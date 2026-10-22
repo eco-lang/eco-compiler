@@ -14,12 +14,14 @@
 //     for port 0. A failure is the FErr tuple ( code, message ), e.g.
 //     ( "EADDRINUSE", "listen EADDRINUSE: ..." ).
 //   * createServerWith (P mode, T2): the same over Socket's tcpListenOn
-//     (an Address, Socket.Address text), with the §7 / A.2 options; http2
-//     without tls fails EINVAL (Elm checks it first). With tls (WS3,
+//     (an Address, Socket.Address text), with the §7 / A.2 options and the
+//     protocols bits (1 HTTP/1.x, 2 HTTP/2); none, or http2 without tls,
+//     fails EINVAL (Elm checks both first). With tls (WS3,
 //     websockets plan §3.5) the same pool job first builds the TLS server
 //     context (buildTlsServerConfig: certificate chain and key; failures are
-//     its ERR_SSL_* codes) in alpnFallback = NoAck mode with the server's own
-//     ALPN list (httpServerAlpn; the user's alpn is not passed down), and,
+//     its ERR_SSL_* codes), with HTTP/1.x in alpnFallback = NoAck mode, with
+//     the server's own ALPN list (httpServerAlpn; the user's alpn is not
+//     passed down), and,
 //     with http2, the RFC 9113 TLS 1.2 cipher restriction. The listener then
 //     wraps every accepted connection in a TlsTransport and installs its
 //     protocol after the handshake (Http1.cpp makeServerProtocol: ALPN
@@ -119,13 +121,16 @@ HPointer createComplete(PoolResult& pr) {
     return serverResult(id, address, r.listen.boundPort);
 }
 
-// The ALPN protocols an https server offers (§3.5): its own list, never the
-// user's Socket.Tls.ServerOptions.alpn: ["h2", "http/1.1"] with http2 (WS8,
-// Http2Protocol), else ["http/1.1"]. A client offering neither still
-// connects without ALPN (NoAck) and is served HTTP/1.1.
-[[maybe_unused]] std::vector<std::string> httpServerAlpn(bool http2) {
-    if (http2) return {"h2", "http/1.1"};
-    return {"http/1.1"};
+// The ALPN protocols an https server offers (§3.5): its own list from its
+// protocols, never the user's Socket.Tls.ServerOptions.alpn: "h2" with http2
+// (WS8, Http2Protocol), then "http/1.1" with http1. With http1 a client
+// offering neither still connects without ALPN (NoAck) and is served
+// HTTP/1.1; an h2-only server sends the fatal alert instead.
+[[maybe_unused]] std::vector<std::string> httpServerAlpn(bool http1, bool http2) {
+    std::vector<std::string> alpn;
+    if (http2) alpn.push_back("h2");
+    if (http1) alpn.push_back("http/1.1");
+    return alpn;
 }
 
 // createServerWith's options, copied out of the heap.
@@ -223,7 +228,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
     bool counted = false;
     ECO_SYSTEM_ASYNC_GUARD(FErr, resume, token, counted,
         WithSpec spec;
-        bool http2 = false;
+        int64_t protocols = 0;
         bool hasTls = false;
         {   // G3: read first; no allocation in this scope
             Tuple3* t = asTuple3(captured);
@@ -235,7 +240,7 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
             Tuple2* hm = asTuple2(target->b.p);
             spec.address = toStdString(ap->a.p);
             spec.port = ap->b.i;
-            http2 = ::Elm::hpBits(hm->a.p) == ::Elm::hpBits(alloc::elmTrue());   // Bool: a constant
+            protocols = hm->a.i;   // bit 0 HTTP/1.x, bit 1 HTTP/2
             spec.maxConnections = hm->b.i;
             hasTls = !alloc::isConstant(tlsHP);   // Nothing is an embedded constant
             if (hasTls) {
@@ -256,7 +261,8 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
             spec.cfg.maxConcurrentStreams = sizes->c.i;   // HTTP/2 (WS8); -1 unlimited
         }
         spec.cfg.tls = hasTls;
-        spec.cfg.http2 = http2;
+        spec.cfg.http1 = (protocols & 1) != 0;
+        spec.cfg.http2 = (protocols & 2) != 0;
         HttpSrv::ensureHttpTables();
 #ifdef _WIN32
         if (hasTls) {   // no OpenSSL on Windows (§1)
@@ -266,7 +272,13 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
             return alloc::unit();
         }
 #endif
-        if (http2 && !hasTls) {
+        if (!spec.cfg.http1 && !spec.cfg.http2) {
+            HPointer task = failFErr("EINVAL", "listen: no protocols");
+            Elm::StackRootGuard g(&task);
+            Scheduler::callClosure1(resume, task);
+            return alloc::unit();
+        }
+        if (spec.cfg.http2 && !hasTls) {
             HPointer task = failFErr("EINVAL", "listen: http2 requires tls");
             Elm::StackRootGuard g(&task);
             Scheduler::callClosure1(resume, task);
@@ -284,10 +296,11 @@ HPointer httpServerCreateServerWithBody(HPointer captured, HPointer resume) {
                 if (spec.cfg.tls) {   // the context first, as Socket.Tls.listen (PEM work)
                     TlsError err;
                     TlsServerMode mode;
-                    mode.alpnNoAck = true;            // §3.5 alpnFallback = NoAck
+                    mode.alpnNoAck = spec.cfg.http1;  // §3.5 alpnFallback = NoAck
                     mode.h2Ciphers = spec.cfg.http2;  // RFC 9113 §9.2.2
                     r.tls = buildTlsServerConfig(spec.certificateChain, spec.privateKey,
-                                                 httpServerAlpn(spec.cfg.http2), err, mode);
+                                                 httpServerAlpn(spec.cfg.http1, spec.cfg.http2),
+                                                 err, mode);
                     if (!r.tls) {
                         r.code = err.code.empty() ? "ERR_SSL_UNKNOWN" : err.code;
                         r.message = err.message;

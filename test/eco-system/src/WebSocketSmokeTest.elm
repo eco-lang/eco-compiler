@@ -217,7 +217,7 @@ client port_ =
     in
     [ get
     , createWith "createServerWith" plain
-    , createWith "createServerWith http2" { plain | http2 = True }
+    , createWith "createServerWith http2" { plain | protocols = [ Http2 ] }
     , outcome "connect ws" (connectTo "WS://127.0.0.1:1/chat?room=1")
     , outcome "connect scheme" (connectTo "http://127.0.0.1/")
     , outcome "connect fragment" (connectTo "ws://127.0.0.1/#x")

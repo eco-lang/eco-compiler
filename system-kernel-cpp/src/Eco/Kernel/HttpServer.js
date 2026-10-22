@@ -23,13 +23,15 @@ import Html.Dom as Dom exposing (toString)
 //   createServerWith         the same with ServerOptions (Appendix A.2): address text from
 //                            Socket.Address, maxConnections (Node's server.maxConnections:
 //                            connections over the limit are dropped, where native leaves them
-//                            in the backlog), body/header limits, timeouts. http2 without
+//                            in the backlog), body/header limits, timeouts, the protocols
+//                            bits (1 HTTP/1.x, 2 HTTP/2). No protocols, or http2 without
 //                            tls: EINVAL. tls (WS3, §3.5): https.createServer with the
 //                            certificate chain and key (checked first, failing with native's
 //                            ERR_SSL_* codes as Socket.Tls.listen); the user's alpn is
 //                            ignored: the server offers ['http/1.1'] (E.2), or with http2
-//                            ['h2', 'http/1.1'] through http2.createSecureServer({ allowHTTP1:
-//                            true }) (WS8, §3.8; TLS 1.2 restricted to ECDHE + AEAD suites).
+//                            ['h2', 'http/1.1'] (or ['h2'] alone) through
+//                            http2.createSecureServer({ allowHTTP1 }) (WS8, §3.8; TLS 1.2
+//                            restricted to ECDHE + AEAD suites).
 //   * HTTP/2 (WS8): h2 requests arrive through Node's compatibility API ('request',
 //     'checkContinue', 'checkExpectation' and, for (extended) CONNECT, 'connect' with
 //     httpVersionMajor 2) and are handled per stream (_HttpServer_onH2Request: no per-socket
@@ -49,7 +51,8 @@ import Html.Dom as Dom exposing (toString)
 //     hands the socket to tls.Server's own connection listener with the server's
 //     ALPNProtocols set for that one connection: the server's list when the client offers
 //     one of them (or no ALPN), none otherwise (the offer is then ignored, as native's
-//     SSL_TLSEXT_ERR_NOACK). tls.Server reads `ALPNProtocols` when the connection arrives
+//     SSL_TLSEXT_ERR_NOACK). An h2-only server (no http1) has no fallback: its list always,
+//     so Node sends the alert, as native. tls.Server reads `ALPNProtocols` when the connection arrives
 //     (internal/tls/wrap tlsConnectionListener, Node 22). A connection whose TLS handshake
 //     has not finished is destroyed by closeServer (native: the listener aborts it).
 //   * Timeouts: Node's keepAliveTimeout / headersTimeout / requestTimeout set to the options
@@ -628,11 +631,11 @@ function _HttpServer_writeAnswer(e, status, raw, bytes, forceClose, complete)
 
 // --- TLS (WS3, §3.5) ---------------------------------------------------------------------
 
-// The ALPN protocols an https server offers: its own, never the user's (§3.5):
-// ['h2', 'http/1.1'] with http2 (WS8), else ['http/1.1'].
-function _HttpServer_alpnList(http2)
+// The ALPN protocols an https server offers: its own, never the user's (§3.5): 'h2' with
+// http2 (WS8), then 'http/1.1' with http1.
+function _HttpServer_alpnList(http1, http2)
 {
-	return http2 ? ['h2', 'http/1.1'] : ['http/1.1'];
+	return (http2 ? ['h2'] : []).concat(http1 ? ['http/1.1'] : []);
 }
 
 // RFC 9113 §9.2.2 for http2: TLS 1.2 suites with ECDHE and AEAD only (the TLS 1.3 suites are
@@ -746,8 +749,9 @@ function _HttpServer_alpnOffer(buf)
 
 // Replaces tls.Server's connection listener: reads the ClientHello (at most 64 KiB, within
 // the handshake timeout), puts it back and hands the socket to the original listener with
-// ALPNProtocols chosen for this connection (NoAck fallback, see the header).
-function _HttpServer_alpnFallback(s, server, list)
+// ALPNProtocols chosen for this connection (NoAck fallback, see the header; `noAck` false: the
+// server's list always).
+function _HttpServer_alpnFallback(s, server, list, noAck)
 {
 	var originals = server.listeners('connection');
 	server.removeAllListeners('connection');
@@ -770,7 +774,7 @@ function _HttpServer_alpnFallback(s, server, list)
 			{
 				raw.unshift(Buffer.concat(chunks));
 			}
-			var common = offer === null || offer === undefined || offer.some(function(p) { return list.indexOf(p) >= 0; });
+			var common = !noAck || offer === null || offer === undefined || offer.some(function(p) { return list.indexOf(p) >= 0; });
 			server.ALPNProtocols = common ? list : undefined;
 			for (var i = 0; i < originals.length; i++)
 			{
@@ -797,13 +801,15 @@ function _HttpServer_alpnFallback(s, server, list)
 
 // --- HTTP/2 (WS8, §3.8, E.2) -------------------------------------------------------------
 
-// http2.createSecureServer({ allowHTTP1: true }): h2 for clients that choose it, HTTP/1.1 (the
+// http2.createSecureServer({ allowHTTP1 }): h2 for clients that choose it, HTTP/1.1 (the
 // same rules as https, through Node's HTTP/1 connection listener, configured by the server's
-// properties) for the others. SETTINGS: ENABLE_CONNECT_PROTOCOL 1, ENABLE_PUSH 0, a 64 KiB
+// properties) for the others; without http1 they are refused as natively: the
+// no_application_protocol alert, and a client without ALPN is destroyed on 'unknownProtocol'
+// (with no listener Node would answer it with an HTTP/1.0 403). SETTINGS: ENABLE_CONNECT_PROTOCOL 1, ENABLE_PUSH 0, a 64 KiB
 // stream window, MAX_CONCURRENT_STREAMS only when maxConcurrentStreams is set (W19). Node
 // enforces MAX_HEADER_LIST_SIZE itself (resetting the stream with ENHANCE_YOUR_CALM), so it is
 // set to twice maxHeaderSize and the header list is checked here (431), as natively.
-function _HttpServer_createH2Server(options, cfg)
+function _HttpServer_createH2Server(options, cfg, http1)
 {
 	var settings = {
 		enableConnectProtocol: true,
@@ -816,7 +822,7 @@ function _HttpServer_createH2Server(options, cfg)
 		settings.maxConcurrentStreams = cfg.__maxStreams;
 	}
 	var h2options = {
-		allowHTTP1: true,
+		allowHTTP1: http1,
 		cert: options.cert,
 		key: options.key,
 		ALPNProtocols: options.ALPNProtocols,
@@ -825,6 +831,10 @@ function _HttpServer_createH2Server(options, cfg)
 		maxHeaderListPairs: 1 << 20
 	};
 	var server = require('http2').createSecureServer(h2options);
+	if (!http1)
+	{
+		server.on('unknownProtocol', function(socket) { socket.destroy(); });
+	}
 	// The HTTP/1.1 side reads these from the server object (Node 22).
 	server.maxHeaderSize = options.maxHeaderSize;
 	server.requestTimeout = options.requestTimeout;
@@ -1077,7 +1087,7 @@ function _HttpServer_writeH2(stream, st, raw, bytes, isHead, closeAfter, complet
 // --- B.6 / B.2 --------------------------------------------------------------------------
 
 // Listens (host may be '' for all interfaces) and registers the server; callback gets
-// the task result. `tls`: null, or { __chain, __key, __http2 } (https, WS3).
+// the task result. `tls`: null, or { __chain, __key, __http1, __http2 } (https, WS3).
 function _HttpServer_start(host, port, cfg, tls, callback)
 {
 	var http = require('http');
@@ -1091,7 +1101,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 	}
 	var server;
 	var live = null, starting = null;
-	var alpn = tls ? _HttpServer_alpnList(tls.__http2) : null;
+	var alpn = tls ? _HttpServer_alpnList(tls.__http1, tls.__http2) : null;
 	try
 	{
 		var options = {
@@ -1111,7 +1121,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 			if (tls.__http2)
 			{
 				options.ciphers = _HttpServer_h2Ciphers;
-				server = _HttpServer_createH2Server(options, cfg);
+				server = _HttpServer_createH2Server(options, cfg, tls.__http1);
 			}
 			else
 			{
@@ -1192,7 +1202,7 @@ function _HttpServer_start(host, port, cfg, tls, callback)
 	{
 		// Requests arrive on the TLSSocket (its queue and keys); the raw socket is tracked
 		// too, so the deadline of closeServer reaches it.
-		_HttpServer_alpnFallback(s, server, alpn);
+		_HttpServer_alpnFallback(s, server, alpn, tls.__http1);
 		server.on('connection', track);
 		server.on('secureConnection', function(socket)
 		{
@@ -1293,14 +1303,21 @@ var _HttpServer_createServer = F2(function(host, port)
 	});
 });
 
-// createServerWith : ( ( String, Int ), ( Bool, Int ) ) -> Maybe ( String, String )
+// createServerWith : ( ( String, Int ), ( Int, Int ) ) -> Maybe ( String, String )
 //     -> ( ( Int, Int, Int ), ( Int, Int, Int ) ) -> Task ( String, String ) ( Int, String, Int )
 var _HttpServer_createServerWith = F3(function(target, tls, limits)
 {
 	return __Scheduler_binding(function(callback)
 	{
 		var hasTls = tls !== __Maybe_Nothing && tls.$ !== __Maybe_Nothing.$;
-		if (target.b.a && !hasTls)
+		var http1 = (target.b.a & 1) !== 0;
+		var http2 = (target.b.a & 2) !== 0;
+		if (!http1 && !http2)
+		{
+			callback(__Scheduler_fail(__Utils_Tuple2('EINVAL', 'listen: no protocols')));
+			return;
+		}
+		if (http2 && !hasTls)
 		{
 			callback(__Scheduler_fail(__Utils_Tuple2('EINVAL', 'listen: http2 requires tls')));
 			return;
@@ -1323,7 +1340,7 @@ var _HttpServer_createServerWith = F3(function(target, tls, limits)
 				callback(__Scheduler_fail(bad));
 				return;
 			}
-			tlsCfg = { __chain: tls.a.a, __key: tls.a.b, __http2: target.b.a };
+			tlsCfg = { __chain: tls.a.a, __key: tls.a.b, __http1: http1, __http2: http2 };
 		}
 		_HttpServer_start(target.a.a, target.a.b, cfg, tlsCfg, callback);
 	});

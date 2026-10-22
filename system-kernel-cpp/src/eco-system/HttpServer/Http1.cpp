@@ -561,6 +561,7 @@ std::unique_ptr<ConnProtocol> makeServerProtocol(Conn& c,
                                                  const std::shared_ptr<ServerReactorState>& srv) {
     const TlsInfo* tls = c.tlsInfo();
     if (tls && tls->alpn == "h2" && srv->cfg->http2) return makeHttp2Protocol(c, srv);
+    if (!srv->cfg->http1) return nullptr;   // h2-only: a client without ALPN
     return makeHttp1Protocol(c, srv);
 }
 

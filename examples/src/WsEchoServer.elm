@@ -131,7 +131,15 @@ start options =
                 d =
                     Server.defaultListenOptions (Address.loopback Address.IPv4) options.port_
             in
-            { d | tls = tls, http2 = options.http2 }
+            { d
+                | tls = tls
+                , protocols =
+                    if options.http2 then
+                        [ Server.Http2, Server.Http1_1 ]
+
+                    else
+                        [ Server.Http1_1 ]
+            }
     in
     (case options.tls of
         Just ( certFile, keyFile ) ->

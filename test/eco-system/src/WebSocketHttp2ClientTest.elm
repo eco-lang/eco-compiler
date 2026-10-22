@@ -3,11 +3,11 @@ module WebSocketHttp2ClientTest exposing (main)
 {-| The WebSocket client over HTTP/2 (`http2 = True`, RFC 8441; plans/eco-system-websockets.md W12,
 §3.9, §4 WS9):
 
-  - against our server with `http2`: ALPN `h2`, the server's SETTINGS allow extended CONNECT, so
-    the WebSocket runs on an HTTP/2 stream (the server sees an `Http2` upgrade request); echo and
-    a clean close; a 4 MiB message and 512 KiB of text sent at once and echoed (HTTP/2 flow
+  - against our server with `Http2` in its `protocols`: ALPN `h2`, the server's SETTINGS allow
+    extended CONNECT, so the WebSocket runs on an HTTP/2 stream (the server sees an `Http2`
+    upgrade request); echo and a clean close; a 4 MiB message and 512 KiB of text sent at once and echoed (HTTP/2 flow
     control: 64 KiB stream windows, the codec's write backpressure);
-  - against an HTTPS server without `http2` (ALPN `http/1.1`): the HTTP/1.1 handshake on the same
+  - against an HTTPS server without `Http2` (ALPN `http/1.1`): the HTTP/1.1 handshake on the same
     connection (`Http1_1`);
   - without `http2`, against the HTTP/2 server: HTTP/1.1 (`Http1_1`);
   - against a Node HTTP/2 server whose SETTINGS do not allow extended CONNECT (`allowHTTP1`): the
@@ -163,4 +163,4 @@ client tools servers =
 
 
 main =
-    H.program { servers = [ identity, \o -> { o | http2 = False } ], client = client }
+    H.program { servers = [ identity, \o -> { o | protocols = [ Server.Http1_1 ] } ], client = client }

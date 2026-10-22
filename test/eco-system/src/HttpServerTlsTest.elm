@@ -4,10 +4,12 @@ module HttpServerTlsTest exposing (main)
 by raw HTTP/1.1 over `Socket.Tls` clients trusting the test CA. Request URLs start with
 `https://`; the server chooses ALPN itself (`http/1.1`), ignoring the `alpn` of its
 `Socket.Tls.ServerOptions` (here `[ "h2" ]`); a client offering `h2` first still gets `http/1.1`
-(the server has no `http2`); a client offering only `http/1.0`, or nothing, connects without
-ALPN (alpnFallback = NoAck) and is served HTTP/1.1; keep-alive works over TLS; `http2 = True`
-with `tls` offers `h2` (HTTP/2 itself: the `HttpServerHttp2*` tests) and fails `InvalidInput` without
-it; an unusable key fails with `CertificateUnusable`. (`Socket.Tls.listen` keeps the fatal alert on no overlap:
+(the server's `protocols` are `[ Http1_1 ]`); a client offering only `http/1.0`, or nothing,
+connects without ALPN (alpnFallback = NoAck) and is served HTTP/1.1; keep-alive works over TLS;
+`protocols = [ Http2, Http1_1 ]` with `tls` offers `h2` (HTTP/2 itself: the `HttpServerHttp2*`
+tests); `[ Http2 ]` alone offers only `h2`, so a client offering `http/1.1` gets the fatal alert
+and one offering nothing is dropped after the handshake; `Http2` without `tls`, and empty
+`protocols`, fail `InvalidInput`; an unusable key fails with `CertificateUnusable`. (`Socket.Tls.listen` keeps the fatal alert on no overlap:
 `SocketTlsAlpnTest`.)
 -}
 
@@ -28,7 +30,11 @@ it; an unusable key fails with `CertificateUnusable`. (`Socket.Tls.listen` keeps
 -- CHECK: client: no alpn: 200 close e
 -- CHECK: client: no alpn: closed
 -- CHECK: client: http2 without tls: InvalidInput
+-- CHECK: client: no protocols: InvalidInput
 -- CHECK: client: http2 with tls: alpn h2
+-- CHECK: client: h2 only, h2: alpn h2
+-- CHECK: client: h2 only, http/1.1: err TlsError (HandshakeFailed {{TLSV1_ALERT_NO_APPLICATION_PROTOCOL}})
+-- CHECK: client: h2 only, no alpn: refused
 -- CHECK: client: bad key: CertificateUnusable True
 -- EXIT: 0
 
@@ -103,6 +109,37 @@ session name alpn exchanges port_ =
         |> Task.map (List.map (\l -> name ++ ": " ++ l))
 
 
+{-| A client of a server that may refuse it: `alpn <protocol>` when the handshake succeeds and
+`get` is answered, `refused` when it succeeds but the connection ends without an answer, else
+the handshake's `err` line.
+-}
+attempt : String -> List String -> Int -> Task String (List String)
+attempt name alpn port_ =
+    Socket.Tls.connect (T.trusted "localhost" alpn)
+        (Socket.Tcp.defaultConnectOptions (Address.loopback IPv4) port_)
+        |> Task.andThen
+            (\conn ->
+                Socket.Tls.info conn
+                    |> Task.andThen
+                        (\info ->
+                            H.sendRaw (get "/h2only") conn
+                                |> Task.onError (\_ -> Task.succeed ())
+                                |> Task.andThen (\_ -> H.readToClose conn)
+                                |> Task.map
+                                    (\text ->
+                                        if String.startsWith "HTTP/" text then
+                                            "alpn " ++ T.alpnString info.alpn
+
+                                        else
+                                            "refused"
+                                    )
+                        )
+                    |> Task.andThen (\line -> Socket.close conn |> Task.map (\_ -> line))
+            )
+        |> Task.onError (\e -> Task.succeed (T.failure e))
+        |> Task.map (\line -> [ name ++ ": " ++ line ])
+
+
 then_ : Task String (List String) -> Task String (List String) -> Task String (List String)
 then_ next before =
     before |> Task.andThen (\lines -> next |> Task.map (\more -> lines ++ more))
@@ -135,16 +172,35 @@ client server =
         |> then_ (session "http/1.0 only" [ "http/1.0" ] (H.exchange (get "/d") 1 False) port_)
         |> then_ (session "no alpn" [] (H.exchange "GET /e HTTP/1.0\u{000D}\nHost: localhost\u{000D}\n\u{000D}\n" 1 True) port_)
         |> then_
-            (startError { plain | http2 = True }
+            (startError { plain | protocols = [ Http2, Http1_1 ] }
                 |> Task.map (\code -> [ "http2 without tls: " ++ code ])
             )
         |> then_
-            (Server.listen (withTls { plain | http2 = True })
+            (startError (withTls { plain | protocols = [] })
+                |> Task.map (\code -> [ "no protocols: " ++ code ])
+            )
+        |> then_
+            (Server.listen (withTls { plain | protocols = [ Http2, Http1_1 ] })
                 |> Task.mapError Server.errorToString
                 |> Task.andThen
                     (\s2 ->
                         session "http2 with tls" [ "h2", "http/1.1" ] (\_ -> Task.succeed []) ((Server.endpoint s2).port_)
                             |> Task.andThen (\lines -> Server.close s2 |> Task.map (\_ -> lines))
+                    )
+            )
+        |> then_
+            (Server.listen (withTls { plain | protocols = [ Http2 ] })
+                |> Task.mapError Server.errorToString
+                |> Task.andThen
+                    (\s3 ->
+                        let
+                            port3 =
+                                (Server.endpoint s3).port_
+                        in
+                        session "h2 only, h2" [ "h2" ] (\_ -> Task.succeed []) port3
+                            |> then_ (attempt "h2 only, http/1.1" [ "http/1.1" ] port3)
+                            |> then_ (attempt "h2 only, no alpn" [] port3)
+                            |> Task.andThen (\lines -> Server.close s3 |> Task.map (\_ -> lines))
                     )
             )
         |> then_

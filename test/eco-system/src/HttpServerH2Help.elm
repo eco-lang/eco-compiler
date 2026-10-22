@@ -8,7 +8,7 @@ websockets.md §4 WS8).
 
 The program writes the test CA (`TlsFixtures.caPem`) and a Node script (`h2.js`, below) into a
 fresh temporary directory, creates the servers of the test with `listen` (https on
-127.0.0.1, port 0, `http2 = True`, then the test's changes), subscribes to all of them, and runs the
+127.0.0.1, port 0, `protocols = [ Http2, Http1_1 ]`, then the test's changes), subscribes to all of them, and runs the
 test's client task, which talks to the servers through peers it spawns with `ChildProcess.run`:
 `curl --http2` (system curl, HTTP/2 through its nghttp2) and `node h2.js <mode> …` (Node's
 `http2` client, or raw HTTP/2 frames over `tls` for cases no client library produces). Both are
@@ -82,7 +82,8 @@ type alias Model =
     }
 
 
-{-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and `http2 = True`.
+{-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and
+`protocols = [ Http2, Http1_1 ]`.
 -}
 h2Options : ListenOptions
 h2Options =
@@ -92,7 +93,7 @@ h2Options =
     in
     { d
         | tls = Just { certificateChain = Fx.serverCertPem, privateKey = Fx.serverKeyPem, alpn = [] }
-        , http2 = True
+        , protocols = [ Server.Http2, Server.Http1_1 ]
     }
 
 

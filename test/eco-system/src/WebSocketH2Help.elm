@@ -8,7 +8,7 @@ plans/eco-system-websockets.md §3.9, §4 WS9).
 
 The program writes the test CA, the test server certificate and key, and a Node script (`ws.js`,
 below) into a fresh temporary directory, creates the servers of the test with `listen`
-(https on 127.0.0.1, port 0, `http2 = True`, then the test's changes), subscribes to all of them,
+(https on 127.0.0.1, port 0, `protocols = [ Http2, Http1_1 ]`, then the test's changes), subscribes to all of them,
 and runs the test's client task.
 
 Every server upgrades a request whose `upgrade` is `Just WebSocketUpgrade` with
@@ -79,7 +79,8 @@ type alias Model =
     }
 
 
-{-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and `http2 = True`.
+{-| `defaultServerOptions` on 127.0.0.1, port 0, with the test certificate and
+`protocols = [ Http2, Http1_1 ]`.
 -}
 h2Options : ListenOptions
 h2Options =
@@ -89,7 +90,7 @@ h2Options =
     in
     { d
         | tls = Just { certificateChain = Fx.serverCertPem, privateKey = Fx.serverKeyPem, alpn = [] }
-        , http2 = True
+        , protocols = [ Http2, Http1_1 ]
     }
 
 

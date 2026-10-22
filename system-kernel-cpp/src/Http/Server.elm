@@ -31,8 +31,8 @@ the request is answered, when [`upgradeRequest`](#upgradeRequest) takes the requ
 when the request's connection goes away. From then on, sending the response writes nothing, so a
 request is answered at most once however often its response is sent.
 
-The server speaks HTTP/1.0 and HTTP/1.1, and, when started with `http2` (which requires TLS),
-HTTP/2 (see [`ListenOptions`](#ListenOptions)). Over HTTP/1 a connection is kept alive and serves one request
+The server speaks HTTP/1.0 and HTTP/1.1, HTTP/2 over TLS, or both, as its `protocols` say (see
+[`ListenOptions`](#ListenOptions)). Over HTTP/1 a connection is kept alive and serves one request
 after another; requests a client sends ahead of their answers (pipelining) are handed to the
 program one at a time, in order, each once the one before it has been answered. Over HTTP/2
 several requests on one connection are handed over at once and answered independently.
@@ -174,11 +174,15 @@ clients to.
 `port_` 0 lets the system pick a free port, which [`endpoint`](#endpoint) reports.
 
 `tls` serves HTTPS (and so `wss` WebSockets) with the given certificate chain and key. Its `alpn`
-field is not used: the server offers `h2` and `http/1.1` with `http2`, else `http/1.1`, and a
-client that offers none of them is still served HTTP/1.1.
+field is not used: the server offers its `protocols` instead, `h2` for HTTP/2 and `http/1.1`
+for HTTP/1.
 
-`http2` also serves HTTP/2 to clients that ask for it during the TLS handshake. It requires `tls`.
-TLS 1.2 is then limited to the cipher suites HTTP/2 allows.
+`protocols` are the [HTTP versions](#HttpVersion) the server serves, as a set: their order does
+not matter, repeats are ignored, and a client that can use both HTTP/1 and HTTP/2 is served
+HTTP/2. `Http1_0` and `Http1_1` both serve HTTP/1.0 and HTTP/1.1. `Http2` serves HTTP/2 to
+clients that choose it during the TLS handshake, so it requires `tls`, and TLS 1.2 is then limited
+to the cipher suites HTTP/2 allows. With HTTP/1, a TLS client that offers neither name, or none at
+all, is still served HTTP/1.1; without it, such a client is refused. `protocols` must not be empty.
 
 `maxConnections` is the most connections open at once. Natively, further clients wait in the
 operating system's queue of pending connections until one closes; on the JavaScript backend Node
@@ -215,7 +219,7 @@ type alias ListenOptions =
     { address : Address
     , port_ : Int
     , tls : Maybe Socket.Tls.ServerOptions
-    , http2 : Bool
+    , protocols : List HttpVersion
     , maxConnections : Maybe Int
     , maxConcurrentStreams : Maybe Int
     , maxBodySize : Int
@@ -226,7 +230,7 @@ type alias ListenOptions =
     }
 
 
-{-| Returns the options for plain HTTP on `address` and `port_`, with no connection or stream
+{-| Returns the options for plain HTTP/1.1 on `address` and `port_`, with no connection or stream
 limits, bodies up to 16 MiB, header blocks up to 64 KiB, a 5 second keep-alive timeout, a 60
 second headers timeout and a 300 second request timeout.
 
@@ -238,7 +242,7 @@ defaultListenOptions address port_ =
     { address = address
     , port_ = port_
     , tls = Nothing
-    , http2 = False
+    , protocols = [ Http1_1 ]
     , maxConnections = Nothing
     , maxConcurrentStreams = Nothing
     , maxBodySize = 16 * 1024 * 1024
@@ -261,20 +265,22 @@ defaultListenOptions address port_ =
 Fails with an [`Error`](#Error): for example of kind [`AddressInUse`](#ErrorKind) when the port
 is taken, [`CertificateUnusable`](#ErrorKind) when the certificate chain or key cannot be used,
 [`InvalidPort`](#ErrorKind) for a port outside 0 to 65535, and [`InvalidInput`](#ErrorKind) when
-`http2` is set without `tls`. A listening server
-keeps the program running only while an [`onRequest`](#onRequest) subscription to it exists or
+`protocols` is empty or has `Http2` without `tls`. A listening server keeps the program running only while an [`onRequest`](#onRequest) subscription to it exists or
 a request it handed over has not been answered.
 
 -}
 listen : ListenOptions -> Task Error Server
 listen options =
-    if options.http2 && options.tls == Nothing then
+    if List.isEmpty options.protocols then
+        Task.fail (Error { code = "EINVAL", message = "listen: no protocols" })
+
+    else if List.member Http2 options.protocols && options.tls == Nothing then
         Task.fail (Error { code = "EINVAL", message = "listen: http2 requires tls" })
 
     else
         kCreateServerWith
             ( ( Socket.Address.toString options.address, options.port_ )
-            , ( options.http2, limit options.maxConnections )
+            , ( protocolBits options.protocols, limit options.maxConnections )
             )
             (Maybe.map (\tls -> ( tls.certificateChain, tls.privateKey )) options.tls)
             ( ( options.keepAliveTimeout, options.headersTimeout, options.requestTimeout )
@@ -282,6 +288,25 @@ listen options =
             )
             |> Task.map toServer
             |> Task.mapError toError
+
+
+{-| Returns `protocols` as the kernel takes them: bit 0 for HTTP/1 (`Http1_0` or `Http1_1`), bit 1
+for `Http2`.
+-}
+protocolBits : List HttpVersion -> Int
+protocolBits protocols =
+    (if List.member Http1_0 protocols || List.member Http1_1 protocols then
+        1
+
+     else
+        0
+    )
+        + (if List.member Http2 protocols then
+            2
+
+           else
+            0
+          )
 
 
 {-| Returns a limit as the kernel takes it: -1 for `Nothing` (no limit), and `max 0 n` for
@@ -402,7 +427,9 @@ toUpgrade token =
         UnknownUpgrade token
 
 
-{-| The HTTP version a request was made with. `Http2` occurs only on a server started with `http2`.
+{-| The HTTP version a request was made with, or one a server offers in the `protocols` of its
+[`ListenOptions`](#ListenOptions). A request is made with `Http2` only on a server whose `protocols`
+include it.
 -}
 type HttpVersion
     = Http1_0
@@ -556,7 +583,7 @@ HTTP/1.1 the requests the client sent before this one on the same connection are
 so the `101` follows their responses.
 
 Over HTTP/2 the request is an extended `CONNECT` with `:protocol` `websocket`, which a server with
-`http2` allows; the server itself answers any other `:protocol` with 501. The WebSocket then runs
+`Http2` allows; the server itself answers any other `:protocol` with 501. The WebSocket then runs
 on that one stream of the connection, next to the connection's other requests and WebSockets:
 `accept` answers `200` and the stream carries the frames, the close handshake ends the stream, and
 an aborted WebSocket resets it. Such a WebSocket is one of the connection's streams for
@@ -826,7 +853,7 @@ type Error
   - `PermissionDenied` (`EACCES`, `EPERM`): the operating system refused to listen, for example
     on a privileged port.
   - `InvalidPort` (`ERR_SOCKET_BAD_PORT`): the port is outside 0 to 65535.
-  - `InvalidInput` (`EINVAL`): the options cannot be used together, as `http2` without `tls`.
+  - `InvalidInput` (`EINVAL`): the options cannot be used, as empty `protocols` or `Http2` without `tls`.
   - `NotSupported` (`ENOTSUP`): no server can be started here, as on the native backend under
     Windows.
   - `CertificateUnusable reason`: the TLS certificate chain or private key cannot be used, for
@@ -1063,13 +1090,13 @@ kCreateServer =
     Eco.Kernel.HttpServer.createServer
 
 
-{-| Starts a server from `( ( address text, port ), ( http2, maxConnections ) )`, the TLS
+{-| Starts a server from `( ( address text, port ), ( protocols, maxConnections ) )`, the TLS
 certificate chain and key, and
 `( ( keepAliveTimeout, headersTimeout, requestTimeout ), ( maxBodySize, maxHeaderSize, maxConcurrentStreams ) )`,
-with -1 for no limit. Results as for `kCreateServer`.
+with `protocols` as from `protocolBits` and -1 for no limit. Results as for `kCreateServer`.
 -}
 kCreateServerWith :
-    ( ( String, Int ), ( Bool, Int ) )
+    ( ( String, Int ), ( Int, Int ) )
     -> Maybe ( String, String )
     -> ( ( Int, Int, Int ), ( Int, Int, Int ) )
     -> Task ( String, String ) ( Int, String, Int )

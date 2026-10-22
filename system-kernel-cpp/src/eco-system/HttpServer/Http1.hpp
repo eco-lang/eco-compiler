@@ -106,7 +106,8 @@ struct ServerConfig {
     int64_t serverId = 0;
     uint64_t gen = 0;               // heap generation of createServer
     bool tls = false;               // TLS (WS3): URL scheme https, flags bit 2
-    bool http2 = false;             // createServerWith's http2: ALPN h2 (Http2.cpp, WS8)
+    bool http1 = true;              // createServerWith's protocols bit 0: HTTP/1.x
+    bool http2 = false;             // protocols bit 1: ALPN h2 (Http2.cpp, WS8)
     std::string fallbackAuthority;  // host:port for requests without Host (E.5)
     int64_t maxBodySize = 16 * 1024 * 1024;
     int64_t maxHeaderSize = 64 * 1024;
@@ -140,8 +141,9 @@ std::unique_ptr<ConnProtocol> makeHttp1Protocol(Conn& c,
 // handshake of an https server, and dispatches on the ALPN protocol the
 // handshake chose (Conn::tlsInfo()->alpn): "h2" → Http2Protocol (phase WS8),
 // anything else (http/1.1, or no ALPN: plain TCP, a client that offered
-// none, or the NoAck fallback) → makeHttp1Protocol. Only servers created
-// with http2 offer "h2" (HttpServer.cpp httpServerAlpn).
+// none, or the NoAck fallback) → makeHttp1Protocol, or, on a server without
+// HTTP/1.x (an h2-only one), null: the connection is dropped. Servers offer
+// "h2" and "http/1.1" as their protocols say (HttpServer.cpp httpServerAlpn).
 std::unique_ptr<ConnProtocol> makeServerProtocol(Conn& c,
                                                  const std::shared_ptr<ServerReactorState>& srv);
 
