@@ -149,7 +149,6 @@ Code:
 - `runtime/src/codegen/ecoc.cpp`, `runtime/src/codegen/eco-boot.cpp`, `runtime/src/codegen/EcoRunner.cpp`, `runtime/src/jit/`, `runtime/src/ecogen.cpp`: the developer tool, the bootstrap compiler, the test JIT, and a tool that only parses, verifies and reprints dialect text.
 - `runtime/src/codegen/RuntimeSymbols.cpp`: runtime symbols registered for the JIT.
 - `runtime/src/codegen/CMakeLists.txt`: the targets, the generated `EcoBootConfig.h` and bundle assembly.
-- `runtime/src/main.cpp` is in this node's scope but is the `ecor` allocator demo, not backend code.
 
 Invariants (`design_docs/invariants.csv`):
 

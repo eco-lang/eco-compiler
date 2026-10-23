@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl, generateGenericCloneFunc)
+module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl)
 
 {-| Function generation for the MLIR backend.
 
@@ -12,7 +12,7 @@ This module handles generation of all function types:
   - Externs
   - Cycles
 
-@docs generateMainEntry, generateNode, generateKernelDecl, generateGenericCloneFunc
+@docs generateMainEntry, generateNode, generateKernelDecl
 
 -}
 
@@ -73,7 +73,7 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                                 Ctx.freshVar ctxMain
 
                             ( ctxB, regCallOp ) =
-                                Ops.ecoCallNamed ctxA Expr.emitSafepointHints regVar "__eco_register_ports" [] Types.ecoValue
+                                Ops.ecoCallNamed ctxA regVar "__eco_register_ports" [] Types.ecoValue
                         in
                         ( [ regCallOp ], ctxB )
 
@@ -85,7 +85,7 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                     specIdToFuncName ctx.registry mainSpecId
 
                 ( ctx2, callOp ) =
-                    Ops.ecoCallNamed ctx1 Expr.emitSafepointHints callVar mainFuncName [] Types.ecoValue
+                    Ops.ecoCallNamed ctx1 callVar mainFuncName [] Types.ecoValue
 
                 ( ctx3, returnOp ) =
                     Ops.ecoReturn ctx2 callVar Types.ecoValue
@@ -203,7 +203,7 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                                 Ctx.freshVar (Ctx.registerKernelCall c symbol [] Types.ecoValue)
 
                             ( c2, registerOp ) =
-                                Ops.ecoCallNamed c1 Expr.emitSafepointHints resultVar symbol [] Types.ecoValue
+                                Ops.ecoCallNamed c1 resultVar symbol [] Types.ecoValue
                         in
                         ( registerOp :: accOps, c2 )
                     )
@@ -226,7 +226,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
                             ( c2, decoderCallOp ) =
                                 Ops.ecoCallNamed c1
-                                    Expr.emitSafepointHints
                                     decoderVar
                                     (specIdToFuncName c1.registry decoderSpecId)
                                     []
@@ -237,7 +236,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
                             ( c4, registerOp ) =
                                 Ops.ecoCallNamed c3
-                                    Expr.emitSafepointHints
                                     resultVar
                                     "Elm_Kernel_Platform_registerFlagsDecoder"
                                     [ ( decoderVar, Types.ecoValue ) ]
@@ -263,7 +261,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
                                     ( c4, decoderCallOp ) =
                                         Ops.ecoCallNamed c3
-                                            Expr.emitSafepointHints
                                             decoderVar
                                             (specIdToFuncName c3.registry decoderSpecId)
                                             []
@@ -274,7 +271,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
                                     ( c6, registerOp ) =
                                         Ops.ecoCallNamed c5
-                                            Expr.emitSafepointHints
                                             resultVar
                                             "Elm_Kernel_Platform_registerIncomingPort"
                                             [ ( nameVar, Types.ecoValue ), ( decoderVar, Types.ecoValue ) ]
@@ -289,7 +285,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
                                     ( c4, registerOp ) =
                                         Ops.ecoCallNamed c3
-                                            Expr.emitSafepointHints
                                             resultVar
                                             "Elm_Kernel_Platform_registerOutgoingPort"
                                             [ ( nameVar, Types.ecoValue ) ]
@@ -749,8 +744,8 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
 
 
 {-| Generate closure functions.
-For closures with captures: generates both fast clone (captures + params)
-and generic clone (Closure\* + params).
+For closures with captures: generates the fast clone `$cap` (captures +
+params), the function its `eco.papCreate` names.
 For zero-capture closures: generates just the original function.
 -}
 generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
@@ -760,9 +755,9 @@ generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit
             not (List.isEmpty closureInfo.captures)
     in
     if hasCaptures then
-        -- Two-clone model: fast clone + generic clone (sret selection
-        -- excludes captured closures, so maybeSret is Nothing here)
-        generateClosureFuncWithClones ctx funcName closureInfo body monoType
+        -- Fast clone only (sret selection excludes captured closures, so
+        -- maybeSret is Nothing here)
+        generateClosureFuncWithCaptures ctx funcName closureInfo body monoType
 
     else
         -- Zero captures: single function (original lambda)
@@ -879,9 +874,7 @@ and remain for their other callers.
 
 Captures are projected out of the closure parameter ONCE, here, before the op —
 so the expansion's loop body never re-extracts them (they arrive as ordinary
-loop-invariant SSA operands and relocate like any other value). This mirrors
-`generateGenericCloneBodyFromSpecs`, which does the same projection for the
-generic clone.
+loop-invariant SSA operands and relocate like any other value).
 
 Declines to the caller (returning `Nothing`) rather than emitting something
 half-formed if the parameter row is not the expected `(f, xs)` shape — the
@@ -1173,7 +1166,7 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
             List.reverse sResultPairsRev
 
         ( ctxS2, sCallOp ) =
-            Ops.ecoCallNamedMulti ctxS1 [] sResultPairs (funcName ++ "$sret") argPairs
+            Ops.ecoCallNamedMulti ctxS1 sResultPairs (funcName ++ "$sret") argPairs
 
         ( sBoxVar, ctxS3 ) =
             Ctx.freshVar ctxS2
@@ -1181,10 +1174,10 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
         ( ctxS4, sConstructOp ) =
             case sResultPairs of
                 [ a, b ] ->
-                    Ops.ecoConstructTuple2 ctxS3 [] sBoxVar a b sretInfo.layout.unboxedBitmap
+                    Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
 
                 [ a, b, c ] ->
-                    Ops.ecoConstructTuple3 ctxS3 [] sBoxVar a b c sretInfo.layout.unboxedBitmap
+                    Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
 
                 _ ->
                     crash "generateSretWorkerAndShim: slot arity not 2/3"
@@ -1354,7 +1347,7 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
             Ctx.freshVar ctxS1
 
         ( ctxS3, sCallOp ) =
-            Ops.ecoCallNamed ctxS2 [] sResultVar (funcName ++ "$psplit") (List.reverse sCallArgsRev) returnType
+            Ops.ecoCallNamed ctxS2 sResultVar (funcName ++ "$psplit") (List.reverse sCallArgsRev) returnType
 
         ( _, sReturnOp ) =
             Ops.ecoReturn ctxS3 sResultVar returnType
@@ -1376,22 +1369,15 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
     ( [ workerOp, shimWithLogical ], { ctxS4 | splitAggParams = ctx.splitAggParams } )
 
 
-{-| Generate two clones for closures with captures:
-
-  - Fast clone (funcName$cap): (captures..., params...) -> R
-  - Generic clone (funcName$clo): (Closure\*, params...) -> R
-
-The generic clone body loads captures from closure and calls the fast clone.
-
+{-| Generate the fast clone (funcName$cap) of a closure with captures:
+(captures..., params...) -> R. It is the function the closure's
+`eco.papCreate` names, both in `function` and in `_fast_evaluator`.
 -}
-generateClosureFuncWithClones : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
-generateClosureFuncWithClones ctx funcName closureInfo body monoType =
+generateClosureFuncWithCaptures : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
+generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
     let
         fastCloneName =
             funcName ++ "$cap"
-
-        genericCloneName =
-            funcName ++ "$clo"
 
         -- Capture types for fast clone signature
         captureTypes : List ( String, MlirType )
@@ -1510,144 +1496,8 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
                 (captureMonoTypes ++ paramMonoTypes)
                 extractedReturnType
                 fastCloneOpRaw
-
-        -- Generic clone: (Closure*, params...) -> R
-        -- Body: load captures, call fast clone
-        captureSpecs : List ( MlirType, Bool )
-        captureSpecs =
-            List.map
-                (\( _, expr, isUnboxed ) ->
-                    ( Types.monoTypeToAbi (Mono.typeOf expr), isUnboxed )
-                )
-                closureInfo.captures
-
-        ( genericCloneOpRaw, ctx2 ) =
-            generateGenericCloneFunc ctx1 genericCloneName fastCloneName captureSpecs paramPairs returnType
-
-        -- $clo logical params: first is the opaque closure pointer
-        -- (always !eco.value → "value"), then the Elm params.
-        cloLogicalParams : List Mono.MonoType
-        cloLogicalParams =
-            -- A throwaway MList placeholder won't do — we want "value".
-            -- Use MUnit (encoded as "value") for the closure slot since
-            -- the encoder treats every non-primitive non-aggregate as
-            -- "value".
-            Mono.MUnit :: paramMonoTypes
-
-        genericCloneOp =
-            LogicalTypes.addLogicalTypesAttr
-                ctx2.ecoConfig.logicalTypes.customMaxFields
-                ctx2.typeRegistry.ctorShapes
-                cloLogicalParams
-                extractedReturnType
-                genericCloneOpRaw
     in
-    ( [ fastCloneOp, genericCloneOp ], ctx2 )
-
-
-{-| Generate a complete generic clone ($clo) func.func op.
-The generic clone takes (Closure\*, params...) and loads captures from the
-closure object, then calls the fast clone ($cap).
-
-This is shared by both the top-level closure path (Functions.generateClosureFuncWithClones)
-and the inline lambda path (Lambdas.generateLambdaFunc).
-
--}
-generateGenericCloneFunc : Ctx.Context -> String -> String -> List ( MlirType, Bool ) -> List ( String, MlirType ) -> MlirType -> ( MlirOp, Ctx.Context )
-generateGenericCloneFunc ctx genericCloneName fastCloneName captureSpecs paramPairs returnType =
-    let
-        genericCloneArgs =
-            ( "%closure", Types.ecoValue ) :: paramPairs
-
-        -- Reset scope for the generic clone's own SSA context.
-        -- Entry block args are %closure, %param1..%paramN, so
-        -- body SSA values start after those.
-        genericCloneArgSsaVars =
-            List.map Tuple.first genericCloneArgs
-
-        genericCloneVarMappings =
-            List.foldl
-                (\( ssaVar, mlirType ) acc ->
-                    let
-                        -- Strip the leading % from SSA var name for the mapping key
-                        name =
-                            String.dropLeft 1 ssaVar
-                    in
-                    Dict.insert name
-                        { ssaVar = ssaVar
-                        , mlirType = mlirType
-                        }
-                        acc
-                )
-                Dict.empty
-                genericCloneArgs
-
-        ctxFreshScope =
-            { ctx | nextVar = List.length genericCloneArgs, varMappings = genericCloneVarMappings }
-                |> Ctx.resetDefinedSsaVars genericCloneArgSsaVars
-
-        ( genericCloneOps, genericCloneResult, ctx1 ) =
-            generateGenericCloneBodyFromSpecs ctxFreshScope captureSpecs fastCloneName paramPairs returnType
-
-        genericCloneRegion =
-            let
-                ( _, returnOp ) =
-                    Ops.ecoReturn ctx1 genericCloneResult returnType
-            in
-            Ops.mkRegion genericCloneArgs genericCloneOps returnOp
-
-        ( ctx2, genericCloneOp ) =
-            Ops.funcFunc ctx1 genericCloneName genericCloneArgs returnType genericCloneRegion
-    in
-    ( genericCloneOp, ctx2 )
-
-
-{-| Generate the body of the generic clone.
-Loads captures from the closure and calls the fast clone.
-Takes a list of (MlirType, isUnboxed) specs for each capture.
-Returns (ops, resultVar, ctx).
--}
-generateGenericCloneBodyFromSpecs : Ctx.Context -> List ( MlirType, Bool ) -> String -> List ( String, MlirType ) -> MlirType -> ( List MlirOp, String, Ctx.Context )
-generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs returnType =
-    let
-        -- Generate eco.project.closure ops to load each capture
-        -- Collect both ops and (var, type) pairs for the call
-        ( projectOps, captureVarsWithTypes, ctxAfterProject ) =
-            List.foldl
-                (\( idx, ( captureType, isUnboxed ) ) ( accOps, accVars, accCtx ) ->
-                    let
-                        ( captureVar, ctxA ) =
-                            Ctx.freshVar accCtx
-
-                        projectAttrs =
-                            Dict.fromList
-                                [ ( "index", IntAttr Nothing idx )
-                                , ( "is_unboxed", BoolAttr isUnboxed )
-                                ]
-
-                        ( ctxB, projectOp ) =
-                            Ops.mlirOp ctxA "eco.project.closure"
-                                |> Ops.opBuilder.withOperands [ "%closure" ]
-                                |> Ops.opBuilder.withResults [ ( captureVar, captureType ) ]
-                                |> Ops.opBuilder.withAttrs projectAttrs
-                                |> Ops.opBuilder.build
-                    in
-                    ( projectOp :: accOps, ( captureVar, captureType ) :: accVars, ctxB )
-                )
-                ( [], [], ctx )
-                (List.indexedMap Tuple.pair captureSpecs)
-
-        -- Build the call to the fast clone with captures + params
-        callArgs =
-            List.reverse captureVarsWithTypes ++ paramPairs
-
-        ( resultVar, ctxAfterFresh ) =
-            Ctx.freshVar ctxAfterProject
-
-        ( ctxFinal, callOp ) =
-            Ops.ecoCallNamed ctxAfterFresh Expr.emitSafepointHints resultVar fastCloneName callArgs returnType
-    in
-    ( List.reverse projectOps ++ [ callOp ], resultVar, ctxFinal )
+    ( [ fastCloneOp ], ctx1 )
 
 
 
@@ -1781,7 +1631,7 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
                     List.reverse sResultPairsRev
 
                 ( ctxS2, sCallOp ) =
-                    Ops.ecoCallNamedMulti ctxS1 [] sResultPairs (funcName ++ "$sret") funcArgPairs
+                    Ops.ecoCallNamedMulti ctxS1 sResultPairs (funcName ++ "$sret") funcArgPairs
 
                 ( sBoxVar, ctxS3 ) =
                     Ctx.freshVar ctxS2
@@ -1789,10 +1639,10 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
                 ( ctxS4, sConstructOp ) =
                     case sResultPairs of
                         [ a, b ] ->
-                            Ops.ecoConstructTuple2 ctxS3 [] sBoxVar a b sretInfo.layout.unboxedBitmap
+                            Ops.ecoConstructTuple2 ctxS3 sBoxVar a b sretInfo.layout.unboxedBitmap
 
                         [ a, b, c ] ->
-                            Ops.ecoConstructTuple3 ctxS3 [] sBoxVar a b c sretInfo.layout.unboxedBitmap
+                            Ops.ecoConstructTuple3 ctxS3 sBoxVar a b c sretInfo.layout.unboxedBitmap
 
                         _ ->
                             crash "generateTailFunc: sret slot arity not 2/3"
@@ -1963,7 +1813,7 @@ generateCtor ctx funcName ctorLayout monoType =
                 Ctx.freshVar ctxBoxed
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 Ctx.liveEcoValueVars resultVar ctorLayout.tag arity (Types.ctorSlotKinds ctorLayout) (List.reverse slotPairsRev) constructorName
+                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag arity (Types.ctorSlotKinds ctorLayout) (List.reverse slotPairsRev) constructorName
 
             ( _, returnOp ) =
                 Ops.ecoReturn ctx2 resultVar Types.ecoValue
@@ -2191,22 +2041,20 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
             { ctx | nextVar = List.length argPairs, varMappings = argVarMappings }
                 |> Ctx.resetDefinedSsaVars argSsaVars
 
-        -- Create string constant for home module name. eco.string_literal is
-        -- not a GCRootCarrier (its allocation call is handled by RS4GC at LLVM
-        -- level), so no front-end hint is threaded here.
+        -- Create string constant for home module name (its allocation call
+        -- is handled by RS4GC at LLVM level).
         ( homeVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
         ( ctx2, homeOp ) =
             Ops.ecoStringLiteral ctx1 homeVar homeModuleName
 
-        -- Call Elm_Kernel_Platform_leaf(home, arg0) - thread the hint here.
+        -- Call Elm_Kernel_Platform_leaf(home, arg0).
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2
 
         ( ctx4, callOp ) =
             Ops.ecoCallNamed ctx3
-                Expr.emitSafepointHints
                 resultVar
                 "Elm_Kernel_Platform_leaf"
                 [ ( homeVar, Types.ecoValue ), ( "%arg0", Types.ecoValue ) ]

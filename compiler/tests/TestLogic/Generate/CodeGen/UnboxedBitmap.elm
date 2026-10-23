@@ -25,19 +25,17 @@ the head) is a violation whatever the bitmap, kind or flag says.
 nesting depth:
 
   - `eco.construct.tuple2` and `eco.construct.tuple3`: slot N of
-    `unboxed_bitmap` holds the kind of operand N, for every recorded operand,
-    trailing GC root hints included.
+    `unboxed_bitmap` holds the kind of operand N, for every recorded operand.
   - `eco.construct.record` and `eco.construct.custom`: `slot_kinds` is present
     and has one entry per field (`field_count` / `size`), and entry N is the
-    kind of operand N. The trailing GC root hint operands are not compared. The
+    kind of operand N. The
     op carries no `unboxed_bitmap` (the backend rejects it as stale since
     wide-object Phase 3D).
   - `eco.papCreate`: `slot_kinds` has one entry per captured operand, and entry
     N is the kind of operand N.
   - `eco.papExtend`: `slot_kinds` has one entry per new argument, and entry N
-    is the kind of operand N+1. Operand 0 is the closure being extended, and
-    the trailing operands that `eco.gc_roots_count` counts are GC root hints,
-    so neither is compared.
+    is the kind of operand N+1. Operand 0 is the closure being extended, so it
+    is not compared.
   - `eco.construct.list`: the boolean `head_unboxed` is true exactly when the
     head operand is `i64`, `f64` or `i16`.
 
@@ -52,8 +50,7 @@ their kind attributes have the post-Phase-2 form the backend expects. No
 bitmap (`unboxed_bitmap`, `newargs_unboxed_bitmap`, `unboxed_bitmaps`); every
 `slot_kinds` array (per sibling for a group) has at most 2047 entries
 (`HeapLimits.maxStageArity`, HEAP\_078); and a papExtend has at most 2047 real
-new arguments (operand 0, the closure, and the trailing GC root hints are not
-counted).
+new arguments (operand 0, the closure, is not counted).
 
 Among what is not tested: the `head_kind` attribute of `eco.construct.list`,
 the kinds of `eco.papCreateGroup` siblings, the types of function parameters
@@ -176,8 +173,7 @@ checkContainerBitmap op =
 op: the op must not carry a stale `unboxed_bitmap`, and `slot_kinds` must be
 present and hold one entry per field (`field_count` for a record, `size` for a
 custom), and entry N must be the kind operand N's type requires (an `i1`
-operand is reported whatever the entry holds). The trailing GC root hint
-operands, beyond the slot count, are not compared. Apart from the stale
+operand is reported whatever the entry holds). Apart from the stale
 bitmap, an op with no recorded operand types gives none.
 -}
 checkContainerSlotKinds : MlirOp -> List Violation
@@ -426,26 +422,17 @@ checkPapCreateBitmap op =
 {-| Returns the violations in the kinds of an `eco.papExtend`, comparing kind
 N with operand N+1, as `checkClosureKinds` decides them.
 
-Operand 0 is the closure being extended and is not compared. The last
-`eco.gc_roots_count` operands are GC root hints and are dropped first; a
-missing count drops none. An op with no recorded operand types gives none.
+Operand 0 is the closure being extended and is not compared. An op with no
+recorded operand types gives none.
 
 -}
 checkPapExtendBitmap : MlirOp -> List Violation
 checkPapExtendBitmap op =
-    let
-        rootCount =
-            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-    in
     case extractOperandTypes op of
         Nothing ->
             []
 
-        Just allOperandTypes ->
-            let
-                operandTypes =
-                    List.take (List.length allOperandTypes - rootCount) allOperandTypes
-            in
+        Just operandTypes ->
             case List.tail operandTypes of
                 Nothing ->
                     []
@@ -618,17 +605,13 @@ slotKindsLength op =
 
 {-| Returns the limit violations of one `eco.papExtend`: a legacy
 `newargs_unboxed_bitmap`, then its `slot_kinds` length, then its number of
-real new arguments, which leaves out operand 0 (the closure) and the trailing
-`eco.gc_roots_count` operands.
+real new arguments, which leaves out operand 0 (the closure).
 -}
 checkPapExtendLimits : MlirOp -> List Violation
 checkPapExtendLimits op =
     let
-        rootCount =
-            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
         newArgCount =
-            List.length op.operands - 1 - rootCount
+            List.length op.operands - 1
     in
     List.filterMap identity
         [ checkNoLegacyBitmap op "newargs_unboxed_bitmap"

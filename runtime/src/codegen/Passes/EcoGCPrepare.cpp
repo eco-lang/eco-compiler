@@ -1,36 +1,30 @@
 //===- EcoGCPrepare.cpp - GC preparation pass -----------------------------===//
 //
 // This pass runs before EcoToLLVM lowering and performs:
-// 1. Groups adjacent allocation ops (stops at calls, terminators, PAP ops).
-// 2. Computes precise SSA liveness of !eco.value values at each GCRootCarrier
-//    op using MLIR's Liveness analysis (inter-block dataflow).
-// 3. Attaches live roots as explicit operands on the first op of each group.
-// 4. Marks subsequent ops in a group with eco.gc_group_member = true.
-// 5. Computes and attaches live roots on call-like safepoints (eco.call,
-//    eco.papExtend, eco.papCreate) via the GCRootCarrier interface.
+// 1. Groups adjacent allocation ops (stops at calls, terminators, PAP ops):
+//    the leader gets eco.gc_group_size, later members eco.gc_group_member.
+// 2. Strips the kernel-opt-12 purity attr (eco.cse_safe) from every eco.call,
+//    fencing purity-based merges/erasures out of the rest of the pipeline.
 //
-// These root operands are an MLIR-level analysis only: lowering discards them
-// (emitAllocWithSafepoint and emitSafepointMarker ignore their liveRoots).
-// The runtime GC roots, statepoints and stackmap entries are computed by
-// LLVM's RS4GC (CGEN_077(b)).
+// It computes no GC roots: the runtime GC roots, statepoints and stackmap
+// entries are computed by LLVM's RS4GC (CGEN_077(b)).
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/Threading.h"
-#include "EcoGCLiveness.h"
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 #include "../Passes.h"
 #include "EcoParallel.h"
 
-#include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "eco-gc-prepare"
@@ -38,10 +32,6 @@
 using namespace mlir;
 
 namespace {
-
-// GC Liveness helpers are in EcoGCLiveness.h (shared with EcoGCLivenessAudit).
-using eco::isEcoValue;
-using eco::computeLiveRoots;
 
 /// Returns true if the operation may allocate heap memory.
 static bool isMayAllocOp(Operation *op) {
@@ -176,8 +166,6 @@ struct MergeCensus {
     uint64_t windows = 0, winNoCall = 0, winLeafOnly = 0, winHardBarrier = 0;
     uint64_t mergeableFree = 0, mergeableLeaf = 0;
     uint64_t blockedDeps = 0, blockedSize = 0;
-    uint64_t safepoints = 0, safepointRoots = 0;
-    uint64_t leafSafepoints = 0, leafSafepointRoots = 0;
     uint64_t splitGroups = 0, splitObjects = 0, keptGroups = 0, keptObjects = 0;
 };
 } // namespace
@@ -224,32 +212,6 @@ static bool isAnyCall(Operation *op) {
     return isa<eco::CallOp>(op) || isa<func::CallOp>(op);
 }
 
-/// Returns true if this is a call-like safepoint that needs independent roots.
-/// musttail calls are excluded — they are non-safepoints per design.
-static bool isCallSafepoint(Operation *op) {
-    if (auto callOp = dyn_cast<eco::CallOp>(op)) {
-        // musttail calls are non-safepoints
-        auto musttail = callOp.getMusttail();
-        if (musttail && *musttail)
-            return false;
-        // kernel-opt-09 Phase 3: a stamped gc-leaf callee cannot GC, so it has
-        // no independent root set. Read the CALL-LOCAL attr placed by
-        // EcoMarkGCLeafCalls; never look up the callee decl from here, because
-        // the mirror consumer (EcoGCLivenessAudit) is a nested per-function
-        // pass and could not do the same.
-        if (eco::gcLeafSafepointRelaxed() && op->hasAttr("eco.callee_gc_leaf"))
-            return false;
-        return true;
-    }
-    if (isa<eco::PapExtendOp>(op))
-        return true;
-    if (isa<eco::PapCreateOp>(op))
-        return true;
-    if (isa<eco::PapCreateGroupOp>(op))
-        return true;
-    return false;
-}
-
 //===----------------------------------------------------------------------===//
 // EcoGCPreparePass
 //===----------------------------------------------------------------------===//
@@ -261,15 +223,15 @@ struct EcoGCPreparePass
 
     StringRef getArgument() const override { return "eco-gc-prepare"; }
     StringRef getDescription() const override {
-        return "Compute GC root sets via SSA liveness and group adjacent allocations";
+        return "Group adjacent allocations and strip call purity attributes";
     }
 
     void runOnOperation() override {
         ModuleOp module = getOperation();
 
         // B6 (plans/backend-lowering-optimization.md): the work is strictly
-        // per function (liveness, root sets, grouping attrs on the function's
-        // own ops; no module-level writes), so run it in parallel over the
+        // per function (grouping and purity attrs on the function's own ops;
+        // no module-level writes), so run it in parallel over the
         // top-level functions. The census accumulates into the unsynchronised
         // gCensus global, so census runs stay serial.
         SmallVector<func::FuncOp> funcs;
@@ -300,10 +262,6 @@ struct EcoGCPreparePass
                          << " mergeableLeaf=" << gCensus.mergeableLeaf
                          << " blockedDeps=" << gCensus.blockedDeps
                          << " blockedSize=" << gCensus.blockedSize << "\n";
-            llvm::errs() << "[gcprepare-census] safepoints=" << gCensus.safepoints
-                         << " roots=" << gCensus.safepointRoots
-                         << " leafSafepoints=" << gCensus.leafSafepoints
-                         << " leafRoots=" << gCensus.leafSafepointRoots << "\n";
             llvm::errs() << "[gcprepare-census] splitGroups=" << gCensus.splitGroups
                          << " splitObjects=" << gCensus.splitObjects
                          << " keptGroups=" << gCensus.keptGroups
@@ -315,19 +273,13 @@ private:
     void processFunction(func::FuncOp func) {
         if (func.isExternal()) return;
 
-        // Build liveness analysis once per function.
-        Liveness liveness(func);
-
         LLVM_DEBUG(llvm::dbgs() << "EcoGCPrepare: processing function "
                                 << func.getName() << "\n");
 
         // Walk ALL blocks in the function, including those nested inside
-        // regions of ops like scf.while/scf.if. Previously only top-level
-        // blocks were visited, which caused papExtend/eco.call ops inside
-        // loops to have no GC roots attached — leading to missing
-        // statepoints, stale HPointer captures after GC, and crashes.
+        // regions of ops like scf.while/scf.if.
         func.walk([&](Block *block) {
-            processBlock(*block, liveness);
+            processBlock(*block);
         });
     }
 
@@ -445,7 +397,7 @@ private:
         closeRun();
     }
 
-    void processBlock(Block &block, Liveness &liveness) {
+    void processBlock(Block &block) {
         if (censusEnabled())
             scanBlockForMerges(block, /*apply=*/false);
 
@@ -514,10 +466,10 @@ private:
 
         // Step 1b (kernel-opt-09 Phase 2-pre): a run whose every member has a
         // call-free inline lowering is CHEAPER ungrouped — see
-        // splitInlineGroupsEnabled. Break those runs into singletons before any
-        // root computation happens, so the members flow through Step 2 exactly
-        // as a lone allocation does today. Mixed runs are left alone: splitting
-        // one would swap a shared region call for a per-object alloc call.
+        // splitInlineGroupsEnabled. Break those runs into singletons, so the
+        // members flow through Step 2 exactly as a lone allocation does.
+        // Mixed runs are left alone: splitting one would swap a shared region
+        // call for a per-object alloc call.
         if (splitInlineGroupsEnabled() && eco::detail::inlineAllocEnabled()) {
             SmallVector<SmallVector<Operation *, 4>> rebuilt;
             rebuilt.reserve(groups.size());
@@ -546,127 +498,34 @@ private:
             groups = std::move(rebuilt);
         }
 
-        // Step 2: For each alloc group, compute liveness and attach via interface.
+        // Step 2: Stamp each group: the leader carries the member count,
+        // every later member is marked as such.
         auto *ctx = block.getParentOp()->getContext();
         for (auto &group : groups) {
             if (group.empty()) continue;
-
-            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, group.front());
-
-            // Union with the group leader's own !eco.value operands.
-            // computeLiveRoots() filters by !isDeadAfter(v, op), which
-            // excludes operands whose only use IS this op. But construct
-            // ops (eco.construct.custom, eco.construct.record, etc.)
-            // expand during lowering into an allocation call followed by
-            // separate field stores. The field operands must survive across
-            // the allocation's GC safepoint even though they appear "dead
-            // after" the single Eco-level op. Without this union, GC at
-            // the allocation statepoint doesn't relocate these values,
-            // producing stale HPointers that corrupt heap fields.
-            {
-                llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
-                for (Value v : group.front()->getOperands()) {
-                    if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
-                        already.insert(v).second)
-                        liveRoots.push_back(v);
-                }
-            }
 
             LLVM_DEBUG({
                 llvm::dbgs() << "EcoGCPrepare: alloc group leader "
                              << group.front()->getName()
                              << " at " << group.front()->getLoc()
-                             << " — " << liveRoots.size() << " roots\n";
+                             << " — " << group.size() << " members\n";
             });
 
-            // Use GCRootCarrier interface to set roots on the group leader.
-            if (auto carrier = dyn_cast<eco::GCRootCarrier>(group.front()))
-                carrier.setGCRoots(liveRoots);
-
-            group.front()->setAttr("eco.gc_roots_count",
-                IntegerAttr::get(IntegerType::get(ctx, 64), liveRoots.size()));
             group.front()->setAttr("eco.gc_group_size",
                 IntegerAttr::get(IntegerType::get(ctx, 64), group.size()));
-
-            // Emit eco.alloc_size_bytes on every grouped op (leader + members)
-            for (auto *memberOp : group) {
-                int64_t sz = getFixedAllocSizeForGrouping(memberOp);
-                if (sz > 0) {
-                    memberOp->setAttr("eco.alloc_size_bytes",
-                        IntegerAttr::get(IntegerType::get(ctx, 64), sz));
-                }
-            }
-
-            // Mark subsequent ops in the group
             for (size_t i = 1; i < group.size(); i++) {
                 group[i]->setAttr("eco.gc_group_member",
                     BoolAttr::get(ctx, true));
             }
         }
 
-        // Step 3 (formerly): the eco.safepoint op no longer exists. Front-end
-        // GC root hints now ride on the next GCRootCarrier op (eco.call /
-        // eco.papExtend / eco.papCreate / construct.*). The cross-region
-        // liveness concern handled by Step 3 — keeping values referenced inside
-        // a nested scf region visible to MLIR's per-block Liveness — is now
-        // covered by the union below at Step 4, which always merges each
-        // carrier's own front-end operand set with the liveness-computed set.
-
-        // Step 4: Compute and attach roots on call-like safepoints.
-        // Each call/papExtend/papCreate gets independent roots.
-        //
-        // UNION with the op's own !eco.value operands — do not shrink.
-        // computeLiveRoots() filters by !isDeadAfter(v, op), which
-        // excludes operands whose only use IS this op. But during
-        // lowering, the op expands to multiple LLVM IR operations
-        // with internal GC points (boxing calls in emitRootedBoxedArgsArray,
-        // emitInlineClosureCall, etc.). Values like closureI64 that are
-        // operands of the op are needed AFTER those internal GC points
-        // but BEFORE the final runtime call. Without the union, GC at
-        // an internal statepoint doesn't update these values, producing
-        // stale HPointers that corrupt heap objects.
+        // Step 3: kernel-opt-12: the Elm-level purity channel dies HERE.
+        // Stripping reverts CallOp::getEffects to its conservative branch for
+        // all downstream passes, so no later pass can merge or erase a call
+        // on the strength of eco.cse_safe.
         for (auto &op : block) {
-            // kernel-opt-12: the Elm-level purity channel dies HERE. From the
-            // next statement on, calls carry appended root operands and any
-            // merge/motion would corrupt root bookkeeping. Stripping also
-            // reverts CallOp::getEffects to its conservative branch for all
-            // downstream passes. Sits BEFORE the early-continue on purpose:
-            // musttail calls and (kernel-opt-09) gc-leaf calls are not
-            // safepoints, but their attrs must die all the same.
             if (isa<eco::CallOp>(&op))
                 op.removeAttr(eco::kCseSafeAttrName);
-
-            if (!isCallSafepoint(&op)) continue;
-
-            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, &op);
-
-            // Union with the op's own !eco.value operands.
-            // Skip embedded constants — not heap objects, don't need GC tracking.
-            llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
-            for (Value v : op.getOperands()) {
-                if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
-                    already.insert(v).second)
-                    liveRoots.push_back(v);
-            }
-
-            if (censusEnabled()) {
-                ++gCensus.safepoints;
-                gCensus.safepointRoots += liveRoots.size();
-                if (op.hasAttr("eco.callee_gc_leaf")) {
-                    ++gCensus.leafSafepoints;
-                    gCensus.leafSafepointRoots += liveRoots.size();
-                }
-            }
-
-            LLVM_DEBUG({
-                llvm::dbgs() << "EcoGCPrepare: call safepoint "
-                             << op.getName()
-                             << " at " << op.getLoc()
-                             << " — " << liveRoots.size() << " roots\n";
-            });
-
-            if (auto carrier = dyn_cast<eco::GCRootCarrier>(&op))
-                carrier.setGCRoots(liveRoots);
         }
     }
 };

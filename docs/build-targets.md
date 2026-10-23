@@ -91,7 +91,6 @@ eco-quick` while iterating on code under `runtime/` or `*-kernel-cpp/`.
 
 | Target | Purpose |
 |---|---|
-| `ecor` | Allocator + RapidCheck test exe (`build/ecor`) |
 | `eco-boot-native` | Native MLIR-lowering tool used by Stages 6–9 |
 | `ecoc` | Standalone Eco compiler driver |
 | `ecogen` | Code-generation driver |

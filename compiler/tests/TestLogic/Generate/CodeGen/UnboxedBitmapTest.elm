@@ -298,7 +298,7 @@ expectIntSlotKinds opName n srcModule =
                         getIntAttr "num_captured" op |> Maybe.withDefault 0
 
                     else
-                        List.length op.operands - 1 - (getIntAttr "eco.gc_roots_count" op |> Maybe.withDefault 0)
+                        List.length op.operands - 1
 
                 candidates =
                     findOpsNamed opName mlirModule |> List.filter (\op -> compared op == n)

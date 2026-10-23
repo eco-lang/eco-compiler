@@ -14,7 +14,7 @@ For each program, `suite` checks that:
 
   - `TestLogic.TestPipeline.runToMlir` compiles it to MLIR without an error;
   - every `eco.call` whose callee is a top-level `func.func` of the module
-    passes exactly as many arguments (GC root hints aside) as the callee takes
+    passes exactly as many arguments as the callee takes
     and has exactly the callee's result types.
 
 Among what is not tested: calls to symbols with no `func.func` in the module.

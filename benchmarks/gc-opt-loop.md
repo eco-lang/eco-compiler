@@ -472,7 +472,7 @@ The hot half of item 13 — the per-allocation branch — is gone.
 **Cross-check worth recording:** item 13's premise is that the branch never runs. The 2026-09-22
 sensitivity sweep independently sat `mark_work_ratio` at 1 / 2 / 4 and got bit-identical GC counters
 every time, which is only possible if it never executes. `mark_work_ratio` now has no reader at all
-and is documented as inert in `AllocatorCommon.hpp`.
+and is documented as inert in `AllocatorCommon.hpp`. (The key has since been removed entirely.)
 
 ### W1.1 — item 6, high-water nursery clear — **LOSS (reverted), gate failure**
 
@@ -974,7 +974,7 @@ had missed `pushMarkRoot` as a second mark-bit writer. Anyone re-opening 44, or 
 working-list #58 (atomic mark-bit set for parallel marking, which inherits this invariant), should
 re-add it first: it is in `try-W11b-final`'s `startMark`, guarded by `ECO_HEAP_VALIDATE`.
 
-**Incidental finding: `--target ecor` does not link in `build-validate`** (`undefined symbol:
+**Incidental finding: `--target ecor` (target since removed) does not link in `build-validate`** (`undefined symbol:
 Elm::PermanentSpace::instance()`), which is pre-existing and harmless in itself — but ninja stops
 on it, so `libEcoRuntimeStatic.a` is left STALE and the next lowering silently tests old code. One
 13-min cycle was lost to this. Build `--target EcoRuntimeStatic` explicitly (or `--target check`)

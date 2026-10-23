@@ -264,8 +264,8 @@ endif()
 # second set of link inputs the musl bundle ships under
 # lib/eco-runtime/glibc/ so the static `eco` can produce glibc-ABI
 # .so/.node outputs. Run on a glibc host (docker/static-build.Dockerfile's
-# `glibc-runtime` stage, FROM eco-llvm-debian); gates off compiler/, test/
-# and ecor below (the Debian LLVM image carries no node/pnpm/rapidcheck).
+# `glibc-runtime` stage, FROM eco-llvm-debian); gates off compiler/ and
+# test/ below (the Debian LLVM image carries no node/pnpm/rapidcheck).
 # Requires ECO_STATIC=ON for the vendored curl/zip archive targets.
 # See plans/stage-d-hybrid-link-profiles.md (step 2).
 option(ECO_GLIBC_OUTPUT_RUNTIME
@@ -547,80 +547,15 @@ if(ECO_STATIC OR WIN32)
     endif()
 endif()
 
-# Stage D archive-only mode: ecor (needs rapidcheck), the test tree and the
+# Stage D archive-only mode: the test tree (needs rapidcheck) and the
 # compiler (hard-requires node + pnpm at configure time,
 # compiler/CMakeLists.txt) are all gated off — the Debian glibc-runtime
 # builder image provides none of those, and the mode only exists to build
 # the archive set staged by eco-glibc-runtime-tree below.
 if(NOT ECO_GLIBC_OUTPUT_RUNTIME AND NOT ECO_FRONTEND_ONLY)
 
-# ecor is the POSIX-only allocator test runner — its main.cpp uses
-# getopt_long, popen("addr2line"), and other POSIX-isms that don't map cleanly
-# to Win64. The eco AOT binary's runtime is exercised by tests/ instead on
-# Windows; ecor remains the inner-loop GC debugging tool on Linux/macOS.
-if(NOT WIN32)
-add_executable(ecor EXCLUDE_FROM_ALL
-        runtime/src/main.cpp
-        runtime/src/allocator/RootSet.cpp
-        runtime/src/allocator/HeapConfigJson.cpp
-        runtime/src/allocator/OldGenSpace.cpp
-        runtime/src/allocator/NurserySpace.cpp
-        runtime/src/allocator/NurseryParallel.cpp
-        runtime/src/allocator/NurseryRegion.cpp
-        runtime/src/allocator/NurseryTenure.cpp
-        runtime/src/allocator/OldGenTenure.cpp
-        runtime/src/allocator/Allocator.cpp
-        runtime/src/allocator/GCHelperPool.cpp
-        runtime/src/allocator/GCFork.cpp
-        runtime/src/allocator/PageWork.cpp
-        runtime/src/allocator/LargeObjectSpace.cpp
-        runtime/src/allocator/P1Census.cpp
-        ${ECO_ALLOCATOR_PLATFORM_SRCS}
-        runtime/src/allocator/ThreadLocalHeap.cpp
-        runtime/src/allocator/GCStats.cpp
-        runtime/src/allocator/StackMap.cpp
-        runtime/src/allocator/StackUnwind.cpp
-        test/allocator/HeapGenerators.hpp
-)
-
-target_include_directories(ecor PRIVATE runtime/src/allocator)
-target_compile_features(ecor PRIVATE cxx_std_20)
-
-# Asserts on iff ECO_ASSERTS_ON (default ON for non-Release builds).
-if(ECO_ASSERTS_ON)
-    target_compile_options(ecor PRIVATE -UNDEBUG)
-endif()
-
-# Include debug symbols for stack traces (works with release optimization)
-target_compile_options(ecor PRIVATE -g)
-
-# Link RapidCheck (find_package is hoisted out of the ecor block below so
-# test/ can resolve it on Windows too — see the find_package call after
-# the `endif() # NOT WIN32 (ecor block)` marker.)
-target_link_libraries(ecor PRIVATE rapidcheck)
-
-# Add pthread for threading support
-find_package(Threads REQUIRED)
-target_link_libraries(ecor PRIVATE Threads::Threads)
-
-# libunwind for stack unwinding in GC root scanning — specifically LLVM's
-# libunwind (from LLVM_ENABLE_RUNTIMES); see cmake/LLVMLibunwind.cmake.
-target_link_libraries(ecor PRIVATE eco::llvm_libunwind)
-
-# Export symbols for stack traces (enables function names in backtrace)
-if(APPLE)
-    # ENABLE_EXPORTS is CMake's portable spelling of -rdynamic (ld64 takes
-    # -export_dynamic; the property picks the right flag per platform).
-    set_target_properties(ecor PROPERTIES ENABLE_EXPORTS ON)
-else()
-    target_link_options(ecor PRIVATE -rdynamic)
-endif()
-endif() # NOT WIN32 (ecor block)
-
-# RapidCheck is consumed by the test/ subdir's test binary as well, so
-# resolve the package here (outside the ecor block) so Windows test builds
-# also see it. find_package is idempotent; reach for it once per
-# configure for the imported target.
+# RapidCheck is consumed by the test/ subdir's test binary; resolve the
+# package here so every platform's test build sees the imported target.
 find_package(rapidcheck REQUIRED)
 
 # EXCLUDE_FROM_ALL: test binaries (test, stress-test, mlir-equivalence,
@@ -637,7 +572,7 @@ find_package(rapidcheck REQUIRED)
 # command that shells out via `sh -c`. Porting those is W5 follow-up.
 add_subdirectory(test EXCLUDE_FROM_ALL)
 
-endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME (ecor + test)
+endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME (test)
 
 if(NOT ECO_FRONTEND_ONLY)
     # MLIR-based code generation

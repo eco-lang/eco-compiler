@@ -21,10 +21,9 @@ uniqueness oracle only; byte-identical emitted MLIR). The census is computed
 in a single pass AFTER the fixpoint converges, so intermediate iterations
 never contribute to the counters.
 
-`deriveFacts` is the readback for code generation: sig fixpoint + lambda sigs distilled to SpecId/member-keyed
-borrowed-param sets, invoked at MLIR-emission time under `borrow.oracleOpt`. The
-result is installed as `Context.oracleFacts`, which nothing in the code
-generator reads yet.
+`deriveFacts` is the readback: sig fixpoint + lambda sigs distilled to
+SpecId/member-keyed borrowed-param sets. The build does not call it and code
+generation has no consumer for its facts; only the borrow-fence tests read it.
 
 `readbackSig` lives here (not in `Sig`) so `Sig` stays free of a `Solve`
 import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).
@@ -238,8 +237,7 @@ actually flows (same argument as the call-site meet; this is a
 CONSTRUCTION-time definition of the member summary, not the forbidden
 call-site write-back — the def fixpoint has already converged when this
 runs). The fence is UNCONDITIONAL (unlike AbiCloning's flag-gated one):
-Borrow has no byte-identity constraint — census numbers may move, and the
-`bopt=1` artifact change is a soundness fix. Fingerprints are computed only
+Borrow has no byte-identity constraint — census numbers may move. Fingerprints are computed only
 for multi-instance members (the lazy discipline); single-instance members —
 the vast majority — pay nothing. Returns the sig table and the count of
 members that took the meet (censused `lambdaSigMeets`).
@@ -331,14 +329,14 @@ sigLookup table specId =
 
 
 {-| OC0.2 (plans/borrow-oracle-consumers.md): derive the distilled oracle
-facts for codegen consumers. Runs the sig fixpoint + per-member lambda sigs
-ONLY — no census fold, no escape closure — so its wall toll is the sigs-only
-slice (measured in OC0.4), not the full report-mode analysis.
+facts. Runs the sig fixpoint + per-member lambda sigs ONLY — no census fold,
+no escape closure — so it costs the sigs-only slice, not the full report-mode
+analysis.
 
-Called at MLIR-emission time on the FINAL graph (post CafDedupe/CafHoist —
-those passes mutate the graph after GlobalOpt Phase 6, so facts derived
-inside the phase would be stale by emission). Keyed by SpecId / LSS member
-id only, so the facts carry no per-def state.
+The facts describe the graph they are derived from: a pass that rewrites the
+graph afterwards (CafDedupe/CafHoist) makes them stale. Keyed by SpecId / LSS
+member id only, so the facts carry no per-def state. Nothing in the build calls
+it; the borrow-fence tests do.
 
 -}
 deriveFacts : Mono.MonoGraph -> Facts.OracleFacts

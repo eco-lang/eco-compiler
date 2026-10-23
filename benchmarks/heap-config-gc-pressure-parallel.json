@@ -26,7 +26,6 @@
   "small_class_cell_max_bytes": "8K",
   "sweep_work_budget": "4K",
   "initial_sweep_budget": "64K",
-  "mark_work_ratio": 2,
   "sweep_bytes_per_alloc_byte": 2.0,
   "max_sweep_bytes_per_alloc": "1M",
   "max_sweep_bytes_hard": "4M",

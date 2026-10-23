@@ -4,7 +4,6 @@ module Compiler.Pipeline.Steps exposing
     , monomorphize, monomorphizeEntry, checkStageArity, checkLayout
     , inline, prune, checkPruned
     , GlobalOptResult, globalOptCore, cse, dedupe, hoist, globalOpt, checkClosureStaging
-    , toGlobalOpt
     )
 
 {-| The compiler's middle end as plain functions: every step a build takes
@@ -58,11 +57,6 @@ return `Err` with the message a build reports.
 # Global optimization
 
 @docs GlobalOptResult, globalOptCore, cse, dedupe, hoist, globalOpt, checkClosureStaging
-
-
-# Whole pipeline
-
-@docs toGlobalOpt
 
 -}
 
@@ -607,41 +601,3 @@ checkClosureStaging ecoConfig g =
     else
         Ok g
 
-
-
--- ============================================================================
--- WHOLE PIPELINE
--- ============================================================================
-
-
-{-| Every step from the typed global graph to the graph MLIR is generated
-from, with every validator a build runs, as one function: `prepare`, `preMono`,
-`checkMinted`, `monomorphize`, `checkStageArity`, `checkLayout`, `inline`,
-`prune`, `checkPruned`, `globalOpt`, `checkStageArity`, `checkClosureStaging`.
-Returns the
-monomorphized graph (before inlining) and the final graph.
-
-Nothing calls this at present: `Builder.Generate` and `TestLogic.TestPipeline`
-each run the steps individually.
--}
-toGlobalOpt : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String { monoGraph : Mono.MonoGraph, optimized : Mono.MonoGraph }
-toGlobalOpt ecoConfig globalTypeEnv typedGraph =
-    let
-        pre =
-            preMono ecoConfig (prepare ecoConfig typedGraph)
-    in
-    checkMinted ecoConfig pre.assigned
-        |> Result.andThen (\_ -> monomorphize ecoConfig globalTypeEnv pre.assigned)
-        |> Result.andThen (\( g, _ ) -> checkStageArity g)
-        |> Result.andThen (checkLayout ecoConfig)
-        |> Result.andThen
-            (\monoGraph ->
-                let
-                    simplified =
-                        prune ecoConfig (Tuple.first (inline ecoConfig monoGraph))
-                in
-                checkPruned ecoConfig simplified
-                    |> Result.andThen (\_ -> checkStageArity (Tuple.first (globalOpt ecoConfig simplified)))
-                    |> Result.andThen (checkClosureStaging ecoConfig)
-                    |> Result.map (\optimized -> { monoGraph = monoGraph, optimized = optimized })
-            )

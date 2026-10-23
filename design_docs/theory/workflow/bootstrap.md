@@ -119,8 +119,7 @@ Parent: [build-and-workflow.md](workflow.md). Sibling: [build-system.md](build-s
 - `compiler/src-xhr/Eco/` and `eco-kernel-cpp/src/Eco/`: the HTTP-based and kernel-based layers. `eco-kernel-cpp/src/Eco/Kernel/*.js` and `eco-kernel-cpp/src/eco-kernel/*.cpp`: the paired kernels.
 - `compiler/bin/index.js`, `compiler/bin/eco-io-handler.js`: the Node server for stage 1.
 - `compiler/scripts/replacements.js`: post-processing of generated JavaScript (`_Bytes_read_string`).
-- `compiler/scripts/build-self.sh`, `compiler/scripts/build-verify.sh`: stand-alone scripts that CMake does not use.
-- `compiler/lib/`, `compiler/scripts/build.sh`: committed bundles of the npm interface inherited from Guida, the compiler Eco's front end is forked from. They are not part of the chain.
+- `compiler/scripts/build.sh`: a script inherited from Guida, the compiler Eco's front end is forked from, that builds the npm interface bundle (into `compiler/lib/`, which is no longer committed). It is not part of the chain.
 - `runtime/src/codegen/`: the native back end (`eco-boot-native`) used from stage 6.
 - `ECO_FRONTEND_ONLY`: the stages 1 to 5 configuration. `ECO_MONO_ENGINE=subst`: the light engine in stage 5. `--kernel-package`, `--local-package`: the stage 2 compiler options. `--text-mlir`: text MLIR output.
 - `docs/bootstrap.md`: stage narrative and test gates. `guides/bootstrap.md`, `guides/bootstrap-fix-loop.md`, `guides/bootstrap-fails.md`: running the chain, the repair loop and recorded failures.

@@ -1,5 +1,13 @@
 #pragma once
 
+// Driver for the codegen .mlir suite (test/codegen/*.mlir), run in-process from test/test.
+//
+// The `// RUN: %ecoc ... | %FileCheck %s` headers in the fixtures are not executed by lit (there is
+// no lit config). This driver only scans the RUN line for the `-emit=` mode, a leading `not %ecoc`
+// (expected non-zero exit) and a small whitelist of pass-through ecoc flags
+// (`--exe-reachability`); the rest of the pipeline is decorative. CHECK lines are matched by
+// test/CheckPatterns.hpp, not by FileCheck.
+
 #include "../CheckPatterns.hpp"
 #include "../IsolatedTestRunner.hpp"
 #include "../TestSuite.hpp"

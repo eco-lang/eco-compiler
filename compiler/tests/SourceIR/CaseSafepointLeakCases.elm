@@ -14,10 +14,10 @@ state just before the `eco.case` op at the start of each alternative after the
 first. `ctxAfterBranchOp` sets `varMappings` back to that state after the
 `case`, and `definedSsaVars` to that state plus the result variables of the
 branch construct. If a value defined inside an alternative stayed in scope
-afterwards, an op after the `case` could name it, for example as a GC root hint:
-a live `!eco.value` operand appended to an allocating op, though
-`Context.liveEcoValueVars` currently returns no hints. The "safepoint" in the
-module's name is the point at which an allocation may run the garbage collector.
+afterwards, an op after the `case` could name it as an operand. The
+"safepoint" in the module's name is the point at which an allocation may run
+the garbage collector; the name is historical, from when such ops also carried
+GC-root operands, which the code generator no longer emits.
 
 A `case` that reaches MLIR generation as a case, and whose decision tree tests
 its scrutinee, is lowered by the decision-tree code of

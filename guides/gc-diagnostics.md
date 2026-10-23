@@ -13,27 +13,22 @@ GC diagnostics are split into two independent flags:
 
 | Flag | Default | Targets | What it controls |
 |------|---------|---------|-----------------|
-| `ECO_GC_DEBUG` | ON for Debug, OFF for Release | `ecor`, `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` (+ top-level `add_compile_definitions`) | Runtime instrumentation: stale-pointer checks, GC phase tracing, stackmap scanning, store-time validation |
-| `ECO_GC_DEBUG_COMP` | OFF | `obj.EcoPasses` | Compile-time instrumentation: GCRootCarrier root dumps during MLIR lowering |
-| `ECO_GC_DEBUG_LIVENESS` | OFF | `obj.EcoPasses`, `ecoc`, `obj.EcoRunner`, `eco-boot-native` | Post-RS4GC verification: `EcoGCLivenessAudit` (pre-RS4GC MLIR-level) and `EcoPtrIntVerify` (post-RS4GC LLVM-level ptr<1>↔i64 boundary check) |
+| `ECO_GC_DEBUG` | ON for Debug, OFF for Release | `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` (+ top-level `add_compile_definitions`) | Runtime instrumentation: stale-pointer checks, GC phase tracing, stackmap scanning, store-time validation |
+| `ECO_LOWERING_VALIDATION` | OFF | `obj.EcoPasses`, `ecoc`, `obj.EcoRunner`, `eco-boot-native` | Validation passes: `EcoGCLivenessAudit` (pre-RS4GC, MLIR-level: checks that no `eco.cse_safe` survives EcoGCPrepare) and `EcoPtrIntVerify` (post-RS4GC LLVM-level ptr<1>↔i64 boundary check) |
 
 The flags are independent. Enable only `ECO_GC_DEBUG` for runtime-only
-investigation (the common case). Enable `ECO_GC_DEBUG_COMP` when you need to
-trace root sets through the MLIR compilation pipeline.
+investigation (the common case). There is no compile-time root-dump flag any
+more (the former `ECO_GC_DEBUG_COMP` / `ECO_GC_DEBUG_LIVENESS` are gone):
+the MLIR pipeline computes no GC roots, so there is nothing to dump before
+RS4GC. Inspect RS4GC's output with `--dump-rs4gc-ir` instead.
 
 ```bash
-# Runtime diagnostics only (recommended for Stage 7 investigation)
+# Runtime diagnostics (recommended for Stage 7 investigation)
 cmake --preset build -DECO_GC_DEBUG=ON
 
-# Compile-time diagnostics only (produces enormous output)
-cmake --preset build -DECO_GC_DEBUG_COMP=ON
-
-# Both
-cmake --preset build -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=ON
+# Validation passes (EcoGCLivenessAudit + EcoPtrIntVerify)
+cmake --preset build -DECO_LOWERING_VALIDATION=ON
 ```
-
-**Warning:** `ECO_GC_DEBUG_COMP` produces enormous output — one log line per
-GCRootCarrier op per function. Redirect stderr to a file and use grep.
 
 ---
 
@@ -45,10 +40,9 @@ points:
 
 | # | Layer | File(s) | What to check |
 |---|-------|---------|---------------|
-| 1 | Eco IR liveness | `EcoGCPrepare.cpp` | Are all live `!eco.value` included in GCRootCarrier roots? (Note: RS4GC computes its own liveness, so EcoGCPrepare roots are informational only) |
-| 2 | gc-leaf-function attrs | `EcoToLLVMRuntime.cpp` | Is a may-GC function incorrectly marked `gc-leaf-function`? RS4GC skips gc-leaf calls. |
-| 3 | RS4GC liveness | Post-RS4GC LLVM IR | Does RS4GC insert `gc.statepoint` around the right calls? Are all live `ptr addrspace(1)` values in `gc-live` bundles? Use `--dump-rs4gc-ir <file>` on eco-boot-native/ecoc. |
-| 4 | Runtime stackmap | `ThreadLocalHeap.cpp`, `StackMap.cpp` | Does the GC actually read & evacuate these roots at runtime? |
+| 1 | gc-leaf-function attrs | `EcoToLLVMRuntime.cpp` | Is a may-GC function incorrectly marked `gc-leaf-function`? RS4GC skips gc-leaf calls. |
+| 2 | RS4GC liveness | Post-RS4GC LLVM IR | Does RS4GC insert `gc.statepoint` around the right calls? Are all live `ptr addrspace(1)` values in `gc-live` bundles? Use `--dump-rs4gc-ir <file>` on eco-boot-native/ecoc. |
+| 3 | Runtime stackmap | `ThreadLocalHeap.cpp`, `StackMap.cpp` | Does the GC actually read & evacuate these roots at runtime? |
 
 **Key difference from old pipeline:** Layers 2-3 used to be `__eco_safepoint_marker` emission
 and `StatepointConversion`. Now RS4GC handles both automatically. The main new failure modes are:
@@ -63,12 +57,12 @@ and `StatepointConversion`. Now RS4GC handles both automatically. The main new f
 that escape the allowed boundary patterns. It catches the "HPtr → i64 →
 untracked → ptr<1>" loophole by construction.
 
-**When to use:** enable `ECO_GC_DEBUG_LIVENESS` and rebuild. The pass runs
+**When to use:** enable `ECO_LOWERING_VALIDATION` and rebuild. The pass runs
 automatically after `RewriteStatepointsForGC` in all pipelines (ecoc,
 EcoRunner, eco-boot-native).
 
 ```bash
-cmake -B build -DECO_GC_DEBUG_LIVENESS=ON
+cmake -B build -DECO_LOWERING_VALIDATION=ON
 cmake --build build --target full
 ```
 
@@ -78,11 +72,12 @@ EcoPtrIntVerify: ptrtoint ptr addrspace(1) result escapes allowed patterns in fu
 EcoPtrIntVerify: inttoptr i64 -> ptr addrspace(1) from non-heap/non-args source in <F>
 ```
 
-**Relationship to EcoGCLivenessAudit:** `EcoGCLivenessAudit` operates at the
-MLIR level *before* RS4GC and verifies eco.value liveness annotations.
-`EcoPtrIntVerify` operates at the LLVM IR level *after* RS4GC and verifies
-that ptr<1>↔i64 crossings respect the allowed boundary patterns. Both are
-gated by the same `ECO_GC_DEBUG_LIVENESS` flag.
+**Relationship to EcoGCLivenessAudit:** despite its name, `EcoGCLivenessAudit`
+no longer audits liveness (the MLIR root operands it used to check are gone):
+it runs at the MLIR level right after EcoGCPrepare and only checks that no
+`eco.call` still carries `eco.cse_safe`. `EcoPtrIntVerify` operates at the
+LLVM IR level *after* RS4GC and verifies that ptr<1>↔i64 crossings respect
+the allowed boundary patterns. Both are gated by `ECO_LOWERING_VALIDATION`.
 
 ---
 
@@ -94,29 +89,12 @@ These fire during MLIR→LLVM lowering inside `eco-compiler` / `eco-boot`.
 Output goes to stderr of the compiler process and is enormous; redirect to a
 file.
 
-#### 7. EcoGCPrepare — per-carrier root dump + strict self-check
+#### 7. ~~EcoGCPrepare — per-carrier root dump + strict self-check~~ (REMOVED)
 
-**File:** `EcoGCPrepare.cpp`  
-**Flag:** `ECO_GC_DEBUG_COMP`
-
-At the end of `processBlock()`, every `GCRootCarrier` op in the block is
-dumped with its `!eco.value` operands and attached roots:
-
-```
-[gc-liveness] func=Dict_insertHelp_$_5182 op=eco.construct.custom loc=...
-  eco.value operands: %arg0 %arg1 %arg2 %arg3 %arg4
-  attached roots (5): %arg0 %arg1 %arg2 %arg3 %arg4
-```
-
-After all functions are processed, a **strict self-check** re-runs
-`computeLiveRoots` + operand union for every carrier and reports any value
-that should be rooted but isn't:
-
-```
-[gc-liveness-CHECK] MISSING ROOT in func=... op=eco.papExtend at ...
-  missing value: %42
-  attached roots (3): ...
-```
+No longer applicable. EcoGCPrepare now only groups adjacent allocations
+(`eco.gc_group_size` / `eco.gc_group_member`) and strips `eco.cse_safe`; it
+computes no root sets, so there is no per-carrier root dump or
+`computeLiveRoots` self-check. RS4GC computes the roots.
 
 #### 8. ~~Eco→LLVM lowering — safepoint marker root dump~~ (REMOVED — RS4GC migration)
 
@@ -357,7 +335,7 @@ with the debug-enabled `eco-boot-native`, and run Stage 7 with stderr captured.
 ```bash
 # 1. Configure and build with runtime GC debug ON (compile-time OFF to avoid noise)
 cd /work
-cmake --preset build -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF
+cmake --preset build -DECO_GC_DEBUG=ON
 cmake --build build
 
 # 2. Rebuild eco-compiler with debug runtime (Stage 6)
@@ -400,7 +378,7 @@ stages 1-5 first per `guides/bootstrap.md`.
 
 ### Heap-side (where the stale pointer is found)
 
-1. Build with `ECO_GC_DEBUG=ON`: `cmake -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF ...`
+1. Build with `ECO_GC_DEBUG=ON`: `cmake -DECO_GC_DEBUG=ON ...`
    Recipes 1–3 and 6 are now live — no manual patching needed.
 2. Run Stage 7. The enhanced assert will print:
    - Nursery layout (from/to blocks with PTR marker)

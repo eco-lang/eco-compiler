@@ -28,13 +28,6 @@ module {
     eco.return %t3 : i64
   }
 
-  // Generic clone stand-in: never invoked in this test (the only apply is the
-  // stamped fast site), but papCreate needs a valid evaluator symbol.
-  func.func private @lam$clo(%clo: !eco.value, %x: i64, %y: i64) -> i64 {
-    %c0 = arith.constant 0 : i64
-    eco.return %c0 : i64
-  }
-
   // The PAP arrives as an opaque value — its creation is invisible here, so
   // this is exactly the Channel-B shape only the stamp can convert.
   func.func @consume(%pap: !eco.value, %y: i64) -> i64 {
@@ -56,7 +49,7 @@ module {
 
     // 1-capture closure over @lam (capture = 7); total slots = 3.
     %pap0 = "eco.papCreate"(%c7) {
-      function = @lam$clo,
+      function = @lam$cap,
       _fast_evaluator = @lam$cap,
       arity = 3 : i64,
       num_captured = 1 : i64,

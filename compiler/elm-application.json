@@ -278,7 +278,6 @@
         "Eco.XHR",
         "Mlir.Bytecode.AttrType",
         "Mlir.Bytecode.DialectSection",
-        "Mlir.Bytecode.Encode",
         "Mlir.Bytecode.IrSection",
         "Mlir.Bytecode.Section",
         "Mlir.Bytecode.StreamEncode",

@@ -517,14 +517,10 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                     Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( "%error", I64 ) ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
 
         ConstructList { headMlirType } ->
-            -- Elm arg order: cons head tail. HINT-FREE by construction
-            -- (kernel-opt-01 Phase 1): EcoGCPrepare recomputes and UNIONS the real
-            -- root set at this carrier (EcoGCPrepare.cpp:249-305), and
-            -- EcoListTemplate only absorbs hint-free links (EcoListTemplate.cpp:148-150).
+            -- Elm arg order: cons head tail.
             case argVars of
                 [ headVar, tailVar ] ->
                     Ops.ecoConstructList ctx
-                        []
                         resultVar
                         ( headVar, headMlirType )
                         ( tailVar, Types.ecoValue )
@@ -532,7 +528,6 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
                 _ ->
                     Ops.ecoConstructList ctx
-                        []
                         resultVar
                         ( "%error", headMlirType )
                         ( "%error", Types.ecoValue )

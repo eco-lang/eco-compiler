@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.SafepointRegionScopingTest exposing (suite)
 
-{-| Runs the GC root scoping check over four catalogues of test programs and
+{-| Runs the operand scoping check over four catalogues of test programs and
 one fixture of its own, so that generated MLIR in which an op uses an SSA value
 defined in a sibling region of a branching op, which MLIR does not allow, is
 caught by the test suite.
@@ -10,16 +10,13 @@ defined in one of those regions is out of scope in the others. The check is
 `TestLogic.Generate.CodeGen.SafepointRegionScoping.expectSafepointRegionScoping`,
 whose module docstring defines its terms and lists what it leaves out. It
 compiles a program to MLIR and fails if compilation fails, or if an operand of
-a _GC root carrier_ (`eco.call`, `eco.papExtend`, `eco.papCreate`,
+a _checked op_ (`eco.call`, `eco.papExtend`, `eco.papCreate`,
 `eco.papCreateGroup`, `eco.to_heap` or one of five `eco.construct` ops) in any
 `func.func` is out of scope where the op sits.
 
-A _GC root hint_ is an extra operand the code generator may append to a
-carrier, naming a value the garbage collector must keep alive across it. The
-"safepoint" in this module's name is the point at which an allocation may run
-the collector. The code generator currently appends no hints
-(`Compiler.Generate.MLIR.Context.liveEcoValueVars` returns none), so the
-operands the check examines are the carriers' ordinary ones.
+The "safepoint" in this module's name is historical: the checked ops once
+also carried GC-root operands, which the code generator no longer emits, so
+the operands the check examines are the ops' ordinary ones.
 
 `suite` runs the check on:
 
@@ -40,7 +37,6 @@ Among what is not tested:
 
   - that the fixture's `case` is compiled by `compileCaseFanOutStep`; no test
     looks at which code path is taken;
-  - GC root hints themselves, since none are generated;
   - what the check does not examine, as its module docstring lists.
 
 -}

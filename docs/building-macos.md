@@ -62,7 +62,7 @@ brew install rapidcheck    # required by the runtime test harness
 | `gnu-time` | The bootstrap's stage timing logs invoke GNU time as `gtime`. |
 | `pkgconf` | Kernel-side curl/openssl probes. |
 | `ccache` | Optional, dramatically speeds up rebuilds. |
-| `rapidcheck` | Used by the runtime test harness (`ecor`). |
+| `rapidcheck` | Used by the `test` binary's property tests. |
 
 `libzip` is intentionally **not** installed via brew — it's vendored via
 FetchContent on macOS so the AOT bundle ships its own `libzip.a` without
@@ -215,7 +215,9 @@ The following are NOT yet supported on macOS:
 - **`x86_64-apple-darwin`.** Intel Macs are out of scope: the LLVM tree
   carries only the AArch64 backend, and the code is platform-conditioned
   on `__aarch64__` for the GC's 16 KiB page size and the codegen CPU
-  (`apple-m1`).
+  (`apple-m1`). Configure rejects an Intel Mac outright: there are no
+  pinned Darwin x86_64 toolchain binaries, so `compiler/CMakeLists.txt`
+  stops with "No pinned Elm toolchain binaries for this platform".
 - **Linking without the Command Line Tools.** A bundled `ld64.lld` plus
   generated `.tbd` stubs would remove the last prerequisite; see the
   follow-up in [`plans/mac-self-contained-bundle.md`](../plans/mac-self-contained-bundle.md).

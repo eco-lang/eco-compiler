@@ -68,7 +68,7 @@ cmake --build build
 
 # Build specific target
 cmake --build build --target test
-cmake --build build --target ecor
+cmake --build build --target eco
 ```
 
 ### Running Tests

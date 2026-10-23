@@ -8,15 +8,11 @@ The two packages differ in who calls them, and that sets how freely each can cha
 
 Both packages give each module the same three files: an Elm wrapper with the public API, a JavaScript kernel for Node, and a C++ kernel for native code. Both kernels implement the same signatures and return the same value shapes, so one Elm wrapper serves both targets.
 
-The library code lives in five top-level directories, and only the first three take part in the build:
+The library code lives in three top-level directories, all of which take part in the build:
 
 - `eco-kernel-cpp/` is the package `eco/kernel`.
 - `system-kernel-cpp/` is the package `eco/system`.
 - `examples/` is an application on top of `eco/system`: small programs such as a `cat`, an `ls`, TCP and UDP echo servers, a TLS client, an HTTP echo server and a WebSocket chat. Beside them sit compute benchmarks that build under both Eco and the official Elm compiler.
-- `elm-io-lib/` is a port-based IO library, published as `guida/elm-io`.
-- `elm-io-ports-example/` is a sample program for that library.
-
-The last two have package manifests of their own and look live, but nothing in the build refers to them. They do IO through Elm ports, which cannot carry `Bytes`, and the compiler needs `Bytes` for file contents. A reader can treat them as history kept in the tree.
 
 ## The compiler's IO layer
 
@@ -163,7 +159,6 @@ Code and documents:
 - `runtime/src/platform/Liveness.hpp` (`LivenessHold`), `TaskBinding.hpp`, `Spawn.hpp`: runtime pieces these libraries use. Setting `ECO_LIVENESS_REPORT=1` prints the holds still open.
 - `compiler/src/Compiler/Generate/MLIR/Functions.elm` (`ecoSystemManagers`, manager registration), `compiler/src/Compiler/Elm/EcoEnvironment.elm` (environment flags), `compiler/src/Compiler/Elm/Package.elm` (`isKernel`: which packages may hold kernels).
 - `examples/src/`, `examples/benchmarks/`: example programs and benchmarks.
-- `elm-io-lib/`, `elm-io-ports-example/`, `design_docs/guida-io-ops.csv`: the dormant port-based library and the IO operation inventory.
 - `plans/eco-system-library.md` sections 2 and 3.2 to 3.4: the library's threading and rooting rules. `plans/native-http-client.md`: a proposed replacement for libcurl, not built.
 - Tests: `test/eco-kernel/`, `test/eco-system/` (the specification; `-- SKIP-JS:` and `-- LINUX-ONLY:` directives), `test/eco-system-core/`, `test/conformance/`.
 

@@ -330,7 +330,7 @@ Top symbols by self-time (≥ 0.5 %):
 | `Elm::initHeaderForTag` | 1.86% |
 | `Elm::NurserySpace::evacuate` | 1.63% |
 | `std::chrono::system_clock::now` | 1.57% |
-| `eco_apply_segmentation_unknown` | 1.52% |
+| `eco_apply_segmentation_unknown` (since removed; now `eco_apply_closure_eval`) | 1.52% |
 | `Elm::GCStats::recordAllocation` | 1.39% |
 | `eco_resolve_hptr` | 1.32% |
 | `eco_gc_restore_stack_range_point` | 1.28% |

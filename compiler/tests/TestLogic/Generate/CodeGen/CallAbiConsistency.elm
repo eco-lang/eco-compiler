@@ -13,10 +13,7 @@ compares two lists of types:
   - The callee's parameter types: the inputs of the `function_type` attribute
     of the module's top-level `func.func` whose `sym_name` is the call's
     `callee`, with any leading `@` removed.
-  - The call's operand types: its `_operand_types` attribute, less any GC-root
-    hints. A GC-root hint is an operand appended after the arguments that the
-    garbage collector treats as a root rather than an argument; the call's
-    `eco.gc_roots_count` attribute says how many there are.
+  - The call's operand types: its `_operand_types` attribute.
 
 The two lists must have the same length and hold equal types, position by
 position. A call that fails gets one violation, for the count if the lengths
@@ -44,7 +41,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , extractOperandTypes
         , findFuncOps
         , findOpsNamed
-        , getIntAttr
         , getStringAttr
         , getTypeAttr
         , violationsToExpectation
@@ -142,8 +138,6 @@ The call is not checked, and `Nothing` is returned, when it has no `callee`,
 when the callee is not in `funcParamTypes`, or when it has operands but no
 `_operand_types`. A call with no operands and no `_operand_types` (the
 generator omits the attribute then) is checked as passing no arguments.
-Otherwise the last `eco.gc_roots_count` operand types, the GC-root hints, are
-dropped before the comparison.
 
 -}
 checkCallOp : Dict String (List MlirType) -> MlirOp -> Maybe Violation
@@ -176,14 +170,7 @@ checkCallOp funcParamTypes op =
                             else
                                 Nothing
 
-                        Just allOperandTypes ->
-                            let
-                                rootCount =
-                                    Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
-                                actualOperandTypes =
-                                    List.take (List.length allOperandTypes - rootCount) allOperandTypes
-                            in
+                        Just actualOperandTypes ->
                             checkTypesMatch op calleeName expectedParamTypes actualOperandTypes
 
 

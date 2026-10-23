@@ -114,7 +114,7 @@ Parent: [backend.md](backend.md). Siblings: [eco-dialect.md](eco-dialect.md), [l
 
 Code:
 
-- `runtime/src/codegen/EcoBackend.h`, `runtime/src/codegen/EcoBackend.cpp`: `runEcoBackend`, `EcoBackendJob`, `BackendKind`, `PartitionWorkerInfo`, `choosePartitionCount`, `rs4gcAfterOpt`. `EcoBackend.cpp.orig` is a stale backup, not part of the design.
+- `runtime/src/codegen/EcoBackend.h`, `runtime/src/codegen/EcoBackend.cpp`: `runEcoBackend`, `EcoBackendJob`, `BackendKind`, `PartitionWorkerInfo`, `choosePartitionCount`, `rs4gcAfterOpt`.
 - `runtime/src/codegen/EcoNativeDriver.h`, `runtime/src/codegen/EcoNativeDriver.cpp`: the AOT pipeline, output choice by extension, `linkExecutable` and its link profiles, `gcSections`. Header comments that mention a `clang++` link driver and Linux-only output are out of date.
 - `runtime/src/codegen/EcoNativeAPI.h`, `runtime/src/codegen/eco_native_stub.cpp`: the C interface the compiler calls, and its weak stand-ins.
 - `runtime/src/codegen/EcoSplit.h`, `runtime/src/codegen/EcoSplit.cpp`: `buildPartitions`, `lowerMlirSplit`.
@@ -123,7 +123,6 @@ Code:
 - `runtime/src/codegen/eco_entry.cpp`: the executable entry stub and `eco_get_exit_code`.
 - `runtime/src/embed/eco_embed.h`, `runtime/src/embed/eco_embed.cpp`, `runtime/src/embed/eco_node_addon.cpp`: the embedding C interface and the Node addon.
 - `runtime/src/jit/EcoJIT.cpp`, `runtime/src/codegen/EcoRunner.cpp`, `runtime/src/codegen/RuntimeSymbols.cpp`: the JIT, the test harness and the runtime symbol table.
-- `runtime/src/codegen/SpikeCensus.cpp`: a diagnostic that runs only when its environment switch is set.
 
 Invariants (`design_docs/invariants.csv`):
 

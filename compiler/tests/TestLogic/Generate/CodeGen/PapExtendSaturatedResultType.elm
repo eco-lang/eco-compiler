@@ -28,9 +28,9 @@ repeat from one function to the next. It follows each PAP from the
 unsaturated, recording the target and the remaining arity. The target is the
 function named by the papCreate's `_fast_evaluator` attribute when it has one,
 and by its `function` attribute otherwise. On a papCreate, the code generator
-sets `_fast_evaluator` only for a closure with captures, and there it names a
-`$cap` clone of the closure's function, a different `func.func` from the `$clo`
-clone that `function` names.
+sets `_fast_evaluator` only for a closure with captures, and there it names the
+`$cap` clone of the closure's function, the same `func.func` that `function`
+names.
 
 Among what is not checked:
 
@@ -200,9 +200,8 @@ attributes, and a non-empty target adds its result, targeting `_fast_evaluator`
 or else `function`, with `arity` minus `num_captured` arguments remaining. A
 typed `eco.papExtend` of a tracked PAP adds its result with the same target,
 when its `remaining_arity` minus the arguments it supplies is still above zero.
-The arguments supplied are the operands after the first, less the trailing
-GC-root operands that `eco.gc_roots_count` counts. Any other op leaves `map`
-unchanged.
+The arguments supplied are the operands after the first. Any other op leaves
+`map` unchanged.
 
 -}
 processOp : MlirOp -> Dict String PapInfo -> Dict String PapInfo
@@ -239,11 +238,8 @@ processOp op map =
                 case Dict.get sourcePapName map of
                     Just sourceInfo ->
                         let
-                            rootCount =
-                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
                             numNewArgs =
-                                List.length op.operands - 1 - rootCount
+                                List.length op.operands - 1
 
                             newRemaining =
                                 remainingArity - numNewArgs
@@ -287,8 +283,7 @@ first result type differs from the return type of the PAP's target.
 
 The extend saturates when the remaining arity recorded for the PAP in
 `papInfoMap`, not the extend's own `remaining_arity`, is no more than the
-arguments it supplies: its operands after the first, less the trailing GC-root
-operands. An extend of an untracked PAP, one that leaves arguments remaining,
+arguments it supplies: its operands after the first. An extend of an untracked PAP, one that leaves arguments remaining,
 and one whose target is not in `funcReturnTypeMap` give nothing.
 
 -}
@@ -305,11 +300,8 @@ checkTypedPapExtend funcReturnTypeMap papInfoMap op =
 
                 Just sourceInfo ->
                     let
-                        rootCount =
-                            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
                         numNewArgs =
-                            List.length op.operands - 1 - rootCount
+                            List.length op.operands - 1
 
                         resultRemaining =
                             sourceInfo.remaining - numNewArgs

@@ -127,9 +127,9 @@ app =
 
 {-| Reads command arguments from the runtime.
 
-In the library API path (lib/index.js), the getArgs handler returns a JSON
+In the library API path (the bundle `scripts/build.sh api` builds), the getArgs handler returns a JSON
 command object directly. In the CLI path, this would get raw argv, which
-would fail to decode. This is fine since API/Main is only loaded by lib/index.js.
+would fail to decode. This is fine since API/Main is only built into that bundle.
 
 -}
 getArgs : Task Never Args

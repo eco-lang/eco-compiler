@@ -2100,8 +2100,9 @@ void *OldGenSpace::allocate(size_t size) {
     // gone.) A STW major marks synchronously in finishMarkAndSweep, which
     // still calls incrementalMark; only this per-allocation branch is gone.
     // Confirmed empirically before removal: the 2026-09-22 sensitivity sweep
-    // ran mark_work_ratio at 1 / 2 / 4 and every GC counter was bit-identical,
-    // which is only possible if this branch never executes.
+    // ran mark_work_ratio (a heap-config key, since deleted) at 1 / 2 / 4 and
+    // every GC counter was bit-identical, which is only possible if this
+    // branch never executes.
 
     // Drive lazy sweep work to make sure free lists fill up before we exhaust
     // the bag. Without this, all unassigned pages can be consumed before the
@@ -7071,13 +7072,14 @@ void OldGenSpace::computeFragmentationStats() {
 // TLA-REGION(OGS.computeFragmentationStats) end
 
 /**
- * Returns true if compaction should be triggered.
- * Based on heap utilization falling below threshold. Compaction is
- * forbidden while lazy sweep is in progress (the partially-rebuilt
+ * Returns true if heap utilization has fallen below the compaction
+ * threshold. Nothing calls this: compaction is driven only by unit tests
+ * (test/allocator/, OldGenSpaceTestAccess::scheduleCompaction). Compaction
+ * is forbidden while lazy sweep is in progress (the partially-rebuilt
  * meta.fully_swept flags would mislead selectEvacuationSet, and the
  * post-mark live_bytes attribution differs from the post-sweep value
- * compaction expects). The mutator drains lazy sweep before we can
- * legally schedule compaction.
+ * compaction expects), so lazy sweep must be drained before compaction
+ * can legally be scheduled.
  */
 bool OldGenSpace::shouldCompact() const {
     if (gc_phase_ != GCPhase::Idle) return false;
@@ -7086,6 +7088,10 @@ bool OldGenSpace::shouldCompact() const {
 
 // ============================================================================
 // Incremental Compaction Implementation
+//
+// No production code schedules compaction. scheduleCompaction and
+// incrementalCompactionSlice are driven only by unit tests (test/allocator/,
+// through OldGenSpaceTestAccess).
 // ============================================================================
 
 void OldGenSpace::scheduleCompaction() {

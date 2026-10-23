@@ -1,7 +1,7 @@
 // RUN: %ecoc %s -emit=mlir 2>&1 | %FileCheck %s
 //
 // kernel-opt-12: `eco.cse_safe` is a discardable dialect attribute on
-// eco.call (like eco.gc_roots_count) — it needs no ODS argument entry and
+// eco.call — it needs no ODS argument entry and
 // must round-trip through the parser/printer unchanged. `callee` lives in the
 // properties dict <{...}> and therefore precedes the discardable
 // {eco.cse_safe} in the printed form.

@@ -736,7 +736,7 @@ public:
     //
     // A UTF-8 (all-ASCII) String form (Tag_StringUtf8View / Tag_StringUtf8Leaf)
     // widened back to UTF-16 — either into a fresh Tag_String leaf
-    // (maybeFlattenOrRebalance's UTF-8 arm, the ensureFlat backstop) or into a
+    // (ensureFlat's UTF-8 arm, the backstop) or into a
     // transient std::u16string (toStdU16String's UTF-8 arm, the snapshot path
     // feeding foldl/split/lines/... fallbacks). Counted at those two
     // chokepoints only; the forEachSegment 512-unit chunk-widen is a known,

@@ -2,11 +2,11 @@
 # This builds the guida compiler (an Elm compiler written in Elm)
 
 # Platforms with pinned toolchain binaries: Linux x86_64, macOS
-# (arm64 / x86_64), Windows x86_64. The per-platform URL/SHA table lives in
+# arm64, Windows x86_64. The per-platform URL/SHA table lives in
 # cmake/toolchain.cmake.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     # supported
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|x86_64)$")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     # supported (front-end bootstrap; backend port in progress — see
     # plans/build-on-mac.md)
 elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
@@ -292,7 +292,6 @@ file(MAKE_DIRECTORY ${BUILD_KERNEL_DIR})
 file(COPY
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/elm.json
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/heap-config.json
-    ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-bytecode-monitor.js
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/inject-mem.js
     ${COMPILER_DIR}/cmake/bootstrap/build-kernel/run-eol2.js
     DESTINATION ${BUILD_KERNEL_DIR})

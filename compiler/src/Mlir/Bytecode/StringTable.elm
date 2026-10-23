@@ -1,4 +1,4 @@
-module Mlir.Bytecode.StringTable exposing (StringTable, collect, indexOf, encode, addString, empty, collectOp)
+module Mlir.Bytecode.StringTable exposing (StringTable, indexOf, encode, addString, empty, collectOp)
 
 {-| MLIR bytecode refers to many of its strings, such as dialect names,
 operation names and the text of string attributes, by their index in one string
@@ -10,7 +10,7 @@ already there changes nothing. `encode` writes the strings in that same order,
 so a string's index is its position in the section. An index never changes once
 given, so it can be written before the table is complete.
 
-`collect` and `collectOp` walk operations and add the strings found in them.
+`collectOp` walks an operation and adds the strings found in it.
 Nothing checks that a string being looked up was added: `indexOf` then returns
 -1, which `Mlir.Bytecode.VarInt.encodeVarInt` writes like any other number, so
 a missed string makes a corrupt file rather than an error.
@@ -22,7 +22,7 @@ only as it writes each string. It does this to every string in the table,
 whatever it came from. Two escaped spellings of the same text are therefore two
 entries.
 
-@docs StringTable, collect, indexOf, encode, addString, empty, collectOp
+@docs StringTable, indexOf, encode, addString, empty, collectOp
 
 -}
 
@@ -34,7 +34,6 @@ import Mlir.Mlir
     exposing
         ( MlirAttr(..)
         , MlirBlock
-        , MlirModule
         , MlirOp
         , MlirRegion(..)
         , MlirType(..)
@@ -47,7 +46,7 @@ section.
 
 The indices run from 0 with no gaps, in the order the strings were first
 added, and a string's index never changes once given. A table is made by
-`empty` or `collect`, and grows through `addString` and `collectOp`.
+`empty`, and grows through `addString` and `collectOp`.
 
 -}
 type StringTable
@@ -100,24 +99,6 @@ indexOf s (StringTable st) =
 
         Nothing ->
             -1
-
-
-{-| Builds the table for a whole module.
-
-It starts with `builtin` and `module`, the dialect and name of MLIR's module
-operation, and then adds what `collectOp` adds for each operation of
-`mod.body`, in order. The module's own location is not visited.
-
--}
-collect : MlirModule -> StringTable
-collect mod =
-    let
-        st0 =
-            empty
-                |> addString "builtin"
-                |> addString "module"
-    in
-    List.foldl collectOp st0 mod.body
 
 
 {-| Adds the strings of `op` and of every operation nested in its regions.

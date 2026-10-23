@@ -2,6 +2,8 @@
 
 Audit date: 2026-08-09. Repo root `/work`. All paths absolute.
 
+> **Since this audit (2026-10-23 dead-code removal):** the MLIR GC-root machinery it describes is gone - `Eco_GCRootCarrierOpInterface`, the trailing root operands and `eco.gc_roots_count`, `EcoGCLiveness.h`/`computeLiveRoots`, and the safepoint markers, plus the Elm-side root-hint plumbing that fed them (`gcRootHints`, `Expr.emitSafepointHints`, `Ctx.liveEcoValueVars`, the `eco.gc_roots_count` emission and the inline papExtend root operands). EcoGCPrepare now only groups allocations and strips `eco.cse_safe`; RS4GC computes the roots. `EcoTypes.{h,cpp}` were folded into `EcoDialect.h/.cpp`, and the `ecor` target, `oracleOpt` and `ECO_BORROW_OPT` were removed. The text below is kept as the audit recorded it.
+
 ## Headline findings (read these first)
 
 1. **There is NO LTO anywhere in the build.** An exhaustive grep for `-flto`,
@@ -50,10 +52,10 @@ collect.
 | Artifact | File |
 |---|---|
 | Op / type / enum / interface definitions (TableGen) | `/work/runtime/src/codegen/Ops.td` (3,070 lines, **162 `def`s**) |
-| Hand-written verifiers, GCRootCarrier impls, symbol-use checks | `/work/runtime/src/codegen/EcoOps.cpp` (55 KB) |
+| Hand-written verifiers, GCRootCarrier impls (since removed), symbol-use checks | `/work/runtime/src/codegen/EcoOps.cpp` (55 KB) |
 | Generated-header shim | `/work/runtime/src/codegen/EcoOps.h` (33 lines — pure `#include` of `eco/EcoOps.h.inc`) |
 | Dialect registration | `/work/runtime/src/codegen/EcoDialect.{h,cpp}` (`EcoDialect::initialize()` at `EcoDialect.cpp:31-42`) |
-| Type shims | `/work/runtime/src/codegen/EcoTypes.{h,cpp}` (`EcoTypes.cpp` is intentionally empty — the generated typedefs were moved into `EcoDialect.cpp:24`) |
+| Type shims | `/work/runtime/src/codegen/EcoTypes.{h,cpp}` (since folded into `EcoDialect.h/.cpp`; `EcoTypes.cpp` was intentionally empty — the generated typedefs were moved into `EcoDialect.cpp:24`) |
 | BF (ByteFusion) dialect | `/work/runtime/src/codegen/BF/BFOps.td` (20 KB, 27 ops) + `BF{Dialect,Ops,Types}.{h,cpp}` |
 | BF lowering | `/work/runtime/src/codegen/Passes/BFToLLVM.cpp` |
 
@@ -123,7 +125,7 @@ Lowered by `EcoToLLVMArith.cpp`. All **inline** (`icmp`/`fcmp`/`select`) **excep
 `eco.construct.{list,tuple2,tuple3,record,custom}`, `eco.allocate`,
 `eco.allocate_ctor`, `eco.allocate_string`, `eco.allocate_closure`,
 `eco.box`, `eco.to_heap`.
-Results `!eco.value`. Construct ops are `[Pure]` + `GCRootCarrier`.
+Results `!eco.value`. Construct ops are `[Pure]` + `GCRootCarrier` (interface since removed).
 
 Lowered by **`/work/runtime/src/codegen/Passes/EcoToLLVMHeap.cpp`** and
 **`EcoToLLVMValueAgg.cpp`**. All **CALL** — but the shipped shape is a
@@ -180,7 +182,7 @@ itself* synthesizes a kernel call (`EcoControlFlowToSCF.cpp:748-833`,
 
 `eco.call` (direct + indirect + `musttail`), `eco.papCreate`,
 `eco.papCreateGroup`, `eco.papExtend`, `eco.make.closure`, `eco.project.closure`.
-All carry `GCRootCarrier`. **`eco.call` is NOT `[Pure]` and declares NO
+All carry `GCRootCarrier` (since removed). **`eco.call` is NOT `[Pure]` and declares NO
 `MemoryEffects`** (`Ops.td:1129-1167`) — it is maximally effectful to MLIR.
 `papCreate`/`papCreateGroup` *are* `[Pure]`.
 
@@ -398,7 +400,7 @@ compiled, and LLVM is nonetheless blind to it.**
 
 **Yes, unconditionally.** Three mechanisms compound:
 
-**(a) MLIR: full live-root sets are attached as extra SSA operands.**
+**(a) MLIR: full live-root sets are attached as extra SSA operands.** (Since removed: EcoGCPrepare no longer computes or attaches roots, so this mechanism no longer applies.)
 `EcoGCPrepare` classifies `eco.call` as a call-safepoint
 (`/work/runtime/src/codegen/Passes/EcoGCPrepare.cpp:125-140`, `isCallSafepoint`)
 — only `musttail` calls are exempt. For each such op it computes the full set of
@@ -566,7 +568,7 @@ sites and flags *"kernel-allowlist growth is untracked as a deliverable"*.
 
 Two further caveats: the whole oracle is **off by default**
 (`/work/compiler/src/Compiler/Eco/Config.elm:323`:
-`borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }`),
+`borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }`; `oracleOpt` since removed),
 and its output type `OracleFacts` (`Borrow/Facts.elm:35-46`) is keyed by
 `SpecId`/LSS-member and currently has **no consumer** — `Generate/MLIR/Context.elm:242,316,353`
 store it and nothing reads `borrowedParamsOf`.

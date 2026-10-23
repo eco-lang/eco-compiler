@@ -8,7 +8,7 @@ array<i8: ...>` in every test/codegen/*.mlir fixture. Tuple2/Tuple3/list attribu
 Per op occurrence it:
   1. finds the op's attribute dict and its trailing functional type `: (T0, T1, ...) -> R`;
   2. computes the slot count S (custom: `size`; record: `field_count`; papCreate: `num_captured`;
-     papExtend: #operands - 1 - eco.gc_roots_count);
+     papExtend: #operands - 1);
   3. derives kinds from operand types 0..S-1 (papExtend: 1..S): i64->1, f64->2, i16->3, else 0;
   4. decodes the old bitmap and REPORTS any disagreement (a fixture that was deliberately
      inconsistent is a negative test and must be rewritten by hand, never silently);
@@ -115,8 +115,7 @@ def process(path, write):
         if count_attr:
             n = int_attr(d, count_attr)
         else:
-            roots = int_attr(d, "eco.gc_roots_count") or 0
-            n = len(tys) - 1 - roots
+            n = len(tys) - 1
         if n is None or n < 0:
             problems.append((lineno, op, f"slot count unknown ({count_attr})"))
             continue
@@ -201,7 +200,7 @@ def add_missing(path, write):
         if count_attr:
             n = int_attr(d, count_attr)
         else:
-            n = len(tys) - 1 - (int_attr(d, "eco.gc_roots_count") or 0)
+            n = len(tys) - 1
         if n is None or n < 0:
             problems.append((lineno, op, "slot count unknown"))
             continue

@@ -6,7 +6,7 @@ Eco keeps the stock Elm compiler's JavaScript and HTML generator for two reasons
 
 The JavaScript generator and the MLIR generator are two back ends of one build driver. They share project loading, caching, the discovery of entry points and error reporting. They do not share the program they read. The MLIR generator reads the monomorphic graph that the whole-program steps produce. The JavaScript generator reads the erased graph: one record of every global definition, as stock Elm's optimizer builds it. Nothing typed crosses to the JavaScript side, and nothing about heap layouts, calling conventions or boxing belongs there.
 
-The interface makes that split a matter of types rather than convention. It has two kinds of back end, and the only real difference between them is the graph they accept:
+The interface makes that split a matter of types rather than convention. It has one kind of back end, and its graph is the erased one:
 
 ```elm
 type alias CodeGen =
@@ -21,18 +21,11 @@ type alias CodeGen =
         -> Output
     ...
     }
-
-type alias MonoCodeGenConfig =
-    { sourceMaps : SourceMaps
-    , leadingLines : Int
-    , mode : Mode.Mode
-    , graph : Mono.MonoGraph
-    }
 ```
 
-From `compiler/src/Compiler/Generate/CodeGen.elm`. The first kind takes the erased `Opt` graph and the list of entry points; the second takes the monomorphic graph. The cut part of `CodeGen` holds two entry points for the interactive loop, which only the erased kind offers. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. Only the MLIR generator implements the second kind, and nothing calls through it: the build streams bytecode through the generator's own writer, and the test harnesses call the generator's functions directly. The second kind therefore only states, as a type, which graph MLIR generation reads, and the interface has no use for a binary result.
+From `compiler/src/Compiler/Generate/CodeGen.elm`. The interface takes the erased `Opt` graph and the list of entry points. The cut part holds two entry points for the interactive loop. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. The MLIR generator has no such interface: the build streams it through the generator's own writer (`Compiler.Generate.MLIR.Backend`), and the test harnesses call the generator's functions directly.
 
-The adapter that puts the stock generator behind the first interface is a few lines long. The build driver wraps it in three drivers, one per mode, that load the cached erased objects, assemble the graph and the entry points, and read module sources when source maps are wanted. The interface exists so that both targets share one driver instead of each carrying a fork of it.
+The adapter that puts the stock generator behind the interface is a few lines long. The build driver wraps it in three drivers, one per mode, that load the cached erased objects, assemble the graph and the entry points, and read module sources when source maps are wanted. Both targets share the rest of the build driver instead of each carrying a fork of it.
 
 ## Choosing JavaScript
 
@@ -93,7 +86,7 @@ Parent: [compiler.md](compiler.md).
 
 Code:
 
-- `compiler/src/Compiler/Generate/CodeGen.elm`: the two interface kinds (`CodeGen`, `MonoCodeGen`) and the text `Output`.
+- `compiler/src/Compiler/Generate/CodeGen.elm`: the `CodeGen` interface and the text `Output`.
 - `compiler/src/Compiler/Generate/CodeGen/JavaScript.elm`: the adapter to the stock generator.
 - `compiler/src/Compiler/Generate/JavaScript.elm`: the graph walk, the helpers, kernel chunks, the closing `EXTRA GUIDA CORE` block (`_Utils_TupleN` and its `_Debug_toAnsiString` wrapper), REPL output and source maps.
 - `compiler/src/Compiler/Generate/JavaScript/Expression.elm`: lowering of each expression.

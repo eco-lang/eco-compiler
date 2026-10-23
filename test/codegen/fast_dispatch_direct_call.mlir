@@ -35,11 +35,6 @@ module {
     eco.return %t3 : i64
   }
 
-  func.func private @lam$clo(%clo: !eco.value, %x: i64, %y: i64) -> i64 {
-    %c0 = arith.constant 0 : i64
-    eco.return %c0 : i64
-  }
-
   func.func @consume(%pap: !eco.value, %y: i64) -> i64 {
     %r = "eco.papExtend"(%pap, %y) {
       remaining_arity = 1 : i64,
@@ -58,7 +53,7 @@ module {
     %c3 = arith.constant 3 : i64
 
     %pap0 = "eco.papCreate"(%c7) {
-      function = @lam$clo,
+      function = @lam$cap,
       _fast_evaluator = @lam$cap,
       arity = 3 : i64,
       num_captured = 1 : i64,

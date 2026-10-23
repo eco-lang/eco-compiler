@@ -112,7 +112,7 @@ is bounded by peak working-set rather than mark-set.
 
 **Status:** SKIPPED — 2 attempts exhausted; no forward progress.
 The underlying RS4GC liveness gap (Failure #3 family) requires a
-codegen-level fix (likely in `EcoGCPrepare`/`EcoGCLiveness.h` or
+codegen-level fix (likely in `EcoGCPrepare`/`EcoGCLiveness.h` (since removed) or
 the `widenToI64ForInit` boundary helpers) and is beyond the scope
 of a single bootstrap-fix loop iteration. Recommend the user
 investigate stackmap coverage for the parser State HPointer
@@ -140,7 +140,7 @@ Also added markers before boxing calls (eco_alloc_int/float/char) in those paths
 **Stage:** 7 (native self-compile)  
 **Symptom:** `eco_pap_extend: new_n_values (34) exceeds max_values (1)` followed by
 `Assertion 'obj < heap_end' failed` when resolving HPointer `0x2d002d002d002d`  
-**Backtrace:** `eco_apply_segmentation_unknown → eco_apply_closure → eco_closure_call_saturated
+**Backtrace** (`eco_apply_segmentation_unknown` has since been removed; segmentation_unknown calls now lower to `eco_apply_closure_eval`): `eco_apply_segmentation_unknown → eco_apply_closure → eco_closure_call_saturated
 → wrapper → Bytes_Decode_loopHelp → eco_apply_segmentation_unknown (corrupt closure)`
 
 ### Evidence
@@ -171,7 +171,7 @@ protect the contents of alloca'd arrays passed to C++ runtime functions.
 ### Attempts
 
 **Attempt 1 (GC suppress):** Added `GCSuppressGuard` RAII class to suppress proactive GC
-during C++ runtime functions (eco_apply_closure, eco_apply_segmentation_unknown,
+during C++ runtime functions (eco_apply_closure, eco_apply_segmentation_unknown (since removed),
 eco_closure_call_saturated). With full suppression: nursery overflows (OOM). With safety
 valve (allow GC at 95%): same crash at lower n_values (4 vs 34). Fundamentally, can't
 suppress GC for long enough without OOM, and any GC during suppression causes the same
@@ -211,6 +211,8 @@ Dict_fromList_$_7250
 __closure_wrapper_Dict_fromList_$_7250
 eco_apply_segmentation_unknown
 ```
+
+(`eco_apply_segmentation_unknown` has since been removed.)
 
 **How far it got:** Very early — before any "Compiling" output. 7 GC cycles
 completed successfully. Crash occurs during 8th allocation cycle in mutator code

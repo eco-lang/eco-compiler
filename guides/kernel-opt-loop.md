@@ -62,7 +62,7 @@ consumer), and puts each item's Phase-0 census after the siblings that would per
 | 6 | **06** string ordering cmp3 | must precede 03 (03's Phase 5 is gated on 06's residue numbers) and lands first in the shared `Intrinsics.elm` region | `ECO_STRING_ORDER_INTRINSIC` | Elm front-end only |
 | 7 | **03** value.eq fast path | needs 07 Phase 5 (the fprintf deletion) and 06's residue numbers; merges on top of 06 in `Intrinsics.elm`/`Config.elm` | `ECO_VALUE_EQ`, `_STRCASE`, `_INLINE`, `_GCLEAF` | Elm + backend + kernel C++ |
 | 8 | **08** kernel gc-leaf stamp | needs 07's facts rows; carries `KERNEL_FACTS_001` | `ECO_KERNEL_GCLEAF_EMIT`, `ECO_KERNEL_GCLEAF` | Elm + backend + new C++ test |
-| 9 | **09** GCPrepare barrier relaxation | consumes 08's `eco.gc_leaf`; census (Phase 1) before any transform | `ECO_GCPREPARE_{CENSUS,MERGE,GROUP_INLINE,LEAF_SAFEPOINT}` | backend only |
+| 9 | **09** GCPrepare barrier relaxation | consumes 08's `eco.gc_leaf`; census (Phase 1) before any transform | `ECO_GCPREPARE_{CENSUS,MERGE,GROUP_INLINE,LEAF_SAFEPOINT}` (LEAF_SAFEPOINT since removed with the MLIR root operands) | backend only |
 | 10 | **11** mono DCE + cost model | needs 07; authors `debug-log-ordering-policy.md` that 13 waits on (13's census ride-along has a stated fallback) | `ECO_KERNEL_FACTS_DCE`, `ECO_KERNEL_COST_*` | Elm front-end |
 | 11 | **13** mono CSE | needs 07 + 11's policy doc; census-gated at every step | `ECO_CSE*` | Elm (+**new .elm ⇒ reconfigure**) |
 | 12 | **10** MLIR CSE + folders | its Phase-0 census must reflect 13's residual; lands second vs 09 ⇒ keeps the order fold → CSE → mark → GCPrepare | `ECO_MLIR_CSE`, `ECO_MLIR_FOLD` | backend only |

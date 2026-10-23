@@ -7,7 +7,6 @@
 
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 #include "EcoToLLVMInternal.h"
 
 #include "../../allocator/Heap.hpp"
@@ -54,19 +53,6 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
                                        llvm::SmallVectorImpl<char> &outName);
 static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
                                        StringRef funcSymbol);
-
-/// Extract GC live roots from adapted operands for append-pattern ops.
-/// Returns the adapted operands split into {real operands, live roots}.
-static std::pair<ValueRange, ValueRange> splitAdaptedRoots(
-    Operation *origOp, ValueRange adaptedOperands) {
-    auto attr = origOp->getAttrOfType<IntegerAttr>("eco.gc_roots_count");
-    unsigned rootCount = attr ? attr.getValue().getZExtValue() : 0;
-    if (rootCount == 0)
-        return {adaptedOperands, ValueRange{}};
-    unsigned realCount = adaptedOperands.size() - rootCount;
-    return {adaptedOperands.take_front(realCount),
-            adaptedOperands.drop_front(realCount)};
-}
 
 //===----------------------------------------------------------------------===//
 // GC root range helpers for args-array call sites
@@ -220,8 +206,7 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         Value result = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocClosure(rewriter),
-            ValueRange{funcPtr, arityConst},
-            adaptor.getLiveRoots());
+            ValueRange{funcPtr, arityConst});
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -488,26 +473,11 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
             return {rc.getResult(), static_cast<Type>(ptrTy)};
         };
 
-        SmallVector<Value, 8> liveRoots;
         SmallVector<Value> callArgs;
-        // Single constant reused for all gc-live allocas below.
-        auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-            rewriter.getI64IntegerAttr(1));
         for (int64_t i = 0; i < arity; ++i) {
             auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
             auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
             Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
-
-            // Force each gc-live value through a wrapper-local stack alloca so it
-            // has a distinct SSA identity from the call argument. This prevents
-            // the register allocator from keeping gc-live roots in argument
-            // registers (which would produce 0 GC-live stack locations in the
-            // stackmap, causing stale pointers after GC relocation).
-            auto rootAlloca = rewriter.create<LLVM::AllocaOp>(
-                loc, ptrTy, i64Ty, oneConst);
-            rewriter.create<LLVM::StoreOp>(loc, argI64, rootAlloca);
-            auto gcLiveVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, rootAlloca);
-            liveRoots.push_back(gcLiveVal);
 
             Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
             Type origType = (hasOrigTypes && i < (int64_t)origParamTypes.size())
@@ -589,10 +559,6 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
             callArgs.push_back(convertedArg);
         }
 
-        // Emit safepoint marker before the target call so StatepointConversion
-        // wraps it in gc.statepoint, keeping loaded HPointers visible to GC.
-        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
-
         // Call the target function
         auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
         auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
@@ -644,18 +610,15 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, resultValue, ptrTy);
         } else if (origResultType && origResultType.isInteger(64)) {
             // Int result: inner function returns raw i64 → box via eco_alloc_int
-            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{resultValue});
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
         } else if (origResultType && origResultType.isF64()) {
-            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
         } else if (origResultType && isa<IntegerType>(origResultType) &&
                    cast<IntegerType>(origResultType).getWidth() < 64) {
-            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
@@ -667,13 +630,11 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
                 resultPtr = resultValue;
             }
         } else if (targetResultType == f64Ty && !origResultType) {
-            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
             resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
         } else if (auto intTy = dyn_cast<IntegerType>(targetResultType); intTy && !origResultType) {
             if (intTy.getWidth() < 64) {
-                emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
                 auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
                 auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
                 resultPtr = wrapperReturnValueToPtr0(rewriter, loc, boxCall.getResult(), ptrTy);
@@ -716,31 +677,18 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Split adapted operands into real captured values + GC roots.
-        auto [realOperands, liveRoots] = splitAdaptedRoots(op, adaptor.getOperands());
-
         int64_t arity = op.getArity();
         int64_t numCaptured = op.getNumCaptured();
-        auto captured = realOperands;  // All real operands are captures
-
-        // Emit safepoint marker before allocation
-        emitSafepointMarker(op, rewriter, runtime, liveRoots);
+        auto captured = adaptor.getOperands();  // All operands are captures
 
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
 
-        // Get wrapper function that adapts calling convention
-        // For closures with captures, prefer the fast clone (_fast_evaluator) for the wrapper
-        // since it takes captures + params as direct arguments (compatible with args-array).
-        // The generic clone ($clo) takes (Closure*, params...) which is used for typed closure dispatch.
+        // Get wrapper function that adapts calling convention. `function`
+        // names the evaluator: the `$cap` clone for a capturing closure
+        // (captures + params as direct arguments, compatible with the
+        // args-array), else the target itself (zero-capture or kernel).
         auto module = op->getParentOfType<ModuleOp>();
-        StringRef funcSymbol;
-        if (auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator")) {
-            // Has fast clone - use it for the wrapper (typed closure calling)
-            funcSymbol = fastEval.getRootReference();
-        } else {
-            // No fast clone - use the function attribute directly (zero-capture or legacy)
-            funcSymbol = op.getFunction();
-        }
+        StringRef funcSymbol = op.getFunction();
         // Phase E: every papCreate closure uses the typed-newargs wrapper.
         // The wrapper reads each slot directly per the target's parameter
         // type — no HPointer→primitive resolve. Caller paths that build
@@ -978,10 +926,8 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
         const unsigned numSiblings = functions.size();
 
-        // Partition adapted operands into captures (= sum of capture_counts)
-        // followed by GC roots.
-        auto [realOperands, liveRoots] =
-            splitAdaptedRoots(op, adaptor.getOperands());
+        // The adapted operands are the captures (= sum of capture_counts).
+        auto captureOperands = adaptor.getOperands();
 
         // Resolve wrapper-function pointer for each sibling. Group members
         // always have captures so we use the fast_evaluator ($cap) form.
@@ -1197,9 +1143,9 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         }
 
         // Convert each capture to i64 and store in captures[].
-        // realOperands is ordered [sibling0_caps..., sibling1_caps..., ...].
+        // captureOperands is ordered [sibling0_caps..., sibling1_caps..., ...].
         for (uint32_t k = 0; k < totalCaptures; ++k) {
-            Value capValue = realOperands[k];
+            Value capValue = captureOperands[k];
             if (auto intTy = dyn_cast<IntegerType>(capValue.getType());
                 intTy && intTy.getWidth() < 64) {
                 capValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, capValue);
@@ -1234,8 +1180,6 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 
         auto numCrossConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
             rewriter.getI64IntegerAttr(static_cast<int64_t>(numCrossEdges)));
-
-        emitSafepointMarker(op, rewriter, runtime, liveRoots);
 
         auto groupFunc = runtime.getOrCreateAllocClosureGroupL(rewriter);
         rewriter.create<LLVM::CallOp>(loc, groupFunc, ValueRange{
@@ -1294,8 +1238,7 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 /// Used for a stamped fast dispatch (`_fast_evaluator` + `_capture_abi`).
 static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                  Value closureI64, ValueRange newArgs, SymbolRefAttr fastEvaluator,
-                                 ArrayAttr captureAbiTypes, Type resultType,
-                                 Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
+                                 ArrayAttr captureAbiTypes, Type resultType) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -1394,57 +1337,6 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
     SmallVector<Value> callOperands;
     callOperands.push_back(funcPtr);
     callOperands.append(callArgs.begin(), callArgs.end());
-    if (safeOp)
-        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-    auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
-
-    return callOp.getResult();
-}
-
-/// Emit a closure call via the generic clone.
-/// Calls the generic clone stored in closure.evaluator with (Closure*, args...).
-/// Used for a heterogeneous closure known by `_closure_kind` (Expr.elm).
-static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
-                             Value closureI64, ValueRange newArgs, Type resultType,
-                             Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
-    auto *ctx = rewriter.getContext();
-    auto i8Ty = IntegerType::get(ctx, 8);
-    auto i64Ty = IntegerType::get(ctx, 64);
-    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
-    // Resolve closure HPointer to raw pointer
-    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
-    Value closurePtr = resolveCall.getResult();
-
-    // Load evaluator pointer (generic clone) at offset 16
-    auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureEvaluatorOffset);
-    auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset16});
-    Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
-
-    // Build argument list: closurePtr + newArgs
-    SmallVector<Value> callArgs;
-    SmallVector<Type> paramTypes;
-
-    // First arg is the closure pointer (not HPointer)
-    callArgs.push_back(closurePtr);
-    paramTypes.push_back(ptrTy);
-
-    // Add new arguments
-    for (Value arg : newArgs) {
-        callArgs.push_back(arg);
-        paramTypes.push_back(arg.getType());
-    }
-
-    // Build function type and indirect call
-    Type llvmResultType = resultType;
-    auto funcType = LLVM::LLVMFunctionType::get(llvmResultType, paramTypes, /*isVarArg=*/false);
-
-    SmallVector<Value> callOperands;
-    callOperands.push_back(evaluator);
-    callOperands.append(callArgs.begin(), callArgs.end());
-    if (safeOp)
-        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
 
     return callOp.getResult();
@@ -2408,7 +2300,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
                                    Value closureI64, ValueRange newArgs, Type resultType,
                                    ArrayRef<Type> origNewArgTypes = {},
                                    Type origResultType = {},
-                                   Operation *safeOp = nullptr, ValueRange liveRoots = {},
+                                   Operation *safeOp = nullptr,
                                    Value layoutPtr = {}) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
@@ -2575,8 +2467,6 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         auto desiredKindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty,
             static_cast<int64_t>(desiredKind));
         auto evalFunc = runtime.getOrCreateClosureCallSaturatedEval(rewriter);
-        if (safeOp)
-            emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
         rewriter.create<LLVM::CallOp>(loc, evalFunc,
             ValueRange{closureI64, newArgsArray, numNewArgsI32, layoutArg,
                        resultSlot, desiredKindConst});
@@ -2598,8 +2488,6 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
 
     // === Boxed-result path: closure → HPtr → caller ===
     auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
-    if (safeOp)
-        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto runtimeCall = rewriter.create<LLVM::CallOp>(
         loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32, layoutArg});
     Value resultI64 = runtimeCall.getResult();
@@ -2636,7 +2524,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     /// Segmentation-unknown lowering: known ABI types but unknown staging.
     /// Builds a single typed `i64*` args buffer (no LLVM-side boxing) plus an
     /// `EvalParamLayout` describing each slot's primitive kind, then calls
-    /// `eco_apply_segmentation_unknown`, which reads the closure header at
+    /// `eco_apply_closure_eval`, which reads the closure header at
     /// runtime to dispatch:
     ///   - Under-saturated: passes the layout to `eco_pap_extend_l`.
     ///   - Saturated/over: forwards to `eco_apply_closure_typed`, which
@@ -2644,8 +2532,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     LogicalResult lowerSegmentationUnknown(PapExtendOp op, OpAdaptor adaptor,
                                            ConversionPatternRewriter &rewriter,
                                            Location loc, Value closureI64,
-                                           ValueRange newargs,
-                                           ValueRange liveRoots) const {
+                                           ValueRange newargs) const {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
@@ -2739,14 +2626,12 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
         // === 6. Call runtime dispatcher via the typed-result eval helper ===
         // `eco_apply_closure_eval` reads the closure header for saturation
-        // dispatch (matching what `eco_apply_segmentation_unknown` did)
-        // and additionally delivers a typed result per `desired_kind`.
+        // dispatch and delivers a typed result per `desired_kind`.
         Type origResultType = op.getResult().getType();
         Type loweredResultType = getTypeConverter()->convertType(origResultType);
         uint8_t desiredKind = mlirTypeToParamKind(loweredResultType);
 
         auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
-        emitSafepointMarker(op, rewriter, runtime, liveRoots);
         Value result = emitClosureEvalCall(rewriter, loc, runtime, op,
                                            closureI64, typedArgsArray,
                                            numNewArgsI32, layoutPtr,
@@ -2769,8 +2654,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     LogicalResult lowerGenericApply(PapExtendOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter,
                                     Location loc, Value closureI64,
-                                    ValueRange newargs,
-                                    ValueRange liveRoots) const {
+                                    ValueRange newargs) const {
         // Phase D: build a typed `i64*` args buffer (no LLVM-side boxing) and
         // pass it to `eco_apply_closure_typed` along with an EvalParamLayout
         // describing each slot's primitive kind. The runtime helper re-boxes
@@ -2879,7 +2763,6 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         Type loweredResultType = getTypeConverter()->convertType(origResultType);
         uint8_t desiredKind = mlirTypeToParamKind(loweredResultType);
 
-        emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(numNewArgs));
         Value result = emitClosureEvalCall(rewriter, loc, runtime, op,
@@ -2904,19 +2787,11 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Split adapted operands into real operands + GC roots.
-        // Layout: [closure, newargs..., roots...]
-        auto [realOperands, liveRoots] = splitAdaptedRoots(op, adaptor.getOperands());
-        Value closureI64 = realOperands[0];
-        auto newargs = realOperands.drop_front(1);
+        Value closureI64 = adaptor.getClosure();
+        auto newargs = adaptor.getNewargs();
         int64_t numNewArgs = newargs.size();
 
         auto remainingArityAttr = op.getRemainingArityAttr();
-
-        // NOTE: safepoint marker is emitted by each sub-path right before
-        // the final GC-triggering call, NOT here at the top. This ensures
-        // findTargetCall in StatepointConversion latches onto the correct
-        // target, not an intermediate boxing or setup call.
 
         // Generic mode: remaining_arity absent — runtime saturation check.
         // Delegate to eco_apply_closure which handles under/exact/over-saturated.
@@ -2935,11 +2810,11 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                                               ValueRange{reasonVal});
             }
             // Check _call_kind to distinguish generic_apply from segmentation_unknown
-            auto callKindAttr = op->getAttrOfType<StringAttr>("_call_kind");
+            auto callKindAttr = op.get_callKindAttr();
             if (callKindAttr && callKindAttr.getValue() == "segmentation_unknown") {
-                return lowerSegmentationUnknown(op, adaptor, rewriter, loc, closureI64, newargs, liveRoots);
+                return lowerSegmentationUnknown(op, adaptor, rewriter, loc, closureI64, newargs);
             }
-            return lowerGenericApply(op, adaptor, rewriter, loc, closureI64, newargs, liveRoots);
+            return lowerGenericApply(op, adaptor, rewriter, loc, closureI64, newargs);
         }
 
         // Typed mode: remaining_arity present — compile-time saturation check.
@@ -2952,27 +2827,18 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             Value result;
 
             // Extract original types for inline/unknown closure call paths.
-            // Only take real newargs, not appended GC roots.
             SmallVector<Type> origNewArgTypes;
-            auto origNewargs = op.getNewargs();
-            for (size_t i = 0; i < static_cast<size_t>(numNewArgs); ++i) {
-                origNewArgTypes.push_back(origNewargs[i].getType());
-            }
+            for (Value v : op.getNewargs())
+                origNewArgTypes.push_back(v.getType());
             Type origResultType = op.getResult().getType();
 
             // Check for typed closure calling attributes
             auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator");
             auto captureAbi = op->getAttrOfType<ArrayAttr>("_capture_abi");
-            auto closureKind = op->getAttr("_closure_kind");
 
             if (fastEval && captureAbi) {
                 // Fast path: known homogeneous closure, call fast clone directly
-                result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy,
-                                             op, liveRoots);
-            } else if (closureKind) {
-                // Has closure kind but not fast path -> heterogeneous, use closure call
-                result = emitClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
-                                         op, liveRoots);
+                result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy);
             } else {
                 // No typed closure info -> use legacy inline closure call.
                 // If _capture_abi is present (without _fast_evaluator), compute a
@@ -2991,7 +2857,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                     layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime, kinds);
                 }
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
-                                               origNewArgTypes, origResultType, op, liveRoots, layoutPtr);
+                                               origNewArgTypes, origResultType, op, layoutPtr);
             }
             rewriter.replaceOp(op, result);
         } else {
@@ -3024,9 +2890,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             Value savedRange = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
 
             // Caller kinds from the newarg operand types (slotKindOf; equal
-            // to slot_kinds / the legacy attribute by the verifier;
-            // getNewargs() also holds the GC roots, which follow the real
-            // newargs).
+            // to slot_kinds / the legacy attribute by the verifier).
             SmallVector<uint8_t> newargKinds;
             SmallVector<bool> boxedSlots;
             for (int64_t i = 0; i < numNewArgs; ++i) {
@@ -3062,7 +2926,6 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             Value layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime,
                                                     newargKinds, /*resultKind=*/0);
             auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
-            emitSafepointMarker(op, rewriter, runtime, liveRoots);
             auto call = rewriter.create<LLVM::CallOp>(
                 loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst, layoutPtr});
 
@@ -3089,8 +2952,7 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
     LogicalResult matchAndRewrite(CallOp op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        // Split adapted operands into real operands + GC roots
-        auto [realOperands, liveRoots] = splitAdaptedRoots(op, adaptor.getOperands());
+        auto operands = adaptor.getOperands();
 
         // Convert result types
         SmallVector<Type> resultTypes;
@@ -3098,14 +2960,9 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             resultTypes.push_back(getTypeConverter()->convertType(t));
         }
 
-        // musttail calls skip safepoint markers
-        bool isMusttail = op.getMusttail() && *op.getMusttail();
-
         auto callee = op.getCallee();
         if (callee) {
             // Direct call to a known function
-            if (!isMusttail)
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
             if (resultTypes.size() > 1) {
                 // U-T1.3.3 sret call: the callee is an sret worker
                 // ((slot, args...) -> void, SretFuncOpLowering). Allocate the
@@ -3136,7 +2993,7 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
                                                            one, /*alignment=*/8);
                 }
                 SmallVector<Value> callArgs{slot};
-                callArgs.append(realOperands.begin(), realOperands.end());
+                callArgs.append(operands.begin(), operands.end());
                 rewriter.create<func::CallOp>(loc, *callee, TypeRange{}, callArgs);
                 SmallVector<Value> loads;
                 for (auto [i, ft] : llvm::enumerate(resultTypes)) {
@@ -3149,7 +3006,7 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
                 rewriter.replaceOp(op, loads);
                 return success();
             }
-            auto callOp = rewriter.create<func::CallOp>(loc, *callee, resultTypes, realOperands);
+            auto callOp = rewriter.create<func::CallOp>(loc, *callee, resultTypes, operands);
             rewriter.replaceOp(op, callOp.getResults());
         } else {
             // Indirect call through closure
@@ -3158,8 +3015,8 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             }
 
             int64_t remainingArity = op.getRemainingArity().value();
-            Value closureI64 = realOperands[0];
-            auto newArgs = realOperands.drop_front(1);
+            Value closureI64 = operands[0];
+            auto newArgs = operands.drop_front(1);
 
             if (static_cast<int64_t>(newArgs.size()) != remainingArity) {
                 return op.emitError("remaining_arity must equal number of new arguments");
@@ -3169,32 +3026,13 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             Value result;
 
             // Extract original types for inline/unknown closure call paths.
-            // Use only the real (non-root) original operands.
-            unsigned origRootCount = op.getGCRoots().size();
             SmallVector<Type> origNewArgTypes;
-            auto origOperands = op.getOperands();
-            unsigned origRealCount = origOperands.size() - origRootCount;
-            for (size_t i = 1; i < origRealCount; ++i) {
-                origNewArgTypes.push_back(origOperands[i].getType());
-            }
+            for (Value v : op.getOperands().drop_front(1))
+                origNewArgTypes.push_back(v.getType());
             Type origResultType = op.getResultTypes()[0];
 
-            // Safepoint marker is emitted inside each helper, right before
-            // the final GC-triggering call (not here, to avoid latching onto
-            // intermediate resolveHPtr/boxing calls).
-            ValueRange callRoots = isMusttail ? ValueRange{} : liveRoots;
-
-            // Phase 4 (plans/gc-root-registration-cost.md): `_dispatch_mode` is
-            // set by NO pass in either tree, so the branch that read it — and
-            // `emitDispatchedClosureCall` / `emitUnknownClosureCall` behind it —
-            // was unreachable and has been deleted. `emitClosureCall` is NOT
-            // dead and stays: PapExtendOpLowering reaches it on the
-            // `_closure_kind` arm, and `_closure_kind` is emitted by the ELM
-            // compiler (Compiler/Generate/MLIR/Expr.elm), not by an MLIR pass.
-            {
-                result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy,
-                                               origNewArgTypes, origResultType, op, callRoots);
-            }
+            result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy,
+                                           origNewArgTypes, origResultType, op);
             rewriter.replaceOp(op, result);
         }
 
@@ -3303,37 +3141,20 @@ void eco::detail::preMaterializeClosureArtifacts(
         auto noteSite = [&](Operation *op) {
             if (auto pe = dyn_cast<PapExtendOp>(op)) {
                 ++seenPe;
-                // `papExtend`'s operand layout is
-                // `[closure, newargs..., roots...]` and `getNewargs()`
-                // returns the whole tail AFTER the closure — roots
-                // included. The lowering drops them via splitAdaptedRoots;
-                // counting them here inflated every site's N (no n=1 at
-                // all, a spurious peak at n=5) and made every real
-                // signature miss.
-                auto all = pe.getNewargs();
-                unsigned roots = pe.getGCRoots().size();
-                if (all.size() < roots) return;
-                note(all.take_front(all.size() - roots),
+                note(pe.getNewargs(),
                      typeConverter->convertType(pe.getResult().getType()));
             } else if (auto call = dyn_cast<CallOp>(op)) {
                 if (call.getCallee()) return;
                 ++seenCall;
-                unsigned rootCount = call.getGCRoots().size();
                 auto operands = call.getOperands();
-                unsigned realCount = operands.size() - rootCount;
-                if (realCount < 1) return;
+                if (operands.empty()) return;
                 Type rty = call.getNumResults() > 0
                                ? typeConverter->convertType(
                                      call.getResult(0).getType())
                                : Type();
-                note(operands.slice(1, realCount - 1), rty);
+                note(operands.drop_front(1), rty);
             } else if (auto pc = dyn_cast<PapCreateOp>(op)) {
-                StringRef sym;
-                if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
-                    sym = fe.getRootReference();
-                else
-                    sym = pc.getFunction();
-                noteCaptures(sym,
+                noteCaptures(pc.getFunction(),
                              static_cast<unsigned>(pc.getNumCaptured()));
             } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
                 auto fes = pg.getFastEvaluators();
@@ -3395,12 +3216,7 @@ void eco::detail::preMaterializeClosureArtifacts(
 
     auto visit = [&](Operation *op) {
         if (auto pc = dyn_cast<PapCreateOp>(op)) {
-            StringRef funcSymbol;
-            if (auto fe = pc->getAttrOfType<SymbolRefAttr>("_fast_evaluator"))
-                funcSymbol = fe.getRootReference();
-            else
-                funcSymbol = pc.getFunction();
-            materialize(funcSymbol, pc.getArity(), 
+            materialize(pc.getFunction(), pc.getArity(),
                         static_cast<uint8_t>(pc.get_resultKind()), pc.getLoc());
         } else if (auto pg = dyn_cast<PapCreateGroupOp>(op)) {
             auto fes = pg.getFastEvaluators();
@@ -3439,39 +3255,20 @@ void eco::detail::preMaterializeClosureArtifacts(
                                        mc.getArity(), /*kinds=*/0,
                                        /*resultKind=*/0, mc.getLoc(), n);
         } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
-            // `papExtend`'s operands are `[closure, newargs..., roots...]`
-            // and `getNewargs()` returns the whole tail after the closure,
-            // roots included; the lowering drops them via
-            // splitAdaptedRoots. Passing the padded range here derived the
-            // layout kind vector for `[kinds..., 0 x rootCount]`, a key NO
-            // site ever asks for — so every pre-minted papExtend layout was
-            // dead and every layout a site DID want was instead created
-            // lazily, under a lock, by whichever Stage-2 worker reached it
-            // first. Both `kinds` and the capture-ABI variant's
-            // zero padding derive from this range, so stripping once here
-            // fixes both. (The CallOp arm below already strips correctly.)
-            auto all = pe.getNewargs();
-            unsigned roots = pe.getGCRoots().size();
-            if (all.size() < roots)
-                return;
             preMaterializeApplyLayouts(
-                builder, runtime, op,
-                all.take_front(all.size() - roots),
+                builder, runtime, op, pe.getNewargs(),
                 static_cast<uint8_t>(pe.get_resultKind()),
                 pe->getAttrOfType<ArrayAttr>("_capture_abi"));
         } else if (auto call = dyn_cast<CallOp>(op)) {
             if (call.getCallee()) return;  // direct call: no closure layout
-            unsigned rootCount = call.getGCRoots().size();
             auto operands = call.getOperands();
-            unsigned realCount = operands.size() - rootCount;
-            SmallVector<Value> newargs;
-            for (unsigned i = 1; i < realCount; ++i)
-                newargs.push_back(operands[i]);
+            ValueRange newargs =
+                operands.empty() ? ValueRange{} : ValueRange(operands.drop_front(1));
             uint8_t rk = 0;
             if (auto a = call->getAttrOfType<IntegerAttr>("_result_kind"))
                 rk = static_cast<uint8_t>(a.getInt());
             preMaterializeApplyLayouts(builder, runtime, op,
-                                       ValueRange(newargs), rk,
+                                       newargs, rk,
                                        /*captureAbi=*/nullptr);
         }
     };

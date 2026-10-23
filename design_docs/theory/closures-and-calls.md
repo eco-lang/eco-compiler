@@ -55,7 +55,7 @@ How boxed values and the pointer word look in general is the subject of [value-r
 
 Global optimization regroups every closure's type so that its first stage is exactly the closure's own parameters, then records on every call through a function value one of three call kinds. With known segmentation, the callee's remaining arity and the arities of its later stages are known. With segmentation unknown, the callee's parameter representations are known but not its staging. With generic apply, nothing about the callee is trusted. Where lambda-set analysis proves the callee value is one specific closure instance, global optimization also stamps the call with that instance's fast entry and the layout of its captures, and for closure values a stamp takes precedence over the call kind. [global-optimization.md](compiler/global-optimization.md) explains how these facts are proved, and [lambda-set-specialization.md](compiler/lambda-set-specialization.md) how Eco knows which functions can reach a call.
 
-For each closure with captures, MLIR generation emits two functions. The body goes in `name$cap`, whose parameters are the captures followed by the stage's parameters, all typed. Captures become ordinary typed parameters so that a proven call is a plain typed call that LLVM can inline. The second function, `name$clo`, takes the closure itself and the parameters, projects each capture out of the closure, and calls `$cap`. A closure with no captures produces a single function that plays the role of `$cap`. The compiler emits `$clo` for every capturing closure, and closure creation names it as its function, but nothing in the default lowering calls it.
+For each closure with captures, MLIR generation emits one function, `name$cap`, whose parameters are the captures followed by the stage's parameters, all typed. Captures become ordinary typed parameters so that a proven call is a plain typed call that LLVM can inline. No generic clone that takes the closure itself is emitted. Closure creation names `$cap` as its function, and when it also carries a fast-evaluator attribute that attribute must name the same symbol, which the verifier checks. A closure with no captures produces a single function that plays the role of `$cap`.
 
 The descriptor's generic entry is a wrapper the back end generates, `__closure_wrapper_typed_<$cap>`. It loads each slot of an argument array at its declared kind and calls `$cap`. Every closure's evaluator wraps `$cap`, with one wrapper per target and result kind, and these wrappers do all the dispatch between differently typed closures. Lambdas are typed end to end, so captured and applied Ints, Floats and Chars flow raw and there are no wrapper functions in MLIR. A uniform boxed calling convention with a generated partial-application wrapper per closure is the rejected alternative. The back-end wrapper remains only because the runtime's uniform entry takes an array.
 
@@ -126,16 +126,6 @@ These are the facts the parts above assume of each other, and nothing at run tim
 - The kinds the wrapper decodes match the kinds on the header, because both come from the same target signature. The kind derivation aborts rather than default to boxed.
 - Code that fills value slots publishes `n_values` with no safepoint between setting the count and filling the slots, because the collector traces exactly that many. The generic field-store helpers must never be used on a closure.
 
-## Code that looks live but is not
-
-Three leftovers in this area look like working paths. A change that wakes one of them breaks the design.
-
-The `$clo` functions are generated for every capturing closure, but the evaluator slot never points to one. It points to a descriptor whose generic entry wraps `$cap`. `$clo` exists only because closure creation names it and the verifier requires a named function to exist. An executable drops it, because nothing reaches it from the entry point. A JIT run, a shared library or an object file without internalization keeps it as dead code.
-
-One arm of the typed saturated lowering, `emitClosureCall`, is taken when an application carries a closure-kind attribute, `_closure_kind`. It loads the evaluator slot and calls it as if it were `$clo(closure, args...)`. Nothing reaches it: the front end puts that attribute only on closure creation, and the dialect simplifier only copies it from an earlier application. If it were reached it would jump into the descriptor, which is data. A comment near it calls it "NOT dead", so it can look like a supported path to revive.
-
-`eco_apply_segmentation_unknown` survives only for a unit test. Both generic kinds lower to `eco_apply_closure_eval`.
-
 ## Examples of changes that fit the theory
 
 - Widening the closure arity limit. The packed word and the descriptor grow, extension words carry the extra kinds, and every reader goes through the shared kind accessors. Each optimization declines the arities it cannot serve, such as the fast edge above 16 or 20 and interning above 20, and generic apply serves the rest.
@@ -151,7 +141,7 @@ One arm of the typed saturated lowering, `emitClosureCall`, is taken when an app
 - Deciding the result kind or the slot kinds at the call site. That breaks kernel callers and staged closures. Read them from the header, and convert at the runtime boundary.
 - Boxing arguments in the IR before a generic apply. Pass raw values with a layout and let the runtime convert.
 - Storing a raw function address in the evaluator slot. Every runtime path reads that slot as a descriptor. A closure around a bare function gets its own descriptor.
-- Reviving the closure-kind arm, or calling `$clo` through the evaluator slot. The call would jump into the descriptor. Route calls that need the whole closure through the descriptor's generic entry or a `sat[]` entry.
+- Calling the evaluator slot as if it were a function taking the closure and its arguments. The slot holds a descriptor, so the call would jump into data. Route calls that need the whole closure through the descriptor's generic entry or a `sat[]` entry.
 - Packing the closure word by hand or reading kind bits directly. Use `packClosureWord`, `closureSlotKind` and `ClosureKinds`, and change every reader of the layout together.
 - Adding a `sat[]` entry whose return type is not the canonical type for its result kind. The fast edge's merge would receive a value of the wrong type. Keep declining that case.
 
@@ -164,7 +154,7 @@ Code:
 - `runtime/src/allocator/Heap.hpp`: `Closure`, `EvaluatorDesc`, `EvalParamLayout`, `ClosureKinds` and the closure constants.
 - `runtime/src/allocator/RuntimeExports.cpp`, section "Closure Operations": `eco_apply_closure_eval`, `invokeSaturatedTyped`, `spliceArgsForSaturatedCall`, `eco_pap_extend_l`, `eco_closure_call_saturated`, `eco_alloc_closure_k`, `eco_intern_closure0`, `eco_alloc_closure_group_l` and `ecoDescForKernelEvaluator`.
 - `runtime/src/allocator/RuntimeExports.h`: the C entry points and their contracts.
-- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`: `getOrCreateWrapper`, `PapCreateOpLowering`, `PapExtendOpLowering` (`lowerGenericApply`, `lowerSegmentationUnknown` and the typed arms), `emitFastClosureCall`, `emitInlineClosureCall`, `emitClosureCall`, `getOrCreateEvalDesc`, `getOrCreateEvalDescForFunc` and `getOrCreateSatEntry`.
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp`: `getOrCreateWrapper`, `PapCreateOpLowering`, `PapExtendOpLowering` (`lowerGenericApply`, `lowerSegmentationUnknown` and the typed arms), `emitFastClosureCall`, `emitInlineClosureCall`, `getOrCreateEvalDesc`, `getOrCreateEvalDescForFunc` and `getOrCreateSatEntry`.
 - `runtime/src/codegen/EcoBackend.cpp`: `expandSatMarkers` and `runCapInlinePrepass`.
 - `runtime/src/allocator/NurserySpace.cpp`: closure tracing at `Tag_Closure`.
 - `compiler/src/Compiler/Generate/MLIR/Functions.elm`: `generateClosureFuncWithClones` and `generateGenericCloneFunc`. `Lambdas.elm` does the same for nested lambdas.
@@ -183,16 +173,13 @@ Invariants (`design_docs/invariants.csv`):
 
 Rows that disagree with the code (trust the code):
 
-- CGEN_CLOSURE_005, 007 and 008 describe a dispatch-mode attribute on every closure call. No pass sets it, and no lowering reads it.
-- CGEN_058 names `eco_apply_closure` and CGEN_059 names `eco_apply_closure_typed` as the generic lowering. CGEN_060 names `eco_apply_segmentation_unknown` with bitmap-based extension. Both generic kinds call `eco_apply_closure_eval`, and partial calls use `eco_pap_extend_l` with a layout.
+- CGEN_058 names `eco_apply_closure` and CGEN_059 names `eco_apply_closure_typed` as the generic lowering. Both generic kinds call `eco_apply_closure_eval`, as CGEN_060 says, and partial calls use `eco_pap_extend_l` with a layout.
 - RUNTIME_CLOSURE_004 places the over-application chain in `eco_apply_closure`. It is in `eco_apply_closure_eval`.
 - HEAP_033's main text gives a different packed-word layout. Its amendment and the code use HEAP_078's 11/11/2/40 layout.
 
 Comments that disagree with the code:
 
-- `Ops.td`'s `papExtend` example: shows the dispatch-mode attribute that nothing sets.
 - The comment above `expandSatMarkers`: "25 slots" where the guard uses 20.
 - `Heap.hpp`'s `EvalParamLayout` comment: a capability bit on a closure flags field that does not exist.
-- `RuntimeExports.h`: the doc for `eco_apply_closure_eval` sits above the segmentation-unknown declaration, and `eco_alloc_closure_k`'s evaluator parameter is documented as a function pointer though it is a descriptor.
+- `RuntimeExports.h`: `eco_alloc_closure_k`'s evaluator parameter is documented as a function pointer though it is a descriptor.
 - `generateGenericApply`'s doc comment in `Expr.elm`: says all arguments are boxed; only Bool is.
-- The `CallOpLowering` comment calling `emitClosureCall` "NOT dead".

@@ -73,7 +73,7 @@ struct BailStats {
              chainFail = 0, chainEmpty = 0, baseUses = 0, kinds = 0,
              rewritten = 0;
     // walkChain failure detail
-    unsigned wcBlockArg = 0, wcConsUses = 0, wcConsRoots = 0, wcHeadTy = 0,
+    unsigned wcBlockArg = 0, wcConsUses = 0, wcHeadTy = 0,
              wcRegionShape = 0, wcMultiUse = 0, wcOtherOp = 0;
     void dump() {
         fprintf(stderr,
@@ -81,11 +81,11 @@ struct BailStats {
                 "beforeUses=%u chainFail=%u chainEmpty=%u baseUses=%u "
                 "kinds=%u} rewritten=%u\n"
                 "[eco-list-template] walkChain{blockArg=%u consUses=%u "
-                "consRoots=%u headTy=%u regionShape=%u multiUse=%u "
+                "headTy=%u regionShape=%u multiUse=%u "
                 "otherOp=%u}\n",
                 whiles, valueArgs, beforeFwd, beforeUses, chainFail,
                 chainEmpty, baseUses, kinds, rewritten, wcBlockArg,
-                wcConsUses, wcConsRoots, wcHeadTy, wcRegionShape, wcMultiUse,
+                wcConsUses, wcHeadTy, wcRegionShape, wcMultiUse,
                 wcOtherOp);
     }
 };
@@ -170,8 +170,7 @@ void walkChain(Value v, Value base, OpOperand &slot, Chain &ch,
     }
     int64_t consKind = -1;
     if (auto c = dyn_cast<eco::ListConstructOp>(def)) {
-        if (c.getLiveRoots().empty())
-            consKind = c.getHeadKind();
+        consKind = c.getHeadKind();
     } else {
         consKind = kernelConsKind(def);
     }
@@ -195,12 +194,6 @@ void walkChain(Value v, Value base, OpOperand &slot, Chain &ch,
         // Both link forms carry (head, tail) as operands 0/1.
         walkChain(def->getOperand(1), base, def->getOpOperand(1), ch,
                   altBase);
-        return;
-    }
-    if (isa<eco::ListConstructOp>(def)) {
-        // construct.list carrying live-root hints: leave it alone.
-        if (ch.bs) ch.bs->wcConsRoots++;
-        ch.ok = false;
         return;
     }
     if (isa<scf::IfOp, scf::IndexSwitchOp, eco::CaseOp>(def)) {
@@ -914,7 +907,7 @@ struct EcoListTemplatePass
             Value x = b.create<eco::ListHeadOp>(loc, headTy, cur);
             Value y = emitCallback(b, loc, ctx, op, x, resultTy);
             Value newAcc = b.create<eco::ListConstructOp>(
-                loc, value, y, acc, ValueRange{},
+                loc, value, y, acc,
                 /*head_unboxed=*/!isa<eco::ValueType>(y.getType()),
                 /*head_kind=*/op.getOutKind());
             Value next = b.create<eco::ListTailOp>(loc, value, cur);
@@ -1052,8 +1045,7 @@ struct EcoListTemplatePass
                 break;  // block-arg leaf = rest
             int64_t ck = -1;
             if (auto c = dyn_cast<eco::ListConstructOp>(def)) {
-                if (c.getLiveRoots().empty())
-                    ck = c.getHeadKind();
+                ck = c.getHeadKind();
             } else {
                 ck = kernelConsKind(def);
             }

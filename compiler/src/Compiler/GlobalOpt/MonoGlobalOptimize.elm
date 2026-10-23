@@ -141,8 +141,7 @@ stamping decision and no emitted output — only what the report can say. OFF by
 default so the mandated `ECO_MONO_LSS_REPORT=1` benchmark protocol does not pay
 a String key and a Dict insert at every consulted site.
 
-`listMapTemplate` is `list.mapTemplate`: with it (or `borrow.enabled` /
-`borrow.oracleOpt`) on, `lssMemberOrigins` has a reader after Phase 4 and is
+`listMapTemplate` is `list.mapTemplate`: with it (or `borrow.enabled`) on, `lssMemberOrigins` has a reader after Phase 4 and is
 kept; otherwise it is cleared with the other AbiCloning-only tables
 (`Mono.clearLssTables`).
 
@@ -168,11 +167,11 @@ globalOptimizeWithStats census stagingCensus borrowCfg listMapTemplate graph0a =
 
         -- Rows 10-11 (plans/frontend-heap-release.md §7.5): the LSS member
         -- tables have no reader after AbiCloning, except `lssMemberOrigins`
-        -- under the flags that read it (Borrow below, the oracle facts and the
-        -- List.map template at codegen).
+        -- under the flags that read it (Borrow below and the List.map template
+        -- at codegen).
         graph4 =
             Mono.clearLssTables
-                { keepOrigins = borrowCfg.enabled || borrowCfg.oracleOpt || listMapTemplate }
+                { keepOrigins = borrowCfg.enabled || listMapTemplate }
                 graph4Full
 
         -- Phase 5: Annotate call staging metadata.

@@ -475,9 +475,6 @@ HPtr eco_apply_closure_typed(HPtr closure, int64_t* typed_args,
 /// @param args_layout Per-slot kind descriptor + closure result kind
 /// @param result_slot Pointer to storage receiving the result
 /// @param desired_kind Caller's desired result kind (ParamKind)
-HPtr eco_apply_segmentation_unknown(HPtr closure, int64_t* typed_args,
-                                    uint32_t num_args,
-                                    const Elm::EvalParamLayout* args_layout);
 void eco_apply_closure_eval(HPtr closure, int64_t* typed_args,
                             uint32_t num_args,
                             const Elm::EvalParamLayout* args_layout,

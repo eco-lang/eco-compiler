@@ -20,7 +20,7 @@ caveats** (lone surrogates, and unit-index translation cost on non-ASCII
 data; §3.4 analyzes the latter in depth — **DECIDED Jul 8, 2026: v1 gates
 view creation on all-ASCII input**, where both caveats vanish); **(2) the runtime
 already has the single decision point needed** (`maybeFlattenOrRebalance` +
-`FlattenReason`), and the correct policy is *keep UTF-8 through
+`FlattenReason`; both since folded into `ensureFlat`, with the rebalance branch removed), and the correct policy is *keep UTF-8 through
 slice/append/search/stream, promote when transforms allocate* — but
 `ensureFlat` promotion cannot be memoized (no GC write barrier), so per-call
 consumers like the parser need explicit byte-path treatment (§3.4);
@@ -59,7 +59,7 @@ The key internal APIs:
   encoding-specific.
 - `singleSegmentView` — `(ptr,len)` for leaf/slice/large, enabling `memcmp`.
 - `toStdU16String` — flatten-to-C-stack, the universal materializer.
-- `flattenToLeaf` / `ensureFlat` / `maybeFlattenOrRebalance(s, FlattenReason)` —
+- `flattenToLeaf` / `ensureFlat` / `maybeFlattenOrRebalance(s, FlattenReason)` (the latter since folded into `ensureFlat`) —
   the **single flatten decision point**; `FlattenReason` already includes a
   `Utf8Encode` member (StringOps.hpp:91-97).
 
@@ -456,7 +456,8 @@ Choice 3.
 
 ### 4.1 Where conversion machinery already lives
 
-`maybeFlattenOrRebalance(s, FlattenReason)` (StringOps.cpp:119) is the single
+`maybeFlattenOrRebalance(s, FlattenReason)` (StringOps.cpp:119; since folded into
+`ensureFlat`, and `FlattenReason` removed) is the single
 existing decision point, and `FlattenReason::{RandomAccess, Transform,
 Equality, Utf8Encode, Structural}` already names the policies. The natural
 extension: `flattenToLeaf` becomes encoding-aware — flattening a UTF-8 form
@@ -567,7 +568,7 @@ nursery-owned-body accounting keeps working.
 decoded from a 100 MB HTTP body keeps the body alive). Precedents and
 mitigations: the tiny-copy threshold (above), plus the existing flatten
 heuristics — and if it bites in practice, a "view ≪ base ⇒ copy out on
-promotion" rule at the `maybeFlattenOrRebalance` decision point. `ElmStringSlice`
+promotion" rule at the `maybeFlattenOrRebalance` (now `ensureFlat`) decision point. `ElmStringSlice`
 has the identical hazard today (unmitigated beyond the tiny-slice limit), so
 this is not a new class of problem.
 
@@ -728,7 +729,7 @@ Hand-maintained per-tag switches that must gain a `Tag_StringUtf8` arm:
 | Sizing | `getObjectSize` (AllocatorCommon.hpp:204) — fixed 24 bytes |
 | Minor GC | evacuate + post-copy scan + 2 debug validators (NurserySpace.cpp:810-823, 943-956, 1665-1704) |
 | Major GC | `markChildren`, pointer fixup (OldGenSpace.cpp:1710, 3958) |
-| StringOps | `isString`/`isLeaf` family, `rawLen`, `charAt`, `forEachSegment`(+raw variant), `singleSegmentView`, `toStdU16String`, `toStdString`, `copyInto`, `equal`, `compare`, `slice`, `uncons`, `flattenToLeaf`, `maybeFlattenOrRebalance` |
+| StringOps | `isString`/`isLeaf` family, `rawLen`, `charAt`, `forEachSegment`(+raw variant), `singleSegmentView`, `toStdU16String`, `toStdString`, `copyInto`, `equal`, `compare`, `slice`, `uncons`, `flattenToLeaf`, `maybeFlattenOrRebalance` (since folded into `ensureFlat`) |
 | HeapHelpers | `isString`, `stringLength`; `stringData` keeps its leaf-only assert |
 | Kernel entry | none directly (String.cpp delegates to StringOps) — that's the payoff of HEAP_025's discipline |
 | Fusion ABI | `elm_utf8_width`/`copy`/`decode` (ElmBytesRuntime.cpp) tag branches |

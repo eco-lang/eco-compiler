@@ -132,14 +132,6 @@ inline u32 leafCountOf(void* obj) {
 // Rope/slice heuristic thresholds live on HeapConfig (see AllocatorCommon.hpp);
 // access them via Allocator::instance().getConfig().{string_flatten_limit, ...}.
 
-enum class FlattenReason {
-    Structural,
-    Equality,
-    Utf8Encode,
-    RandomAccess,
-    Transform,
-};
-
 /**
  * Allocates a fresh leaf wrapping `len` UTF-16 code units. Routes len==0 to
  * the embedded empty-string constant (never allocates a zero-length leaf).
@@ -212,16 +204,12 @@ HPointer finishAsciiOut(const AsciiOut& out);
 HPointer flattenToLeaf(HPointer s);
 
 /**
- * Decision point for "should I flatten this string before further work?".
- * Phase 1 behaviour: leaves and the empty constant pass through; slices
- * with len <= string_flatten_limit are flattened; larger slices pass
- * through (the caller is then responsible for using charAt-style access).
- */
-HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason);
-
-/**
- * Returns a leaf HPointer for `s`. If `s` is already a leaf or empty
- * constant, returns it unchanged; otherwise allocates a flat copy.
+ * The decision point for "should I flatten this string before random
+ * access?". Leaves, split-header strings and the empty constant pass through
+ * unchanged; UTF-8 forms always widen to a fresh UTF-16 leaf; slices and
+ * ropes with len <= string_flatten_limit are flattened into a fresh leaf;
+ * larger slices and ropes pass through (the caller is then responsible for
+ * using charAt-style access).
  * Caller must root any HPointer it holds across this call (it may allocate).
  */
 HPointer ensureFlat(HPointer s);

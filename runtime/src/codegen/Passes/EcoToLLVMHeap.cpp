@@ -29,7 +29,6 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 #include "../../allocator/Heap.hpp"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -222,8 +221,6 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         Type inputType = input.getType();
         Value result;
 
-        auto liveRoots = adaptor.getLiveRoots();
-
         // Inline nursery allocation (HEAP_034): boxed Int/Float/Char are
         // header + one payload slot; emitFreshFieldStore's type dispatch
         // (i64 direct, f64 bitcast, i16 zext — the zext fully defines the
@@ -250,19 +247,19 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocInt(rewriter),
-                ValueRange{input}, liveRoots);
+                ValueRange{input});
         } else if (inputType.isF64()) {
             // Box f64 -> eco_alloc_float with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocFloat(rewriter),
-                ValueRange{input}, liveRoots);
+                ValueRange{input});
         } else if (inputType.isInteger(16)) {
             // Box i16 (char) -> eco_alloc_char with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocChar(rewriter),
-                ValueRange{input}, liveRoots);
+                ValueRange{input});
         } else if (inputType.isInteger(1)) {
             // Box i1 (bool) -> use embedded constant True/False (no allocation)
             auto hptrTy = getHPtrLLVMType(*ctx);
@@ -349,8 +346,7 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         Value result = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocate(rewriter),
-            ValueRange{size, tag},
-            adaptor.getLiveRoots());
+            ValueRange{size, tag});
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -380,8 +376,7 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
         Value result = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocString(rewriter),
-            ValueRange{length},
-            adaptor.getLiveRoots());
+            ValueRange{length});
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -439,8 +434,7 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         Value consHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocConsUninit(rewriter),
-            ValueRange{headKindVal},
-            adaptor.getLiveRoots());
+            ValueRange{headKindVal});
 
         if (headKind == 0) {
             // Boxed head: pass ptr addrspace(1) directly.
@@ -664,8 +658,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         Value tuple = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocTuple2Uninit(rewriter),
-            ValueRange{unboxedVal},
-            adaptor.getLiveRoots());
+            ValueRange{unboxedVal});
 
         auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
         auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
@@ -755,8 +748,7 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         Value tuple = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocTuple3Uninit(rewriter),
-            ValueRange{unboxedVal},
-            adaptor.getLiveRoots());
+            ValueRange{unboxedVal});
 
         auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
         auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
@@ -914,16 +906,12 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         // attributes are verifier checks only); slots past 31 go in K ext
         // kind words after the last field (HEAP_019).
         PackedKinds pk = packKinds(
-            slotKindsOfTypes(op.getFields().take_front(fieldCount).getTypes()),
+            slotKindsOfTypes(op.getFields().getTypes()),
             layout::RecordHdrSlots);
         const uint64_t K = pk.ext.size();
         int64_t unboxedBitmap = static_cast<int64_t>(pk.hdrBits);
 
-        // The fields operand list may contain GC roots appended after
-        // the actual fields by EcoGCPrepare. Split them using fieldCount.
-        auto allOperands = adaptor.getFields();
-        auto fields = allOperands.take_front(fieldCount);
-        auto liveRoots = allOperands.drop_front(fieldCount);
+        auto fields = adaptor.getFields();
 
         // Inline nursery allocation (HEAP_034): marker + header (sizeField =
         // field count) + unboxed-bitmap meta word + fresh field stores.
@@ -956,8 +944,7 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         Value objHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocRecord(rewriter),
-            ValueRange{fieldCountVal, unboxedBitmapVal},
-            liveRoots);
+            ValueRange{fieldCountVal, unboxedBitmapVal});
 
         // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
@@ -1071,7 +1058,7 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         // Layout C (3B.4.2): kinds from the ORIGINAL operand types; slots past
         // 23 go in K ext kind words after the last field (HEAP_019).
         PackedKinds pk = packKinds(
-            slotKindsOfTypes(op.getFields().take_front(opSize).getTypes()),
+            slotKindsOfTypes(op.getFields().getTypes()),
             layout::CustomHdrSlots);
         const uint64_t K = pk.ext.size();
 
@@ -1089,7 +1076,7 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             Value objHPtr = emitInlineAllocWithHeader(
                 rewriter, loc, runtime, cusByteSize, header);
             emitInlineAllocMetaWord(rewriter, loc, objHPtr, meta);
-            auto fieldsInl = adaptor.getFields().take_front(opSize);
+            auto fieldsInl = adaptor.getFields();
             auto origFieldsInl = op.getFields();
             for (int64_t i = 0; i < opSize; i++) {
                 emitFreshFieldStore(rewriter, loc, objHPtr,
@@ -1105,17 +1092,12 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
         auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(opSize));
 
-        // The fields operand list may contain GC roots appended after
-        // the actual fields by EcoGCPrepare. Split them using the size attr.
-        auto allOperands = adaptor.getFields();
-        auto fields = allOperands.take_front(opSize);
-        auto liveRoots = allOperands.drop_front(opSize);
+        auto fields = adaptor.getFields();
 
         Value objHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocCustom(rewriter),
-            ValueRange{tag, size},
-            liveRoots);
+            ValueRange{tag, size});
 
         // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
@@ -1966,13 +1948,6 @@ static void lowerOneAllocGroup(
         totalBytes += computeAllocSize(op);
     }
 
-    // Get the leader's GC roots for the safepoint marker.
-    SmallVector<Value, 4> liveRoots;
-    if (auto carrier = dyn_cast<eco::GCRootCarrier>(leader)) {
-        for (Value r : carrier.getGCRoots())
-            liveRoots.push_back(r);
-    }
-
     // --- CFG surgery ---
     Block *origBlock = leader->getBlock();
     Region *parentRegion = origBlock->getParent();
@@ -2152,23 +2127,6 @@ bool eco::detail::containsGCPointer(Type t) {
         return containsGCPointer(cons.getHead()) ||
                containsGCPointer(cons.getTail());
     return false;
-}
-
-/// True if `t` is one of the Eco data-aggregate dialect types.
-static bool isEcoAggregate(Type t) {
-    return isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
-               eco::CustomType, eco::ConsType>(t);
-}
-
-Value eco::detail::materialiseAsBoxed(OpBuilder &b, Location loc, Value v,
-                                       ValueRange liveRoots) {
-    if (!isEcoAggregate(v.getType())) return v;
-    auto valueTy = eco::ValueType::get(b.getContext());
-    auto toHeap = b.create<eco::ToHeapOp>(loc, valueTy, v, liveRoots,
-                                         /*tag=*/uint64_t{0}, /*head_kind=*/uint64_t{0},
-                                         /*head_unboxed=*/false,
-                                         /*slot_kinds=*/DenseI8ArrayAttr());
-    return toHeap.getResult();
 }
 
 //===----------------------------------------------------------------------===//

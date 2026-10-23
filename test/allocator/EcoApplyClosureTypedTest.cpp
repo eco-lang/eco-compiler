@@ -1,6 +1,5 @@
 /**
- * Tests for eco_apply_closure_typed (Phase D Part 1) and the migrated
- * eco_apply_segmentation_unknown (Phase D Part 2).
+ * Tests for eco_apply_closure_typed (Phase D Part 1).
  *
  * The typed entry points take a single `int64_t*` args buffer plus an
  * `EvalParamLayout` describing each slot's primitive kind. The runtime
@@ -10,7 +9,6 @@
  *   1. Mixed primitive kinds (Int/Float/Char/Boxed) in a single call.
  *   2. The legacy null-layout path (every slot treated as PK_Boxed).
  *   3. Zero-arg calls go through cleanly.
- *   4. eco_apply_segmentation_unknown saturated branch (typed args only).
  */
 
 #include "EcoApplyClosureTypedTest.hpp"
@@ -220,38 +218,6 @@ static void test_eco_apply_closure_typed_zero_args() {
 }
 
 // ============================================================================
-// Test: eco_apply_segmentation_unknown (saturated branch) goes through the
-// typed-args path and reaches the evaluator with re-boxed args.
-// ============================================================================
-
-static void test_eco_apply_segmentation_unknown_saturated_typed() {
-    initAllocator();
-    resetRecord();
-
-    g_record.n_args = 2;
-    HPtr closure = eco_alloc_closure_fn(
-        reinterpret_cast<void*>(&mock_recording_evaluator), 2, /*result_kind=*/0);
-
-    // Saturate with one Int and one Float at once (no captures, max=2).
-    int64_t typed_args[2];
-    typed_args[0] = 99;
-    double f = -2.25;
-    std::memcpy(&typed_args[1], &f, sizeof(double));
-
-    auto layoutBuf = LayoutStorage<2>::build({/*PK_Int*/1, /*PK_Float*/2});
-
-    HPtr result = eco_apply_segmentation_unknown(
-        closure, typed_args, 2, layoutBuf.layout());
-
-    TEST_ASSERT(g_record.called);
-    TEST_ASSERT(g_record.tags[0] == Tag_Int);
-    TEST_ASSERT(g_record.int_vals[0] == 99);
-    TEST_ASSERT(g_record.tags[1] == Tag_Float);
-    TEST_ASSERT(g_record.float_vals[1] == -2.25);
-    TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
-}
-
-// ============================================================================
 // Phase D Part 3: typed-newargs fast path
 //
 // `eco_apply_closure_typed` dispatches to the closure's evaluator directly
@@ -407,7 +373,4 @@ void registerEcoApplyClosureTypedTests(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase(
         "legacy path still reboxes primitive args",
         test_legacy_path_still_reboxes));
-    suite.add(Testing::TestCase(
-        "eco_apply_segmentation_unknown saturated typed",
-        test_eco_apply_segmentation_unknown_saturated_typed));
 }

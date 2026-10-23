@@ -10,7 +10,6 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 

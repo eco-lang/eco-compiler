@@ -94,8 +94,8 @@ struct MajorGCPhaseProfile {
 
 // Free-list size-class layout constants (NUM_SMALL_CLASSES, MAX_SMALL_SIZE,
 // MEDIUM_CLASS_BASE, NUM_MEDIUM_CLASSES_MAX, NUM_SIZE_CLASSES) and the
-// sweep / mark pacing knobs (SWEEP_WORK_BUDGET, INITIAL_SWEEP_BUDGET,
-// MARK_WORK_RATIO, SWEEP_BYTES_PER_ALLOC_BYTE, MAX_SWEEP_BYTES_PER_ALLOC,
+// sweep pacing knobs (SWEEP_WORK_BUDGET, INITIAL_SWEEP_BUDGET,
+// SWEEP_BYTES_PER_ALLOC_BYTE, MAX_SWEEP_BYTES_PER_ALLOC,
 // MAX_SWEEP_BYTES_HARD, SWEEP_CAP_RATIO_*, SWEEP_SCALE_*,
 // SWEEP_UNSWEPT_RATIO_BOOST, SWEEP_UNSWEPT_SCALE, PANIC_SWEEP_SLICE_BYTES)
 // now live in AllocatorCommon.hpp. The pacing knobs are mirrored as fields
@@ -238,7 +238,9 @@ struct FragmentationStats {
     }
 };
 
-// Utilization threshold below which compaction is triggered.
+// Utilization threshold below which shouldCompact() reports that compaction
+// would pay. Nothing acts on it: compaction runs only when a unit test calls
+// scheduleCompaction (test/allocator/, via OldGenSpaceTestAccess).
 static constexpr float UTILIZATION_THRESHOLD = 0.70f;
 
 // Target utilization after returning surplus buffers to the OS.
@@ -1696,7 +1698,10 @@ private:
     // the global old-gen cap. See `major_gc_75_50_policy.md`.
     void adjustCapacityAfterMajorGC();
 
-    // Fragmentation and compaction methods.
+    // Fragmentation and compaction methods. Compaction has no production
+    // caller: it is driven only by unit tests (test/allocator/), through
+    // OldGenSpaceTestAccess::scheduleCompaction / incrementalCompactionSlice.
+    // shouldCompact() has no caller at all.
     bool shouldCompact() const;
     void computeFragmentationStats();
     void scheduleCompaction();
@@ -2621,7 +2626,7 @@ public:
                oldgen.large_body_index_.end();
     }
 
-    // Compaction control for testing.
+    // Compaction control for testing: these are compaction's only callers.
     static void scheduleCompaction(OldGenSpace& oldgen) { oldgen.scheduleCompaction(); }
     static void incrementalCompactionSlice(OldGenSpace& oldgen, size_t work_budget) {
         oldgen.incrementalCompactionSlice(work_budget);

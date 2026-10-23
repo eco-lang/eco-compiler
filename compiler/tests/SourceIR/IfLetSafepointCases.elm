@@ -8,12 +8,9 @@ regions, and an SSA value defined inside a region cannot be named outside it.
 The code generator keeps a mapping from Elm variable names to SSA values. If a
 name bound in a branch stayed in that mapping after the `if`, a later operation
 could be given an operand that is out of scope, and the MLIR would be invalid.
-One place such a name could surface is the list of GC-root hints the code
-generator can attach to a call or an allocation: the values of type
-`!eco.value` (a boxed heap value, such as a `String`, a `List` or a custom
-type) that it treats as live there. What goes into that hint list is decided
-in `Compiler.Generate.MLIR.Context`, whose `liveEcoValueVars` at present
-returns no values.
+(The "safepoint" in the module's name is historical: such names were once also
+at risk of surfacing as GC-root operands, which the code generator no longer
+emits.)
 
 Each case is a module named `Test` with two annotated top-level values. The
 first is a function whose body is a `let` binding a name (two names in the last

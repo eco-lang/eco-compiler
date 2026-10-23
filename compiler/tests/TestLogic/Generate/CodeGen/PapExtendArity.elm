@@ -10,8 +10,7 @@ arguments captured so far. `eco.papCreate` builds one; its `arity` attribute
 counts the closure's captured values and parameters together, and its
 `num_captured` attribute the captured values alone. `eco.papExtend` applies one to
 more arguments, its _new arguments_: the operands after the first, which is the
-PAP being extended, less the trailing GC-root operands that its
-`eco.gc_roots_count` attribute counts. A PAP's _remaining arity_ is how many
+PAP being extended. A PAP's _remaining arity_ is how many
 arguments it still needs before its function runs. The `remaining_arity`
 attribute of an `eco.papExtend` must be the remaining arity of the PAP it
 extends before this application, not after it.
@@ -141,11 +140,8 @@ buildPapArityMapForOps ops =
                 case ( List.head op.results, getIntAttr "remaining_arity" op ) of
                     ( Just ( resultName, _ ), Just remainingArity ) ->
                         let
-                            rootCount =
-                                Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
                             numNewArgs =
-                                List.length op.operands - 1 - rootCount
+                                List.length op.operands - 1
 
                             resultRemaining =
                                 remainingArity - numNewArgs
@@ -183,12 +179,8 @@ checkPapExtendOp papArityMap op =
         maybeSourcePap =
             List.head op.operands
 
-        rootCount =
-            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
-        -- The trailing GC-root operands are not arguments.
         numNewArgs =
-            List.length op.operands - 1 - rootCount
+            List.length op.operands - 1
     in
     case maybeRemainingArity of
         Nothing ->

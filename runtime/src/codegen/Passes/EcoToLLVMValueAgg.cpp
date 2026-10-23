@@ -30,7 +30,6 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 
 using namespace mlir;
 using namespace eco;
@@ -209,7 +208,6 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 
         Type srcTy = op.getValue().getType();
         Value agg = adaptor.getValue();
-        ValueRange liveRoots = adaptor.getLiveRoots();
 
         // -------- Tuple2 ---------------------------------------------------
         if (auto tup2 = dyn_cast<eco::Tuple2Type>(srcTy)) {
@@ -254,8 +252,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value tuple = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocTuple2Uninit(rewriter),
-                ValueRange{unboxedVal},
-                liveRoots);
+                ValueRange{unboxedVal});
 
             auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
             auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
@@ -330,8 +327,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value tuple = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocTuple3Uninit(rewriter),
-                ValueRange{unboxedVal},
-                liveRoots);
+                ValueRange{unboxedVal});
 
             auto storeFieldBoxed = runtime.getOrCreateStoreTupleField(rewriter);
             auto storeFieldI64   = runtime.getOrCreateStoreTupleFieldI64(rewriter);
@@ -419,8 +415,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value objHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocRecord(rewriter),
-                ValueRange{fieldCountVal, unboxedBitmapVal},
-                liveRoots);
+                ValueRange{fieldCountVal, unboxedBitmapVal});
 
             auto storeFunc    = runtime.getOrCreateStoreRecordField(rewriter);
             auto storeI64Func = runtime.getOrCreateStoreRecordFieldI64(rewriter);
@@ -510,8 +505,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value objHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocCustom(rewriter),
-                ValueRange{tagVal, sizeVal},
-                liveRoots);
+                ValueRange{tagVal, sizeVal});
 
             auto storeFunc    = runtime.getOrCreateStoreField(rewriter);
             auto storeI64Func = runtime.getOrCreateStoreFieldI64(rewriter);
@@ -606,8 +600,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value consHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocConsUninit(rewriter),
-                ValueRange{kindVal},
-                liveRoots);
+                ValueRange{kindVal});
 
             // Store head via the helper matching its kind.
             if (kind == 0) {
@@ -847,8 +840,7 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             closureHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocClosure(rewriter),
-                ValueRange{funcPtr, arityConst},
-                adaptor.getLiveRoots());
+                ValueRange{funcPtr, arityConst});
         }
 
         // Base pointer for the in-place stores. P2.5 R5

@@ -2,12 +2,12 @@ module TestLogic.Generate.CodeGen.RecordConstructionTest exposing (suite)
 
 {-| Runs the record construction check on every program in the standard
 catalogue, so that generated MLIR building a record with a missing, zero or
-too large field count fails a test on many programs rather than on a
+wrong field count fails a test on many programs rather than on a
 hand-picked few.
 
 The code generator builds a non-empty record with an `eco.construct.record` op,
-whose `field_count` attribute says how many of its operands are fields. The
-rules checked, and why an extra operand is allowed, are described in
+whose `field_count` attribute says how many operands (fields) it has. The
+rules checked are described in
 `TestLogic.Generate.CodeGen.RecordConstruction`.
 
 The fixture is the catalogue of source programs that
@@ -15,7 +15,7 @@ The fixture is the catalogue of source programs that
 
 `suite` establishes, for each program in the catalogue, that it compiles to
 MLIR and that every `eco.construct.record` op in the result has an integer
-`field_count` that is positive and no larger than its number of operands.
+`field_count` that is positive and equal to its number of operands.
 
 Among what is not tested: that an empty record is built as an `eco.constant`
 (only that no construction has a `field_count` of 0); that `field_count`

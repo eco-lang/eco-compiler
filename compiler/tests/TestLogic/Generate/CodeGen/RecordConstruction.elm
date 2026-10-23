@@ -2,11 +2,11 @@ module TestLogic.Generate.CodeGen.RecordConstruction exposing (expectRecordConst
 
 {-| Checks the `field_count` attribute of every record construction in the MLIR
 generated for a test program, so that a construction whose count is missing,
-zero or larger than its operand list fails a test.
+zero or different from its number of operands fails a test.
 
 The code generator builds a non-empty record with an `eco.construct.record` op.
-Its operands are the field values followed by any GC-root hint operands, and
-`field_count` says how many of the operands are fields. The empty record is
+Its operands are exactly the field values, and `field_count` says how many
+there are. The empty record is
 never constructed this way: it is an `eco.constant`. Both choices are made in
 `Compiler.Generate.MLIR.Expr`, and the op is built only by
 `Compiler.Generate.MLIR.Ops.ecoConstructRecord`.
@@ -19,14 +19,13 @@ violation for each `eco.construct.record` op, at any depth in the module, whose
 
   - is absent or not an integer;
   - is 0 or negative;
-  - is larger than the op's number of operands.
+  - differs from the op's number of operands.
 
 A failing test shows only the first violation, as
 `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
 
 Among what is not checked: that `field_count` equals the number of fields of
-the record's type, that the operands after the fields are GC-root hints, and
-that an empty record is an `eco.constant` (only
+the record's type, and that an empty record is an `eco.constant` (only
 that no construction has a count of 0).
 
 @docs expectRecordConstruction
@@ -112,16 +111,14 @@ checkRecordOp op =
                     , message = "eco.construct.record with negative field_count=" ++ String.fromInt fieldCount
                     }
 
-            else if operandCount < fieldCount then
-                -- Operands after the fields are GC-root hints (the op carries
-                -- no count of them), so only too few operands is a violation.
+            else if operandCount /= fieldCount then
                 Just
                     { opId = op.id
                     , opName = op.name
                     , message =
                         "eco.construct.record field_count ("
                             ++ String.fromInt fieldCount
-                            ++ ") exceeds operand count ("
+                            ++ ") differs from operand count ("
                             ++ String.fromInt operandCount
                             ++ ")"
                     }

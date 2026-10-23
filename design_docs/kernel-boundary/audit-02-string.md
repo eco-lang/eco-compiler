@@ -100,7 +100,7 @@ runtime state touched is the `GC_STATS_*` census, compiled out in non-stats buil
    *Stay lazy (structure-preserving):* `length`, `charAt`, `contains`, `startsWith`, `endsWith`,
    `equal`, `compare` (all three tiers), `uncons`, `slice` above 128, the `split`/`lines`/`words`
    UTF-8 arms, and `append`/`concat`/`join` above 32768.
-   `ensureFlat`/`maybeFlattenOrRebalance` (`StringOps.cpp:241-279`) is the single decision point;
+   `ensureFlat`/`maybeFlattenOrRebalance` (`StringOps.cpp:241-279`; `maybeFlattenOrRebalance` has since been folded into `ensureFlat`) is the single decision point;
    note it **always** widens a UTF-8 form regardless of size, because `ensureFlat` consumers cast
    to `ElmString*` and index `chars[]`.
 

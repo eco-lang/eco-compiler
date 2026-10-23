@@ -6139,7 +6139,7 @@ inlineVarInDecider name replacement decider =
 the residual lambda UIDs that landed in the `returned` bucket.
 
 These are the only residuals §5 could act on, so they are the join key for the
-dynamic weight: each is emitted as `<Module>_lambda_<uid>` (plus `$cap`/`$clo`),
+dynamic weight: each is emitted as `<Module>_lambda_<uid>` (or `<Module>_lambda_<uid>$cap`),
 and `ECO_DISPATCH_STATS=1` reports generic dispatch keyed by EVALUATOR pointer —
 which is what a stamp at the consuming site would convert to a direct call.
 

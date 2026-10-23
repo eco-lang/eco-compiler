@@ -141,4 +141,3 @@ Parent: [verification.md](verification.md).
 - `design_docs/invariants.csv`, `design_docs/invariant-test-logic.md`: the catalog, and the inputs and oracle of each tested rule. The design note names some test modules that do not exist in `compiler/tests`.
 - `compiler/elm-coverage/THEORY.md`, `guides/test-coverage-howto.md`: the coverage fork. The guide's setup steps assume a toolchain layout the build does not use.
 - `docs/testing.md`: how to run the tests. It calls `elm-tests` the front-end tests, but the suite covers every phase through MLIR generation.
-- `elm-cov-file.csv`: a work list of compiler files for coverage, all marked done; no build step reads it.

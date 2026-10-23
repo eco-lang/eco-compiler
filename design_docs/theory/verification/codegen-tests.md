@@ -146,13 +146,12 @@ A change breaks the theory when it makes a fixture quieter without the code beco
 Parent: [verification.md](verification.md).
 
 - `test/codegen/CodegenIsolatedTest.hpp`: the eco harness (`runCodegenTest`, `parseEmitMode`, `isExpectedFail`, `isExpectedCrash`, `UNSETENV`, `--exe-reachability` forwarding, `eco_test::requireRegionNursery`).
-- `test/bf-codegen/BFCodegenTest.hpp`: the byte-fusion harness. `test/bf-codegen/run_tests.sh` is an older grep runner that the build does not use.
+- `test/bf-codegen/BFCodegenTest.hpp`: the byte-fusion harness.
 - `test/CheckPatterns.hpp`: the shared `CHECK` parser and matcher (`extractCheckPatterns`).
 - `test/IsolatedTestRunner.hpp`, `test/SpawnedChildren.hpp`, `test/main.cpp`: child dispatch (`codegen <path>`, `bf-codegen <path>`) and suite registration.
 - `test/RegionNurseryGuard.hpp`: the production-nursery check.
 - `test/codegen/gen_wide_fixtures.py`, `test/codegen/gen_wide_limit_fixtures.py`: the wide-object generators.
 - `test/codegen/run_llvm_statepoint_probes.sh`, `test/codegen/llvm_statepoint_struct_return_*.mlir`: the upstream probes.
-- `test/codegen/run_tests.sh`: the stub that forwards to the C++ driver; its header gives the reasons a grep runner cannot serve the suite.
 - `runtime/src/codegen/ecoc.cpp`, `runtime/src/codegen/EcoRunner.cpp`, `runtime/src/codegen/EcoPipeline.cpp`, `runtime/src/codegen/Passes/`: the compiler driver, the in-process runner and the passes under test.
 - `runtime/src/codegen/BF/`: the byte-fusion dialect.
 - `runtime/src/codegen/EcoBackend.cpp`: where `ECO_CAPHOIST_VALIDATE` and `ECO_GCFREE_VALIDATE` are read.

@@ -84,32 +84,15 @@ The whole-program half is a list of pure functions in build order:
 
 The build and the compiler's test harnesses call the same functions. A harness with a pipeline of its own drifts: one that picks a different engine, skips the pre-monomorphization rewrites and the prune, or generates MLIR without production's tables ends up checking MLIR that production never emits. A script that runs first in the compiler test target fails if either harness imports a pass module directly. The steps read no environment and write nothing, because that purity is what lets both callers share them; the caller builds reports from the metrics the steps return.
 
-Validators sit between the steps. Each tests a property of the intermediate program and returns either success or a message, and both the build and the tests run them. The steps module also has one function that composes the whole list with its validators, and it is the shortest exact statement of the order:
+Validators sit between the steps. Each tests a property of the intermediate program and returns either success or a message, and both the build and the tests run them. There is no single function that composes the list; the order is the one `Builder.Generate` runs, from `buildMonoGraphFromMerged` through `monoPipelineFrom` and `runInlineSimplifyPhase`:
 
-```elm
-toGlobalOpt ecoConfig globalTypeEnv typedGraph =
-    let
-        pre =
-            preMono ecoConfig (prepare ecoConfig typedGraph)
-    in
-    checkMinted ecoConfig pre.assigned
-        |> Result.andThen (\_ -> monomorphize ecoConfig globalTypeEnv pre.assigned)
-        |> Result.andThen (\( g, _ ) -> checkStageArity g)
-        |> Result.andThen (checkLayout ecoConfig)
-        |> Result.andThen
-            (\monoGraph ->
-                let
-                    simplified =
-                        prune ecoConfig (Tuple.first (inline ecoConfig monoGraph))
-                in
-                checkPruned ecoConfig simplified
-                    |> Result.andThen (\_ -> checkStageArity (Tuple.first (globalOpt ecoConfig simplified)))
-                    |> Result.andThen (checkClosureStaging ecoConfig)
-                    ...
-            )
-```
+1. `Steps.prepare`, then `Steps.preMono`, then the `checkMinted` validator;
+2. `Steps.monomorphize`, then `checkStageArity` and `checkLayout`;
+3. `Steps.inline`, then `Steps.prune`, then `checkPruned`;
+4. global optimization: `Steps.globalOptCore`, then `Steps.cse`, `Steps.dedupe` and `Steps.hoist` (`Steps.globalOpt` composes the four for the test harnesses);
+5. `checkStageArity` again, then `checkClosureStaging`.
 
-From `compiler/src/Compiler/Pipeline/Steps.elm`, `toGlobalOpt`. Every step is a pure function of the settings and a graph. The stage arity check, which fails the build when a closure's parameters and captured values do not fit in one closure stage, runs twice. The first run, after monomorphization, catches specialization multiplying a closure's captured functions. Inlining and global optimization decline any rewrite that would break the limit, so a failure in the second run, after them, is a compiler bug. The closure staging check, which compares each closure's parameters with its type's first stage, runs once at the end, and only when validation is on. Neither the build nor the harnesses call this composed function; they call the same steps one at a time, in this order.
+Every step is a pure function of the settings and a graph. The stage arity check, which fails the build when a closure's parameters and captured values do not fit in one closure stage, runs twice. The first run, after monomorphization, catches specialization multiplying a closure's captured functions. Inlining and global optimization decline any rewrite that would break the limit, so a failure in the second run, after them, is a compiler bug. The closure staging check, which compares each closure's parameters with its type's first stage, runs once at the end, and only when validation is on. The test harnesses call the same steps in the same order.
 
 The build calls the steps one at a time so that each phase's data can be dropped before the one collection that releases memory ahead of the native back end ([build-driver.md](build-driver.md) gives the measurement behind that single collection).
 
@@ -165,7 +148,7 @@ Code:
 - `compiler/src/Compiler/Compile.elm`: the per-module driver, `compile` for the erased path and `compileTyped` for the typed path, including root normalization, PostSolve, the arrow-root stamping (`SolverRoots.stampArrowRoots`) and the erased stub (`Opt.typedPathStub`).
 - `compiler/src/Compiler/Type/Constrain/Erased/Module.elm`: the erased entry point, a wrapper that runs the typed constraint generator with recording off.
 - `compiler/src/Compiler/TypedCanonical/Build.elm`, `compiler/src/Compiler/AST/TypedCanonical.elm`: the join of solved types onto the canonical program by node id.
-- `compiler/src/Compiler/Pipeline/Steps.elm`: the step list (`prepare`, `preMono`, `monomorphize`, `inline`, `prune`, `globalOpt`), the validators (`checkMinted`, `checkStageArity`, `checkLayout`, `checkPruned`, `checkClosureStaging`) and `toGlobalOpt`.
+- `compiler/src/Compiler/Pipeline/Steps.elm`: the step list (`prepare`, `preMono`, `monomorphize`, `inline`, `prune`, `globalOpt`), the global optimization steps (`globalOptCore`, `cse`, `dedupe`, `hoist`, composed by `globalOpt`) and the validators (`checkMinted`, `checkStageArity`, `checkLayout`, `checkPruned`, `checkClosureStaging`).
 - `compiler/src/Compiler/Eco/Config.elm`: the `EcoConfig` record, `default`, the `eco-config.json` decoder and `hash`. `compiler/src/Builder/Eco/Config.elm` reads the file and the `ECO_*` environment overrides.
 - `compiler/src/Terminal/Make.elm` (`shouldUseTypedOpt`, `graphHasMain`), `compiler/src/Builder/Generate.elm` (`buildMonoGraphFromMerged`, `monoPipelineFrom`), `compiler/src/Builder/Elm/Details.elm` (`hasTypedOpt`, `configChanged`): the choice of path, the running of the steps and the cache checks.
 - `compiler/src/Compiler/Graph.elm`: stack-safe strongly connected components.

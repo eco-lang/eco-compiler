@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "EcoToLLVMInternal.h"
-#include "../EcoTypes.h"
+#include "../EcoDialect.h"
 #include "../BF/BFTypes.h"
 
 using namespace mlir;
@@ -1197,7 +1197,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAtan2(OpBuilder &builder) const {
 #undef VOID_TY
 
 //===----------------------------------------------------------------------===//
-// Allocation with Safepoint
+// Allocation Call
 //===----------------------------------------------------------------------===//
 
 Value eco::detail::emitAllocWithSafepoint(
@@ -1205,39 +1205,10 @@ Value eco::detail::emitAllocWithSafepoint(
     ConversionPatternRewriter &rewriter,
     const EcoRuntime &runtime,
     LLVM::LLVMFuncOp allocFunc,
-    ValueRange args,
-    ValueRange liveRoots) {
-
-    auto loc = op->getLoc();
-
+    ValueRange args) {
     // RS4GC handles safepoint insertion automatically — no marker needed.
-    // Just emit the allocation call directly.
-    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc, args);
+    auto allocCall = rewriter.create<LLVM::CallOp>(op->getLoc(), allocFunc, args);
     return allocCall.getResult();
-}
-
-//===----------------------------------------------------------------------===//
-// Safepoint Marker (for call-like safepoints)
-//===----------------------------------------------------------------------===//
-
-void eco::detail::emitSafepointMarker(
-    Operation *op,
-    ConversionPatternRewriter &rewriter,
-    const EcoRuntime &runtime,
-    ValueRange liveRoots) {
-    // RS4GC handles safepoint insertion automatically — no marker needed.
-}
-
-//===----------------------------------------------------------------------===//
-// Wrapper Safepoint Marker (for closure wrapper bodies)
-//===----------------------------------------------------------------------===//
-
-void eco::detail::emitWrapperSafepointMarker(
-    OpBuilder &builder,
-    const EcoRuntime &runtime,
-    Location loc,
-    ValueRange liveRoots) {
-    // RS4GC handles safepoint insertion automatically — no marker needed.
 }
 
 //===----------------------------------------------------------------------===//

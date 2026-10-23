@@ -19,9 +19,8 @@
 // eco_list_pos_view materializes the position as a real list value — one
 // allocation per loop exit instead of one per element stepped.
 //
-// Runs AFTER EcoToLLVMPass (list projections are already marker calls;
-// EcoGCPrepare has already run, so no rooting machinery attaches to the new
-// per-step ops) and BEFORE the SCF tail conversions. The pass is a no-op
+// Runs AFTER EcoToLLVMPass (list projections are already marker calls) and
+// BEFORE the SCF tail conversions. The pass is a no-op
 // unless the module declares __eco_list_tail_inline, which only
 // chunk-compiled modules contain — flag-off output is untouched.
 //

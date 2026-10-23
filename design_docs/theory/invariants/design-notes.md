@@ -115,7 +115,7 @@ Parent: [invariants-and-design.md](invariants-and-design.md).
 - `design_docs/invariants.csv`: where adopted designs become rules (LSS_*, BFOPS_*, BFUSE_*, HEAP_032 for ASCII-only UTF-8, CGEN_061, CGEN_063, REP_AGG_001 for value aggregates).
 - `kernel-opt-status.md`: the status table with the seven dispositions; `guides/kernel-opt-loop.md` and `benchmarks/` for the measurement protocol.
 - `design_docs/parallel-gc.md`, `design_docs/multi-threaded-eco/README.md`: evidence-tagged investigation reports.
-- `design_docs/globalopt/borrow-inference-design.md` (section 2, the escape analysis postmortem), `design_docs/escape-analysis.md`, `design_docs/escape-analysis-status.md`.
+- `design_docs/globalopt/borrow-inference-design.md` (section 2, the escape analysis postmortem).
 - `design_docs/monomorphization/lambda-set-specialization-design.md`, `capture-union-representation.md`, `multiset-defunctionalization-design.md`, `solver-reuse-evaluation.md`; `design_docs/hm-solver-reuse.md`; `design_docs/auto-borrow-inference/lss-why-the-fidelity-program-failed.md`.
 - `design_docs/caf-memoization-design.md`, `design_docs/utf8-string-encoding-investigation.md`, `design_docs/fused-bytes-compilation.md`, `design_docs/array-optimisation.md`, `design_docs/kernel-boundary-reduction.md`, `design_docs/debug-log-ordering-policy.md`.
 - `design_docs/backend-parallel-optimization.md`, `design_docs/mlir-level-partitioning-whole-program-steps.md`, `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`, `design_docs/distribution.md`.

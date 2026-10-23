@@ -2,7 +2,6 @@ module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
     , coerceResultToType
-    , emitSafepointHints
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
     , aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
@@ -29,11 +28,6 @@ This module handles generation of MLIR code for all Elm expressions.
 # Boxing and Coercion
 
 @docs coerceResultToType
-
-
-# GC Root Hints
-
-@docs emitSafepointHints
 
 
 # Utilities
@@ -97,24 +91,6 @@ type alias ExprResult =
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
-
-
-{-| Compute the front-end's conservative GC root hint list at this point in
-the IR. Returns the set of in-scope `!eco.value` SSA bindings, which callers
-thread directly into the next GCRootCarrier op (alloc / construct / call /
-papExtend / papCreate). EcoGCPrepare unions this hint with the SSA liveness
-analysis at the carrier op's position; the union is load-bearing for values
-referenced only inside nested SCF regions, which per-block liveness misses.
-
-Drop the hint (do not invoke this helper) at sites where the immediately
-following op is not a GCRootCarrier (e.g. `eco.string_literal`, back-edge
-`eco.jump`): there is no operand list to attach roots to, and LLVM-level
-RS4GC handles the resulting call's statepoint independently.
-
--}
-emitSafepointHints : List ( String, MlirType )
-emitSafepointHints =
-    Ctx.liveEcoValueVars
 
 
 {-| Rename an SSA variable in a list of MlirOps, recursing into nested regions.
@@ -666,8 +642,7 @@ generateLiteral ctx lit =
 
                 -- Empty strings use the EmptyString embedded constant; non-empty
                 -- literals lower to a call to eco_alloc_string_literal whose
-                -- statepoint RS4GC inserts directly. eco.string_literal is not
-                -- a GCRootCarrier, so no MLIR-level hint is threaded here.
+                -- statepoint RS4GC inserts directly.
                 ( ctx2, op ) =
                     if value == "" then
                         Ops.ecoConstantEmptyString ctx1 var
@@ -829,7 +804,7 @@ generateVarGlobal ctx specId monoType =
                                                 Types.monoTypeToAbi sig.returnType
 
                                             ( ctx2, callOp ) =
-                                                Ops.ecoCallNamed ctx1 emitSafepointHints var funcName [] resultMlirType
+                                                Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
                                         in
                                         { ops = [ callOp ]
                                         , resultVar = var
@@ -893,7 +868,7 @@ generateVarGlobal ctx specId monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 emitSafepointHints var funcName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -947,7 +922,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                                 Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
                         in
                         { ops = [ callOp ]
                         , resultVar = var
@@ -974,7 +949,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -1003,7 +978,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                                 Types.monoTypeToAbi monoType
 
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
                         in
                         { ops = [ callOp ]
                         , resultVar = var
@@ -1024,7 +999,7 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.monoTypeToAbi monoType
 
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 emitSafepointHints var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
                     in
                     { ops = [ callOp ]
                     , resultVar = var
@@ -1156,7 +1131,7 @@ generateList ctx items listType =
                                         Ctx.freshVar result.ctx
 
                                     ( ctx4, consOp ) =
-                                        Ops.ecoConstructList ctx3 emitSafepointHints consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
+                                        Ops.ecoConstructList ctx3 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
                                 in
                                 ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
 
@@ -1170,7 +1145,7 @@ generateList ctx items listType =
                                         Ctx.freshVar ctx3
 
                                     ( ctx5, consOp ) =
-                                        Ops.ecoConstructList ctx4 emitSafepointHints consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
+                                        Ops.ecoConstructList ctx4 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
                                 in
                                 ( consOp :: List.reverse boxOps ++ List.reverse result.ops ++ accOps, consVar, ctx5 )
                         )
@@ -1275,7 +1250,7 @@ generateClosure ctx closureInfo body monoType =
                 Types.monoTypeToAbi monoType
 
             ( ctx4, callOp ) =
-                Ops.ecoCallNamed ctx3 emitSafepointHints resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
+                Ops.ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
         in
         { ops = captureOps ++ boxOps ++ [ callOp ]
         , resultVar = resultVar
@@ -1293,10 +1268,11 @@ generateClosure ctx closureInfo body monoType =
             baseFuncName =
                 lambdaIdToString closureInfo.lambdaId
 
-            -- For closures with captures, reference generic clone; otherwise original
+            -- For closures with captures, reference the fast clone ($cap),
+            -- the only function emitted for them; otherwise the original.
             functionName =
                 if hasCaptures then
-                    baseFuncName ++ "$clo"
+                    baseFuncName ++ "$cap"
 
                 else
                     baseFuncName
@@ -1409,7 +1385,7 @@ boxToEcoValue ctx var mlirTy =
                 Ctx.freshVar ctx
 
             ( ctx2, toHeapOp ) =
-                Ops.ecoToHeap ctx1 emitSafepointHints heapVar ( var, mlirTy )
+                Ops.ecoToHeap ctx1 heapVar ( var, mlirTy )
         in
         ( [ toHeapOp ], heapVar, ctx2 )
 
@@ -1919,38 +1895,22 @@ generateGenericApply ctx func args resultType =
                 [ ( "_result_kind", IntAttr (Just I8) genericApplyResultKind ) ]
 
         -- Build eco.papExtend WITHOUT remaining_arity (generic mode).
-        -- GC root hints are appended after the call operands; eco.gc_roots_count
-        -- tells the C++ GCRootCarrier interface how many tail operands are roots.
-        gcRootHints1 =
-            emitSafepointHints
-
-        ( gcRootNames1, gcRootTypes1 ) =
-            List.unzip gcRootHints1
-
-        gcRootsCountAttr1 =
-            if List.isEmpty gcRootHints1 then
-                []
-
-            else
-                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHints1) ) ]
-
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes1)
+                        (List.map TypeAttr allOperandTypes)
                    )
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "generic_apply" )
                  ]
                     ++ gencallReasonAttr ctx (gencallCalleeReason func)
                     ++ genericApplyResultKindAttr
-                    ++ gcRootsCountAttr1
                 )
 
         ( ctx4, papExtendOp ) =
             Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNames1)
+                |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
@@ -2037,38 +1997,22 @@ generateUnknownSegmentationCall ctx func args resultType =
                 [ ( "_result_kind", IntAttr (Just I8) unknownSegResultKind ) ]
 
         -- Build eco.papExtend WITHOUT remaining_arity, with _call_kind = "segmentation_unknown".
-        -- GC root hints are appended after the call operands; eco.gc_roots_count
-        -- tells the C++ GCRootCarrier interface how many tail operands are roots.
-        gcRootHints2 =
-            emitSafepointHints
-
-        ( gcRootNames2, gcRootTypes2 ) =
-            List.unzip gcRootHints2
-
-        gcRootsCountAttr2 =
-            if List.isEmpty gcRootHints2 then
-                []
-
-            else
-                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHints2) ) ]
-
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes2)
+                        (List.map TypeAttr allOperandTypes)
                    )
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
                     ++ gencallReasonAttr ctx (gencallCalleeReason func)
                     ++ unknownSegResultKindAttr
-                    ++ gcRootsCountAttr2
                 )
 
         ( ctx4, papExtendOp ) =
             Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNames2)
+                |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
@@ -2187,36 +2131,22 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
             else
                 [ ( "_result_kind", IntAttr (Just I8) segResultKind ) ]
 
-        gcRootHintsT =
-            emitSafepointHints
-
-        ( gcRootNamesT, gcRootTypesT ) =
-            List.unzip gcRootHintsT
-
-        gcRootsCountAttrT =
-            if List.isEmpty gcRootHintsT then
-                []
-
-            else
-                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHintsT) ) ]
-
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesT)
+                        (List.map TypeAttr allOperandTypes)
                    )
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "_call_kind", StringAttr "segmentation_unknown" )
                  ]
                     ++ gencallReasonAttr ctx 9
                     ++ segResultKindAttr
-                    ++ gcRootsCountAttrT
                 )
 
         ( ctx4, papExtendOp ) =
             Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNamesT)
+                |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
@@ -2366,24 +2296,11 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        gcRootHintsF =
-            emitSafepointHints
-
-        ( gcRootNamesF, gcRootTypesF ) =
-            List.unzip gcRootHintsF
-
-        gcRootsCountAttrF =
-            if List.isEmpty gcRootHintsF then
-                []
-
-            else
-                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHintsF) ) ]
-
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypesF)
+                        (List.map TypeAttr allOperandTypes)
                    )
                  , ( "slot_kinds", newargsSlotKinds )
                  , ( "remaining_arity", IntAttr Nothing (List.length args) )
@@ -2402,12 +2319,11 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
                         else
                             []
                        )
-                    ++ gcRootsCountAttrF
                 )
 
         ( ctx4, papExtendOp ) =
             Ops.mlirOp ctx3 "eco.papExtend"
-                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNamesF)
+                |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, retAbiType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
@@ -2570,22 +2486,6 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             [ ( "_result_kind", IntAttr (Just I8) saturatedResultKind ) ]
 
-                    -- GC root hints are appended after the call operands; the
-                    -- eco.gc_roots_count attr tells the GCRootCarrier interface
-                    -- how many tail operands are roots.
-                    gcRootHints3 =
-                        emitSafepointHints
-
-                    ( gcRootNames3, gcRootTypes3 ) =
-                        List.unzip gcRootHints3
-
-                    gcRootsCountAttr3 =
-                        if List.isEmpty gcRootHints3 then
-                            []
-
-                        else
-                            [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHints3) ) ]
-
                     -- H6.2 layer 1 (unconditional): a batch PAST the first
                     -- stage boundary extends a RUNTIME-COMPUTED value — the
                     -- callee's stage-1 result — not the callee itself. The old
@@ -2608,7 +2508,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     baseAttrs =
                         [ ( "_operand_types"
                           , ArrayAttr Nothing
-                                (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes3)
+                                (List.map TypeAttr allOperandTypes)
                           )
                         , ( "slot_kinds", newargsSlotKinds )
                         ]
@@ -2619,7 +2519,6 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                                     [ ( "remaining_arity", IntAttr Nothing remainingArity ) ]
                                )
                             ++ resultKindAttrs
-                            ++ gcRootsCountAttr3
 
                     callKindAttrs =
                         -- The cross-stage downgrade must apply regardless of
@@ -2653,7 +2552,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
 
                     ( ctx2, papExtendOp ) =
                         Ops.mlirOp ctx1 "eco.papExtend"
-                            |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNames3)
+                            |> Ops.opBuilder.withOperands allOperandNames
                             |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
@@ -2750,35 +2649,21 @@ generateFlattenedPartialApplication ctx func args resultType =
             else
                 [ ( "_result_kind", IntAttr (Just I8) flatPapResultKind ) ]
 
-        gcRootHints4 =
-            emitSafepointHints
-
-        ( gcRootNames4, gcRootTypes4 ) =
-            List.unzip gcRootHints4
-
-        gcRootsCountAttr4 =
-            if List.isEmpty gcRootHints4 then
-                []
-
-            else
-                [ ( "eco.gc_roots_count", IntAttr Nothing (List.length gcRootHints4) ) ]
-
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
                    , ArrayAttr Nothing
-                        (List.map TypeAttr allOperandTypes ++ List.map TypeAttr gcRootTypes4)
+                        (List.map TypeAttr allOperandTypes)
                    )
                  , ( "remaining_arity", IntAttr Nothing remainingArity )
                  , ( "slot_kinds", newargsSlotKinds )
                  ]
                     ++ flatPapResultKindAttr
-                    ++ gcRootsCountAttr4
                 )
 
         ( ctx3, papExtendOp ) =
             Ops.mlirOp ctx2 "eco.papExtend"
-                |> Ops.opBuilder.withOperands (allOperandNames ++ gcRootNames4)
+                |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
@@ -3675,7 +3560,7 @@ emitPsplitCall ctx specId info args resultType =
             Ctx.freshVar ctxA
 
         ( ctxC, callOp ) =
-            Ops.ecoCallNamed ctxB emitSafepointHints resultVar (funcName ++ "$psplit") (List.reverse operandsRev) returnAbi
+            Ops.ecoCallNamed ctxB resultVar (funcName ++ "$psplit") (List.reverse operandsRev) returnAbi
     in
     { ops = List.reverse opsRev ++ [ callOp ]
     , resultVar = resultVar
@@ -3933,7 +3818,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Types.monoTypeToAbi sig.returnType
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs callResultType
+                                    Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -4027,7 +3912,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Types.ecoValue
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName kernelArgPairs callResultType
+                                            Ops.ecoCallNamed ctx2 resVar kernelName kernelArgPairs callResultType
                                     in
                                     { ops = argOps ++ boxOps ++ [ projectOp, callOp ]
                                     , resultVar = resVar
@@ -4092,7 +3977,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                         Types.monoTypeToAbi sig.returnType
 
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs callResultType
+                                                        Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
                                                 in
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resVar
@@ -4134,7 +4019,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                                 Types.monoTypeToAbi resultType
 
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 emitSafepointHints resultVar funcName argVarPairs resultMlirType
+                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
                                                 in
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resultVar
@@ -4177,7 +4062,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                     Types.monoTypeToAbi resultType
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 emitSafepointHints resultVar funcName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resultVar
@@ -4363,7 +4248,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
                         ( ctx2d, callOp ) =
                             Ops.ecoCallNamed ctx2c
-                                emitSafepointHints
                                 resultVar
                                 "Elm_Kernel_Debug_toString_typed"
                                 [ ( boxedValueVar, Types.ecoValue )
@@ -4419,7 +4303,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Ctx.freshVar ctx1b
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4438,7 +4322,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Ctx.freshVar ctx1b
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -4491,7 +4375,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             Ctx.freshVar ctx1b
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4510,7 +4394,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Ctx.freshVar ctx1b
 
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 emitSafepointHints resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                             in
                             { ops = argOps ++ boxOps ++ [ callOp ]
                             , resultVar = resVar
@@ -4597,7 +4481,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             instanceAbi.abiResultType
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 emitSafepointHints resVar kernelName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resVar
@@ -4827,9 +4711,8 @@ generateTailCall ctx args =
                 , ( "target", IntAttr Nothing 0 )
                 ]
 
-        -- No safepoint hint on back-edges: eco.jump is a terminator, not a
-        -- GCRootCarrier, so there is nowhere to attach the hint. Non-allocating
-        -- non-calling loops already lack a GC poll today (eco.safepoint was
+        -- Back-edges carry no GC poll: non-allocating non-calling loops
+        -- already lack one today (eco.safepoint was
         -- erased pre-RS4GC), so this is not a regression. If we ever need GC
         -- progress on such loops, the fix belongs in the LLVM backend, not
         -- here.
@@ -5173,7 +5056,7 @@ addPlaceholderMappings names ctx =
                         acc2 =
                             Ctx.addVarMapping name ssaVar Types.ecoValue acc1
                     in
-                    -- Don't mark placeholder as defined for safepoint purposes.
+                    -- Don't mark placeholder as defined yet.
                     -- The placeholder SSA var has no defining op yet; it will be
                     -- defined when forceResultVar renames the RHS result op.
                     -- addVarMapping at line ~3440 re-adds it after the RHS is complete.
@@ -6061,7 +5944,7 @@ generateLetSingle ctx def body =
 
                 functionName =
                     if hasCaptures then
-                        tailFuncName ++ "$clo"
+                        tailFuncName ++ "$cap"
 
                     else
                         tailFuncName
@@ -6311,7 +6194,7 @@ generateLetGroup ctx members body =
                     Types.mlirTypeToKind bodyAbi
 
                 siblingMeta =
-                    { functionName = baseFuncName ++ "$clo"
+                    { functionName = baseFuncName ++ "$cap"
                     , fastEvaluator = baseFuncName ++ "$cap"
                     , arity = numCaptured + List.length closureInfo.params
                     , numCaptured = numCaptured
@@ -6362,7 +6245,6 @@ generateLetGroup ctx members body =
         ( ctxWithGroupOp, groupOp ) =
             Ops.ecoPapCreateGroup
                 ctxAfterSiblings
-                emitSafepointHints
                 siblingMetaList
                 crossEdges
                 resultVars
@@ -6372,8 +6254,8 @@ generateLetGroup ctx members body =
         -- mappings mirror what generateClosure sets up; isTailRecursive is
         -- False — the group op handles mutual-rec through cross-edges.
         pendingLambdas =
-            List.map2
-                (\member siblingMeta ->
+            List.map
+                (\member ->
                     let
                         closureInfo =
                             member.closureInfo
@@ -6401,7 +6283,7 @@ generateLetGroup ctx members body =
                             List.map toNameType nonSibCapEntries
                                 ++ List.map toNameType sibCapEntries
                     in
-                    { name = siblingMeta.functionName |> stripCloSuffix
+                    { name = lambdaIdToString closureInfo.lambdaId
                     , captures = capturesOrdered
                     , params = closureInfo.params
                     , body = member.lambdaBody
@@ -6412,7 +6294,6 @@ generateLetGroup ctx members body =
                     }
                 )
                 members
-                siblingMetaList
 
         ctxAfterLambdas =
             { ctxWithGroupOp
@@ -6422,7 +6303,7 @@ generateLetGroup ctx members body =
         -- Re-register each sibling's name so varMappings contains the real
         -- result type (ecoValue) for downstream references. These were already
         -- mapped to the placeholder var by addPlaceholderMappings; we just
-        -- mark those SSA vars as defined (by the group op) for safepoint tracking.
+        -- mark those SSA vars as defined (by the group op).
         ctxReady =
             List.foldl
                 (\member c ->
@@ -6453,19 +6334,6 @@ generateLetGroup ctx members body =
     , ctx = ctxOut
     , isTerminated = finalIsTerminated
     }
-
-
-{-| Helper: remove the "$clo" suffix from a function name for use as the
-PendingLambda base name (which gets $clo/$cap appended again during
-lambda code generation).
--}
-stripCloSuffix : String -> String
-stripCloSuffix s =
-    if String.endsWith "$clo" s then
-        String.dropRight 4 s
-
-    else
-        s
 
 
 wrapDefsIntoLet : List ClosureBinding -> Mono.MonoExpr -> Mono.MonoExpr
@@ -7299,7 +7167,7 @@ generateRecordCreate ctx fields layout recordType =
 
             -- Use eco.construct.record for records
             ( ctx4, constructOp ) =
-                Ops.ecoConstructRecord ctx3 emitSafepointHints resultVar fieldVarPairs layout.fieldCount (Types.recordSlotKinds layout)
+                Ops.ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount (Types.recordSlotKinds layout)
         in
         { ops = fieldsOps ++ boxOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -7446,7 +7314,7 @@ generateRecordUpdate ctx record updates layout =
                 Ctx.freshVar finalCtx
 
             ( ctx2, constructOp ) =
-                Ops.ecoConstructRecord ctx1 emitSafepointHints resultVar fieldVarsAndTypes layout.fieldCount (Types.recordSlotKinds layout)
+                Ops.ecoConstructRecord ctx1 resultVar fieldVarsAndTypes layout.fieldCount (Types.recordSlotKinds layout)
         in
         { ops = allOps ++ [ constructOp ]
         , resultVar = resultVar
@@ -7518,18 +7386,15 @@ generateTupleCreate ctx elements layout tupleType =
 
         -- Use type-specific tuple construction ops.
         -- Now that MonoPath carries ContainerKind, projection ops match construction layout.
-        tupleGcRootHints =
-            emitSafepointHints
-
         ( ctx4, constructOp ) =
             case elemVarPairs of
                 [ ( aVar, aType ), ( bVar, bType ) ] ->
                     -- 2-tuple: use eco.construct.tuple2
-                    Ops.ecoConstructTuple2 ctx3 tupleGcRootHints resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
+                    Ops.ecoConstructTuple2 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
 
                 [ ( aVar, aType ), ( bVar, bType ), ( cVar, cType ) ] ->
                     -- 3-tuple: use eco.construct.tuple3
-                    Ops.ecoConstructTuple3 ctx3 tupleGcRootHints resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
+                    Ops.ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
 
                 _ ->
                     -- Elm rejects tuples with >3 elements during canonicalization
@@ -7889,7 +7754,7 @@ emitSretCallMulti ctx specId cargs info =
             List.reverse resultPairsRev
 
         ( ctxD, callOp ) =
-            Ops.ecoCallNamedMulti ctxC emitSafepointHints resultPairs (funcName ++ "$sret") argVarPairs
+            Ops.ecoCallNamedMulti ctxC resultPairs (funcName ++ "$sret") argVarPairs
     in
     ( argOps ++ boxOps ++ [ callOp ], resultPairs, ctxD )
 
@@ -8450,8 +8315,8 @@ isCustomKind kind =
 
 
 {-| Emit a promotable tuple literal in the VALUE-aggregate form:
-`eco.make.tuple2/3` producing `!eco.tuple2/3<...>` — no heap allocation,
-no GC-root hints (the result is not an `!eco.value`; its boxed elements'
+`eco.make.tuple2/3` producing `!eco.tuple2/3<...>` — no heap allocation
+(the result is not an `!eco.value`; its boxed elements'
 liveness is handled by RS4GC after SROA scalarises the struct —
 REP\_AGG\_001, pinned by `test/codegen/value_sroa_statepoint_llvm.mlir`).
 Element preparation (ordering, per-slot boxing discipline) mirrors
@@ -8580,7 +8445,6 @@ generateCustomCreateHeap ctx shape args =
 
         ( ctx4, constructOp ) =
             Ops.ecoConstructCustom ctx3
-                emitSafepointHints
                 resultVar
                 layout.tag
                 (List.length layout.fields)

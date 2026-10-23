@@ -1,5 +1,5 @@
 module Mlir.Bytecode.AttrType exposing
-    ( AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
+    ( AttrTypeTable, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
     , StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
     )
 
@@ -38,9 +38,9 @@ and is not checked. A value that was never collected gets -1, which
 `Mlir.Bytecode.VarInt.encodeVarInt` writes like any other number, so a missed
 value makes a corrupt file rather than an error.
 
-There are two ways to build a table. `collect` takes a whole module at once. A
-`StreamAccum` takes one operation at a time, and its indices never change once
-given, so an operation can be encoded as soon as it has been collected.
+A table is built through a `StreamAccum`, which takes one operation at a time
+and whose indices never change once given, so an operation can be encoded as
+soon as it has been collected.
 
 In the data section, attributes and builtin types are written in the binary
 form of MLIR's builtin dialect. A `NamedStruct`, such as `!eco.value`, is
@@ -52,7 +52,7 @@ into a `Mlir.Bytecode.StringTable`, and dialects as indices into a
 `Mlir.Bytecode.DialectSection` registry. This module adds nothing to either,
 and a string or dialect missing from them is written as -1 too.
 
-@docs AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
+@docs AttrTypeTable, typeIndex, locIndex, dictAttrIndex, bytecodeAttrs
 @docs StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
 
 -}
@@ -70,7 +70,6 @@ import Mlir.Mlir
     exposing
         ( MlirAttr(..)
         , MlirBlock
-        , MlirModule
         , MlirOp
         , MlirRegion(..)
         , MlirType(..)
@@ -144,7 +143,7 @@ type Entry
 
 
 {-| The numbering of the attributes and types an MLIR program refers to, and,
-for a table made by `collect` or `finalizeStreamAccum`, the entries
+for a table made by `finalizeStreamAccum`, the entries
 themselves, ready for `encodeDataAndOffsets` to write.
 
 Attributes, locations and dictionaries share one numbering and types have
@@ -451,10 +450,9 @@ streamCollectOp op (StreamAccum acc) =
 
 {-| Returns the finished table, for `encodeDataAndOffsets` to write.
 
-Entries keep the indices they were given during collection. Unlike in
-`collect`, the builtin types are not moved ahead of the others, so the types
-stay in the order they were found and a dialect's entries may be split across
-several dialect groups.
+Entries keep the indices they were given during collection. The builtin types
+are not moved ahead of the others, so the types stay in the order they were
+found and a dialect's entries may be split across several dialect groups.
 
 -}
 finalizeStreamAccum : StreamAccum -> AttrTypeTable
@@ -483,54 +481,6 @@ streamAccumEncodingView (StreamAccum acc) =
         , typeEntries = []
         , numAttrs = 0
         , numTypes = 0
-        }
-
-
-{-| Returns the table of the attributes, types and locations collected from the
-operations of `mod`, numbered and ready for `encodeDataAndOffsets`.
-
-What is collected from each operation is what `streamCollectOp` collects. The
-location of `mod` itself is not collected, but `Mlir.Loc.unknown` is always in
-the table, at attribute index 0.
-
-Once everything is collected, the builtin types are moved ahead of the others,
-each part keeping the order it was found in, and type indices are renumbered to
-match. Attribute indices stay in the order found.
-
--}
-collect : MlirModule -> AttrTypeTable
-collect mod =
-    let
-        result =
-            emptyAccum
-                |> addLocEntry Mlir.Loc.unknown
-                |> (\acc -> List.foldl collectOp acc mod.body)
-
-        -- Every attribute entry is in the builtin dialect, so these need no reordering.
-        attrEntries =
-            List.reverse result.attrEntries
-
-        allTypeEntries =
-            List.reverse result.typeEntries
-
-        ( builtinTypes, otherTypes ) =
-            List.partition (\( d, _ ) -> d == "builtin") allTypeEntries
-
-        orderedTypeEntries =
-            builtinTypes ++ otherTypes
-
-        reindexedTypeKeys =
-            orderedTypeEntries
-                |> List.indexedMap (\i ( _, entry ) -> ( typeEntryToKey entry, i ))
-                |> Dict.fromList
-    in
-    AttrTypeTable
-        { attrKeys = result.attrKeys
-        , typeKeys = reindexedTypeKeys
-        , attrEntries = attrEntries
-        , typeEntries = orderedTypeEntries
-        , numAttrs = result.nextAttr
-        , numTypes = result.nextType
         }
 
 
@@ -779,30 +729,6 @@ typeEntryDialect entry =
             "builtin"
 
 
-{-| Returns the entry key of the type a type entry came from, the same string
-`typeToKey` gives that type, so that `collect` can renumber types from their
-entries. It returns `""` for an attribute entry, which `collect` never gives
-it.
--}
-typeEntryToKey : Entry -> String
-typeEntryToKey entry =
-    case entry of
-        EIntegerType w ->
-            "i" ++ String.fromInt w
-
-        EFloat64Type ->
-            "f64"
-
-        EAsmType _ asm ->
-            asm
-
-        EFunctionType inputs results ->
-            "fn(" ++ String.join "," (List.map typeToKey inputs) ++ ")->(" ++ String.join "," (List.map typeToKey results) ++ ")"
-
-        _ ->
-            ""
-
-
 {-| Returns an operation's attribute dictionary `attrs` as it is written to
 bytecode, which is without `_operand_types`.
 
@@ -962,8 +888,6 @@ dialect groups: the attributes' groups, then the types'.
 A group is a run of consecutive entries of one dialect, so a dialect whose
 entries are not next to each other has more than one group. Gathering each
 dialect's entries together instead would move entries away from their indices.
-In a table from `collect` the builtin types are next to each other and form one
-group.
 
 Each entry is encoded once, and the same bytes serve the data section and the
 sizes in the offset section.

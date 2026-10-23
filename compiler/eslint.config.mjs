@@ -15,7 +15,6 @@ export default defineConfig([
   { files: ["**/*.{js,mjs,cjs}"] },
   { files: ["**/*.js"], languageOptions: { sourceType: "commonjs" } },
   { files: ["bin/**/*.{js,mjs,cjs}"], languageOptions: { globals: globals.node } },
-  { files: ["lib/index.js"], languageOptions: { globals: { ...globals.browser, ...globals.node } } },
   { files: ["try/**/*.{js,mjs,cjs}"], languageOptions: { globals: { ...globals.browser, ...globals.node } } },
   { files: ["scripts/*.js"], languageOptions: { globals: globals.node } },
   {

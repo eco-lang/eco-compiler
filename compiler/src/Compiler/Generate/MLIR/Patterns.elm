@@ -272,9 +272,8 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                 ( strVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
-                -- eco.string_literal is not a GCRootCarrier; RS4GC handles the
-                -- underlying alloc call's statepoint at the LLVM level. No
-                -- front-end hint to thread here.
+                -- RS4GC handles the underlying alloc call's statepoint at the
+                -- LLVM level.
                 ( ctx3, strOp ) =
                     if s == "" then
                         Ops.ecoConstantEmptyString ctx2 strVar
@@ -301,7 +300,7 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                     else
                         let
                             ( ctx5, cmpOp ) =
-                                Ops.ecoCallNamed ctx4 Ctx.liveEcoValueVars eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+                                Ops.ecoCallNamed ctx4 eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
 
                             ( unboxOps, unboxedVar, ctx5b ) =
                                 Intrinsics.unboxToType ctx5 eqVar I1
@@ -375,9 +374,6 @@ materializeSplitParam ctx info =
     let
         ( resultVar, ctx1 ) =
             Ctx.freshVar ctx
-
-        hints =
-            Ctx.liveEcoValueVars
     in
     case info.split of
         Ctx.SplitTuple layout ->
@@ -385,14 +381,14 @@ materializeSplitParam ctx info =
                 [ a, b ] ->
                     let
                         ( ctx2, op ) =
-                            Ops.ecoConstructTuple2 ctx1 hints resultVar a b layout.unboxedBitmap
+                            Ops.ecoConstructTuple2 ctx1 resultVar a b layout.unboxedBitmap
                     in
                     ( [ op ], resultVar, ctx2 )
 
                 [ a, b, c ] ->
                     let
                         ( ctx2, op ) =
-                            Ops.ecoConstructTuple3 ctx1 hints resultVar a b c layout.unboxedBitmap
+                            Ops.ecoConstructTuple3 ctx1 resultVar a b c layout.unboxedBitmap
                     in
                     ( [ op ], resultVar, ctx2 )
 
@@ -402,7 +398,7 @@ materializeSplitParam ctx info =
         Ctx.SplitCtor layout ->
             let
                 ( ctx2, op ) =
-                    Ops.ecoConstructCustom ctx1 hints resultVar layout.tag (List.length info.slots) (Types.ctorSlotKinds layout) info.slots (Just layout.name)
+                    Ops.ecoConstructCustom ctx1 resultVar layout.tag (List.length info.slots) (Types.ctorSlotKinds layout) info.slots (Just layout.name)
             in
             ( [ op ], resultVar, ctx2 )
 

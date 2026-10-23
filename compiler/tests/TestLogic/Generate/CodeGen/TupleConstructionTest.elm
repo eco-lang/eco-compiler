@@ -14,10 +14,10 @@ The programs are those built by the case modules that
 What the tests establish:
 
   - The check on a program fails if it does not compile to MLIR, or if the MLIR
-    holds, at any nesting depth, an `eco.construct.tuple2` with fewer than two
-    operands, an `eco.construct.tuple3` with fewer than three, or an
+    holds, at any nesting depth, an `eco.construct.tuple2` without exactly two
+    operands, an `eco.construct.tuple3` without exactly three, or an
     `eco.construct.custom` whose `constructor` attribute is `Tuple2`, `Tuple3`,
-    `(,)` or `(,,)`. A tuple op with more operands than elements is accepted.
+    `(,)` or `(,,)`.
 
 Among what is not tested: the value-level `eco.make.tuple2`, `eco.make.tuple3`
 and `eco.make.custom` ops, the types of the operands, programs outside the

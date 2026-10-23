@@ -22,9 +22,10 @@ rules, one per context.
 
 The _ABI type_ of a value, given by `monoTypeToAbi`, is its type at a boundary
 between pieces of code: function parameters and results, closure captures,
-and the operands of partial applications. Int, Float, Char and a number type
-variable (`MVar _ CNumber`, which is `i64`) are unboxed there, and everything
-else, Bool included, is `!eco.value`.
+and the operands of partial applications. Int, Float and Char are unboxed
+there, and everything else, Bool included, is `!eco.value`. No number type
+variable (`MVar _ CNumber`) reaches code generation: Prune closes every one to
+Int and fails if one survives (MONO\_002, MONO\_028).
 
 The _operand type_ of a value, given by `monoTypeToOperand`, is its type as an
 SSA value inside a function. It is the ABI type except that a Bool is `i1`, so
@@ -32,8 +33,7 @@ that it can drive a branch directly. A Bool read from a boundary or from the
 heap is a `!eco.value` and has to be unboxed before it can be used as an `i1`.
 
 Inside a heap object (a record, tuple or constructor) only Int, Float and Char
-fields are stored unboxed. A number type variable is boxed there, although it
-is `i64` at the ABI.
+fields are stored unboxed.
 
 The rest of the module is the heap rule worked out for each kind of object. A
 _layout_ says where each field of a record, tuple or constructor goes and
@@ -65,6 +65,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Dict exposing (Dict)
 import Mlir.Mlir exposing (MlirType(..))
+import Utils.Crash exposing (crash)
 
 
 
@@ -105,8 +106,7 @@ ecoChar =
 
 
 {-| Returns whether a value of the given type is stored unboxed in a heap
-object: true for Int, Float and Char only. A number type variable is not
-unboxed here, although `monoTypeToAbi` makes it `i64`.
+object: true for Int, Float and Char only.
 -}
 canUnbox : Mono.MonoType -> Bool
 canUnbox monoType =
@@ -128,8 +128,8 @@ canUnbox monoType =
 function parameter or result, a closure capture, or an operand of a partial
 application.
 
-Int is `i64`, Float `f64`, Char `i16`, and a number type variable `i64`.
-Every other type, Bool included, is `!eco.value`. The mapping is defined in
+Int is `i64`, Float `f64` and Char `i16`. Every other type, Bool included, is
+`!eco.value`. The mapping is defined in
 `Compiler.AST.MonoAbi`, so that passes below the back end can use it too.
 
 -}
@@ -142,7 +142,8 @@ monoTypeToAbi monoType =
 SSA value inside a function.
 
 This is the ABI type of `monoTypeToAbi` except for Bool, which is `i1`. A
-function type is `!eco.value` whatever its lambda set.
+function type is `!eco.value` whatever its lambda set. A number type variable
+crashes: none reaches code generation (MONO\_002, MONO\_028).
 
 -}
 monoTypeToOperand : Mono.MonoType -> MlirType
@@ -181,13 +182,11 @@ monoTypeToOperand monoType =
         Mono.MFunction _ _ _ _ ->
             ecoValue
 
-        Mono.MVar _ constraint_ ->
-            case constraint_ of
-                Mono.CNumber ->
-                    I64
+        Mono.MVar _ Mono.CNumber ->
+            crash "MONO_002: a number type variable reached MLIR code generation (Prune closes every one to Int, MONO_028)"
 
-                Mono.CEcoValue ->
-                    ecoValue
+        Mono.MVar _ Mono.CEcoValue ->
+            ecoValue
 
 
 

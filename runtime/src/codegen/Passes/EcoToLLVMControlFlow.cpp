@@ -8,7 +8,6 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 
 #include <atomic>
 #include <cstdint>

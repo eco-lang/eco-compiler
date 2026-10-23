@@ -8,7 +8,6 @@
 
 #include <cstdlib>
 #include "EcoDialect.h"
-#include "EcoTypes.h"
 #include "../allocator/Heap.hpp"  // NULL_CONS_MAX (HEAP_044)
 
 #include "mlir/IR/OpImplementation.h"
@@ -20,12 +19,6 @@
 
 using namespace mlir;
 using namespace eco;
-
-/// Helper to read the eco.gc_roots_count attribute from an operation.
-static unsigned getGCRootsCountAttr(Operation *op) {
-    auto attr = op->getAttrOfType<IntegerAttr>("eco.gc_roots_count");
-    return attr ? attr.getValue().getZExtValue() : 0;
-}
 
 //===----------------------------------------------------------------------===//
 // SymbolUserOpInterface: verifySymbolUses
@@ -57,8 +50,6 @@ LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
       return emitOpError("kernel function '") << funcName
              << "' has no func.func declaration; compiler must emit one (CGEN_057)";
   }
-  if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
-    return verifySymRef(*this, fast, symbolTable, "fast evaluator");
   return success();
 }
 
@@ -88,7 +79,7 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
     auto prev = dyn_cast<PapExtendOp>(def);
     if (!prev || !prev.getRemainingArityAttr())
       return success();
-    size_t prevReal = prev.getNewargs().size() - getGCRootsCountAttr(prev);
+    size_t prevReal = prev.getNewargs().size();
     if (static_cast<int64_t>(prevReal) >= prev.getRemainingArityAttr().getInt())
       return success();  // saturated: result is whatever the evaluator returned
     offset += prevReal;
@@ -96,20 +87,18 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
   }
   if (!create)
     return success();
-  // Two-clone closures: $cap takes (captures..., params...); $clo does not.
-  auto calleeSym = create->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-  if (!calleeSym)
-    calleeSym = create.getFunctionAttr();
+  // The evaluator (`$cap` for a capturing closure) takes
+  // (captures..., params...).
+  auto calleeSym = create.getFunctionAttr();
   auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, calleeSym);
   if (!callee)
     return success();
   auto inputs = callee.getFunctionType().getInputs();
   if (static_cast<uint64_t>(inputs.size()) != create.getArity())
     return success();  // not a captures+params evaluator layout
-  auto allNewargs = getNewargs();
-  size_t realCount = allNewargs.size() - getGCRootsCountAttr(getOperation());
-  for (size_t i = 0; i < realCount && offset + i < inputs.size(); ++i) {
-    Type actual = allNewargs[i].getType();
+  auto newargs = getNewargs();
+  for (size_t i = 0; i < newargs.size() && offset + i < inputs.size(); ++i) {
+    Type actual = newargs[i].getType();
     Type expected = inputs[offset + i];
     if (actual != expected)
       return emitOpError("CGEN_003: typed papExtend newarg ")
@@ -137,13 +126,7 @@ LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTa
                << "' has no func.func declaration; compiler must emit one (CGEN_057)";
     }
   }
-  for (Attribute a : getFastEvaluators()) {
-    auto sym = dyn_cast<FlatSymbolRefAttr>(a);
-    if (!sym)
-      return emitOpError("fast_evaluators attribute must contain FlatSymbolRefAttr entries");
-    if (failed(verifySymRef(*this, sym, symbolTable, "sibling fast evaluator")))
-      return failure();
-  }
+  // fast_evaluators equals functions (PapCreateGroupOp::verify).
   return success();
 }
 
@@ -427,7 +410,7 @@ static uint8_t fieldKind(Type t) {
 }
 
 
-/// Checks the operand types of `slots` (the fields; GC roots excluded) and
+/// Checks the operand types of `slots` (the fields) and
 /// `slot_kinds` (one entry per field) against them (REP_BOUNDARY_002).
 static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
                                      ArrayRef<int8_t> kinds, StringRef what) {
@@ -472,14 +455,11 @@ LogicalResult CustomConstructOp::verify() {
         "eco.constant.null_cons instead");
   }
 
-  // The fields operand list may contain GC live roots appended after the
-  // actual fields by EcoGCPrepare. The first `size` entries are fields;
-  // any beyond that are live roots (always !eco.value).
   int64_t size = getSize();
-  if (static_cast<int64_t>(getFields().size()) < size) {
+  if (static_cast<int64_t>(getFields().size()) != size) {
     return emitOpError("number of operands (")
            << getFields().size()
-           << ") must be at least size attribute ("
+           << ") must equal size attribute ("
            << size << ")";
   }
 
@@ -489,21 +469,18 @@ LogicalResult CustomConstructOp::verify() {
            << Elm::CUSTOM_MAX_FIELDS << "-field limit (HEAP_019)";
   }
 
-  return verifySlotKinds(getOperation(), getFields().take_front(size).getTypes(),
+  return verifySlotKinds(getOperation(), getFields().getTypes(),
                          getSlotKinds(), "field");
 }
 
 LogicalResult RecordConstructOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
-  // The fields operand list may contain GC live roots appended after the
-  // actual fields by EcoGCPrepare. The first `field_count` entries are
-  // fields; any beyond that are live roots (always !eco.value).
   int64_t fieldCount = getFieldCount();
-  if (static_cast<int64_t>(getFields().size()) < fieldCount) {
+  if (static_cast<int64_t>(getFields().size()) != fieldCount) {
     return emitOpError("number of operands (")
            << getFields().size()
-           << ") must be at least field_count attribute ("
+           << ") must equal field_count attribute ("
            << fieldCount << ")";
   }
 
@@ -516,7 +493,7 @@ LogicalResult RecordConstructOp::verify() {
 
   // REP_BOUNDARY_002: the lowering derives the kinds from the operand types,
   // so slot_kinds is a check of the front end's layout, never trusted.
-  return verifySlotKinds(getOperation(), getFields().take_front(fieldCount).getTypes(),
+  return verifySlotKinds(getOperation(), getFields().getTypes(),
                          getSlotKinds(), "field");
 }
 
@@ -569,14 +546,20 @@ static constexpr int64_t kClosureMaxCaptures = Elm::CLOSURE_MAX_ARITY - 1;
 LogicalResult PapCreateOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
+  // A capturing closure's evaluator is its `$cap` clone, named by both
+  // `function` and `_fast_evaluator`.
+  if (auto fast = get_fastEvaluatorAttr()) {
+    if (fast != getFunctionAttr())
+      return emitOpError("_fast_evaluator '") << fast.getValue()
+             << "' must equal function '" << getFunction() << "'";
+  }
+
   // Verify that num_captured matches the number of captured operands.
-  // Subtract appended GC roots from operand count.
   int64_t numCaptured = getNumCaptured();
-  unsigned rootCount = getGCRootsCountAttr(getOperation());
-  int64_t realCapturedCount = static_cast<int64_t>(getCaptured().size()) - rootCount;
-  if (realCapturedCount != numCaptured) {
+  int64_t capturedCount = static_cast<int64_t>(getCaptured().size());
+  if (capturedCount != numCaptured) {
     return emitOpError("number of captured operands (")
-           << realCapturedCount
+           << capturedCount
            << ") must match num_captured attribute ("
            << numCaptured << ")";
   }
@@ -602,10 +585,8 @@ LogicalResult PapCreateOp::verify() {
            << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // Per-slot kinds (CGEN_003). B22: only the real captures; getCaptured()
-  // also holds the GC-root operands EcoGCPrepare appends.
-  auto realCaptured = getCaptured().take_front(static_cast<size_t>(numCaptured));
-  if (failed(verifyClosureKinds(getOperation(), realCaptured, getSlotKinds(),
+  // Per-slot kinds (CGEN_003).
+  if (failed(verifyClosureKinds(getOperation(), getCaptured(), getSlotKinds(),
                                 "capture")))
     return failure();
 
@@ -616,24 +597,17 @@ LogicalResult PapCreateOp::verify() {
 LogicalResult PapExtendOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
-  auto allNewargs = getNewargs();
+  auto newargs = getNewargs();
 
-  // Subtract appended GC roots from newargs count.
-  unsigned rootCount = getGCRootsCountAttr(getOperation());
-  // Roots are appended to the full operand list (closure + newargs + roots),
-  // so the real newargs count is allNewargs.size() - rootCount.
-  size_t realNewargsCount = allNewargs.size() - rootCount;
-
-  if (realNewargsCount > static_cast<size_t>(kClosureMaxArity)) {
+  if (newargs.size() > static_cast<size_t>(kClosureMaxArity)) {
     return emitOpError("newargs count (")
-           << realNewargsCount
+           << newargs.size()
            << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // Per-slot kinds (CGEN_003) and REP_CLOSURE_001, real newargs only.
-  if (failed(verifyClosureKinds(getOperation(),
-                                allNewargs.take_front(realNewargsCount),
-                                getSlotKinds(), "newarg")))
+  // Per-slot kinds (CGEN_003) and REP_CLOSURE_001.
+  if (failed(verifyClosureKinds(getOperation(), newargs, getSlotKinds(),
+                                "newarg")))
     return failure();
 
   // === Generic mode: remaining_arity absent ===
@@ -696,6 +670,11 @@ LogicalResult PapCreateGroupOp::verify() {
     return emitOpError("per-sibling attribute arrays must all have length ")
            << numSiblings;
   }
+  // Each sibling's evaluator is its `$cap` clone, named by both arrays.
+  for (size_t i = 0; i < numSiblings; ++i)
+    if (functions[i] != fastEvaluators[i])
+      return emitOpError("functions[") << i << "] must equal fast_evaluators["
+             << i << "]";
   for (size_t i = 0; i < numSiblings; ++i)
     if (!isa<DenseI8ArrayAttr>(slotKinds[i]))
       return emitOpError("slot_kinds[") << i << "] must be a DenseI8ArrayAttr";
@@ -760,20 +739,17 @@ LogicalResult PapCreateGroupOp::verify() {
     totalCaptures += cc;
   }
 
-  // Operand partition: [captures..., roots...].
-  unsigned rootCount = getGCRootsCountAttr(getOperation());
-  int64_t realOperandCount =
-      static_cast<int64_t>(getOperands().size()) - rootCount;
-  if (realOperandCount != totalCaptures)
-    return emitOpError("operand count minus GC roots (")
-           << realOperandCount
+  int64_t operandCount = static_cast<int64_t>(getOperands().size());
+  if (operandCount != totalCaptures)
+    return emitOpError("operand count (")
+           << operandCount
            << ") must equal sum of capture_counts ("
            << totalCaptures << ")";
 
-  // Per-slot kind check on the captures prefix (mirrors papCreate).
+  // Per-slot kind check on the captures (mirrors papCreate).
   // Non-sibling captures occupy the low slots [0..cc); sibling captures
   // (cross-edge consumers) live at the remaining slots and are boxed.
-  auto captures = getOperands().take_front(totalCaptures);
+  auto captures = getOperands();
   size_t operandCursor = 0;
   for (size_t i = 0; i < numSiblings; ++i) {
     int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
@@ -841,16 +817,9 @@ LogicalResult CallOp::verify() {
   auto calleeAttr = getCalleeAttr();
   auto remainingArityAttr = getRemainingArityAttr();
 
-  // Subtract appended GC roots from operand count for verification.
-  unsigned rootCount = getGCRootsCountAttr(getOperation());
-  unsigned realOperandCount = operands.size() - rootCount;
-
-  // kernel-opt-12: the purity attr's structural preconditions. The rootCount
-  // arm makes the after-each-pass module verifier fire immediately after
-  // EcoGCPrepare if the strip there is ever removed -- but only where that
-  // verifier runs (ecoc, the JIT runner, validation builds; the release
-  // native driver and eco-boot disable it). EcoGCLivenessAudit (validation
-  // builds) also reports a surviving 'eco.cse_safe'.
+  // kernel-opt-12: the purity attr's structural preconditions. A surviving
+  // 'eco.cse_safe' after EcoGCPrepare is reported by EcoGCLivenessAudit
+  // (validation builds).
   if ((*this)->hasAttr(kCseSafeAttrName)) {
     if (!calleeAttr)
       return emitOpError("'eco.cse_safe' is only valid on a direct call "
@@ -858,9 +827,6 @@ LogicalResult CallOp::verify() {
     auto musttail = getMusttail();
     if (musttail && *musttail)
       return emitOpError("'eco.cse_safe' must not be set on a musttail call");
-    if (rootCount != 0)
-      return emitOpError("'eco.cse_safe' must not survive GC root attachment "
-                         "(a purity consumer is running after EcoGCPrepare)");
   }
 
   // Case 1: Direct call (callee present)
@@ -876,7 +842,7 @@ LogicalResult CallOp::verify() {
   }
 
   // Case 2: Indirect call (closure application)
-  if (realOperandCount == 0) {
+  if (operands.empty()) {
     return emitOpError("indirect call must have at least one operand (closure)");
   }
 
@@ -890,7 +856,7 @@ LogicalResult CallOp::verify() {
   }
 
   int64_t remainingArity = remainingArityAttr.getValue().getSExtValue();
-  unsigned numNewArgs = realOperandCount - 1;
+  unsigned numNewArgs = operands.size() - 1;
 
   if (remainingArity <= 0) {
     return emitOpError("remaining_arity must be > 0, got ") << remainingArity;
@@ -930,151 +896,6 @@ void CallOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
-// GCRootCarrier Interface Implementations
-//===----------------------------------------------------------------------===//
-
-// --- Pattern 1: Ops with dedicated $live_roots segment ---
-
-ValueRange AllocateOp::getGCRoots() { return getLiveRoots(); }
-void AllocateOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange AllocateStringOp::getGCRoots() { return getLiveRoots(); }
-void AllocateStringOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange AllocateClosureOp::getGCRoots() { return getLiveRoots(); }
-void AllocateClosureOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange BoxOp::getGCRoots() { return getLiveRoots(); }
-void BoxOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange ListConstructOp::getGCRoots() { return getLiveRoots(); }
-void ListConstructOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange Tuple2ConstructOp::getGCRoots() { return getLiveRoots(); }
-void Tuple2ConstructOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange Tuple3ConstructOp::getGCRoots() { return getLiveRoots(); }
-void Tuple3ConstructOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-// --- Pattern 2: Ops with roots appended after fields ---
-
-ValueRange RecordConstructOp::getGCRoots() {
-    int64_t fieldCount = getFieldCount();
-    auto all = getFields();
-    if (static_cast<int64_t>(all.size()) <= fieldCount) return {};
-    return all.drop_front(fieldCount);
-}
-void RecordConstructOp::setGCRoots(ValueRange newRoots) {
-    int64_t fieldCount = getFieldCount();
-    auto all = getFields();
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + fieldCount);
-    ops.append(newRoots.begin(), newRoots.end());
-    getFieldsMutable().clear(); getFieldsMutable().append(ops);
-}
-
-ValueRange CustomConstructOp::getGCRoots() {
-    int64_t sz = getSize();
-    auto all = getFields();
-    if (static_cast<int64_t>(all.size()) <= sz) return {};
-    return all.drop_front(sz);
-}
-void CustomConstructOp::setGCRoots(ValueRange newRoots) {
-    int64_t sz = getSize();
-    auto all = getFields();
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + sz);
-    ops.append(newRoots.begin(), newRoots.end());
-    getFieldsMutable().clear(); getFieldsMutable().append(ops);
-}
-
-// --- Pattern 3: Append-pattern ops (Call, PapExtend, PapCreate) ---
-
-ValueRange CallOp::getGCRoots() {
-    unsigned rootCount = getGCRootsCountAttr(getOperation());
-    if (rootCount == 0) return {};
-    auto all = getOperands();
-    return all.drop_front(all.size() - rootCount);
-}
-void CallOp::setGCRoots(ValueRange newRoots) {
-    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
-    auto all = getOperands();
-    unsigned nonRootCount = all.size() - oldRootCount;
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
-    ops.append(newRoots.begin(), newRoots.end());
-    getOperation()->setOperands(ops);
-    OpBuilder b(getOperation());
-    getOperation()->setAttr("eco.gc_roots_count",
-        b.getI64IntegerAttr(newRoots.size()));
-}
-
-ValueRange PapExtendOp::getGCRoots() {
-    unsigned rootCount = getGCRootsCountAttr(getOperation());
-    if (rootCount == 0) return {};
-    auto all = getOperation()->getOperands();
-    return all.drop_front(all.size() - rootCount);
-}
-void PapExtendOp::setGCRoots(ValueRange newRoots) {
-    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
-    auto all = getOperation()->getOperands();
-    unsigned nonRootCount = all.size() - oldRootCount;
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
-    ops.append(newRoots.begin(), newRoots.end());
-    getOperation()->setOperands(ops);
-    OpBuilder b(getOperation());
-    getOperation()->setAttr("eco.gc_roots_count",
-        b.getI64IntegerAttr(newRoots.size()));
-}
-
-ValueRange PapCreateOp::getGCRoots() {
-    unsigned rootCount = getGCRootsCountAttr(getOperation());
-    if (rootCount == 0) return {};
-    auto all = getOperation()->getOperands();
-    return all.drop_front(all.size() - rootCount);
-}
-void PapCreateOp::setGCRoots(ValueRange newRoots) {
-    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
-    auto all = getOperation()->getOperands();
-    unsigned nonRootCount = all.size() - oldRootCount;
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
-    ops.append(newRoots.begin(), newRoots.end());
-    getOperation()->setOperands(ops);
-    OpBuilder b(getOperation());
-    getOperation()->setAttr("eco.gc_roots_count",
-        b.getI64IntegerAttr(newRoots.size()));
-}
-
-ValueRange PapCreateGroupOp::getGCRoots() {
-    unsigned rootCount = getGCRootsCountAttr(getOperation());
-    if (rootCount == 0) return {};
-    auto all = getOperation()->getOperands();
-    return all.drop_front(all.size() - rootCount);
-}
-void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
-    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
-    auto all = getOperation()->getOperands();
-    unsigned nonRootCount = all.size() - oldRootCount;
-    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
-    ops.append(newRoots.begin(), newRoots.end());
-    getOperation()->setOperands(ops);
-    OpBuilder b(getOperation());
-    getOperation()->setAttr("eco.gc_roots_count",
-        b.getI64IntegerAttr(newRoots.size()));
-}
-
-//===----------------------------------------------------------------------===//
 // Projection Folders (kernel-opt-10)
 //===----------------------------------------------------------------------===//
 //
@@ -1099,9 +920,8 @@ void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
 // fold must bail. Type equality is exactly that test. (An i1 field is not
 // accepted: verifySlotKinds rejects it, Bool is boxed first — B14.)
 //
-// The index guard is against the DECLARED field count, never fields.size():
-// EcoGCPrepare splices root operands into the same variadic after the declared
-// fields, and a fold must never return a root.
+// The index guard is against the DECLARED field count (which the construct
+// verifiers tie to fields.size()).
 
 /// Shared guard: index within the declared field count and types identical.
 static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
@@ -1426,22 +1246,6 @@ LogicalResult MakeClosureOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Value-level Aggregate GCRootCarrier impls
-//===----------------------------------------------------------------------===//
-// Only the boundary ops (eco.to_heap, eco.make.closure) are GCRootCarriers;
-// the value-level eco.make.* ops are Pure with no live_roots.
-
-ValueRange ToHeapOp::getGCRoots() { return getLiveRoots(); }
-void ToHeapOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-ValueRange MakeClosureOp::getGCRoots() { return getLiveRoots(); }
-void MakeClosureOp::setGCRoots(ValueRange newRoots) {
-    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
-}
-
-//===----------------------------------------------------------------------===//
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
@@ -1658,9 +1462,6 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
 
 // Include enum definitions.
 #include "eco/EcoEnums.cpp.inc"
-
-// Include generated OpInterface definitions.
-#include "eco/EcoOpInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "eco/EcoOps.cpp.inc"

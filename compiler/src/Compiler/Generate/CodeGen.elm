@@ -2,16 +2,14 @@ module Compiler.Generate.CodeGen exposing
     ( Output(..), outputToString
     , SourceMaps(..)
     , Mains
-    , CodeGen, MonoCodeGen, MonoCodeGenConfig
+    , CodeGen
     )
 
 {-| Backend interface definitions for code generation.
 
-This module defines the abstract interface that all compiler backends must implement.
-It supports two backend types based on the level of type information needed:
-
-1.  CodeGen - Standard backends working with optimized AST (JavaScript)
-2.  MonoCodeGen - Backends working with fully monomorphized IR (MLIR)
+This module defines the interface the JavaScript backend implements over the
+optimized AST. The MLIR backend streams its output instead
+(`Compiler.Generate.MLIR.Backend`).
 
 
 # Output Types
@@ -31,12 +29,11 @@ It supports two backend types based on the level of type information needed:
 
 # Backend Interfaces
 
-@docs CodeGen, MonoCodeGen, MonoCodeGenConfig
+@docs CodeGen
 
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -120,27 +117,3 @@ type SourceMaps
     = NoSourceMaps
     | SourceMaps (Dict String ModuleName.Canonical String)
 
-
-
--- ====== TYPED CODE GEN ======
--- Interface for backends that need full type information (e.g., MLIR)
--- ====== MONO CODE GEN ======
--- Interface for backends that work with fully monomorphized IR
-
-
-{-| Backend interface for code generators that work with fully monomorphized IR where all polymorphism has been resolved to concrete types.
--}
-type alias MonoCodeGen =
-    { -- Generate a complete program from the monomorphized graph
-      generate : MonoCodeGenConfig -> Output
-    }
-
-
-{-| Configuration for monomorphized code generation.
--}
-type alias MonoCodeGenConfig =
-    { sourceMaps : SourceMaps
-    , leadingLines : Int
-    , mode : Mode.Mode
-    , graph : Mono.MonoGraph
-    }

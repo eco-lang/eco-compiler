@@ -81,8 +81,6 @@ void loadRequiredDialects(MLIRContext &context) {
 
 void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
-    // TODO: Add construct lowering pass.
-    // pm.addPass(eco::createConstructLoweringPass());
     pm.addPass(eco::createRCEliminationPass());
 
 #ifdef ECO_LOWERING_VALIDATION
@@ -140,27 +138,21 @@ void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Chunked-list Tier-B templates: rewrite cons-accumulation loops to
     // scratch-stack chunk builds. Runs after SCF conversion (needs
     // scf.while / scf.if) and before EcoGCPrepare (the inserted runtime
-    // calls take part in normal root/safepoint analysis). No-op without
+    // calls take part in normal allocation grouping). No-op without
     // the eco.list_chunks function attribute.
     pm.addPass(eco::createEcoListTemplatePass());
     // M4/4b (measured): the func-level canonicalizer here was removed. Effect:
     // MLIR phase -~0.5s, exe +~0.28%, produced functional output byte-identical.
-    // Safe because (1) LLVM's downstream pipeline re-canonicalizes anyway, and
-    // (2) fewer pre-GC folds can only make EcoGCPrepare's liveness MORE
-    // conservative (more live values => over-rooting, which is GC-SAFE — the
-    // unsafe direction is under-rooting). Validated by the full E2E + self-host
-    // byte-identity gate. Re-add createCanonicalizerPass() here if any GC or
+    // Safe because LLVM's downstream pipeline re-canonicalizes anyway, and
+    // GC roots are computed later by RS4GC, not here. Validated by the full
+    // E2E + self-host byte-identity gate. Re-add createCanonicalizerPass() here if any GC or
     // codegen regression appears.
     // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
     // Kernel-opt-10 (M4 slot): the module pass EcoFoldProject (default-on) and
     // a func-nested CSE (default-off, ECO_MLIR_CSE=1). They MUST stay before
-    // EcoGCPrepare: that pass appends root operands to carrier ops, after
-    // which "structurally identical" ops differ by root set and CSE would
-    // either miss every merge or merge ops with different root sets. Running
-    // here is GC-safe by the M4 argument above — fewer/earlier pure ops can
-    // only make liveness MORE conservative, and over-rooting is the safe
-    // direction.
+    // EcoGCPrepare, which strips the `eco.cse_safe` purity attr CSE relies on
+    // (the ordering rule below).
     //
     // kernel-opt-12 ordering rule, reproduced verbatim as that plan requires:
     // purity consumers MAY run anywhere in buildEcoToEcoPipeline or in
@@ -184,7 +176,7 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // run) and `--emit=mlir-llvm` too late (the ops are gone).
     buildEcoToOptPipeline(pm, opts);
 
-    // Stage 2.5: GC preparation (MLIR-level root sets, allocation grouping).
+    // Stage 2.5: GC preparation (allocation grouping, cse_safe fence).
     // Publish the per-callee cannot-GC fact as a call-local attr first: by here
     // every kernel decl exists and every kernel call site is final (both
     // EcoCompareCaseRewrite, which can mint Elm_Kernel_Utils_cmp3, and
@@ -200,8 +192,8 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addPass(eco::createEcoToLLVMPass());
     // Mixed-spine cursors: rewrite list-walking scf.while loops to
     // (node, idx) stepping. Must run after EcoToLLVM (projections are
-    // marker calls; EcoGCPrepare is done, so nothing statepoints the new
-    // per-step ops) and before the SCF tail conversions. No-op flag-off.
+    // marker calls; EcoGCPrepare is done, so the new per-step ops are not
+    // grouped) and before the SCF tail conversions. No-op flag-off.
     pm.addPass(eco::createEcoListCursorPass());
 #ifdef ECO_LOWERING_VALIDATION
     // Insert stale-HPointer barriers in front of direct boxed-slot stores

@@ -127,13 +127,15 @@ constexpr size_t UTF8_VIEW_MIN_LEN = 32;
 // every creation path falls back to the UTF-16 forms — a config-only rollback.
 constexpr bool UTF8_STRINGS_ENABLED = true;
 
-// Rope tree depth above which the rebalance heuristic flags the rope (rebalance itself is TODO).
+// NO EFFECT: read by nothing since the empty rebalance branch of StringOps' flatten
+// decision was deleted (rope rebalancing is unimplemented); still an accepted key.
+// Was: rope tree depth above which a rebalance heuristic would flag the rope.
 constexpr u32 ROPE_MAX_HEIGHT = 32;
 
-// Leaf count above which the rebalance heuristic checks for too-many-small-leaves (paired with ROPE_MIN_LEAF_SIZE).
+// NO EFFECT (as ROPE_MAX_HEIGHT). Was: leaf count above which a rebalance heuristic would check for too-many-small-leaves.
 constexpr u32 ROPE_LEAF_COUNT_LIMIT = 64;
 
-// Average leaf size below which a rope at/over ROPE_LEAF_COUNT_LIMIT is flagged as a rebalance candidate.
+// NO EFFECT (as ROPE_MAX_HEIGHT). Was: average leaf size below which a rope at/over ROPE_LEAF_COUNT_LIMIT would be a rebalance candidate.
 constexpr u32 ROPE_MIN_LEAF_SIZE = 128;
 
 // ---- Nursery ----
@@ -386,17 +388,13 @@ constexpr double LIVE_GROWTH_BOUND = 1.5;
 // Default cap on bytes committed to uniform small-class pages before splitting larger free cells.
 constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;
 
-// ---- Old-gen sweep & mark pacing ----
+// ---- Old-gen sweep pacing ----
 
 // Bytes of lazy-sweep work the allocator does per slow-path invocation (per slice).
 constexpr size_t SWEEP_WORK_BUDGET = 4096;
 
 // Bytes of sweep work `finishMarkAndSweep` runs synchronously before returning (seeds free lists for the first allocations).
 constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
-
-// NO EFFECT (W0 item 13): HeapConfig::mark_work_ratio is parsed and validated but never read.
-// Allocation-paced marking was removed; marking is driven by its own steps, never per allocation.
-constexpr size_t MARK_WORK_RATIO = 2;
 
 // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested), pre pressure scaling.
 constexpr double SWEEP_BYTES_PER_ALLOC_BYTE = 2.0;
@@ -744,13 +742,13 @@ struct HeapConfig {
     // Master switch: when false, no UTF-8 String form is ever created.
     bool utf8_strings_enabled = UTF8_STRINGS_ENABLED;
 
-    // Rope tree depth above which the rebalance heuristic flags the rope.
+    // NO EFFECT: read by nothing (rope rebalancing is unimplemented; see ROPE_MAX_HEIGHT).
     u32 rope_max_height = ROPE_MAX_HEIGHT;
 
-    // Leaf count above which the rebalance heuristic checks for too-many-small-leaves.
+    // NO EFFECT: read by nothing (see ROPE_MAX_HEIGHT).
     u32 rope_leaf_count_limit = ROPE_LEAF_COUNT_LIMIT;
 
-    // Average leaf size below which a rope at/over rope_leaf_count_limit is flagged as a rebalance candidate.
+    // NO EFFECT: read by nothing (see ROPE_MAX_HEIGHT).
     u32 rope_min_leaf_size = ROPE_MIN_LEAF_SIZE;
 
     // ---- Nursery ----
@@ -877,7 +875,7 @@ struct HeapConfig {
     // Cell-size cap that defines "small" for budgeting; allocations larger than this are not budgeted.
     size_t small_class_cell_max_bytes = LARGE_OBJECT_THRESHOLD;
 
-    // ---- Old-gen sweep & mark pacing ----
+    // ---- Old-gen sweep pacing ----
 
     // Bytes of lazy-sweep work the allocator does per slow-path invocation.
     size_t sweep_work_budget = SWEEP_WORK_BUDGET;
@@ -894,12 +892,6 @@ struct HeapConfig {
 
     // Bytes of sweep work finishMarkAndSweep runs synchronously before returning.
     size_t initial_sweep_budget = INITIAL_SWEEP_BUDGET;
-
-    // NO EFFECT (W0 item 13). Its only reader was the allocation-paced marking
-    // branch in OldGenSpace::allocate, which was dead (gc_phase_ is never
-    // Marking) and has been removed. Kept as an accepted key so existing
-    // heap-config files still parse; validate() still rejects 0.
-    size_t mark_work_ratio = MARK_WORK_RATIO;
 
     // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested).
     double sweep_bytes_per_alloc_byte = SWEEP_BYTES_PER_ALLOC_BYTE;
@@ -1474,9 +1466,6 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "initial_sweep_budget must be >= sweep_work_budget "
                 "(at least one slice per startup pass)");
-        }
-        if (mark_work_ratio < 1) {
-            throw std::invalid_argument("mark_work_ratio must be >= 1");
         }
         if (sweep_bytes_per_alloc_byte <= 0.0) {
             throw std::invalid_argument(

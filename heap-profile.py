@@ -223,11 +223,10 @@ BASELINE_HEAP = {
     # Small-class page budgeting.
     "small_class_heap_budget_bytes":     "1G",
     "small_class_cell_max_bytes":        "8K",
-    # Old-gen sweep pacing. mark_work_ratio has no effect (kept so old files parse).
+    # Old-gen sweep pacing.
     "sweep_work_budget":                 "4K",
     "minor_sweep_divisor":               1,
     "initial_sweep_budget":              "64K",
-    "mark_work_ratio":                   2,
     "sweep_bytes_per_alloc_byte":        2.0,
     "max_sweep_bytes_per_alloc":         "1M",
     "max_sweep_bytes_hard":              "4M",
@@ -495,23 +494,13 @@ def _full_bootstrap_to_stage6() -> None:
         shutil.rmtree(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    compiler_dir = REPO_ROOT / "compiler"
     env = _bootstrap_env()
 
-    print("[heap-profile] Stage 1: stock Elm → build-xhr/bin/guida.js",
-          flush=True)
-    subprocess.run(["./scripts/build.sh", "bin"],
-                   cwd=compiler_dir, env=env, check=True)
-
-    print("[heap-profile] Stage 2: guida.js → build-kernel/bin/eco-boot.js",
-          flush=True)
-    subprocess.run(["./scripts/build-self.sh", "bin"],
-                   cwd=compiler_dir, env=env, check=True)
-
-    print("[heap-profile] Stages 3+4: fixed-point verification "
-          "(eco-boot-2.js, eco-boot-3.js)", flush=True)
-    subprocess.run(["./scripts/build-verify.sh"],
-                   cwd=compiler_dir, env=env, check=True)
+    print("[heap-profile] Stages 1-4: guida.js, eco-boot.js and the JS "
+          "fixed-point check (cmake --target eco-boot-verify)", flush=True)
+    subprocess.run(["cmake", "--build", str(REPO_ROOT / "build"),
+                    "--target", "eco-boot-verify"],
+                   cwd=REPO_ROOT, env=env, check=True)
 
     eco_stuff = BUILD_KERNEL / "eco-stuff"
     if eco_stuff.exists():
@@ -525,7 +514,7 @@ def _full_bootstrap_to_stage6() -> None:
           flush=True)
     if not ECO_BOOT_2_RUNNER.exists():
         sys.exit(f"ERROR: {ECO_BOOT_2_RUNNER} not found after Stages 3+4; "
-                 "build-verify.sh did not produce the runner.")
+                 "eco-boot-verify did not produce the runner.")
     subprocess.run(
         ["node", "--stack-size=65536", str(ECO_BOOT_2_RUNNER), "make",
          "--optimize",

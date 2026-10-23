@@ -5,12 +5,9 @@
 // under kernel-opt-08's `kernelGcLeaf` flag) onto each DIRECT eco.call as the
 // call-local unit attr `eco.callee_gc_leaf`.
 //
-// Why a separate module pass rather than a lookup inside EcoGCPrepare: that
-// pass's mirror consumer, EcoGCLivenessAudit, is a NESTED func::FuncOp pass and
-// must not inspect sibling func.func ops. One module walk here gives both
-// consumers a call-local bit they can read without leaving their anchor op,
-// which is also what keeps the two from drifting apart — a validator build that
-// disagreed with the transform build would fail with false positives.
+// Its only consumer is EcoGCPrepare's merge census (ECO_GCPREPARE_CENSUS),
+// which classifies a window holding only stamped calls as one an allocation
+// could legally cross.
 //
 // The attr is advisory: nothing downstream is REQUIRED to honour it, and every
 // consumer is independently gated. Whitelist discipline — a call the pass does
@@ -50,9 +47,7 @@ struct EcoMarkGCLeafCallsPass
 
         // CROSS-PLAN CONTRACT with kernel-opt-08: ECO_KERNEL_GCLEAF=0 means
         // "the backend ignores eco.gc_leaf ENTIRELY without recompiling the
-        // .mlir". Honouring it here is what keeps that switch whole — otherwise
-        // 08 would stop attaching gc-leaf-function while 09's consumers kept
-        // de-safepointing off the same fact.
+        // .mlir". Honouring it here is what keeps that switch whole.
         if (!eco::detail::kernelGcLeafEnabled())
             return;
 

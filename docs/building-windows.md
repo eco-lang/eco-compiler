@@ -139,9 +139,6 @@ when invoked:
 - **Symbolic links via `file(CREATE_LINK ... SYMBOLIC)`** — replaced by
   NTFS junctions (`mklink /J`) which require no privileges. See
   `cmake/EcoCreateDirLink.cmake`.
-- **`ecor` allocator test runner** — POSIX-only (`getopt_long`,
-  `popen("addr2line")`); the test/JIT/AOT suites cover the same GC paths
-  on Windows.
 
 [win-aot]: ../.github/workflows/win-aot.yml
 [win-llvm-build]: ../.github/workflows/win-llvm-build.yml

@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts, withMapTemplates
-    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , hasKernelImplementation
@@ -23,12 +23,12 @@ state during MLIR code generation.
 
 # Context Management
 
-@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withOracleFacts, withMapTemplates
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates
 
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
 
 
 # Type Registration
@@ -65,7 +65,6 @@ import Compiler.Eco.Config as Config
 import Compiler.Generate.MLIR.KernelAbi as KernelAbi
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
-import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Dict
@@ -219,7 +218,7 @@ type alias Context =
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , currentFuncName : String -- diagnostics only: the func being generated (crash context)
     , localEvaluatorParams : Dict.Dict String (List MlirType) -- Let-bound locals aliasing a known global/kernel function: the ABI param types of the evaluator its closure runs (CGEN_003 closure-boundary boxing)
-    , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
+    , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
     , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
     , nullConsBySpec : Dict.Dict Int Int -- HEAP_044/CGEN_079: SpecId -> effective tag for nullary-ctor/enum specs that embed as null-cons constants; generateVarGlobal emits the constant instead of the arity-0 call (a perf layer — the specs' func.funcs still return the same constant)
@@ -253,13 +252,6 @@ type alias Context =
     -- `MapTemplate.derive` and installed at codegen entry; `MapTemplate.empty`
     -- when `list.mapTemplate` is off, which is what makes a flag-off compile
     -- byte-identical. A missing entry means "no licence" — never a proof.
-    , oracleFacts : BorrowFacts.OracleFacts
-
-    -- ^ OC0.3 (plans/borrow-oracle-consumers.md): distilled borrow-oracle
-    -- facts (SpecId/LSS-member-keyed borrowed-param sets), derived from the
-    -- FINAL post-CafHoist graph via `Borrow.deriveFacts` and installed at
-    -- codegen entry ONLY under `borrow.oracleOpt`. Empty otherwise;
-    -- consumers must treat empty as "no facts", never as a proof.
     }
 
 
@@ -332,7 +324,6 @@ initContext mode registry signatures initialCtorShapes =
     , sretTailLayout = Nothing
     , ecoConfig = Config.default
     , mapTemplates = MapTemplate.empty
-    , oracleFacts = BorrowFacts.emptyFacts
     }
 
 
@@ -392,16 +383,6 @@ codegen entry. Call with `MapTemplate.derive` output; defaults to
 withMapTemplates : MapTemplate.Templates -> Context -> Context
 withMapTemplates t ctx =
     { ctx | mapTemplates = t }
-
-
-{-| OC0.3 (plans/borrow-oracle-consumers.md): install the distilled
-borrow-oracle facts at codegen entry. Call with `Borrow.deriveFacts` output
-under `borrow.oracleOpt`, `BorrowFacts.emptyFacts` otherwise; defaults to
-empty when not called.
--}
-withOracleFacts : BorrowFacts.OracleFacts -> Context -> Context
-withOracleFacts facts ctx =
-    { ctx | oracleFacts = facts }
 
 
 {-| Empty type registry for initialization.
@@ -664,39 +645,6 @@ initial SSA variable names (e.g. function parameters and captures).
 resetDefinedSsaVars : List String -> Context -> Context
 resetDefinedSsaVars initialVars ctx =
     { ctx | definedSsaVars = Set.fromList initialVars }
-
-
-{-| Phase 2 probe: return an empty front-end GC root hint set, letting
-EcoGCPrepare's MLIR `Liveness` analysis alone drive root attachment at
-each GCRootCarrier op. The conservative all-in-scope hint set landed in
-Phase 1 (full closure of `varMappings` filtered by `definedSsaVars`) is
-kept as documentation below for reference; flip back to it if the
-EcoGCLivenessAudit pass surfaces missing roots that liveness cannot
-recover on its own.
-
-    -- Conservative Phase 1 implementation (restore by inverting the body):
-    --     ctx.varMappings
-    --         |> Dict.values
-    --         |> List.filterMap
-    --             (\info ->
-    --                 if Set.member info.ssaVar ctx.definedSsaVars then
-    --                     case info.mlirType of
-    --                         NamedStruct "eco.value" ->
-    --                             Just ( info.ssaVar, info.mlirType )
-    --
-    --                         _ ->
-    --                             Nothing
-    --
-    --                 else
-    --                     Nothing
-    --             )
-
-
-
--}
-liveEcoValueVars : List ( String, MlirType )
-liveEcoValueVars =
-    []
 
 
 {-| Cache a let-bound expression for BytesFusion decoder resolution.

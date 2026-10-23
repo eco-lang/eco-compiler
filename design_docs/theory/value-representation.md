@@ -180,7 +180,7 @@ Code:
 - `runtime/src/codegen/Passes/EcoToLLVMHeap.cpp`: `BoxOpLowering`, `UnboxOpLowering`, the `static_assert`s on the encoding.
 - `runtime/src/codegen/Passes/EcoToLLVMInternal.h`: `value_enc`, the storage-boundary helpers (`heapStoreValueToI64`, `closureLoadI64ToValue`, `caseScrutineeToI64`).
 - `runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp`: `EcoTypeConverter` (`!eco.value` to `ptr addrspace(1)`).
-- `runtime/src/codegen/EcoTypes.cpp`, `EcoTypes.h`: empty; the eco types are declared in `Ops.td` and registered in `EcoDialect.cpp`.
+- `runtime/src/codegen/EcoDialect.h`, `EcoDialect.cpp`: the eco types are declared in `Ops.td` and registered with the dialect here.
 - `elm-kernel-cpp/src/core/CharExports.cpp`: `Char.fromCode` clamping.
 - `test/allocator/HPointerLayoutTest.cpp`: the exact-word test. `test/mlir_equivalence_main.cpp`: the MLIR-equivalence runner.
 - Build settings: `ECO_HEAP_VALIDATE` or a Debug build for the validator asserts; `ECO_GC_DEBUG_LIVENESS` for `EcoPtrIntVerify`.

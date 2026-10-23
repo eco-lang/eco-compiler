@@ -104,7 +104,7 @@ jobs:
         run: npm install -g pnpm
         shell: pwsh
 
-      - name: Install rapidcheck (configure-time dep of ecor)
+      - name: Install rapidcheck (configure-time dep of the test tree)
         shell: pwsh
         run: |
           git clone --depth=1 https://github.com/emil-e/rapidcheck.git $env:RUNNER_TEMP\rapidcheck

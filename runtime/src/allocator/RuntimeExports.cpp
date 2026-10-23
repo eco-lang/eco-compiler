@@ -999,7 +999,7 @@ extern "C" void eco_closure_stats_dump(void) { closureStatsDumpImpl(); }
 //   2. eco_closure_call_saturated()'s K==0 boxed-result direct call.
 // Recording `sat` at those two points counts every saturated indirect call
 // EXACTLY ONCE regardless of how the site was lowered — the generic/unknown-
-// saturation funnel (eco_apply_closure_eval / eco_apply_segmentation_unknown),
+// saturation funnel (eco_apply_closure_eval),
 // the typed statically-known-saturation path (emitInlineClosureCall ->
 // eco_closure_call_saturated{,_eval}), C++ kernel callers, and thunk force.
 //
@@ -1168,8 +1168,8 @@ extern "C" void eco_dispatch_stats_dump(void) { dispatchStatsDumpImpl(); }
 // Lowering-time hook (LSS plan E0.4): the MLIR lowering emits a call to this
 // immediately before a stamped fast-dispatch `$cap` call when
 // ECO_LSS_DISPATCH_SITE_COUNTERS is set at lowering time, passing the closure's
-// generic-clone ($clo) symbol so the fast row keys to the same fp the sat rows
-// use. Allocation-free / GC-leaf.
+// live evaluator pointer so the fast row keys to the same fp the sat rows use.
+// Allocation-free / GC-leaf.
 extern "C" void eco_dispatch_stats_fast(void* evaluator_fp) {
     dispatchStatsRecord(evaluator_fp, DispatchKind::Fast);
 }
@@ -2339,77 +2339,6 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
 
 } // anonymous namespace
 
-// NOTE (plans/gc-root-registration-cost.md Phase 4, second correction):
-// no LOWERING emits a call to this — the decline census records zero events
-// and `getOrCreateApplySegmentationUnknown` has been deleted — but
-// test/allocator/EcoApplyClosureTypedTest.cpp exercises it directly, so the
-// definition stays. Only the dead codegen-side wiring was removed.
-// Phase D Part 2: typed-args entry point for segmentation-unknown apply.
-//
-// Takes a single typed `int64_t*` buffer plus an `EvalParamLayout` (instead
-// of the previous dual buffer + bitmap form). The runtime decides at the
-// closure header whether the call is under- or saturated, and routes:
-//
-//   under-saturated  → eco_pap_extend_l (with the caller's layout)
-//   saturated/over   → eco_apply_closure_typed (which centralises any
-//                      necessary primitive re-boxing for the saturated path)
-//
-// `args_layout` may be null only for the all-boxed fallback case; every
-// emitter today passes a non-null layout.
-extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
-                                               int64_t* typed_args,
-                                               uint32_t num_args,
-                                               const EvalParamLayout* args_layout) {
-    uint64_t closure_bits = closure_hptr.toBits();
-    void* closure_ptr = hpointerToPtr(closure_bits);
-    if (!closure_ptr) return HPtr::fromBits(0);
-
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-    uint32_t max_values = closure->max_values;
-
-    // DIAG: Check for corrupted closure header
-    if (max_values == 0 || max_values > CLOSURE_MAX_ARITY) {
-        uint64_t packed;
-        memcpy(&packed, reinterpret_cast<char*>(closure_ptr) + 8, sizeof(packed));
-        // Check if the closure has been forwarded (GC moved it)
-        fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
-                closure_bits, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
-        fprintf(stderr, "  header: color=%u pin=%u age=%u unboxed=%u size=%u\n",
-                closure->header.color, closure->header.pin,
-                closure->header.age, closure->header.unboxed, closure->header.size);
-        fprintf(stderr, "  evaluator=%p\n", (void*)closure->evaluator);
-        fflush(stderr);
-        // Abort early so we get the full output before the assertion
-        abort();
-    }
-    uint32_t remaining = max_values - n_values;
-
-    // Root closure_bits across the inner call.
-    EcoRootMark saved_range = ecoRootMark();
-    ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
-    HPtr result;
-
-    if (num_args < remaining) {
-        // Under-saturated: hand the typed args and their layout to
-        // eco_pap_extend_l, which roots them by caller kind and converts
-        // each one to its slot kind.
-        result = eco_pap_extend_l(HPtr::fromBits(closure_bits),
-                                  reinterpret_cast<uint64_t*>(typed_args),
-                                  num_args, args_layout);
-    } else {
-        // Saturated/over-saturated: forward to the typed-apply entry point,
-        // which reaches eco_apply_closure_eval; the `gen`+`sat` are recorded
-        // there.
-        // which centralises any required primitive re-boxing before invoking
-        // the evaluator. No parallel boxed buffer is needed.
-        result = eco_apply_closure_typed(HPtr::fromBits(closure_bits),
-                                         typed_args, num_args, args_layout);
-    }
-
-    ecoRootRelease(saved_range);
-    return result;
-}
 // Phase E: canonical generic-apply entry point with typed result delivery.
 //
 // Args interpretation is fully typed per REP_ABI_001:

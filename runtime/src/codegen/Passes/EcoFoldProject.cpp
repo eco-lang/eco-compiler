@@ -10,9 +10,7 @@
 // regression the pipeline removed. This is one linear walk.
 //
 // Runs at the M4 slot (module pass, functions in parallel chunks; plan 07 P1),
-// BEFORE EcoGCPrepare — after that pass the
-// construct's operand list carries appended root operands, and (worse) the
-// projections this pass deletes would already be baked into root sets.
+// BEFORE EcoGCPrepare.
 //
 //===----------------------------------------------------------------------===//
 

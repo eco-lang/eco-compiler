@@ -1224,39 +1224,19 @@ struct EcoCFContext {
 std::vector<uint16_t> utf8ToUtf16(llvm::StringRef utf8);
 
 //===----------------------------------------------------------------------===//
-// Allocation with Safepoint Marker
+// Allocation Call
 //===----------------------------------------------------------------------===//
 
-/// Emit a safepoint marker + allocation call. The liveRoots parameter
-/// contains pre-converted (i64) GC roots from the op adaptor — these were
-/// computed by EcoGCPrepare at the Eco IR level and carried as explicit
-/// operands through type conversion. Lowering must NOT recompute liveness.
-/// No block splitting — safe to use inside structured regions (scf.if etc).
+/// Emit the runtime allocation call for `op`. No safepoint marker and no
+/// root list: RS4GC inserts the statepoint and computes the live GC roots
+/// from LLVM liveness (CGEN_077(b)). No block splitting — safe to use inside
+/// structured regions (scf.if etc).
 mlir::Value emitAllocWithSafepoint(
     mlir::Operation *op,
     mlir::ConversionPatternRewriter &rewriter,
     const EcoRuntime &runtime,
     mlir::LLVM::LLVMFuncOp allocFunc,
-    mlir::ValueRange args,
-    mlir::ValueRange liveRoots);
-
-/// Emit a safepoint marker before a call. Like emitAllocWithSafepoint but
-/// does NOT emit the call itself — the caller is responsible for creating
-/// the actual LLVM call after this returns. This allows the marker to be
-/// placed before direct calls, indirect calls, or func::CallOps.
-void emitSafepointMarker(
-    mlir::Operation *op,
-    mlir::ConversionPatternRewriter &rewriter,
-    const EcoRuntime &runtime,
-    mlir::ValueRange liveRoots);
-
-/// No-op stub (RS4GC handles safepoint insertion automatically).
-/// Retained for API compatibility with existing call sites.
-void emitWrapperSafepointMarker(
-    mlir::OpBuilder &builder,
-    const EcoRuntime &runtime,
-    mlir::Location loc,
-    mlir::ValueRange liveRoots);
+    mlir::ValueRange args);
 
 //===----------------------------------------------------------------------===//
 // Pattern Population Functions (Internal)
@@ -1282,13 +1262,6 @@ void lowerAllocGroups(mlir::ModuleOp module, const EcoRuntime &runtime);
 /// that itself contains one). Used by `make.*` boxing decision: nest
 /// when false (no `ptr<1>` inside the nested FCA), box when true.
 bool containsGCPointer(mlir::Type t);
-
-/// If `v` is an Eco-aggregate-typed SSA value
-/// (tuple2/tuple3/record/custom/cons), emit `eco.to_heap` to box it into
-/// a fresh `!eco.value` and return that. Otherwise return `v` unchanged.
-/// `liveRoots` is forwarded to the inserted `eco.to_heap`.
-mlir::Value materialiseAsBoxed(mlir::OpBuilder &b, mlir::Location loc,
-                                mlir::Value v, mlir::ValueRange liveRoots);
 
 /// Populate patterns for heap operations (box, unbox, allocate, construct, project).
 void populateEcoHeapPatterns(

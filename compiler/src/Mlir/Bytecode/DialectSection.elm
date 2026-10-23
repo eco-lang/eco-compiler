@@ -1,5 +1,5 @@
 module Mlir.Bytecode.DialectSection exposing
-    ( DialectRegistry, collect, opIndex, dialectIndex, encode
+    ( DialectRegistry, opIndex, dialectIndex, encode
     , OpGroup, buildRegistry, registryFromOpMap
     )
 
@@ -22,11 +22,11 @@ module is checked: a name that was never added gets the index -1, which
 `Mlir.Bytecode.VarInt.encodeVarInt` writes like any other number, so a missed
 name makes a corrupt file rather than an error.
 
-`collect` numbers every operation name of a whole module at once.
 `buildRegistry` and `registryFromOpMap` make a registry from numberings worked
-out elsewhere.
+out elsewhere (`Mlir.Bytecode.StreamEncode` numbers operation names as it
+meets them).
 
-@docs DialectRegistry, collect, opIndex, dialectIndex, encode
+@docs DialectRegistry, opIndex, dialectIndex, encode
 @docs OpGroup, buildRegistry, registryFromOpMap
 
 -}
@@ -35,25 +35,14 @@ import Bytes.Encode as BE
 import Dict exposing (Dict)
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
 import Mlir.Bytecode.VarInt exposing (encodeVarInt)
-import Mlir.Mlir
-    exposing
-        ( MlirBlock
-        , MlirModule
-        , MlirOp
-        , MlirRegion(..)
-        )
-import OrderedDict
 
 
 {-| A numbering of dialects and operation names, together with the op groups
 the dialect section lists them in.
 
 `opIndex` and `dialectIndex` look the numbers up, and `encode` writes the
-section. A registry from `collect` lists every operation name in the module it
-was built from, and `builtin.module`, and numbers each by its position in the
-section; `opIndex` finds all of them except a name with no `.`, for the reason
-`collect` gives. One from `buildRegistry` holds exactly what it was given,
-unchecked. One from `registryFromOpMap` answers only `opIndex`.
+section. One from `buildRegistry` holds exactly what it was given, unchecked.
+One from `registryFromOpMap` answers only `opIndex`.
 
 -}
 type DialectRegistry
@@ -68,10 +57,9 @@ type DialectRegistry
 {-| One op group of the dialect section: a dialect, given by its index, and
 suffixes of that dialect's operation names, in the order they are written.
 
-`opNames` holds suffixes, not full names: `func` for `func.func`. A registry
-from `collect` has one group per dialect, but `encode` writes whatever groups a
-registry holds, and one from `buildRegistry` may hold several groups for the
-same dialect.
+`opNames` holds suffixes, not full names: `func` for `func.func`. `encode`
+writes whatever groups a registry holds, and one from `buildRegistry` may hold
+several groups for the same dialect.
 
 -}
 type alias OpGroup =
@@ -104,206 +92,6 @@ dialectIndex name (DialectRegistry reg) =
 
         Nothing ->
             -1
-
-
-{-| Builds the registry for `mod`: the name of every operation in its body and
-in the regions nested inside them, and `builtin.module`, which is added whether
-or not `mod` contains one.
-
-There is one op group per dialect. Dialects are listed in ascending order of
-their names, except that `builtin`, when no operation in `mod` belongs to it,
-is added last. Within a group each suffix is listed once, in the order a walk
-first meets it: an operation before its regions, a region's entry block before
-its other blocks, and a block's body before its terminator. `module` is added
-at the end of the `builtin` group unless the walk met it. Operation names are
-numbered from 0 in that listing order.
-
-A name with no `.` is listed as a dialect with an empty suffix, but its index
-is kept under the name followed by a `.`, so `opIndex` given the name itself
-returns -1.
-
--}
-collect : MlirModule -> DialectRegistry
-collect mod =
-    let
-        groups =
-            collectOpNames mod
-
-        groupsWithBuiltin =
-            ensureBuiltinModule groups
-
-        dialectList =
-            List.map .dialect groupsWithBuiltin
-
-        dialectIdxMap =
-            dialectList
-                |> List.indexedMap (\i d -> ( d, i ))
-                |> Dict.fromList
-
-        opGroups =
-            groupsWithBuiltin
-                |> List.map
-                    (\g ->
-                        { dialectIdx = Maybe.withDefault -1 (Dict.get g.dialect dialectIdxMap)
-                        , opNames = g.ops
-                        }
-                    )
-
-        opIdxMap =
-            opGroups
-                |> List.foldl
-                    (\group ( idx, acc ) ->
-                        let
-                            ( nextIdx, entries ) =
-                                List.foldl
-                                    (\opName ( i, es ) ->
-                                        let
-                                            fullName =
-                                                dialectList
-                                                    |> List.drop group.dialectIdx
-                                                    |> List.head
-                                                    |> Maybe.withDefault ""
-                                                    |> (\d -> d ++ "." ++ opName)
-                                        in
-                                        ( i + 1, ( fullName, i ) :: es )
-                                    )
-                                    ( idx, [] )
-                                    group.opNames
-                        in
-                        ( nextIdx, entries ++ acc )
-                    )
-                    ( 0, [] )
-                |> Tuple.second
-                |> Dict.fromList
-    in
-    DialectRegistry
-        { dialects = dialectList
-        , dialectIndices = dialectIdxMap
-        , opGroups = opGroups
-        , opIndexMap = opIdxMap
-        }
-
-
-{-| A dialect's name with the distinct suffixes of its operation names, before
-the dialect has been given an index.
--}
-type alias CollectedGroup =
-    { dialect : String
-    , ops : List String
-    }
-
-
-{-| Returns a group for each dialect that an operation in `mod` belongs to,
-holding the distinct suffixes in the order `walkOpForNames` first meets them,
-with the groups in ascending order of dialect name.
--}
-collectOpNames : MlirModule -> List CollectedGroup
-collectOpNames mod =
-    let
-        allOps =
-            List.foldl walkOpForNames Dict.empty mod.body
-    in
-    allOps
-        |> Dict.toList
-        |> List.map
-            (\( dialect, ops ) ->
-                { dialect = dialect
-                , ops = List.reverse ops
-                }
-            )
-
-
-{-| Adds the name of `op`, and then the names of the operations in its regions,
-to `acc`, which maps each dialect to its suffixes, newest first. A suffix
-already in its dialect's list is not added again.
--}
-walkOpForNames : MlirOp -> Dict String (List String) -> Dict String (List String)
-walkOpForNames op acc =
-    let
-        acc1 =
-            addOpNameToDict op.name acc
-    in
-    List.foldl walkRegionForNames acc1 op.regions
-
-
-{-| Adds the operation names in a region, its entry block first and then its
-other blocks in the order they were inserted.
--}
-walkRegionForNames : MlirRegion -> Dict String (List String) -> Dict String (List String)
-walkRegionForNames (MlirRegion r) acc =
-    let
-        acc1 =
-            walkBlockForNames r.entry acc
-    in
-    OrderedDict.foldl (\_ blk a -> walkBlockForNames blk a) acc1 r.blocks
-
-
-{-| Adds the operation names in a block, its body first and then its
-terminator, each with the operations nested in its regions.
--}
-walkBlockForNames : MlirBlock -> Dict String (List String) -> Dict String (List String)
-walkBlockForNames blk acc =
-    let
-        acc1 =
-            List.foldl walkOpForNames acc blk.body
-    in
-    walkOpForNames blk.terminator acc1
-
-
-{-| Returns `groups` with `module` in the `builtin` group. It is added at the
-end of that group if missing, and if there is no `builtin` group, one holding
-only `module` is added at the end of the list.
--}
-ensureBuiltinModule : List CollectedGroup -> List CollectedGroup
-ensureBuiltinModule groups =
-    let
-        hasBuiltin =
-            List.any (\g -> g.dialect == "builtin") groups
-    in
-    if hasBuiltin then
-        groups
-            |> List.map
-                (\g ->
-                    if g.dialect == "builtin" && not (List.member "module" g.ops) then
-                        { g | ops = g.ops ++ [ "module" ] }
-
-                    else
-                        g
-                )
-
-    else
-        groups ++ [ { dialect = "builtin", ops = [ "module" ] } ]
-
-
-{-| Adds the suffix of `fullName` to the front of its dialect's list in `acc`,
-unless the list already holds it. A name with no `.` is its own dialect, with
-the empty suffix.
--}
-addOpNameToDict : String -> Dict String (List String) -> Dict String (List String)
-addOpNameToDict fullName acc =
-    case String.split "." fullName of
-        dialect :: rest ->
-            let
-                suffix =
-                    String.join "." rest
-            in
-            Dict.update dialect
-                (\existing ->
-                    case existing of
-                        Just ops ->
-                            if List.member suffix ops then
-                                Just ops
-
-                            else
-                                Just (suffix :: ops)
-
-                        Nothing ->
-                            Just [ suffix ]
-                )
-                acc
-
-        _ ->
-            acc
 
 
 {-| Creates an encoder for the contents of the dialect section, with every name

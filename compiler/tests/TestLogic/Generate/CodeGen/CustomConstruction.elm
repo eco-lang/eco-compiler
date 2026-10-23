@@ -12,10 +12,8 @@ Each `eco.construct.custom` op is reported as a violation, in the sense of
 
   - it has no integer `tag` attribute;
   - it has no integer `size` attribute;
-  - its `size` is greater than its number of operands, or an operand after the
-    first `size` is not recorded as `!eco.value` in `_operand_types`
-    (`Compiler.Generate.MLIR.Ops.ecoConstructCustom` appends GC-root hint
-    operands, always boxed values, after the `size` fields);
+  - its `size` differs from its number of operands (the op carries exactly
+    its `size` fields as operands);
   - its `constructor` attribute is `Cons` or `Nil` and no custom type of the
     program has a constructor of that name (the monomorphized graph's
     constructor shapes, which never include `List`, are consulted), so the op
@@ -38,11 +36,9 @@ import Set exposing (Set)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
-        , extractOperandTypes
         , findOpsNamed
         , getIntAttr
         , getStringAttr
-        , isEcoValueType
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -129,7 +125,7 @@ checkCustomOp ctorNames op =
                     }
 
             Just size ->
-                if size > operandCount then
+                if size /= operandCount then
                     Just
                         { opId = op.id
                         , opName = op.name
@@ -138,16 +134,6 @@ checkCustomOp ctorNames op =
                                 ++ String.fromInt size
                                 ++ " but operand count="
                                 ++ String.fromInt operandCount
-                        }
-
-                else if not (List.all isEcoValueType (List.drop size (Maybe.withDefault [] (extractOperandTypes op)))) then
-                    Just
-                        { opId = op.id
-                        , opName = op.name
-                        , message =
-                            "eco.construct.custom size="
-                                ++ String.fromInt size
-                                ++ " but an operand after the fields (a GC-root hint) is not !eco.value"
                         }
 
                 else

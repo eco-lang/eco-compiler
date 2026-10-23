@@ -254,9 +254,8 @@ HPointer flattenToLeaf(HPointer s) {
                               buf.size());
 }
 
-HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
+HPointer ensureFlat(HPointer s) {
     if (alloc::isEmbeddedConstant(s)) return s;
-    auto& allocator = Allocator::instance();
     void* obj = Allocator::resolveFast(s);
     if (!obj) return s;
     Header* hdr = static_cast<Header*>(obj);
@@ -270,28 +269,11 @@ HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason) {
         // which flattenToLeaf calls — do not double-count it here.)
         return flattenToLeaf(s);
     }
-    const HeapConfig& cfg = allocator.getConfig();
-    if (hdr->size <= cfg.string_flatten_limit) {
+    if (hdr->size <= Allocator::instance().getConfig().string_flatten_limit) {
         return flattenToLeaf(s);
     }
-    // Oversized: keep structural form to bound memory. For ropes, this is
-    // also where rebalance heuristics fire — but actual rebalancing is
-    // deferred per the plan (Q9). The conditions checked here are for the
-    // future rebalancer; today we only emit a debug TODO.
-    if (hdr->tag == Tag_StringRope && reason == FlattenReason::Structural) {
-        ElmStringRope* r = static_cast<ElmStringRope*>(obj);
-        bool tall = r->height > cfg.rope_max_height;
-        bool tooManyTinyLeaves = r->leafCount > cfg.rope_leaf_count_limit &&
-                                 (r->header.size / r->leafCount) < cfg.rope_min_leaf_size;
-        if (tall || tooManyTinyLeaves) {
-            // TODO: rebalance — keep this rope as-is for now.
-        }
-    }
+    // Oversized: keep the structural form to bound memory.
     return s;
-}
-
-HPointer ensureFlat(HPointer s) {
-    return maybeFlattenOrRebalance(s, FlattenReason::RandomAccess);
 }
 
 // ============================================================================

@@ -13,7 +13,6 @@
 
 namespace mlir {
 class Pass;
-class RewritePatternSet;
 class TypeConverter;
 class MLIRContext;
 } // namespace mlir
@@ -25,9 +24,6 @@ namespace eco {
 //===----------------------------------------------------------------------===//
 
 // ========== Stage 1: Eco -> Eco transformations ==========
-
-// Lowers eco.construct to allocation + field stores.
-std::unique_ptr<mlir::Pass> createConstructLoweringPass();
 
 // Removes/errors on reference counting placeholder ops (incref, decref, etc).
 // These are not used in tracing GC mode.
@@ -85,49 +81,29 @@ std::unique_ptr<mlir::Pass> createEcoListCursorPass();
 /// EcoGCPrepare. No-op under ECO_MLIR_FOLD=0.
 std::unique_ptr<mlir::Pass> createEcoFoldProjectPass();
 
-// Declared but not defined and never scheduled: eco control flow ops (case,
-// joinpoint, jump, return) are lowered to cf by EcoToLLVM's patterns in
-// Passes/EcoToLLVMControlFlow.cpp.
-std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
-
 // ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
 
 // Copies `eco.gc_leaf` from a kernel func.func declaration onto each direct
 // eco.call of it, as the call-local unit attr `eco.callee_gc_leaf`. Reads the
-// decl attr kernel-opt-08 emits; writes the call attr EcoGCPrepare and
-// EcoGCLivenessAudit consume. Honours ECO_KERNEL_GCLEAF=0. Must run after every
+// decl attr kernel-opt-08 emits; writes the call attr EcoGCPrepare reads (an
+// allocation group may extend across a gc-leaf call). Honours ECO_KERNEL_GCLEAF=0. Must run after every
 // pass that can mint a kernel decl or a kernel call site, and before
 // EcoGCPrepare.
 std::unique_ptr<mlir::Pass> createEcoMarkGCLeafCallsPass();
 
-// Computes MLIR-level root sets for all GCRootCarrier ops (allocations,
-// calls, PAP ops, construct ops) via SSA liveness analysis, unioned with each
-// op's front-end root hints, and groups adjacent allocations. These root
-// operands are NOT the runtime GC roots: lowering discards them
-// (emitAllocWithSafepoint / emitSafepointMarker ignore them); the real roots, statepoints and
-// stackmaps come from LLVM's RS4GC (CGEN_077(b)). Must run after all Eco->Eco
-// transformations and control flow lowering, before EcoToLLVM.
+// Groups adjacent allocations (eco.gc_group_size / eco.gc_group_member) and
+// strips the eco.cse_safe purity attr from every eco.call (the CSE fence).
+// It computes no GC roots: roots, statepoints and stackmaps come from LLVM's
+// RS4GC (CGEN_077(b)). Must run after all Eco->Eco transformations and
+// control flow lowering, before EcoToLLVM.
 std::unique_ptr<mlir::Pass> createEcoGCPreparePass();
 
-// Audits GC root sets attached by EcoGCPrepare against SSA liveness of
-// !eco.value values. Emits diagnostics and fails the pipeline if any
-// GCRootCarrier op is missing a root that is semantically live across it.
-// No-op unless built with ECO_LOWERING_VALIDATION (and only scheduled then).
+// Checks that no eco.call still carries eco.cse_safe after EcoGCPrepare.
+// Fails the pipeline if one does. No-op unless built with
+// ECO_LOWERING_VALIDATION (and only scheduled then).
 std::unique_ptr<mlir::Pass> createEcoGCLivenessAuditPass();
 
 // ========== Stage 3: Eco -> LLVM Dialect ==========
-
-// Lowers eco heap operations (allocate_*, project, box, unbox) to LLVM.
-std::unique_ptr<mlir::Pass> createHeapOpsToLLVMPass();
-
-// Lowers eco.constant to LLVM constants.
-std::unique_ptr<mlir::Pass> createConstantToLLVMPass();
-
-// Lowers eco.call and closure operations to LLVM.
-std::unique_ptr<mlir::Pass> createCallLoweringPass();
-
-// Lowers eco.string_literal to LLVM global constants (UTF-8 -> UTF-16).
-std::unique_ptr<mlir::Pass> createStringLiteralLoweringPass();
 
 // Combined pass that runs all eco-to-LLVM lowering.
 std::unique_ptr<mlir::Pass> createEcoToLLVMPass();
@@ -178,21 +154,6 @@ std::unique_ptr<mlir::Pass> createEcoGcFreePropagationPass();
 /// none of the roots exists.
 std::unique_ptr<mlir::Pass>
 createEcoReachabilityPass(std::vector<std::string> roots);
-
-//===----------------------------------------------------------------------===//
-// Pattern Population
-//===----------------------------------------------------------------------===//
-
-// Populates patterns for lowering eco heap ops to LLVM.
-void populateEcoHeapOpsToLLVMPatterns(mlir::TypeConverter &typeConverter,
-                                       mlir::RewritePatternSet &patterns);
-
-// Populates patterns for lowering eco control flow to cf dialect.
-void populateEcoControlFlowToStandardPatterns(mlir::RewritePatternSet &patterns);
-
-// Populates patterns for lowering eco calls to LLVM.
-void populateEcoCallToLLVMPatterns(mlir::TypeConverter &typeConverter,
-                                    mlir::RewritePatternSet &patterns);
 
 //===----------------------------------------------------------------------===//
 // Type Converter

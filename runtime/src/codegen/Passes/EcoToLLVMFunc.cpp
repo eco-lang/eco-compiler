@@ -9,7 +9,6 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 

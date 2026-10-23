@@ -404,7 +404,7 @@ domain, accepted upstream form).
   21 build. Local patch maintenance until upstreamed.
 - Touches the GC's stackmap reader — a part of the runtime we'd
   rather leave alone. Needs careful testing across all our existing
-  binaries (ecor, ecoc, EcoRunner, eco-boot-native, eco) because all
+  binaries (ecor (since removed), ecoc, EcoRunner, eco-boot-native, eco) because all
   of them read this section.
 
 ### Option 4: export all function symbols dynamically
@@ -573,7 +573,7 @@ section version provides a guard.
 | Patch `runtime/src/allocator/StackMap.cpp` (parse new encoding) | runtime | ~30 | 1 hour |
 | Wire `-stackmap-encoding=pic` through `eco-boot-native` | `EcoNativeDriver.cpp::compileMlirFileToExecutable` | ~5 | 30 min |
 | Drop `-z notext`; add `-z now -z relro` | same | 3 | trivial |
-| Test all binaries (ecor, ecoc, EcoRunner, eco-boot-native, eco) | — | 0 | 1–2 hours |
+| Test all binaries (ecor (since removed), ecoc, EcoRunner, eco-boot-native, eco) | — | 0 | 1–2 hours |
 | **Option 3 (proper PIC) increment** | | **~60 LoC + LLVM patch** | **~6 hours** |
 
 ---

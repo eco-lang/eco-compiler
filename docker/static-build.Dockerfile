@@ -200,7 +200,7 @@ ENV CCACHE_DIR=/ccache
 ENV CCACHE_MAXSIZE=2G
 
 # RapidCheck: the top-level CMakeLists.txt does find_package(rapidcheck
-# REQUIRED) for the `ecor` allocator-test binary, and `cmake --build … --target
+# REQUIRED) for the test tree, and `cmake --build … --target
 # package` builds `all` (including `test`, which links librapidcheck.a). Build
 # rapidcheck with -stdlib=libc++ so its objects share the libc++ ABI used by
 # the rest of the Stage B link — Alpine's clang otherwise picks up libstdc++

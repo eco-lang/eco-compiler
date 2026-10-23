@@ -9,7 +9,8 @@
 # from the build and let pnpm run with ignore-scripts=true (see
 # compiler/.npmrc).
 #
-# Platforms: Linux x86_64, macOS (arm64 / x86_64), Windows x86_64 — see the
+# Platforms: Linux x86_64, macOS arm64, Windows x86_64 (Intel Macs are out of
+# scope, docs/building-macos.md) — see the
 # per-platform URL/SHA table below and the platform gate in
 # compiler/CMakeLists.txt.
 
@@ -95,13 +96,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "
     set(ELM_FORMAT_SHA "d8f898be599fa767d3b6607256e273dd4f62ea7abc41369a068e903159787098")
     set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_macos-arm.tar.gz")
     set(ELM_TEST_RS_SHA "e2be5e6d2c1b9e18729a330b9b7db7a286c9f9f34376b634b910e52378219df5")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-    set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-mac-64-bit.gz")
-    set(ELM_SHA "05289f0e3d4f30033487c05e689964c3bb17c0c48012510dbef1df43868545d1")
-    set(ELM_FORMAT_URL "https://github.com/avh4/elm-format/releases/download/0.8.7/elm-format-0.8.7-mac-x64.tgz")
-    set(ELM_FORMAT_SHA "064102cd471550beb43ff7eb3dd6ac7c2a1946cf038dbde389873384f62cbdc4")
-    set(ELM_TEST_RS_URL "https://github.com/mpizenberg/elm-test-rs/releases/download/v3.0.1/elm-test-rs_macos.tar.gz")
-    set(ELM_TEST_RS_SHA "614936b1f3b2d5488c4168399446821c9304c2c2c1f4701f23e65199e3a8e6ba")
 elseif(WIN32 AND (CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64"))
     set(ELM_URL "https://github.com/elm/compiler/releases/download/0.19.1/binary-for-windows-64-bit.gz")
     set(ELM_SHA "d1bf666298cbe3c5447b9ca0ea608552d750e5d232f9845c2af11907b654903b")

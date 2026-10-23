@@ -378,11 +378,6 @@ applyEnvOverrides cfg =
                     |> Task.map (\sfVal -> applySretFreshOverride sfVal cfg26)
             )
         |> Task.andThen
-            (\cfg29 ->
-                (Utils.envLookupEnv "ECO_BORROW_OPT" |> Task.mapError never)
-                    |> Task.map (\boVal -> applyBorrowOptOverride boVal cfg29)
-            )
-        |> Task.andThen
             (\cfg30 ->
                 (Utils.envLookupEnv "ECO_STRING_LENGTH_OP" |> Task.mapError never)
                     |> Task.map (\slVal -> applyStringLengthOpOverride slVal cfg30)
@@ -1294,38 +1289,6 @@ applyValidateOverride maybeVal cfg =
 
     else
         cfg
-
-
-{-| `ECO_BORROW_OPT=1|true|yes|on`: OC0.1 (plans/borrow-oracle-consumers.md) —
-opt this build into the oracle-coupled transforms. Enables the borrow pass and
-sets `borrow.oracleOpt`; the distilled facts are derived at MLIR-emission time
-from the final post-CafHoist graph (`Borrow.deriveFacts`). ARTIFACT-AFFECTING
-(folded into `Config.hash` as `bopt=1`), so opt builds never share caches with
-default builds. `0`/`off` disables `oracleOpt` only. Applied AFTER
-`ECO_BORROW`, so an explicit opt-in wins over `ECO_BORROW=0`'s disable.
--}
-applyBorrowOptOverride : Maybe String -> EcoConfig -> EcoConfig
-applyBorrowOptOverride maybeVal cfg =
-    case maybeVal of
-        Nothing ->
-            cfg
-
-        Just raw ->
-            let
-                t =
-                    String.toLower (String.trim raw)
-
-                borrow =
-                    cfg.borrow
-            in
-            if t == "1" || t == "true" || t == "yes" || t == "on" then
-                { cfg | borrow = { borrow | enabled = True, oracleOpt = True } }
-
-            else if t == "0" || t == "off" then
-                { cfg | borrow = { borrow | oracleOpt = False } }
-
-            else
-                cfg
 
 
 {-| `ECO_MONO_LSS=0|1`: toggle lambda-set specialization. Unknown values are

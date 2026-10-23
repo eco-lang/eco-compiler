@@ -196,7 +196,7 @@ Not deletable, but never on an applied path.
 13. **Nothing in this group is HOF.** No symbol calls back into an Elm closure, which means every
     one of them is a candidate for gc-leaf annotation on the allocation criterion alone.
 14. **Code size is paid unconditionally.** `RuntimeSymbols.cpp:590-651` takes the address of every
-    kernel symbol via `KERNEL_SYM`, pinning all 80 object-file bodies into `ecoc`/`ecor` regardless
+    kernel symbol via `KERNEL_SYM`, pinning all 80 object-file bodies into `ecoc`/`ecor` (`ecor` since removed) regardless
     of use. Dead-in-corpus ≠ dead-in-binary.
 15. **Top 3 opportunities** (see below).
 

@@ -256,7 +256,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         "sweep_work_budget",
         "minor_sweep_divisor",
         "initial_sweep_budget",
-        "mark_work_ratio",
         "sweep_bytes_per_alloc_byte",
         "max_sweep_bytes_per_alloc",
         "max_sweep_bytes_hard",
@@ -461,8 +460,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.minor_sweep_divisor = parseByteSize(*it, "minor_sweep_divisor");
     if (auto it = doc.find("initial_sweep_budget"); it != doc.end())
         cfg.initial_sweep_budget = parseByteSize(*it, "initial_sweep_budget");
-    if (auto it = doc.find("mark_work_ratio"); it != doc.end())
-        cfg.mark_work_ratio = parseByteSize(*it, "mark_work_ratio");
     if (auto it = doc.find("sweep_bytes_per_alloc_byte"); it != doc.end())
         cfg.sweep_bytes_per_alloc_byte =
             parseDouble(*it, "sweep_bytes_per_alloc_byte");

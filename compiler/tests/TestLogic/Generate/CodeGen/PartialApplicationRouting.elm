@@ -11,9 +11,8 @@ Instead `expectPartialApplicationRouting` compiles a program to MLIR, finds for
 each `eco.call` the top-level `func.func` its `callee` names (with any leading
 `@` removed), and reports the call when
 
-  - its operands, less the trailing GC root hints that `eco.gc_roots_count`
-    counts, are fewer or more than the inputs of the callee's `function_type`,
-    or
+  - its operands are fewer or more than the inputs of the callee's
+    `function_type`, or
   - its result types are not exactly the results of the callee's
     `function_type`.
 
@@ -116,11 +115,8 @@ checkCall signatures op =
 
         Just ( calleeName, sig ) ->
             let
-                rootCount =
-                    Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
                 argCount =
-                    List.length op.operands - rootCount
+                    List.length op.operands
 
                 inputCount =
                     List.length sig.inputs

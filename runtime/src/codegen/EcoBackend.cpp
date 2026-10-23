@@ -235,7 +235,6 @@ bool callCensusKindCounted(uint8_t k) {
 // (RuntimeExports.cpp "No dispatch here — this grows a PAP") => runtime.
 bool callCensusIsTrampoline(StringRef n) {
     return n == "eco_apply_closure" || n == "eco_apply_closure_eval" ||
-           n == "eco_apply_segmentation_unknown" ||
            n == "eco_apply_closure_typed" ||
            n == "eco_closure_call_saturated" ||
            n == "eco_closure_call_saturated_eval";

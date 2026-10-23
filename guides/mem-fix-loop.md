@@ -36,7 +36,7 @@ LOOP:
 
 5. Re-run elm-test and E2E tests. Compare results to previous run.
 
-6. Re-bootstrap to Stage 5 (re-run build-self.sh and build-verify.sh first if
+6. Re-bootstrap to Stage 5 (rebuild the `eco-boot-2` and `eco-boot-verify` targets first if
    compiler source changed, so eco-boot-2.js reflects the fix). Capture the
    instrumentation output. Compare heap/RSS profiles to the previous run.
 

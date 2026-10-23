@@ -16,38 +16,6 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 
 //===----------------------------------------------------------------------===//
-// GCRootCarrier OpInterface
-//===----------------------------------------------------------------------===//
-
-def Eco_GCRootCarrierOpInterface : OpInterface<"GCRootCarrier"> {
-  let cppNamespace = "::eco";
-
-  let description = [{
-    Operations that explicitly carry the set of Eco GC roots live across
-    a safepoint. EcoGCPrepare computes liveness on Eco IR and populates
-    these roots; lowering and statepoint conversion consume them.
-
-    The interface abstracts over different operand layouts:
-    - Dedicated `live_roots` segments (most allocation ops)
-    - Roots appended after fields (construct.record, construct.custom)
-    - Roots appended after call operands (call, papExtend, papCreate)
-  }];
-
-  let methods = [
-    InterfaceMethod<
-      "Return the eco.value roots carried by this operation.",
-      "mlir::ValueRange", "getGCRoots", (ins)>,
-
-    InterfaceMethod<
-      "Replace the GC root operands carried by this operation. "
-      "The op is responsible for preserving non-root operands "
-      "and maintaining any operand layout invariants.",
-      "void", "setGCRoots",
-      (ins "mlir::ValueRange":$newRoots)>
-  ];
-}
-
-//===----------------------------------------------------------------------===//
 // Dialect Definition
 //===----------------------------------------------------------------------===//
 
@@ -615,9 +583,7 @@ def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
 // List Operations (Cons / Nil)
 //===----------------------------------------------------------------------===//
 
-def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   let summary = "Construct a list Cons cell";
   let description = [{
     Allocate a list cons cell: head :: tail.
@@ -640,13 +606,12 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
   let arguments = (ins
     Eco_AnyValueOrAggregate:$head,
     Eco_Value:$tail,
-    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<BoolAttr, "false">:$head_unboxed,
     DefaultValuedAttr<I64Attr, "0">:$head_kind
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$head `,` $tail (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($head) `,` type($tail) `->` type($result)";
+  let assemblyFormat = "$head `,` $tail attr-dict `:` type($head) `,` type($tail) `->` type($result)";
 }
 
 def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
@@ -732,10 +697,8 @@ def Eco_ListMapOp : Eco_Op<"list.map"> {
 
     Expanded by `EcoListTemplate` into a mark / cursor-loop / push /
     `eco_scratch_finish_fwd` sequence — see that pass. The expansion happens
-    BEFORE `EcoGCPrepare`, which is why this op carries **no `$live_roots` and
-    does not implement `Eco_GCRootCarrierOpInterface`**: root operands could
-    never be populated on it, and the post-expansion SCF form is rooted by the
-    ordinary EcoGCPrepare/RS4GC path like any other loop.
+    BEFORE `EcoGCPrepare`, and the post-expansion SCF form is rooted by RS4GC
+    like any other loop.
 
     `$callee` is the devirtualized fast-clone symbol (the `$cap` clone, or the
     bare lambda symbol when the instance is captureless) taken from
@@ -785,9 +748,7 @@ def Eco_ListMapOp : Eco_Op<"list.map"> {
 // Tuple Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   let summary = "Construct a 2-tuple";
   let description = [{
     Construct a 2-tuple value. Elements may be boxed (!eco.value) or
@@ -807,17 +768,14 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure,
   let arguments = (ins
     Eco_AnyValueOrAggregate:$a,
     Eco_AnyValueOrAggregate:$b,
-    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$a `,` $b (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($a) `,` type($b) `->` type($result)";
+  let assemblyFormat = "$a `,` $b attr-dict `:` type($a) `,` type($b) `->` type($result)";
 }
 
-def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
   let summary = "Construct a 3-tuple";
   let description = [{
     Construct a 3-tuple value.
@@ -837,12 +795,11 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure,
     Eco_AnyValueOrAggregate:$a,
     Eco_AnyValueOrAggregate:$b,
     Eco_AnyValueOrAggregate:$c,
-    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$a `,` $b `,` $c (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
+  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
 }
 
 def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
@@ -894,9 +851,7 @@ def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
 // Record Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
   let summary = "Construct an Elm record";
   let description = [{
     Construct a record with a fixed set of fields. `field_count` gives
@@ -906,10 +861,6 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
     and must equal the kinds of the field operands (REP_BOUNDARY_002); the
     lowering packs slots 0..31 into the header bitmap and the rest into
     tail kind words (HEAP_019); field_count <= 2047.
-
-    GC live roots may be appended after the fields by EcoGCPrepare.
-    The first `field_count` operands are fields; any beyond that are
-    live GC roots tracked across this allocation.
 
     Example:
     ```mlir
@@ -958,9 +909,7 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
 // Custom ADT Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
   let summary = "Construct a custom ADT value";
   let description = [{
     Create a custom algebraic data type (ADT) value for a user-defined type.
@@ -979,10 +928,6 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
 
     The optional constructor attribute is for MLIR readability only and is
     not stored at runtime. Debug printing uses generic Ctor1, Ctor2, etc.
-
-    GC live roots may be appended after the fields by EcoGCPrepare.
-    The first `size` operands are fields; any beyond that are live GC
-    roots tracked across this allocation.
 
     Example:
     ```mlir
@@ -1284,7 +1229,6 @@ def Eco_StringAppendOp : Eco_Op<"string.append"> {
 
 def Eco_CallOp : Eco_Op<"call", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "Call function or closure";
@@ -1321,7 +1265,7 @@ def Eco_CallOp : Eco_Op<"call", [
 
     It does NOT license speculation or motion (eco.call implements no
     ConditionallySpeculatable), and it is INVALID after EcoGCPrepare, which
-    appends GC roots to the operand list and strips the attribute. A call
+    strips the attribute. A call
     WITHOUT the attribute reports conservative read+write on the default
     resource — identical in practice to having no effect interface at all.
     Never valid on an indirect call or a musttail call.
@@ -1340,9 +1284,7 @@ def Eco_CallOp : Eco_Op<"call", [
 
 def Eco_PapCreateOp : Eco_Op<"papCreate", [
     Pure,
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Create partial application closure";
   let description = [{
     Create a closure representing a partial application (PAP) of a function
@@ -1356,17 +1298,20 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     signature. Stage arity <= 2047, captures
     <= 2046 (HEAP_078).
 
-    For typed closure calling, closures with captures have:
-    - `function`: References the generic clone (funcName$clo)
-    - `_fast_evaluator`: References the fast clone (funcName$cap)
+    `function` names the closure's evaluator, whose parameters are the
+    captures followed by the remaining params (`arity` in all). For a
+    closure with captures that is the fast clone (funcName$cap), and
+    closures with captures also have:
+    - `_fast_evaluator`: the same symbol as `function` (verified)
     - `_closure_kind`: Integer ID or "heterogeneous" (omit if unknown)
 
-    Zero-capture closures have no _fast_evaluator or _closure_kind.
+    Zero-capture closures have no _fast_evaluator or _closure_kind; their
+    `function` is the target itself (a kernel function for kernel PAPs).
 
     Example:
     ```mlir
     // Partially apply `add` with first argument captured as i64
-    %add_5 = eco.papCreate @add$clo(%five) {
+    %add_5 = eco.papCreate @add$cap(%five) {
       arity = 2 : i64,
       num_captured = 1 : i64,
       slot_kinds = array<i8: 1>,
@@ -1396,9 +1341,7 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
 
 def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
     Pure,
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Create a group of mutually-recursive PAP closures atomically";
   let description = [{
     Allocates N sibling closures in a single contiguous runtime region and
@@ -1411,22 +1354,19 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
 
     Operand layout:
       [sibling0_captures..., sibling1_captures..., ...,
-       siblingN-1_captures..., roots...]
+       siblingN-1_captures...]
     Per-sibling capture count is `capture_counts[i]`; the captures for
-    sibling i live at operands[prefix_i .. prefix_i + capture_counts[i]).
-    All trailing operands (after `sum(capture_counts)`) are GC live roots,
-    consumed by the GCRootCarrier interface. `eco.gc_roots_count`
-    tracks how many trailing operands are roots.
+    sibling i live at operands[prefix_i .. prefix_i + capture_counts[i]),
+    and the operand count equals `sum(capture_counts)`.
 
     Results: N `!eco.value` HPointers in sibling order.
 
     Attributes:
     - `functions`: ArrayAttr of FlatSymbolRefAttr, one per sibling,
-      the $clo clone used by generic closure dispatch.
+      the sibling's evaluator: its $cap clone. Group members all have
+      captures (cross-edges count as captures), so every sibling has one.
     - `fast_evaluators`: ArrayAttr of FlatSymbolRefAttr, one per sibling,
-      the $cap clone used by typed closure dispatch. Group members all
-      have captures (cross-edges count as captures), so every sibling
-      has a fast evaluator.
+      equal to `functions` (verified).
     - `arities`: I64 ArrayAttr, one entry per sibling.
     - `num_captured`: I64 ArrayAttr, single source of truth for each
       sibling's Closure.n_values. Must satisfy
@@ -1441,8 +1381,6 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
     - `cross_edges`: I64 ArrayAttr, flat triples of
       [producer, consumer, slot]. Cross-edge slots must be boxed
       (slot_kinds[consumer][slot] == 0).
-    - `_operand_types`: optional ArrayAttr of TypeAttr, one per capture
-      operand (before roots), mirroring the papCreate convention.
   }];
 
   let arguments = (ins
@@ -1462,9 +1400,7 @@ def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
 }
 
 def Eco_PapExtendOp : Eco_Op<"papExtend", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Extend closure with more arguments (typed or generic apply)";
   let description = [{
     Extend an existing partial application (closure) with more arguments.
@@ -1475,10 +1411,8 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     is a saturated call that invokes the evaluator and returns the result.
     Otherwise, returns a new closure with additional captured arguments.
     CGEN_052 and CGEN_056 are enforced. Result type may be a typed ABI value.
-    Typed closure calling attributes (_fast_evaluator, _closure_kind) control
-    lowering dispatch. (`_dispatch_mode` is declared below but set by no pass;
-    the lowering arm that read it was deleted — see
-    plans/gc-root-registration-cost.md Phase 4.)
+    A saturated call stamped with `_fast_evaluator` and `_capture_abi` calls
+    the fast clone directly; otherwise it goes through the runtime.
 
     **Generic mode** (remaining_arity absent):
     Saturation is decided at RUNTIME, inside `eco_apply_closure_eval` — the
@@ -1498,16 +1432,21 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     types the call as a primitive return — in that case the JIT lowers
     with the matching `desired_kind` and the runtime writes the primitive
     straight into the result slot. CGEN_052/CGEN_056 do not apply. Typed
-    closure calling attributes are ignored.
+    closure calling attributes are ignored. `_call_kind =
+    "segmentation_unknown"` selects the typed-args-buffer lowering; any other
+    value, or none, selects the generic-apply lowering.
 
     `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
     new-arg i; it must equal the operand's MLIR type kind. At most 2047
     new-args.
 
     For typed closure calling (typed mode only):
-    - `_closure_kind`: Propagated from source closure (int or "heterogeneous")
-    - `_dispatch_mode`: How to lower this call ("fast", "closure", "unknown")
-    - `_fast_evaluator`: Fast clone symbol (required when _dispatch_mode="fast")
+    - `_fast_evaluator`: Fast clone symbol (the `$cap` clone)
+    - `_capture_abi`: Capture types of that clone's leading parameters
+
+    `_call_kind` records the front end's call classification
+    (e.g. "generic_apply", "segmentation_unknown", "singleton_fast",
+    "direct_known_segmentation"); only generic-mode lowering reads it.
 
     Examples:
     ```mlir
@@ -1515,7 +1454,6 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     %result = eco.papExtend %closure(%arg) {
       remaining_arity = 1 : i64,
       slot_kinds = array<i8: 1>,
-      _dispatch_mode = "fast",
       _fast_evaluator = @add$cap
     } : !eco.value, (i64) -> i64
 
@@ -1530,11 +1468,10 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     Eco_Value:$closure,
     Variadic<Eco_AnyValue>:$newargs,
     OptionalAttr<I64Attr>:$remaining_arity,
-    // One kind per real newarg; defaults to empty as on papCreate.
+    // One kind per newarg; defaults to empty as on papCreate.
     DefaultValuedAttr<DenseI8ArrayAttr, "{}">:$slot_kinds,
-    OptionalAttr<AnyAttr>:$_closure_kind,
-    OptionalAttr<StrAttr>:$_dispatch_mode,
     OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
+    OptionalAttr<StrAttr>:$_call_kind,
     DefaultValuedAttr<I8Attr, "0">:$_result_kind
   );
   let results = (outs Eco_AnyValue:$result);
@@ -1590,9 +1527,7 @@ def Eco_ProjectClosureOp : Eco_Op<"project.closure", [Pure]> {
 // 5. Allocation and GC Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_AllocateOp : Eco_Op<"allocate", [
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_AllocateOp : Eco_Op<"allocate"> {
   let summary = "Generic heap allocation";
   let description = [{
     Allocate a heap object of the specified size. This is a low-level
@@ -1602,12 +1537,9 @@ def Eco_AllocateOp : Eco_Op<"allocate", [
     If needs_root is true, the allocation is registered as a GC root
     during construction (for multi-field objects being initialized).
 
-    The optional live_roots operands are GC roots that must be tracked
-    across this allocation (populated by EcoGCPrepare).
-
     Example:
     ```mlir
-    %obj = eco.allocate %size (%r0 : !eco.value) {
+    %obj = eco.allocate %size {
       type = @"Custom.MyType",
       needs_root = true
     } : (i64) -> !eco.value
@@ -1616,18 +1548,15 @@ def Eco_AllocateOp : Eco_Op<"allocate", [
 
   let arguments = (ins
     Eco_Int:$size,
-    Variadic<Eco_Value>:$live_roots,
     FlatSymbolRefAttr:$type,
     BoolAttr:$needs_root
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$size (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($size) `->` type($result)";
+  let assemblyFormat = "$size attr-dict `:` type($size) `->` type($result)";
 }
 
-def Eco_AllocateStringOp : Eco_Op<"allocate_string", [
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
   let summary = "Allocate string storage";
   let description = [{
     Allocate storage for a string of the specified length (in UTF-16 code
@@ -1637,40 +1566,31 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string", [
     may later return slices (`Tag_StringSlice`) or ropes (`Tag_StringRope`)
     when transforming such leaves; allocate_string itself does not.
 
-    The optional live_roots operands are GC roots that must be tracked
-    across this allocation (populated by EcoGCPrepare).
-
     Example:
     ```mlir
-    %str = eco.allocate_string(%r0 : !eco.value) {length = 100 : i64} : !eco.value
+    %str = eco.allocate_string {length = 100 : i64} : !eco.value
     ```
   }];
 
   let arguments = (ins
-    Variadic<Eco_Value>:$live_roots,
     I64Attr:$length
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Allocate closure object";
   let description = [{
     Allocate a closure object for the specified function with space for
     values. The `arity` specifies the total number of value slots (max_values),
     which should equal num_captured + num_remaining_args.
 
-    The optional live_roots operands are GC roots that must be tracked
-    across this allocation (populated by EcoGCPrepare).
-
     Example:
     ```mlir
-    %closure = eco.allocate_closure(%r0, %r1 : !eco.value, !eco.value) {
+    %closure = eco.allocate_closure {
       function = @my_func,
       arity = 3 : i64
     } : !eco.value
@@ -1678,13 +1598,12 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
   }];
 
   let arguments = (ins
-    Variadic<Eco_Value>:$live_roots,
     FlatSymbolRefAttr:$function,
     I64Attr:$arity
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -1761,30 +1680,24 @@ def Eco_StoreGlobalOp : Eco_Op<"store_global", [
 // 7. Type Conversion Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_BoxOp : Eco_Op<"box", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_BoxOp : Eco_Op<"box", [Pure]> {
   let summary = "Box primitive value to eco.value";
   let description = [{
     Box an unboxed primitive value (i64, f64, i16, i1) into an eco.value.
     This allocates an ElmInt, ElmFloat, or ElmChar object; Bool (i1) maps
-    to the embedded True/False constant.
-
-    The optional live_roots operands are GC roots that must be tracked
-    across this allocation (populated by EcoGCPrepare). For Bool boxing
-    (i1), no allocation occurs and roots are unused.
+    to the embedded True/False constant; no allocation occurs for Bool.
 
     Example:
     ```mlir
-    %boxed = eco.box %int_val (%r0 : !eco.value) : i64 -> !eco.value
+    %boxed = eco.box %int_val : i64 -> !eco.value
     %boxed_float = eco.box %float_val : f64 -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_AnyValue:$value, Variadic<Eco_Value>:$live_roots);
+  let arguments = (ins Eco_AnyValue:$value);
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$value (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($value) `->` type($result)";
+  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
 }
 
 def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {
@@ -3092,13 +3005,13 @@ def Eco_ResetRefOp : Eco_Op<"reset_ref"> {
 // 11. Value-level Aggregate Operations (Phase 0 escape-analysis plumbing)
 //===----------------------------------------------------------------------===//
 //
-// `eco.make.*` ops produce SSA-only aggregate values; they are Pure, do
-// NOT participate in GC root sets, and never carry heap-layout artifacts
+// `eco.make.*` ops produce SSA-only aggregate values; they are Pure, never
+// allocate, and never carry heap-layout artifacts
 // (`slot_kinds`, `field_count`, `head_kind`).  Phase 1 escape analysis
 // rewrites non-escaping `eco.construct.*` heap ops into these.
 //
 // `eco.to_heap` is the boxing op for the four data-aggregate shapes
-// (tuple2/3, record, custom, cons); it allocates and is `GCRootCarrier`.
+// (tuple2/3, record, custom, cons); it allocates and is not `Pure`.
 // Closure realisation goes through the dedicated `eco.make.closure` op
 // (Q-A): it is the only `make.*` that allocates, the only one returning
 // `!eco.value`, and the only one carrying a function symbol + arity.
@@ -3109,8 +3022,7 @@ def Eco_ResetRefOp : Eco_Op<"reset_ref"> {
 def Eco_Tuple2MakeOp : Eco_Op<"make.tuple2", [Pure]> {
   let summary = "Create unboxed 2-tuple aggregate";
   let description = [{
-    Build a value-level 2-tuple aggregate. Pure; never allocates; not a
-    GCRootCarrier. Result is `!eco.tuple2<T0, T1>` with element types
+    Build a value-level 2-tuple aggregate. Pure; never allocates. Result is `!eco.tuple2<T0, T1>` with element types
     matching the operand SSA types.
   }];
 
@@ -3204,9 +3116,7 @@ def Eco_ClosureEnvMakeOp : Eco_Op<"make.closure_env", [Pure]> {
 
 //=== Heap/value boundary ops =============================================//
 
-def Eco_ToHeapOp : Eco_Op<"to_heap", [
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_ToHeapOp : Eco_Op<"to_heap"> {
   let summary = "Box a data aggregate into a heap object";
   let description = [{
     Allocate a heap object matching the input aggregate kind and store
@@ -3233,7 +3143,6 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
 
   let arguments = (ins
     Eco_DataAggregate:$value,
-    Variadic<Eco_Value>:$live_roots,
 
     // Heap-layout attributes (per kind; only the relevant ones are read
     // at lowering time):
@@ -3247,7 +3156,7 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
   let hasVerifier = 1;
 
   let assemblyFormat =
-    "$value (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict "
+    "$value attr-dict "
     "`:` functional-type($value, $result)";
 }
 
@@ -3282,9 +3191,7 @@ def Eco_FromHeapOp : Eco_Op<"from_heap", [Pure]> {
 }
 
 def Eco_MakeClosureOp : Eco_Op<"make.closure", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "Realise a heap closure from a value-level environment";
   let description = [{
     Allocate a heap closure for `function` with `arity` total value slots
@@ -3292,13 +3199,13 @@ def Eco_MakeClosureOp : Eco_Op<"make.closure", [
     matches what `eco.allocate_closure` + capture stores produces today.
 
     This is the **only** `eco.make.*` op that allocates; it is the only
-    one that returns `!eco.value`; it is the only one that is a
-    `GCRootCarrier` rather than `Pure`. Documented exception to the
+    one that returns `!eco.value`; it is the only one that is not
+    `Pure`. Documented exception to the
     `make.*` family convention (Q-A-b, see CGEN_061).
 
     Example:
     ```mlir
-    %clo = eco.make.closure @add$cap, %env(%r0 : !eco.value) {
+    %clo = eco.make.closure @add$cap, %env {
       arity = 2 : i64
     } : !eco.closure_env<i64> -> !eco.value
     ```
@@ -3306,7 +3213,6 @@ def Eco_MakeClosureOp : Eco_Op<"make.closure", [
 
   let arguments = (ins
     Eco_ClosureEnv:$env,
-    Variadic<Eco_Value>:$live_roots,
     FlatSymbolRefAttr:$function,
     I64Attr:$arity
   );
@@ -3315,6 +3221,6 @@ def Eco_MakeClosureOp : Eco_Op<"make.closure", [
   let hasVerifier = 1;
 
   let assemblyFormat =
-    "$function `,` $env (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict "
+    "$function `,` $env attr-dict "
     "`:` functional-type($env, $result)";
 }

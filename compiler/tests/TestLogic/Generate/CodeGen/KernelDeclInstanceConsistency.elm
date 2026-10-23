@@ -20,8 +20,7 @@ Every op in the module, at any depth, is checked against the declared
 signatures:
 
   - An `eco.call` whose `callee` names a declared kernel must have operand
-    types, less the trailing GC root hints that `eco.gc_roots_count` counts,
-    equal to the declared inputs, in number and position by position, and
+    types equal to the declared inputs, in number and position by position, and
     exactly one result, of the declared result type. A call with no
     `_operand_types` is compared as having no operands.
   - An `eco.papCreate` whose `function` names a declared kernel must have an
@@ -168,9 +167,8 @@ checkOp kernelDeclSigs op =
 
 
 {-| Returns the violations of an `eco.call` whose callee is a declared kernel.
-Its operand types, less the trailing GC root hints that `eco.gc_roots_count`
-counts, must equal the declared inputs, and it must have exactly one result, of
-the declared result type. A call to anything else, including a kernel with no
+Its operand types must equal the declared inputs, and it must have exactly one
+result, of the declared result type. A call to anything else, including a kernel with no
 declaration, gives none.
 -}
 checkCallOp : Dict String KernelDeclSig -> MlirOp -> List Violation
@@ -186,14 +184,8 @@ checkCallOp kernelDeclSigs op =
 
                 Just sig ->
                     let
-                        allOperandTypes =
-                            extractOperandTypes op |> Maybe.withDefault []
-
-                        rootCount =
-                            Maybe.withDefault 0 (getIntAttr "eco.gc_roots_count" op)
-
                         operandTypes =
-                            List.take (List.length allOperandTypes - rootCount) allOperandTypes
+                            extractOperandTypes op |> Maybe.withDefault []
 
                         resultTypes =
                             extractResultTypes op

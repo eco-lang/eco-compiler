@@ -70,5 +70,5 @@ File size increases ~22% due to inlining (6.0 MB → 7.3 MB).
 - The optimized JS is not a fixed-point compiler — do not use it for
   self-compilation (stages 2-4). Use it only for Stage 5 (MLIR generation)
   or other one-shot compilation tasks.
-- Apply after `build-verify.sh` confirms the fixed point, so the input
+- Apply after the `eco-boot-verify` target confirms the fixed point, so the input
   JS is known-correct.

@@ -1,4 +1,4 @@
-module Mlir.Bytecode.IrSection exposing (encode, encodeFuncOp)
+module Mlir.Bytecode.IrSection exposing (encodeFuncOp)
 
 {-| An MLIR bytecode file keeps a program's operations in its IR section, and
 this module writes them there, with the regions and blocks nested inside them.
@@ -40,7 +40,7 @@ is written as -1 too, as `Mlir.Bytecode.AttrType` and
 `Mlir.Bytecode.DialectSection` describe. Either way the file is corrupt rather
 than the encoding failing.
 
-@docs encode, encodeFuncOp
+@docs encodeFuncOp
 
 -}
 
@@ -55,7 +55,6 @@ import Mlir.Loc
 import Mlir.Mlir
     exposing
         ( MlirBlock
-        , MlirModule
         , MlirOp
         , MlirRegion(..)
         , MlirType
@@ -239,135 +238,6 @@ buildBlockEnv (MlirRegion r) =
 
 
 -- ==== Pass 2: Encoding ====
-
-
-{-| Creates an encoder for the contents of the IR section of a whole module,
-without the section's own frame.
-
-The module's operations are written as the single region of one `builtin.module`
-operation, which is isolated and so is numbered from 0 and written in an IR
-section of its own. The tables must already hold everything the module refers
-to, `builtin.module` included.
-
--}
-encode : DialectRegistry -> AttrTypeTable -> MlirModule -> BE.Encoder
-encode dialectReg attrTypeTable mod =
-    encodeModuleBlock dialectReg attrTypeTable mod
-
-
-{-| Creates an encoder for the top level of the IR section: a block header
-saying one operation and no arguments, then the `builtin.module` operation.
--}
-encodeModuleBlock : DialectRegistry -> AttrTypeTable -> MlirModule -> BE.Encoder
-encodeModuleBlock dialectReg attrTypeTable mod =
-    let
-        blockHeader =
-            Bitwise.shiftLeftBy 1 1
-    in
-    BE.sequence
-        [ encodeVarInt blockHeader
-        , encodeModuleOp dialectReg attrTypeTable mod
-        ]
-
-
-{-| Creates an encoder for the `builtin.module` operation that holds the module's
-operations.
-
-It has no attributes, results, operands or successors. When the module has
-operations, it has one isolated region holding them, numbered from 0 and written
-in a nested IR section. A module with no operations is written with no region.
-
--}
-encodeModuleOp : DialectRegistry -> AttrTypeTable -> MlirModule -> BE.Encoder
-encodeModuleOp dialectReg attrTypeTable mod =
-    let
-        nameIdx =
-            DialectSection.opIndex "builtin.module" dialectReg
-
-        locIdx =
-            AttrType.locIndex mod.loc attrTypeTable
-
-        hasRegions =
-            not (List.isEmpty mod.body)
-
-        encodingMask =
-            if hasRegions then
-                kHasInlineRegions
-
-            else
-                0
-
-        regionEncoding =
-            Bitwise.or (Bitwise.shiftLeftBy 1 1) 1
-
-        region =
-            moduleBodyRegion mod
-
-        numberedEnv =
-            numberRegion emptyValueEnv region
-
-        moduleRegionEncoder =
-            encodeRegion dialectReg attrTypeTable numberedEnv region
-
-        moduleRegionSection =
-            Section.encodeSection Section.sectionId.ir moduleRegionEncoder
-    in
-    BE.sequence
-        ([ encodeVarInt nameIdx
-         , BE.unsignedInt8 encodingMask
-         , encodeVarInt locIdx
-         ]
-            ++ (if hasRegions then
-                    [ encodeVarInt regionEncoding
-                    , moduleRegionSection
-                    ]
-
-                else
-                    []
-               )
-        )
-
-
-{-| Returns a region of one block, with no arguments, holding the module's
-operations in order.
-
-The last operation becomes the block's terminator, whatever its `isTerminator`.
-An earlier operation whose `isTerminator` is set is skipped when the block is
-numbered and written. For a module with no operations the terminator is a
-placeholder `builtin.unrealized_cast`, which `encodeModuleOp` never writes,
-since it writes no region for an empty module.
-
--}
-moduleBodyRegion : MlirModule -> MlirRegion
-moduleBodyRegion mod =
-    let
-        ( bodyOps, termOp ) =
-            case List.reverse mod.body of
-                [] ->
-                    ( []
-                    , { name = "builtin.unrealized_cast"
-                      , id = ""
-                      , operands = []
-                      , results = []
-                      , attrs = Dict.empty
-                      , regions = []
-                      , isTerminator = True
-                      , loc = Mlir.Loc.unknown
-                      , successors = []
-                      }
-                    )
-
-                last :: rest ->
-                    ( List.reverse rest, last )
-    in
-    MlirRegion
-        { entry =
-            { args = []
-            , body = bodyOps
-            , terminator = termOp
-            }
-        , blocks = OrderedDict.empty
-        }
 
 
 {-| Creates an encoder for a region, given `valueEnv`, its value environment,

@@ -3,6 +3,8 @@
 Third leg of the kernel purity audit. Scope: the C++ symbols that *generated code*
 calls directly, as opposed to `Elm_Kernel_*` / `Eco_Kernel_*` kernel functions.
 
+> **Since this audit (2026-10-23 dead-code removal):** `_dispatch_mode` and the `emitClosureCall` closure-kind branch were removed (a saturated typed `eco.papExtend` now lowers to `emitFastClosureCall` when it carries `_fast_evaluator` + `_capture_abi`, otherwise to `emitInlineClosureCall`), and `eco_apply_segmentation_unknown` was removed (both generic call kinds, `generic_apply` and `segmentation_unknown`, lower to `eco_apply_closure_eval`). The text below is kept as the audit recorded it.
+
 Authoritative sources read:
 
 - `/work/runtime/src/allocator/RuntimeExports.h` (747 lines — the declared surface)
@@ -65,7 +67,7 @@ All declared in `EcoToLLVMRuntime.cpp:173–258`, all **without** `gcLeaf` (so R
 
 | Symbol | Purpose | Class | Inline-lowered today? | Notes |
 |---|---|---|---|---|
-| `eco_resolve_hptr(HPtr) -> ptr` | Resolve HPointer, follow forwarding | PH | **YES** via `__eco_resolve_fwd` marker | Marker at `EcoToLLVMRuntime.cpp:630` (gc-leaf); expanded to the header-tag diamond by `expandInlineDerefs`, `EcoBackend.cpp:871–950`. Real `eco_resolve_hptr` calls remain only on the `ECO_INLINE_DEREF_EXT=0` A/B leg (`EcoToLLVMClosures.cpp:126,439,682,1244,1344`; `EcoToLLVMControlFlow.cpp:184,707`; `EcoToLLVMValueAgg.cpp:708,845`) — **and unconditionally in `emitClosureCall` (`EcoToLLVMClosures.cpp:1344`), the `_dispatch_mode="closure"` path.** |
+| `eco_resolve_hptr(HPtr) -> ptr` | Resolve HPointer, follow forwarding | PH | **YES** via `__eco_resolve_fwd` marker | Marker at `EcoToLLVMRuntime.cpp:630` (gc-leaf); expanded to the header-tag diamond by `expandInlineDerefs`, `EcoBackend.cpp:871–950`. Real `eco_resolve_hptr` calls remain only on the `ECO_INLINE_DEREF_EXT=0` A/B leg (`EcoToLLVMClosures.cpp:126,439,682,1244,1344`; `EcoToLLVMControlFlow.cpp:184,707`; `EcoToLLVMValueAgg.cpp:708,845`) — **and unconditionally in `emitClosureCall` (`EcoToLLVMClosures.cpp:1344`), the `_dispatch_mode="closure"` path** (both since removed). |
 | `eco_follow_forward(HPtr) -> as1` | Cold arm of the deref diamond | PH | is the cold arm | gc-leaf, `EcoToLLVMRuntime.cpp:637`, `EcoBackend.cpp:885–887`. |
 | `eco_get_tag(HPtr) -> i32` | Constructor tag incl. embedded constants | PH | **YES** via `__eco_get_tag_inline` marker | `EcoToLLVMControlFlow.cpp:96–117`; expanded by `expandGetTagMarkers`. Call only on the A/B leg. |
 | `eco_get_header_tag`, `eco_get_custom_ctor` | Raw header / ctor reads | PH | never emitted by codegen | Kernel/C++ only. |
@@ -82,12 +84,12 @@ All declared in `EcoToLLVMRuntime.cpp:173–258`, all **without** `gcLeaf` (so R
 | `eco_apply_closure(clo, u64* args, n)` | Generic apply: under/exact/over-saturated | DISPATCH | NO | `EcoToLLVMRuntime.cpp:587`. Not gc-leaf ⇒ statepointed. |
 | `eco_apply_closure_typed(clo, i64* args, n, layout)` | Typed-args generic apply (CGEN_059) | DISPATCH | NO | `:593`. Re-boxes per `EvalParamLayout` — the single locus of re-boxing. |
 | `eco_apply_closure_eval(..., result_slot, desired_kind)` | Typed-args **and** typed-result apply | DISPATCH | NO | `:604`; emitted `EcoToLLVMClosures.cpp:1669`. |
-| `eco_apply_segmentation_unknown` | Unknown-staging apply | DISPATCH | NO | `:611`; `EcoToLLVMClosures.cpp:2189`. |
+| `eco_apply_segmentation_unknown` (since removed) | Unknown-staging apply | DISPATCH | NO | `:611`; `EcoToLLVMClosures.cpp:2189`. Now `eco_apply_closure_eval`. |
 | `eco_pap_extend(clo, args, n, bitmap)` | Under-saturated PAP extension | DISPATCH / ALLOC | NO | `:564`; `EcoToLLVMClosures.cpp:2248`. |
 | `eco_closure_call_saturated(...)` / `_eval(...)` | Saturated evaluator invocation | DISPATCH | NO | `:570,581`; `EcoToLLVMClosures.cpp:1855,1878`. |
-| `_dispatch_mode = "fast"` | Known homogeneous closure kind | DISPATCH | **YES — fully inline** | `emitFastClosureCall`, `EcoToLLVMClosures.cpp:1222–1330`: inline resolve + capture loads + **direct call to `@lambda$cap`**. No runtime helper at all. |
-| `_dispatch_mode = "closure"` | Known heterogeneous | DISPATCH | Partially | `emitClosureCall`, `:1334–1430`: `eco_resolve_hptr` call + evaluator load + **indirect typed call**. No `eco_apply_*`. |
-| `_dispatch_mode = "unknown"` | Analysis gap | DISPATCH | NO | `emitUnknownClosureCall` → the `eco_apply_*` family. |
+| `_dispatch_mode = "fast"` (attr since removed) | Known homogeneous closure kind | DISPATCH | **YES — fully inline** | `emitFastClosureCall`, `EcoToLLVMClosures.cpp:1222–1330`: inline resolve + capture loads + **direct call to `@lambda$cap`**. No runtime helper at all. |
+| `_dispatch_mode = "closure"` (since removed) | Known heterogeneous | DISPATCH | Partially | `emitClosureCall`, `:1334–1430`: `eco_resolve_hptr` call + evaluator load + **indirect typed call**. No `eco_apply_*`. |
+| `_dispatch_mode = "unknown"` (since removed) | Analysis gap | DISPATCH | NO | `emitUnknownClosureCall` → the `eco_apply_*` family. |
 | `eco_dispatch_stats_fast(ptr)` | LSS dispatch counter | STATS | NO | gc-leaf, `:881`. |
 | `eco_closure_stats_dump`, `eco_dispatch_stats_dump`, `eco_cons_site_tally` | Census dumps | STATS | never emitted | Driver/atexit only. |
 
@@ -201,11 +203,11 @@ plausible future inline candidate.
   `eco_apply_closure`. CGEN_059 makes this the **single locus** where re-boxing may
   happen — the LLVM IR for a generic apply is forbidden from containing
   `eco_alloc_int/_float/_char` calls introduced purely to box arguments.
-  `eco_apply_closure_eval` adds a typed *result* slot; `eco_apply_segmentation_unknown`
-  routes under-saturated → `eco_pap_extend`, saturated/over → `_typed`.
+  `eco_apply_closure_eval` adds a typed *result* slot; `eco_apply_segmentation_unknown` (since removed)
+  routed under-saturated → `eco_pap_extend`, saturated/over → `_typed`.
 
 **Yes, the typed-closure-calling path bypasses them for known-arity calls.** The
-`_dispatch_mode` attribute (CGEN_CLOSURE_007, always present) selects among three
+`_dispatch_mode` attribute (CGEN_CLOSURE_007, always present; both since removed/retired) selected among three
 lowerings in `emitDispatchedClosureCall` (`EcoToLLVMClosures.cpp:1390–1430`):
 
 - `"fast"` → `emitFastClosureCall` (`:1222`): inline `__eco_resolve_fwd` diamond, inline
@@ -219,7 +221,7 @@ lowerings in `emitDispatchedClosureCall` (`EcoToLLVMClosures.cpp:1390–1430`):
 
 So the `eco_apply_*` surface is now reached only from `_dispatch_mode="unknown"`,
 generic-mode `eco.papExtend` (CGEN_058: no `remaining_arity` attribute), and
-`segmentation_unknown` callees. This matches the recorded HOF-elimination result
+`segmentation_unknown` callees (today: generic-mode papExtend of either call kind, via `eco_apply_closure_eval`, plus saturated typed calls without a fast stamp). This matches the recorded HOF-elimination result
 (P6: −99.2% dispatch events).
 
 One residual: `emitClosureCall` calls `eco_resolve_hptr` **unconditionally**
@@ -350,9 +352,9 @@ no runtime state, no allocation):
 9. **`eco_resolve_hptr` and `eco_get_tag` are already inline** via the
    `__eco_resolve_fwd` / `__eco_get_tag_inline` markers; the remaining direct calls are
    A/B-leg fallbacks — **except `emitClosureCall` (`EcoToLLVMClosures.cpp:1344`), which
-   calls `eco_resolve_hptr` unconditionally on the `_dispatch_mode="closure"` path.**
+   calls `eco_resolve_hptr` unconditionally on the `_dispatch_mode="closure"` path** (since removed).
    That is a free inline win.
-10. **`eco_apply_closure*` is bypassed for all known-arity calls.** `_dispatch_mode`
+10. **`eco_apply_closure*` is bypassed for all known-arity calls.** `_dispatch_mode` (since removed)
     routes `"fast"` to a direct `@lambda$cap` call with inline capture loads
     (`EcoToLLVMClosures.cpp:1222`) and `"closure"` to a typed indirect call (`:1334`).
     The `eco_apply_*` family survives only for `"unknown"`, generic-mode `papExtend`

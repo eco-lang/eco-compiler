@@ -36,14 +36,12 @@ The operations group by what they describe, from control flow inward to memory. 
 
 Join points exist because a value-producing case cannot jump out of one of its branches. Tail recursion is therefore written as a jump to a join point, which lowers to a loop.
 
-Every operation is declared in one TableGen file, and MLIR generates the C++ classes from it. All hand-written logic lives in one C++ file: the verifiers, the symbol checks, the folds, the effect declarations for calls, and the custom printing of case expressions and join points. The C++ files that register the dialect and its types contain no logic of their own.
+Every operation is declared in one TableGen file, and MLIR generates the C++ classes from it. All hand-written logic lives in one C++ file: the verifiers, the symbol checks, the folds, the effect declarations for calls, and the custom printing of case expressions and join points. The C++ file that registers the dialect and its types (`EcoDialect.cpp`) contains no logic of its own.
 
 The declaration of the custom-type construction shows several of the dialect's rules in one place. Record and closure operations follow the same pattern.
 
 ```tablegen
-def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
-    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
-]> {
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
   ...
   let arguments = (ins
     Variadic<Eco_AnyValueOrAggregate>:$fields,
@@ -62,7 +60,7 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
 
 From `runtime/src/codegen/Ops.td` (`Eco_CustomConstructOp`).
 
-Notice three things. The operation is marked pure although it allocates; the section on effects explains what keeps that safe. The fields are one variable-length operand list, and `size` says where the real fields end, because the list can also carry extra operands described under root operands below. The tag is an attribute of the operation, not part of a type.
+Notice three things. The operation is marked pure although it allocates; the section on effects explains what keeps that safe. The fields are one variable-length operand list, and the verifier requires its length to equal `size`. The tag is an attribute of the operation, not part of a type.
 
 ## What the verifier checks
 
@@ -154,7 +152,7 @@ Purity in the dialect is narrow, and a broad grant of it would be unsound. Most 
 
 The variable-size allocating operations (list and string append, list map, the array allocators) and the extension of a partial application carry no traits at all. MLIR then assumes they have unknown effects and neither merges nor erases them.
 
-A call declares its memory effects explicitly. Declaring them at all removes MLIR's default of unknown effects, so a call that is not marked must claim to read and write memory, or every call would become erasable. A direct call can carry a marker that lets it be merged or erased (`eco.cse_safe`). It never lets the call be moved ahead of the condition that guards it, since the call does not declare itself speculatable. The marker is a discardable attribute, one that MLIR lets any pass drop. The verifier allows it only on a direct call with no root operands, and the garbage-collection preparation pass strips it, so the marker never meets the operands that pass attaches.
+A call declares its memory effects explicitly. Declaring them at all removes MLIR's default of unknown effects, so a call that is not marked must claim to read and write memory, or every call would become erasable. A direct call can carry a marker that lets it be merged or erased (`eco.cse_safe`). It never lets the call be moved ahead of the condition that guards it, since the call does not declare itself speculatable. The marker is a discardable attribute, one that MLIR lets any pass drop. The verifier allows it only on a direct call that is not a forced tail call, and the garbage-collection preparation pass strips it, so no pass after preparation can act on it.
 
 Reads of heap values, such as string length, string comparison and structural equality, are marked pure. That is sound only because Eco heap values are never written after they are published.
 
@@ -164,13 +162,11 @@ A projection from a construction that dominates it folds to the constructed fiel
 
 The same folds for list head and tail exist but are off unless an environment switch enables them. Combined with common subexpression elimination, they break the lowering's rewrite of list traversals, so they stay off to keep that combination from being reached.
 
-## Root operands
+## No root operands
 
-Every operation that can allocate where the collector might run implements an interface (`GCRootCarrier`) that lets a preparation pass attach the boxed values live at that point as extra operands. The pass puts them in one of three places. Some operations have a separate list for them. Record and custom-type constructions take them after the declared fields, which avoids changing the operand layout that compiler-written bytecode relies on. Calls and closure operations take them after their own operands, with an attribute counting them.
+No operation carries the boxed values that are live across it. LLVM's statepoint rewriting finds the real roots from liveness, as the parent explains, and the compiler attaches none. Roots cannot be computed inside the lowering either: by then the type conversion has turned boxed values into plain integers, so liveness there cannot tell pointers from numbers. LLVM can, because boxed values reach it as pointers in their own address space.
 
-These operands change no emitted code. The lowering splits them off and discards them, and LLVM's statepoint rewriting finds the real roots from liveness, as the parent explains. The compiler attaches none. Roots cannot be computed inside the lowering either: by then the type conversion has turned boxed values into plain integers, so liveness there cannot tell pointers from numbers. LLVM can, because boxed values reach it as pointers in their own address space. Nothing in the current design needs the operands, and removing them is an open cleanup, so until it is done every allocating operation must still make room for them.
-
-What matters for the dialect is a counting rule: every verifier and fold that counts operands works from the declared count (the size, the field count or the number of captures), or subtracts the root count. A check that counted all operands would break as soon as roots were attached.
+The counting rule that follows is simple: every verifier and fold counts operands directly, and an operation's operand list holds exactly its declared operands. A record or custom-type construction must have exactly as many operands as its field count or size.
 
 ## Aggregates and closure building
 
@@ -202,7 +198,7 @@ Some invariant rows are stale. Two say the aggregate operations have no producer
 A change fits when it keeps the verifier local, keeps layout derived from types, and gives every fact one representation.
 
 - Another typed intrinsic is one operation with a precise description and a lowering pattern. Mark it pure only if it neither allocates nor has observable effects, or if it reads immutable data and its description says why. A variable-size allocating operation stays without traits. String and list append, structural equality, the code-unit read and list map have this shape.
-- Another allocating operation implements the root-carrier interface, chooses one of the three root layouts, and counts operands from its declared counts in every verifier and fold, because the preparation pass may append roots to it and the module is verified again afterward.
+- Another allocating operation declares exactly its own operands, with a verifier that checks their count against its declared size, and leaves rooting to LLVM's statepoint rewriting.
 - Widening a size limit changes the constant in the runtime's heap header together with the header encoding. The verifier picks up the constant itself; add a rejected-input test at the edge, as for arity 2047 and fields 2040 and 2047.
 - A tighter check becomes another case in an operation's verifier, or in its symbol check if it needs one lookup, with a negative test under `test/codegen/`. The bounded extension check is the model: walk a short way, and give up when unsure.
 - An optimization hint is a discardable attribute with a verifier precondition and a defined pass that strips it, as the call purity marker has.
@@ -225,11 +221,11 @@ Parent: [backend.md](backend.md). This node has no children. The consumers of th
 
 Code:
 
-- `runtime/src/codegen/Ops.td`: the dialect, its seven types, the type constraints, the `GCRootCarrier` interface and every operation. Read the descriptions of `eco.case`, `eco.call`, `eco.papExtend`, `eco.list.map`, `eco.value.eq` and the value-aggregate section.
+- `runtime/src/codegen/Ops.td`: the dialect, its seven types, the type constraints and every operation. Read the descriptions of `eco.case`, `eco.call`, `eco.papExtend`, `eco.list.map`, `eco.value.eq` and the value-aggregate section.
 - `runtime/src/codegen/EcoOps.cpp`: `verifySlotKinds`, `verifyClosureKinds`, `rejectStaleBitmapAttr`, `CaseOp::verify`, `RecordConstructOp::verify`, `CustomConstructOp::verify`, `PapExtendOp::verifySymbolUses`, `CallOp::getEffects`, `foldConstructedField`, `ListHeadOp::fold`.
-- `runtime/src/codegen/EcoOps.h` (`kCseSafeAttrName`), `runtime/src/codegen/EcoDialect.cpp`, `runtime/src/codegen/EcoTypes.cpp`.
+- `runtime/src/codegen/EcoOps.h` (`kCseSafeAttrName`), `runtime/src/codegen/EcoDialect.h` and `runtime/src/codegen/EcoDialect.cpp` (the dialect and its types).
 - `runtime/src/allocator/Heap.hpp`: `CUSTOM_MAX_FIELDS`, `RECORD_MAX_FIELDS`, `CLOSURE_MAX_ARITY`, `NULL_CONS_MAX`.
-- `runtime/src/codegen/Passes/EcoGCPrepare.cpp`, `runtime/src/codegen/Passes/RCElimination.cpp`, `runtime/src/codegen/Passes/CheckEcoClosureCaptures.cpp`, `runtime/src/codegen/EcoPipeline.cpp`: root operands and the purity marker, the placeholder check, the validation-only capture check, and when verification runs (`ECO_LOWERING_VALIDATION`, off by default).
+- `runtime/src/codegen/Passes/EcoGCPrepare.cpp`, `runtime/src/codegen/Passes/RCElimination.cpp`, `runtime/src/codegen/Passes/CheckEcoClosureCaptures.cpp`, `runtime/src/codegen/EcoPipeline.cpp`: allocation grouping and the purity marker, the placeholder check, the validation-only capture check, and when verification runs (`ECO_LOWERING_VALIDATION`, off by default).
 - `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp`: the aggregate promotion before statepoint rewriting.
 - `compiler/src/Compiler/Eco/Config.elm` (`aggPromote`, `ctorInline`): the compiler's default aggregate output.
 - `test/codegen/*_rejected.mlir`, `test/codegen/invalid_*.mlir`, `test/codegen/call_purity_attr_*.mlir`, `test/codegen/value_*.mlir`: what the verifier accepts and rejects.

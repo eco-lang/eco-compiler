@@ -381,8 +381,8 @@ private:
     void preEvacuationFromSpaceWalk();
 
     // Stale-pointer tripwire (validator-only; see Allocator::resolve and the
-    // per-arg validation in eco_apply_closure / eco_apply_segmentation_unknown
-    // / eco_closure_call_saturated). Reports + aborts when an HPointer
+    // per-arg validation in eco_apply_closure / eco_closure_call_saturated).
+    // Reports + aborts when an HPointer
     // resolves to a free region of the nursery (i.e. post-swap to-space-free,
     // i.e. a stale pre-GC pointer that was never evacuated).
     // (isInFromSpaceAllocatedRegion / isInToSpaceAllocatedRegion declared

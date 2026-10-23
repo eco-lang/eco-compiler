@@ -8,14 +8,13 @@ a code generator miscounting a partial application's arguments fails a test.
 
 The function an op names depends on whether the closure it builds has captured
 values. Without captures, the op's `function` attribute names the function
-itself. With captures, the closure is emitted as two functions, and the op's
-`arity` counts the captures as well as the parameters. The _fast clone_, named
-with a `$cap` suffix, takes each capture and then each parameter as separate
-arguments, and the op names it in its `_fast_evaluator` attribute. The _generic
-clone_, named with a `$clo` suffix, takes a pointer to the closure and then the
-parameters, and the op names it in `function`. The generic clone therefore
-takes fewer arguments than `arity` by design, so the check is made against the
-fast clone whenever `_fast_evaluator` is present.
+itself. With captures, the closure is emitted as one function, the _fast
+clone_, named with a `$cap` suffix, which takes each capture and then each
+parameter as separate arguments; the op's `arity` counts the captures as well
+as the parameters, and the op names the fast clone both in `function` and in
+its `_fast_evaluator` attribute. So the check is always made against the
+function `function` names, and an op whose `_fast_evaluator` names a different
+function fails too.
 
 The program is compiled to MLIR with `TestLogic.TestPipeline.runToMlir`, and
 the caller supplies the program. A function's parameter count is the number of
@@ -30,8 +29,6 @@ Among what is not checked:
     `TestLogic.Generate.CodeGen.PapCreateArity` reports those.
   - An op that names a function with no top-level `func.func` of that name
     passes.
-  - When `_fast_evaluator` is present, the generic clone named in `function` is
-    not checked at all.
   - A `func.func` with no region counts as taking no parameters.
   - When several ops fail, only the first is reported.
 
@@ -135,10 +132,10 @@ buildFuncParamCountMap mlirModule =
 {-| Returns a violation if `op`'s `arity` differs from the parameter count, in
 `funcParamCountMap`, of the function it targets, and `Nothing` otherwise.
 
-The target is the function named by `_fast_evaluator` when `op` has that
-attribute, and otherwise the one named by `function`. `Nothing` is also
-returned when `op` lacks `arity` or `function`, or when the target is not in
-`funcParamCountMap`.
+The target is the function named by `function`. A violation is also returned
+when `op` has a `_fast_evaluator` naming a different function. `Nothing` is
+also returned when `op` lacks `arity` or `function`, or when the target is not
+in `funcParamCountMap`.
 
 -}
 checkPapCreateOp : Dict String Int -> MlirOp -> Maybe Violation
@@ -163,38 +160,53 @@ checkPapCreateOp funcParamCountMap op =
             Nothing
 
         ( Just arity, Just funcName ) ->
-            -- When the closure has captures, `function` names the $clo clone,
-            -- which takes a closure pointer in place of the captures, so
-            -- `_fast_evaluator` is compared with instead.
-            let
-                targetFuncName =
-                    case maybeFastEval of
-                        Just fastEvalName ->
-                            fastEvalName
-
-                        Nothing ->
-                            funcName
-            in
-            case Dict.get targetFuncName funcParamCountMap of
-                Nothing ->
-                    -- No top-level func.func has this name, so there is
-                    -- nothing to compare with.
-                    Nothing
-
-                Just paramCount ->
-                    if arity /= paramCount then
+            case maybeFastEval of
+                Just fastEvalName ->
+                    if fastEvalName /= funcName then
                         Just
                             { opId = op.id
                             , opName = op.name
                             , message =
-                                "eco.papCreate arity="
-                                    ++ String.fromInt arity
-                                    ++ " but function "
-                                    ++ targetFuncName
-                                    ++ " has "
-                                    ++ String.fromInt paramCount
-                                    ++ " parameters"
+                                "eco.papCreate function="
+                                    ++ funcName
+                                    ++ " but _fast_evaluator="
+                                    ++ fastEvalName
+                                    ++ " (both must name the $cap function)"
                             }
 
                     else
-                        Nothing
+                        checkArity funcParamCountMap arity funcName op
+
+                Nothing ->
+                    checkArity funcParamCountMap arity funcName op
+
+
+{-| Returns a violation if `arity` differs from the parameter count of
+`funcName` in `funcParamCountMap`, and `Nothing` otherwise or when no
+top-level `func.func` has that name.
+-}
+checkArity : Dict String Int -> Int -> String -> MlirOp -> Maybe Violation
+checkArity funcParamCountMap arity funcName op =
+    case Dict.get funcName funcParamCountMap of
+        Nothing ->
+            -- No top-level func.func has this name, so there is nothing to
+            -- compare with.
+            Nothing
+
+        Just paramCount ->
+            if arity /= paramCount then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message =
+                        "eco.papCreate arity="
+                            ++ String.fromInt arity
+                            ++ " but function "
+                            ++ funcName
+                            ++ " has "
+                            ++ String.fromInt paramCount
+                            ++ " parameters"
+                    }
+
+            else
+                Nothing

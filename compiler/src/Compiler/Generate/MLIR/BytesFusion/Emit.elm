@@ -1819,11 +1819,8 @@ emitJustResult state =
                     Context.freshVar ctx2
 
                 -- Use eco.construct.custom with constructor "Just", tag 0, size 1.
-                -- No safepoint hint was emitted at this site previously; preserve
-                -- behavior. EcoGCPrepare's liveness query at the construct op
-                -- still picks up roots from the surrounding SSA scope.
                 ( ctx4, justOp ) =
-                    Ops.ecoConstructCustom ctx3 [] justVar 0 1 [ 0 ] [ ( unitVar, Types.ecoValue ) ] (Just "Just")
+                    Ops.ecoConstructCustom ctx3 justVar 0 1 [ 0 ] [ ( unitVar, Types.ecoValue ) ] (Just "Just")
             in
             ( [ unitOp, justOp ], justVar, ctx4 )
 
@@ -1848,7 +1845,7 @@ emitJustResultWithVar varName state =
                 Context.freshVar state.ctx
 
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 [] justVar 0 1 [ Types.mlirTypeToKind varType ] [ ( varName, varType ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 justVar 0 1 [ Types.mlirTypeToKind varType ] [ ( varName, varType ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -1860,7 +1857,7 @@ emitJustResultWithVar varName state =
 
             -- Use eco.construct.custom with constructor "Just", tag 0, size 1, slot kind 0
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 [] justVar 0 1 [ 0 ] [ ( varName, Types.ecoValue ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 justVar 0 1 [ 0 ] [ ( varName, Types.ecoValue ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -2002,7 +1999,7 @@ emitConsUnboxed head tail ctx0 =
             Context.freshVar ctx0
 
         ( ctx2, op ) =
-            Ops.ecoConstructList ctx1 [] var head ( tail, Types.ecoValue ) True
+            Ops.ecoConstructList ctx1 var head ( tail, Types.ecoValue ) True
     in
     ( op, var, ctx2 )
 
@@ -2017,7 +2014,7 @@ emitReverseList list ctx0 =
             Context.freshVar ctx0
 
         ( ctx2, callOp ) =
-            Ops.ecoCallNamed ctx1 [] reversed "Elm_Kernel_List_reverse" [ ( list, Types.ecoValue ) ] Types.ecoValue
+            Ops.ecoCallNamed ctx1 reversed "Elm_Kernel_List_reverse" [ ( list, Types.ecoValue ) ] Types.ecoValue
     in
     ( [ callOp ], reversed, ctx2 )
 

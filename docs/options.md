@@ -3,7 +3,7 @@
 This page lists every flag, option and switch that changes how Eco builds, compiles or runs. It covers:
 
 - the Elm front-end (`eco make` and the other commands, `ECO_*` environment variables, `eco-config.json`),
-- the C++ backend tools (`eco-boot-native`, `ecoc`, `ecogen`, `ecor`, the test runners) and the lowering environment variables,
+- the C++ backend tools (`eco-boot-native`, `ecoc`, `ecogen`, the test runners) and the lowering environment variables,
 - the runtime heap and garbage collector (`ECO_HEAP_CONFIG` JSON keys and `ECO_GC_*` environment variables),
 - build-time configuration (CMake options, cache variables, presets, preprocessor switches).
 
@@ -48,7 +48,7 @@ These are the places where a setting does not do what its name suggests. Each is
 
 ## Elm front-end
 
-Scope: `compiler/src/**`, `compiler/src-xhr/**`, and the shipped JS glue `compiler/bin/*.js`, `compiler/lib/index.js`. All paths are repo-relative. Line numbers were checked against the tree on 2026-09-28.
+Scope: `compiler/src/**`, `compiler/src-xhr/**`, and the shipped JS glue `compiler/bin/*.js` (`compiler/lib/` has since been removed). All paths are repo-relative. Line numbers were checked against the tree on 2026-09-28.
 
 ### 1. CLI commands and flags (`eco <command>`)
 
@@ -110,7 +110,7 @@ Flag syntax, from `compiler/src/Terminal/Terminal/Chomp.elm:404-442`: a value fl
 | `test --fuzz` (disabled) | int; default 100 | Runs per fuzz test (parsed into `maybeRuns`) | compiler/src/Terminal/Main.elm:666,703 |
 | `test --report` (disabled) | `json` \| `junit` \| `console`; default console | Test report format | compiler/src/Terminal/Main.elm:668; compiler/src/Terminal/Test.elm:1307 |
 
-**Library API** (`compiler/lib/index.js` drives `API.Main`, which reads a JSON argument through `Eco.Env.rawArgs`)
+**Library API** (`API.Main`, which reads a JSON argument through `Eco.Env.rawArgs`; its JS driver `compiler/lib/index.js` has since been removed, so nothing in the tree ships a driver for it)
 
 | Name | Values / default | Effect | Source |
 |---|---|---|---|
@@ -198,7 +198,6 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `ECO_PSPLIT_PARAMS` | B4; on | Feature: projection-only aggregate params get a `$psplit` worker (hash `psplit`) | compiler/src/Builder/Eco/Config.elm:356 |
 | `ECO_SRET_TAILFUNC` | B4; on | Feature: widens sret to tail funcs; no-op unless SRET_RESULTS (hash `srtf=`) | compiler/src/Builder/Eco/Config.elm:361 |
 | `ECO_SRET_FRESH` | B4; on | Feature: widens sret to helper-mediated results; no-op unless SRET_RESULTS (hash `sretf=`) | compiler/src/Builder/Eco/Config.elm:366 |
-| `ECO_BORROW_OPT` | B4; off | Feature: oracle-coupled transforms. On also enables borrow; applied after `ECO_BORROW`, so it wins over `ECO_BORROW=0` (hash `bopt=`) | compiler/src/Builder/Eco/Config.elm:371 |
 | `ECO_STRING_LENGTH_OP` | B4; on | Feature: emits the inline `eco.string.length` op (hash `strlen=`) | compiler/src/Builder/Eco/Config.elm:376 |
 | `ECO_APPEND_SPLIT` | B4; on | Feature: typed `eco.string.append` / `eco.list.append` where the type is known (hash `apsplit=`) | compiler/src/Builder/Eco/Config.elm:381 |
 | `ECO_STRING_ORDER_INTRINSIC` | B4; on | Feature: String `lt/le/gt/ge` lower to `eco.string.cmp3` (hash `strord=`) | compiler/src/Builder/Eco/Config.elm:386 |
@@ -224,7 +223,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `GUIDA_REGISTRY` | URL; `https://package.elm-lang.org` | Package registry base URL (inherited from Guida) | compiler/src/Builder/Deps/Website.elm:25 |
 | `GUIDA_JS_PATH` | path; `../../build/compiler/build-xhr/bin/guida.js` | `bin/index.js` (the npm `guida` bin) loads the compiled compiler JS from here | compiler/bin/index.js:34 |
 | `APPDATA` | Windows only | Base for `File.appDataDir` in the XHR IO handler | compiler/bin/eco-io-handler.js:363 |
-| (any name) | none | Generic `Env.lookup` passthrough: `process.env[name]` in the Node runners; `lib/index.js` uses the caller-supplied `config.env`, not `process.env` | compiler/bin/eco-io-handler.js:471; compiler/bin/eco-boot-runner.js:360; compiler/lib/index.js:199 |
+| (any name) | none | Generic `Env.lookup` passthrough: `process.env[name]` in the Node runners | compiler/bin/eco-io-handler.js:471; compiler/bin/eco-boot-runner.js:360 |
 
 `compiler/bin/eco-boot-runner.js:486` loads `../build-kernel/bin/eco-boot.js` from a hard-coded path; no environment variable changes it.
 
@@ -255,7 +254,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `mono.lss.{enabled,maxSetSize,maxSpecsPerGlobal,report,qCensus,arrowCensus}` | true / 0 / 0 / false / false / false | LSS knobs | compiler/src/Compiler/Eco/Config.elm:919-927 |
 | `mono.lss.instanceQualMaxInstances` / `mono.lss.census` | 8 / false | Stamp config | compiler/src/Compiler/Eco/Config.elm:936-937 |
 | `mono.limits.{specTypeNodes,specBreadth}` | 400000 / 50000 | Watchdogs | compiler/src/Compiler/Eco/Config.elm:909-910 |
-| `borrow.{enabled,reify,report,validate,oracleOpt}` | false / `"off"` (`off\|rc`) / false / false / false | Borrow. **`validate` is JSON-only** | compiler/src/Compiler/Eco/Config.elm:863-867 |
+| `borrow.{enabled,reify,report,validate}` | false / `"off"` (`off\|rc`) / false / false | Borrow. **`validate` is JSON-only** | compiler/src/Compiler/Eco/Config.elm:735-738 |
 | `list.{chunks,consIntrinsic,mapTemplate}` | true / true / false | `list.report` is env-only | compiler/src/Compiler/Eco/Config.elm:769-771 |
 | `cse.{enabled,minCost,maxPerDef}` | false / 5 / 64 | `cse.report` is env-only | compiler/src/Compiler/Eco/Config.elm:782-784 |
 | `aggPromote`, `ctorInline`, `sretResults`, `psplitParams`, `sretFresh`, `sretTailFuncs`, `stringLengthOp`, `appendSplit`, `stringOrderIntrinsic`, `valueEq`, `kernelGcLeaf`, `callPurityAttrs` | bool; all true | Top-level feature switches (see the env rows) | compiler/src/Compiler/Eco/Config.elm:741-752 |
@@ -359,21 +358,6 @@ Source: `runtime/src/ecogen.cpp`, target at `runtime/src/codegen/CMakeLists.txt:
 | `-verify-only` | bool, default `false` | Stop after verification (always prints "Verification successful!" to stdout) | `runtime/src/ecogen.cpp:42` |
 | `-mlir-print-debuginfo` | bool, default `false` | Print location debug info in the output | `runtime/src/ecogen.cpp:47` |
 
-### `ecor` (standalone GC workload demo / allocator debug tool)
-
-Source: `runtime/src/main.cpp`, target at `CMakeLists.txt:414` (`EXCLUDE_FROM_ALL`, POSIX only, needs RapidCheck). Uses `getopt_long`.
-
-| Name | Values / default | Effect | Source |
-|---|---|---|---|
-| `-d, --duration <time>` | `<n>s\|sec\|m\|min\|h\|hr`; default `0` = run until Ctrl+C | How long to run | `runtime/src/main.cpp:570`, `:109` |
-| `-f, --fields <n>` | integer >= 1, default `8` | Number of fields (lists) in the model record | `runtime/src/main.cpp:571`, `:107` |
-| `-l, --list-size <n>` | integer >= 1, default `500` | Integers per list | `runtime/src/main.cpp:572`, `:108` |
-| `-t, --threshold <frac>` | (0, 1], **default `0.5`** | Old-gen fill fraction that triggers a major GC. The help text says "default: 0.9" and the header example uses `-t 100`, which is rejected: both are wrong | `runtime/src/main.cpp:573`, `:110`, `:520` |
-| `-p, --probability <p>` | [0, 1], default `0.5` | Probability of reversing each field's list per step | `runtime/src/main.cpp:574`, `:112` |
-| `-n, --threads <n>` | integer >= 1, default `1` | Number of program threads, each with its own heap | `runtime/src/main.cpp:575`, `:113` |
-| `--dfs` / `--no-dfs` | default on | Two-pass list-spine copying (hybrid DFS) vs pure Cheney BFS; sets `config.use_hybrid_dfs` | `runtime/src/main.cpp:576-577`, `:695` |
-| `-h, --help` | | Print usage | `runtime/src/main.cpp:578` |
-
 ### Unified `eco` binary: in-process native driver
 
 The unified `eco` binary (`compiler/CMakeLists.txt:876`, plus `eco-quick` at `:941`) gets its CLI from the Elm compiler, which another section covers. For `--output` to a native target, `Terminal/Make.elm` calls the kernel intrinsic `Eco.NativeDriver.lowerAndLink mlirPath outputPath rootModule` (`eco-kernel-cpp/src/Eco/NativeDriver.elm:46`). That goes through `Eco::Kernel::NativeDriver` (`eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`) to the C ABI `eco_native_lower_and_link` / `eco_native_lower_and_link_bytes` (`runtime/src/codegen/EcoNativeAPI.h`, `runtime/src/codegen/EcoNativeDriver.cpp:1206`, `:1215`). Both build a **default** `EcoNativeOptions`. None of the options below can be set from the `eco` command line; only `rootModule` is passed through. Binaries linked without `EcoNativeDriverStatic` get weak stubs that return -1 (`runtime/src/codegen/eco_native_stub.cpp`).
@@ -427,9 +411,8 @@ These are not command-line flags, but they are how startup options reach a compi
 | `ECO_LIST_CURSOR_DEBUG` | presence | Debug trace from EcoListCursor | `runtime/src/codegen/Passes/EcoListCursor.cpp:118` |
 | `ECO_GCLEAF_MARK` | default-on, `0` = off | `EcoMarkGCLeafCalls` stamps `eco.callee_gc_leaf` on calls to `eco.gc_leaf` kernels | `runtime/src/codegen/Passes/EcoMarkGCLeafCalls.cpp:65` |
 | `ECO_GCLEAF_MARK_REPORT` | presence | Prints the `[gcleaf-mark]` decl/site counts | `runtime/src/codegen/Passes/EcoMarkGCLeafCalls.cpp:95` |
-| `ECO_GCPREPARE_CENSUS` | presence | Prints the `[gcprepare-census]` allocation-group opportunity census (no IR change) | `runtime/src/codegen/Passes/EcoGCPrepare.cpp:132` |
-| `ECO_GCPREPARE_SPLIT_INLINE_GROUPS` | default-on, `0` = off | Splits allocation groups whose members all have inline lowerings (`0` restores grouping) | `runtime/src/codegen/Passes/EcoGCPrepare.cpp:150` |
-| `ECO_GCPREPARE_LEAF_SAFEPOINT` | default-on, `0` = off | Calls stamped `eco.callee_gc_leaf` are not treated as safepoints (no root operands) | `runtime/src/codegen/Passes/EcoGCLiveness.h:41` |
+| `ECO_GCPREPARE_CENSUS` | presence | Prints the `[gcprepare-census]` allocation-group opportunity census (no IR change) | `runtime/src/codegen/Passes/EcoGCPrepare.cpp:118` |
+| `ECO_GCPREPARE_SPLIT_INLINE_GROUPS` | default-on, `0` = off | Splits allocation groups whose members all have inline lowerings (`0` restores grouping) | `runtime/src/codegen/Passes/EcoGCPrepare.cpp:136` |
 | `ECO_LAX_CASE_VERIFY` | presence (even `0` enables it) | Turns `eco.case`/`eco.yield` type-mismatch verifier errors into warnings, for dumping invalid IR. Never set it in real builds | `runtime/src/codegen/EcoOps.cpp:273`, `:314` |
 
 ### Backend lowering environment variables: Eco -> LLVM dialect
@@ -577,9 +560,9 @@ There is no flag for the target triple or CPU: both tools use `JITTargetMachineB
 
 The CMake options themselves are covered in another section.
 
-- `ECO_LOWERING_VALIDATION`: turns on the MLIR per-pass verifier and the LLVM module verifier in `eco-boot-native`/`ecoc`/`eco`. Adds the `CheckEcoClosureCaptures`, `EcoGCLivenessAudit` and `EcoBoxedStoreVerify` passes (`runtime/src/codegen/EcoPipeline.cpp:61`, `:158`, `:176`; `runtime/src/codegen/eco-boot.cpp:365`).
+- `ECO_LOWERING_VALIDATION`: turns on the MLIR per-pass verifier and the LLVM module verifier in `eco-boot-native`/`ecoc`/`eco`. Adds the `CheckEcoClosureCaptures`, `EcoGCLivenessAudit` (now only checks that no `eco.cse_safe` survives EcoGCPrepare) and `EcoBoxedStoreVerify` passes (`runtime/src/codegen/EcoPipeline.cpp:61`, `:158`, `:176`; `runtime/src/codegen/eco-boot.cpp:365`).
 - `ECO_KERNEL_DEBUG`: kernel stderr tracing (table above).
-- `ENABLE_GC_STATS` / `ECO_GC_DEBUG` / `P1_CENSUS_COMPILED` / `ECO_HEAP_VALIDATE`: change what `ecor` and generated programs print at exit, and add GC checks (GC section).
+- `ENABLE_GC_STATS` / `ECO_GC_DEBUG` / `P1_CENSUS_COMPILED` / `ECO_HEAP_VALIDATE`: change what generated programs and the test binaries print at exit, and add GC checks (GC section).
 - `_WIN32`: `eco-boot-native` runs the MLIRContext single-threaded and exits through `TerminateProcess`.
 
 ### Dead or inconsistent items
@@ -588,9 +571,6 @@ The CMake options themselves are covered in another section.
   - `ecoc -o` and `ecoc -verify-diagnostics` are declared but never read.
   - `test --no-shrink` and `test --reproduce` are parsed but never used.
   - `ecoc -no-verify-parse` is close to dead: `main()` runs `verify(*module)` right after parsing (`runtime/src/codegen/ecoc.cpp:451`), so invalid IR still fails before `-emit=mlir` can dump it.
-- **Wrong `ecor` help text:**
-  - It says `--threshold` defaults to 0.9; the code default is 0.5.
-  - The header example `-t 100` is rejected, because the value must be ≤ 1.0.
 - **Stale comment:** `KernelDebug.hpp` says `ECO_KERNEL_DEBUG` "defaults ON"; the CMake default is OFF.
 - **Presence-type variables where `=0` still enables the switch:** `ECO_LAX_CASE_VERIFY`, `ECO_FCA_SCAN`, `ECO_PAP_HISTO`, `ECO_GCPREPARE_CENSUS`, `ECO_GCLEAF_MARK_REPORT`, `ECO_ECO2LLVM_STATS`, `ECO_LIST_TEMPLATE_DEBUG`, `ECO_LIST_CURSOR_DEBUG`, `ECO_LSS_DISPATCH_SITE_COUNTERS`, `ECO_CAP_INLINE_GCFREE_ONLY`, `ECO_CAP_INLINE_DEBUG`, `ECO_CONS_SITES`.
 - **Precedence:** `AOT_E2E_JOBS` and `MLIR_EQUIV_JOBS` override an explicit `--jobs`. The environment beats the flag, which is the reverse of the usual convention.
@@ -611,7 +591,7 @@ All runtime heap/GC tuning lives in one struct, `Elm::HeapConfig` (`runtime/src/
 | 5. `validate()` | Range and cross-field checks. On failure it throws `std::invalid_argument`. | `AllocatorCommon.hpp:953-1386` |
 | First-init-only geometry | The reservation and the nursery/old-gen split (`nursery_offset`) are computed once, on the first `initialize()`. `reset()` re-derives slice geometry but never the region. | `Allocator.cpp:282-286` |
 
-**Byte-size values** can be a JSON integer (raw bytes) or a string with a power-of-two suffix: `K`/`M`/`G`, optionally followed by `B` or `iB`, e.g. `"16M"` or `"512KiB"` (`HeapConfigJson.cpp:33-93`). The same parser also reads several *count* keys: `nursery_block_count`, `nursery_max_block_count`, `mark_work_ratio`, `string_tiny_slice_limit`, `utf8_view_min_len`, `minor_sweep_divisor`, `incremental_mark_min_slice_units` and `heal_parallel_min`. So `"1K"` is accepted there and means 1024.
+**Byte-size values** can be a JSON integer (raw bytes) or a string with a power-of-two suffix: `K`/`M`/`G`, optionally followed by `B` or `iB`, e.g. `"16M"` or `"512KiB"` (`HeapConfigJson.cpp:33-93`). The same parser also reads several *count* keys: `nursery_block_count`, `nursery_max_block_count`, `string_tiny_slice_limit`, `utf8_view_min_len`, `minor_sweep_divisor`, `incremental_mark_min_slice_units` and `heal_parallel_min`. So `"1K"` is accepted there and means 1024. (The former `mark_work_ratio` key has been removed: a file that still sets it is rejected as an unknown key.)
 
 **Fraction** keys must be JSON numbers in [0, 1]; values outside that are rejected at parse time (`HeapConfigJson.cpp:95-106`). **Double** keys only need to be numbers; `validate()` checks their range. **u32/i32** keys must be JSON integers.
 
@@ -626,8 +606,6 @@ That file lists all **88** keys at their current struct defaults, and so does `h
 - The one lasting effect is the first-init region split and the helper jitter.
 
 The test binaries (`test`, `stress-test`) run every isolated test and every E2E program in a spawned child, `<self> --isolated-child <result> <kind> <args…>` (kinds `case`, `codegen`, `bf-codegen`, `elm`; `test/SpawnedChildren.hpp`, SYS_008). That mode is internal: the harness passes a zero-filled result file the child maps, and captures the child's stdout and stderr in a per-test file. `initAllocator` takes the config as given, so unit tests run the region nursery by default. `initLegacyAllocator` is the only route to the legacy nursery, for the tests whose subject it is (plans/region-nursery-everywhere.md). E2E children re-install the production config at every `EcoRunner::reset()` (`Allocator::environmentConfig()`), and `test/RegionNurseryGuard.hpp` fails any E2E program that is not on the region nursery unless the environment asks for legacy. To change minor threads across the whole suite, use `ECO_TEST_MINOR_THREADS`, which is applied into each test config (`TestHelpers.cpp:17-31`).
-
-**Other programmatic config.** `runtime/src/main.cpp:693-696`, the standalone runtime stress harness, sets `max_heap_size = 2G` and `use_hybrid_dfs` from its CLI.
 
 "Auto" thread counts are resolved in `OldGenSpace.cpp:2922-2968`. `gc::availableCpus()` returns the affinity mask, capped by the cgroup v2 quota (`GCHelperPool.hpp:308-311`). Every "auto" below uses it. On this 24-CPU host the defaults resolve to 16 markers, 8 minor workers and 4 background markers.
 
@@ -650,9 +628,9 @@ The test binaries (`test`, `stress-test`) run every isolated test and every E2E 
 | `string_tiny_slice_limit` | UTF-16 units | 128 | Slices at or below this are copied instead of allocating a `StringSlice`. | `:111,638` |
 | `utf8_view_min_len` | bytes | 32 | Minimum ASCII payload for a zero-copy `StringUtf8View`. | `:116,642` |
 | `utf8_strings_enabled` | bool | true | Master switch for UTF-8 string forms. | `:120,645` |
-| `rope_max_height` | u32 | 32 | Rebalance heuristic flag only. The rebalance itself is TODO. | `:123`; `StringOps.cpp:267` |
-| `rope_leaf_count_limit` | u32 | 64 | Rebalance heuristic (paired with the next key). | `:126`; `StringOps.cpp:268` |
-| `rope_min_leaf_size` | u32 | 128 | Rebalance heuristic: average leaf size threshold. | `:129`; `StringOps.cpp:269` |
+| `rope_max_height` | u32 | 32 | **No effect**: read by nothing (rope rebalancing is unimplemented). Still accepted so old files parse. | `AllocatorCommon.hpp:746`; `HeapConfigJson.cpp:451` |
+| `rope_leaf_count_limit` | u32 | 64 | **No effect**: read by nothing. Still accepted so old files parse. | `AllocatorCommon.hpp:749`; `HeapConfigJson.cpp:453` |
+| `rope_min_leaf_size` | u32 | 128 | **No effect**: read by nothing. Still accepted so old files parse. | `AllocatorCommon.hpp:752`; `HeapConfigJson.cpp:455` |
 
 ### Heap config JSON keys — nursery and minor GC
 
@@ -734,7 +712,6 @@ The test binaries (`test`, `stress-test`) run every isolated test and every E2E 
 | `sweep_work_budget` | bytes > 0 | 4 KiB | Lazy-sweep work per slow-path slice. | `AllocatorCommon.hpp:347,777` |
 | `minor_sweep_divisor` | count | 1 (no throttle) | Divides `sweep_work_budget` for promotion allocations inside a minor. 0 = no sweep during promotion. Added in W7. | `:786` |
 | `initial_sweep_budget` | bytes ≥ `sweep_work_budget` | 64 KiB | Synchronous sweep done at the end of `finishMarkAndSweep`. | `:350,789` |
-| `mark_work_ratio` | count ≥ 1 | 2 | **No effect** (W0 item 13): its only reader was dead code. Still accepted so old files parse. | `:353,795-796`; `OldGenSpace.cpp:1877` |
 | `sweep_bytes_per_alloc_byte` | double > 0 | 2.0 | Base per-allocation sweep budget, as bytes swept per byte requested. | `:356,799`; `OldGenSpace.cpp:2075-2084` |
 | `max_sweep_bytes_per_alloc` | bytes ≥ `sweep_work_budget` | 1 MiB | Soft cap applied before pressure scaling. | `:359,802` |
 | `max_sweep_bytes_hard` | bytes ≥ soft cap | 4 MiB | Hard cap applied after scaling and the boost. | `:362,805` |
@@ -820,7 +797,7 @@ These are out of scope here, but related: lowering-time env vars in `runtime/src
 
 ## Build-time configuration
 
-Everything here is fixed when you configure (`cmake --preset …` / `-D…`) or build. Runtime environment variables read by `eco`, `ecor` and the runtime (for example `ECO_GC_*` and `ECO_HEAP_TRACE`) are in [Runtime: heap and GC](#runtime-heap-and-gc) and [C++ backend tools](#c-backend-tools-and-native-driver). Targets are documented in [docs/build-targets.md](build-targets.md). The preset workflow is in [docs/building.md § Presets](building.md#presets), and the test targets are in [docs/testing.md](testing.md).
+Everything here is fixed when you configure (`cmake --preset …` / `-D…`) or build. Runtime environment variables read by `eco` and the runtime (for example `ECO_GC_*` and `ECO_HEAP_TRACE`) are in [Runtime: heap and GC](#runtime-heap-and-gc) and [C++ backend tools](#c-backend-tools-and-native-driver). Targets are documented in [docs/build-targets.md](build-targets.md). The preset workflow is in [docs/building.md § Presets](building.md#presets), and the test targets are in [docs/testing.md](testing.md).
 
 **Build-type-dependent defaults are evaluated only once.** `ECO_GC_DEBUG`, `ECO_GC_STATS` and `ECO_ASSERTS_ON` choose their default from `CMAKE_BUILD_TYPE` the first time a build tree is configured. After that, the value stays in `CMakeCache.txt`. If you later change `CMAKE_BUILD_TYPE` in the same tree, these options keep their old values. To pick up new defaults, delete the cache or pass the options explicitly.
 
@@ -830,18 +807,18 @@ Everything here is fixed when you configure (`cmake --preset …` / `-D…`) or 
 |---|---|---|---|
 | `ECO_FRONTEND_ONLY` | OFF (`mac-frontend`, `win-frontend`: ON) | Configure only `compiler/` (bootstrap stages 1–5, pure Node/Elm). Skips LLVM/MLIR, libunwind, runtime, kernels and tests. No define. | `CMakeLists.txt:15` |
 | `ECO_GC_DEBUG` | ON if `CMAKE_BUILD_TYPE=Debug`, else OFF | Runtime GC debug checks (nursery stale-pointer detection, extra GC asserts). Adds the global define `ECO_GC_DEBUG=1`. It changes class layout (`in_minor_gc_`), so every target must agree. | `CMakeLists.txt:56-63` (also re-declared at `runtime/src/codegen/CMakeLists.txt:16-20`; per-target copies at `:650,742,785,824`) |
-| `ECO_LOWERING_VALIDATION` | OFF | Validation-only MLIR verifier passes (EcoBoxedStoreVerify, EcoPtrIntVerify, GC liveness audit, closure-capture check). Also turns on the after-each-pass module verifier and runtime copy-loop barriers. Slow. Global define `ECO_LOWERING_VALIDATION=1`. | `CMakeLists.txt:70-75` (re-declared at `runtime/src/codegen/CMakeLists.txt:22`; per-target copies at `:425,560,653,895,1624`) |
+| `ECO_LOWERING_VALIDATION` | OFF | Validation-only MLIR verifier passes (EcoBoxedStoreVerify, EcoPtrIntVerify, EcoGCLivenessAudit's `eco.cse_safe` check, closure-capture check). Also turns on the after-each-pass module verifier and runtime copy-loop barriers. Slow. Global define `ECO_LOWERING_VALIDATION=1`. | `CMakeLists.txt:70-75` (re-declared at `runtime/src/codegen/CMakeLists.txt:22`; per-target copies at `:425,560,653,895,1624`) |
 | `ECO_HEAP_VALIDATE` | OFF | Heap-corruption detectors at every read/write/GC-walk site: stale-HPointer hooks, free-region poisoning, post-GC integrity walker, old-gen/BBoP audits. Also compiles in the P1 census in abort mode. Slow. `ECO_HEAP_VALIDATE=1` | `CMakeLists.txt:84-89` |
 | `ECO_P1_CENSUS` | OFF | Compiles in the P1 survivor-write census (threaded-gc-04) without the full heap validator. The runtime mode comes from the environment variable of the same name (`0`/`1`/`2`). Always defines `ENABLE_P1_CENSUS=1` or `=0`. | `CMakeLists.txt:96-103` |
 | `ECO_HEAP_TRACE` | OFF | Compiles in the per-GC `[heap-trace]` diagnostics. Output still requires the runtime environment variable `ECO_HEAP_TRACE=1`. `ECO_HEAP_TRACE=1` | `CMakeLists.txt:109-114` |
 | `ECO_GC_STATS` | OFF if `CMAKE_BUILD_TYPE=Release`, else ON | GC allocation/timing counters and the exit-time `=== GC Statistics ===` banner. Always defines `ENABLE_GC_STATS=1` or `=0`. | `CMakeLists.txt:121-130` |
 | `ECO_GC_PHASE_TIMERS` | OFF | threaded-gc-00 minor-GC phase timers, pause log (percentiles/MMU) and `ECO_GC_EVENT_LOG` TSV. Measured cost is about +2.3 % GC time. Configure fails with FATAL_ERROR unless `ECO_GC_STATS` is ON. Always defines `ENABLE_GC_PHASE_TIMERS=1` or `=0`. | `CMakeLists.txt:137-147` |
-| `ECO_ASSERTS_ON` | OFF if `CMAKE_BUILD_TYPE=Release`, else ON | Keeps `assert()` live by adding `-UNDEBUG` per target (`ecor`, runtime static libs, all kernel libs). No define. | `CMakeLists.txt:155-159`; applied at `CMakeLists.txt:440`, `elm-kernel-cpp/CMakeLists.txt:328`, `eco-kernel-cpp/CMakeLists.txt:287`, `runtime/src/codegen/CMakeLists.txt:723,782,821` |
+| `ECO_ASSERTS_ON` | OFF if `CMAKE_BUILD_TYPE=Release`, else ON | Keeps `assert()` live by adding `-UNDEBUG` per target (runtime static libs, all kernel libs). No define. | `CMakeLists.txt:181-186`; applied at `CMakeLists.txt:440`, `elm-kernel-cpp/CMakeLists.txt:328`, `eco-kernel-cpp/CMakeLists.txt:287`, `runtime/src/codegen/CMakeLists.txt:723,782,821` |
 | `ECO_USE_CCACHE` | OFF | Wraps C/C++ compiles with ccache (force-sets `CMAKE_{C,CXX}_COMPILER_LAUNCHER`). | `CMakeLists.txt:164-169` |
 | `ECO_FRAME_POINTERS` | OFF | Adds `-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer` globally, for perf/flamegraphs. | `CMakeLists.txt:171-174` |
 | `ECO_STATIC` | OFF (`release`: ON, forced by `ECO_STATIC_MUSL`) | Statically links curl/openssl/libzip/libunwind/libstdc++ into `eco`, prefers `.a` libraries, and vendors libcurl (and zlib on Windows) via FetchContent. Emits `ecoStatic=true` in the generated `EcoBootConfig.h`. | `CMakeLists.txt:182`; `runtime/src/codegen/CMakeLists.txt:1401-1416` |
 | `ECO_STATIC_MUSL` | OFF (`release`: ON) | Stage B: fully static musl build (libc++/compiler-rt/LLVM libunwind, `-static` non-PIE). Force-sets `ECO_STATIC=ON` and enables the Stage C bundle install rules and CPack. | `CMakeLists.txt:192-197` |
-| `ECO_GLIBC_OUTPUT_RUNTIME` | OFF | Stage D archive-only mode: builds only the glibc-ABI PIC output-runtime archive set, with no compiler, tests or `ecor`. Requires `ECO_STATIC`. Incompatible with `ECO_STATIC_MUSL`. Adds `-stdlib=libc++`. | `CMakeLists.txt:207-228` |
+| `ECO_GLIBC_OUTPUT_RUNTIME` | OFF | Stage D archive-only mode: builds only the glibc-ABI PIC output-runtime archive set, with no compiler or tests. Requires `ECO_STATIC`. Incompatible with `ECO_STATIC_MUSL`. Adds `-stdlib=libc++`. | `CMakeLists.txt:207-228` |
 | `ECO_LINK_WITH_BFD` | ON (`release`: OFF) | Links `eco` with `-fuse-ld=bfd`, because lld rejects `.llvm_stackmaps` relocations in PIE builds. | `CMakeLists.txt:237`; used at `compiler/CMakeLists.txt:824` |
 | `ECO_KERNEL_DEBUG` | OFF (`dev`: ON) | Stderr tracing (`ECO_KLOG`) in the HTTP/File/zip kernels and the HttpService runtime. Per-target define `ECO_KERNEL_DEBUG` on ElmKernel_Http, EcoKernel_Http, EcoKernel_File and EcoRuntimeStatic. | `CMakeLists.txt:247`; `elm-kernel-cpp/CMakeLists.txt:343`, `eco-kernel-cpp/CMakeLists.txt:300`, `runtime/src/codegen/CMakeLists.txt:748` |
 | `ECO_BUNDLE_STRIP` | ON | `strip --strip-debug` on every bundled `.a`/`.o` at install/CPack time. Only takes effect under `ECO_STATIC_MUSL`. | `CMakeLists.txt:529`, `:649` |

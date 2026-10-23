@@ -1,5 +1,5 @@
 module Compiler.Generate.MLIR.Backend exposing
-    ( backend, generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
+    ( generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
     , constThunkReport
     )
 
@@ -9,7 +9,7 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend, generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
+@docs generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
 @docs constThunkReport
 
 -}
@@ -18,7 +18,6 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.CtorTag as CtorTag
 import Compiler.Eco.Config as Config
-import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.ConstThunks as ConstThunks
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
@@ -27,8 +26,6 @@ import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
-import Compiler.GlobalOpt.Borrow as Borrow
-import Compiler.GlobalOpt.Borrow.Facts as BorrowFacts
 import Compiler.GlobalOpt.MapTemplate as MapTemplate
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
@@ -43,20 +40,6 @@ import Set
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Main as Utils
-
-
-
--- ====== BACKEND ======
-
-
-{-| The MLIR backend that generates MLIR code from fully monomorphized IR with all polymorphism resolved.
--}
-backend : CodeGen.MonoCodeGen
-backend =
-    { generate =
-        \config ->
-            generateProgram Config.default config.mode config.graph |> CodeGen.TextOutput
-    }
 
 
 
@@ -142,7 +125,7 @@ generateProgram ecoConfig mode monoGraph =
 {-| The code generator context every MLIR entry point starts from: signatures,
 inline bodies, the build's configuration and the per-program tables
 (constructors, null-cons, constant constructors, constant thunks, sret and
-psplit promotion, borrow oracle facts, List.map templates).
+psplit promotion, List.map templates).
 -}
 buildContext : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> Ctx.Context
 buildContext ecoConfig mode monoGraph0 =
@@ -170,7 +153,6 @@ buildContext ecoConfig mode monoGraph0 =
             )
         |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
         |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
-        |> Ctx.withOracleFacts (deriveOracleFacts ecoConfig monoGraph0)
         |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
 
 
@@ -189,20 +171,6 @@ resetNodeCtx newCtx =
 
 
 -- ====== STREAMING ======
-
-
-{-| OC0.3 (plans/borrow-oracle-consumers.md): derive the distilled
-borrow-oracle facts from the graph being emitted — by construction the FINAL
-post-CafHoist graph, so the SpecId-keyed facts can never go stale against a
-pass that runs after GlobalOpt. Empty (and free) unless `borrow.oracleOpt`.
--}
-deriveOracleFacts : Config.EcoConfig -> Mono.MonoGraph -> BorrowFacts.OracleFacts
-deriveOracleFacts ecoConfig monoGraph =
-    if ecoConfig.borrow.oracleOpt then
-        Borrow.deriveFacts monoGraph
-
-    else
-        BorrowFacts.emptyFacts
 
 
 {-| Stream MLIR text output to a writer function, emitting the module header,

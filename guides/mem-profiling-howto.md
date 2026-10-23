@@ -27,7 +27,7 @@ Where:
 
 ## Injecting the instrumentation
 
-Run this against a clean eco-boot-2.js (after build-verify.sh confirms fixed point):
+Run this against a clean eco-boot-2.js (after the `eco-boot-verify` target confirms fixed point):
 
 ```javascript
 // inject-mem.js

@@ -33,7 +33,7 @@ else()
     option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" OFF)
 endif()
 
-option(ECO_LOWERING_VALIDATION "Enable validation-only lowering passes (GC liveness audit, post-RS4GC ptr<1>↔i64 boundary verifier; slow, independent of ECO_GC_DEBUG)" OFF)
+option(ECO_LOWERING_VALIDATION "Enable validation-only lowering passes (cse_safe purity audit, post-RS4GC ptr<1>↔i64 boundary verifier; slow, independent of ECO_GC_DEBUG)" OFF)
 
 # Stage D archive-only mode (ECO_GLIBC_OUTPUT_RUNTIME): everything MLIR
 # is gated off — find_package(MLIR), TableGen, the dialect/pass/driver
@@ -169,12 +169,6 @@ mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOps.h.inc -gen-op-decls)
 # Generate Op class definitions (implementation file)
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOps.cpp.inc -gen-op-defs)
 
-# Generate OpInterface declarations (header file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOpInterfaces.h.inc -gen-op-interface-decls)
-
-# Generate OpInterface definitions (implementation file)
-mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoOpInterfaces.cpp.inc -gen-op-interface-defs)
-
 # Generate dialect declarations
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_SUBDIR}/EcoDialect.h.inc -gen-dialect-decls)
 
@@ -203,8 +197,6 @@ add_public_tablegen_target(EcoOpsIncGen)
 set(ECO_TABLEGEN_OUTPUTS
     ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.h.inc
     ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.cpp.inc
-    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.h.inc
-    ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.cpp.inc
     ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.h.inc
     ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.cpp.inc
     ${MLIR_TABLEGEN_OUTPUT_DIR}/EcoTypes.h.inc
@@ -214,7 +206,7 @@ set(ECO_TABLEGEN_OUTPUTS
 )
 
 set_source_files_properties(
-    EcoDialect.cpp EcoOps.cpp EcoTypes.cpp
+    EcoDialect.cpp EcoOps.cpp
     PROPERTIES OBJECT_DEPENDS "${ECO_TABLEGEN_OUTPUTS}"
 )
 
@@ -241,7 +233,6 @@ set(ECO_ECODIALECT_MLIR_LIBS
 add_mlir_dialect_library(EcoDialect
     EcoDialect.cpp
     EcoOps.cpp
-    EcoTypes.cpp
 
     PARTIAL_SOURCES_INTENDED
 
@@ -1590,7 +1581,6 @@ if(NOT ECO_GLIBC_OUTPUT_RUNTIME) # MLIR half: the eco-boot-native CLI
 
 add_llvm_executable(eco-boot-native
     eco-boot.cpp
-    SpikeCensus.cpp  # plans/mlir-split-backend-00-spikes.md (diagnostic)
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -1662,19 +1652,16 @@ endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — eco-boot-native CLI
 #     - Dialect definitions (include in your EcoDialect.cpp)
 #
 #   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoTypes.h.inc
-#     - Type declarations (include in your EcoTypes.h)
+#     - Type declarations (included by EcoDialect.h)
 #
 #   ${CMAKE_CURRENT_BINARY_DIR}/include/eco/EcoTypes.cpp.inc
-#     - Type definitions (include in your EcoTypes.cpp)
+#     - Type definitions (included by EcoDialect.cpp)
 #
 # To use in your C++ code:
 #
 #   // EcoDialect.h
 #   #include "mlir/IR/Dialect.h"
 #   #include "eco/EcoDialect.h.inc"
-#
-#   // EcoTypes.h
-#   #include "mlir/IR/Types.h"
 #   #define GET_TYPEDEF_CLASSES
 #   #include "eco/EcoTypes.h.inc"
 #
@@ -1700,7 +1687,7 @@ endif() # NOT ECO_GLIBC_OUTPUT_RUNTIME — eco-boot-native CLI
 #   #define GET_OP_CLASSES
 #   #include "eco/EcoOps.cpp.inc"
 #
-#   // EcoTypes.cpp
+#   // EcoDialect.cpp (type definitions, before initialize())
 #   #define GET_TYPEDEF_CLASSES
 #   #include "eco/EcoTypes.cpp.inc"
 #

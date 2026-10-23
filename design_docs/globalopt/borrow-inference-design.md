@@ -1402,7 +1402,8 @@ ecoc `--rc-mode` flag that the driver passes when `borrow.reify = rc`):
 // EcoPipeline.cpp — buildEcoToEcoPipeline
     if (!opts.rcMode)
         pm.addPass(eco::createRCEliminationPass());   // tracing mode: RC ops are a bug
-    // rcMode: ops flow through untouched (no results, not GCRootCarriers)
+    // rcMode: ops flow through untouched (no results; the GCRootCarrier
+    // interface this once named has since been removed)
     // and lower in EcoToLLVM (§15.3).
 ```
 

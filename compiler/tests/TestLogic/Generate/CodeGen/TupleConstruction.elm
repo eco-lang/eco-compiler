@@ -7,16 +7,14 @@ tuple op with an element missing, or building a tuple through the generic
 
 A tuple of two or three elements has its own heap construction ops,
 `eco.construct.tuple2` and `eco.construct.tuple3`, which take the elements as
-their leading operands. The code generator's builders for them may append
-GC-root hints after the elements, extra operands naming values to be kept as
-garbage-collection roots, so an op with more operands than elements is
-accepted, and only one with fewer is a violation.
+their only operands, so an op with any other number of operands is a
+violation.
 
 `expectTupleConstruction` compiles a module to MLIR and reports, among the ops
 at any nesting depth:
 
-  - an `eco.construct.tuple2` with fewer than two operands;
-  - an `eco.construct.tuple3` with fewer than three operands;
+  - an `eco.construct.tuple2` without exactly two operands;
+  - an `eco.construct.tuple3` without exactly three operands;
   - an `eco.construct.custom` whose `constructor` attribute is `Tuple2`,
     `Tuple3`, `(,)` or `(,,)`.
 
@@ -91,9 +89,8 @@ checkTupleConstruction mlirModule =
     tuple2Violations ++ tuple3Violations ++ customViolations
 
 
-{-| Returns a violation when `op`, an `eco.construct.tuple2`, has fewer than two
-operands. More are accepted, because operands after the two elements are GC-root
-hints.
+{-| Returns a violation when `op`, an `eco.construct.tuple2`, does not have
+exactly two operands.
 -}
 checkTuple2OperandCount : MlirOp -> Maybe Violation
 checkTuple2OperandCount op =
@@ -101,20 +98,19 @@ checkTuple2OperandCount op =
         operandCount =
             List.length op.operands
     in
-    if operandCount < 2 then
+    if operandCount /= 2 then
         Just
             { opId = op.id
             , opName = op.name
-            , message = "eco.construct.tuple2 should have at least 2 operands, got " ++ String.fromInt operandCount
+            , message = "eco.construct.tuple2 should have exactly 2 operands, got " ++ String.fromInt operandCount
             }
 
     else
         Nothing
 
 
-{-| Returns a violation when `op`, an `eco.construct.tuple3`, has fewer than
-three operands. More are accepted, because operands after the three elements
-are GC-root hints.
+{-| Returns a violation when `op`, an `eco.construct.tuple3`, does not have
+exactly three operands.
 -}
 checkTuple3OperandCount : MlirOp -> Maybe Violation
 checkTuple3OperandCount op =
@@ -122,11 +118,11 @@ checkTuple3OperandCount op =
         operandCount =
             List.length op.operands
     in
-    if operandCount < 3 then
+    if operandCount /= 3 then
         Just
             { opId = op.id
             , opName = op.name
-            , message = "eco.construct.tuple3 should have at least 3 operands, got " ++ String.fromInt operandCount
+            , message = "eco.construct.tuple3 should have exactly 3 operands, got " ++ String.fromInt operandCount
             }
 
     else

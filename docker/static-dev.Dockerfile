@@ -76,8 +76,8 @@ RUN apk add --no-cache \
       ripgrep fd vim tmux less jq file wget curl \
       util-linux py3-pip
 
-# RapidCheck: required at configure time (for `ecor`) and at link time when
-# building the `test` target. Built with -stdlib=libc++ to match the rest of
+# RapidCheck: required at configure time (the top-level find_package for the
+# test tree) and at link time when building the `test` target. Built with -stdlib=libc++ to match the rest of
 # the Stage B build's libc++ ABI — without this, Alpine's clang picks up
 # libstdc++ headers from gcc (installed via build-base) and emits GCC-only
 # symbols that don't resolve against libc++. Mirrors static-build.Dockerfile.

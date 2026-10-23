@@ -34,8 +34,7 @@
 // Placement: after EcoPAPSimplify (closure-mediated compares are direct calls
 // by then) and before UndefinedFunction (which validates the declaration this
 // pass may insert for Elm_Kernel_Utils_cmp3), hence before
-// EcoControlFlowToSCF/EcoGCPrepare — `eco.case` is still present and GC root
-// sets are computed on the final shape.
+// EcoControlFlowToSCF/EcoGCPrepare — `eco.case` is still present.
 //
 // v1 is deliberately narrow: single-use producer, 3-region ctor case whose
 // tags are a permutation of [0,1,2], no aggregate results. Everything else is
@@ -54,7 +53,6 @@
 
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
-#include "../EcoTypes.h"
 #include "../Passes.h"
 
 #include "llvm/ADT/SmallVector.h"

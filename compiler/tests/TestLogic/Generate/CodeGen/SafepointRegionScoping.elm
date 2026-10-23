@@ -1,7 +1,7 @@
 module TestLogic.Generate.CodeGen.SafepointRegionScoping exposing (expectSafepointRegionScoping)
 
-{-| A check that the MLIR generated for a program never has a GC root carrier
-use an SSA value that is out of scope where the carrier sits, which MLIR's
+{-| A check that the MLIR generated for a program never has a checked op
+use an SSA value that is out of scope where the op sits, which MLIR's
 scoping rules do not allow.
 
 An SSA value is a named block argument or op result, such as `%x`. A region is
@@ -12,28 +12,26 @@ region and in the regions nested inside it, but not in a sibling region, which
 is a separate scope. A `func.func` is isolated from above: its body sees
 nothing defined outside it.
 
-GC root hints are trailing operands the code generator may append to some ops,
-naming values the garbage collector must treat as live across the op. The code
-generator builds them with `emitSafepointHints` in
-`Compiler.Generate.MLIR.Expr`. This check treats ten ops as _GC root
-carriers_: `eco.call`, `eco.papExtend`, `eco.to_heap`, `eco.papCreateGroup`,
+This check examines ten ops, the _checked ops_, which are the calls and
+allocations: `eco.call`, `eco.papExtend`, `eco.to_heap`, `eco.papCreateGroup`,
 `eco.papCreate` and `eco.construct.list`, `.tuple2`, `.tuple3`, `.record` and
-`.custom`. The code generator builds `eco.papCreate` without hints. The code
+`.custom`. (The name of the module is historical: these ops once also carried
+GC-root operands, which the code generator no longer emits.) The code
 generator builds the alternatives of a `case` one after another, passing a
 context along, so a context that kept one alternative's variables into the
-next would give a carrier in the later alternative a sibling region's value.
+next would give a checked op in the later alternative a sibling region's value.
 
 `expectSafepointRegionScoping` compiles a program to MLIR and walks each
 `func.func`, top-level or nested, from an empty scope. Each block sees the
 values in scope in the enclosing region, its own arguments and the results of
 the ops before it in the block; a block other than the region's entry block
 also sees what the entry block defines, since the entry block dominates it.
-Every operand of a carrier, hint or not, must be among those. The regions of
+Every operand of a checked op must be among those. The regions of
 any other op are walked from the values visible before that op (its own results
 are not in scope inside its regions), so sibling regions never see each
 other's values.
 
-Among what is not checked: the operands of ops that are not carriers. A value
+Among what is not checked: the operands of ops that are not checked ops. A value
 defined in a non-entry block that dominates another non-entry block is not
 treated as visible there, which would be reported; the code generator does not
 produce that shape today.
@@ -58,8 +56,8 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Returns an expectation that compiles `srcModule` to MLIR and passes when no
-GC root carrier in a top-level `func.func` has an operand that is out of scope
-where the carrier sits, judged as the module docstring describes.
+checked op in a top-level `func.func` has an operand that is out of scope
+where the op sits, judged as the module docstring describes.
 
 It fails with `"Compilation failed: "` and the error when compilation does. A
 failure for a scoping violation shows only the first violation found, as
@@ -159,9 +157,7 @@ checkBlock funcName ancestorDefs block =
 `visibleDefs` extended by `op`'s results, which is the scope for the next op in
 the block.
 
-For a GC root carrier, every operand not in `visibleDefs` is a violation. All
-operands are checked, not only the trailing hints, since an ordinary operand
-from a sibling region is the same fault.
+For a checked op, every operand not in `visibleDefs` is a violation.
 
 Every region of `op` is walked from `visibleDefs`, without `op`'s own results,
 which are not in scope inside its regions; sibling regions are each walked from
@@ -175,8 +171,8 @@ checkOp funcName visibleDefs op =
         defsWithResults =
             List.foldl (\( name, _ ) acc -> Set.insert name acc) visibleDefs op.results
 
-        carrierViolations =
-            if isCarrierOp op.name then
+        checkedOpViolations =
+            if isCheckedOp op.name then
                 List.filterMap
                     (\operand ->
                         if Set.member operand visibleDefs then
@@ -207,16 +203,15 @@ checkOp funcName visibleDefs op =
             else
                 List.concatMap (checkRegion funcName visibleDefs) op.regions
     in
-    ( carrierViolations ++ regionViolations, defsWithResults )
+    ( checkedOpViolations ++ regionViolations, defsWithResults )
 
 
-{-| Returns whether an op name is one of the ops this check treats as GC root
-carriers: the ops the code generator may give GC root hints, `eco.call`,
-`eco.papExtend`, `eco.to_heap`, `eco.papCreateGroup` and the five
-`eco.construct` ops, plus `eco.papCreate`.
+{-| Returns whether an op name is one of the ops this check examines:
+`eco.call`, `eco.papExtend`, `eco.papCreate`, `eco.to_heap`,
+`eco.papCreateGroup` and the five `eco.construct` ops.
 -}
-isCarrierOp : String -> Bool
-isCarrierOp name =
+isCheckedOp : String -> Bool
+isCheckedOp name =
     List.member name
         [ "eco.call"
         , "eco.papExtend"

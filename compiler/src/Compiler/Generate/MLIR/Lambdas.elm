@@ -12,7 +12,6 @@ with typed ABIs (parameters in their actual types, not all boxed).
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
-import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.LogicalTypes as LogicalTypes
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
@@ -207,7 +206,7 @@ generateLambdaFuncNamed ctx lambda =
                         let
                             selfFunctionName =
                                 if hasCaptures then
-                                    lambda.name ++ "$clo"
+                                    lambda.name ++ "$cap"
 
                                 else
                                     lambda.name
@@ -341,42 +340,7 @@ generateLambdaFuncNamed ctx lambda =
                     lambda.returnType
                     fastCloneOpRaw
         in
-        if hasCaptures then
-            let
-                captureSpecs : List ( MlirType, Bool )
-                captureSpecs =
-                    List.map
-                        (\( _, monoTy ) ->
-                            let
-                                mlirTy =
-                                    Types.monoTypeToAbi monoTy
-                            in
-                            ( mlirTy, Types.isUnboxable mlirTy )
-                        )
-                        lambda.captures
-
-                ( genericCloneOpRaw, ctx3 ) =
-                    Functions.generateGenericCloneFunc ctx2
-                        (lambda.name ++ "$clo")
-                        (lambda.name ++ "$cap")
-                        captureSpecs
-                        paramArgPairs
-                        actualResultType
-
-                -- $clo: first arg is the closure (opaque "value"), then
-                -- the Elm params. MUnit encodes as "value".
-                genericCloneOp =
-                    LogicalTypes.addLogicalTypesAttr
-                        ctx3.ecoConfig.logicalTypes.customMaxFields
-                        ctx3.typeRegistry.ctorShapes
-                        (Mono.MUnit :: paramMonoTypes)
-                        lambda.returnType
-                        genericCloneOpRaw
-            in
-            ( [ fastCloneOp, genericCloneOp ], ctx3 )
-
-        else
-            ( [ fastCloneOp ], ctx2 )
+        ( [ fastCloneOp ], ctx2 )
 
     else
         -- Regular (non-tail-recursive) lambda
@@ -426,37 +390,4 @@ generateLambdaFuncNamed ctx lambda =
                     lambda.returnType
                     fastCloneOpRaw
         in
-        if hasCaptures then
-            let
-                captureSpecs : List ( MlirType, Bool )
-                captureSpecs =
-                    List.map
-                        (\( _, monoTy ) ->
-                            let
-                                mlirTy =
-                                    Types.monoTypeToAbi monoTy
-                            in
-                            ( mlirTy, Types.isUnboxable mlirTy )
-                        )
-                        lambda.captures
-
-                ( genericCloneOpRaw, ctx3 ) =
-                    Functions.generateGenericCloneFunc ctx2
-                        (lambda.name ++ "$clo")
-                        (lambda.name ++ "$cap")
-                        captureSpecs
-                        paramArgPairs
-                        actualResultType
-
-                genericCloneOp =
-                    LogicalTypes.addLogicalTypesAttr
-                        ctx3.ecoConfig.logicalTypes.customMaxFields
-                        ctx3.typeRegistry.ctorShapes
-                        (Mono.MUnit :: paramMonoTypes)
-                        lambda.returnType
-                        genericCloneOpRaw
-            in
-            ( [ fastCloneOp, genericCloneOp ], ctx3 )
-
-        else
-            ( [ fastCloneOp ], ctx2 )
+        ( [ fastCloneOp ], ctx2 )

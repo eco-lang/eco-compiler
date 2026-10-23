@@ -6,7 +6,6 @@
 
 #include "EcoDialect.h"
 #include "EcoOps.h"
-#include "EcoTypes.h"
 
 #include "mlir/IR/DialectImplementation.h"
 #include "llvm/ADT/TypeSwitch.h"

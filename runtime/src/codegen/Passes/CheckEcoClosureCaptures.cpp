@@ -94,11 +94,9 @@ struct CheckEcoClosureCapturesPass
 
         // === Phase 1: Validate eco.papCreate ops ===
         module.walk([&](PapCreateOp createOp) {
-            // For two-clone closures, validate against $cap (which has
-            // captures as individual typed params) rather than $clo (which
-            // has Closure* as first param).
-            auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-            auto funcSym = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
+            // `function` names the evaluator (`$cap` for a capturing
+            // closure), which takes the captures as individual typed params.
+            auto funcSym = createOp.getFunctionAttr();
 
             auto captured = createOp.getCaptured();
             SmallVector<Type> capturedTypes;

@@ -19,7 +19,7 @@ buildEcoToOptPipeline:                 # adds structured control flow and the fo
   EcoFoldProject (on); CSE (off)       # last point where purity may be used
 buildEcoToLLVMPipeline:
   EcoMarkGCLeafCalls; EcoGCPrepare     # strips eco.cse_safe; no merge or motion after
-  [EcoGCLivenessAudit]
+  [EcoGCLivenessAudit]                 # validation only: no eco.cse_safe survives
   BFToLLVM; EcoToLLVM; EcoListCursor; [EcoBoxedStoreVerify]
   EcoTailConversions                   # scf -> cf, then arith + cf -> llvm
   EcoReachability (closed world)       # whole-program tail starts: planners see only live code
@@ -53,34 +53,36 @@ Two passes in the pipeline rewrite list loops for chunked lists, which build and
 
 The fold slot removes redundant work while purity is still known. A field projection or a tag read from a construct built earlier in the same function folds to the original operand or the constant tag. MLIR's common subexpression elimination has its place in this slot and is off by default. Merging identical constructs keeps memory alive longer, and it changes results: two constructions that each contain a NaN are separate objects, and the equality kernel answers True when both sides are the same object, so merging them turns a False comparison into True. The folder stays on because it deletes operations without merging allocations. A canonicalizer has no place in the slot, since LLVM canonicalizes the code again after translation.
 
-The fold slot sits before collector preparation for two reasons. Preparation strips the purity attribute that merging relies on. It also attaches lists of live values to calls and allocations, and a fold or merge after it would leave those lists naming deleted values, while identical operations would stop matching because their lists differ.
+The fold slot sits before collector preparation because preparation strips the purity attribute that merging relies on.
 
 ## Preparing for the collector and converting to LLVM
 
 The third layer prepares the module for the collector and then converts it to LLVM's dialect.
 
-It starts by copying the "cannot collect" fact from each kernel declaration onto every direct call to that kernel, as an attribute on the call. This runs here because by this point every pass that can add a kernel declaration or a call has run. The fact sits on the call, not only on the declaration, because the validation audit after preparation runs separately on each function and cannot look at sibling declarations. Preparation and the audit must agree exactly, or validation builds report false errors, so both read the call's own attribute through one shared predicate.
+It starts by copying the "cannot collect" fact from each kernel declaration onto every direct call to that kernel, as an attribute on the call. This runs here because by this point every pass that can add a kernel declaration or a call has run. The fact sits on the call, not only on the declaration, because preparation runs separately on each function and cannot look at sibling declarations. Inside preparation the fact is read only by the merge census, an optional report that counts how often a later allocation could move above a call to join an earlier group.
 
 ### What garbage collection preparation does and does not do
 
-Garbage collection preparation (`EcoGCPrepare`) does not decide what the collector sees, although its name suggests it does. Statepoint rewriting in LLVM computes the roots from which heap pointers are live, as the parent document describes, and the compiler supplies none. Preparation computes a set of live values for each allocation and each call that might collect and attaches it as extra operands. During conversion those operands are split off and passed to code emitters that ignore them: the two marker emitters have empty bodies, and the allocation emitter builds its call from the arguments alone.
+Garbage collection preparation (`EcoGCPrepare`) does not decide what the collector sees, although its name suggests it does. Statepoint rewriting in LLVM computes the roots from which heap pointers are live, as the parent document describes, and the compiler supplies none. Preparation computes no root sets and attaches no root operands, and the allocation emitter builds its call from the arguments alone:
 
 ```cpp
 Value eco::detail::emitAllocWithSafepoint(
-    ...
-    ValueRange args,
-    ValueRange liveRoots) {
-    ...
-    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc, args);
+    Operation *op,
+    ConversionPatternRewriter &rewriter,
+    const EcoRuntime &runtime,
+    LLVM::LLVMFuncOp allocFunc,
+    ValueRange args) {
+    // RS4GC handles safepoint insertion automatically — no marker needed.
+    auto allocCall = rewriter.create<LLVM::CallOp>(op->getLoc(), allocFunc, args);
     return allocCall.getResult();
 }
 ```
 
 From `runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp`.
 
-Notice that `liveRoots` is never read. Dropping the attached sets changes no emitted LLVM IR. They are unused bookkeeping, and the backend does not compute roots by hand. A garbage collection bug therefore cannot be fixed by adding values to these sets; it has to be fixed where statepoint rewriting gets its information, in the types, the "cannot collect" attributes or the fold-proof casts.
+A garbage collection bug therefore cannot be fixed in preparation; it has to be fixed where statepoint rewriting gets its information, in the types, the "cannot collect" attributes or the fold-proof casts.
 
-Preparation has three effects that do matter, and they are why it keeps its place.
+Preparation has three effects, and they are why it keeps its place.
 
 1. It groups allocations, so that one request to the nursery can serve several objects.
 2. It strips the purity attribute from calls. After that MLIR treats every call as having unknown effects, which ends any merging or motion of calls.
@@ -132,7 +134,7 @@ Every parallel stage must produce output byte-identical to the serial path. The 
 
 ## Checks that never repair
 
-Several passes check and never fix: the reference-counting guard, the declaration check, the closure-capture check, the liveness audit, the stale-pointer check before boxed stores, and the backend's pointer-to-integer check. Each failure points to a bug in the front end, and a pass that repaired its input would hide that bug and produce code nobody intended. The closure-capture check, the liveness audit, the stale-pointer check and the pointer-to-integer check are compiled in only for validation builds, and release builds also skip the verifier between passes. Keeping validation in passes of its own is what makes removing it from release builds free. Most transforms can also be turned off one at a time by an environment switch, so a miscompile can be bisected on an existing MLIR file without recompiling the Elm side.
+Several passes check and never fix: the reference-counting guard, the declaration check, the closure-capture check, the purity audit after collector preparation, the stale-pointer check before boxed stores, and the backend's pointer-to-integer check. Each failure points to a bug in the front end, and a pass that repaired its input would hide that bug and produce code nobody intended. The closure-capture check, the purity audit, the stale-pointer check and the pointer-to-integer check are compiled in only for validation builds, and release builds also skip the verifier between passes. Keeping validation in passes of its own is what makes removing it from release builds free. Most transforms can also be turned off one at a time by an environment switch, so a miscompile can be bisected on an existing MLIR file without recompiling the Elm side.
 
 ## What the pipeline trusts
 
@@ -159,7 +161,7 @@ A change fits when it decides its fact where the inputs are final, records the f
 - Merging, eliminating or moving eco operations after collector preparation. Purity is gone by then and the attached lists and group membership go stale. Put the transform at the fold slot, and do not merge allocations unless their result provably cannot reach a Float.
 - Fixing a collector bug by adding values to preparation's live sets, or reading them as the source of collector safety. The emitted code never uses them. Fix what statepoint rewriting sees: types, "cannot collect" attributes or fold-proof casts.
 - Rewriting LLVM-dialect bodies after gc-free propagation, or between the capacity plan and gc-free propagation. A stamp goes stale in a way no check on one partition sees. Put the rewrite before reachability.
-- Looking up a callee's declaration inside a per-function pass or a consumer to recover a fact about it. The transform and the audit then read different things and diverge. Copy the fact onto the call.
+- Looking up a callee's declaration inside a per-function pass or a consumer to recover a fact about it. A per-function pass cannot see sibling declarations, and two consumers that look the fact up differently diverge. Copy the fact onto the call.
 - Making a validator repair its input, for example by stubbing a missing declaration. It hides the front-end bug; fix the emitter in the Elm compiler.
 - Emitting a raw integer-to-pointer or pointer-to-integer cast for a boxed slot. The inliner can fold it and leave an integer live across a statepoint. Use the slot helpers, which emit the barrier form.
 - Adding a whole-module analysis on the LLVM side. It cannot run on a partition. Compute it in the MLIR tail and stamp it.
@@ -174,7 +176,7 @@ Code:
 - `runtime/src/codegen/EcoPipeline.cpp`, `runtime/src/codegen/EcoPipeline.h`: the three builders, the ordering comments, the purity rule, `ecoMlirCseEnabled`.
 - First layer, in `runtime/src/codegen/Passes/`: `RCElimination`, `CheckEcoClosureCaptures`, `EcoPAPSimplify.cpp`, `EcoCompareCaseRewrite.cpp`, `UndefinedFunction`.
 - Second layer: `JoinpointNormalization`, `EcoControlFlowToSCF.cpp`, `EcoListTemplate`, `EcoFoldProject.cpp`.
-- Third layer: `EcoMarkGCLeafCalls.cpp`, `EcoGCPrepare.cpp`, `EcoGCLiveness.h` (`computeLiveRoots`, `gcLeafSafepointRelaxed`), `EcoGCLivenessAudit`, `BFToLLVM`, `EcoToLLVM.cpp`, `EcoToLLVMInternal.h`, `EcoToLLVMHeap.cpp` (`lowerAllocGroups`), `EcoToLLVMRuntime.cpp` (the emitters that ignore root operands), `EcoToLLVMClosures.cpp`, `EcoToLLVMControlFlow.cpp`.
+- Third layer: `EcoMarkGCLeafCalls.cpp`, `EcoGCPrepare.cpp`, `EcoGCLivenessAudit` (validation builds: checks that no `eco.cse_safe` survives preparation), `BFToLLVM`, `EcoToLLVM.cpp`, `EcoToLLVMInternal.h`, `EcoToLLVMHeap.cpp` (`lowerAllocGroups`), `EcoToLLVMRuntime.cpp` (`emitAllocWithSafepoint`), `EcoToLLVMClosures.cpp`, `EcoToLLVMControlFlow.cpp`.
 - Tail: `EcoListCursor.cpp`, `EcoBoxedStoreVerify`, `EcoTailConversions.cpp`, `EcoReachability.cpp`, `EcoCapHoistPlan.cpp`, `EcoGcFreePropagation.cpp`.
 - Shared machinery: `Passes/EcoParallel.h` (`forEachChunk`), `Passes/EcoSymbolGraph.h`, `Passes/EcoMarkerFacts.h`, `EcoCapHoistCore`; `runtime/src/codegen/LoweringStats.cpp` (per-pass timing); `runtime/src/codegen/RuntimeSymbols.cpp` (runtime symbols for the JIT).
 - LLVM-side collector contract: `Passes/EcoGCStrategy.cpp`, `Passes/EcoSlotCastBarriers.h`, `Passes/EcoPtrIntVerify.cpp` (`addEcoGCPipeline`, `StripEcoCastBarriers`).

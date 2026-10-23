@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Borrow.Facts exposing
     ( CalleeParamFacts, OracleFacts
-    , emptyFacts, borrowedParamsOfLambda
+    , borrowedParamsOfLambda
     )
 
 {-| The results of borrow inference reduced to what code generation can use:
@@ -23,7 +23,7 @@ it. Only wholly borrowed parameters are recorded. A parameter that is not
 recorded may be owned, borrowed in part, free of heap positions, or aliased by
 the result, so its absence proves nothing, and the only safe reading is that
 the callee may take ownership of the argument. The same holds for a callee
-with no entry, and so for every lookup on `emptyFacts`.
+with no entry.
 
 A callee is named in one of two ways: a specialization by its `SpecId`, and a
 function value reached through a lambda set by its lambda-set member id, the
@@ -33,7 +33,7 @@ graph they were derived from, not whatever that graph is later rewritten
 into.
 
 @docs CalleeParamFacts, OracleFacts
-@docs emptyFacts, borrowedParamsOfLambda
+@docs borrowedParamsOfLambda
 
 -}
 
@@ -63,16 +63,6 @@ name the same callee.
 type alias OracleFacts =
     { bySpec : Dict Int CalleeParamFacts
     , byLambda : Dict Int CalleeParamFacts
-    }
-
-
-{-| The oracle facts that record nothing. Every lookup on it returns the empty
-set, which means that nothing is known, not that every parameter is owned.
--}
-emptyFacts : OracleFacts
-emptyFacts =
-    { bySpec = Dict.empty
-    , byLambda = Dict.empty
     }
 
 

@@ -1,8 +1,8 @@
 module TestLogic.Generate.CodeGen.CustomConstructionTest exposing (suite)
 
 {-| This suite looks, across many programs, for an `eco.construct.custom` op
-that lacks its `tag` or `size` attribute, whose `size` exceeds its operand
-count or whose trailing GC-root hint operands are not boxed, or that builds a
+that lacks its `tag` or `size` attribute, whose `size` differs from its
+operand count, or that builds a
 list (`constructor` `Cons` or `Nil` with no such constructor in the program's
 own types). It is the only
 module that runs
@@ -19,8 +19,7 @@ What the tests establish:
   - `suite` runs `expectCustomConstruction` on the programs in the
     catalogue. A program passes when it compiles to MLIR and
     every `eco.construct.custom` op in it has integer `tag` and `size`
-    attributes, at least `size` operands with every operand after the first
-    `size` recorded as `!eco.value`, and no `constructor` attribute equal to
+    attributes, exactly `size` operands, and no `constructor` attribute equal to
     `Cons` or `Nil` unless the program defines a constructor of that name.
 
 Among what is not tested:

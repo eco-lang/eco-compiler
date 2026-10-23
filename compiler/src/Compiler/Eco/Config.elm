@@ -30,10 +30,10 @@ for it, so that an artifact built under one value is not reused under another.
 A setting that changes no generated code, such as one that prints a report on
 stderr, runs a validator, decides whether a compile fails, or asks for the
 pre-link collection, is _output-only_ and gets no token, so turning it on
-keeps the cache. The docstrings below say which each setting is. Four
+keeps the cache. The docstrings below say which each setting is. Three
 settings are the exception: the censuses `qCensus` and `arrowCensus` in
-`LssConfig` and `census` in `LssStampConfig`, and `oracleOpt` in
-`BorrowConfig`, change no generated code, yet each adds a token when on.
+`LssConfig` and `census` in `LssStampConfig` change no generated code, yet
+each adds a token when on.
 
 The second is that the file is a partial override of `default`. Every key is
 optional, a missing key usually takes its value from `default`, and unknown keys
@@ -183,15 +183,8 @@ of which function parameters are only borrowed.
 `Compiler.GlobalOpt.MonoGlobalOptimize`, before CSE and the CAF passes. It runs
 only when `report`, `validate` or `reify = RRc` is also on, and it returns the
 program unchanged, in both `BorrowReify` modes; its products are a census and
-checks, under `report` and `validate`. `oracleOpt` derives the analysis's
-facts when MLIR is generated (`Borrow.deriveFacts`, installed as
-`Context.oracleFacts`), and keeps the lambda-set member origins they need
-through global optimization. No code generator reads those facts yet, so
-turning it on costs compile time but changes no emitted code.
-
-`oracleOpt` is the only borrow setting with a token in `hash` (`bopt=1`, when
-on). The token keys the cache on the setting; it does not mean the emitted
-code differs.
+checks, under `report` and `validate`. No borrow setting has a token in
+`hash`.
 
 -}
 type alias BorrowConfig =
@@ -199,7 +192,6 @@ type alias BorrowConfig =
     , reify : BorrowReify
     , report : Bool
     , validate : Bool
-    , oracleOpt : Bool
     }
 
 
@@ -548,7 +540,7 @@ default =
     , logicalTypes = { customMaxFields = 8 }
     , cafMemo = { enabled = True, census = False, dedupe = False, hoist = { enabled = False, minNodes = 3, maxHoists = 8192 } }
     , mono = { engine = EngineSolver, diffDump = False, validate = False, stagingReport = False, lss = defaultLss, limits = defaultLimits }
-    , borrow = { enabled = False, reify = ROff, report = False, validate = False, oracleOpt = False }
+    , borrow = { enabled = False, reify = ROff, report = False, validate = False }
     , list = { chunks = True, consIntrinsic = True, mapTemplate = False, report = False }
     , aggPromote = True
     , ctorInline = True
@@ -733,19 +725,17 @@ not recognize gives `default`'s `ROff`.
 borrowDecoder : D.Decoder x BorrowConfig
 borrowDecoder =
     D.pure
-        (\enabled reifyStr report validate oracleOpt ->
+        (\enabled reifyStr report validate ->
             { enabled = enabled
             , reify = Maybe.withDefault default.borrow.reify (borrowReifyFromString reifyStr)
             , report = report
             , validate = validate
-            , oracleOpt = oracleOpt
             }
         )
         |> D.apply (D.optionalField "enabled" D.bool default.borrow.enabled)
         |> D.apply (D.optionalField "reify" D.string "off")
         |> D.apply (D.optionalField "report" D.bool default.borrow.report)
         |> D.apply (D.optionalField "validate" D.bool default.borrow.validate)
-        |> D.apply (D.optionalField "oracleOpt" D.bool default.borrow.oracleOpt)
 
 
 {-| Returns the `BorrowReify` that `s` names, `"off"` or `"rc"`, ignoring case
@@ -877,13 +867,13 @@ clamp cfg =
 
 
 {-| Returns the cache key for `cfg`: a version token, then tokens for its
-artifact-affecting settings, for the three read-only censuses and for
-`borrow.oracleOpt`, joined by `|`.
+artifact-affecting settings and for the three read-only censuses, joined
+by `|`.
 
 The key depends on nothing else, so a file that spells out `default` gets the
 same key as no file at all. No token comes from any `report` setting,
 `cafMemo.census`, `constThunksReport`, `mono.diffDump`, `mono.validate`,
-`mono.limits`, `gc`, or any `borrow` setting but `oracleOpt`.
+`mono.limits`, `gc`, or any `borrow` setting.
 
 Many switches have a token only when on, and many limits only when they
 differ from `default`. Among the engines, `EngineSolver` and `EngineDiff` have
@@ -1219,12 +1209,6 @@ hash cfg =
                )
             ++ (if cfg.kernelGcLeaf then
                     [ "kgcl=1" ]
-
-                else
-                    []
-               )
-            ++ (if cfg.borrow.oracleOpt then
-                    [ "bopt=1" ]
 
                 else
                     []

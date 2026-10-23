@@ -87,18 +87,9 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         if (!remainingArityAttr)
             return failure();
 
-        // Front-end GC root hints are appended after the real new-args
-        // (the trailing `eco.gc_roots_count` operands of `$newargs`).
-        // Strip them when measuring saturation and when forwarding to the
-        // direct call; the new eco.call gets its own GC root hints via the
-        // GCRootCarrier interface.
-        unsigned rootCount = extendOp.getGCRoots().size();
-        auto allNewargs = extendOp.getNewargs();
-        unsigned realNewargCount = allNewargs.size() - rootCount;
-        auto newargs = allNewargs.take_front(realNewargCount);
-        auto rootHints = allNewargs.drop_front(realNewargCount);
+        auto newargs = extendOp.getNewargs();
 
-        // Check saturation: remaining_arity == real newargs count
+        // Check saturation: remaining_arity == newargs count
         int64_t remainingArity = remainingArityAttr.getInt();
         if (static_cast<int64_t>(newargs.size()) != remainingArity)
             return failure();  // Not saturated
@@ -120,10 +111,9 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         if (createOp->hasAttr("self_capture_indices"))
             return failure();
 
-        // For two-clone closures, the direct call targets $cap (whose params
-        // are captures + params) rather than $clo (Closure* + params).
-        auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-        FlatSymbolRefAttr calleeAttr = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
+        // The direct call targets the closure's evaluator (`$cap` for a
+        // capturing closure), whose params are captures + params.
+        FlatSymbolRefAttr calleeAttr = createOp.getFunctionAttr();
 
         // Look up the target function to verify it has a compatible signature.
         // Skip transformation if the function uses the args-array calling convention
@@ -136,19 +126,11 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         if (usesArgsArrayConvention(targetFunc))
             return failure();
 
-        // Build combined operand list: captured + real newargs + GC root hints
-        // (roots appended at the tail, GCRootCarrier interface keys off
-        // `eco.gc_roots_count`).
+        // Build combined operand list: captured + newargs.
         SmallVector<Value> allOperands;
         allOperands.append(createOp.getCaptured().begin(),
                           createOp.getCaptured().end());
         allOperands.append(newargs.begin(), newargs.end());
-        // Also bring along the papCreate's own GC root hints so liveness at
-        // the new direct call is no worse than at the original papExtend.
-        ValueRange createRoots = createOp.getGCRoots();
-        for (Value r : createRoots) allOperands.push_back(r);
-        for (Value r : rootHints) allOperands.push_back(r);
-        unsigned newRootCount = createRoots.size() + rootHints.size();
 
         // CGEN_056: saturated papExtend result type == callee's func.func return type
         // (enforced by Elm codegen, verified by PapExtendSaturatedResultType test)
@@ -161,10 +143,6 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
             calleeAttr,
             nullptr,   // musttail
             nullptr);  // remaining_arity
-        if (newRootCount > 0) {
-            callOp->setAttr("eco.gc_roots_count",
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(newRootCount)));
-        }
 
         rewriter.replaceOp(extendOp, callOp.getResults());
         // papCreate will be DCE'd since it now has no uses
@@ -187,11 +165,10 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
 // a direct call with no duplication and the allocation disappears.
 //
 // The DECISION content is unchanged and stays front-end: which target is
-// callable directly comes from the papCreate's own attributes
-// (`_fast_evaluator` for two-clone closures, else `function`), exactly as
-// P1 consumes them. Any other use — the closure stored as a newarg of some
-// papExtend, captured by another papCreate, passed to a call, kept as a GC
-// root hint — disqualifies the whole papCreate (escape).
+// callable directly comes from the papCreate's own `function` attribute
+// (the `$cap` clone for a capturing closure), exactly as P1 consumes it. Any other use — the closure stored as a newarg of some
+// papExtend, captured by another papCreate, passed to a call — disqualifies
+// the whole papCreate (escape).
 //
 struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
     const mlir::SymbolTable &symTable;
@@ -213,10 +190,9 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
         if (createOp->hasAttr("self_capture_indices"))
             return failure();
 
-        // For two-clone closures the direct call targets $cap (captures +
-        // params); otherwise the referenced function itself.
-        auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-        FlatSymbolRefAttr calleeAttr = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
+        // The direct call targets the closure's evaluator (`$cap` for a
+        // capturing closure), whose params are captures + params.
+        FlatSymbolRefAttr calleeAttr = createOp.getFunctionAttr();
 
         auto targetFunc = symTable.lookup(calleeAttr.getValue());
         if (!targetFunc)
@@ -227,45 +203,32 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
         // Every use must be the closure operand (#0) of a saturated
         // typed-mode papExtend. Collect the extends (deduped: one closure
         // use per extend by construction — any second use of %pap on the
-        // same op would be a newarg/root-hint use with operand index != 0,
-        // which disqualifies below).
+        // same op would be a newarg use with operand index != 0, which
+        // disqualifies below).
         SmallVector<PapExtendOp> extends;
         for (OpOperand &use : pap.getUses()) {
             auto ext = dyn_cast<PapExtendOp>(use.getOwner());
             if (!ext)
                 return failure();
             if (use.getOperandNumber() != 0)
-                return failure();  // %pap escapes as a newarg or root hint
+                return failure();  // %pap escapes as a newarg
             auto remainingArityAttr = ext.getRemainingArityAttr();
             if (!remainingArityAttr)
                 return failure();  // generic mode: saturation unknown
-            unsigned rootCount = ext.getGCRoots().size();
-            auto allNewargs = ext.getNewargs();
-            unsigned realNewargCount = allNewargs.size() - rootCount;
-            if (static_cast<int64_t>(realNewargCount) != remainingArityAttr.getInt())
+            if (static_cast<int64_t>(ext.getNewargs().size()) != remainingArityAttr.getInt())
                 return failure();  // not saturated
             extends.push_back(ext);
         }
 
         // Rewrite every use to a direct call (P1's operand construction,
-        // applied per use). The papCreate's own GC root hints ride along on
-        // each call; duplicates across calls are harmless (EcoGCPrepare
-        // dedupes during liveness unioning).
+        // applied per use).
         for (PapExtendOp ext : extends) {
-            unsigned rootCount = ext.getGCRoots().size();
-            auto allNewargs = ext.getNewargs();
-            unsigned realNewargCount = allNewargs.size() - rootCount;
-            auto newargs = allNewargs.take_front(realNewargCount);
-            auto rootHints = allNewargs.drop_front(realNewargCount);
+            auto newargs = ext.getNewargs();
 
             SmallVector<Value> allOperands;
             allOperands.append(createOp.getCaptured().begin(),
                                createOp.getCaptured().end());
             allOperands.append(newargs.begin(), newargs.end());
-            ValueRange createRoots = createOp.getGCRoots();
-            for (Value r : createRoots) allOperands.push_back(r);
-            for (Value r : rootHints) allOperands.push_back(r);
-            unsigned newRootCount = createRoots.size() + rootHints.size();
 
             // CGEN_056: saturated papExtend result type == callee return type.
             Type resultType = ext.getResult().getType();
@@ -278,10 +241,6 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
                 calleeAttr,
                 nullptr,   // musttail
                 nullptr);  // remaining_arity
-            if (newRootCount > 0) {
-                callOp->setAttr("eco.gc_roots_count",
-                    rewriter.getI64IntegerAttr(static_cast<int64_t>(newRootCount)));
-            }
             rewriter.replaceOp(ext, callOp.getResults());
         }
 
@@ -331,17 +290,8 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         auto curRemainingAttr = extendOp.getRemainingArityAttr();
         bool bothTyped = static_cast<bool>(prevRemainingAttr) && static_cast<bool>(curRemainingAttr);
 
-        // Split off the trailing GC root hints from each papExtend's newargs
-        // — they are not real call arguments and must not be folded into the
-        // fused newarg list (which would corrupt remaining_arity / bitmaps).
-        unsigned prevRootCount = prevExtend.getGCRoots().size();
-        unsigned curRootCount = extendOp.getGCRoots().size();
-        auto prevAllNewargs = prevExtend.getNewargs();
-        auto curAllNewargs = extendOp.getNewargs();
-        auto prevRealNewargs = prevAllNewargs.take_front(prevAllNewargs.size() - prevRootCount);
-        auto curRealNewargs = curAllNewargs.take_front(curAllNewargs.size() - curRootCount);
-        auto prevRootHints = prevAllNewargs.drop_front(prevRealNewargs.size());
-        auto curRootHints = curAllNewargs.drop_front(curRealNewargs.size());
+        auto prevNewargs = prevExtend.getNewargs();
+        auto curNewargs = extendOp.getNewargs();
 
         // A TYPED prev that saturates would have called already — leave it
         // to P1 (typed case) and never fold a call boundary into a typed
@@ -349,14 +299,14 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // which is fine: the chaining argument above covers it.
         if (prevRemainingAttr) {
             int64_t prevRemaining = prevRemainingAttr.getInt();
-            if (static_cast<int64_t>(prevRealNewargs.size()) >= prevRemaining)
+            if (static_cast<int64_t>(prevNewargs.size()) >= prevRemaining)
                 return failure();
         }
 
-        // Build fused real newargs: prev.realNewargs + this.realNewargs
+        // Build fused newargs: prev.newargs + this.newargs
         SmallVector<Value> fusedNewargs;
-        fusedNewargs.append(prevRealNewargs.begin(), prevRealNewargs.end());
-        fusedNewargs.append(curRealNewargs.begin(), curRealNewargs.end());
+        fusedNewargs.append(prevNewargs.begin(), prevNewargs.end());
+        fusedNewargs.append(curNewargs.begin(), curNewargs.end());
 
         // Verifier limit (PapExtendOp::verify: newargs <= CLOSURE_MAX_ARITY,
         // HEAP_078). Release builds do not re-verify after passes, so the
@@ -369,16 +319,6 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // 2=Float (f64), 3=Char (i16).
         SmallVector<int8_t> fusedKinds = slotKindsOf(fusedNewargs);
 
-        // Append GC root hints from BOTH chained extends after the fused
-        // real newargs. The new papExtend's eco.gc_roots_count covers the
-        // union; duplicates are harmless (MLIR allows them and EcoGCPrepare
-        // will dedupe via DenseSet during liveness unioning).
-        SmallVector<Value> allOperands;
-        allOperands.append(fusedNewargs.begin(), fusedNewargs.end());
-        for (Value r : prevRootHints) allOperands.push_back(r);
-        for (Value r : curRootHints) allOperands.push_back(r);
-        unsigned fusedRootCount = prevRootCount + curRootCount;
-
         // Get result type from current extendOp
         Type resultType = extendOp.getResult().getType();
 
@@ -389,25 +329,20 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         // identity is a runtime value), segmentation_unknown call kind, and
         // the CURRENT extend's _result_kind (the final result's ABI claim).
         // PapExtendOp build signature: (result, closure, newargs, remaining_arity,
-        //   slot_kinds, _closure_kind, _dispatch_mode, _fast_evaluator).
+        //   slot_kinds, _fast_evaluator, _call_kind). Typed×typed keeps the
+        //   first extend's _call_kind.
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)
-            allOperands,                            // Fused real newargs + appended GC root hints
+            fusedNewargs,                           // Fused newargs
             bothTyped ? prevRemainingAttr : IntegerAttr(),
             rewriter.getDenseI8ArrayAttr(fusedKinds),
-            bothTyped ? prevExtend->getAttr("_closure_kind") : Attribute(),
-            bothTyped ? prevExtend->getAttrOfType<StringAttr>("_dispatch_mode") : StringAttr(),
-            bothTyped ? prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator") : FlatSymbolRefAttr());
+            bothTyped ? prevExtend.get_fastEvaluatorAttr() : FlatSymbolRefAttr(),
+            bothTyped ? prevExtend.get_callKindAttr()
+                      : rewriter.getStringAttr("segmentation_unknown"));
 
-        if (bothTyped) {
-            // Propagate _call_kind from the first extend
-            if (auto callKindAttr = prevExtend->getAttrOfType<StringAttr>("_call_kind")) {
-                fusedOp->setAttr("_call_kind", callKindAttr);
-            }
-        } else {
-            fusedOp->setAttr("_call_kind", rewriter.getStringAttr("segmentation_unknown"));
+        if (!bothTyped) {
             if (auto resultKindAttr = extendOp->getAttr("_result_kind")) {
                 fusedOp->setAttr("_result_kind", resultKindAttr);
             }
@@ -420,10 +355,6 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
             fusedOp->setAttr("_gencall_reason", prevReason);
         else if (!bothTyped)
             fusedOp->setAttr("_gencall_reason", rewriter.getI64IntegerAttr(10));
-        if (fusedRootCount > 0) {
-            fusedOp->setAttr("eco.gc_roots_count",
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));
-        }
 
         rewriter.replaceOp(extendOp, fusedOp.getResult());
         // Erase the orphaned intermediate explicitly: papExtend has no
@@ -490,12 +421,7 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         if (!remainingArityAttr)
             return failure();  // Generic-mode: runtime saturation unknown
 
-        // Split trailing GC root hints from the real newargs.
-        unsigned extendRootCount = extendOp.getGCRoots().size();
-        auto allNewargs = extendOp.getNewargs();
-        unsigned realNewargCount = allNewargs.size() - extendRootCount;
-        auto newargs = allNewargs.take_front(realNewargCount);
-        auto extendRoots = allNewargs.drop_front(realNewargCount);
+        auto newargs = extendOp.getNewargs();
 
         if (newargs.empty())
             return failure();  // Nothing to fuse
@@ -518,10 +444,7 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         if (!isa<eco::ValueType>(extendOp.getResult().getType()))
             return failure();
 
-        unsigned createRootCount = createOp.getGCRoots().size();
-        auto allCaptured = createOp.getCaptured();
-        auto caps = allCaptured.take_front(allCaptured.size() - createRootCount);
-        auto createRoots = allCaptured.drop_front(caps.size());
+        auto caps = createOp.getCaptured();
 
         int64_t fusedCaptured =
             static_cast<int64_t>(caps.size()) + static_cast<int64_t>(newargs.size());
@@ -535,12 +458,6 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         allOperands.append(newargs.begin(), newargs.end());
         SmallVector<int8_t> fusedKinds = slotKindsOf(allOperands);
 
-        // GC root hints from BOTH ops trail the real operands (duplicates
-        // are harmless — EcoGCPrepare dedupes during liveness unioning).
-        for (Value r : createRoots) allOperands.push_back(r);
-        for (Value r : extendRoots) allOperands.push_back(r);
-        unsigned fusedRootCount = createRootCount + extendRootCount;
-
         // Clone the create (keeps function/arity/_result_kind/
         // _fast_evaluator/_closure_kind verbatim) at the extend's
         // position, then rewrite operands + capture bookkeeping.
@@ -549,11 +466,6 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         cloned->setOperands(allOperands);
         cloned->setAttr("num_captured", rewriter.getI64IntegerAttr(fusedCaptured));
         cloned->setAttr("slot_kinds", rewriter.getDenseI8ArrayAttr(fusedKinds));
-        if (fusedRootCount > 0)
-            cloned->setAttr("eco.gc_roots_count",
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(fusedRootCount)));
-        else
-            cloned->removeAttr("eco.gc_roots_count");
 
         rewriter.replaceOp(extendOp, cloned->getResult(0));
         // The original create's only use was the extend — erase it
@@ -588,12 +500,8 @@ struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
         if (!remainingArityAttr)
             return failure();  // Generic mode: may saturate (and call) at runtime
 
-        // Real newargs exclude the trailing GC root hints (same accounting
-        // as P1/P2).
-        unsigned rootCount = extendOp.getGCRoots().size();
-        int64_t realNewargCount =
-            static_cast<int64_t>(extendOp.getNewargs().size()) - rootCount;
-        if (realNewargCount >= remainingArityAttr.getInt())
+        if (static_cast<int64_t>(extendOp.getNewargs().size()) >=
+            remainingArityAttr.getInt())
             return failure();  // Saturating (or over): calls code — never erase
 
         rewriter.eraseOp(extendOp);

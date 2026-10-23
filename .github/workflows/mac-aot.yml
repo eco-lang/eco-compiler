@@ -90,7 +90,7 @@ jobs:
           # eco-kernel-cpp/CMakeLists.txt) so brew's libzip is not needed.
           # openssl@3 provides the static libssl.a/libcrypto.a linked into eco
           # and user programs. pkgconf is still useful for kernel curl/ssl
-          # probes. rapidcheck is a configure-time dep of the ecor target
+          # probes. rapidcheck is a configure-time dep of the test tree
           # (find_package); Homebrew has no formula for it, so build it from
           # source, for the same minimum macOS as everything else.
           brew install openssl@3 pnpm gnu-time pkgconf ccache

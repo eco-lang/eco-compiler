@@ -30,8 +30,6 @@ runtime/src/codegen,EcoPipeline.cpp
 runtime/src/codegen,EcoPipeline.h
 runtime/src/codegen,EcoRunner.cpp
 runtime/src/codegen,EcoRunner.hpp
-runtime/src/codegen,EcoTypes.cpp
-runtime/src/codegen,EcoTypes.h
 runtime/src/codegen,Passes.h
 runtime/src/codegen/Passes,EcoControlFlowToSCF.cpp
 runtime/src/codegen/Passes,EcoToLLVM.cpp
@@ -43,7 +41,6 @@ runtime/src/codegen,RuntimeSymbols.cpp
 runtime/src/codegen,RuntimeSymbols.h
 runtime/src/codegen,ecoc.cpp
 runtime/src,ecogen.cpp
-runtime/src,main.cpp
 compiler/src/API,Format.elm
 compiler/src/API,Install.elm
 compiler/src/API,Main.elm

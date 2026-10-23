@@ -354,7 +354,7 @@ sync points.
 **Today.** `ThreadLocalHeap::majorGC` calls `finishMarkAndSweep`, which loops
 `while (incrementalMark(1000))` to completion (`OldGenSpace.cpp:2103, 2146`). The allocation-paced
 branch was gated on `gc_phase_ == Marking`, which nothing ever sets. It was deleted as dead code
-(`:665-672`). `mark_work_ratio` is still parsed (`HeapConfigJson.cpp:286`) but read by nothing.
+(`:665-672`). `mark_work_ratio` is still parsed (`HeapConfigJson.cpp:286`) but read by nothing (the key has since been removed).
 This is why the Sep-22 sweep found it inert. THEORY.md:83 is stale on this point.
 
 **Handbook options:**
@@ -1039,7 +1039,7 @@ stopped, and it captures the majority of the available throughput.
 
 | Location | Stale claim | Actual state |
 |---|---|---|
-| THEORY.md:83 | "incremental marking driven by `MARK_WORK_RATIO`" | Marking always runs to completion; the paced branch was deleted; `mark_work_ratio` is parsed but never read. |
+| THEORY.md:83 | "incremental marking driven by `MARK_WORK_RATIO`" | Marking always runs to completion; the paced branch was deleted; `mark_work_ratio` is parsed but never read (key since removed). |
 | THEORY.md:87 | `decommit_on_oldgen_release` is `false` | It is `true` (`AllocatorCommon.hpp:177`). |
 | `NurserySpace.cpp:926-928` | the large-body sweep is "Skipped if a major GC is mid-cycle" | Only compaction defers it. |
 | `OldGenSpace.cpp` `freeLargeBodyCell` | has a `GCPhase::Marking` case | Dead: `gc_phase_` is never set to Marking. |

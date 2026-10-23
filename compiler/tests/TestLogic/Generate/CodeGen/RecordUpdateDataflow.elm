@@ -16,8 +16,7 @@ results of every record projection by the record they were projected from.
 For each record construction it then takes its _source records_: every record
 from which at least one of the construction's field operands was projected.
 The construction is reported if any source record is also one of its field
-operands. Operands past the construction's `field_count` are GC-root hints,
-not fields, and are ignored.
+operands.
 
 This is a heuristic. A construction that copies fields out of `r` and also
 holds `r` itself as a field, such as `{ a = r.a, orig = r }`, is reported
@@ -37,7 +36,6 @@ import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , findFuncOps
-        , getIntAttr
         , getStringAttr
         , violationsToExpectation
         )
@@ -156,24 +154,16 @@ its source records, a record from which at least one of those operands was
 projected according to `projectionsBySource`. `funcName` is used only in the
 message.
 
-The field operands are the first `field_count` operands, or all of them when
-the attribute is absent or not an integer. A construction none of whose field
-operands is a projection has no source records and gives `Nothing`.
+The field operands are all of the construction's operands. A construction
+none of whose field operands is a projection has no source records and gives
+`Nothing`.
 
 -}
 checkConstructOp : String -> Dict String (Set String) -> MlirOp -> Maybe Violation
 checkConstructOp funcName projectionsBySource constructOp =
     let
-        -- Operands past `field_count` are GC-root hints, not fields.
-        fieldCount =
-            Maybe.withDefault (List.length constructOp.operands)
-                (getIntAttr "field_count" constructOp)
-
-        operands =
-            List.take fieldCount constructOp.operands
-
         operandSet =
-            Set.fromList operands
+            Set.fromList constructOp.operands
 
         storedSource =
             sourceRecords operandSet projectionsBySource
