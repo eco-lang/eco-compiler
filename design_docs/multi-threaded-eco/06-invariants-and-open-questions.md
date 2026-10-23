@@ -20,7 +20,7 @@ are placeholders.
 
 ## 6.2 Verification
 
-- **TLA+ models** (alongside `test/tla/`; GC_MODEL_001 applies once the
+- **TLA+ models** (alongside `test/tla/`; the canary rule in `test/tla/README.md` applies once the
   allocator code exists):
   - ring protocol: commit flags, cursors (single, *k* readers, claim cursor
     with out-of-order completion), the sleep/wake flag (lost wakeups);

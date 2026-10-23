@@ -29,7 +29,7 @@ static LowerToLLVMOptions ecoLLVMOptions(MLIRContext *ctx) {
 EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
     : LLVMTypeConverter(ctx, ecoLLVMOptions(ctx)) {
     // Convert eco.value -> ptr addrspace(1) (GC-managed pointer).
-    // This implements CGEN_012 for the eco.value type.
+    // Every non-primitive Elm value takes this form (REP_ABI_001, REP_SSA_001).
     addConversion([ctx](eco::ValueType type) {
         return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     });

@@ -5,13 +5,12 @@ module TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps)
 This module assumes, as its failure message says, that allocation ops are
 introduced only by a lowering step that runs after code generation, so the
 MLIR the code generator produces must contain none. An _allocation op_ here is
-an op named `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string` or
-`eco.allocate_closure`. No module under `src` builds an op with any of these
+an op named `eco.allocate`, `eco.allocate_string` or `eco.allocate_closure`. No module under `src` builds an op with any of these
 names, so the check guards against one being introduced.
 
 `expectNoAllocateOps` compiles one source module to MLIR with
 `TestLogic.TestPipeline.runToMlir` and fails if any op in the result, at any
-depth, has one of those four names. Ops are matched by exact name, so an op
+depth, has one of those three names. Ops are matched by exact name, so an op
 whose name merely begins with `eco.allocate` is not reported.
 
 Among what is not tested: MLIR produced by bootstrap Stage 5 (the substitution
@@ -57,7 +56,6 @@ generator's output.
 allocateOps : List String
 allocateOps =
     [ "eco.allocate"
-    , "eco.allocate_ctor"
     , "eco.allocate_string"
     , "eco.allocate_closure"
     ]

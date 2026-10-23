@@ -160,6 +160,6 @@ Parent: [build-and-workflow.md](workflow.md). Sibling: [bootstrap.md](bootstrap.
 - `experiments/mac-llvm-build/build.sh`, `experiments/win-llvm-build/build.ps1`: per-platform LLVM builds (`ECO_MAC_DEPS_DIR`).
 - `.github/workflows/linux-aot.yml`, `mac-aot.yml`, `win-aot.yml`: per-platform workflows. `mac-llvm-build.yml`, `win-llvm-build.yml`: cache warmers. `publish-nightly.yml`, `release.yml`: publishing. `.github/scripts/prune-caches.sh`: cache pruning.
 - `docs/building.md`, `docs/building-macos.md`, `docs/building-windows.md`, `docs/build-targets.md`, `design_docs/distribution.md`, `design_docs/lld-in-eco.md`.
-- Invariant `GC_MODEL_001`: the canary's rule.
+- `test/tla/README.md` "The canary": the canary's rule.
 
 Known disagreements in the repository's documents: `design_docs/distribution.md` and some comments in `CMakeLists.txt` name a preset `ninja-clang-lld-linux-musl`, which is `release`. `design_docs/distribution.md` and `docs/build-targets.md` list 9 EcoKernel archives and no EcoSystem archives; the build has 11 and 12. `docs/building.md` speaks of three presets; there are seven. `docs/build-targets.md` omits the glibc-runtime, `eco-system-*`, `run-js-e2e`, `kernel-license-check` and `tla-check` targets.

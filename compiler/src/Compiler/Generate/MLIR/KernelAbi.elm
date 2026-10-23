@@ -44,36 +44,27 @@ import Utils.Crash exposing (crash)
 -- KERNEL BACKEND ABI POLICY
 -- ============================================================================
 --
--- During the per-instance kernel ABI rollout (see plans/per-instance-kernel-abi.md)
--- this table acts as a coarse "always boxed" guardrail. As each kernel migrates
--- to monomorphic variants, its broad-policy entry is replaced with explicit
--- per-name entries for the kernels that *stay* AllBoxed. Phase E retires the
--- table entirely.
+-- Every kernel derives its ABI from the call-site monomorphized type (KERN_006).
+-- The policy type has a single constructor; it is kept so that code which
+-- cases on it must be revisited if a second policy is ever introduced.
 -- ============================================================================
 
 
 {-| Backend ABI policy for kernel function calls.
 
-    AllBoxed   -> All args and result are !eco.value in MLIR, regardless of
-                  the monomorphized Elm wrapper type. Used for kernels whose
-                  C++ implementation uniformly takes boxed uint64_t values
-                  (e.g., List.cons).
-
     ElmDerived -> ABI is derived from the Elm wrapper's funcType via
-                  monoTypeToAbi. Used for kernels with typed C++ signatures
-                  (e.g., Basics.fdiv takes double, String.cons takes uint16_t).
+                  monoTypeToAbi: Int -> i64, Float -> f64, Char -> i16, every
+                  other type (including type variables) -> !eco.value. Kernels
+                  that take only boxed values therefore get an all-!eco.value
+                  ABI without a separate policy.
 
 -}
 type KernelBackendAbiPolicy
     = ElmDerived
 
 
-{-| Determine the backend ABI policy for a kernel call.
-
-Only kernels whose C++ implementation takes ALL arguments as boxed
-uint64\_t (eco.value) and returns uint64\_t should be marked AllBoxed.
-When in doubt, use ElmDerived (safe default — preserves current behavior).
-
+{-| The backend ABI policy for a kernel call. It is `ElmDerived` for every
+kernel.
 -}
 kernelBackendAbiPolicy : KernelBackendAbiPolicy
 kernelBackendAbiPolicy =
@@ -81,10 +72,8 @@ kernelBackendAbiPolicy =
     -- call-site monomorphized type via `monoTypeToAbi`. Kernels with no
     -- primitive-capable parameters (List.fromArray/toArray/map2-5/
     -- sortBy/sortWith, Utils.append, JsArray.empty/length/map/foldl/
-    -- foldr) produce identical wire format under either policy, so the
-    -- explicit `AllBoxed` arms were redundant. The `Basics.add/sub/mul/
-    -- pow` arms moved to ElmDerived in Phase E.2 to match the new
-    -- per-instance C symbols. Debug.* is handled separately via
+    -- foldr) get an all-!eco.value ABI from `monoTypeToAbi` anyway, so no
+    -- all-boxed policy is needed. Debug.* is handled separately via
     -- `alwaysPolymorphicModules`.
     ElmDerived
 
@@ -132,10 +121,9 @@ type alias KernelInstanceAbi =
 {-| Compute the C symbol name plus MLIR ABI types for a per-instance kernel
 call.
 
-Phase A: the symbol is exactly the legacy `Elm_Kernel_<home>_<name>` and the
-ABI types are determined by `kernelBackendAbiPolicy` (AllBoxed → all
-`!eco.value`; ElmDerived → `monoTypeToAbi` of each argument and the result).
-This produces the same wire format as today.
+The base symbol is `<prefix>_Kernel_<home>_<name>`, and the ABI types are
+`monoTypeToAbi` of each argument and the result (`kernelBackendAbiPolicy` is
+`ElmDerived` for every kernel).
 
 Phase B onwards adds suffix branches for primitive instantiations (see
 Appendix A of `plans/per-instance-kernel-abi.md`).

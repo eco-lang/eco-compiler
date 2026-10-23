@@ -1568,10 +1568,9 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         ledgerTop =
             censusAt "zc|all|poison" + censusAt "zc|all|edgeTop"
 
-        -- Phase 3: this bucket is `LVar` — a set VARIABLE, "to be determined".
-        -- It was Phase 1's `LUnknown`, and before that it was silently inside
-        -- `top`. The census keys keep their historical names so the rows stay
-        -- joinable against every earlier arm.
+        -- This bucket is `LVar` — a set VARIABLE, "to be determined". It used
+        -- to be counted inside `top`. The census keys keep their historical
+        -- names so the rows stay joinable against every earlier arm.
         ledgerUnknown =
             censusAt "zc|all|flex" + censusAt "zc|all|edgeEmpty"
 
@@ -2568,7 +2567,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         --
         -- Keys are RELATIVE to the lambda's own arrow (`/r` = its result), so
         -- the table drops straight into the same context machinery the row
-        -- cellmaps use. Several closures may share one mid (LSS_024): merging
+        -- cellmaps use. Several closures may share one mid (layout-qualified members): merging
         -- their cells is the unsplit-store union, and a ⊤/var at ANY
         -- instantiation contaminates rather than lies.
         vf3RecordLambda info body t acc =
@@ -3754,7 +3753,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                -- `deferred` is the residual-arrow precision frontier.
                , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
 
-               -- LSS_024 layout-qualification census
+               -- Layout-qualification census
                -- (plans/lss-layout-qualified-members.md §2.5): `shared` = id reuse
                -- across distinct enclosing specs (the fix working), `fallback` =
                -- mints with no captured widened key (expected 0), `tieBypass` =
@@ -3940,7 +3939,7 @@ seedSpec global monoType s =
         ( specId, reg1 ) =
             Registry.getOrCreateSpecId global monoType s.registry
 
-        -- LSS_024 §2.2: entry-seeded specs are keyed-ROUTED under the
+        -- Layout-qualified members §2.2: entry-seeded specs are keyed-ROUTED under the
         -- all-keyed default (the routing predicate is per-mint, not
         -- per-creation-path), so their bodies' lambda mints consult
         -- `specWidenedKeys` — capture here too, or every entry-global lambda

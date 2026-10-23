@@ -196,8 +196,8 @@ Documents:
 
 Invariants (`design_docs/invariants.csv`):
 
-- HEAP_025: string access through the runtime; out of date on the number of forms and on flattening for equality. HEAP_032: the UTF-8 forms.
-- HEAP_010, REP_CONSTANT_003: the empty constant and its comparison. HEAP_071: no zero-length objects.
+- HEAP_025: the six string forms and string access through the runtime; equality and comparison never flatten. HEAP_032: the UTF-8 forms.
+- HEAP_010: the empty constant. HEAP_071: no zero-length objects, so Empty is the only empty string.
 - HEAP_037, HEAP_038, HEAP_039, CGEN_070: chunked lists, backing size, the program-wide switch and compiled projections.
 - HEAP_026, HEAP_081: large split payloads.
 - HEAP_019, REP_HEAP_002: element kinds.

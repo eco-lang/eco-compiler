@@ -1,4 +1,4 @@
-# TLA+ model canary manifest (GC_MODEL_001; plans/threaded-gc-tla-verification.md 7).
+# TLA+ model canary manifest (see test/tla/README.md; plans/threaded-gc-tla-verification.md 7).
 # Checked by test/scripts/check-tla-manifest.sh in every build (target tla-canary).
 # ASCII only (CMake reads this with file(STRINGS)).
 #

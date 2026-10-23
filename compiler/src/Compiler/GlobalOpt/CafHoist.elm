@@ -32,10 +32,14 @@ The exclusions are these. A result of scalar type (`Int`, `Float`, `Char`, or
 a `number` variable) is not hoisted. Neither is a result of function type,
 because a call's `CallInfo` describes the shape of its callee expression, and
 replacing that expression with a global would leave the `CallInfo` describing
-a shape that is no longer there. A subtree that references a kernel whose home
-is `Debug` is not hoisted: moving a `Debug` call would change how many times
-it logs. The test looks only at kernel references, so a subtree that calls a
-global function that logs can still be hoisted. A result whose type contains a type from the
+a shape that is no longer there. A subtree that transitively reaches a kernel
+whose home is `Debug` is not hoisted: moving a `Debug` call would change how
+many times, and when, it logs (OPT_DEBUG_ORDER_001). The subtree reaches one
+when it references a `Debug` kernel directly, or references a global spec that
+is not in `CsePurity.analyze`'s `safeSpecs`, the specs from which no `Debug`
+kernel is reachable through the global specs they mention. That oracle is
+computed once, on the graph `run` is given; a spec id outside it, such as a
+`MonoExtern`, counts as reaching `Debug`. A result whose type contains a type from the
 `elm/bytes` package, other than inside a function type, is not hoisted either,
 and nor is a call whose callee is a `Bytes` kernel.
 
@@ -66,7 +70,9 @@ order, so the result is deterministic.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.GlobalOpt.CsePurity as CsePurity
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
 import Set exposing (Set)
@@ -142,7 +148,8 @@ renderStats s =
 
 `free` holds the local names the subtree uses without binding them; the
 subtree is closed when it is empty. `size` is the number of nodes in the
-subtree. `hasDebug` is set when it references a `Debug` kernel.
+subtree. `hasDebug` is set when it references a `Debug` kernel, or a global
+spec outside `Ctx.debugFree`.
 
 -}
 type alias Info =
@@ -189,7 +196,8 @@ type alias Candidate =
 bodies and types of the specs minted so far, the most recent first. `dedupe`
 finds the spec already minted for a closure-free candidate: it is keyed by
 `kindTagOf` and then by type, and holds each region-zeroed body with its
-SpecId.
+SpecId. `debugFree` is `CsePurity.analyze`'s `safeSpecs` for the input graph,
+the specs from which no `Debug` kernel is reachable.
 
 -}
 type alias Ctx =
@@ -198,6 +206,7 @@ type alias Ctx =
     , dedupe : Dict String (Mono.SpecMap (List ( Mono.MonoExpr, Int )))
     , stats : Stats
     , maxHoists : Int
+    , debugFree : BitSet
     }
 
 
@@ -225,6 +234,7 @@ run cfg (Mono.MonoGraph g) =
             , dedupe = Dict.empty
             , stats = emptyStats
             , maxHoists = cfg.maxHoists
+            , debugFree = (CsePurity.analyze (Mono.MonoGraph g)).safeSpecs
             }
 
         ( newNodes, ctxFinal ) =
@@ -439,8 +449,10 @@ collectChildren minNodes ctx expr =
         Mono.MonoVarLocal n _ ->
             ( { leafInfo | free = Set.singleton n }, [], ctx )
 
-        Mono.MonoVarGlobal _ _ _ ->
-            ( leafInfo, [], ctx )
+        Mono.MonoVarGlobal _ sid _ ->
+            -- OPT_DEBUG_ORDER_001: a global that transitively reaches a Debug
+            -- kernel poisons the subtree just as a direct Debug reference does.
+            ( { leafInfo | hasDebug = not (BitSet.member sid ctx.debugFree) }, [], ctx )
 
         Mono.MonoVarKernel _ _ home _ _ ->
             ( { leafInfo | hasDebug = home == "Debug" }, [], ctx )

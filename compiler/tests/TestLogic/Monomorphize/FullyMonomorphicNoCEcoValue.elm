@@ -1,4 +1,4 @@
-module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, Violation)
+module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, expectFullyMonomorphicNoCEcoValueSubst, Violation)
 
 {-| Checks that a specialization whose key type is concrete has a concrete
 signature: no type variable, of either constraint, in the types that the key
@@ -11,7 +11,11 @@ either constraint. Only those specializations are checked; one whose key still
 holds a variable is skipped.
 
 `expectFullyMonomorphicNoCEcoValue` compiles a program with
-`TestLogic.TestPipeline.runToMono` and, in each such specialization, searches
+`TestLogic.TestPipeline.runToMono`, which uses the solver engine
+(`EngineSolver`, the default), and `expectFullyMonomorphicNoCEcoValueSubst`
+with `TestLogic.TestPipeline.runToMonoStage5`, which uses the substitution
+engine (`EngineSubst`). Both then make the same checks. In each such
+specialization they search
 its _signature_ for an `MVar _ CEcoValue` (a variable whose values are always
 boxed) or an `MVar _ CNumber` (a variable known only to be a number): the
 node's own type, the parameter types of a `MonoTailFunc`, and, for a
@@ -20,6 +24,13 @@ A constructor or enum node has its own type checked. A variable in any of
 these means the specialization's key was computed wrongly or its substitution
 was not applied to the node, which invariant MONO\_024 rules out. Each type is
 searched to any depth.
+
+Separately, every registry entry's key type is searched for an
+`MVar _ CNumber`, fully monomorphic or not. Both engines keep a number variable
+as a residual until `Compiler.Monomorphize.Prune` closes it to `MInt`, and
+Prune closes `registry.reverseMapping` as well as the nodes (MONO\_028), so a
+key that still holds one is a residual Prune failed to close. Without this
+check such a key would only be skipped as not fully monomorphic.
 
 Among what is not checked: the types inside a body. MONO\_024 as written asks
 for no `CEcoValue` variable anywhere in the node, but correct output has them
@@ -31,7 +42,7 @@ operator in the programs that hit the known TYPE\_007/POST\_010 typing gap. A
 and crashes if one is left. `MonoExtern` nodes and effect-manager leaves are
 not checked.
 
-@docs expectFullyMonomorphicNoCEcoValue, Violation
+@docs expectFullyMonomorphicNoCEcoValue, expectFullyMonomorphicNoCEcoValueSubst, Violation
 
 -}
 
@@ -65,8 +76,24 @@ error, it fails with that error, and otherwise with a count and list of the
 violations.
 -}
 expectFullyMonomorphicNoCEcoValue : Src.Module -> Expectation
-expectFullyMonomorphicNoCEcoValue srcModule =
-    case Pipeline.runToMono srcModule of
+expectFullyMonomorphicNoCEcoValue =
+    expectWith Pipeline.runToMono
+
+
+{-| `expectFullyMonomorphicNoCEcoValue` under the substitution engine: the
+program is compiled with `TestLogic.TestPipeline.runToMonoStage5`.
+-}
+expectFullyMonomorphicNoCEcoValueSubst : Src.Module -> Expectation
+expectFullyMonomorphicNoCEcoValueSubst =
+    expectWith Pipeline.runToMonoStage5
+
+
+{-| Compiles `srcModule` with `runner` and makes the checks of the module
+docstring on the graph it returns.
+-}
+expectWith : (Src.Module -> Result String Pipeline.MonoArtifacts) -> Src.Module -> Expectation
+expectWith runner srcModule =
+    case runner srcModule of
         Err msg ->
             Expect.fail ("Compilation failed: " ++ msg)
 
@@ -82,8 +109,9 @@ expectFullyMonomorphicNoCEcoValue srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Returns the violations in every specialization of the graph whose key type is
-fully monomorphic, in SpecId order. An empty registry slot, which is a pruned
+{-| Returns, in SpecId order, a violation for every registry key type that
+holds a number variable, and the violations in every specialization of the
+graph whose key type is fully monomorphic. An empty registry slot, which is a pruned
 specialization, and a SpecId with no node are skipped.
 -}
 checkFullyMonomorphicNoCEcoValue : Mono.MonoGraph -> List Violation
@@ -96,7 +124,20 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
                         acc
 
                     Just ( _, keyMonoType ) ->
-                        if not (isFullyMonomorphic keyMonoType) then
+                        if hasNumberVar keyMonoType then
+                            acc
+                                ++ [ { context = "SpecId " ++ String.fromInt specId ++ " (key: " ++ monoTypeToString keyMonoType ++ ") registry key"
+                                     , message =
+                                        "MONO_028 violation: a number type variable survived Prune in the registry's key type\n"
+                                            ++ "  type: "
+                                            ++ monoTypeToString keyMonoType
+                                            ++ "\n"
+                                            ++ "  type variables: "
+                                            ++ String.join ", " (collectTypeVars keyMonoType)
+                                     }
+                                   ]
+
+                        else if not (isFullyMonomorphic keyMonoType) then
                             acc
 
                         else
@@ -114,6 +155,13 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
 -- ============================================================================
 -- FULLY MONOMORPHIC CHECK
 -- ============================================================================
+
+
+{-| Returns whether `monoType` holds an `MVar _ CNumber` at any depth.
+-}
+hasNumberVar : Mono.MonoType -> Bool
+hasNumberVar monoType =
+    List.any (String.endsWith "(number)") (collectTypeVars monoType)
 
 
 {-| Returns whether `monoType` holds no type variable of either constraint.
@@ -271,7 +319,7 @@ then each violation's context and message, separated by blank lines.
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
-    "MONO_024 violations found ("
+    "MONO_024/MONO_028 violations found ("
         ++ String.fromInt (List.length violations)
         ++ "):\n\n"
         ++ (violations

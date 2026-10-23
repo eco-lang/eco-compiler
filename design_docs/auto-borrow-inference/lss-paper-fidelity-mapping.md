@@ -141,7 +141,7 @@ Verdict key: **FAITHFUL** (same mechanism, possibly different clothes) · **PART
 
 | paper | where | Eco | where | verdict |
 |---|---|---|---|---|
-| function type → sum over members; application → `match` | §5.2, 146:16 | **no sum lowering exists.** Singleton sets: direct dispatch (three stamp arms: exact LSS_009, PAP LSS_011, staged LSS_014; ctor/fn-global/kernel devirt LSS_015/E9.1/LSS_016). Everything else: the generic `papExtend` pipeline. Multi-member sets: census-only in the *dispatch* path (AbiCloning), but since G-1 (2026-08-15) **analysis consumers do act on them** — MapTemplate licenses a clean multi-member callback generically (`MapTemplate.elm:492-597`, default-off flag) and Borrow meets multi-member `BorrowSig`s per call site (BORROW_006) | `AbiCloning.elm:1037-1208`, `Translate.elm:2025-2134` | **DIVERGENT** — deliberately, on census evidence (M5 NO-GO); but the evidence is partly downstream of GAP-2 — see GAP-6 |
+| function type → sum over members; application → `match` | §5.2, 146:16 | **no sum lowering exists.** Singleton sets: direct dispatch (three stamp arms: exact LSS_009 (row since removed), PAP LSS_011, staged LSS_014; ctor/fn-global/kernel devirt LSS_015/E9.1/LSS_016). Everything else: the generic `papExtend` pipeline. Multi-member sets: census-only in the *dispatch* path (AbiCloning), but since G-1 (2026-08-15) **analysis consumers do act on them** — MapTemplate licenses a clean multi-member callback generically (`MapTemplate.elm:492-597`, default-off flag) and Borrow meets multi-member `BorrowSig`s per call site (BORROW_006) | `AbiCloning.elm:1037-1208`, `Translate.elm:2025-2134` | **DIVERGENT** — deliberately, on census evidence (M5 NO-GO); but the evidence is partly downstream of GAP-2 — see GAP-6 |
 | the lowered sum's per-variant environment (capture record) | §5.2 | recovered per-instance by AbiCloning (`captureAbi` from the indexed `MonoClosure`), since id-only members carry no types | `AbiCloning.elm:395-413` | **DIVERGENT** — the cost of id-only members: ABI must be re-derived from instances |
 | entry point: `τ has no function types` (AT-Entry) | Fig. 3, 146:7 | kernel/port/debug ABI arrows are top-poisoned (LSS_004) | `Store.elm:804-848` | **FAITHFUL in spirit** — same boundary; the paper forbids, Eco widens |
 | Thms 5.6/5.7: end-to-end semantics preservation (146:17; Isabelle/HOL mechanization covers *inference*/Thm 4.1 only — the §5 theorems are paper proofs). The paper's L^annot semantics are BY DEFINITION its erasure's semantics (146:6) | 146:17 | the same erasure correspondence, exactly: annotations are inert metadata; the lss-off / all-LTop pipeline IS the erasure, and LSS_005 (widening changes performance, never semantics) + LSS_002/LSS_010 tests + the lss-off byte-identity gate are what enforce it | `invariants.csv:612, 609, 617` | **DIVERGENT** assurance class: the paper proves, Eco tests + degrades gracefully — but the *object* being assured (erasure-equivalence) is the same on both sides |
@@ -170,7 +170,7 @@ and none is a fidelity violation:
   `topSiteShapes` lives in AbiCloning's stats, `AbiCloning.elm:132`, rendered under the
   same census banner), `ECO_MONO_LSS*` env surface, artifact-hash tokens.
 - **Staging/wrapper identity discipline** (LSS_008) and representative interchangeability
-  (LSS_009) — obligations created by having a GlobalOpt pipeline between mono and
+  (LSS_009 (row since removed)) — obligations created by having a GlobalOpt pipeline between mono and
   emission; the paper lowers directly.
 - **The accessor namespace `a|`** — `.field` values; no paper analogue.
 
@@ -225,9 +225,9 @@ Eco's five namespaces, measured against that:
 
 | namespace | identity carried | paper-faithful? |
 |---|---|---|
-| `l|` lambda instances (post-Fix-B) | source lambda × **minting SpecId** (`l|<raw>|<spec>`, keyed-routed); under LSS_024 (`lss.layoutQualMembers`) source lambda × **annotation-widened creation key** (`l|<raw>|<widenedKey>`) + the AbiCloning fingerprint fence | **REFINED 2026-08-21** (plans/lss-layout-qualified-members.md §10): faithful in DIRECTION — instantiation qualification is μ-substitution's image, and raw ids are proven unsound (the §11.6 SIGSEGV: one id over divergent instances = the representative hijack) — but the SpecId form is UNFAITHFUL in PROXY when substituted content coincides: the paper's §6.2 evaluates substitutions *before* any cardinality check and collapses distinct derivations of one lambda term, which the SpecId tag cannot (the sigFlow de-stamp class). LSS_024 returns identity to the paper's axis: widened-key sharing collapses the coincident case at mint time, and the paper's §6.1 annotation-sensitivity (the E11 lesson) is enforced at the consumer by verbatim-body fingerprint unanimity instead of by id inequality |
+| `l|` lambda instances (post-Fix-B) | source lambda × **minting SpecId** (`l|<raw>|<spec>`, keyed-routed); under LSS_024 (row since removed) (`lss.layoutQualMembers`) source lambda × **annotation-widened creation key** (`l|<raw>|<widenedKey>`) + the AbiCloning fingerprint fence | **REFINED 2026-08-21** (plans/lss-layout-qualified-members.md §10): faithful in DIRECTION — instantiation qualification is μ-substitution's image, and raw ids are proven unsound (the §11.6 SIGSEGV: one id over divergent instances = the representative hijack) — but the SpecId form is UNFAITHFUL in PROXY when substituted content coincides: the paper's §6.2 evaluates substitutions *before* any cardinality check and collapses distinct derivations of one lambda term, which the SpecId tag cannot (the sigFlow de-stamp class). LSS_024 (row since removed) returns identity to the paper's axis: widened-key sharing collapses the coincident case at mint time, and the paper's §6.1 annotation-sensitivity (the E11 lesson) is enforced at the consumer by verbatim-body fingerprint unanimity instead of by id inequality |
 | `g|` globals | source global only — one id over **many** SpecIds | **NO** — a family name; the paper's output cannot contain one |
-| `c|` ctors | source ctor only | **NO** — same, mitigated by ctor interchangeability (LSS_015: "stronger than LSS_009") |
+| `c|` ctors | source ctor only | **NO** — same, mitigated by ctor interchangeability (LSS_015: "stronger than LSS_009 (row since removed)") |
 | `k|` kernels | kernel name, head-only | N/A (no paper analogue); completeness-relevant (GAP-4) |
 | `a|` accessors | field name | N/A; `.field` is layout-generic — arguably *correctly* a family |
 
@@ -626,7 +626,7 @@ the burden of justification is on Eco, and the recorded censuses carry it.
 - **LSS_017 was not in `invariants.csv`** despite being enforced code discipline
   (`Engine.elm:217-276`), specified in the fork plan (§10), and *referenced by*
   BORROW_006 — **row added 2026-08-17** (closing the fork plan's B4 debt). Still open:
-  LSS_009's row does not carry its LSS_017-discharge amendment, and LSS_012 (a
+  LSS_009 (row since removed)'s row does not carry its LSS_017-discharge amendment, and LSS_012 (a
   permanently skipped id, reserved for the closed E3) is unannotated.
 - **Stale line references**: fork plan §6.5 cites `Engine.elm:712-723` for budget
   widening — now `Engine.elm:876-894`.

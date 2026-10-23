@@ -160,7 +160,7 @@ createEcoReachabilityPass(std::vector<std::string> roots);
 //===----------------------------------------------------------------------===//
 
 // Creates the type converter for eco types to LLVM types.
-// Converts eco.value -> ptr addrspace(1) (GC-managed HPointer, CGEN_012).
+// Converts eco.value -> ptr addrspace(1) (GC-managed HPointer, REP_ABI_001, REP_SSA_001).
 std::unique_ptr<mlir::TypeConverter> createEcoToLLVMTypeConverter(mlir::MLIRContext *ctx);
 
 //===----------------------------------------------------------------------===//

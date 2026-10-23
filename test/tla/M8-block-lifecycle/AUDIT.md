@@ -192,7 +192,7 @@ address) and a no-op `freeLargeBodyCell` never occur in a pass row: both are CR-
   cell with slack short of the geometry change; `no_trailing_header` covers `BlockParseable`.
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: OGS.lazySweep (3019e316a801).
 
@@ -223,7 +223,7 @@ The stats-only counter does not touch block state, lists or `live_bytes`.
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
 
@@ -235,7 +235,7 @@ step, lock, shared location or memory order changes.
 
 M8 models this carve (`FreshPage`): **model updated first** - the fixed behaviour is the default and the pre-fix test is the A6 mutant `bag_tail_headerless` (`violates:BlockParseable`, 43 states); `MC_quick_cr033` now passes (2,263 states); `controls/cr033_tail_header` retired (it is the default now); `bag_tail_header` dropped from `fixed_all`, `MC_deep_fixed` and `coverage.cfg`. M8 quick tier 25/25 as expected (2026-09-30). **Verdict: model updated.**
 
-## 2026-09-30 — register-fixes §3.2: CR-018 fixed (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.initObjectHeaderWithSize`, new hash prefix **2d1af3f18a67**.
 
@@ -251,7 +251,7 @@ then moves them to mutants). M8 quick 26/26 as expected.
 
 **Verdict: model updated.**
 
-## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (GC_MODEL_001, one audit)
+## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (test/tla/README.md "The canary", one audit)
 
 Pin fired: region `OGS.allocateFromEmptyRegularBlocks`, new hash prefix **241b815c0313**.
 
@@ -272,7 +272,7 @@ states): the purge alone closes the chain. `fixed_all`, `MC_deep_fixed` and `cov
 
 **Verdict: model updated.**
 
-## 2026-09-30 — register-fixes §3.5: CR-036, BlockTable per-id generation (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.5: CR-036, BlockTable per-id generation (test/tla/README.md "The canary")
 
 Pin fired: file `BlockTable.hpp`, new hash prefix **3400ac12ae09**.
 
@@ -287,7 +287,7 @@ validate check can now tell the two incarnations apart.
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M8: region `OGS.lazySweep` (**b033f3f0c837**), region `OGS.onSweepComplete` (**9a0fe8aa36e1**: the PM7 tripwire as its first statement).
 
@@ -295,7 +295,7 @@ Change: both completions call one lambda (`completeSweep`), which inside a paral
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pin fired for M8: region `TLH.majorGC`, new hash prefix **dde8f0dcca5e**.
 
@@ -308,7 +308,7 @@ models changes.
 
 **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `OGS.lazySweep` (**6066819cec59**).
 
@@ -325,7 +325,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 M8 is serial over the block lifecycle; the parse, the run building, the index retire and the sentinel boundary see identical header values. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (test/tla/README.md "The canary")
 
 Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**).
 
@@ -343,7 +343,7 @@ leaf (it calls nothing).
 
 Only the in-use byte counter's access changed (same values); the extent choice, the free list and the bump are unchanged. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.allocateFromBagPage` (**8707d299ec96**), `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**), `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**), `AL.acquireOldGenBlock` (**58fd49f66454**).
 
@@ -364,7 +364,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 M8 models the block lifecycle serially and treats the page supply as "some extent"; which free extent or fresh bump an acquire returns is not an M8 choice, and the release paths only gained a validate-only abort. **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: owner check at the GC entries (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: owner check at the GC entries (test/tla/README.md "The canary")
 
 Pins fired: regions `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**).
 
@@ -391,7 +391,7 @@ event's `refused` field and an M1 `stop` after a refused launch.
 Only a validate-only `assertOwner` at the entry of `minorGC` / `majorGC` (HEAP_007 / CR-031). No block
 lifecycle step changes. **Verdict: no model change needed.**
 
-## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (GC_MODEL_001)
+## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.onSweepComplete` (**fecf4917088c**), `OGS.maybeShrinkCapacity` (**16f2d7bb56c4**).
 New pin: region `TLH.majorGCAndShrink` (M1, M4, M8).
@@ -412,7 +412,7 @@ mutator inside one pause, which M8 (serial) covers as a sequence of its existing
 `live_bytes == 0` (HEAP_073) and the flip/reclaim interplay are unchanged, and no block is released that
 the heavy or light pass could not release with a lower `desired_heap`. **Verdict: no model change needed.**
 
-## 2026-10-05 — macOS build: BufferMetadata::live_bytes declared uint64_t (GC_MODEL_001)
+## 2026-10-05 — macOS build: BufferMetadata::live_bytes declared uint64_t (test/tla/README.md "The canary")
 
 Pin fired: file `BlockTable.hpp` (**37a0440b8bf9**).
 
@@ -423,7 +423,7 @@ distinct types, so those `atomic_ref`s did not compile; on LP64 Linux they are t
 build is unchanged. Width and representation are unchanged on every platform, and M8's `lb` is a value.
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 

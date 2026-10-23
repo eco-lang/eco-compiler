@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-tla-manifest.sh -- GC_MODEL_001: the TLA+ model canary.
+# check-tla-manifest.sh -- the TLA+ model canary, see test/tla/README.md.
 #
 #   usage: check-tla-manifest.sh <repo-root> [--update]
 #

@@ -86,7 +86,7 @@ ones, and the typed program a server would keep resident is only about 105 MB an
    - At about 20 MB of high-water per build, the 20 GiB old-gen cap is reached after about 750
      builds.
    - The fix (split the extent, return the remainder) is in TLA-modelled allocator code, so the
-     models must be checked first (GC_MODEL_001).
+     models must be checked first (`test/tla/README.md` "The canary").
 5. **Compaction would recover only 25-90 MB after 10 builds,** less than the two leaks.
 6. **The compactor (`OldGenSpace.hpp:2580`) is not wired, and is unsafe to call as is:**
    - it is reachable only from a test-access shim, and `shouldCompact` has no caller;

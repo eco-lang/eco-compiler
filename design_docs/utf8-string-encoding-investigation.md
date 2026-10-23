@@ -160,7 +160,7 @@ Consequences:
   This is a free flag: on ASCII data, *every* index-based operation is O(1)
   byte arithmetic and every operation has identical semantics byte-wise. No
   `_padding` bit needed — it falls out of the two lengths.
-- `REP_CONSTANT_003` (Empty compares EQ to any `header.size == 0` string)
+- `REP_CONSTANT_003 (row since removed)` (Empty compares EQ to any `header.size == 0` string)
   keeps working unchanged (and zero-length UTF-8 results canonicalize to the
   `Empty` constant like every other form).
 - Rope accounting (`header.size = leftLen + rightLen`) is encoding-independent,
@@ -736,7 +736,7 @@ Hand-maintained per-tag switches that must gain a `Tag_StringUtf8` arm:
 | Bytes kernel | `read_string`, `writeEncoder ENC_UTF8`, `getStringWidth` (×2), `BytesOps::encodeUtf8` |
 | Debug | `print_value`/`print_string_content` Tag switch (RuntimeExports.cpp:2477 area) |
 | Literals (phase 4) | `preMaterializeStringLiterals` + `StringLiteralOpLowering` (EcoToLLVMTypes.cpp), string-pattern path (EcoToLLVMControlFlow.cpp:396), new `eco_alloc_string_literal_utf8` ABI fn + JIT symbol (RuntimeSymbols.cpp), `fromInt`/`fromFloat` intrinsic allocation |
-| Invariants | HEAP_025 (five forms + validity invariant + unit-count rule), REP_CONSTANT_003 (add tag to the size==0 list), BFOPS_032 (unchanged in spirit), new invariant for "strictly valid UTF-8 + lone-surrogate fallback" |
+| Invariants | HEAP_025 (five forms + validity invariant + unit-count rule), REP_CONSTANT_003 (row since removed) (add tag to the size==0 list), BFOPS_032 (unchanged in spirit), new invariant for "strictly valid UTF-8 + lone-surrogate fallback" |
 | Tag space | 5-bit tag, ~22 used incl. `Tag_Forward` (must stay last) — room exists; append before `Tag_Forward`, never renumber `Tag_String` (baked into lowering) |
 
 Compiler/MLIR: **zero changes required** (CGEN_039 already says codegen emits

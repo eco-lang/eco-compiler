@@ -203,7 +203,7 @@ suite =
                         , abiResultType = ecoValue
                         }
                         abi
-            , test "Utils.append on String args stays AllBoxed (not migrated)" <|
+            , test "Utils.append on String args gets the root symbol and all-!eco.value ABI" <|
                 \_ ->
                     let
                         abi =

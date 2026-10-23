@@ -101,6 +101,7 @@ add_executable(test
         allocator/Utf8Test.cpp
         allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
+        allocator/StringFormsCompareTest.cpp
         allocator/ListOpsTest.cpp
         allocator/ChunkedListTest.cpp
         allocator/BytesOpsTest.cpp
@@ -111,6 +112,7 @@ add_executable(test
         allocator/WideObjectTest.cpp
         allocator/WideClosureTest.cpp
         allocator/EcoApplyClosureTypedTest.cpp
+        allocator/EcoApplyClosureEvalChainTest.cpp
         allocator/GCPressureTest.cpp
         allocator/EnsureHeadroomTest.cpp
         allocator/NurseryFillerTest.cpp

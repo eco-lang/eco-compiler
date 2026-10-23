@@ -16,7 +16,7 @@ test cannot see that; only a lowered, executed binary can.
 
 The pin must print the same numbers in every flag arm — it is a guard, not a
 bug demo. Nothing at HEAD is expected to take the false stamp (AbiCloning's
-LSS_024 fingerprint fence declines it), and nothing flag-on should either
+fingerprint fence declines it), and nothing flag-on should either
 (the ids are distinct, so each member has exactly one instance).
 
 `List.map` over `inputs` is load-bearing: a single monomorphic use lets the

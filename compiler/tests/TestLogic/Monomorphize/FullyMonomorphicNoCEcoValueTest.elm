@@ -11,31 +11,38 @@ The fixture is the set of programs gathered by
 own.
 
   - `suite` gives each program to
-    `TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue.expectFullyMonomorphicNoCEcoValue`.
-    That check monomorphizes the program with the substitution engine and, in
-    each specialization whose key type has no `MVar`, reports every `MVar`,
-    `CEcoValue` or `CNumber`, in the node's type, its parameter types and the
-    type of the closure it is. A program also fails when `runToMono` returns
-    an error.
+    `TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue.expectFullyMonomorphicNoCEcoValue`,
+    which monomorphizes it with the solver engine (`EngineSolver`, the
+    default), and to `expectFullyMonomorphicNoCEcoValueSubst`, which uses the
+    substitution engine (`EngineSubst`, bootstrap Stage 5). Under each engine
+    the check reports, in each specialization whose key type has no `MVar`,
+    every `MVar`, `CEcoValue` or `CNumber`, in the node's type, its parameter
+    types and the type of the closure it is; and any registry key type that
+    still holds a `CNumber` variable after Prune's closing (MONO\_028). A
+    program also fails when monomorphization returns an error.
 
 Among what is not tested: type variables inside a specialization's body, which
 correct output does have (an unconstrained empty list or `let`-bound function;
-the checker's module docstring gives the cases); specializations whose key type
-still holds a type variable; and the solver engine, which is the default
-engine of a build.
+the checker's module docstring gives the cases); and `CEcoValue` variables in
+specializations whose key type still holds a type variable.
 
 -}
 
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue)
+import TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, expectFullyMonomorphicNoCEcoValueSubst)
 
 
-{-| The unresolved-number-variable check applied to every program of the
-standard catalogue, grouped under one `describe`.
+{-| The type-variable check applied to every program of the standard catalogue,
+once per monomorphization engine.
 -}
 suite : Test
 suite =
-    Test.describe "MONO_024: Fully monomorphic specs have no type variable in their signature"
-        [ StandardTestSuites.expectSuite expectFullyMonomorphicNoCEcoValue "has no type variable in fully monomorphic spec signatures"
+    Test.describe "MONO_024/MONO_028: Fully monomorphic specs have no type variable in their signature, and no number residual survives Prune"
+        [ Test.describe "solver engine (EngineSolver)"
+            [ StandardTestSuites.expectSuite expectFullyMonomorphicNoCEcoValue "has no type variable in fully monomorphic spec signatures (solver)"
+            ]
+        , Test.describe "substitution engine (EngineSubst)"
+            [ StandardTestSuites.expectSuite expectFullyMonomorphicNoCEcoValueSubst "has no type variable in fully monomorphic spec signatures (subst)"
+            ]
         ]

@@ -25,8 +25,12 @@ What the checks establish:
   - `expectCallableMonoNodes`: in the globally optimized graph, a `MonoDefine`
     with a function type has an expression the check counts as callable, and
     a `MonoTailFunc` has a function type.
-  - `expectSpecRegistryComplete`: every SpecId that has an entry in the
-    registry's `reverseMapping` has a node.
+  - `expectSpecRegistryComplete` (MONO\_005): the nodes and the
+    specialization registry agree. Every SpecId with an entry in the
+    registry's `reverseMapping` has a node, and every node has an entry; no
+    two entries are the same specialization (the same global, at types with
+    one spec key); and the registry's `mapping`, when not empty, agrees with
+    `reverseMapping` both ways.
   - `expectMonoGraphClosed`: every SpecId named by a `MonoVarGlobal` in a node
     body has a node, and every `MonoVarLocal` is in scope where it occurs,
     under the scope rules that function's docstring gives.
@@ -37,7 +41,7 @@ What the checks establish:
 The failures a check finds are combined with `Expect.all`, so a failing test
 reports only the first of them.
 
-Among what is not checked: that every node has a registry entry; SpecIds named
+Among what is not checked: SpecIds named
 by the graph's `main`, `flagsDecoder` or `ports` fields; the paths in a case's
 decision tree; and that a `ctorShapes` entry lists all of a type's
 constructors.
@@ -48,6 +52,7 @@ import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Monomorphize.MonoTraverse as MonoTraverse
+import Data.HashMap as HashMap
 import Data.Set as Set exposing (EverySet)
 import Dict
 import Expect
@@ -151,10 +156,17 @@ expectMonoGraphClosed srcModule =
                     Expect.all checks ()
 
 
-{-| Runs `srcModule` through monomorphization and checks that every SpecId
-with an entry in the registry's `reverseMapping` has a node. A node with no
-registry entry is not looked for, and the registry's forward `mapping` is not
-read.
+{-| Runs `srcModule` through monomorphization and checks that the graph's
+nodes and its specialization registry agree (MONO\_005), as
+`collectRegistryChecks` lists.
+
+The graph is the one `runToMono` returns, after the mono-time prune. That
+prune nulls a dead SpecId's node and its `reverseMapping` entry together, so
+both directions of node-to-entry agreement must hold. It also leaves
+`mapping` empty, as both engines do, so on that graph the `mapping` checks
+pass without comparing anything; they bite only on a graph that keeps
+`mapping`.
+
 -}
 expectSpecRegistryComplete : Src.Module -> Expect.Expectation
 expectSpecRegistryComplete srcModule =
@@ -964,8 +976,16 @@ collectSpecIdRefsFromExpr expr =
 -- ============================================================================
 
 
-{-| Returns one failing check for each SpecId with an entry in the registry's
-`reverseMapping` that has no node, in ascending order.
+{-| Returns one failing check for each way the graph's nodes and its
+specialization registry disagree (MONO\_005), in this order:
+
+  - each SpecId with an entry in `reverseMapping` and no node;
+  - each SpecId with a node and no entry in `reverseMapping` (an orphan node);
+  - each SpecId whose `reverseMapping` entry has the same key as an earlier
+    SpecId's entry, so that one specialization has two SpecIds;
+  - each disagreement between `mapping` and `reverseMapping`, when `mapping`
+    is not empty, as `collectMappingChecks` describes.
+
 -}
 collectRegistryChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectRegistryChecks (Mono.MonoGraph data) =
@@ -990,10 +1010,215 @@ collectRegistryChecks (Mono.MonoGraph data) =
         undefinedRegistrySpecIds =
             Set.diff registrySpecIds definedSpecIds
                 |> Set.toList
+
+        orphanNodeSpecIds =
+            Set.diff definedSpecIds registrySpecIds
+                |> Set.toList
     in
     List.map
         (\specId -> \() -> Expect.fail ("Registry contains SpecId " ++ String.fromInt specId ++ " which is not defined in nodes"))
         undefinedRegistrySpecIds
+        ++ List.map
+            (\specId -> \() -> Expect.fail ("Node at SpecId " ++ String.fromInt specId ++ " has no entry in the registry's reverseMapping (" ++ describeNode (Array.get specId data.nodes |> Maybe.andThen identity) ++ ")"))
+            orphanNodeSpecIds
+        ++ collectDuplicateKeyChecks data.registry
+        ++ collectMappingChecks data.registry
+
+
+{-| Returns a short description of a node for a failure message: its kind and
+its type.
+-}
+describeNode : Maybe Mono.MonoNode -> String
+describeNode maybeNode =
+    case maybeNode of
+        Nothing ->
+            "no node"
+
+        Just node ->
+            let
+                kind =
+                    case node of
+                        Mono.MonoDefine _ _ ->
+                            "MonoDefine"
+
+                        Mono.MonoTailFunc _ _ _ ->
+                            "MonoTailFunc"
+
+                        Mono.MonoCtor _ _ ->
+                            "MonoCtor"
+
+                        Mono.MonoEnum _ _ ->
+                            "MonoEnum"
+
+                        Mono.MonoExtern _ ->
+                            "MonoExtern"
+
+                        Mono.MonoManagerLeaf _ _ ->
+                            "MonoManagerLeaf"
+
+                        Mono.MonoPortIncoming _ _ ->
+                            "MonoPortIncoming"
+
+                        Mono.MonoPortOutgoing _ _ ->
+                            "MonoPortOutgoing"
+            in
+            kind ++ " : " ++ Mono.monoTypeToDebugString (Mono.nodeType node)
+
+
+{-| Returns a global as text for a failure message.
+-}
+globalToString : Mono.Global -> String
+globalToString global =
+    case global of
+        Mono.Global _ _ ->
+            Mono.toComparableGlobal global
+
+        Mono.Accessor name ->
+            "." ++ name
+
+
+{-| Returns one failing check for each SpecId whose `reverseMapping` entry is
+the same specialization as a lower SpecId's entry: the same global, and types
+`Mono.eqKeySpec` counts as one spec key (the equality the registry's
+`SpecKeyMap` files entries under). Such a pair is one specialization recorded
+under two SpecIds.
+-}
+collectDuplicateKeyChecks : Mono.SpecializationRegistry -> List (() -> Expect.Expectation)
+collectDuplicateKeyChecks registry =
+    Array.foldl
+        (\maybeEntry ( idx, seen, acc ) ->
+            case maybeEntry of
+                Nothing ->
+                    ( idx + 1, seen, acc )
+
+                Just ( global, monoType ) ->
+                    let
+                        key =
+                            Mono.SpecKey global monoType
+                    in
+                    case Mono.specKeyMapGet key seen of
+                        Just firstId ->
+                            ( idx + 1
+                            , seen
+                            , (\() ->
+                                Expect.fail
+                                    ("Registry gives one specialization two SpecIds: "
+                                        ++ String.fromInt firstId
+                                        ++ " and "
+                                        ++ String.fromInt idx
+                                        ++ " are both "
+                                        ++ globalToString global
+                                        ++ " at "
+                                        ++ Mono.monoTypeToDebugString monoType
+                                    )
+                              )
+                                :: acc
+                            )
+
+                        Nothing ->
+                            ( idx + 1, Mono.specKeyMapInsert key idx seen, acc )
+        )
+        ( 0, Mono.specKeyMapEmpty, [] )
+        registry.reverseMapping
+        |> (\( _, _, acc ) -> List.reverse acc)
+
+
+{-| Returns the failing checks for a disagreement between the registry's
+`mapping` (key to SpecId) and its `reverseMapping` (SpecId to global and type).
+
+A finished graph may carry an empty `mapping`: both engines and `Prune` clear it
+once monomorphization is over, keeping only `reverseMapping`, as the
+`Mono.SpecializationRegistry` docs allow. An empty `mapping` therefore passes.
+A non-empty one must agree with `reverseMapping` both ways:
+
+  - every `mapping` entry names a SpecId whose `reverseMapping` entry has the
+    key's global and a type with the key's spec key, either as recorded or
+    with its lambda sets widened (`Mono.widenSets`; the solver files a
+    specialization under the widened type and records the joined demand
+    type);
+  - no two `mapping` entries name the same SpecId;
+  - every `reverseMapping` entry is found in `mapping`, at its own SpecId,
+    under its recorded type or its widened type.
+
+-}
+collectMappingChecks : Mono.SpecializationRegistry -> List (() -> Expect.Expectation)
+collectMappingChecks registry =
+    let
+        mappingEntries =
+            HashMap.toList registry.mapping
+
+        matches keyType storedType =
+            Mono.eqKeySpec storedType keyType || Mono.eqKeySpec (Mono.widenSets storedType) keyType
+
+        forwardChecks =
+            List.filterMap
+                (\( Mono.SpecKey keyGlobal keyType, specId ) ->
+                    case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
+                        Nothing ->
+                            Just (\() -> Expect.fail ("Registry mapping files " ++ globalToString keyGlobal ++ " under SpecId " ++ String.fromInt specId ++ ", which has no reverseMapping entry"))
+
+                        Just ( storedGlobal, storedType ) ->
+                            if storedGlobal == keyGlobal && matches keyType storedType then
+                                Nothing
+
+                            else
+                                Just
+                                    (\() ->
+                                        Expect.fail
+                                            ("Registry mapping files "
+                                                ++ globalToString keyGlobal
+                                                ++ " at "
+                                                ++ Mono.monoTypeToDebugString keyType
+                                                ++ " under SpecId "
+                                                ++ String.fromInt specId
+                                                ++ ", but reverseMapping records "
+                                                ++ globalToString storedGlobal
+                                                ++ " at "
+                                                ++ Mono.monoTypeToDebugString storedType
+                                            )
+                                    )
+                )
+                mappingEntries
+
+        injectivityChecks =
+            List.foldl
+                (\( _, specId ) ( seen, acc ) ->
+                    if Set.member identity specId seen then
+                        ( seen, (\() -> Expect.fail ("Registry mapping files two keys under SpecId " ++ String.fromInt specId)) :: acc )
+
+                    else
+                        ( Set.insert identity specId seen, acc )
+                )
+                ( Set.empty, [] )
+                mappingEntries
+                |> Tuple.second
+                |> List.reverse
+
+        reverseChecks =
+            Array.toIndexedList registry.reverseMapping
+                |> List.filterMap
+                    (\( idx, maybeEntry ) ->
+                        case maybeEntry of
+                            Nothing ->
+                                Nothing
+
+                            Just ( global, monoType ) ->
+                                let
+                                    found t =
+                                        Mono.specKeyMapGet (Mono.SpecKey global t) registry.mapping == Just idx
+                                in
+                                if found monoType || found (Mono.widenSets monoType) then
+                                    Nothing
+
+                                else
+                                    Just (\() -> Expect.fail ("reverseMapping SpecId " ++ String.fromInt idx ++ " (" ++ globalToString global ++ " at " ++ Mono.monoTypeToDebugString monoType ++ ") is not filed under that SpecId in the registry mapping"))
+                    )
+    in
+    if HashMap.isEmpty registry.mapping then
+        []
+
+    else
+        forwardChecks ++ injectivityChecks ++ reverseChecks
 
 
 {-| Returns the SpecIds that have an entry in `registry`'s `reverseMapping`,

@@ -36,8 +36,13 @@ namespace detail {
 // Type Converter
 //===----------------------------------------------------------------------===//
 
-/// Type converter that converts eco.value to ptr addrspace(1) (GC-managed pointer).
-/// Implements CGEN_012: MInt->i64, MFloat->f64, MBool->i1, MChar->i32, others->eco.value->ptr<1>.
+/// Type converter for the Eco -> LLVM lowering. Primitive operands pass
+/// through unchanged: Int -> i64, Float -> f64, Char -> i16 (REP_ABI_001).
+/// `i1` appears only for Bool in SSA control flow (REP_SSA_001); Bool is
+/// never `i1` in heap, closure or ABI positions. Every other value is
+/// `!eco.value`, which lowers to `ptr addrspace(1)` (GC-managed HPointer).
+/// Value-level aggregate types lower to LLVM literal structs of their
+/// converted element types (REP_AGG_001).
 class EcoTypeConverter : public mlir::LLVMTypeConverter {
 public:
     explicit EcoTypeConverter(mlir::MLIRContext *ctx);

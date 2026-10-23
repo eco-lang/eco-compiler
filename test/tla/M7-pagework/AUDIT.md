@@ -300,7 +300,7 @@ file    -  test/gc-helper-tsan/harness.cpp         -  M7
 `PageWork.cpp` needs a census pin now: its trace-only stamp counter (`std::atomic`, `fetch_add`)
 is a concurrency line the census regex matches, even though it is compiled out.
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 44 pins
 name this model (9 census, 6 file, 6 grep, 23 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -382,7 +382,7 @@ Quick tier after the change: `run_models.py --model M7 --jobs 2 --workers 2
 reject). No canary pin changed (no code change).
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: OGS.lazySweep (3019e316a801), NT.TenureParEnv (53fc7d8f27b8), census Allocator.hpp (bedee6e4aa91), greps F.promoMu (2da021596e6c), F.threadMutex (e1f93bebd039), F.pageWorkCalls (8f281f438097), F.oldGenFreeBlocks (9df02db9364c), F.setThreadHeap (01d12addfaca).
 
@@ -413,7 +413,7 @@ Accessor text and a trace-only probe only. The new CR-007 guard reproduces M7's 
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
 
@@ -425,7 +425,7 @@ step, lock, shared location or memory order changes.
 
 M7 models the page supply (`acquireOldGenBlock` via `ensureBagPageAvailable`, and the tail-completion release route); the carve change runs after the page is acquired and touches no page-work state, lock or counter. **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M7: region `OGS.allocatePromotion` (**9551468c0f86**: CR-002's rung-2 rewrite — an unswept-block head is finalized before the unlock, the batch peeks; PM8), region `OGS.lazySweep` (**b033f3f0c837**: CR-014's `completeSweep` for both completions, CR-028's deferred V11), census `OldGenSpace.cpp` (**2afe7bc4cf4d**).
 
@@ -433,7 +433,7 @@ Change that matters to M7: CR-014's fix closes the release route from the tail c
 
 **Verdict: MAPPING.md updated; no model change needed.**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.lazySweep`, new hash prefix **6066819cec59**.
 
@@ -450,7 +450,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 M7 models the page supply and the release routes; the sweep's header reads acquire, release and wait for nothing. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (test/tla/README.md "The canary")
 
 Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**), region `AL.acquireOldGenRegion` (**31cefe0c2ae5**), census `Allocator.cpp` (**88ca56595b84**), census `Allocator.hpp` (**1936ebd9fe0e**), grep `F.threadMutex` (**ac671f10dc1d**), grep `F.pageWorkCalls` (**cc75623b8fe3**: the new `onFreshBump` caller).
 
@@ -468,7 +468,7 @@ leaf (it calls nothing).
 
 The new `onFreshBump` call in `acquireOldGenRegion` runs under `thread_mutex_` like every PageWork call and is a fresh bump at the bump pointer, i.e. M7a's `M_Choose` fresh branch (owner fresh → heap, never waits, never re-maps the window): the code now matches the model's HEAP_060 claim on this route instead of contradicting it. The in-use counter is not a PageWork input. MAPPING.md: `M_Choose` (fresh) row names the route; the `thread_mutex_` row and "outside the model" record that several heaps are forbidden by HEAP_007 (opt-in only) and that CR-012(d) is fixed. The TracePageWork harness drives PageWork standalone (no Allocator), so no trace changes. **Verdict: no model change needed; MAPPING.md updated.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: file `PageWork.hpp` (**681db7309a0a**), file `PageWork.cpp` (**3b5ca6feb509**), file `test/gc-helper-tsan/harness.cpp` (**f3f06ed92a5e**), regions `OGS.allocateFromBagPage` (**8707d299ec96**), `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**), `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**), `AL.acquireOldGenBlock` (**58fd49f66454**), greps `F.pageWorkCalls` (**9c2d8130d065**), `F.oldGenFreeBlocks` (**aa1d3a2debd5**).
 
@@ -522,7 +522,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 no-wait `M_Choose` row, `P_Pick`, §4 route note, §6 invariants, §10 trace, A5).**
 
 
-## 2026-10-01 — register-fixes Phase 5: no teardown under thread_mutex_, the fork prepare order (HEAP_075) (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: no teardown under thread_mutex_, the fork prepare order (HEAP_075) (test/tla/README.md "The canary")
 
 Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**); new file and census pins `GCFork.cpp`; regions `AL.onGCPauseEnd` (**21aae9bc0c5a**), `AL.cleanupThread` (**b3491e1c948b**), `AL.finishTenureForExit` (**1eb1d4117cf9**); censuses `Allocator.cpp` (**98ff871fcd48**), `Allocator.hpp` (**12959cd0b43c**), `GCHelperPool.cpp` (**98e0cc199b0b**), `GCHelperPool.hpp` (**297cf886ba5a**); greps `F.threadMutex` (**6cdf9fdc0767**), `F.setThreadHeap` (**792561bbb51f**).
 
@@ -568,7 +568,7 @@ call still runs under `thread_mutex_`; the pool's `post` only moved its CAS into
 section (workers still take only `m_`). The new trace-only probe `m6.tm.held` in `onGCPauseEnd` fires
 under `thread_mutex_` and changes no step. **Verdict: model updated (LockOrder, MAPPING.md).**
 
-## 2026-10-01 — frontend-heap-release P1: DiscardAllPending, the explicit release's drainAll(true) (GC_MODEL_001)
+## 2026-10-01 — frontend-heap-release P1: DiscardAllPending, the explicit release's drainAll(true) (test/tla/README.md "The canary")
 
 Pins fired: census `Allocator.cpp` (**7d5d75af1902**), grep `F.threadMutex` (**00cb061f21bd**): four new
 `thread_mutex_` lock_guards. New pin: region `AL.releaseDiscard` (M6, M7). `PageWork.{hpp,cpp}` (file pins)
@@ -599,7 +599,7 @@ its ghost, so GC_DET_001's `DetChoice` is untouched: `drainAll(true)` empties `p
 1 and 2). LockOrder (M7b) is unchanged: the drain adds no edge beyond the existing `thread_mutex_` → pool
 `m_`. **Verdict: model updated (PageWork.tla, MAPPING.md, models.txt).**
 
-## 2026-10-05 — Windows build: the probe page's alignment under _WIN32 (GC_MODEL_001)
+## 2026-10-05 — Windows build: the probe page's alignment under _WIN32 (test/tla/README.md "The canary")
 
 Pin fired: file `PageWork.cpp` (**6a3a3b932b3a**).
 
@@ -613,7 +613,7 @@ memory order was added, removed or reordered. The six added lines move every lat
 (`runJob` is cited at `:50-63` and sat at `:65`) and are left as they are. **Verdict: no model change
 needed.**
 
-## 2026-10-05 — Windows link: the probe page's alignment under _WIN32 is 4096 (GC_MODEL_001)
+## 2026-10-05 — Windows link: the probe page's alignment under _WIN32 is 4096 (test/tla/README.md "The canary")
 
 Pin fired: file `PageWork.cpp` (**2dc7a9205c9a**).
 
@@ -624,7 +624,7 @@ before, the probe is one `ops_.populate` call in the constructor, before any job
 page no other thread touches; MAPPING.md maps no step to it, and no atomic step, lock, shared location
 or memory order changed. **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 

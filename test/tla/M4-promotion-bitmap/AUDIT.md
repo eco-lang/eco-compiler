@@ -437,7 +437,7 @@ file    -  runtime/src/allocator/BitmapScan.hpp   -                             
 file    -  test/gc-heap-tsan/promo_sweep.cpp      -                               M4
 ```
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 62 pins
 name this model (3 census, 4 file, 15 grep, 40 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -517,7 +517,7 @@ scratch), which needs more promotions after the release than the model allows.
   in NDEBUG builds). Another CR-014 consequence; not modelled (one class of blocks).
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: OGS.lazySweep (3019e316a801), file promo_sweep.cpp (d7dbcbdf5c41), greps F.parPromoActive (dd3dd6ba15de), F.promoMu (2da021596e6c).
 
@@ -548,7 +548,7 @@ The counter is stats-only and adds no step to M4's sweep or completion actions (
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes §3.1: CR-033 fixed (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.1: CR-033 fixed (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.allocateFromBagPage`, new hash prefix **8e85cd8f9aa1**.
 
@@ -560,7 +560,7 @@ step, lock, shared location or memory order changes.
 
 M4 models the bag rung as one step of the locked ladder (`W_Virgin`'s else-branch); the carve's header layout is not state in M4. The rung still runs under `promo_mu_` exactly as before. **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes §3.2: CR-018 fixed, CR-001's S1 half closed (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed, CR-001's S1 half closed (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.initObjectHeaderWithSize` (**2d1af3f18a67**), region `OGS.finalizePoppedCellW`
 (**26356efabd55**), grep `P6.M16` (**dff5ec5a9d43**: the new plain owner add
@@ -591,7 +591,7 @@ block's `liveBytes` by `cnt` = `IdleCounts`. Runs: M4 quick 47/47 as expected; `
 
 **Verdict: model updated.**
 
-## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (GC_MODEL_001, one audit)
+## 2026-09-30 — register-fixes §3.3 + §3.4: CR-035 and CR-016 fixed (test/tla/README.md "The canary", one audit)
 
 Pins fired: region `OGS.allocateFromEmptyRegularBlocks` (**241b815c0313**), grep `P6.M9`
 (**cc48c7eb8f67**: the flip's `retireIndexRange` loop over `large_body_index_` and its validate
@@ -619,7 +619,7 @@ row updated.
 
 **Verdict: model updated.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M4: file `test/gc-heap-tsan/promo_sweep.cpp` (**4f6ac56ce006**: the det arms' path
 witness is now `sweep_tail_in_promotion`, det-cr002's message), regions `OGS.finalizePoppedCellW`
@@ -676,7 +676,7 @@ P6.M6, §6 contracts, A4, A5, A6, §8 events).
 
 **Verdict: model updated.**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.lazySweep`, new hash prefix **6066819cec59**; new census pin `AllocatorCommon.hpp`.
 
@@ -693,7 +693,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 M4 models the gap sweep's step over a live object as reading that object's size (`W_SweepStep`); it never modelled the header word's other bits or a concurrent YLOS writer. The step now comes from one relaxed atomic load instead of a plain read; the size, the bit clear and the order of the trace events (`m4.sw` carries the same `end` value, computed from the same step) are unchanged. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.allocateFromBagPage` (**8707d299ec96**), grep `F.parPromoActive` (**4bd31a55ef87**: the new `acquireWaitPolicy()` reads `par_promo_active_` and `promo_ctx_->n`).
 
@@ -714,7 +714,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 `acquireWaitPolicy()` reads `par_promo_active_` / `promo_ctx_->n` where the CR-016 test already does (under `promo_mu_` or before the workers start); M4 models the page source abstractly (`W_Virgin` / `W_Large` take "a fresh block"), so which extent the allocator returns is invisible to it. **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: owner check at minorGC entry (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: owner check at minorGC entry (test/tla/README.md "The canary")
 
 Pins fired: region `TLH.minorGC` (**896f924a1e35**).
 
@@ -741,7 +741,7 @@ event's `refused` field and an M1 `stop` after a refused launch.
 `TLH.minorGC` gained only a validate-only `assertOwner("minorGC")` before the pause starts (HEAP_007 /
 CR-031). No promotion, sweep or bitmap step changes. **Verdict: no model change needed.**
 
-## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (GC_MODEL_001)
+## 2026-10-01 — frontend-heap-release P1: explicit release, ShrinkPass::Forced (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.onSweepComplete` (**fecf4917088c**), `OGS.maybeShrinkCapacity` (**16f2d7bb56c4**).
 New pin: region `TLH.majorGCAndShrink` (M1, M4, M8).
@@ -764,7 +764,7 @@ no minor and no gang is running: the CR-014 tripwire cannot fire); that is the m
 granted `kAllocTenure` blocks skipped). No atomic, lock, shared location or memory order was added; the
 F.gc_phase and F.allocTenure greps are unchanged. **Verdict: no model change needed.**
 
-## 2026-10-05 — macOS build: BufferMetadata::live_bytes declared uint64_t (GC_MODEL_001)
+## 2026-10-05 — macOS build: BufferMetadata::live_bytes declared uint64_t (test/tla/README.md "The canary")
 
 Pin fired: grep `P6.M16` (**2be50684b09d**): `size_t live_bytes;` became `uint64_t live_bytes;` in
 `BlockTable.hpp`.
@@ -775,7 +775,7 @@ accesses: relaxed `atomic_ref<uint64_t>` adds outside `promo_mu_` (`initObjectHe
 now matches the `atomic_ref`'s on every platform; on Linux it already did. No atomic step, lock, shared
 location or memory order changed. **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 
@@ -783,7 +783,7 @@ Pins fired: regions `OGS.allocateFromEmptyRegularBlocks` (**01961268bb26**), `OG
 
 LOS blocks never enter M4's paths: they are never `Current`/`Queued`/tenure-granted, never on `partial_` or a free list, born and kept `fully_swept` (the sweep and its slices under `promo_mu_` skip them), and the flip and shrink now skip them explicitly (`los != 0`). A promotion never allocates an LOS cell (nursery placement is capped at the largest uniform class). `lazySweep`'s legacy is_large arm no longer reads a raw block's header (a branch the bitmap-mode model does not take). The census/P6.M16/F.parPromoActive lines are `attributeNewCell`'s, a mutator-only copy of `initObjectHeaderWithSize`'s live-bytes add (atomic when `par_promo_active_`, as there). **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/region-nursery-everywhere.md: promo_sweep keeps the legacy nursery, explicitly (GC_MODEL_001)
+## 2026-10-09 — plans/region-nursery-everywhere.md: promo_sweep keeps the legacy nursery, explicitly (test/tla/README.md "The canary")
 
 Pin fired: file `test/gc-heap-tsan/promo_sweep.cpp` (**1b739c760ed8**).
 

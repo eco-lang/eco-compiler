@@ -129,7 +129,7 @@ type alias AbiCloningStats =
     , declinedShapeChar : Int
     , declinedShapeNonArrow : Int
     , declinedAbiMismatch : Int
-    , declinedBodyMismatch : Int -- LSS_024 F fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
+    , declinedBodyMismatch : Int -- Fingerprint fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
 
     -- E9.5 + lss-lpartial counters bundled in ONE field: the flat stats
     -- record sits at the 32-slot GC-scan cap (the Engine.S lesson) — a
@@ -148,7 +148,7 @@ type alias AbiCloningStats =
     -- interchangeable. Expect this to be small; every one is a site that
     -- needs the reference's own spec carried through the member origin.
     , devirtPost : { fn : Int, ctor : Int, noSpec : Int, partialDeclined : Int, ambiguous : Int }
-    , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and under LSS_024 annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
+    , multiInstanceGroups : Int -- layout groups holding ≥2 distinct lambdaIds. A MONITORING DELTA, not a zero-gate (amended LSS_017 reading): MonoInlineSimplify mints fresh lambdaIds for verbatim inline copies, and with layout-qualified members annotation-only clones legitimately join one group — the representative premise is discharged by fingerprint unanimity, not by this count.
 
     -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
     -- questions). Stats-only — never touches the graph; the maps are
@@ -253,7 +253,7 @@ type alias LayoutGroup =
     , unanimous : Bool
     , charFree : Bool
     , multi : Bool -- ≥2 DISTINCT lambdaIds joined this group (monitoring — see multiInstanceGroups; the stamp license is unanimous && fpUnanimous, never this flag)
-    , fpUnanimous : Bool -- LSS_024: every instance's fingerprint equals rep's (trivially True single-instance; sticky False). The fence that consumes it was `lss.layoutQualMembers`-gated until 2026-09-18 and is unconditional now; the four measured non-verbatim multi-group stamps it declines are the recorded flip delta, see the fence note on abiCloningPass.
+    , fpUnanimous : Bool -- Fingerprint fence: every instance's fingerprint equals rep's (trivially True single-instance; sticky False). The fence that consumes it was `lss.layoutQualMembers`-gated until 2026-09-18 and is unconditional now; the four measured non-verbatim multi-group stamps it declines are the recorded flip delta, see the fence note on abiCloningPass.
     , repFp : Maybe String -- rep's fingerprint, memoized at the first multi join that needs it
     , count : Int -- P0 census only (plans/lss-instance-qualified-members.md §2.1): instances joined into this group. Never consulted by stamping.
     }
@@ -264,8 +264,8 @@ type alias Instance =
     , captureTypes : List Mono.MonoType
     , paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
-    , info : Mono.ClosureInfo -- LSS_024 F fence: closure header reference for the lazy fingerprint
-    , body : Mono.MonoExpr -- LSS_024 F fence: body reference for the lazy fingerprint
+    , info : Mono.ClosureInfo -- Fingerprint fence: closure header reference for the lazy fingerprint
+    , body : Mono.MonoExpr -- Fingerprint fence: body reference for the lazy fingerprint
 
     -- LSS_031: `Just specId` when this instance is a NODE-TOP-LEVEL closure —
     -- one that `Functions.generateNode` emits under
@@ -580,13 +580,11 @@ joinGroup inst groups =
                     { g | unanimous = g.unanimous && sameCaptureLayout g.rep inst, count = g.count + 1 } :: rest
 
                 else
-                    -- LSS_024 F fence: a DISTINCT lambdaId joined. Maintain
-                    -- fingerprint unanimity LAZILY, and only when the fence
-                    -- is ON: both flags are sticky-False and only consulted
-                    -- together (a stamp needs unanimous && fpUnanimous), so
-                    -- once either is False the serialization is skipped
-                    -- entirely; fence off, fpUnanimous stays True and the
-                    -- pass behaves exactly as before LSS_024.
+                    -- Fingerprint fence: a DISTINCT lambdaId joined. Maintain
+                    -- fingerprint unanimity LAZILY: both flags are
+                    -- sticky-False and only consulted together (a stamp
+                    -- needs unanimous && fpUnanimous), so once either is
+                    -- False the serialization is skipped entirely.
                     let
                         uni1 =
                             g.unanimous && sameCaptureLayout g.rep inst
@@ -2374,7 +2372,7 @@ resolveRepresentative calleeType argCount memberInfo =
                             -- stage — a flat multi-stage call. If an instance
                             -- matches the site's FIRST stage exactly (params +
                             -- return, layout-wise), the runtime callee IS that
-                            -- instance (LSS_009) and applying
+                            -- instance and applying
                             -- |inst.paramTypes| args saturates the instance's
                             -- own stage — stamp batch 1; emission applies the
                             -- remainder generically to the intermediate.
@@ -2416,7 +2414,7 @@ resolveInGroups fargs fret argCount groups memberInfo =
                     Stamp g.rep
 
                 else
-                    -- LSS_024 F fence: same-layout clones with divergent
+                    -- Fingerprint fence: same-layout clones with divergent
                     -- verbatim bodies (the E11 class) — never stamp.
                     Decline "bodyMismatch" bumpBodyMismatch
 
@@ -3169,7 +3167,7 @@ bumpBodyMismatch ctx =
 
 
 -- ============================================================================
--- ====== LSS_024 FINGERPRINT (the F fence serializer) ======
+-- ====== FINGERPRINT (the fingerprint fence serializer) ======
 -- ============================================================================
 
 
@@ -3233,7 +3231,7 @@ fpName name ( acc, ctx ) =
 type alias FpCtx =
     { lamMap : Dict Int Int -- own lambdaId uid -> position (first-encounter order)
     , nextLam : Int
-    , nameMap : Dict String Int -- LOCAL names -> position (first-encounter order). MonoInlineSimplify freshens let-bound names in verbatim inline copies (freshenLetBoundNames), so local names — binders AND references — must compare positionally or every inliner copy false-mismatches (measured: 163 lost flag-off stamps). Semantic names (record fields, ctors, globals, kernels) stay verbatim. Aliasing capture-expr OUTER references across copies is sound: captures are per-object runtime VALUES loaded from the actual object — LSS_009's capture-layout unanimity is the gate for those, not the fingerprint.
+    , nameMap : Dict String Int -- LOCAL names -> position (first-encounter order). MonoInlineSimplify freshens let-bound names in verbatim inline copies (freshenLetBoundNames), so local names — binders AND references — must compare positionally or every inliner copy false-mismatches (measured: 163 lost flag-off stamps). Semantic names (record fields, ctors, globals, kernels) stay verbatim. Aliasing capture-expr OUTER references across copies is sound: captures are per-object runtime VALUES loaded from the actual object — AbiCloning's capture-layout unanimity is the gate for those, not the fingerprint.
     , nextName : Int
     }
 

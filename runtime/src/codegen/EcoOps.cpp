@@ -58,6 +58,39 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
     if (failed(verifySymRef(*this, fast, symbolTable, "fast evaluator")))
       return failure();
 
+  // CGEN_CLOSURE_005: a typed papExtend stamped with `_fast_evaluator` and
+  // `_capture_abi` is lowered (emitFastClosureCall) by loading one value slot
+  // per `_capture_abi` entry at that type and calling the fast clone with
+  // (captures..., newargs...). So the `_capture_abi` types must equal the
+  // fast clone's leading parameter types, element for element; otherwise the
+  // mismatch surfaces only as an LLVM signature error, or as a capture read
+  // at the wrong kind. Checked when the clone is a func.func in this module.
+  if (getRemainingArityAttr()) {
+    auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+    auto captureAbi = getOperation()->getAttrOfType<ArrayAttr>("_capture_abi");
+    if (fast && captureAbi) {
+      if (auto clone = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, fast)) {
+        auto inputs = clone.getFunctionType().getInputs();
+        if (captureAbi.size() > inputs.size())
+          return emitOpError("CGEN_CLOSURE_005: _capture_abi has ")
+                 << captureAbi.size() << " entries but fast evaluator '"
+                 << fast.getValue() << "' has only " << inputs.size()
+                 << " parameters";
+        for (auto [i, attr] : llvm::enumerate(captureAbi)) {
+          auto typeAttr = dyn_cast<TypeAttr>(attr);
+          if (!typeAttr)
+            return emitOpError("CGEN_CLOSURE_005: _capture_abi entry ")
+                   << i << " is not a type: " << attr;
+          if (typeAttr.getValue() != inputs[i])
+            return emitOpError("CGEN_CLOSURE_005: _capture_abi entry ")
+                   << i << " has type " << typeAttr.getValue()
+                   << " but fast evaluator '" << fast.getValue()
+                   << "' expects " << inputs[i] << " at parameter " << i;
+        }
+      }
+    }
+  }
+
   // CGEN_003: a typed papExtend's real newargs fill evaluator params, so their
   // SSA types must be the target func.func's param types (the closure's slot
   // kinds for uncaptured params come from that signature, and EcoPAPSimplify

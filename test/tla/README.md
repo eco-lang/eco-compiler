@@ -272,11 +272,17 @@ invocation runs once, and its rows (the `accept` row and the negative controls) 
   a cycle (the bitmap is not the allocation record then), so M1's driver reads the marks with a
   probe at the tail, where they are the liveness decision.
 
-## The canary (`tla-canary`, GC_MODEL_001)
+## The canary (`tla-canary`)
 
 A model that passes says nothing once the code it describes has changed. The canary pins the code
-each model covers, and fails the build when that code changes (parent plan §7). It runs in `ALL`
-(every `cmake --build build`), needs only `sh`, `awk` and `sha256sum`, and takes about a second.
+each model covers, and reports when that code changes (parent plan §7; warn-only by default, see
+below). It runs in `ALL` (every `cmake --build build`), needs only `sh`, `awk` and `sha256sum`, and
+takes about a second.
+
+**The rule:** every pin in `manifest.txt` matches the code it pins, and every hash change is
+justified by an AUDIT.md entry in every model that names it. When the canary fires, investigate the
+models it names first; never just repair the hash. This section is the rule's only home (until 2026-10-23
+it was also a row of `design_docs/invariants.csv`).
 
 **Files:**
 - `manifest.txt`: one pin per line, `<kind> <sha256> <path> <id> <models>`:

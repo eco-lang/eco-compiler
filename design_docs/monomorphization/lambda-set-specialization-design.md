@@ -1175,7 +1175,7 @@ params; annotation-only differences cannot change behavior (LSS_005) —
 and `computeClosureCaptures` is a deterministic function of the body, so
 all survivors share one capture slot order. Calling copy A's fast clone
 on an object created at copy B's site is therefore exactly equivalent.
-Recorded as **LSS_009** (§12).
+Recorded as **LSS_009 (row since removed)** (§12).
 
 ### 9.3 Pass ordering — AbiCloning runs after Staging
 
@@ -1461,7 +1461,7 @@ semantics. Every knob's fallback is the fully-implemented `LTop` pipeline.
   consumes; a wrapper hiding its provenance under `srcLambda = Nothing`
   while the annotation still names m re-establishes false uniqueness and
   licenses a wrong `Known` stamp (§9.3).
-- **LSS_009 (lands with M3.5)** — AbiCloning may stamp a *representative*
+- **LSS_009 (row since removed) (lands with M3.5)** — AbiCloning may stamp a *representative*
   instance over several only when every one is a verbatim copy of the
   member (directly `srcLambda`-stamped, `lambdaId` home a real module —
   mono / inliner / local-multi producers), filtered to the call site's

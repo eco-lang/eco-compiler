@@ -172,11 +172,8 @@ kernelFuncSignatureFromType funcType =
 
 
 
--- The KernelBackendAbiPolicy type and the kernelBackendAbiPolicy lookup table
--- now live in Compiler.Monomorphize.KernelAbi as part of the per-instance
--- kernel ABI rollout (see plans/per-instance-kernel-abi.md, Phase A).
--- Callers should use KernelAbi.AllBoxed / KernelAbi.ElmDerived /
--- KernelAbi.kernelBackendAbiPolicy directly.
+-- The KernelBackendAbiPolicy type and kernelBackendAbiPolicy live in
+-- Compiler.Generate.MLIR.KernelAbi. Its only policy is ElmDerived (KERN_006).
 
 
 {-| Check if a core module function has a kernel implementation to fall back to

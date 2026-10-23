@@ -292,7 +292,7 @@ fork stops and joins.
   The hooks sit inside functions M1's A9 row lists; a pin taken before them sees them as a change.
 - The weak-memory companions W3/W4: see MAPPING.md §7.
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 69 pins
 name this model (8 census, 3 file, 19 grep, 39 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -403,7 +403,7 @@ Register: the stale-grey reuse is a new consequence of CR-017, reported to the o
 candidate entry. It flips to `pass` together with `MC_quick_region` in CR-017's fix.
 
 
-## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (test/tla/README.md "The canary")
 
 New hash prefixes: 3c350fb64616 (`NR.minorGCRegion`), dbff5f1887fb (grep H8).
 
@@ -440,7 +440,7 @@ M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep ro
 state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
 135/135 as expected in 140 s.
 
-## 2026-09-30 — register-fixes §3.2: CR-018 fixed, live_bytes counted in every phase (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.2: CR-018 fixed, live_bytes counted in every phase (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.initObjectHeaderWithSize` (new hash prefix **2d1af3f18a67**), region
 `OGS.finalizePoppedCellW` (new hash prefix **26356efabd55**).
@@ -457,7 +457,7 @@ writes `live_bytes` outside that window differently. A negative-control flag
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M1: region `OGS.finalizePoppedCellW` (**4d8b93453093**), region `OGS.finalizeBitmapCellW` (**296d0825c9c5**), Census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: the relaxed `std::atomic_ref<GCPhase>(gc_phase_)` store in `lazySweep`'s `completeSweep` and the relaxed loads in `finalizePoppedCellW`, `finalizeBitmapCellW` and the validate-only PM8 check) and census `runtime/src/allocator/OldGenSpace.hpp` (**493c238780a8**: `static_assert(std::atomic_ref<GCPhase>::is_always_lock_free)`).
 
@@ -465,7 +465,7 @@ Change: the two promotion finalizers read `gc_phase_` with a relaxed `atomic_ref
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 3 (§5.2): CR-017 fixed, model first (HEAP_074; GC_MODEL_001)
+## 2026-09-30 — register-fixes Phase 3 (§5.2): CR-017 fixed, model first (HEAP_074; test/tla/README.md "The canary")
 
 Pins fired for M1: region `TLH.majorGC` (**dde8f0dcca5e**), region `NT.mergeJob` (**2892c92bf479**),
 and the new region pin `NR.zapDeadAfterMajor` (M1, M5; added with `-`, hash filled by `--update`).
@@ -491,7 +491,7 @@ mark did not reach = `NR.zapDeadAfterMajor` over `nursery_visited_`), and `zombi
 **Verdict: model updated (J_STW zap), MAPPING.md updated (J_STW row, region-mode row, the lemma note,
 canary pin `NR.zapDeadAfterMajor`).**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.promoteYoungLarge`, new hash prefix **ab64ef2a56ee**.
 
@@ -508,7 +508,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 M1 reads no YLOS header bit (its snapshot keys on the mark bitmap and the body index); the age write is the same value change as before, now one atomic word store. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.releaseBlockToAllocator` (**2dc05c9c0440**), `OGS.releaseUnassignedBlockToAllocator` (**b1038520c58f**).
 
@@ -529,7 +529,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 Only a validate-only abort was added at the top of the two release functions (no release inside a parallel promotion with n > 1, already true since CR-014/CR-016). Nothing M1 models changes. **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: fork, exit and gangs (CR-003/004/005/013/015/023/031/032) (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: fork, exit and gangs (CR-003/004/005/013/015/023/031/032) (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.afterSnapshot` (**3bea1fd891bb**), `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**); census `P1Census.cpp` (**ce0924594df0**); grep `F.bgEp` (**add33fc189d1**).
 
@@ -565,7 +565,7 @@ gained a fork layer (a mutex held across fork, a flag set in the child): no cens
 `TLH.minorGC` / `majorGC` gained a validate-only owner check at entry. **Verdict: no model change
 needed (trace projection extended for refusals).**
 
-## 2026-10-01 — frontend-heap-release P1: new pin TLH.majorGCAndShrink (GC_MODEL_001)
+## 2026-10-01 — frontend-heap-release P1: new pin TLH.majorGCAndShrink (test/tla/README.md "The canary")
 
 New pin (no hash fired in M1): region `TLH.majorGCAndShrink` (M1, M4, M8).
 
@@ -577,7 +577,7 @@ point to the end of the outer pause, and the sweep-to-Idle and the forced shrink
 no cycle active (`finishSweepForRelease` aborts if one is). Nothing in M1's mark cycle (t0 snapshot,
 slices, handoff, join) changes. **Verdict: no model change needed.**
 
-## 2026-10-04 — remove-cellstore: F.externalRoots loses the CellStore scanner (GC_MODEL_001)
+## 2026-10-04 — remove-cellstore: F.externalRoots loses the CellStore scanner (test/tla/README.md "The canary")
 
 Fired: grep `F.externalRoots` (M1), new hash prefix 631d334f9bcf.
 
@@ -592,7 +592,7 @@ ports, Http, Time), so only comments change: the CellStore mentions in `Snapshot
 `M5-tenuring/Tenuring.tla`'s `Roots` comment. **Verdict: no model change needed.**
 
 
-## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (test/tla/README.md "The canary")
 
 Pins fired: none (unpinned shared walkers HeapChildWalk / NurseryChildWalk / OldGenSpace
 scanChildren / NurserySpace scanObject). Voluntary entry (plans/wide-object-tail-kind-words.md §5).
@@ -607,7 +607,7 @@ caps; builder asserts). **Verdict: no model change needed.**
 The mark pass (`OldGenSpace` scanChildren) and the compaction fix pass use the same accessors, so
 they still visit exactly the same slots.
 
-## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (test/tla/README.md "The canary")
 
 Pins fired: census `runtime/src/allocator/RuntimeExports.cpp` (**7b4ec951a253**).
 
@@ -627,7 +627,7 @@ a frozen object and visit exactly the slots below n_values, as before. Object si
 function of the header word alone. No atomic, lock or memory order is added on a GC path.
 **Verdict: no model change needed.**
 
-## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (GC_MODEL_001)
+## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (test/tla/README.md "The canary")
 
 No pin fired; voluntary entry (unpinned walkers HeapChildWalk / OldGenSpace scanChildren and the
 compaction fix pass, plans/wide-object-tail-kind-words.md §5).
@@ -649,7 +649,7 @@ validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 
 **Verdict: no model change needed.**
 
-## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (GC_MODEL_001)
+## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (test/tla/README.md "The canary")
 
 Pin `F.externalRoots` (grep) moved, new hash prefix `5a5733b39b1c`. The kernel C++ directory was
 renamed so it no longer collides with `src/Eco` on case-insensitive filesystems. The grep still finds
@@ -659,7 +659,7 @@ registration changed.
 
 **Verdict: no model change needed.**
 
-## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (GC_MODEL_001)
+## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.runCycleStepConcurrent` (**d618e7fcb354**).
 
@@ -674,7 +674,7 @@ to `P_Decide`, "a decision with no shared reads" (IM16); its inputs and its resu
 
 **Verdict: no model change needed.**
 
-## 2026-10-06 — generic-call reason census counters in RuntimeExports.cpp (GC_MODEL_001)
+## 2026-10-06 — generic-call reason census counters in RuntimeExports.cpp (test/tla/README.md "The canary")
 
 Census pin `runtime/src/allocator/RuntimeExports.cpp` moved, new hash prefix `2e8487fd3e9f`
 (plans/staging-honesty-and-production-test-pipeline.md P0.4). Added `g_gencall_counts`, a private
@@ -686,7 +686,7 @@ or lock is read or written, and no ordering is relied on.
 
 **Verdict: no model change needed.**
 
-## 2026-10-07 — process exit code and main-thread record in RuntimeExports.cpp (GC_MODEL_001)
+## 2026-10-07 — process exit code and main-thread record in RuntimeExports.cpp (test/tla/README.md "The canary")
 
 Census pin `runtime/src/allocator/RuntimeExports.cpp` moved, new hash prefix `e6ce850a9a95`
 (plans/eco-system-library.md Phase 2 steps 2.2 and 2.7). Added `g_eco_exit_code`, a process-wide
@@ -700,7 +700,7 @@ release/acquire pair only orders the plain `pthread_t` store for the reader.
 
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 
@@ -710,7 +710,7 @@ Re-audit against MAPPING. `greyObject`: after `testAndSetMark` a raw block's obj
 
 Also fired in the same run, from an unrelated change (the 2026-10-09 tree sync, not plans/large-object-space.md): grep `F.vnodeRegistry` (**e3b0c44298fc**, the empty match: every line removed). The pinned footprint is the latent unregistered store `static std::vector<VNodePtr> vnodeRegistry` in `elm-kernel-cpp/src/virtual-dom/VirtualDom.cpp`, which the sync deleted (the virtual-dom kernels are now `HtmlWriter.cpp`, `VirtualDomExports.cpp`, `XssFilters.cpp`). Checked: none of them keeps a namespace-scope or static mutable container (grep of `elm-kernel-cpp/src/virtual-dom/*.cpp` for static/namespace-scope stores: none), so no off-heap store of heap values replaced it. A removed store cannot hide a root. **Verdict: no model change needed** (the grep now pins the absence).
 
-## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (GC_MODEL_001)
+## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (test/tla/README.md "The canary")
 
 Pin fired: region `NT.mergeJob` (**cce0534231b1**).
 

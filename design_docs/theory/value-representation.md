@@ -132,7 +132,7 @@ Each seam has one conversion, and code generation decides whether to apply it by
 | SSA aggregate to heap and back | `eco.to_heap`, `eco.from_heap` | `eco.to_heap` allocates the heap object |
 | LLVM storage | `ptrtoint` and `inttoptr` | none; they appear only inside named helpers |
 
-The LLVM storage helpers are the only place a pointer turns into an integer or back, and the conversions are kept from being folded away until statepoint rewriting has run. A check after that rewriting confirms that no other pointer-integer conversion exists, in GC-debug builds.
+The LLVM storage helpers are the only place a pointer turns into an integer or back, and the conversions are kept from being folded away until statepoint rewriting has run. A check after that rewriting confirms that no other pointer-integer conversion exists, in builds configured with the `ECO_LOWERING_VALIDATION` CMake option, which is off by default.
 
 The runtime has one more re-boxing site: its generic apply re-boxes typed arguments from a closure's kinds ([closures-and-calls.md](closures-and-calls.md)). Where code generation places each conversion in practice belongs to [mlir-generation.md](compiler/mlir-generation.md).
 
@@ -148,7 +148,7 @@ A representation bug surfaces at the first check that can see it. The earlier th
 | Validator assert "Pointer outside heap and permanent space", or a crash in the collector | A raw slot marked kind 00, so the collector traces an integer | The kinds emitted for the object |
 | Wrong value printed, or equal values comparing unequal | A projection type that differs from the storage, or a heap copy of an embedded value | The slot kinds; whether a constant was allocated |
 
-The validator asserts run only in heap-validating or Debug builds, and the pointer-integer check only in GC-debug builds.
+The validator asserts run only in heap-validating or Debug builds, and the pointer-integer check only in builds configured with `ECO_LOWERING_VALIDATION`.
 
 ## Examples of changes that fit the theory
 
@@ -183,13 +183,13 @@ Code:
 - `runtime/src/codegen/EcoDialect.h`, `EcoDialect.cpp`: the eco types are declared in `Ops.td` and registered with the dialect here.
 - `elm-kernel-cpp/src/core/CharExports.cpp`: `Char.fromCode` clamping.
 - `test/allocator/HPointerLayoutTest.cpp`: the exact-word test. `test/mlir_equivalence_main.cpp`: the MLIR-equivalence runner.
-- Build settings: `ECO_HEAP_VALIDATE` or a Debug build for the validator asserts; `ECO_GC_DEBUG_LIVENESS` for `EcoPtrIntVerify`.
+- Build settings: `ECO_HEAP_VALIDATE` or a Debug build for the validator asserts; the `ECO_LOWERING_VALIDATION` CMake option (off by default) for `EcoPtrIntVerify`.
 
 Invariants (`design_docs/invariants.csv`):
 
-- REP_001: the four models. REP_SSA_001, REP_ABI_001, REP_ABI_002, REP_HEAP_001, REP_HEAP_002: each model's rules and the four kinds. REP_AGG_001: SSA aggregates. REP_LLVM_001, REP_LLVM_002: `!eco.value` in LLVM and the storage boundary.
+- REP_001: the four models and the LLVM-level fifth form. REP_SSA_001, REP_ABI_001, REP_ABI_002, REP_HEAP_001, REP_HEAP_002: each model's rules and the four kinds. REP_AGG_001: SSA aggregates. REP_LLVM_001, REP_LLVM_002: `!eco.value` in LLVM and the storage boundary.
 - REP_BOUNDARY_001, REP_BOUNDARY_002, REP_BOUNDARY_003: projection and construction.
-- REP_CONSTANT_002, FORBID_HEAP_001: the pointer test. REP_CONSTANT_003: says Empty equals a zero-length heap string; only the kernel's boxed-slot compare does so, and the rule holds because no producer makes such a string. HEAP_010, HEAP_044, CGEN_019: embedded constants and nullary constructors.
+- REP_CONSTANT_002, FORBID_HEAP_001: the pointer test. HEAP_071: no zero-length heap string exists, so Empty is the only empty string and no comparison path needs to equate the two. HEAP_010, HEAP_044, CGEN_019: embedded constants and nullary constructors.
 - HEAP_019, CGEN_026, CGEN_027: kind attributes and tail kind words. CGEN_065: logical-type strings in layout order.
 - CGEN_013, MONO_029: erased variables are boxed; every view of a value has a layout-equal type.
 - FORBID_REP_001, FORBID_REP_002, FORBID_REP_003: one model's form does not imply another's. FORBID_CLOSURE_001, FORBID_CLOSURE_002: Bool and kinds in closures. FORBID_LAYOUT_001, FORBID_DBG_001: kinds read only through the accessors. FORBID_OPT_001: box and unbox pairs. XPHASE_001: constants shared between Elm and C++ with no automatic check.
@@ -202,9 +202,6 @@ Documents:
 
 Rows and comments that disagree with the code. A developer who trusts them writes the wrong test or looks for layouts in the wrong phase:
 
-- HEAP_014 and XPHASE_002 say an embedded constant is one whose constant bits are nonzero. False has constant code 0, so that test misclassifies it. The real test is the pointer indicator (REP_CONSTANT_001, REP_CONSTANT_002).
-- REP_HEAP_001 says layout metadata is produced during monomorphization, but monomorphization supplies only constructor shapes, and code generation derives every layout.
-- REP_AGG_001 says the aggregate types have no producer. Code generation emits `eco.make.tuple2`, `eco.make.tuple3`, `eco.make.custom` and `eco.to_heap` by default.
-- REP_SSA_001 lists `i1` among the immediates it says exist only for Int, Float and Char.
+- (HEAP_014, REP_HEAP_001, REP_AGG_001 and REP_SSA_001 were brought into line with the code on 2026-10-23: the pointer-indicator test, layouts computed in code generation, the front end's aggregate producers, and Bool as `i1` in SSA.)
 - The description of `eco.box` in `Ops.td` says it accepts `i32` and allocates a Bool object. Char is `i16`, and boxing a Bool allocates nothing.
 - Comments in `Heap.hpp` describe `ElmArray`'s and `DynRecord`'s unboxed bits as one-bit flags and mention a `Const_EmptyString` constant that does not exist.

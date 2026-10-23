@@ -922,9 +922,9 @@ monoTypeToVarC lssOn varSlots monoType st =
                     -- lattice in the same commit as this line, and must never
                     -- be separated from it in either order: once the two ⊤
                     -- labels carry different ENCODINGS, keep-first would let a
-                    -- stored `LUnknown` absorb a genuinely-poisoned `LTop`
-                    -- demand and seed a bare flex slot where a caller demanded
-                    -- poison.
+                    -- stored set variable (`LVar`) absorb a genuinely-poisoned
+                    -- `LTop` demand and seed a bare flex slot where a caller
+                    -- demanded poison.
                     slotContent =
                         case anno of
                             Mono.LTop tpK ->
@@ -958,9 +958,9 @@ monoTypeToVarC lssOn varSlots monoType st =
                     -- resolves to the ONE slot `mintVarSlots` made for it, so
                     -- every arrow carrying `LVar n` in this type shares a slot.
                     -- THAT is what makes the annotation round trip PRESERVE a
-                    -- store unification instead of destroying it — Phase 1's
-                    -- anonymous `LUnknown` minted a fresh slot per arrow and
-                    -- lost the sharing every single time.
+                    -- store unification instead of destroying it — an
+                    -- anonymous "unknown" label with no variable number would
+                    -- mint a fresh slot per arrow and lose the sharing.
                     mintSlot stA =
                         case anno of
                             Mono.LVar n ->
@@ -2294,7 +2294,7 @@ type alias ZonkCtx =
     -- This is what gives the paper's α its identity across the annotation
     -- round trip: two arrows the store UNIFIED share a repr, so they get the
     -- SAME n, so `monoTypeToVarC` mints ONE slot for both when the annotation
-    -- is re-encoded. Phase 1's anonymous `LUnknown` lost exactly that.
+    -- is re-encoded. An anonymous "unknown" label would lose exactly that.
     , varOf : Dict.Dict Int Int
     , nextVar : Int
     }
@@ -2367,11 +2367,11 @@ type alias LssZonkAcc =
     -- within one `zonkToMono` call every readback belongs to one consumer.
     --   causeSet       LsMembers within cap  -> LSet (the win case)
     --   causePoison    explicit LsTop        -> LTop (widened/kernel/demand-encoded)
-    --   causeFlex      FlexVar residual      -> LUnknown (nothing ever written — the GAP-2 class)
+    --   causeFlex      FlexVar residual      -> LVar (nothing ever written — the GAP-2 class)
     --   causeEdgeSet   LsFrom resolved to a set within cap
-    --   causeEdgeEmpty LsFrom resolved empty -> LUnknown
+    --   causeEdgeEmpty LsFrom resolved empty -> LVar
     --   causeEdgeTop   LsFrom absorbed by a reachable ⊤ -> LTop
-    --   causeUnknown   the LUnknown total = causeFlex + causeEdgeEmpty
+    --   causeUnknown   the LVar total = causeFlex + causeEdgeEmpty (historical name)
     -- (over-cap reads of either arm are already `widenedBySize` — the
     -- seventh cause, not duplicated here.)
     --
@@ -3165,7 +3165,7 @@ zonkSetSlot paramT resultT setVar c0 =
                         -- symmetric HEAD reads an unconstrained class as
                         -- unknown.
                         --
-                        -- Phase 1: one of the TWO `LUnknown` producers.
+                        -- One of the TWO "no information" `LVar` producers.
                         -- Nothing was ever written anywhere in this slot's
                         -- reachable edge graph — that is an absence, not a
                         -- widening. Both the old counter and `causeUnknown`
@@ -3207,8 +3207,8 @@ zonkSetSlot paramT resultT setVar c0 =
         _ ->
             -- FlexVar residual: no information — never empty.
             --
-            -- Phase 1: the OTHER (and by far the larger) `LUnknown` producer.
-            -- The slot was never written by anything, ever — 52.3% of
+            -- The OTHER (and by far the larger) "no information" `LVar`
+            -- producer. The slot was never written by anything, ever — 52.3% of
             -- everything that used to read back as ⊤. Calling that "widened"
             -- made the acceptable share of ⊤ unmeasurable, which is what
             -- plans/lss-unknown-elimination.md Phase 1 exists to fix.

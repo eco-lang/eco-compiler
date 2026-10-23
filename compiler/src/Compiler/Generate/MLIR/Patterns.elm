@@ -841,7 +841,7 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             -- Same Bool/I1 unbox insertion as the field-info branch
                             -- above: an I1 target with a boxed source must go through
                             -- eco.unbox so the True/False HPointer constants are
-                            -- compared via runtime semantics (REP_CONSTANT_003).
+                            -- compared via runtime semantics.
                             if
                                 targetType == I1
                             then
@@ -930,7 +930,7 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
     else if not fieldInfo.isUnboxed && (targetType == I1 || Types.isUnboxable targetType) then
         -- Boxed slot, primitive target: project !eco.value, then unbox. Covers
         -- a primitive read of a boxed (e.g. polymorphic) field and a Bool scrutinee, whose
-        -- slot holds the True/False HPointer constants (REP_CONSTANT_003).
+        -- slot holds the True/False HPointer constants.
         let
             ( valVar, ctxA ) =
                 Ctx.freshVar ctx2

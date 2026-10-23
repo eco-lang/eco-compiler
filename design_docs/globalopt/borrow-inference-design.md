@@ -1057,7 +1057,7 @@ Resolution order at a generic/unknown call site:
        (adoption/staging-wrapper per LSS_008 semantics) → the member's
        behavior set is not enumerated by its instances → `Poison
        PBlocked`. Otherwise take the meet of the instances' lambda sigs
-       (LSS_009/017 make verbatim instances interchangeable, so the meet
+       (LSS_009 (row since removed)/017 make verbatim instances interchangeable, so the meet
        should be trivial; `validate` asserts sig-equality across
        instances as a cheap soundness probe).
      * **standalone member**: `lssMemberOrigins`:

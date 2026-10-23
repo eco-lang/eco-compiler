@@ -162,4 +162,4 @@ Code and documents:
 - `docs/bootstrap.md`: the stages, the two gates and the fixed points.
 - `.github/workflows/`: continuous integration per platform (`linux-aot.yml`, `win-aot.yml` and the macOS workflow).
 
-Invariants: GC_MODEL_001 (investigate the named model before touching a canary hash); REP_*, CGEN_*, HEAP_*, MONO_*, GOPT_*, FORBID_* (the families the layers check).
+Invariants: REP_*, CGEN_*, HEAP_*, MONO_*, GOPT_*, FORBID_* (the families the layers check). The canary rule (investigate the named model before touching a canary hash) lives in `test/tla/README.md` "The canary".

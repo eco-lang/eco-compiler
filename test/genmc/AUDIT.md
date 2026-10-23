@@ -376,7 +376,7 @@ The census still has 259 `memory_order` / `atomic_thread_fence` lines in `runtim
 Every group now has a W driver or a written disposition. The per-line mapping belongs to the
 canary's census (parent §7.1), which was not built yet (it was, the next day: entry below).
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today. Pins that
 name the drivers: W1 2, W2 4, W3 15, W4 19, W5 9, w_pool_done 3, w_running_chain 4. They are the code the drivers include or reduce (whole files such as
@@ -385,7 +385,7 @@ and `TLA-REGION` regions for the reduced functions). A pin that fires and names 
 entry here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: W3: OGS.lazySweep (3019e316a801); W5, w_running_chain: file TenureWork.hpp (1b0803bf3a66); W5: NT.TenureParEnv (53fc7d8f27b8).
 
@@ -416,7 +416,7 @@ The drivers compile without ECO_TLA_TRACE, so every probe is absent from them; t
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes §3.2: CR-018, `finalizePoppedCellW` (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.2: CR-018, `finalizePoppedCellW` (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.finalizePoppedCellW` (W3), new hash prefix **26356efabd55**.
 
@@ -428,7 +428,7 @@ in W3 (M4's `NoRaceLive` covers it). No W3 access changes.
 
 **Verdict: no model change needed.** (`w3d_CR001_gc_phase` still expects `race`.)
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired naming W3 / W4: regions `OGS.finalizePoppedCellW` (**4d8b93453093**, W3),
 `OGS.finalizeBitmapCellW` (**296d0825c9c5**, W3), `OGS.lazySweep` (**b033f3f0c837**, W3), census
@@ -454,7 +454,7 @@ Pins fired naming W3 / W4: regions `OGS.finalizePoppedCellW` (**4d8b93453093**, 
 **W4**: census only (the new `atomic_ref<GCPhase>` lines are not W4's publication pattern).
 **Verdict: W3 driver and registry updated (not run); W4 no change needed.**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: W3: region `OGS.lazySweep`, new hash prefix **6066819cec59**.
 
@@ -471,7 +471,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 W3 models the sweeper's bitmap-word reads/clears against the finalizer's `fetch_or` and the `gc_phase_` accesses; it has no header word. The new relaxed header load adds no ordering and touches no W3 location. **Verdict: W3 no change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: `w_pool_done`: file `PageWork.cpp` (**3b5ca6feb509**); W4: regions `OGS.ensureBagPageAvailable` (**37f3ac00eb2f**), `OGS.allocateLargeBlock` (**e2c48a27f642**).
 
@@ -492,7 +492,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 **w_pool_done**: the Done release / acquire pair, `post`'s CAS and `reap` are untouched; `noteNoWait` only bumps plain counters under `thread_mutex_` and emits a trace event. **W4**: the region-bounds publication pattern is unchanged; only the `acquireOldGenBlock` argument changed. GenMC is not installed here (as in Phases 1-2); audited by reading. **Verdict: no driver change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: GCHelperPool fork changes (w_pool_done, w_running_chain) (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: GCHelperPool fork changes (w_pool_done, w_running_chain) (test/tla/README.md "The canary")
 
 Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**).
 
@@ -527,7 +527,7 @@ chain member -> m_ -> joiner -> running_ -> owner holds for the joiner of its ow
 stopper whose generation was relaunched publishes nothing. GenMC is not installed here (as in Phases
 1-4); audited by reading. **Verdict: no driver change needed.**
 
-## 2026-10-05 — Windows build: the PageWork probe page's alignment (w_pool_done) (GC_MODEL_001)
+## 2026-10-05 — Windows build: the PageWork probe page's alignment (w_pool_done) (test/tla/README.md "The canary")
 
 Pin fired: file `PageWork.cpp` (**6a3a3b932b3a**).
 
@@ -537,7 +537,7 @@ the driver reduces are untouched, and the driver builds without `_WIN32`, so it 
 `PageWork.cpp` lines move by +6; the driver's comment citations were already stale and are left as they
 are. GenMC is not installed here; audited by reading. **Verdict: no driver change needed.**
 
-## 2026-10-05 — Windows link: the PageWork probe page's alignment is 4096 (w_pool_done) (GC_MODEL_001)
+## 2026-10-05 — Windows link: the PageWork probe page's alignment is 4096 (w_pool_done) (test/tla/README.md "The canary")
 
 Pin fired: file `PageWork.cpp` (**2dc7a9205c9a**).
 
@@ -546,7 +546,7 @@ link with LNK1164) and `alignas(65536)` elsewhere, as before. **w_pool_done**: t
 without `_WIN32` and the code it reduces is untouched. GenMC is not installed here; audited by
 reading. **Verdict: no driver change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Pin fired (W3, W4): census `runtime/src/allocator/OldGenSpace.cpp` (**714b07d48107**). The new concurrency lines are one relaxed `std::atomic_ref<uint64_t>(…live_bytes).fetch_add` in `OldGenSpace::attributeNewCell` (allocate-black for a header-less LOS body: the mutator, mid-cycle or under `par_promo_active_`), a copy of `initObjectHeaderWithSize`'s add to the same word with the same order. W3 (mark-byte RMWs, `testAndSetMark`, `setMarkBitAtomic`'s non-large branch) and W4 (block publication: `setRegionEnd` → `commitPageIndexThrough` → `materializeBlock` → `storeOwner`) are unchanged: an LOS block is published by the same `ensureBagPageAvailable` + `materializeBlock` sequence a bag page uses, and its mark bits are an ordinary arena slot. **Verdict: no driver change needed.**
 

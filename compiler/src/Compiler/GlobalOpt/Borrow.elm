@@ -91,7 +91,7 @@ type alias BorrowStats =
     , kernelDefaultedHeapCalls : Int -- B3: kernel misses with heap args
     , sccFixpointBailouts : Int -- B3: expected 0
     , maxSccIter : Int -- B3: max fixpoint iterations observed (design predicts 2-3)
-    , lambdaSigMeets : Int -- LSS_024 fence (amended BORROW_006): members whose instances fingerprint-diverge — their stored sig is the MEET over per-instance sigs, never one representative's
+    , lambdaSigMeets : Int -- Fingerprint fence (BORROW_006 amendment): members whose instances fingerprint-diverge — their stored sig is the MEET over per-instance sigs, never one representative's
     , capturesForcedOwned : Int
     , nonVarOperandHeapOwnedFresh : Int
     , nonVarOperandHeapBorrowedProducer : Int

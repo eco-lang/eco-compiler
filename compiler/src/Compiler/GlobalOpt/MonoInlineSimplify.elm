@@ -3340,7 +3340,7 @@ betaReduce ctx region info closureBody args resultType =
                 -- The residual is a NEW function, not a verbatim copy of the
                 -- source lambda: params and capture layout differ. Claiming
                 -- the source's srcLambda would let AbiCloning treat it as an
-                -- interchangeable instance of the member (LSS_009
+                -- interchangeable instance of the member (verbatim-copy
                 -- impersonation); clear the identity like tryInlineCall's
                 -- partial branch does. closureKind/captureAbi are stale for
                 -- the new capture set for the same reason (normally still

@@ -17,8 +17,9 @@ logic: Document and verify that ABI, SSA, Heap, and Logical representations are 
   * SSA: MLIR operands
   * Heap: runtime object fields
   * Logical: Elm semantics
+  * LLVM level (fifth form, below MLIR): every !eco.value is ptr addrspace(1); see REP_LLVM_001/REP_LLVM_002
   Assert no code assumes rules from one model apply to another without explicit invariant reference.
-inputs: Code review and cross-phase tests
+inputs: Code review and cross-phase tests (definitional; no checker exists, which is why the row is `documented`)
 oracle: Representation decisions are always justified by the correct model's invariants.
 --
 --
@@ -48,11 +49,13 @@ name: SSA operand types for primitives
 phase: cross-phase
 invariants: REP_SSA_001
 ir: MLIR SSA operands
-logic: Assert SSA operands use immediate types (i64, f64, i16, i1) only for Int, Float, Char values:
+logic: Assert SSA operands use immediate types only for Int (i64), Float (f64), Char (i16) and Bool (i1):
+  * Every Bool SSA value inside a function body is i1 (`Types.monoTypeToOperand`); it is boxed only at heap, closure and call boundaries (CGEN_009).
   * All other Elm values are !eco.value in SSA.
   * SSA representation is independent of heap layout and ABI.
 inputs: Generated MLIR modules
-oracle: Only Int/Float/Char have immediate SSA types; all others are !eco.value.
+oracle: Only Int/Float/Char/Bool have immediate SSA types (i64/f64/i16/i1); all others are !eco.value. An `eco.case` with `case_kind` bool has an i1 scrutinee; no i1 reaches a boxed boundary.
+tests: compiler/tests/TestLogic/Generate/CodeGen/BoxingValidationTest.elm, compiler/tests/TestLogic/Generate/CodeGen/CaseScrutineeTypeTest.elm, compiler/tests/TestLogic/Generate/CodeGen/BooleanConstantsTest.elm
 --
 --
 name: Heap layout determined by layout metadata
@@ -60,10 +63,12 @@ phase: runtime heap
 invariants: REP_HEAP_001
 ir: Heap objects and layout structures
 logic: Verify heap field representation is determined solely by RecordLayout, TupleLayout, CtorLayout:
-  * Layout metadata is produced during monomorphization.
+  * Layouts are computed in MLIR codegen as a pure function of the type (`Types.computeRecordLayout`, `computeTupleLayout`, `computeCtorLayout`); monomorphization supplies only the graph's `ctorShapes`.
+  * Each `eco.construct.custom`'s `size` and `slot_kinds` equal `computeCtorLayout` of the matching ctor shape; each projection's result type matches the heap layout.
   * Heap layout is independent of ABI and SSA representation.
-inputs: Monomorphized layouts and runtime heap objects
-oracle: Heap layouts match metadata; no implicit assumptions from other representations.
+inputs: Monomorphized graphs and the MLIR generated from them
+oracle: Heap layouts match the computed metadata; no implicit assumptions from other representations.
+tests: compiler/tests/TestLogic/Generate/CodeGen/CtorLayoutConsistencyTest.elm, compiler/tests/TestLogic/Generate/CodeGen/ProjectionHeapLayoutConsistencyTest.elm, compiler/tests/TestLogic/Generate/MonoLayoutIntegrityTest.elm
 --
 --
 name: Heap unboxing determined by bitmap
@@ -286,7 +291,7 @@ name: Constraints cover all reachable declarations
 phase: type checking
 invariants: TYPE_001
 ir: Canonical module -> Constraint tree
-logic: Traverse canonical declarations, effects, expressions, and patterns; mark reachable nodes. After constraint generation (erased and typed), traverse the constraint tree and mark nodes back. Assert every reachable node has corresponding constraints.
+logic: Traverse canonical declarations, effects, expressions, and patterns; mark reachable nodes. After constraint generation (one generator, `Compiler.Type.Constrain.Typed`; the erased entry point only runs it without node tracking), traverse the constraint tree and mark nodes back. Assert every reachable node has corresponding constraints.
 inputs: Canonical modules (large plus synthetic edge cases)
 oracle: No reachable AST node is missing from constraints; dead/unreachable parts may be exempt by design and documented.
 --
@@ -704,10 +709,11 @@ phase: typed optimization
 invariants: TOPT_001
 ir: TypedOptimized.Expr
 logic: For each `TypedOptimized.Expr` variant:
-  * Assert the last constructor argument is a `Can.Type`.
-  * Implement `typeOf` via pattern-match, and test that for all expressions (after optimization), `typeOf` returns that last field.
+  * Assert the trailing constructor argument is a `Meta { tipe, tvar }` record.
+  * `typeOf` is `(metaOf expr).tipe`; test that for all expressions (after optimization) every stored `tipe` is well formed (known type names, correct arity).
 inputs: TypedOptimized modules (from varied sources)
-oracle: No expression constructor missing a trailing type; `typeOf` is total and returns the stored type.
+oracle: No expression constructor missing its `Meta`; `typeOf` is total and returns the stored `tipe`. The Elm type system guarantees presence; the test checks well-formedness, not correctness.
+tests: compiler/tests/TestLogic/LocalOpt/TypedOptTypesTest.elm
 --
 --
 name: Pattern matches compile to exhaustive decision trees
@@ -843,13 +849,15 @@ name: Specialization registry is complete and consistent
 phase: monomorphization
 invariants: MONO_005
 ir: SpecializationRegistry + MonoGraph
-logic: For each entry in `SpecializationRegistry` (keyed by Global + MonoType + LambdaId):
-  * Assert it maps to a unique `SpecId`.
+logic: For each entry in `SpecializationRegistry` (keyed by `SpecKey Global MonoType`):
+  * Assert `mapping` and `reverseMapping` agree in both directions: each `mapping` key's SpecId has a `Just` entry in `reverseMapping` holding that key, and each `Just` entry's key maps back to its SpecId.
+  * Assert SpecIds are unique per key: no two keys share a SpecId.
+  * Assert every `Just` entry has a `MonoNode`, and every `MonoNode` has a `Just` registry entry (no orphan nodes).
   * Assert each `SpecId` used in `MonoVarGlobal` refers to an existing `MonoNode`.
   * `Nothing` entries in `reverseMapping` are expected (pruned slots from MONO_022) and are not violations.
-  * Only `Just` entries must have corresponding nodes.
 inputs: Monomorphized graphs with heavy polymorphism
 oracle: 1-1 mapping between live specializations and nodes; no missing or orphan specs among live entries.
+tests: compiler/tests/TestLogic/Generate/MonoGraphIntegrityTest.elm (checkers in compiler/tests/TestLogic/Generate/MonoGraphIntegrity.elm: `expectSpecRegistryComplete`, `expectMonoGraphClosed`, extended with the node-to-registry, mapping/reverseMapping agreement and per-key SpecId uniqueness checks)
 --
 --
 name: Record and tuple layouts capture shape completely
@@ -903,7 +911,7 @@ invariants: MONO_010
 ir: MonoGraph
 logic: Traverse the entire MonoGraph:
   * Assert every referenced MonoType is present and fully elaborated (no dangling references).
-  * Ensure ctorLayouts for custom types include all constructors and their types.
+  * Ensure ctorShapes for custom types include all constructors and their types.
 inputs: Large monomorphized graphs
 oracle: There are no missing type definitions; MonoGraph fully describes program types and constructors.
 --
@@ -1017,8 +1025,12 @@ logic: Collect all lambdaId values from:
   * Any lambdaId in related structures
 Assert the collected set has no duplicates.
 inputs: Monomorphized graphs with many closures
+  `ClosureInfo.srcLambda` is exempt: instances sharing a source-lambda id is intended LSS semantics.
+  Run the check on the graph after monomorphization, after GlobalOpt, and after CAF hoisting.
+  Backstop in production: `Generate.MLIR.Lambdas` crashes when two different lambdas are queued under one name instead of silently dropping one.
+inputs: Monomorphized graphs with many closures (the standard test catalogue) plus two hand-built graphs (distinct ids, accepted; one id in two specs, reported)
 oracle: Every closure/function has a unique lambdaId.
-tests: REMOVED. compiler/tests/TestLogic/Monomorphize/LambdaIdUniquenessTest.elm no longer exists; no replacement checker.
+tests: compiler/tests/TestLogic/GlobalOpt/LambdaIdUniquenessTest.elm (checker compiler/tests/TestLogic/GlobalOpt/LambdaIdUniqueness.elm)
 --
 --
 name: No CEcoValue MVar in user-defined function types
@@ -1225,6 +1237,19 @@ oracle: Every MonoVarGlobal's carried type has the same flattened arity as the n
   references. Any arity mismatch is a monomorphization type-truncation bug.
 tests: compiler/tests/TestLogic/Monomorphize/MonoVarGlobalArityConsistencyTest.elm
 --
+--
+name: Number residuals survive until Prune closes them to Int
+phase: monomorphization
+invariants: MONO_028
+ir: MonoGraph after monomorphization (both engines)
+logic: Under each mono engine (the default solver engine and the subst engine):
+  * Neither engine defaults `MVar _ CNumber` to `MInt` during the specialization fixpoint (solver: `MonoSolver.Zonk` stamps residuals from `superVars`; subst: `TypeSubst`).
+  * `Prune.pruneUnreachableSpecs` closes every residual to `MInt` while copying live nodes, and closes `registry.reverseMapping`.
+  * After the pipeline, walk the signatures of every fully monomorphic spec and assert no `MVar _ CNumber` remains.
+inputs: Standard test catalogue, compiled once per engine
+oracle: No number type variable survives into a fully monomorphic spec signature; codegen's MONO_002 crash never fires.
+tests: compiler/tests/TestLogic/Monomorphize/FullyMonomorphicNoCEcoValueTest.elm (checker FullyMonomorphicNoCEcoValue.elm, run under both engines)
+--
 
 ---
 
@@ -1242,14 +1267,6 @@ logic: For every MonoClosure with MFunction type after GlobalOpt:
 inputs: GlobalOpt output graphs
 oracle: All closures have param counts matching their stage arity.
 tests: compiler/tests/TestLogic/Generate/MonoFunctionArityTest.elm (replaces the removed TestLogic/GlobalOpt/ClosureStageArityTest.elm)
---
---
-name: Returned closure param counts tracked (REMOVED)
-phase: global optimization
-invariants: GOPT_002 (removed; no longer in invariants.csv)
-status: REMOVED. MonoGraph.returnedClosureParamCounts and computeReturnedClosureParamCount
-  no longer exist in the compiler, and GOPT_002 has been dropped from invariants.csv.
-  There is nothing to test; this entry is kept only as a record.
 --
 --
 name: Case/if joins claim no staging beyond what all branches agree on
@@ -1422,8 +1439,8 @@ name: Argument boxing only adjusts eco.value vs unboxed
 phase: MLIR codegen
 invariants: CGEN_007
 ir: MLIR calls and boxing helpers
-logic: For calls where `boxToMatchSignature` / `boxToMatchSignatureTyped` are invoked:
-  * Compare actual SSA operand types with `monoTypeToMlir` of expected MonoTypes.
+logic: For calls where `boxToMatchSignatureTyped` is invoked:
+  * Compare actual SSA operand types with the callee signature's ABI types (`Types.monoTypeToAbi` of the expected MonoTypes).
   * Ensure the only adjustments are between boxed (`!eco.value`) and corresponding unboxed primitives.
   * No primitive kind changes (i64 <-> f64) are introduced.
 inputs: MLIR with mixed boxed/unboxed call arguments
@@ -1443,15 +1460,17 @@ oracle: No divergence between operand types and recorded attributes.
 tests: compiler/tests/TestLogic/Generate/CodeGen/OperandTypesAttrTest.elm
 --
 --
-name: Boolean constants use !eco.value except in control-flow
+name: Bool is i1 in SSA and boxed only at boundaries
 phase: MLIR codegen
 invariants: CGEN_009
 ir: MLIR boolean values
-logic: Boolean constants:
-  * May appear as i1 immediate SSA operands only in control-flow contexts (case scrutinees).
-  * Are otherwise represented as !eco.value constants at ABI, heap, and closure boundaries.
+logic: Booleans:
+  * Every Bool SSA value inside a function body is i1 (literals are `arith.constant` i1).
+  * A True/False `eco.constant` yields `!eco.value`.
+  * No i1 operand reaches `eco.construct.*`, `papCreate`, `papCreateGroup`, `papExtend`, `eco.call` or `eco.return`: Bool is boxed to the embedded True/False constants at ABI, heap, closure and call boundaries.
 inputs: MLIR with boolean operations and constants
-oracle: i1 only in control-flow; !eco.value elsewhere for Bool.
+oracle: i1 inside bodies; !eco.value at every boxed boundary.
+tests: compiler/tests/TestLogic/Generate/CodeGen/BooleanConstantsTest.elm
 --
 --
 name: eco.case is SSA value-producing with eco.yield
@@ -1478,17 +1497,6 @@ inputs: Generated MLIR modules
 oracle: No undefined function symbols; mismatches are caught and fail tests.
 --
 --
-name: monoTypeToMlir primitive mapping is correct
-phase: MLIR codegen
-invariants: CGEN_012
-ir: MonoType -> MLIR type mapping
-logic: For each MonoType:
-  * Check that `MInt -> i64`, `MFloat -> f64`, `MChar -> i16`.
-  * Assert all other MonoTypes (including MBool, MVar, compound types) map to `!eco.value`.
-inputs: Synthetic MonoTypes and integrated MLIR outputs
-oracle: Mapping table is complete and consistent; no primitive maps to wrong MLIR type.
---
---
 name: CEcoValue MVars always lower to eco.value
 phase: MLIR codegen
 invariants: CGEN_013
@@ -1499,22 +1507,23 @@ inputs: MLIR modules derived from CEcoValue-heavy code
 oracle: No influence of CEcoValue type vars on MLIR primitive types or layouts; always eco.value.
 --
 --
-name: MLIR uses only MonoGraph ctorLayouts for unions
+name: MLIR computes ctor layouts only from MonoGraph ctorShapes
 phase: MLIR codegen
 invariants: CGEN_014
-ir: MLIR for constructors / pattern matches + MonoGraph.ctorLayouts
+ir: MLIR for constructors / pattern matches + MonoGraph.ctorShapes
 logic: For union constructors and matches:
-  * Verify codegen uses `MonoGraph.ctorLayouts` for tag, size, and unboxed layout.
-  * Ensure no access to GlobalTypeEnv for union metadata during MLIR codegen (enforced via test-only stubbing).
+  * Verify each `eco.construct.custom`'s `tag`, `size` and `slot_kinds` equal `Types.computeCtorLayout` of the graph's `ctorShapes` entry.
+  * The no-GlobalTypeEnv half is structural: `Compiler/Generate/MLIR/` has no reference to `GlobalTypeEnv`, so it is not tested.
 inputs: MLIR and MonoGraph snapshots
-oracle: All constructor metadata is sourced from MonoGraph; GlobalTypeEnv reads for unions are absent or unused.
+oracle: All constructor metadata is computed from the MonoGraph's ctorShapes; no GlobalTypeEnv reads during MLIR codegen.
+tests: compiler/tests/TestLogic/Generate/CodeGen/CtorLayoutConsistencyTest.elm
 --
 --
 name: MChar maps to i16
 phase: MLIR codegen
 invariants: CGEN_015
 ir: Char values in MLIR
-logic: Assert monoTypeToMlir maps MChar to i16 (Eco_Char), not i32:
+logic: Assert the type mapping (`Types.monoTypeToAbi` / `monoTypeToOperand`) maps MChar to i16 (Eco_Char), not i32:
   * All codegen char constants and ops must use i16.
 inputs: MLIR with char operations
 oracle: No i32 for char values; all use i16.
@@ -1575,7 +1584,7 @@ phase: MLIR codegen
 invariants: CGEN_020
 ir: eco.construct.custom ops
 logic: eco.construct.custom is used only for user-defined custom ADTs:
-  * Its tag, size, and unboxed_bitmap attributes match CtorLayout from MonoGraph.ctorLayouts.
+  * Its tag, size, and slot_kinds attributes match the CtorLayout that codegen computes (`Types.computeCtorLayout`) from the MonoGraph's ctorShapes.
   * Operand count matches layout.
 inputs: MLIR with custom type construction
 oracle: Attributes match layout; no mismatched construction.
@@ -1630,15 +1639,18 @@ oracle: Only eco.project.custom for custom types.
 tests: compiler/tests/TestLogic/Generate/CodeGen/CustomProjectionTest.elm
 --
 --
-name: All construct ops produce !eco.value
+name: All construct ops produce !eco.value; make ops produce aggregates
 phase: MLIR codegen
 invariants: CGEN_025
-ir: eco.construct.* ops
+ir: eco.construct.* and eco.make.* ops
 logic: All eco.construct.* operations produce !eco.value results:
   * Regardless of whether any fields are stored unboxed.
-inputs: MLIR with construction ops
-oracle: Result type is always !eco.value.
-tests: compiler/tests/TestLogic/Generate/CodeGen/ConstructResultTypeTest.elm
+  The SSA-only eco.make.* family produces aggregate types (!eco.tuple2 etc.):
+  * The front end emits eco.make.tuple2, eco.make.tuple3 and eco.make.custom under aggPromote (default on).
+  * eco.make.record, eco.make.cons and eco.make.closure_env have no producer; only hand-written fixtures use them.
+inputs: MLIR with construction ops; lit fixtures for the make.* family
+oracle: construct.* result type is always !eco.value; make.* results are aggregate types and lower without heap allocation.
+tests: compiler/tests/TestLogic/Generate/CodeGen/ConstructResultTypeTest.elm (construct.* half), test/codegen/value_tuple2.mlir, value_tuple3.mlir, value_custom.mlir, value_record3.mlir, value_cons.mlir, value_closure_env.mlir, test/elm/src/AggPromoteTupleTest.elm (make.* half)
 --
 --
 name: Container construct unboxed_bitmap matches SSA types
@@ -1735,15 +1747,18 @@ oracle: Arity and capture constraints satisfied.
 tests: compiler/tests/TestLogic/Generate/CodeGen/PapCreateArityTest.elm
 --
 --
-name: eco.papExtend produces !eco.value result
+name: Generic eco.papExtend result is boxed or i64/f64/i16
 phase: MLIR codegen
 invariants: CGEN_034
 ir: eco.papExtend ops
-logic: MLIR codegen emits eco.papExtend with !eco.value result type:
-  * Produces immediate results only by inserting eco.unbox after papExtend when expected result type is immediate.
-inputs: MLIR with closure application
-oracle: papExtend always returns !eco.value; unboxing is explicit.
-tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm
+logic: For every eco.papExtend in generic mode (no remaining_arity):
+  * Assert the result type is !eco.value, i64, f64 or i16 - the set PapExtendOp::verify accepts in generic mode.
+  * Reject i1: a Bool result is !eco.value (bug SD-8 was the checker accepting i1).
+  * A primitive result comes from the call's Mono result type and carries a matching non-zero `_result_kind`.
+  For typed-mode papExtend (remaining_arity present), the result follows the callee signature (CGEN_056); the checker also requires remaining_arity unless `_call_kind` is generic_apply or segmentation_unknown.
+inputs: MLIR with closure application (standard test catalogue)
+oracle: Every generic papExtend result type is in {!eco.value, i64, f64, i16}; i1 is a violation.
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm (checker compiler/tests/TestLogic/Generate/CodeGen/PapExtendResult.elm)
 --
 --
 name: eco.papCreate arity matches function parameter count
@@ -1857,9 +1872,9 @@ name: MLIR codegen does not emit allocation ops directly
 phase: MLIR codegen
 invariants: CGEN_039
 ir: MLIR from codegen
-logic: MLIR codegen does not emit:
-  * eco.allocate, eco.allocate_ctor, eco.allocate_string, eco.allocate_closure.
-  * These allocation ops are introduced only by later lowering from eco.construct and related ops.
+logic: No pass and no part of the front end emits:
+  * eco.allocate, eco.allocate_string, eco.allocate_closure (eco.allocate_ctor no longer exists).
+  * eco.construct.* and related ops lower straight to runtime calls; the allocation ops appear only in hand-written fixtures.
 inputs: MLIR before lowering
 oracle: No allocation ops in codegen output.
 tests: compiler/tests/TestLogic/Generate/CodeGen/NoAllocateOpsTest.elm
@@ -1997,9 +2012,10 @@ logic: For every eco.papExtend that is a saturated call (isSaturatedCall) of som
   * Look up @f's func.func signature and extract its result type.
   * Assert the eco.papExtend result MLIR type equals @f's result type.
   * Non-saturated papExtend ops (those producing a PAP, not a final result) are excluded from this check since they always return !eco.value.
+  * Generic-mode papExtend (no remaining_arity) is excluded: its result is governed by CGEN_034.
 inputs: MLIR with closure applications including both saturated and partial applications
-oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug.
-tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm
+oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug. No C++ verifier checks this half.
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendSaturatedResultTypeTest.elm; E2E test/elm/src/HofResidualPartialTest.elm
 --
 --
 name: Kernel declaration completeness
@@ -2019,6 +2035,57 @@ oracle: Every Elm_Kernel_* symbol referenced in papCreate, papExtend, or eco.cal
   corresponding func.func declaration with is_kernel=true. Any missing declaration is a
   compiler bug (registerKernelCall + generateKernelDecl pipeline failure).
 tests: compiler/tests/TestLogic/Generate/CodeGen/KernelDeclCompletenessTest.elm
+--
+--
+name: Generic apply lowers to eco_apply_closure_eval
+phase: MLIR codegen
+invariants: CGEN_058
+ir: generic-mode eco.papExtend (no remaining_arity) -> LLVM
+logic: Lower MLIR containing generic papExtend ops (generic_apply and segmentation_unknown call kinds):
+  * Assert the lowered LLVM calls `eco_apply_closure_eval` (not `eco_apply_closure` or `eco_apply_closure_typed`).
+  * Assert the op's result type is !eco.value or i64/f64/i16 with a matching `_result_kind` (CGEN_034), passed as `desired_kind`.
+  * `_fast_evaluator` / `_capture_abi` on a generic op do not change the lowering.
+inputs: test/codegen fixtures with generic apply
+oracle: Every generic apply is a call of eco_apply_closure_eval.
+tests: test/codegen/papextend_no_realloc.mlir (CHECK: eco_apply_closure_eval)
+--
+--
+name: Generic apply adds no LLVM-side boxing
+phase: MLIR codegen
+invariants: CGEN_059
+ir: generic-mode eco.papExtend -> LLVM; runtime eco_apply_closure_eval
+logic: For generic apply:
+  * Assert the LLVM IR builds a typed i64 args buffer plus an EvalParamLayout and contains no eco_alloc_int / eco_alloc_float / eco_alloc_char call introduced to box an argument.
+  * Assert the runtime re-boxes per layout kind (Int as i64, Float as bitcast f64, Char as zext i16, others as HPointer) when the callee needs boxed values.
+  * Front-end boxing happens only for Bool (i1) arguments and for arguments to a known callee whose parameter is !eco.value.
+inputs: test/codegen fixtures; runtime unit tests over each layout kind
+oracle: No boxing allocation before the call in LLVM; the runtime result matches the boxed semantics.
+tests: test/codegen/papextend_no_realloc.mlir (CHECK-NOT @eco_alloc_int/@eco_alloc_float/@eco_alloc_char), test/allocator/EcoApplyClosureTypedTest.cpp, test/allocator/GenericApplyBoxingTest.cpp
+--
+--
+name: Fast closure call capture ABI matches the fast clone prefix
+phase: MLIR codegen
+invariants: CGEN_CLOSURE_005
+ir: saturated typed eco.papExtend with _fast_evaluator and _capture_abi
+logic: For each such op:
+  * Assert it lowers to a direct call of the fast clone named by `_fast_evaluator`.
+  * Assert the `_capture_abi` types equal the leading `$cap` parameter types of that clone; PapExtendOp's verifier rejects a mismatch.
+inputs: test/codegen fixtures, one deliberately mismatched
+oracle: Matching fixtures lower to a direct call with capture and prefix slots in order; the mismatched fixture fails verification.
+tests: test/codegen/fast_dispatch_direct_call.mlir, test/codegen/fast_dispatch_pap_prefix.mlir, test/codegen/pap_simplify_multi_use_fast_evaluator.mlir, test/codegen/invalid_fast_evaluator_capture_abi.mlir (negative)
+--
+--
+name: Only the GC-free propagation stamps gc-leaf on generated functions
+phase: MLIR codegen
+invariants: CGEN_072
+ir: LLVM functions after lowering (gc-leaf-function attrs, eco-gcfree-plan module flag)
+logic: For each generated function:
+  * In stamp mode (default) the stamps come from EcoGcFreePropagation, the last MLIR pass, which records the `eco-gcfree-plan` flag; `propagateGcFreeLeafAttrs` produces them only for flagless modules (`ECO_GCFREE_MLIR=0`, census) and otherwise is the validate twin.
+  * Assert a stamped function's every call is accepted by `llvm::callsGCLeafFunction` or targets another stamped definition; indirect calls, non-gc-leaf declarations and EH constructs poison.
+  * Assert no stamped function contains a gc.statepoint after RS4GC (a hard build failure).
+inputs: test/codegen fixtures covering plans, markers, covered functions, address-of and mismatches
+oracle: Stamps match the plan; a stamped function never needs a statepoint.
+tests: test/codegen/gcfree_plan_basic.mlir, gcfree_plan_addressof.mlir, gcfree_plan_covered.mlir, gcfree_plan_local_check.mlir, gcfree_plan_markers.mlir, gcfree_plan_mismatched_breaker.mlir, gcfree_plan_no_marker_row.mlir, gcfree_plan_veq_mismatch.mlir, test/codegen/kernel_gcleaf_stamp.mlir, test/codegen/caphoist_plan_gcleaf_covered.mlir
 --
 
 ---
@@ -2075,10 +2142,12 @@ phase: runtime heap
 invariants: HEAP_005
 ir: Heap graph during GC
 logic: Construct long-lived data and new allocations:
-  * During GC, scan for pointers from old generation to nursery.
-  * Assert none exist; if any found, test fails.
-inputs: Generational heap runtime tests
+  * During GC, scan for pointers from the old generation to the young generation (nursery or region extents plus YLOS).
+  * Assert none exist; if any found, the build aborts.
+  * In ECO_HEAP_VALIDATE builds this runs in production: an old-gen walk every 64th minor (NurseryRegion.cpp), `validatePromotedHaveNoYoungChildren` (NurserySpace.cpp) and the tenure check (NurseryTenure.cpp); the P1 census (P1Census.cpp) catches writes into old objects, the premise of the rule.
+inputs: Generational heap runtime tests; validate-build unit, E2E and stress runs
 oracle: Heap graph never has old->young edges, matching Elm immutability assumptions.
+tests: the ECO_HEAP_VALIDATE gate (build-validate unit tests + E2E + GC-pressure stress); TLA+ invariant `NoOldToYoung` in test/tla/M1-snapshot-mark/SnapshotMark.tla (with a mutant in test/tla/models.txt)
 --
 --
 name: Forwarding pointers are GC-only
@@ -2086,33 +2155,39 @@ phase: runtime heap
 invariants: HEAP_006
 ir: Tag_Forward objects
 logic: While GC is running:
-  * Validate objects with `Tag_Forward` appear only during collection.
+  * Validate objects with `Tag_Forward` (and BUSY words) appear only during collection, and in region mode only on eden and builder-area objects.
+  * Survivor-extent forwarding during tenuring lives in the extent's shadow table, never in a header.
   * Immediately after GC, verify no live object has `Tag_Forward`.
 inputs: GC instrumentation tests
 oracle: Forwarding pointers never escape into mutator-visible execution; tag is transient.
+tests: TLA+ models test/tla/M3-minor-forwarding/ (MinorForwarding.tla) and test/tla/M5-tenuring/, each with a MAPPING.md to the code
 --
 --
-name: Each heap region has a single owning thread
+name: One mutator per process; each heap has a single owning thread
 phase: runtime heap
 invariants: HEAP_007
 ir: ThreadLocalHeap regions
 logic: In multi-threaded tests:
-  * Track heap regions and their `ThreadLocalHeap` owners.
-  * Assert no cross-thread heap pointers are created.
-  * Confirm each mutator only runs GC on its own heap.
-inputs: Concurrency tests with multiple threads allocating
+  * Assert `initThread` aborts on a second live mutator unless `Allocator::allowMultipleMutators(true)` (every build).
+  * Assert a heap used by a non-owner aborts in validate builds (`ThreadLocalHeap::owner_`).
+  * Assert no cross-thread heap pointers are created and each mutator only runs GC on its own heap.
+  * Fork contract: in a forked child only the forker's heaps are live.
+inputs: Concurrency tests; fork harness
 oracle: Ownership is exclusive; no cross-thread heap references or GC operations.
+tests: test/allocator/ConcurrencyRegisterTest.cpp (testCR012Forbid, testCR012OptIn), test/gc-heap-tsan/fork_harness.cpp
 --
 --
-name: HPointer is a 40-bit offset from heap_base
+name: An HPointer word is the raw heap address
 phase: runtime heap
 invariants: HEAP_008
 ir: HPointer representation
-logic: For HPointer values:
-  * Verify `ptr` field is within 40-bit range and encodes an offset from `heap_base`.
-  * Confirm conversions to/from raw pointers use helpers and produce consistent results.
+logic: For heap-pointer HPointer values:
+  * Verify the 64-bit word equals the raw absolute 8-byte-aligned address (the `ptr` field begins at bit 3; no `heap_base` term, no shift).
+  * Verify every address is below 2^43, and that header forwards store addr>>3.
+  * Confirm conversions to/from raw pointers only reinterpret the word.
 inputs: Runtime tests involving pointer conversions
-oracle: Logical pointers are never raw addresses; offset and base compute the actual location.
+oracle: The word and the address are bit-identical for every heap pointer.
+tests: test/allocator/HPointerLayoutTest.cpp
 --
 --
 name: HPointer is the only heap reference type
@@ -2126,15 +2201,17 @@ inputs: Codebase checks and runtime assertions
 oracle: No direct raw pointer arithmetic or casts for heap values; HPointer is canonical.
 --
 --
-name: Common constants are non-zero tagged HPointers
+name: The three embedded constants have ptr_ind set
 phase: runtime heap
 invariants: HEAP_010
 ir: HPointer constants
-logic: Inspect `Unit`, `EmptyRec`, `True`, `False`, `Nil`, `Nothing`, `EmptyString`:
-  * Confirm they are represented as HPointer values with `constant != 0`.
+logic: Inspect `False`, `True` and the merged Empty (`Unit`, `EmptyRec`, `Nil`, `Nothing`, the empty String):
+  * Confirm False is word 0x4 (constant 0), True 0x5, and every empty form is 0x6.
+  * Confirm they are classified by `ptr_ind`, not by `constant != 0`.
   * Assert they are never heap-allocated and not traced by GC.
 inputs: Runtime tests and constant table inspection
-oracle: All listed constants are embedded, nonzero-tag HPointer constants.
+oracle: All listed constants are embedded HPointer words with ptr_ind set.
+tests: test/allocator/HPointerLayoutTest.cpp
 --
 --
 name: Allocation may move all nursery objects
@@ -2174,12 +2251,14 @@ oracle: No mismatch between header.tag and in-memory structure; mismatches cause
 name: Embedded constants are non-heap and not traced
 phase: runtime heap
 invariants: HEAP_014
-ir: HPointer.constant handling
-logic: For HPointer values with `constant != 0`:
-  * Assert allocator and resolver treat them as non-heap.
+ir: HPointer ptr_ind handling
+logic: For HPointer values with `ptr_ind` set (False has `constant == 0`, so `constant != 0` is the wrong test):
+  * Assert `isConstantBits` holds for False, True and Empty, and fails for null and heap pointers.
+  * Assert allocator and resolver treat them as non-heap (`Allocator::resolve` asserts `ptr_ind == 0`).
   * Confirm GC and debug printing never attempt to trace or resolve them as heap addresses.
 inputs: Runtime tests involving embedded constants
 oracle: Embedded constants behave as value-like handles, not heap objects.
+tests: test/allocator/HPointerLayoutTest.cpp
 --
 --
 name: Header tag and struct layout match runtime type
@@ -2238,20 +2317,61 @@ logic: For `Custom`, `Cons`, `Record` objects:
 inputs: Runtime allocations with mixed boxed/unboxed fields
 oracle: Bitmap and actual contents match; GC and utilities behave correctly.
 --
+--
+name: String forms; equality and compare never flatten
+phase: runtime heap
+invariants: HEAP_025
+ir: Heap strings in all six forms
+logic: Build the same logical strings in each form: Tag_String leaf, Tag_StringRope, Tag_StringSlice, Tag_LargeStringHeader (payload >= large_object_threshold), Tag_StringUtf8Leaf and Tag_StringUtf8View:
+  * Assert `header.size` is the logical UTF-16 length in every form.
+  * Assert `equal` and `compare` agree for every pair of forms (same and different contents, prefixes, mixed UTF-8/UTF-16) and never flatten either operand.
+  * ASCII literals from compiled code are interned Tag_StringUtf8Leaf leaves; other compiled allocations are Tag_String leaves.
+inputs: Runtime unit tests constructing each form directly
+oracle: Results depend only on the logical contents, never on the form; no operand changes form.
+tests: test/allocator/StringFormsCompareTest.cpp; also test/allocator/Utf8StringTest.cpp, StringOpsTest.cpp, HeapHelpersTest.cpp
+--
+--
+name: Zero-capture closures are interned with the HEAP_078 packed word
+phase: runtime heap
+invariants: HEAP_033
+ir: eco.papCreate lowering; eco_intern_closure0
+logic: For each papCreate with num_captured == 0, no self_capture_indices and arity <= 20:
+  * Assert the lowering calls `eco_intern_closure0` with a compile-time packed word in the HEAP_078 layout (n_values | max_values<<11 | result_kind<<22 | kinds<<24).
+  * Assert every other papCreate allocates a fresh closure.
+  * Assert two creates of the same wrapper return the same permanent object.
+inputs: test/codegen fixtures with primitive- and boxed-returning wrappers
+oracle: Interned closures are immutable singletons per wrapper; the packed word agrees at every call site.
+tests: test/codegen/wrapper_primitive_return_int.mlir, wrapper_primitive_return_float.mlir, wrapper_primitive_return_char.mlir, wrapper_boxed_return_boxes_primitive.mlir, test/codegen/make_closure_packed_word.mlir
+--
+--
+name: Over-saturated eval chains stages and stays GC-safe
+phase: runtime heap
+invariants: RUNTIME_CLOSURE_004
+ir: eco_apply_closure_eval
+logic: Build a closure whose first stage returns a closure for a second stage, and apply more args than the first stage takes, with mixed slot kinds (Int, Float, Char, boxed):
+  * Assert eval saturates stage one, then recurses on the intermediate with the trailing args and a sub-layout of their kinds.
+  * Force a GC between the stages and assert the intermediate and the boxed trailing args survive (the callee roots the intermediate with ecoRoot1Push; the caller's pushRootsByKinds roots the args).
+  * Assert the final result for both a boxed and a primitive desired_kind.
+inputs: Runtime unit test with hand-built closures
+oracle: The chained result equals applying the stages one at a time; no stale pointer after the forced GC.
+tests: test/allocator/EcoApplyClosureEvalChainTest.cpp
+--
 
 ---
 
 ## Bytes Fusion Reification Phase (BFUSE_*)
 
 --
-name: Reification is all-or-nothing
+name: Decoders fuse all-or-nothing; encoders may fuse around opaque parts
 phase: bytes fusion
 invariants: BFUSE_001
 ir: Fused kernels
-logic: A fused kernel is emitted only when the entire encoder or decoder structure can be statically resolved:
-  * Otherwise the interpreter path is used.
-inputs: Programs with encoders/decoders
-oracle: Partial fusion never occurs.
+logic: A fused kernel is emitted only when the structure can be statically resolved; otherwise the interpreter path is used:
+  * Decoders are all-or-nothing: any dynamic or opaque part rejects the whole decoder.
+  * An encoder subtree the reifier does not recognise becomes an `EOpaque` leaf, written through the kernel's own walkers (BFOPS_037); an encoder whose single node is opaque is not fused.
+inputs: Programs with encoders/decoders, including an encoder with an opaque part
+oracle: Decoder fusion is total or absent; encoder fusion may be partial, with opaque parts delegated.
+tests: test/elm-bytes/src/FusionPartialOpaqueTest.elm
 --
 --
 name: Dynamic encoders/decoders rejected from fusion
@@ -2298,6 +2418,19 @@ oracle: No runtime value inspection in fusion decisions.
 
 Note: See invariants.csv for the full list of BFOPS invariants (BFOPS_001 through BFOPS_038).
 These cover cursor state, SSA threading, encoder/decoder bounds checking, lowering, and ABI rules.
+
+--
+name: Fused kernels make only the allowed kernel calls
+phase: bytes fusion
+invariants: BFOPS_037
+ir: LLVM IR of fused encoders/decoders
+logic: Inspect the lowered fused kernels:
+  * The only calls are `elm_encoder_size` / `elm_encoder_write_into` for opaque encoder parts and the `List.reverse` kernel at the end of a list decoder.
+  * Everything else is inlined.
+inputs: Programs with fused encoders (with and without opaque parts) and list decoders
+oracle: No other interpreter or kernel call inside a fused kernel.
+tests: test/elm-bytes/src/FusionPartialOpaqueTest.elm (pins the elm_encoder_write_into delegation)
+--
 
 ---
 
@@ -2351,6 +2484,19 @@ logic: Compare MonoTypes before and after GlobalOpt:
 inputs: Monomorphized graphs before/after GlobalOpt
 oracle: Type mutations are limited to documented canonicalization.
 tests: REMOVED. compiler/tests/TestLogic/CrossPhase/TypeConsistencyTest.elm no longer exists; no replacement checker.
+--
+--
+name: Passes never drop, merge or move Debug-bearing expressions
+phase: cross-phase (GlobalOpt)
+invariants: OPT_DEBUG_ORDER_001
+ir: MonoGraph before/after CSE, inlining, CAF dedupe and CAF hoisting
+logic: With CAF hoisting enabled:
+  * Build closed subtrees that call `Debug.log` directly, through a global, and through a global that calls such a global.
+  * Run CafHoist and assert none of them is hoisted (all counted in `skippedDebug`) and their bodies are unchanged; the Debug check is transitive (`CsePurity.analyze`'s `safeSpecs`), as in CSE.
+  End to end on the default pipeline: Debug.log output keeps source order and is never dropped.
+inputs: Hand-built graphs; E2E programs with Debug.log
+oracle: No Debug-bearing expression is moved into a CAF, merged or dropped.
+tests: compiler/tests/TestLogic/GlobalOpt/CafHoistTest.elm (hoisting on), test/elm/src/DebugLogOrderingTest.elm, test/elm/src/DebugLogNoDropTest.elm
 --
 
 ---

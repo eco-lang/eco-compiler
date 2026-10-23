@@ -183,7 +183,7 @@ Invariants (`design_docs/invariants.csv`):
 - HEAP_005, HEAP_031, HEAP_034, HEAP_SNAPSHOT_001, HEAP_SNAPSHOT_002: unwritten published objects and the snapshot.
 - HEAP_BUILDER_001 to HEAP_BUILDER_003, HEAP_040: builders and the scratch stack.
 - HEAP_001 to HEAP_004, HEAP_008, HEAP_019, HEAP_028, HEAP_044, HEAP_071: layout, object kinds, field kinds, minimum size.
-- HEAP_007: one mutator per process. GC_DET_001: decisions from mutator state. FORBID_HEAP_004: no collector writes the mutator reads. GC_MODEL_001: the canary (warn by default; it lists M1 to M7, `test/tla/models.txt` adds M8).
+- HEAP_007: one mutator per process. GC_DET_001: decisions from mutator state. FORBID_HEAP_004: no collector writes the mutator reads. The canary's rule is in `test/tla/README.md` "The canary" (warn by default; it covers M1 to M8 in `test/tla/models.txt`).
 - HEAP_011, HEAP_020, FORBID_HEAP_003: rooting.
 - HEAP_041, HEAP_042, HEAP_069, HEAP_070, HEAP_079, HEAP_082: allocation, region nursery, direct-allocation budget.
 - HEAP_026, HEAP_062, HEAP_080, HEAP_081: large objects and the young large-object space.

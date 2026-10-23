@@ -64,7 +64,7 @@ import Test exposing (Test)
 -}
 suite : Test
 suite =
-    Test.describe "LSS_024 Borrow fence (buildLambdaSigs)"
+    Test.describe "Fingerprint-fence Borrow meet (buildLambdaSigs)"
         [ Test.test "borrowing-only instance alone: param reads back borrowed" <|
             \() ->
                 Expect.equal (Set.fromList [ 0 ])

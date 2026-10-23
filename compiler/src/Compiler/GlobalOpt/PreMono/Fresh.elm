@@ -396,7 +396,7 @@ copyExpr env expr =
 
         TOpt.Function _ params body meta ->
             -- A COPIED lambda is a NEW member. Sharing the original's id is the
-            -- LSS_009 impersonation this module exists to prevent.
+            -- verbatim-copy impersonation this module exists to prevent.
             let
                 ( lamId, st1 ) =
                     AssignMVarIds.mintLamId env.state
@@ -1408,7 +1408,7 @@ seeLam who lamId seen =
             Id.toComparable lamId
     in
     if Dict.member key seen.lams then
-        Err (who ++ ": SrcLambdaId " ++ String.fromInt key ++ " occurs twice — a copy kept its identity (LSS_009 impersonation). Use Fresh.freshenCopy.")
+        Err (who ++ ": SrcLambdaId " ++ String.fromInt key ++ " occurs twice — a copy kept its identity (verbatim-copy impersonation). Use Fresh.freshenCopy.")
 
     else
         Ok { seen | lams = Dict.insert key () seen.lams }

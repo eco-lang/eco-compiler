@@ -68,7 +68,7 @@ closures.
 -}
 suite : Test
 suite =
-    Test.describe "LSS_024 fingerprint fence (AbiCloning)"
+    Test.describe "Fingerprint fence (AbiCloning)"
         [ Test.test "verbatim clones under one member: multi group, fingerprints agree, site STAMPS" <|
             \() ->
                 let

@@ -914,9 +914,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     in
                     if arity == 0 then
                         -- Zero-arity function (thunk): call directly
-                        -- NOTE: No AllBoxed kernels with arity 0 exist today. If one is added,
-                        -- this path must consult kernelBackendAbiPolicy and force
-                        -- resultMlirType = Types.ecoValue.
+                        -- The result ABI comes from monoTypeToAbi, matching the
+                        -- ElmDerived kernelBackendAbiPolicy (KERN_006).
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -938,8 +937,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         --
                         -- Phase B: route symbol-name selection through registerKernelInstance
                         -- so Utils.compare on primitive comparables gets the typed
-                        -- _Int / _Float / _Char variant. AllBoxed kernels continue to
-                        -- get the boxed root symbol with all-!eco.value ABI.
+                        -- _Int / _Float / _Char variant. Kernels with only boxed
+                        -- parameters get the root symbol with all-!eco.value ABI.
                         instanceClosureResult ctx1 var kernelPrefix home name monoType arity
 
                 _ ->
@@ -970,9 +969,8 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     in
                     if arity == 0 then
                         -- Zero-arity function (thunk): call directly
-                        -- NOTE: No AllBoxed kernels with arity 0 exist today. If one is added,
-                        -- this path must consult kernelBackendAbiPolicy and force
-                        -- resultMlirType = Types.ecoValue.
+                        -- The result ABI comes from monoTypeToAbi, matching the
+                        -- ElmDerived kernelBackendAbiPolicy (KERN_006).
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -1828,8 +1826,8 @@ result is that primitive and carries a matching non-zero `_result_kind`;
 otherwise (function-type result, boxed Custom, etc.) it is !eco.value.
 
 Only Bool (i1) arguments are boxed to !eco.value here; Int, Float and Char
-stay primitive, and EcoToLLVM's lowerGenericApply boxes them at the LLVM level
-from their SSA types.
+stay primitive. EcoToLLVM's lowerGenericApply passes them unboxed, with their
+kinds in an EvalParamLayout, and the runtime re-boxes per slot (CGEN_059).
 
 -}
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -1843,9 +1841,8 @@ generateGenericApply ctx func args resultType =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Only box Bool (i1) to !eco.value; Int/Float/Char stay as primitives.
-        -- EcoToLLVM's lowerGenericApply will box primitives at the LLVM level
-        -- using SSA types to determine the correct boxing function.
+        -- Only box Bool (i1) to !eco.value; Int/Float/Char stay as primitives,
+        -- passed unboxed with their kinds; the runtime re-boxes (CGEN_059).
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsForClosureBoundary False ctx1 argsWithTypes
 

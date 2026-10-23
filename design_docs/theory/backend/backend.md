@@ -156,7 +156,7 @@ Invariants (`design_docs/invariants.csv`):
 - CGEN_076, HEAP_034: inline expansions of markers.
 - CGEN_072, CGEN_074, CGEN_081, CGEN_083: leaf stamps, capacity hoisting, reachability, partitioning.
 - CGEN_082: constant thunks folded in the compiler.
-- CGEN_064, CGEN_066: aggregate types and their ordering.
+- CGEN_064, CGEN_067: sret lowering of aggregate results (CGEN_066, the boundary-flattening pass, is retired).
 - CGEN_050 to CGEN_063: the front end's contract with the dialect.
 - REP_ABI_001, REP_ABI_002, FORBID_REP_001 to FORBID_REP_003, FORBID_META_001: independent representation models.
 - HEAP_028, FORBID_HEAP_002: heap layout assumed by the expansions.

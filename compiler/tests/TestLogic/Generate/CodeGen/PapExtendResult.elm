@@ -3,21 +3,29 @@ module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResul
 {-| Checks that the code generator builds every `eco.papExtend` op with one
 result of a type a closure application can return and, unless it is a generic
 or segmentation-unknown application, with its arity recorded, so that an op
-built otherwise fails a test.
+built otherwise fails a test (CGEN\_034, CGEN\_056, CGEN\_058).
 
 A _partial application_ (PAP) is a function value together with the
 arguments it has been given so far. An `eco.papExtend` op gives a PAP more
 arguments. It may carry an integer `remaining_arity` attribute, whose value
 `TestLogic.Generate.CodeGen.PapExtendArity` checks where it can, and a string
-`_call_kind` attribute naming the kind of application.
+`_call_kind` attribute naming the kind of application. An op without
+`remaining_arity` is in _generic mode_: the runtime decides saturation from the
+closure header.
 
 `expectPapExtendResult` compiles a program with `TestPipeline.runToMlir` and
 fails if compilation fails. Otherwise it looks at every `eco.papExtend` op at
 any depth of the module and reports one with:
 
   - a number of results other than one;
-  - a result type other than `!eco.value` (a boxed value) or one of the
-    unboxed types `i1`, `i16`, `i64` and `f64`;
+  - in generic mode (no `remaining_arity`), a result type other than
+    `!eco.value` (a boxed value) or one of the primitives `i64`, `i16` and
+    `f64`. This is the rule `PapExtendOp::verify` in
+    `runtime/src/codegen/EcoOps.cpp` enforces. In particular a generic-mode
+    `i1` result is rejected: a Bool crosses the closure boundary boxed;
+  - with `remaining_arity` (typed mode), a result type other than
+    `!eco.value`, `i1`, `i16`, `i64` or `f64`. The C++ verifier checks no
+    result type in typed mode; this set is the test's own;
   - no integer `remaining_arity` attribute, unless its `_call_kind` is
     `generic_apply` or `segmentation_unknown`.
 
@@ -25,9 +33,10 @@ When there are violations the expectation reports only the first, as
 `TestLogic.Generate.CodeGen.Invariants.violationsToExpectation` describes.
 
 Among what is not tested: the value of `remaining_arity`; whether a typed
-result matches the return type of the function being applied; and whether a
+result matches the return type of the function being applied; whether a
 `generic_apply` or `segmentation_unknown` op that does carry `remaining_arity`
-should.
+should; and whether a generic-mode op's `_result_kind` agrees with its result
+type, which the C++ verifier does not check either.
 
 @docs expectPapExtendResult
 
@@ -74,19 +83,34 @@ checkPapExtendResult mlirModule =
 
 
 {-| Returns a violation for the first rule `op` breaks, checking in order: one
-result, a valid result type, then an integer `remaining_arity` present. An op
-with no `remaining_arity` passes when its `_call_kind` is `generic_apply` or
-`segmentation_unknown`.
+result, a valid result type for its mode, then an integer `remaining_arity`
+present. An op with no `remaining_arity` passes the last rule when its
+`_call_kind` is `generic_apply` or `segmentation_unknown`.
 -}
 checkPapExtendOp : MlirOp -> Maybe Violation
 checkPapExtendOp op =
     let
         maybeRemainingArity =
             getIntAttr "remaining_arity" op
+
+        callKindText =
+            case getStringAttr "_call_kind" op of
+                Just kind ->
+                    " (_call_kind " ++ kind ++ ")"
+
+                Nothing ->
+                    ""
     in
     case op.results of
         [ ( _, resultType ) ] ->
-            if not (isValidPapExtendResultType resultType) then
+            if maybeRemainingArity == Nothing && not (isValidGenericResultType resultType) then
+                Just
+                    { opId = op.id
+                    , opName = op.name
+                    , message = "generic-mode eco.papExtend (no remaining_arity)" ++ callKindText ++ " result should be !eco.value, i16, i64, or f64, got " ++ typeToString resultType
+                    }
+
+            else if not (isValidPapExtendResultType resultType) then
                 Just
                     { opId = op.id
                     , opName = op.name
@@ -118,8 +142,30 @@ checkPapExtendOp op =
                 }
 
 
+{-| Returns whether `t` is `!eco.value`, `i16`, `i64` or `f64`, the result
+types `PapExtendOp::verify` accepts on a generic-mode `eco.papExtend` op.
+-}
+isValidGenericResultType : MlirType -> Bool
+isValidGenericResultType t =
+    case t of
+        NamedStruct name ->
+            name == "eco.value"
+
+        I16 ->
+            True
+
+        I64 ->
+            True
+
+        F64 ->
+            True
+
+        _ ->
+            False
+
+
 {-| Returns whether `t` is `!eco.value`, `i1`, `i16`, `i64` or `f64`, the
-result types an `eco.papExtend` op may have.
+result types a typed-mode `eco.papExtend` op may have.
 -}
 isValidPapExtendResultType : MlirType -> Bool
 isValidPapExtendResultType t =

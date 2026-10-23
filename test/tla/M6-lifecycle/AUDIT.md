@@ -407,7 +407,7 @@ Findings while building the specs:
   `tla_m6` macros), and in `OldGenSpace.cpp` the `m6.closing` probe inside `closingFinish` (already
   inside the `closingFinish` region).
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 39 pins
 name this model (6 census, 3 file, 6 grep, 24 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -416,7 +416,7 @@ wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fir
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: region TLH.destructor (e50c08c7f202), census Allocator.hpp (bedee6e4aa91), grep F.threadMutex (e1f93bebd039).
 
@@ -447,13 +447,13 @@ The destructor's probe fires only in the fork harness's `det-cr031` arm (gated b
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M6: census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: new relaxed `atomic_ref<GCPhase>` accesses of `gc_phase_` in promotion). No gang, pool, fork or lifecycle step changes; the new lines are M4's.
 
 **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.2: CR-012 option F (a second live mutator is forbidden), CR-012(d) fixed (test/tla/README.md "The canary")
 
 Pins fired: region `AL.acquireOldGenBlock` (**4f5f0b1d4dcd**), region `AL.releaseOldGenBlock` (**0fe08577fb84**), census `Allocator.cpp` (**88ca56595b84**), census `Allocator.hpp` (**1936ebd9fe0e**), grep `F.threadMutex` (**ac671f10dc1d**: the new `allowMultipleMutators` lock_guard).
 
@@ -471,7 +471,7 @@ leaf (it calls nothing).
 
 M6 models the lifecycle locks (registry, gangs, pool, `thread_mutex_` in the fork prepare). The new `thread_mutex_` holder (`allowMultipleMutators`) takes no other lock and is called only at setup; the in-use counter accesses stay inside the existing `thread_mutex_` sections; the `initThread` abort runs under `thread_mutex_` with nothing else held. No lock order changes. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: region `AL.acquireOldGenBlock` (**58fd49f66454**).
 
@@ -492,7 +492,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 M6 sees `acquireOldGenBlock` only as a `thread_mutex_` holder that may wait on a pool job; the policy removes waits (outside the cap) and adds no lock. **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: the unified fork design (CR-003/004/005/013/015/023/031/032) (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: the unified fork design (CR-003/004/005/013/015/023/031/032) (test/tla/README.md "The canary")
 
 Pins fired: files `GCHelperPool.hpp` (**376411c19869**), `GCHelperPool.cpp` (**22f4e3f2b546**); new file and census pins `GCFork.cpp`; regions `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `TLH.minorGC` (**896f924a1e35**), `NT.tenureLaunch` (**c844a0dfc358**), `NT.tenureConcLaunch` (**873a1bb7f7be**), `AL.onGCPauseEnd` (**21aae9bc0c5a**), `AL.destructor` (**4cd5c1af901a**); censuses `Allocator.cpp` (**98ff871fcd48**), `Allocator.hpp` (**12959cd0b43c**), `GCHelperPool.cpp` (**98e0cc199b0b**), `GCHelperPool.hpp` (**297cf886ba5a**), `NurserySpace.cpp` (**ac75856d10b4**), `P1Census.cpp` (**ce0924594df0**), new census pins `ThreadLocalHeap.{cpp,hpp}`; greps `F.bgEp` (**add33fc189d1**), `F.atfork` (**850ac4ab5ed2**), `F.threadMutex` (**6cdf9fdc0767**).
 
@@ -568,7 +568,7 @@ running unconditionally -> CRT `CR-023` sees running() false. `det-cr015` now pa
 
 **Verdict: model updated (HelperPool, Gangs, TracePool, TraceGangs, MAPPING.md).**
 
-## 2026-10-01 — frontend-heap-release P1: explicit release takes thread_mutex_ (GC_MODEL_001)
+## 2026-10-01 — frontend-heap-release P1: explicit release takes thread_mutex_ (test/tla/README.md "The canary")
 
 Pins fired: census `Allocator.cpp` (**7d5d75af1902**: four new
 `std::lock_guard<std::recursive_mutex> lock(thread_mutex_)` lines), grep `F.threadMutex` (**00cb061f21bd**,
@@ -587,7 +587,7 @@ workers take only the pool's `m_` (HEAP_058), exactly like `drainHelperWork` and
 CR-015 shape, `pool_host_fork_*` rows). No new atomic, thread, job kind or fork-handler state.
 **Verdict: no model change needed** (M7 models the drain step itself: `DiscardAllPending`).
 
-## 2026-10-09 — plans/spawn-not-fork.md: Eco.Process spawns with posix_spawn, no runtime fork() left (GC_MODEL_001)
+## 2026-10-09 — plans/spawn-not-fork.md: Eco.Process spawns with posix_spawn, no runtime fork() left (test/tla/README.md "The canary")
 
 Pin `F.fork` (grep) moved, new hash prefix `e3b0c44298fc`: the grep now matches nothing. The two
 `fork()` calls in `eco-kernel-cpp/src/eco-kernel/Process.cpp` (`spawn`, `spawnProcess`) were replaced
@@ -599,7 +599,7 @@ pthread_atfork handler (pinned by test/platform/SpawnTest.cpp S1), so a spawn is
 sense. No fork handler, lock, layer or lifecycle state changed.
 **Verdict: no model change needed.**
 
-## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (GC_MODEL_001)
+## 2026-10-06 — eco-kernel-cpp/src/eco renamed to src/eco-kernel (test/tla/README.md "The canary")
 
 Pin `F.fork` (grep) moved, new hash prefix `a6e632eaf3ea`. The kernel C++ directory was renamed so
 it no longer collides with `src/Eco` on case-insensitive filesystems. The grep still finds the same
@@ -607,7 +607,7 @@ two `fork()` calls in Process.cpp with identical text; only the path prefix in t
 changed. No fork site, fork handler or lifecycle state changed.
 **Verdict: no model change needed.**
 
-## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (GC_MODEL_001)
+## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.runCycleStepConcurrent` (**d618e7fcb354**).
 
@@ -622,7 +622,7 @@ deterministic. No atomic step, lock, shared location or memory order changed. M6
 this edit does not touch.
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 

@@ -181,4 +181,5 @@ Parent: [verification.md](verification.md). Related: [concurrency-models.md](con
 - `CMakeLists.txt`: `ECO_HEAP_VALIDATE`, `tla-canary` (strict mode `ECO_TLA_CANARY_STRICT`), `register-guards`.
 - `test/tla/README.md`: the formal models and the canary.
 - `docs/testing.md` does not describe the ThreadSanitizer, GenMC or guard tiers; the READMEs under `test/` do.
-- `design_docs/invariants.csv`: the heap rules (HEAP_*), HEAP_082 (tests run the region nursery), HEAP_007 and HEAP_075 (fork contract and one mutator), HEAP_080 (young large objects are never swept), SYS_008 (spawned test children), GC_DET_001 (determinism), GC_MODEL_001 (investigate the named model before touching a canary hash), LIVE_* (liveness holds).
+- `design_docs/invariants.csv`: the heap rules (HEAP_*), HEAP_082 (tests run the region nursery), HEAP_007 and HEAP_075 (fork contract and one mutator), HEAP_080 (young large objects are never swept), SYS_008 (spawned test children), GC_DET_001 (determinism), LIVE_* (liveness holds).
+- `test/tla/README.md` "The canary": the canary rule (investigate the named model before touching a canary hash).

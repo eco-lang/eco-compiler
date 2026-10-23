@@ -36,10 +36,17 @@ The tests establish:
     minted and nothing is replaced.
   - With room for no hoists, nothing is minted and `skippedBudget` is at
     least 1.
+  - OPT_DEBUG_ORDER_001, on a second fixture, `debugGraph`, with hoisting on
+    (minimum size 3, room for 100 hoists): a closed call of a global function
+    that calls `Debug.log` is not hoisted, nor is one of a global that calls
+    such a global, nor one of the `Debug.log` kernel itself. All three are
+    counted in `skippedDebug`, and their bodies are left exactly as they were.
+    A closed call of a global function that does not log, in the same graph,
+    is hoisted, so the exclusion is not simply rejecting every global call.
 
 Among what is not tested: candidates that contain a closure, which are minted
-once per site rather than shared; the exclusions for function-typed, `Debug`
-and `elm/bytes` candidates; tail-function bodies and closure
+once per site rather than shared; the exclusions for function-typed and
+`elm/bytes` candidates; tail-function bodies and closure
 capture expressions; an eligible subexpression inside an ineligible one; the
 names given to new specs in `reverseMapping`; the crash on a registry whose
 size does not match the node count; and the `origNodes` counter.
@@ -118,6 +125,32 @@ suite =
                 Expect.all
                     [ \_ -> Expect.equal 0 stats.hoisted
                     , \_ -> Expect.atLeast 1 stats.skippedBudget
+                    ]
+                    ()
+        , Test.test "OPT_DEBUG_ORDER_001: closed call reaching Debug.log through a global is not hoisted" <|
+            \_ ->
+                let
+                    ( Mono.MonoGraph g1, stats ) =
+                        CafHoist.run { minNodes = 3, maxHoists = 100 } debugGraph
+
+                    unchanged sid =
+                        \_ ->
+                            Expect.equal (Array.get sid debugGraphNodes) (Array.get sid g1.nodes)
+                in
+                Expect.all
+                    [ \_ -> Expect.equal 3 stats.skippedDebug
+                    , \_ -> Expect.equal 1 stats.hoisted
+                    , \_ -> Expect.equal 1 stats.sites
+                    , unchanged 0
+                    , unchanged 1
+                    , unchanged 3
+                    , \_ ->
+                        case Array.get 2 g1.nodes of
+                            Just (Just (Mono.MonoDefine (Mono.MonoClosure _ (Mono.MonoCall _ _ [ Mono.MonoVarGlobal _ 7 _, Mono.MonoVarLocal _ _ ] _ _) _) _)) ->
+                                Expect.pass
+
+                            _ ->
+                                Expect.fail "expected node 2's closed call of the non-logging global to be hoisted into spec 7"
                     ]
                     ()
         ]
@@ -266,4 +299,125 @@ testGraph =
         , lssMemberOrigins = Dict.empty
         , lssMemberKinds = Dict.empty
         , lssBlockedMembers = Dict.empty
+        }
+
+
+
+-- ====== DEBUG FIXTURE (OPT_DEBUG_ORDER_001) ======
+
+
+{-| The `Debug.log` kernel reference, given the type `String -> String -> String`.
+-}
+debugLogKernel : Mono.MonoExpr
+debugLogKernel =
+    Mono.MonoVarKernel A.zero
+        "Elm"
+        "Debug"
+        "log"
+        (Mono.mFunction Mono.topLegacy [ strTy, strTy ] strTy)
+
+
+{-| Builds a spec defining a function of one `String` parameter `s` whose body
+is `body s`, with its closure numbered `uid`.
+-}
+helperNode : Int -> (Mono.MonoExpr -> Mono.MonoExpr) -> Mono.MonoNode
+helperNode uid body =
+    Mono.MonoDefine
+        (Mono.MonoClosure
+            { lambdaId = Mono.AnonymousLambda home uid
+            , srcLambda = Nothing
+            , lssMember = Nothing
+            , captures = []
+            , params = [ ( "s", strTy ) ]
+            , closureKind = Nothing
+            , captureAbi = Nothing
+            }
+            (body (Mono.MonoVarLocal "s" strTy))
+            fnTy
+        )
+        fnTy
+
+
+{-| The closed call `callee "ab"` of a global spec, with result type `String`.
+It counts three nodes: the call, the global reference and the literal.
+-}
+closedGlobalCall : Int -> Mono.MonoExpr
+closedGlobalCall sid =
+    Mono.MonoCall A.zero
+        (Mono.MonoVarGlobal A.zero sid fnTy)
+        [ Mono.MonoLiteral (Mono.LStr "ab") strTy ]
+        strTy
+        Mono.defaultCallInfo
+
+
+{-| The nodes of `debugGraph`.
+
+  - 0: `bodyUsing "x"` of a closed call of spec 4, which calls `Debug.log`.
+  - 1: `bodyUsing "y"` of a closed call of spec 5, which calls spec 4.
+  - 2: `bodyUsing "z"` of a closed call of spec 6, which does not log.
+  - 3: `bodyUsing "w"` of the closed call `Debug.log "ab" "cd"`.
+  - 4: `logger s = Debug.log "lbl" s`.
+  - 5: `viaLogger s = logger s`.
+  - 6: `clean s = String.append s s`.
+
+-}
+debugGraphNodes : Array.Array (Maybe Mono.MonoNode)
+debugGraphNodes =
+    Array.fromList
+        [ Just (funcNode 10 "x" (closedGlobalCall 4))
+        , Just (funcNode 11 "y" (closedGlobalCall 5))
+        , Just (funcNode 12 "z" (closedGlobalCall 6))
+        , Just
+            (funcNode 13
+                "w"
+                (Mono.MonoCall A.zero
+                    debugLogKernel
+                    [ Mono.MonoLiteral (Mono.LStr "ab") strTy
+                    , Mono.MonoLiteral (Mono.LStr "cd") strTy
+                    ]
+                    strTy
+                    Mono.defaultCallInfo
+                )
+            )
+        , Just
+            (helperNode 14
+                (\s ->
+                    Mono.MonoCall A.zero
+                        debugLogKernel
+                        [ Mono.MonoLiteral (Mono.LStr "lbl") strTy, s ]
+                        strTy
+                        Mono.defaultCallInfo
+                )
+            )
+        , Just
+            (helperNode 15
+                (\s -> Mono.MonoCall A.zero (Mono.MonoVarGlobal A.zero 4 fnTy) [ s ] strTy Mono.defaultCallInfo)
+            )
+        , Just (helperNode 16 (\s -> bodyUsing "s" s))
+        ]
+
+
+{-| The seven-spec graph of the `Debug` test, `debugGraphNodes` with a
+registry whose size matches.
+-}
+debugGraph : Mono.MonoGraph
+debugGraph =
+    let
+        (Mono.MonoGraph base) =
+            testGraph
+
+        names =
+            [ "f", "h", "n", "d", "logger", "viaLogger", "clean" ]
+    in
+    Mono.MonoGraph
+        { base
+            | nodes = debugGraphNodes
+            , registry =
+                { nextId = List.length names
+                , mapping = Mono.specKeyMapEmpty
+                , reverseMapping =
+                    Array.fromList (List.map (\n -> Just ( Mono.Global home n, fnTy )) names)
+                , countByGlobal = Dict.empty
+                }
+            , nextLambdaIndex = 17
         }

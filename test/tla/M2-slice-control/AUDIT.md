@@ -308,7 +308,7 @@ merges bring it to 3 M.
 - **Harness note:** `SynthHeap::publishAll` stores `priv = 0` even on an empty stack, where
   `OldGenSpace::publishAll` returns first; a store of the value already there, harmless.
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 31 pins
 name this model (6 census, 3 file, 5 grep, 17 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -317,7 +317,7 @@ wave 3's fixes and the `TLA-REGION` markers landed). From now on, a pin that fir
 here quoting the new hash prefix before `check-tla-manifest.sh --update` accepts it.
 
 
-## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (test/tla/README.md "The canary")
 
 New hash prefixes: 3c350fb64616 (`NR.minorGCRegion`).
 
@@ -351,7 +351,7 @@ state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebu
 135/135 as expected in 140 s.
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: NT.TenureParEnv (new hash prefix 53fc7d8f27b8).
 
@@ -382,7 +382,7 @@ The one edit in the pinned region is the trace-only `m5.l3.claimed` probe after 
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 0, Step 0.3: test accessors (GC_MODEL_001)
+## 2026-09-30 — register-fixes Phase 0, Step 0.3: test accessors (test/tla/README.md "The canary")
 
 Pin fired: grep H12 (`OldGenSpace.hpp` test hooks), new hash prefix **3167be7a492d**.
 
@@ -396,7 +396,7 @@ control is untouched.
 
 **Verdict: test accessor, no model change.**
 
-## 2026-09-30 — register-fixes §3.5: CR-036 negative-control hook (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.5: CR-036 negative-control hook (test/tla/README.md "The canary")
 
 Pin fired: grep H12 (`OldGenSpace.hpp` test hooks), new hash prefix **c9364ed6abde**.
 
@@ -407,7 +407,7 @@ M2's slice, episode and help control is untouched.
 
 **Verdict: test accessor, no model change.**
 
-## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 2 (§4.1-§4.4): CR-014, CR-001 (race), CR-002, CR-028 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M2: Census `runtime/src/allocator/OldGenSpace.cpp` (**2afe7bc4cf4d**: the relaxed `std::atomic_ref<GCPhase>(gc_phase_)` store in `lazySweep`'s `completeSweep` and the relaxed loads in `finalizePoppedCellW`, `finalizeBitmapCellW` and the validate-only PM8 check) and census `runtime/src/allocator/OldGenSpace.hpp` (**493c238780a8**: `static_assert(std::atomic_ref<GCPhase>::is_always_lock_free)`).
 
@@ -416,7 +416,7 @@ The new atomic lines are `gc_phase_` accesses inside parallel promotion (M4's do
 **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: CR-005 closingFinish accepts a stopped episode (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: CR-005 closingFinish accepts a stopped episode (test/tla/README.md "The canary")
 
 Pins fired: regions `OGS.launchBackground` (**011248915015**), `OGS.runCycleStepConcurrent` (**289cdccf4bd4**), `OGS.closingFinish` (**af1f59d07ebb**), `NT.tenureConcLaunch` (**873a1bb7f7be**).
 
@@ -450,7 +450,7 @@ M2`: 34/34 as expected. A refused launch never starts a member (no marker loop r
 contract is unaffected; `tenureConcLaunch`'s refusal leaves the L3 job to `tenureConcFinish` in the
 pause (M2's `MC_quick_tenure_l3` help path). **Verdict: model updated (ClosingFinished, mutant).**
 
-## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (GC_MODEL_001)
+## 2026-10-05 — Windows link: the paced assist's expected-work product without __int128 (test/tla/README.md "The canary")
 
 Pin fired: region `OGS.runCycleStepConcurrent` (**d618e7fcb354**).
 
@@ -465,7 +465,7 @@ deterministic. No atomic step, lock, shared location or memory order changed. M2
 computed; the decision and `k` are unchanged.
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 

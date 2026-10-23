@@ -286,7 +286,7 @@ object in `gc-heap-tsan`'s `heap_driver`, which would reach CR-019's sweep read)
 - The canary lines for `MinorWork.hpp` (now carrying the hooks) and the harness's regions: in the
   report to the orchestrator.
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 40 pins
 name this model (6 census, 4 file, 13 grep, 17 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -343,7 +343,7 @@ register:
   consumer tolerates a duplicate.
 
 
-## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (test/tla/README.md "The canary")
 
 New hash prefixes: 325187bc686f (`NR.copyClaimedR`), 1dcbb38f752b (`NR.reachYoungLargeR`), 3c350fb64616 (`NR.minorGCRegion`).
 
@@ -381,7 +381,7 @@ M1 22/22 in 63 s, M2 33/33 in 57 s, M3 12/12 in 8 s, all as expected. M5 deep ro
 state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebuilt on this tree):
 135/135 as expected in 140 s.
 
-## 2026-09-30 — register-fixes §3.3 + §3.4: the empty-block flip retires index entries (GC_MODEL_001)
+## 2026-09-30 — register-fixes §3.3 + §3.4: the empty-block flip retires index entries (test/tla/README.md "The canary")
 
 Pin fired: grep `P6.M9` (`large_body_index_`), new hash prefix **cc48c7eb8f67**.
 
@@ -394,7 +394,7 @@ the map concurrently with these writes. M3's index-map race (CR-014's tail path)
 
 **Verdict: no model change needed.**
 
-## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038/CR-039 fixed (test/tla/README.md "The canary", one audit for the batch)
 
 Pin fired for M3: region `NR.evacuateR`, new hash prefix **1e4eb8b5439c**.
 
@@ -408,7 +408,7 @@ protocol (Eden / PrevBuilders) is untouched.
 
 **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `NP.reachYoungLargeP` (**2b3de37fd8f0**), region `NR.reachYoungLargeR` (**183e2cd3fb44**); new census pin `AllocatorCommon.hpp`.
 
@@ -426,7 +426,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 Footprint note (§6.1 step 5): M3 has no sweep, so the reader side is outside the model (MAPPING §4, A3). The `ylos_mu_` section stays one step (`Y_Lock`): its header access is now one relaxed whole-word load and, on the age branch, one relaxed store, both inside the lock as before, so `YlosOnce` and every invariant read the same states. MAPPING.md §4 and A3 now record CR-019 as fixed. **Verdict: no model change needed (footprint only); MAPPING.md updated.**
 
 
-## 2026-10-01 — register-fixes Phase 5: fork layer for detector N's mutex (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: fork layer for detector N's mutex (test/tla/README.md "The canary")
 
 Pins fired: census `NurserySpace.cpp` (**ac75856d10b4**).
 
@@ -456,7 +456,7 @@ forwarding step changes; the census is a validate/census-build detector outside 
 **Verdict: no model change needed.** (The pin now also names M6, which models the fork layers.)
 
 
-## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (test/tla/README.md "The canary")
 
 Pins fired: region `NP.scanEntryP` (**e06ed77f04e5**).
 
@@ -474,7 +474,7 @@ unchanged. The same split is in the unpinned shared walkers (`NurseryChildWalk.h
 (`NP.MinorEnv`, `NR.RegionEnv`, `i < 4`) are untouched.
 
 
-## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (test/tla/README.md "The canary")
 
 Pins fired: none (`NP.scanEntryP` text is unchanged: its Closure arm already reads kinds through
 `closureSlotKind` since Phase 1d). Voluntary entry, because the accessor's semantics changed
@@ -494,7 +494,7 @@ is one existing location; no atomic, lock or memory order added). Region hash un
 `test/tla/run_traces.py --model M3` after the change: 15/15 rows as expected (accept/reject
 controls included).
 
-## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (GC_MODEL_001)
+## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (test/tla/README.md "The canary")
 
 Pins fired: none. `NP.scanEntryP` (region hash prefix **e06ed77f04e5**, unchanged): its
 Custom/Record arms already read tail kinds through customSlotKind / recordSlotKind since Phase 1d,
@@ -520,7 +520,7 @@ validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 

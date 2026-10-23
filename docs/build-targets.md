@@ -29,7 +29,7 @@ This reference was verified against the project's `CMakeLists.txt` files.
 | Target | Purpose |
 |---|---|
 | `kernel-license-check` | Check the LSS_022 kernel license manifest (in ALL) |
-| `tla-canary` | TLA+ model canary, GC_MODEL_001 (in ALL; warn mode unless `ECO_TLA_CANARY_STRICT=ON`) |
+| `tla-canary` | TLA+ model canary, rule in `test/tla/README.md` "The canary" (in ALL; warn mode unless `ECO_TLA_CANARY_STRICT=ON`) |
 | `tla-check` / `tla-check-deep` | TLA+ models of the threaded GC, quick / deep tier (`test/tla/models.txt`; needs Java + tla2tools.jar) |
 | `tla-trace` | TLA+ trace validation (`test/tla/traces.txt`) |
 | `genmc-check` | Weak-memory drivers under GenMC (`test/genmc/`; needs the GenMC image) |

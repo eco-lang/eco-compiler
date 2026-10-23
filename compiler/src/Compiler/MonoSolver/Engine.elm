@@ -202,7 +202,7 @@ type alias LssStats =
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
     , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record to stay clear of the 32-slot record GC-scan cap
     , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record per the same 32-slot rationale
-    , layoutQual : LayoutQualStats -- LSS_024 census (plans/lss-layout-qualified-members.md §2.5); NESTED per the same 32-slot rationale (LssStats sits at 31 slots with this field)
+    , layoutQual : LayoutQualStats -- layout-qualified-members census (plans/lss-layout-qualified-members.md §2.5); NESTED per the same 32-slot rationale (LssStats sits at 31 slots with this field)
     }
 
 
@@ -470,10 +470,10 @@ self-compile.
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
     , sources : CoreDict.Dict Int MemberSource
-    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, FIRST-minting SpecId — first-mint-wins; under LSS_024 layout qualification several specs share one mid, so the payload is diagnostics only); written at the qualified intern
+    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, FIRST-minting SpecId — first-mint-wins; under layout qualification several specs share one mid, so the payload is diagnostics only); written at the qualified intern
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
-    , specWidenedKeys : CoreDict.Dict Int String -- LSS_024: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints; a missing entry falls back to SpecId qualification (censused, expected 0).
+    , specWidenedKeys : CoreDict.Dict Int String -- Layout-qualified members: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints; a missing entry falls back to SpecId qualification (censused, expected 0).
     , rootLamOf : CoreDict.Dict Int TOpt.Global -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S — S sits at the runtime's 32-slot record GC-scan cap (the grounding/sigStats/layoutQual rationale).
     }
 
@@ -801,7 +801,7 @@ both qualification regimes.
 -}
 lambdaInstanceMemberGo : Int -> Int -> Int -> S -> ( Int, S )
 lambdaInstanceMemberGo raw instTag specId s0 =
-    -- LSS_024: layout-qualified identity, with the §2.3
+    -- Layout-qualified identity (plans/lss-layout-qualified-members.md), with the §2.3
     -- equal-id μ-tie bypass — see
     -- `lambdaMemberLayoutQualified`.
     lambdaMemberLayoutQualified raw instTag specId s0
@@ -2382,7 +2382,7 @@ enqueueSpecKeyed global monoType s0 =
         underBudget =
             s0.env.lss.maxSpecsPerGlobal <= 0 || count < s0.env.lss.maxSpecsPerGlobal
 
-        -- LSS_024 §2.2: the annotation-widened key is needed on the
+        -- Layout-qualified members §2.2: the annotation-widened key is needed on the
         -- over-budget arm (it IS the dedup key there) and on the
         -- under-budget arm too (the capture probe — the under-budget create
         -- path is exactly the sigFlow-split population). Built at most once,
@@ -2433,7 +2433,7 @@ enqueueSpecKeyed global monoType s0 =
                         { stats0 | widenedByBudget = stats0.widenedByBudget + 1 }
             }
 
-        -- LSS_024 §2.2: capture the widened creation key for a just-CREATED
+        -- Layout-qualified members §2.2: capture the widened creation key for a just-CREATED
         -- spec, write-once. Both arms record (widenSets is idempotent, so
         -- budget-widened and annotation-created twins of one global land
         -- EQUAL widened keys — their lambdas share, per the plan's §5 pins).

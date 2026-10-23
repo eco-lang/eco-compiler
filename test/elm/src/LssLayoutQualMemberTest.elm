@@ -1,13 +1,13 @@
 module LssLayoutQualMemberTest exposing (main)
 
-{-| LSS_024 reproducer (plans/lss-layout-qualified-members.md §5.4): a
+{-| Layout-qualified members reproducer (plans/lss-layout-qualified-members.md §5.4): a
 two-caller family forcing an annotation-only same-layout key split of `mid`
 ({mA} vs {mB} on `f`'s arrow) whose per-spec callback lambdas feed ONE
 shared `andThenS`-shaped HOF — the miniature of the sigFlow
 `variableToCanType` → `System.TypeCheck.IO.andThen` de-stamp (Phase 0
 census: specs 16373/16375 reading same-raw sibling 2-sets).
 
-Under `lss.layoutQualMembers` both `mid` specs mint their callback under ONE
+With layout-qualified members both `mid` specs mint their callback under ONE
 layout-qualified member id, the shared HOF's callback slot re-becomes a
 singleton, and AbiCloning consults it — where the fingerprint fence must
 DECLINE this particular family (the clones capture different `f`s: an

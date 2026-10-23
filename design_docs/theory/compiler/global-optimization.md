@@ -209,7 +209,7 @@ Invariants (`design_docs/invariants.csv`):
 - GOPT_001: closure staging after regrouping.
 - GOPT_003: a join has known stages only when every branch agrees.
 - GOPT_010 to GOPT_016: the fields of the call record.
-- LSS_008, LSS_009, LSS_017, LSS_018, LSS_024, LSS_025: the lambda-set facts and licenses the stamp phase reads.
+- LSS_008, LSS_017, LSS_018, LSS_025: the lambda-set facts and licenses the stamp phase reads. The representative license and fingerprint fence themselves are stated in `compiler/src/Compiler/GlobalOpt/AbiCloning.elm`.
 - MONO_029: layouts agree across views of a value.
 - CGEN_052, CGEN_060, CGEN_069: the remaining-arity check, the generic fallback, and call records after code motion.
 - HEAP_078: the closure arity limit.

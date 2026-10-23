@@ -41,6 +41,7 @@
 #include "allocator/Utf8Test.hpp"
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
+#include "allocator/StringFormsCompareTest.hpp"
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/ChunkedListTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
@@ -51,6 +52,7 @@
 #include "allocator/WideObjectTest.hpp"
 #include "allocator/WideClosureTest.hpp"
 #include "allocator/EcoApplyClosureTypedTest.hpp"
+#include "allocator/EcoApplyClosureEvalChainTest.hpp"
 #include "allocator/GCPressureTest.hpp"
 #include "allocator/EnsureHeadroomTest.hpp"
 #include "allocator/NurseryFillerTest.hpp"
@@ -1137,6 +1139,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite stringOpsTests("StringOps");
     registerStringOpsTests(stringOpsTests);
 
+    // HEAP_025: equal/compare across the six string forms
+    Testing::TestSuite stringFormsCompareTests("StringFormsCompare");
+    registerStringFormsCompareTests(stringFormsCompareTests);
+
     // List operations tests
     Testing::TestSuite listOpsTests("ListOps");
     registerListOpsTests(listOpsTests);
@@ -1168,6 +1174,10 @@ int main(int argc, char* argv[]) {
     // Phase D typed-apply runtime correctness tests
     Testing::TestSuite ecoApplyClosureTypedTests("EcoApplyClosureTyped");
     registerEcoApplyClosureTypedTests(ecoApplyClosureTypedTests);
+
+    // RUNTIME_CLOSURE_004: over-saturated eval chaining with a GC between stages
+    Testing::TestSuite ecoApplyClosureEvalChainTests("EcoApplyClosureEvalChain");
+    registerEcoApplyClosureEvalChainTests(ecoApplyClosureEvalChainTests);
 
     // Byte-buffer / String non-flat representation coverage (clean tests).
     Testing::TestSuite sliceReprTests("SliceRepresentation");
@@ -1323,6 +1333,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8Tests));
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
+    suite.add(std::move(stringFormsCompareTests));
     suite.add(std::move(listOpsTests));
     suite.add(std::move(chunkedListTests));
     suite.add(std::move(bytesOpsTests));
@@ -1333,6 +1344,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(wideObjectTests));
     suite.add(std::move(wideClosureTests));
     suite.add(std::move(ecoApplyClosureTypedTests));
+    suite.add(std::move(ecoApplyClosureEvalChainTests));
     suite.add(std::move(sliceReprTests));
     suite.add(std::move(addressReservationTests));
     suite.add(std::move(hpointerLayoutTests));

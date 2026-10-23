@@ -26,7 +26,7 @@ Key representation rules:
 
 Before modifying GC concurrency code (`runtime/src/allocator/`), read `test/tla/README.md`: the
 TLA+ models under `test/tla/` describe that code. A `tla-canary` failure means investigate the
-models it names first (GC_MODEL_001); never just repair the hash.
+models it names first (`test/tla/README.md`, "The canary"); never just repair the hash.
 
 ## Commit messages
 

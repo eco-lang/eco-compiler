@@ -2648,21 +2648,18 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     }
 
     /// Generic apply lowering: remaining_arity is absent, so saturation is
-    /// determined at runtime. We build an args array (boxing unboxed values as
-    /// HPointers) and call eco_apply_closure, which handles under/exact/over-
-    /// saturated cases by reading the closure header.
+    /// determined at runtime. We build a typed `i64*` args buffer (no
+    /// LLVM-side boxing) plus an `EvalParamLayout`, and call
+    /// `eco_apply_closure_eval` (CGEN_058), which reads the closure header to
+    /// handle the under/exact/over-saturated cases and delivers a typed result.
     LogicalResult lowerGenericApply(PapExtendOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter,
                                     Location loc, Value closureI64,
                                     ValueRange newargs) const {
-        // Phase D: build a typed `i64*` args buffer (no LLVM-side boxing) and
-        // pass it to `eco_apply_closure_typed` along with an EvalParamLayout
-        // describing each slot's primitive kind. The runtime helper re-boxes
-        // primitives into HPointers (centralising what used to be inline
-        // LLVM boxing) before forwarding to `eco_apply_closure`. Allocation
-        // count is unchanged — the boxing locus has just moved from the
-        // JIT'd IR to the runtime, where a future per-evaluator capability
-        // bit can elide it for evaluators that accept typed newargs.
+        // Build a typed `i64*` args buffer (no LLVM-side boxing) and pass it
+        // to `eco_apply_closure_eval` along with an EvalParamLayout
+        // describing each slot's primitive kind. Any primitive re-boxing the
+        // callee needs happens in the runtime helper, not in the JIT'd IR.
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
@@ -2794,7 +2791,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto remainingArityAttr = op.getRemainingArityAttr();
 
         // Generic mode: remaining_arity absent — runtime saturation check.
-        // Delegate to eco_apply_closure which handles under/exact/over-saturated.
+        // Both generic paths below (lowerSegmentationUnknown and
+        // lowerGenericApply) call eco_apply_closure_eval, which handles
+        // under/exact/over-saturated.
         if (!remainingArityAttr) {
             // Generic-call reason census (plans/staging-honesty-and-production-
             // test-pipeline.md P0.4): census builds only. Untagged generic ops

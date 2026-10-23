@@ -121,7 +121,7 @@ spiral fixture and the split fixture.
 -}
 suite : Test
 suite =
-    Test.describe "LSS_024 layout-qualified members"
+    Test.describe "Layout-qualified members"
         [ Test.describe "pure key machinery" purePins
         , Test.describe "qualification spiral under C" spiralPins
         , Test.describe "annotation-split collapse" splitPins

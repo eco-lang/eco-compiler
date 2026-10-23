@@ -526,7 +526,7 @@ allocation. The driver now bounds allocations between minors.
 `mergeJob` (M5); `census runtime/src/allocator/NurseryTenure.cpp M5`. The harness files are test
 code and need no pin.
 
-## 2026-09-29 — canary baseline (GC_MODEL_001)
+## 2026-09-29 — canary baseline (test/tla/README.md "The canary")
 
 The canary (`test/tla/manifest.txt`, `tla-canary` in every build) was first pinned today: 50 pins
 name this model (6 census, 3 file, 8 grep, 33 region); the list is in MAPPING.md's "Canary pins (A9)" block. This is the
@@ -740,7 +740,7 @@ should get pins naming M5.
 MAPPING.md (§1-§3, §5, §6, new §9); `test/tla/models.txt` (M5's rows); `test/tla/README.md` (layout).
 
 
-## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (GC_MODEL_001)
+## 2026-09-30 — canary: HEAP_071 and HEAP_072 merged (test/tla/README.md "The canary")
 
 New hash prefixes: 325187bc686f (`NR.copyClaimedR`), 1dcbb38f752b (`NR.reachYoungLargeR`), 3c350fb64616 (`NR.minorGCRegion`), b463014eb999 (grep T4).
 
@@ -804,7 +804,7 @@ state counts identical to the entries of 2026-09-29. `tla-trace` (harnesses rebu
 135/135 as expected in 140 s.
 
 
-## 2026-09-30 — canary re-audit: register reproductions (GC_MODEL_001)
+## 2026-09-30 — canary re-audit: register reproductions (test/tla/README.md "The canary")
 
 Pins fired: file TenureWork.hpp (1b0803bf3a66), region NT.TenureParEnv (53fc7d8f27b8).
 
@@ -852,7 +852,7 @@ the code guard `cr038Z` (`CR-039 [xfail CR-039]`, reproduced: t0 marks Z's `Tag_
 control. §5.3 of the fix plan (the merge clears dead ageing-generation YLOS slots) covers it; its
 mutant `skip_ylos_zap_2` will be hosted on this row. No code change, so the canary does not fire.
 
-## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038 and CR-039 fixed, models first (GC_MODEL_001, one audit for the batch)
+## 2026-09-30 — register-fixes Phase 3 (§5.1-§5.3): CR-037, CR-017, CR-038 and CR-039 fixed, models first (test/tla/README.md "The canary", one audit for the batch)
 
 Pins fired for M5: region `TLH.majorGC` (**dde8f0dcca5e**), region `NR.evacuateR` (**1e4eb8b5439c**),
 region `NT.mergeJob` (**2892c92bf479**), grep `T1` (**c5204e1f0f08**: the zap's walk of a Young
@@ -905,7 +905,7 @@ header load (no protocol change).
 **Verdict: model updated (MJ_Mark zap, J_Merge step 5c, LbKey rename), MAPPING.md updated (MJ_Mark,
 J_Merge, LbKey, the lb_bodies footprint row, A6, canary pins).**
 
-## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.1: CR-019 fixed, relaxed atomic whole-word YLOS header access (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.promoteYoungLarge` (**ab64ef2a56ee**), region `NR.reachYoungLargeR` (**183e2cd3fb44**), grep `T3` (**6e200a1c6e88**: the validate check now reads the local copy `hv.age`).
 
@@ -922,7 +922,7 @@ step order or memory order beyond "relaxed" is added, so no happens-before edge 
 
 Region mode: the first reach still sets age 1 under `ylos_mu_` and joins generation m in the same section; only the access is now a whole-word relaxed load/store. No M5 action or variable changes. **Verdict: no model change needed.**
 
-## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (GC_MODEL_001)
+## 2026-10-01 — register-fixes §6.3: CR-007 fixed, no-wait acquire for a promotion holder with n > 1 (test/tla/README.md "The canary")
 
 Pins fired: region `OGS.releaseBlockToAllocator` (**2dc05c9c0440**).
 
@@ -943,7 +943,7 @@ PageWork call runs under `thread_mutex_` like the old ones.
 The validate-only release abort; the pause tenure engine (`runJobParallel`) promotes through `allocatePromotion` and now gets the no-wait page policy, which changes which extent a page comes from, never a tenuring decision. **Verdict: no model change needed.**
 
 
-## 2026-10-01 — register-fixes Phase 5: CR-013 tenure launch refused under a fork hold (GC_MODEL_001)
+## 2026-10-01 — register-fixes Phase 5: CR-013 tenure launch refused under a fork hold (test/tla/README.md "The canary")
 
 Pins fired: regions `TLH.minorGC` (**896f924a1e35**), `TLH.majorGC` (**69a04246e15b**), `NT.tenureLaunch` (**c844a0dfc358**), `NT.tenureConcLaunch` (**873a1bb7f7be**).
 
@@ -981,7 +981,7 @@ l3-exit,l3-minor}` clean (window closed by the refusal; the child's orphan path 
 hold): start/copy/copy-scan/l3-minor reproduce TV1, TV3/TV4, TV6, the L3 hang again.
 
 
-## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 1d: D-semantics walker split (test/tla/README.md "The canary")
 
 Pins fired: none (unpinned shared walkers HeapChildWalk / NurseryChildWalk / OldGenSpace
 scanChildren / NurserySpace scanObject). Voluntary entry (plans/wide-object-tail-kind-words.md §5).
@@ -997,7 +997,7 @@ The mark pass (`OldGenSpace` scanChildren) and the compaction fix pass use the s
 they still visit exactly the same slots.
 
 
-## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (GC_MODEL_001)
+## 2026-10-05 — wide objects Phase 2: closure packed word n:11|max:11|rk:2|kinds:40 + tail kind words (test/tla/README.md "The canary")
 
 Pins fired: none (unpinned shared walker `NurseryChildWalk.hpp`, reached by `scanEntryR` and the
 tenure engine through `forEachChildSlot`). Voluntary entry (plans/wide-object-tail-kind-words.md §5).
@@ -1009,7 +1009,7 @@ allocation (HEAP_077), and the object's size is still a function of its header w
 value slots + K), so promotion copies the ext words with the body. No atomic, lock, memory order or
 step is added or reordered. **Verdict: no model change needed.**
 
-## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (GC_MODEL_001)
+## 2026-10-05 — wide-object-tail-kind-words Phase 3A (Custom/Record ext kind words) (test/tla/README.md "The canary")
 
 No pin fired; voluntary entry (unpinned NurseryChildWalk.hpp, reached by `scanEntryR` and the
 tenure engine through forEachChildSlot, and the YLOS header fix-up; plans/wide-object-tail-kind-words.md §5).
@@ -1032,7 +1032,7 @@ validate pre-walk and OldGenSpace scanChildren: reads only, abort on failure.
 
 **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (GC_MODEL_001)
+## 2026-10-09 — plans/large-object-space.md: the large-object space, header-less bodies, O7 (test/tla/README.md "The canary")
 
 Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct large object (split String/Bytes bodies, YLOS, pinned pointer-free objects, the permanent fallback) now lives in LOS blocks: ordinary `alloc_buffer_size` blocks acquired like bag pages and materialized with `BlockInfo::los` (page index, mark arena, region bounds unchanged), whose free space a mutator-only `LargeObjectSpace` manages (1 KiB granules, a bitmap per block); larger objects keep is_large blocks. Every LOS object is tracked in `large_bodies_` (kind 0 body, 1 YLOS, 2 old: `promoteYoungLarge` and `promoteLargeHeader` re-kind to 2 instead of erasing); `losSweepAtMarkEnd` (inside `finalizeMetaAfterMark`) frees unmarked tracked LOS entries and sets LOS `live_bytes` to used granules; empty LOS blocks beyond `los_empty_keep` are released after the reclaim. LOS blocks are excluded from the flip, reclaim, shrink, evacuation and lazy sweep (`fully_swept` stays true). Bodies are header-less in raw blocks (`kLosRaw`): `greyObject` marks them without a push. O7: `takeFreeAt` releases a reused extent's tail.
 
@@ -1040,7 +1040,7 @@ Pins fired: regions `OGS.greyObject` (**beee5d40d9af**), `OGS.sweepNurseryLargeB
 
 The tenure paths are unchanged: `lb_bodies`/`lb_seen`/`lb_promoted` still name bodies by address, `markLargeBodySeen` colours kind 0 only, `promoteLargeHeader` (now a re-kind to 2, keeping the entry, so trap 14's "promoted body still indexed" holds a fortiori) and `promoteYoungLarge` (re-kind) run at the merge as before. `YlosGen` = "stamp" (HEAP_072's `join_minor`) is still the code; id recycling changed only in that kind-2 retirements now recycle ids, and the model's `ylos_lbid` control already shows ids are not a stamp. With the LOS, bodies (raw pool) and YLOS (object pool) never share a cell, so the model's shared Y cells (`lalloc` bodies and YLOS) are a superset of the code's behaviours. `greyObject`'s raw arm: see M1. **Verdict: no model change needed.**
 
-## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (GC_MODEL_001)
+## 2026-10-09 — plans/region-nursery-everywhere.md: mergeJob records in-place YLOS promotions for P1 detector O (test/tla/README.md "The canary")
 
 Pin fired: region `NT.mergeJob` (**cce0534231b1**).
 

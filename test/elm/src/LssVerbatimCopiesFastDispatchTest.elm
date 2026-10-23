@@ -1,6 +1,6 @@
 module LssVerbatimCopiesFastDispatchTest exposing (main)
 
-{-| LSS M3.5 (LSS_009): `runWith` is polymorphic in a parameter the lambda
+{-| LSS M3.5 (verbatim-copy representative stamping): `runWith` is polymorphic in a parameter the lambda
 never touches, so its two specializations each contain a VERBATIM copy of
 the capturing lambda — same `srcLambda`, identical capture/param/return
 layout, distinct `lambdaId`s. The shared `applyN` specialization's

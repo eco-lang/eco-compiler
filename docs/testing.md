@@ -120,7 +120,7 @@ These are not part of `check` or `full`; see `test/tla/README.md` and
 
 - `tla-canary` (in ALL) — warns (fails with `ECO_TLA_CANARY_STRICT=ON`) when
   GC code pinned by `test/tla/manifest.txt` changes before every model it names
-  has an `AUDIT.md` verdict for the new code (GC_MODEL_001).
+  has an `AUDIT.md` verdict for the new code (the rule: `test/tla/README.md` "The canary").
 - `tla-check` / `tla-check-deep` / `tla-trace` — run the TLA+ models under
   `test/tla/` (quick and deep tiers) and trace validation; need Java and
   tla2tools.jar.

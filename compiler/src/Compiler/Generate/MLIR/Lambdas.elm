@@ -19,6 +19,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..))
 import Set
+import Utils.Crash exposing (crash)
 
 
 
@@ -43,21 +44,37 @@ processLambdas ctx =
                 priorFuncOps =
                     ctx.pendingFuncOps
 
-                -- Deduplicate lambdas by name to avoid duplicate function definitions
-                -- (can happen when BytesFusion compiles a decoder binding AND the fused path
-                -- references the same lambda)
+                -- Deduplicate lambdas by name to avoid duplicate function definitions.
+                -- The same lambda can legitimately be queued twice in one round:
+                -- BytesFusion compiles a decoder binding AND the fused path
+                -- references the same lambda, so `generateClosure` runs twice on one
+                -- `MonoClosure` and queues two identical entries. Those are dropped.
+                -- Two entries that share a name but differ are two different lambdas
+                -- under one lambdaId, which MONO_019 forbids; dropping one would
+                -- silently miscompile every call to it, so that crashes instead.
                 dedupedLambdas =
                     let
                         ( _, revResult ) =
                             List.foldl
                                 (\lambda ( seen, acc ) ->
-                                    if Set.member lambda.name seen then
-                                        ( seen, acc )
+                                    case Dict.get lambda.name seen of
+                                        Just kept ->
+                                            if sameLambda kept lambda then
+                                                ( seen, acc )
 
-                                    else
-                                        ( Set.insert lambda.name seen, lambda :: acc )
+                                            else
+                                                crash
+                                                    ("MONO_019 violation: two different lambdas are both named '"
+                                                        ++ lambda.name
+                                                        ++ "' (in "
+                                                        ++ ctx.currentFuncName
+                                                        ++ "); a lambdaId must identify one logical lambda"
+                                                    )
+
+                                        Nothing ->
+                                            ( Dict.insert lambda.name lambda seen, lambda :: acc )
                                 )
-                                ( Set.empty, [] )
+                                ( Dict.empty, [] )
                                 lambdas
                     in
                     List.reverse revResult
@@ -83,6 +100,28 @@ processLambdas ctx =
                     processLambdas ctxAfter
             in
             ( priorFuncOps ++ List.reverse revLambdaOps ++ moreOps, finalCtx )
+
+
+{-| Whether two pending lambdas queued under one name are the same lambda queued
+twice: the same captures, parameters, body, return type and tail-recursion
+role. `siblingMappings` is not compared, since it records SSA names of the
+enclosing function at the point each copy was queued, which differ between two
+queuings of one lambda without changing the lambda.
+-}
+sameLambda : Ctx.PendingLambda -> Ctx.PendingLambda -> Bool
+sameLambda a b =
+    a.captures
+        == b.captures
+        && a.params
+        == b.params
+        && a.returnType
+        == b.returnType
+        && a.isTailRecursive
+        == b.isTailRecursive
+        && a.selfBindingName
+        == b.selfBindingName
+        && a.body
+        == b.body
 
 
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )

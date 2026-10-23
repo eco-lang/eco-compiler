@@ -138,4 +138,4 @@ Invariants (`design_docs/invariants.csv`):
 - HEAP_020, FORBID_HEAP_003: rooting in C++. HEAP_030, HEAP_034: inline allocation and forwarding checks.
 - KERNEL_TASK_IO_001, KERNEL_TASK_IO_002: deferred kernel IO.
 - LIVE_001 to LIVE_006: holds. PORT_004, PORT_006, PORT_007: ports, the eco thread and JSON flags.
-- GC_DET_001: collector policy does not depend on helper-thread progress. GC_MODEL_001: the model canary.
+- GC_DET_001: collector policy does not depend on helper-thread progress. The model canary's rule is in `test/tla/README.md` "The canary".

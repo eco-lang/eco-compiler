@@ -97,7 +97,7 @@ suite =
                     , \_ -> Expect.equal 1 (statsOf graph).declinedShapeArityOver
                     ]
                     ()
-        , Test.test "3. Fix A does NOT bypass the LSS_024 fence: divergent bodies still decline" <|
+        , Test.test "3. Fix A does NOT bypass the fingerprint fence: divergent bodies still decline" <|
             \() ->
                 let
                     graph =
