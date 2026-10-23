@@ -244,7 +244,7 @@ CGEN_007;MLIR_Codegen;Signatures;enforced;boxToMatchSignature and boxToMatchSign
 
 CGEN_008;MLIR_Codegen;Attributes;documented;eco.construct eco.project eco.call and eco.return always carry an _operand_types attribute whose entries exactly match the MLIR SSA operand types used at that call site;Compiler.Generate.MLIRMono
 
-CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants may appear as i1 immediate SSA operands only in control-flow contexts (case scrutinees) and are otherwise represented as !eco.value constants at ABI, heap, and closure boundaries;PLAN.md known issues section
+CGEN_009;MLIR_Codegen;Booleans;documented;Boolean constants may appear as i1 immediate SSA operands only in control-flow contexts (case scrutinees) and are otherwise represented as !eco.value constants at ABI, heap, and closure boundaries;Compiler.Generate.MLIR.Types
 
 CGEN_010;MLIR_Codegen;Case;enforced;Every eco.case is SSA value-producing: it has explicit MLIR result types on the op itself (not a result_types/caseResultTypes attribute), and every alternative region terminates with eco.yield whose operand arity and types exactly match the eco.case result types;Compiler.Generate.MLIR.Expr and runtime/src/codegen/Ops.td
 

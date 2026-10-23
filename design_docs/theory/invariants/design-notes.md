@@ -28,7 +28,7 @@ Each outcome leaves a different trace, and the table says where to confirm it.
 | Superseded | The original note, unchanged or deleted | The replacement plan or note, the history |
 | Open | A note with no plan and no code | Its revival condition, usually a count to take first |
 
-Adoption is often partial or reshaped. An idea may be adopted in a narrower form, adopted as an analysis while the work built on it is abandoned, or adopted with its central proposal changed. Several notes read as unbuilt although their designs ship. The note on memoizing top-level constants says there is no implementation, and memoization is on by default. The note on deciding whole-program facts before splitting the back end says nothing is built, and the passes exist. The top-level roadmap lists escape analysis as active work, and its passes have been deleted.
+Adoption is often partial or reshaped. An idea may be adopted in a narrower form, adopted as an analysis while the work built on it is abandoned, or adopted with its central proposal changed. Several notes read as unbuilt although their designs ship. The note on memoizing top-level constants says there is no implementation, and memoization is on by default. The note on deciding whole-program facts before splitting the back end says nothing is built, and the passes exist.
 
 ## How a design moves from note to rule
 
@@ -77,9 +77,7 @@ Two lambda set designs failed their own gates. Stack-allocated unions of capture
 
 Several smaller optimizations each showed no gain when measured: fusing list combinators pairwise, raising function arity, flattening record stores, and writing the list higher-order functions in Elm instead of in the kernel. The register of parked items records each one with the condition under which it could return.
 
-### Superseded and open
-
-The top-level roadmap is superseded as a tracker. It is kept as a statement of intent, but it lists work as active that has been removed and work as not started that exists, so do not read it as a statement of what is built.
+### Open
 
 Several designs are open, and each says what would move it forward:
 
@@ -102,7 +100,6 @@ A change to the design record fits when it keeps the notes as reasoning and the 
 - A superseded note gets its status line pointed at the replacement, or is deleted, so the tree does not offer a dead design as live.
 
 ### Examples of changes that would break the theory
-- Editing the top-level roadmap to track current work. A second tracker drifts from the plans and the catalog, which are the record. Update the plan instead.
 - Reviving a parked item without its revival condition being met. The recorded measurement stands until something replaces it. Reopen the item only with fresh evidence and a fresh census.
 - Ranking or justifying an optimization by allocation or call counts alone. Wall time follows retained data and removed work, not counts. Measure those.
 - Rebuilding a removed pass from a stale note. The reason it failed is in the postmortem and the commit that removed it. Read both first.
@@ -123,6 +120,5 @@ Parent: [invariants-and-design.md](invariants-and-design.md).
 - `design_docs/caf-memoization-design.md`, `design_docs/utf8-string-encoding-investigation.md`, `design_docs/fused-bytes-compilation.md`, `design_docs/array-optimisation.md`, `design_docs/kernel-boundary-reduction.md`, `design_docs/debug-log-ordering-policy.md`.
 - `design_docs/backend-parallel-optimization.md`, `design_docs/mlir-level-partitioning-whole-program-steps.md`, `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`, `design_docs/distribution.md`.
 - `design_docs/kernel-closure-lookthrough.md`, `direct-call-decline-census.md`, `design_docs/explicit-meta-structures.md`, `design_docs/incremental-builds/README.md`, `error-handling.md`, `tuple-project-fun-error.md` (open, unverified), `let-number-misspec-error.md` (superseded).
-- `PLAN.md`: the top-level roadmap, superseded as a tracker.
 - `compiler/src/Compiler/Eco/Config.elm`: the defaults that say which adopted compiler designs run. `compiler/src/Compiler/MonoSolver/`, `compiler/src/Compiler/GlobalOpt/`: where they live.
 - `runtime/src/codegen/Passes/` (`EcoGCStrategy.cpp`, `EcoToLLVMValueAgg.cpp`), `runtime/src/codegen/EcoBackend.cpp`, `runtime/src/allocator/`, `runtime/src/platform/Scheduler.cpp`: where adopted back-end and runtime designs live.

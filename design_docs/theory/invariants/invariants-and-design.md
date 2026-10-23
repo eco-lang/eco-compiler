@@ -115,4 +115,4 @@ Parent: [eco.md](../../../THEORY.md). Children: [invariants.md](invariants.md), 
 - `STYLE.md`, `GITSTYLE.md`: the C++ and commit style guides.
 - `CLAUDE.md`: the agent instructions, the blocks to read first and the pointer to `test/tla/README.md`.
 - `test/tla/README.md`, section "The canary", and `test/tla/manifest.txt`: the collector models and their drift check.
-- `plans/`, `PLAN.md`: the plans and the roadmap. `plans/threaded-gc-master-plan.md` ("How this plan is used") shows how a large plan is staged. `plans/hpointer-representation-redesign.md`, `plans/2-bit-unboxed-migration.md` and `plans/null-cons-hpointer-embedding.md` record the representation decisions above. `plans/threaded-gc-04-frozen-published-heap.md` states the no-writes-after-survival premise.
+- `plans/`: the plans. `plans/threaded-gc-master-plan.md` ("How this plan is used") shows how a large plan is staged. `plans/hpointer-representation-redesign.md`, `plans/2-bit-unboxed-migration.md` and `plans/null-cons-hpointer-embedding.md` record the representation decisions above. `plans/threaded-gc-04-frozen-published-heap.md` states the no-writes-after-survival premise.
