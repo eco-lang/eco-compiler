@@ -41,7 +41,7 @@ on:
   schedule:
     # Nightly build keeps the workflow exercised. (schedule only fires from the
     # default branch, so this is inert until merged to master.)
-    - cron: '0 6 * * *'
+    - cron: '0 0 * * *'
 
 # A newer push to the same branch cancels this run. Master and tag runs each
 # get a group of their own, so they are never cancelled or queued behind another.

@@ -16,9 +16,9 @@ name: publish-nightly
 
 on:
   schedule:
-    # After the 06:00-06:40 build crons clear; linux-aot (its three jobs in
+    # Four hours after the 00:00 build crons; linux-aot (its three jobs in
     # parallel) is the slowest; see plans/nightly-build-publishing.md (Risks).
-    - cron: '0 10 * * *'
+    - cron: '0 4 * * *'
   workflow_dispatch: {}
 
 permissions:

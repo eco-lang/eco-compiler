@@ -57,7 +57,7 @@ on:
   schedule:
     # Nightly build keeps the debian + alpine LLVM caches accessed (a restore
     # resets GitHub's 7-day eviction timer). Inert until merged to master.
-    - cron: '20 6 * * *'
+    - cron: '0 0 * * *'
 
 env:
   LLVM_VERSION: '21.1.8'
