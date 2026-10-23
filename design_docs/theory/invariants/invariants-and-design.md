@@ -69,7 +69,7 @@ Code comments hold the local reason and cite the rule's number.
 
 `STYLE.md` is the coding guide for the C++ runtime. Collector code is read to check its invariants, not only its behavior, so the guide asks for a comment stating the purpose of every class, field and public method, and the preconditions a caller must meet, such as holding a lock. It also asks for a compile-time size check on every heap object structure and a guard object for every value rooted on the stack. Parts of the guide describe structures the runtime does not have: a collector class and accessor that do not exist, pointers stored as offsets, a design directory that does not exist, and include guards where many allocator headers use `#pragma once`. Follow the code where they differ.
 
-`GITSTYLE.md` is the commit guide. The subject is imperative and capitalized, names the concrete thing changed, and has no scope prefix. The body is in the present tense, wrapped at 100 columns, one paragraph per concern, and explains why. The guide forbids tool or assistant attribution trailers. The commit log does not always follow that last rule, and the agent instructions do not point to the guide.
+`GITSTYLE.md` is the commit guide. The subject is imperative and capitalized, names the concrete thing changed, and has no scope prefix. The body is in the present tense, wrapped at 100 columns, one paragraph per concern, and explains why. The guide forbids tool or assistant attribution trailers, without exception; the few commits that carry one are mistakes. The agent instructions do not yet point to the guide.
 
 ## Designs the record keeps as rejected
 
