@@ -1,911 +1,154 @@
-# THEORY.md
+# Eco
 
-This document captures the essential insights and design rationale for the eco-runtime garbage collector. It is written for an engineer joining the project who wants to quickly build a working understanding of how the system thinks, not just how it works.
+Eco compiles whole Elm programs to native code by specializing every function to concrete types, handing the result to LLVM through a single custom intermediate language, and running it on a small runtime whose garbage collector is simple because Elm values never change. It exists so that Elm can run outside the browser as fast native programs, such as command-line tools, servers and the Eco compiler itself, with Elm's meaning unchanged. Users install one `eco` command. Inside it, a compiler written in Elm checks the program, specializes it and writes it out in that intermediate language. A back end written in C++, running in the same process, turns the result into machine code and links it with the runtime and with C++ implementations of Elm's built-in functions. A catalog of numbered rules keeps the two halves consistent, and the compiler tests the whole toolchain by compiling itself.
 
-For the broader project context, see [PLAN.md](PLAN.md). ECO (Elm Compiler Offline) is a native compilation backend and runtime for Elm, targeting high-performance multi-threaded execution via LLVM. This runtime provides memory management for compiled Elm programs.
+## What Eco accepts and what it produces
 
-## The Core Insight: Elm's Immutability Changes Everything
+Eco accepts ordinary Elm. Its front end is a fork of Guida, a port of the standard Elm compiler into Elm, so existing Elm source, packages and error messages carry over unchanged. Eco adds back ends, not a language: Guida's own syntax extensions are removed so that the language Eco accepts stays exactly Elm.
 
-The single most important thing to understand about eco-runtime is that it exploits **Elm's immutability guarantee** to eliminate the write barrier that normally dominates generational GC complexity.
+The file name the user asks for chooses the output. A name with no extension, or one ending in `.o`, gives a native executable or object file. A name ending in `.so` or `.node` gives a shared library or a Node addon, so a compiled Elm program can be embedded in another application. A name ending in `.js` or `.html` gives JavaScript or a web page, as stock Elm does, and `.mlir` gives the intermediate code for inspection.
 
-In a typical generational collector, you need to track when an old-generation object is mutated to point to a young-generation object (an "old-to-young pointer"). This requires a write barrier on every pointer store, plus remembered sets or card tables to scan during minor GC.
+Eco leans on three guarantees that Elm makes about every program it accepts. A value is never changed once the program can see it. Effects happen only through the runtime, as tasks, effect managers and ports. And there is no dynamic code loading, so the whole program is known at compile time. The governing ideas below follow from these guarantees and from one fact about Eco itself: its compiler is split across two languages.
 
-Elm values are immutable. Once created, they never change. This means:
-- **New objects can only point to older objects** (they can only reference things that already exist)
-- **Old-to-young pointers cannot exist** (old objects cannot be modified to point to new things)
-- **No write barrier is needed** for generational correctness
+## The governing ideas
 
-This is not a minor optimization - it fundamentally simplifies the GC design. The complexity you do not see in this codebase (card tables, remembered sets, store buffers, barrier code on every write) is the complexity you would normally expect.
+Five ideas explain most of Eco's design. The first two turn Elm's guarantees into a simple runtime and fast code. The next two keep the Elm half and the C++ half consistent. The last is how Eco shows that the whole stack works.
 
-## Thread-Local Heaps
+### Values never change, so the collector can be simple
 
-Each thread owns a `ThreadLocalHeap` containing its own nursery and old generation. This design eliminates cross-thread synchronization during normal operation:
+Once an Elm object is built and the program can see it, nothing writes to it again, and Eco's garbage collector is built on that fact. A generational collector keeps young objects apart from old ones so it can collect the young ones often and cheaply. It normally needs a write barrier: extra code on every store that records when an old object comes to point at a young one, so that collecting the young generation does not miss that reference. In Elm an old object can never point to a younger one, because the younger one did not exist when the old one was last written. Eco's collector therefore has no write barrier. It collects the young generation, the nursery, by copying the reachable objects out of it, and because it moves objects it must know exactly which stack slots hold heap pointers; the back end arranges that with LLVM.
 
-- **Allocation**: Pure bump-pointer in thread-local nursery, no locks
-- **Minor GC**: Operates only on thread-local nursery, no coordination
-- **Major GC**: Operates only on thread-local old gen, no coordination
+What the collector depends on is that values never change, not that they are acyclic. Elm values can form cycles. A recursive closure captures itself, and mutually recursive closures capture each other while they are being built, with each store going into an object the program cannot yet see. The collector traces cycles like any other graph.
 
-The central `Allocator` singleton manages the unified address space and carves out regions for each thread on initialization. Once a thread has its regions, it operates independently.
+The runtime and the kernels do build objects in place, so they keep the same rule by hand. They write only into objects that are still under construction and invisible to the program, and they keep any state that really changes outside the heap, registered with the collector as a root. Generated code stores only into objects it has just allocated.
 
-```
-Thread 1: [Nursery₁] → [OldGen₁]
-Thread 2: [Nursery₂] → [OldGen₂]
-          ↑                    ↑
-          └── carved from unified heap ──┘
-```
+Each process has exactly one mutator, the thread that runs Elm code and allocates, and the runtime calls it the eco thread; starting a second one aborts. Several live heaps in one process cost more than they return. The collector's accounting of committed memory, the timing of handing memory back to the system and the list of released memory are shared by the whole process, so each extra heap would need its own reservations, caps and page accounting, and only benchmark and test harnesses ask for more than one heap. With one mutator, the scheduler can run all of Elm on a single thread and the collector's behavior stays deterministic.
 
-This is simpler than shared-heap designs that require synchronization on every allocation or during GC. The trade-off is that memory cannot be shared between threads, but Elm's message-passing concurrency model makes this natural.
+Other threads exist, and they come in two kinds. Collector helper threads mark the old generation and promote survivors in the background, again without a write barrier: anything reachable when marking starts stays reachable through objects that existed then, and everything allocated afterward is treated as live until the next cycle. Service threads, such as IO workers, the HTTP worker and the network thread, never touch the heap. They hand plain values back to the eco thread, which builds the Elm values. Child processes are started by spawning, never by forking, because a fork would copy the live heap, the collector's state and the runtime's global objects into the child.
 
-## Two Generations, Two Algorithms
+Running Elm on many threads over one shared heap is ruled out. It would need references between threads' young objects, or stop-the-world minor collections with safepoint polls, plus a marking handshake with every mutator and further formal models, and the JavaScript back end could not offer the same behavior. The direction decided for parallel Elm is a heap per thread, each with one mutator, with threads exchanging only messages. It is not built.
 
-The GC uses two generations because the "weak generational hypothesis" holds: most Elm values die young. The design pairs each generation with the algorithm best suited to its characteristics.
+### The whole program is known, so every function is specialized
 
-### Nursery: Region-Based Semi-Space Copying (Cheney's Algorithm)
+Elm has no dynamic loading, and every kernel is reached from known Elm code, so the compiler sees every use of every function. It starts from `main` and makes a separate copy of each polymorphic function for each concrete type it is used at, a step called monomorphization. The back end can then store Int, Float and Char unboxed and call functions directly. Boxing every value, as the JavaScript back end does, costs too much at run time to be the native design. A type variable that no use constrains stays boxed everywhere, so a value of unknown type always has one layout.
 
-Young objects live in the nursery, which uses Cheney's copying collector:
+Specialization needs the types that type checking finds, and Elm's optimizer throws them away. Eco keeps a parallel, typed version of the optimized program instead of changing Elm's erased one, so JavaScript generation keeps working exactly as in Elm. That is why the compiler has two paths, chosen once per build by the output format: a typed path for native code and MLIR, and an erased path for JavaScript and HTML. The two share parsing, name resolution and the type checker, and split after it.
 
-1. **Bump-pointer allocation**: Just increment a pointer. O(1), no fragmentation concerns.
-2. **Copy survivors to to-space**: Only live objects pay the cost; garbage is free.
-3. **Swap spaces**: Old from-space becomes new to-space; memory is implicitly reclaimed.
+### One value, four representations, linked only by numbered rules
 
-This is optimal for high-churn, short-lived allocations. The cost of GC is proportional to survivors, not total allocations.
+The same Elm value takes different forms in different places, and Eco treats them as four separate models. The ABI form is how the value is passed across a function call. The SSA form is how it appears in the intermediate code, where every value is defined exactly once. The heap form is how it is stored in an object field or a closure at run time. The logical form is what it means in Elm. Each model has its own rules, and only numbered rules link one model to another.
 
-**Two-region design** *(HEAP_042)*: each semi-space is ONE CONTIGUOUS EXTENT — the committed prefix of a fixed-size slice of the low or high half of the nursery region, both slices at the same slot index and always the same length. One extent is from-space, the other to-space, swapping roles after each GC. This enables:
+The models are kept apart because the commonest code generation bug in Eco is a phase assuming that one form of a value implies another, so that a value's declared type no longer matches how it is really stored. Bool is the standard case. In SSA a Bool is a one-bit integer, but in heap fields, in closures and at call boundaries it is a boxed value: one of two constants embedded in the pointer word itself, never an object on the heap. A phase that stores a Bool unboxed in a heap field because it is a single bit in SSA corrupts the heap. Only Int, Float and Char are ever stored unboxed, and a value changes form only at a few named seams, such as calls, captures, construction and projection ([value-representation.md](design_docs/theory/value-representation.md)).
 
-- **O(1) membership checks**: a bounds comparison (`ptr >= low_base_ && ptr < low_end_`) that is EXACT — the extent has no interior gaps and never spans another heap's memory
-- **Dynamic growth**: when survivors exceed the growth threshold, both extents are extended in place (same bases, larger capacity) — or neither is
-- **A bump limit that spans the whole space**: an allocation can never fail to fit "between blocks", so there is no block advance and a bump miss means exactly one thing — collect
+The numbered rules live in one flat catalog, grouped by area: representation, code generation, heap layout, forbidden assumptions, and others. Each phase is written and tested against the rules rather than against what its neighbors happen to do, so one phase can change without its author re-reading every other phase. The catalog is needed because no type system sees across the boundary: Elm's stops at the intermediate code, and C++'s stops at the kernels. No build step reads the catalog. Checks, code comments and tests cite rule numbers, and review keeps the rows in step with the code. Some rows are out of date, so where a row and the code disagree, trust the code and fix the row.
 
-The key insight: by keeping from-space and to-space in separate address ranges, `isInFromSpace()` is a single bounds check cached in member variables (`low_base_`, `low_end_`, `high_base_`, `high_end_`). Making each range contiguous then removes the last reason for the allocator to have a slow path that is not a GC: the block design entered its slow path once per 512 KiB (312,952 times against 871 minor GCs on a self-compile), purely to step to the next block.
+### A custom dialect between the Elm half and the C++ half
 
-### Old Generation: Segregated-Fits + Big Bag of Pages with Mark-Driven Lazy Sweep
+MLIR is a framework for defining typed intermediate languages, called dialects, and lowering them step by step toward LLVM. Eco defines its own dialect, and everything that crosses from the Elm compiler to the C++ back end is an operation in it. The front end is an Elm program and cannot call MLIR or LLVM libraries, so whatever crosses has to be written out. The compiler writes the dialect as MLIR bytecode to a temporary file, then calls a kernel function that runs the C++ lowering inside the same process. A dialect of Eco's own lets the C++ passes reason in Eco's terms, such as boxed values, constructors, closures and groups of allocations, before LLVM sees anything.
 
-Long-lived objects promoted from the nursery live in the old generation. *(Apr 25-26, 2026)* The old gen is a **segregated-fits allocator backed by a Big Bag of Pages (BBoP)** with mark-driven liveness attribution and lazy sweeping on the allocation slow path.
+Each operation has a verifier, and it checks what that single operation shows: its operand types, its result types and its attributes. Facts that span operations, such as the memory layout of a constructor or the signature a call must match, cannot be seen one operation at a time. Those are covered by the numbered rules instead, and by the tests that check them.
 
-**The Big Bag of Pages**: At init, `initial_old_gen_size` (16 MiB by default) is committed up front and sliced into pages of `alloc_buffer_size` (512 KiB by default). Pages live in `unassigned_blocks_` until first use. Each thread has its own bag; no cross-thread sharing during normal operation.
+The compiler decides such cross-operation facts once, upstream, and attaches each decision to the operations as an attribute: a value's layout, how each call is made, a kernel's calling convention. The C++ passes read these decisions and never work them out again. A lowering pass that derives a kernel's calling convention for itself drifts away from what the compiler emitted, and the two halves stop agreeing.
 
-**Stable old-gen metadata** *(Sep 24, 2026 — plans/threaded-gc-01-stable-metadata.md)*: every materialized block has a stable `BlockId` (`BlockTable`, `BlockTable.hpp`), and all per-block metadata — `BlockInfo`, `BufferMetadata`, the large-mark byte, the mark-bit slot, the marker's live-bytes accumulator — lives in `ReservedArray` storage that is VA-reserved at init for the maximum block count and **never moves** (HEAP_048). Iteration *order* is kept separately and reproduces the former `std::vector` exactly (swap-remove on release, ordered erase in compaction), because sweep order, first-fit reuse and reclaim order depend on it. The page index is keyed from `heap_base` over the whole old-gen reservation and is never rebuilt (HEAP_049); mark bits live in a fixed per-id arena slot (HEAP_050); marking attributes live bytes to a `LiveBytesAccumulator` merged at `finalizeMetaAfterMark` (HEAP_051); free-list back-links are addresses, so the block count is unbounded (HEAP_052); GC code reads per-heap state, not TLS (HEAP_053). This is the prerequisite for every threaded GC phase: a second thread can hold a block id or metadata pointer across any growth.
+The dialect also gives the front end two ways to build a value. A value that provably does not escape its function is built as a plain aggregate in SSA and never costs a heap allocation. A value that may escape is allocated on the heap.
 
-**Size classes**:
-- **Small classes** — 32 classes covering 8..256 B in 8-byte steps.
-- **Medium classes** — powers of two starting at 512 B (up through 65536 B). Class count is capped at runtime by `large_object_threshold`.
-- **Mid-range** (`large_object_threshold` up to `alloc_buffer_size`) — pulls a page from the bag and installs a single page-spanning `Tag_Free` cell, then splits via the larger-cell path.
-- **Large objects** (`≥ alloc_buffer_size`) — go through `allocateLargeBlock` to a dedicated pinned block sized to fit the object. Released large blocks are kept in `free_large_blocks_` and reused before the Allocator hands out a fresh page.
+### The compiler compiles itself
 
-A class pulls a page from the bag on first use and slices it into uniform `Tag_Free` cells. Allocation pops from the class's free list; on miss it tries to split a larger free cell, then falls back to acquiring a new bag page.
+The compiler is a large Elm program that allocates heavily, so compiling it natively exercises the whole stack. A staged chain starts from the stock Elm compiler, the only trusted ancestor, which can build only a JavaScript program. From there the chain builds a JavaScript Eco, then a native Eco, and at two points checks for a fixed point: the compiler rebuilds itself and gets byte-for-byte identical output. Those fixed points show that the native compiler behaves like the JavaScript one. Two end-to-end gates run early in the chain, one through the in-memory just-in-time (JIT) runner that the tests use and one through the ahead-of-time (AOT) compiler that users run, so that, run in the documented order, they report a back-end regression before the slow self-compiles start.
 
-**Class-selection asymmetry** *(Apr 25, 2026 — fixes Stage 7 SEGV)*:
-- `sizeClass(size)` rounds **up** at allocation time so a popped cell can always satisfy the request.
-- `freeListClassFor(span)` rounds **down** at placement time (split tails, sweep coalesces, bag-page tails) so cells on `free_lists_[cls]` always have at least `classToSize(cls)` bytes — the invariant the fast path relies on.
+The JavaScript back end stays for the same reason. It is the first link of the chain and the reference for correct behavior.
 
-Without the round-down placement, a 352-byte span would land on cls=32 (cellSize=512); the fast path would then hand it out as a 512-byte slot, overflowing on the first store.
+## The parts
 
-**Mark-and-sweep** *(Apr 26, 2026 rewrite)*:
-1. **Trigger** — `shouldTriggerMajorGC()` fires when per-thread `allocated/committed ≥ major_gc_initiating_occupancy` (default 0.75) **OR** when the global old-gen pressure crosses ~25% of the cap. The global trigger is needed because `allocateFromBagPage` burns a fresh page per request, so per-thread occupancy alone never crosses 0.75.
-2. **Mark** — by default marking runs to completion inside the major pause (`finishMarkAndSweep` loops `incrementalMark(1000)` until done; `mark_work_ratio` is still parsed but read by nothing, W0 item 13). **With `incremental_mark`** *(Sep 26, 2026 — plans/threaded-gc-05a-incremental-marking.md, HEAP_063)* a major is a **mark cycle spanning T + 1 minor GCs** (T = `incremental_mark_slices`). At the end of the minor that fires the trigger (t0) the **snapshot** greys the old-gen targets of every root and off-heap store (HEAP_SNAPSHOT_002) and of every young object — the nursery's contiguous survivor prefix and every YLOS object — and marks the YLOS cells; after t0 the marker never reads a root or a young object again. The next T − 1 minor ends each run a paced slice of mark work, the T-th drains the stack, and the (T + 1)-th runs the unchanged post-mark tail (the **handoff**). The schedule is fixed at t0 (GC_DET_001) except for a pressure finish or a join (any `majorGC()` during a cycle finishes it, then runs a STW major). No barrier is needed: P1 (HEAP_SNAPSHOT_001) and HEAP_005 make every object reachable after t0 either reachable at t0 (so marked) or allocated after t0, and every old-gen allocation during a cycle is **allocated black**. Because a uniform block's bitmap is its allocation map (HEAP_054) and t0 clears it, the cursor serves only blocks created after t0 until the handoff; bodies and YLOS cells that die mid-cycle are freed at the handoff; nothing is released mid-cycle. `ECO_HEAP_VALIDATE` builds re-derive all of it with validators IM1–IM9 (two independent reachability traces at every handoff). **With `gc_mark_threads` > 1** *(Sep 26, 2026 — plans/threaded-gc-05b-parallel-marking.md, HEAP_064)* every slice, closing drain and emergency drain runs on N markers: the paused mutator plus N−1 `GCMarkGang` threads, started and joined inside the pause. Markers keep 8-byte grey entries in per-marker Chase–Lev deques and steal from each other, set mark bits with atomic `fetch_or`, and attribute live bytes to their own accumulators (merged in index order). Work is counted in **exact tickets** — an entry is taken only with a ticket in hand and idle markers hold none — so a slice consumes min(budget, work) whatever N is, and every GC counter is bit-identical at every marker count. Long boxed arrays and list backings are scanned in 1,024-slot chunks (never in the t0 snapshot). The legacy STW `majorGC()` stays serial; with `incremental_mark` off and N > 1, trigger majors run as T = 0 cycles. Validators IM10–IM12 (scanned once, scanned set = closure of the t0 greys, scanned = tickets). **With `conc_mark = 2`** (the default; auto markers capped at 4, priority 0) *(Sep 27, 2026 — plans/threaded-gc-05c-concurrent-marking.md, HEAP_065)* the mark leaves the pauses: at the end of the t0 pause the grey set is distributed over **B background markers** (a per-heap `GCBackgroundGang`, low priority set once per thread) that mark while the mutator runs Elm code *and* minor GCs. The markers read only frozen S_H objects (P1), a t0 `MarkView` and page-index/`BlockInfo` entries published with release/acquire; mutator allocate-black on shared (pre-t0) mark bytes is an atomic `fetch_or`, while the hot cursor path stays plain because mid-cycle cursors own only post-t0 blocks (IM13). At minor ends 1…T−1 the paused mutator and the foreground gang **join the running episode** for a bounded, paced assist only when the background is late against a lagged schedule; at k = T they join until termination; the handoff at T + 1 is unchanged. Collector progress decides only pause-internal work, so every GC decision and the units of every cycle equal the in-pause (05b) path at every B and under jitter (GC_DET_001). `conc_mark = 1` (sync) marks everything at t0 — the determinism reference. **Heap-relative trigger pacing** (HEAP_066; the Headroom trigger (margin 1.5) and the paced LiveBudget are on by default, the backstop is off): a promotion-rate estimate P̂ (integer EWMA of old-gen bytes per minor) times the fixed cycle length H_c = T + 1 minors feeds an optional `Headroom` trigger (start while the cycle's growth still fits under the finish fraction of the cap), a paced LiveBudget (reach the budget at the handoff) and a garbage-fraction backstop. **Liveness is recorded in per-block bitmaps**, not in the header `color` field. Each regular block's 1-bit-per-8-byte-slot bitmap is its fixed `MarkBitArena` slot (`arena + id * stride`, HEAP_050); `is_large` blocks use a single large-mark byte in the `BlockTable`. Headers retain `color` for compaction's debug asserts but are no longer load-bearing for sweep liveness. Major GC visits external root scanners (Scheduler, PlatformRuntime, MVar, Runtime) so objects rooted only via external state survive collection. Embedded constants (`HPointer.constant != 0`) are skipped during marking — they live outside the heap.
-3. **No nursery color writes during major GC**: nursery objects pushed during major-GC mark are tracked in a `nursery_visited_` set instead of writing into nursery header `color` bits, since minor GC owns those bits.
-4. **Mark-driven live attribution + lazy sweep**: `live_bytes` is attributed during marking. `transitionToSweeping` clears `free_lists_` *before* reclaim (turning per-block release from O(F) to O(1)). An **all-dead block fast path** releases dead non-large blocks without scanning their cells. An **O(1) page-index** (`page_index_`, HEAP_049) replaces the old linear `findBlockContaining`. `finishMarkAndSweep` returns with `gc_phase_ = Sweeping` after a 64 KiB initial slice; the rest of the sweep work runs in `SWEEP_WORK_BUDGET`-sized slices on the allocation slow path. (Stage 7 major GC: 432 s → 16 s, 27× faster.) **With `old_gen_bitmap_alloc`** (default on) *(Sep 25, 2026 — plans/threaded-gc-02-bitmap-allocation.md)* the lazy sweep no longer walks every header. After mark, `classifyBlocksAfterMark` decides every block at once: **uniform** blocks (one size class) are never swept — their mark bitmap *is* the allocation map (a clear cell-start bit is a free cell), and a per-class **cursor** allocates straight from it, owning one block at a time (the promotion buffer threaded-gc phase 6 extends to one per thread, HEAP_054); **is_large** blocks are decided on the spot; **mixed** blocks (bag pages, and uniform blocks demoted because `live ≤ demote_live_fraction` of the page, default 0.3 from experiment E1, 0.0 = never) keep a lazy **gap sweep** that reads only live headers, found through the mark bits, and frees each gap between them as one run (HEAP_055). The cursor's hit path tests the next cell's bit directly, and the word scan uses per-stride constant tables with no integer division: promotion allocation costs about 16 ns vs the free-list pop's 31 ns. Dead nursery-owned large bodies are retired at mark end instead of by the sweep (HEAP_056), there are no on-free-list sentinels, and uniform blocks are no longer header-parsable (HEAP_021/024/027 reworded). Fresh pages are no longer pre-sliced into `Tag_Free` cells; a virgin block enters the allocation ladder exactly where `populateFromBlock` did (the W6 rule). **Major-GC trigger:** the garbage-fraction trigger `(allocated since sweep)/committed ≥ 0.7` sizes the heap at about 3.3× the live set seen at ONE instant, so a major that lands on a transient live-set peak (≈3 GB in the self-compile) sizes the next cycle for the peak — legacy mode swings 4–7 majors and 8.8–16 GB old-gen peak across gf 0.65–0.75. A **LiveBudget** trigger (both modes; `major_gc_live_budget` k = 4.5, `live_growth_bound` r = 1.5) also fires when bytes allocated since the last major reach k·min(L_i, r·L_{i−1}), L being the mark-derived live set, so one peak major cannot size the next cycle for the peak.
-5. **Color reset after every evacuation memcpy**: nursery promotion, to-space copy, and OldGen compaction each reset `header.color` to White after the memcpy, and the mark phase resets at start. Without this, a stale Black left by an earlier mark would survive the memcpy and cause the next mark to skip the cell as already-processed, with sweep then freeing untraced children.
-6. **Shrink-and-return**: post-sweep, surplus blocks below `BUFFER_RETURN_THRESHOLD` are returned to the Allocator's free pool. (`decommit_on_oldgen_release` is `true` by default (`AllocatorCommon.hpp`), so released blocks are `madvise(MADV_DONTNEED)`ed; with `gc_thread_mode` != 0 the discard is deferred: a released block stays resident for `decommit_delay_syncs` pause ends, a reuse before then cancels it, and the discard itself runs on a helper thread (HEAP_059). The stale-pointer corruption once blamed on decommit was carry-over mark bits making a live block look all-dead; it was fixed by the bulk mark-bitmap clear at `startMark`.)
-7. **Compaction** — incremental, manual trigger only. Evacuates sparse blocks under a `COMPACTION_WORK_BUDGET` slice budget when fragmentation crosses `UTILIZATION_THRESHOLD`.
+Nine parts make up Eco. Four are what a program passes through or runs on: the compiler, the back end, the runtime and the kernels, in the order a program meets them. Two follow a single concern through several of those: how a call through a function value is made, and the forms a value takes. Three hold the rules, the tests and the build.
 
-**GC phases** (state machine):
-```
-Idle → Marking → Sweeping (lazy, paced on alloc slow path) → Idle
-
-With `incremental_mark` (HEAP_063) the Marking state spans T + 1 minor GCs: t0 snapshot → T slices (the last drains) → handoff → Sweeping. With `conc_mark = 2` (HEAP_065) the slices are background marking plus optional assists; the closing step joins the episode.
-                    ↓
-              (if fragmented)
-                    ↓
-            Compaction: Evacuating → FixingRefs → Idle
+```mermaid
+flowchart LR
+    src[Elm source] --> C[compiler<br/>written in Elm]
+    C -- "eco-dialect bytecode<br/>in a temporary file" --> B[backend<br/>written in C++]
+    C -- "JavaScript or HTML" --> js[web output]
+    B -- "object files" --> L[link]
+    R[runtime:<br/>collector and scheduler] -- "prebuilt archive" --> L
+    K[kernels:<br/>C++ built-in functions] -- "prebuilt archives" --> L
+    L --> exe[executable, library<br/>or Node addon]
 ```
 
-Mark-sweep does not require 2x space overhead. Compaction is optional and incremental, spreading the cost across multiple allocation slow-paths.
+The compiler turns Elm source into eco-dialect MLIR in two halves with a cache between them. The first half compiles each module on its own (parse, resolve names, type check, Elm's pattern checks, and the local optimizations that need no concrete types) into a cached typed graph. The second half links every module into one typed program and runs a fixed list of whole-program steps over it: monomorphize, inline, prune, optimize, then write the result out as MLIR. The build and the tests run the same list, so a test sees exactly the program the build sees. See [compiler.md](design_docs/theory/compiler/compiler.md).
 
-## Forwarding Pointers
+The back end turns eco-dialect MLIR into native code in one fixed sequence. A stack of small MLIR passes lowers the eco dialect to LLVM's own dialect. LLVM then rewrites every point where the collector might run so that it records which stack slots hold heap pointers, which is what lets a moving collector find and update every reference. LLVM optimizes and emits object files in parallel partitions, and a per-platform link step joins them with the prebuilt runtime and kernel archives. Every whole-program fact is settled in MLIR before the partitions split, because an MLIR context can be shared between threads and an LLVM context cannot. The JIT and AOT paths share all of this code and differ only in the final step, since two pipelines kept in step by hand would let programs built one way behave differently from programs built the other. See [backend.md](design_docs/theory/backend/backend.md).
 
-When Cheney's algorithm copies an object, the original location becomes invalid. But other objects might still have pointers to that old location. The solution is a **forwarding pointer**: a special object left at the old location that says "I moved to X".
+The runtime is what a compiled program runs on, and it has two halves linked into every executable. One is the garbage collector described above. The other is a cooperative scheduler that gives Elm's tasks, effect managers, timers, HTTP and ports a single thread, the eco thread, to run on. See [runtime.md](design_docs/theory/runtime/runtime.md).
 
-During minor GC:
-1. Object is copied to new location (to-space or old gen)
-2. Original location is overwritten with `Tag_Forward` header containing new address
-3. Subsequent pointer fixup finds the forward and updates to the new location
+The kernels are how Elm's built-in functions, and Eco's own IO libraries, reach native code. A kernel is a function the compiler treats as having no Elm body. Elm source names it under `Elm.Kernel` or `Eco.Kernel`, and the compiler turns each use into a call to a C++ function that works directly on the Eco heap. Three C++ libraries supply them: Elm's own kernels, ported from their JavaScript originals so that unmodified Elm packages run; the compiler's private IO layer; and the public `eco/system` library for files, processes, sockets and an HTTP server. `eco/system` has no HTTP client; programs make HTTP requests through Elm's own `elm/http`, whose kernel is among Elm's kernels. The compiler alone decides how each kernel is called, and the C++ decides only what it does. See [kernels.md](design_docs/theory/kernels/kernels.md).
 
-The Forward structure repurposes the header word:
-```cpp
-typedef struct {
-    struct {
-        u64 tag : 5;              // Tag_Forward
-        u64 color : 2;            // (unused for forwards)
-        u64 forward_ptr : 40;     // New location as an absolute address >> 3 (8-byte units; no heap_base — plan D8)
-        u64 unused : 17;
-    } header;
-} Forward;
-```
+Closures and calls run from the compiler through the back end to the runtime. Every Elm function value is a closure on the heap, and its header records everything needed to apply it: how many arguments its current stage takes, how many it already holds, the kind of every slot and of its result, and a static descriptor with one uniform entry point. The runtime can therefore apply any closure to any number of arguments with no static knowledge of it. The compiler emits a faster call only where it can prove that call correct, and every other call goes through this generic apply. See [closures-and-calls.md](design_docs/theory/closures-and-calls.md).
 
-Key insight: Forwarding pointers are only valid during GC. By the time the mutator resumes, all pointers have been updated to their final locations.
+Value representation follows one value through the four models. Outside the body of a single function, every value except an Int, a Float or a Char is one 64-bit word, and one bit of it says whether the word is a heap address or a constant embedded in the word itself. Int, Float and Char are raw machine values at calls, in closures and in heap fields, and Bool is a one-bit integer only inside a function. Every heap object whose fields can hold a raw number records a two-bit kind for each field, so the collector tells a raw number from a pointer without knowing any types, and the compiler computes each object's layout from the value's type, the same way at every site that builds or reads one. A value changes form only at six seams, each with one conversion operation. See [value-representation.md](design_docs/theory/value-representation.md).
 
-## List Locality Optimization
+The invariants and design records hold the rules every phase obeys and the reasons behind them. Every phase from name resolution to the runtime heap is bound by numbered rules in the catalog, and above them by the four representation models. The reason for a decision lives in the plan or design note that caused it, and the rule, the code comments and the commit message all point back to that note. The repository's coding and commit conventions sit alongside. See [invariants-and-design.md](design_docs/theory/invariants/invariants-and-design.md).
 
-Elm programs create many linked lists. Standard Cheney's algorithm copies objects in breadth-first order, which can scatter list nodes across memory. The GC uses an optional two-pass copying strategy for Cons cells to improve cache locality:
+Verification is how Eco knows it is correct, and it layers checks so that each class of bug meets the cheapest check that can catch it. The compiler's intermediate forms are checked structurally against the rules, without running anything. Whole Elm programs carry their expected output as comments and run on the JIT and AOT paths, and the system library's programs run on the JavaScript path too. Generated MLIR and each lowering pass are compared with expected text. The runtime has unit and property tests. The collector's concurrency is described in formal TLA+ models, with a canary that reports when the code a model describes changes. Every layer exists to make some numbered rule tested or enforced. See [verification.md](design_docs/theory/verification/verification.md).
 
-**Pass 1 - Copy spine contiguously**: Walk the tail chain, copying each Cons cell immediately after the previous one in to-space. This allocates the entire spine contiguously.
+Build and workflow cover how Eco is built, bootstrapped and developed. One CMake tree runs the compiler's self-compiling chain as ordinary build targets, so building Eco and testing that it can compile itself are the same act. Work is driven by written plans and by loops that measure one change at a time, because the system is large and slow to rebuild, and a mistake in it can easily go unnoticed. See [build-and-workflow.md](design_docs/theory/workflow/workflow.md).
 
-**Pass 2 - Evacuate heads**: Walk the copied spine and evacuate each head element (which may be any type).
+## Shipping one tool
 
-```
-Before GC (scattered):    After GC (contiguous spine):
-  [Cons₁] → ... → [Cons₂] → ... → [Cons₃]    [Cons₁][Cons₂][Cons₃] → heads nearby
-```
+Eco is distributed as a single `eco` binary per platform (Linux x86_64, macOS arm64 and Windows x86_64), and each choice below keeps that binary self-contained and portable.
 
-This optimization is controlled by `HeapConfig::use_hybrid_dfs` (enabled by default). The term "hybrid DFS" refers to the depth-first treatment of list tails within an otherwise breadth-first Cheney algorithm.
+The Elm front end and the C++ back end live in one process because users should install one tool. Two cooperating executables would keep the cost of shipping and starting two programs and of piping one into the other. The C++ side owns the program's entry point, because the collector and the scheduler start up there.
 
-Benefits:
-- Better cache prefetching when traversing lists
-- Reduced TLB misses for list-heavy code
-- No cost for non-list data structures (they use standard BFS)
+Generated code targets a fixed CPU model for each architecture rather than the machine doing the compiling. The compiler is itself a binary that Eco builds. Tuning for the host CPU puts that machine's instructions, such as AVX-512, into the bootstrapped compiler, which then crashes with illegal-instruction errors on machines without them.
 
-### Parallel minor GC *(Sep 27, 2026 — plans/threaded-gc-06-parallel-minor.md, HEAP_067/HEAP_068)*
+On Linux the toolchain is statically linked against the musl C library and carries its own linker and runtime archives, so it depends on neither the host's C library nor its linker. Static linking against glibc breaks DNS and user lookups, which a compiler that builds network programs cannot accept.
 
-By default (`gc_minor_threads` = 0: auto, capped at 8) the copy phase of a minor GC runs on N workers: the paused mutator and N − 1 `GCMarkGang` threads (the 5b gang, sized for the larger of the mark and minor worker counts). The root phase stays serial on worker 0, and its copies are dealt round-robin to the workers' Chase–Lev deques; the drain is 5b's `markwork::runMarkerLoop` with an unlimited budget. `gc_minor_threads = 1` keeps the serial Cheney core above, unchanged.
+## Changing Eco
 
-- **Exactly-once copying without undo.** A worker CASes a from-space object's header word from the header it read to **BUSY** (`Tag_Forward`, `forward_ptr` 0), sizes and copies the object from the saved header, then publishes the forward word with a release store. A loser reads the forward (waiting out BUSY). A loser never allocated anything, so nothing is rolled back.
-- **To-space LABs and fillers.** Young survivors go to per-worker LABs claimed from an atomic to-space top. A LAB tail left behind becomes a `Tag_Free` filler, so the survivor prefix is objects plus fillers. Every nursery policy — the minor trigger, the fail-soft test, growth, the stats — counts **object bytes** (prefix bytes − `filler_bytes_`, HEAP_068), which makes every nursery counter identical at every worker count. A minor runs parallel only when the survivors plus the worst-case LAB waste provably fit in to-space; otherwise it runs serially.
-- **Promotion buffers.** Workers share one current block per size class and claim chunks of it with a CAS (units of 64 cells, so two workers never share a mark-bitmap byte; a worker's claim grows from 1 to 16 units within a minor). The open slack is N chunks rather than N blocks, which keeps committed bytes — and so the garbage-fraction trigger — where the serial collector has them. Rungs 2–8 of the ladder run under one spin lock; free-list cells are popped in batches of 16 and finalized outside it. At the end of the minor the shared block becomes the mutator's cursor again, and a block left with free cells goes to the **front** of the partial-block queue (reuse before growth). The per-promotion lazy-sweep slice becomes one pre-drain slice with the same total budget.
-- **Idle workers wake only for stealable work.** A worker's private stack is its own; counting it as work (as the parallel marker does) made idle workers spin against a worker walking a long list and slowed it 5–40×.
-- **Lists** are copied in runs of 512 spine cells; the heads pass counts the cells it copied (the next cell may be another worker's copy). Long boxed arrays and list backings are scanned in 1,024-slot chunks.
-- **Determinism.** Which old-gen cell a promoted object lands in depends on the copy schedule, so old-gen placement — and the decisions that read it (committed bytes, per-block live fractions) — can differ between runs at N > 1. Object-level counters cannot: GC_DET_001 was amended to say exactly this.
+A change fits Eco's theory when it decides a fact once, in the compiler, and carries it through the dialect; when it leaves published values unchanged; and when it adds or amends a numbered rule wherever it links two representations. A change that works around one of these breaks the theory. The structure stays visible, but it stops doing its job.
 
-### Region nursery and concurrent tenuring *(Sep 27, 2026 — plans/threaded-gc-07-concurrent-tenuring.md, HEAP_069/HEAP_070, FORBID_HEAP_004)*
+### Examples of changes that fit the theory
+- An optimization that decides which code exists or how it is called belongs in a named compiler phase, behind a switch in the compiler's configuration. A switch that can change generated code contributes to the settings hash that keys the build cache, so a build never reuses results made under other settings. It comes with a rule and a test, and it is turned on by default only after measurement shows it pays. Promoting non-escaping values to SSA aggregates, and returning large results through memory the caller supplies, are both switches of this kind.
+- A representation idea becomes a dialect operation with a verifier, a lowering pass that establishes one fact about it, and rules that link the models it touches. The non-escaping aggregates have exactly this shape, sitting beside the heap operations.
+- A kernel or IO capability is an Elm declaration, a C++ function that works on the Eco heap, and a calling convention that the compiler owns. Blocking work goes to a service thread that hands back plain values. The sockets, WebSockets and HTTP server in `eco/system` are built from these pieces and touch no compiler phase.
+- An output kind or a platform is a branch in the native driver's output dispatch, or a build preset, a CI workflow and platform-specific code, with the compiler phases left alone. Embedding as a shared library or Node addon, and the macOS and Windows ports, are examples.
+- A collector mechanism fits if it keeps two properties: no old object points to a younger one, and the collector writes nothing the program can read. It also needs heap validators, a TLA+ model if it runs concurrently, and a hash pin in the canary's manifest, so that drift between model and code is noticed. Before touching the collector's concurrency code, read the models' README.
 
-With `nursery_regions = 1` the nursery is an **eden plus three survivor extents** (a fourth and fifth extent — a second eden — with eden flip, the default in validate builds). They have one capacity and sit at a power-of-two stride in the heap's slot block, so classifying a pointer (`roleOf`) is a subtraction, a compare, a shift and a table load. The survivor extents rotate through *fill → fresh → hand-over → tenuring → retire → free*:
+### Examples of changes that would break the theory
+- Letting a C++ pass work out again a fact the compiler already decided, such as a type, a memory layout, how a call is made, or a kernel's calling convention. Two derivations of one fact drift apart, and nothing checks that they agree. Decide it once in the compiler and carry it as an attribute.
+- Mutating a published heap object, or adding a write barrier, to make a feature easier. The nursery copy and the background marking both depend on no old object ever gaining a pointer to a younger one. Build a fresh value, write into an object still under construction, or keep the changing state off the heap as a registered root.
+- Inferring one representation's rules from another's, for example storing a Bool unboxed because it is a single bit in SSA. The models are independent, so the inference is wrong as soon as their rules differ, and the result is a corrupted heap or a mismatched call. Amend or add a rule that links the two models explicitly.
+- Treating a kernel specially by name in a later phase. That makes a second place that decides how the kernel is called, and it will disagree with the compiler. Extend the compiler's tables of kernel calling conventions and kernel facts instead.
+- Adding a second eco thread, or a second heap, to get parallelism. The scheduler, the collector's determinism and the service-thread contracts all assume one mutator. Put parallel work on service threads that exchange only plain values; parallel Elm waits for the heap-per-thread design, which is a project of its own.
+- Making the JavaScript and native paths share a partly typed program, or teaching the JavaScript back end about specialized types. The erased path stays identical to Elm's so that it can serve as the bootstrap's reference, and the typed path is free to carry everything specialization needs. Put typed work on the typed path.
+- Recording the reason for a decision only in a plan. Readers find reasons by following the rule, the code comment and the commit message, so the reason has to reach those.
 
-- **Minor m** evacuates eden completely on phase 6's engine (header claim / publish, LABs, fillers) into the Free extent (the **fill**, which becomes G_m, age 1); builders go to the fill's top-down **builder area** and stay age 0. It **never promotes**. References into the extent filled at minor m − 1 (the **hand-over** extent, G_{m−1}) are only **recorded**, without loading the target's header: root and builder targets into a start set S_m, slots of survivor copies and of young YLOS objects into a heal list H_m. References into the extent handed over at m − 1 (the **retire** extent, G_{m−2}) are **resolved** through its shadow; nothing then points into it and it becomes Free in constant time.
-- **The tenure job** of minor m promotes the live objects of the hand-over extent: exactly those reachable from S_m ∪ *H_m. Forwarding lives off-header in the extent's **shadow** (one word per 16-byte granule by default, `shadow_granule_log2 = 4`, sound because no heap object is under 16 B (HEAP_071): address | state | generation; a generation bump at every hand-over makes stale entries read as unvisited). Its copies are allocated only from a **promotion grant** — uniform blocks in state `kAllocTenure`, sized in the pause from the extent's per-class object counts, which no allocator path may select, detach or release until the grant is returned (trap: a granted block looks empty). With `tenure_mode = 1` the job runs in the hand-over pause; with `tenure_mode = 2` it runs on the heap's **tenure collector** (a `GCBackgroundGang`) during the next epoch, and the next minor waits for it or stops it and finishes it in the pause. Its outputs (the heal of H_m, large-body transfers, in-place YLOS promotions of the generation, the grant's return, the stats) always **merge at the next minor's start**, in both modes.
-- **The collector writes nothing the mutator can read** (FORBID_HEAP_004): shadow words, its own fresh copies in granted blocks, job-private state. The heal is pause work. So HEAP_006, HEAP_030 and P1 stay literally true, and TSan checks it mechanically.
-- **Exactness.** One collector thread (`tenure_collector_threads = 1`) runs a resumable exact engine: a stop is honoured only between items and the item order does not depend on where it stopped, so mode 2 reproduces mode 1 bit for bit (every counter, placement and decision) under jitter and forced stops. Against the legacy nursery every object counter is identical, tenured counts one minor later; eden's allotment is threshold − S_m, which keeps the trigger and growth identical. `tenure_collector_threads > 1` (lever L3) runs 5b's marker loop over CAS-claimed grant chunks of ≥ 1,024 bitmap bits (smaller chunks false-shared the bitmap lines).
-- **Retention bound.** At most three survivor extents are in use (fresh, tenuring, and the fill during a minor): the live young objects are in Fresh, Tenuring and YLOS. Every survivor extent has eden's capacity, which makes fill overflow impossible by construction, as equal semi-spaces do.
-- **Size classes.** The grant covers size classes only, so every nursery object must have one: the large-pointer nursery cap is clamped to the largest class, `allocateFast` refuses larger requests, and a larger pointer object goes to the YLOS.
-- **Mark cycles.** The job is built after the cycle decision of its pause (a scope-exit launch on every return path of `ThreadLocalHeap::minorGC`), so mid-cycle its grant holds only post-t0 blocks and its copies are allocate-black. The t0 young walk covers Fresh *and* Tenuring. A STW major joins and merges the job first and greys the copy of every forwarded tenuring object it meets.
-- **Default (Sep 28, TG7d).** `nursery_regions = 2` (auto): the region nursery whenever the config meets its requirements (`promotion_age` 1..3, bitmap allocation, a size class for every nursery object, room for one heap slot), the legacy semi-space nursery otherwise; concurrent tenuring (`tenure_mode = 2`) with one collector. About 17 % of self-compile minors find their job late and finish it in the pause (the E4 keep-up rule was overridden).
-- **Tenure ageing (Sep 28, threaded-gc-07b).** `promotion_age = k` is the region tenure age: an object copied into the fill at minor j ages in place (never copied again) and is tenured at minor j + k only if live then. The pause records references into the ageing extents as mark sources; the job first **marks** through the ageing extents from those sources (read-only, a private bitmap per extent), so a slot recorded when its holder was copied never keeps a target alive after the holder died (no nepotism), and each marked holder's slot into the hand-over extent joins the heal list. It then lists the unmarked ageing objects, and the next merge **zaps** them into fillers, so between minors no dead object with a possibly dangling slot is left for the t0 young walk, the census or the validators. Legacy `promotion_age = k` promotes exactly what region age k tenures (one minor later) on the same minor schedule. The default stays k = 1: at k = 2 / 3 the self-compile promotes 7 % / 12 % fewer bytes but runs 5 % / 10 % longer with a higher pause p99 (the ageing mark adds as many object visits as the tenure copies), and the old-gen peak follows the major trigger rather than the promoted volume (plans/threaded-gc-07b-tenure-ageing.md §7).
+## References
 
-## HPointers: Raw Absolute Addresses with Embedded Constants
+Children: [compiler.md](design_docs/theory/compiler/compiler.md), [backend.md](design_docs/theory/backend/backend.md), [runtime.md](design_docs/theory/runtime/runtime.md), [kernels.md](design_docs/theory/kernels/kernels.md), [closures-and-calls.md](design_docs/theory/closures-and-calls.md), [value-representation.md](design_docs/theory/value-representation.md), [invariants-and-design.md](design_docs/theory/invariants/invariants-and-design.md), [verification.md](design_docs/theory/verification/verification.md), [build-and-workflow.md](design_docs/theory/workflow/workflow.md).
 
-An `HPointer` is a 64-bit tagged word. For a heap pointer the word **is** the raw
-absolute address; there is no heap_base offset and no shift.
+Code and documents:
 
-```cpp
-typedef struct {
-    u64 constant : 2;   // 0=False, 1=True, 2=Empty, 3=NullCons (only when ptr_ind==1)
-    u64 ptr_ind  : 1;   // 0 = heap pointer, 1 = embedded constant
-    u64 ptr      : 40;  // absolute 8-byte-aligned heap address (occupies bits [3,42])
-    u64 null_cons_idx : 10;  // nullary ctor's declaration index (when constant==3)
-    u64 padding  : 11;  // reserved (always 0)
-} HPointer;
-```
+- `Readme.md`, `docs/getting-started.md`, `docs/bootstrap.md`, `docs/options.md`: what Eco is, how it builds itself, and every setting.
+- `compiler/src/Terminal/Make.elm`: output dispatch by file name, the choice between the typed and erased paths, and the hand-off to the native back end.
+- `compiler/src/Compiler/Pipeline/Steps.elm`, `compiler/src/Compiler/Eco/Config.elm`: the shared whole-program step list and its switches (`aggPromote`, `sretResults` and the others).
+- `runtime/src/codegen/Ops.td`: the eco dialect and its verifiers.
+- `runtime/src/codegen/EcoNativeDriver.cpp`, `runtime/src/codegen/EcoNativeAPI.h`, `eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp`, `runtime/src/codegen/eco_entry.cpp`: the in-process back end, its C interface, the kernel that calls it, and the program entry point.
+- `runtime/src/codegen/EcoBackend.h`: the fixed CPU targets (x86-64-v3, apple-m1).
+- LLVM's RewriteStatepointsForGC pass and its stack maps: how the back end makes collection points precise.
+- `runtime/src/allocator/`, `runtime/src/platform/`: the collector and the scheduler.
+- `elm-kernel-cpp/`, `eco-kernel-cpp/`, `system-kernel-cpp/`: the three kernel libraries.
+- `CMakeLists.txt`, `CMakePresets.json`, `.github/workflows/`, `version.txt`: the build graph, platform bundles, CI, the kernel license and TLA+ canary guards, and the version.
+- `test/tla/README.md`: the formal models of the collector's concurrency.
+- `design_docs/compatability.md`: the CPU and C library choices.
+- `design_docs/multi-threaded-eco/01-baseline-and-boundary.md`: one mutator per process, the rejected shared heap, and the heap-per-thread direction.
 
-Because the `ptr` field starts at **bit 3** and heap objects are 8-byte aligned
-(their low 3 bits are 0, coinciding with a zero `constant`/`ptr_ind`), the low 43
-bits of the word — `constant ++ ptr_ind ++ ptr` — *are* the address. The heap is
-reserved below 2^43 (8 TB) so `null_cons_idx`/`padding` are 0 for any pointer. Decode
-is a reinterpret; encode stores the aligned address verbatim.
+Invariants (`design_docs/invariants.csv`):
 
-Golden words: `null = 0x0`, `False = 0x4`, `True = 0x5`, `Empty = 0x6`, a nullary
-constructor `(idx << 43) | 0b111`; a heap pointer's word equals its address.
-
-Key points:
-
-1. **`ptr_ind` discriminates** a pointer (0) from a constant (1). It cannot be
-   `constant != 0` because `False` has constant field 0.
-2. **Embedded constants**: `False`, `True`, the single merged `Empty` which
-   subsumes Unit, Nil, Nothing, "", and `{}` (the type checker guarantees a
-   merged empty is only produced/matched where its type is expected), and the
-   **null-cons** family. Bool's low bit equals the SSA/ABI `i1` value, so
-   box = `(1<<2)|i1`, unbox = `word & 1`.
-3. **No `heap_base` in the hot path**: `fromPointerRaw`/`toPointerRaw`/`hpToAddr`
-   only reinterpret the word. Forwarding pointers (`Forward.forward_ptr`) still
-   store `addr >> 3` in 8-byte units (their field cannot sit at bit 3 — bits 0-4
-   hold the Tag_Forward tag) but drop the heap_base term.
-4. **Nullary constructors are embedded, not allocated** (`HEAP_044`,
-   `plans/null-cons-hpointer-embedding.md`): constant code 3 carries the ctor's
-   zero-based declaration index verbatim in `null_cons_idx`, so `LT`, `RBEmpty`,
-   and every other field-less constructor is an immediate rather than a 16-byte
-   heap object. Tag extraction (`eco_get_tag`, the open-coded diamond, the
-   `eco.case` lowering) returns those 10 bits, which is what keeps case dispatch
-   representation-agnostic. This is a **single representation**: a live heap
-   `Tag_Custom` with 0 fields is a bug, because equality decides by raw word
-   comparison the moment either operand is embedded.
-
-## Unified Heap: One Address Space, Per-Thread Regions
-
-The allocator reserves a single large address space (1GB by default) via `mmap` without committing physical memory. This space is partitioned:
-
-```
-[0 .. heap_reserved/2)      - Old generation regions (carved up per-thread)
-[heap_reserved/2 .. end)    - Nursery regions (carved up per-thread)
-```
-
-Physical memory is committed on demand:
-- Nursery: a slice pair claimed via `acquireNurserySlicePair()` when a thread initializes, its committed prefix extended by `growNurserySlicePair()` as the nursery grows (released slots retain their pages for the next heap that claims them)
-- Old gen: Committed via `acquireOldGenRegion()` when a thread initializes, grows as needed
-
-Each thread gets its own regions within these spaces. The Allocator tracks committed ranges and hands out contiguous chunks to each `ThreadLocalHeap`.
-
-**Configuration**: Heap parameters are centralized in `HeapConfig`:
-- `nursery_block_count`: Must be even (split between from-space and to-space)
-- `alloc_buffer_size`: Size of each block (default 512 KiB)
-- `promotion_age`: GC cycles before promotion (default 1)
-- `nursery_gc_threshold`: Occupancy threshold for minor GC trigger (default 90%)
-- `use_hybrid_dfs`: Enable list locality optimization (default true)
-
-Configuration is validated on `Allocator::initialize()` to catch invalid combinations early.
-
-**Heap validation**: During major GC, pointers are validated with `isInHeap()` - a simple O(1) bounds check against the reserved address range. This is simpler than checking `isInOldGen() || isInNursery()` and correctly handles all valid heap pointers regardless of which generation they're in.
-
-## Promotion: When Objects Grow Up
-
-Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (default 2, configurable via `HeapConfig`). The age is tracked in the header:
-
-```cpp
-u32 age : 2;      // Survives up to 3 GCs before promotion
-u32 pin : 1;      // Prevents relocation (for FFI or debugging)
-u32 unboxed : 6;  // 2 bits/slot; per-slot primitive kind (Cons/Tuple/ElmArray)
-```
-
-The `unboxed` bitfield encodes a 2-bit primitive kind per slot (00=boxed
-HPointer, 01=Int, 10=Float, 11=Char) for `Cons` (1 slot), `Tuple2`/`Tuple3`
-(2/3 slots), and `ElmArray` (1 uniform kind). `Custom`, `Record`, and
-`DynRecord` carry separate wider bitmaps in their own structures (48, 64,
-and 64 bits respectively, all 2-bit-per-slot). See
-`design_docs/theory/heap_representation_theory.md` for details.
-
-When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
-
-### Builder bit: pinning in-construction objects to nursery *(May 10, 2026)*
-
-Some runtime kernels (notably `JsArray.indexedMap`/`map`/`initialize` and similar) allocate a result container up front and then write into it across multiple calls into user closures. Because each closure call is a GC safepoint, a minor GC may fire mid-loop and promote the half-built container to old gen. Subsequent slot writes would then plant nursery HPointers into an old-gen parent — exactly the kind of old-gen→young edge the no-remembered-set design forbids.
-
-To handle this, the header carries a 1-bit `builder` flag (carved from the unused `refcount` field). While `builder == 1` the object:
-
-- is **fully traced** during minor GC like any other live object,
-- is **never promoted** (the canonical promotion predicate is `!pin && !builder && age >= promotion_age`),
-- is **never aged** (the invariant `builder ⇒ age == 0` holds at every GC-visible point),
-- is **forbidden from old gen** (HEAP_BUILDER_001).
-
-Kernels opt in via `allocArrayBuilder` (and the `BuilderGuard` RAII helper), which set the bit at allocation time and clear it on scope exit before the result becomes reachable to user Elm code. `pin` and `builder` are orthogonal axes: `pin` forbids relocation, `builder` forbids promotion.
-
-## Execution Model: Thread-Local Stop-the-World
-
-Each mutator thread runs its own GC on its own heap, and makes every decision about it. Since threaded-gc-03 a per-process pool of **GC helper threads** (`GCHelperPool`, `gc_thread_mode` / `ECO_GC_THREAD` = 0 off, 1 sync, 2 concurrent) may run *jobs* the mutator posts at the end of a pause. So far those jobs touch no heap object: they discard released old-gen pages late (HEAP_059) and pre-fault the pages above the old-gen bump (HEAP_060). No GC decision may depend on helper progress (GC_DET_001); mode 1 runs the same jobs inline and is the reference. See HEAP_007 and HEAP_058:
-
-- **Minor GC**: Triggered when nursery occupancy exceeds `nursery_gc_threshold` (default 90%)
-- **Major GC**: Triggered when old gen committed bytes exceed a threshold
-- **Incremental work**: Marking and compaction can be spread across allocation slow-paths
-
-**Frozen published heap (P1, HEAP_SNAPSHOT_001).** Runtime and kernel code never write into an object after it has survived a GC, unless it carries `builder`. Compiled Elm code writes only fresh objects (HEAP_031). Validate builds enforce this with the P1 census (`ECO_P1_CENSUS`, detectors N/O/W), and a `-DECO_P1_CENSUS=ON` build measures it at full scale. There are no old→young pointers (HEAP_005). A large pointer-bearing object is never born old: it goes to the nursery up to a cap, or to the *young large-object space* (YLOS, HEAP_062), a pinned old-gen cell that is young: minor GCs reach it through the copiers, scan it in place, age it and promote it in place (HEAP_062 replaced the born-old pending list, HEAP_061).
-
-Each thread's GC is stop-the-world *for that thread only*. Other threads continue executing. This avoids global synchronization while keeping the GC simple.
-
-The `ThreadLocalHeap` coordinates its nursery and old gen:
-1. `allocate()` bumps pointer in nursery (fast path)
-2. When nursery is exhausted, slow path runs allocation inside a GC safepoint
-3. When threshold exceeded, `minorGC()` evacuates survivors
-4. Promoted objects go to thread-local old gen
-5. When old gen grows large, `majorGC()` marks and sweeps
-
-### Fast and Slow Allocation Paths
-
-*(Apr 2026)* Allocation is split into two paths:
-
-- **Fast path**: Simple nursery bump-pointer increment. No GC interaction. O(1).
-- **Slow path**: When nursery space is insufficient, the allocation runs inside a GC safepoint. This allows the GC to collect before retrying.
-
-The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and attaches live GC roots as explicit operands. This ensures the runtime has accurate root information when the slow path triggers GC.
-
-**Allocation groups — single safepoint per group** *(Apr 16, 2026)*: Adjacent fixed-size allocations identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast(totalBytes)` (a `gc-leaf-function`, never a safepoint); on null the slow path calls `eco_gc_alloc_region_slow(totalBytes)`, which is non-leaf and is therefore wrapped in a `gc.statepoint` by RS4GC. Each member is initialized at its offset via `eco_init_*_at` runtime functions (leaf) that write the header/fields into the reserved region and return the HPointer. Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups; group size is capped below the 32 KiB large-object threshold.
-
-**Inline nursery allocation — the bump diamond** *(Jul 21, 2026; HEAP_034, `plans/inline-nursery-allocation.md`)*: fixed-size constructions do not call the runtime at all. `NurserySpace::NurseryBump{ptr, end}` (offsets 0/8, `static_assert`-pinned ABI) is exported by `eco_bump_state()` — declared `memory(none)` + `speculatable` + gc-leaf, because the *address* is thread-stable even though the contents move. `expandInlineAllocs` turns each `__eco_alloc_inline(SIZE)` marker into `load ptr; load end; gep +SIZE; icmp ugt; br` with the miss edge weighted 1 : 2²⁰: the fast arm publishes the new top and the merge block receives the object, while the cold arm makes the single statepointed call to `eco_alloc_inline_slow(SIZE)`. `end` is pre-clamped to `min(from-space extent end, proactive-GC threshold trip)` by `computeAllocEnd`, so that **one unsigned compare encodes both space exhaustion and the GC trigger** — which is what lets the fast path be a genuine non-safepoint. Since HEAP_042 made each semi-space contiguous, a miss on that compare means "collect", not "step to the next block". The header word and every payload field are stored straight-line after the merge with no possible safepoint in between, so a GC can never observe a partially-initialized object.
-
-**The capacity model — hoisting the check out of the callee** *(Aug 8, 2026; CGEN_074/HEAP_041, `plans/capacity-check-hoisting.md`)*: the *bump* is not the GC hazard; the *check* is. So the check can be hoisted while the bumps stay put. A **guarantee of N bytes** at program point P means `bump.end - bump.ptr >= N` on this thread, and entitles the straight-line code after P to bump up to N bytes with no checks at all — provided nothing in between can trigger a GC *or consume nursery headroom*. That last clause is a real distinction: gc-leaf does **not** imply bump-state-transparent (`eco_gc_alloc_region_fast` is gc-leaf yet bumps the same cursor), so such calls void a guarantee despite the attribute. Under `ECO_ALLOC_HOIST=1` a backend fixpoint computes a byte budget per function; a function whose only GC hazard is its own bounded allocation becomes *coverable*, its diamonds collapse to unchecked bumps, and its callers emit one **ensure diamond** — the same compare against the clamped `end`, with `eco_ensure_nursery_slow(N)` on the cold edge — sized for the whole run of allocations and covered calls that follows. Because the guarantee is measured against the *clamped* end, the proactive-GC decision is simply fronted for the covered region: trigger semantics are preserved and granularity coarsens by at most N bytes. A covered function ends up statepoint-free, so CGEN_072 stamps it gc-leaf and CGEN_073 drops its frame pointer — the mechanism composes with, rather than duplicates, the gc-free propagation above. **All three flags (`ECO_GCFREE_LEAF`, `ECO_FP_LEAF`, `ECO_ALLOC_HOIST`) are DEFAULT-ON as of Aug 9, 2026**; setting any of them to `0` is the escape hatch, and `=c` runs the analysis as a census without mutating the module.
-
-### GC instrumentation *(threaded-gc-00, Sep 24, 2026)*
-
-`plans/threaded-gc-00-measure-and-fix.md` added measurements that change no GC behaviour. All of them except the census are **compiled in only with the CMake option `-DECO_GC_PHASE_TIMERS=ON`** (default OFF; requires `ECO_GC_STATS`). Left on, they cost +1.52 s of GC time (+2.3 %) on the self-compile (`benchmarks/gc-opt-loop.md` entry T00). With the option off, none of their code or clock reads exist in the runtime. GC counters and `out.mlir` stay bit-identical, and nothing below feeds a GC decision.
-
-- **Banner blocks** (`ECO_GC_PHASE_TIMERS` builds, appended after "Adaptive Lazy-Sweep Bytes"):
-  - `GC Pause Distribution (threaded-gc-00)`. A pause is one contiguous mutator stop: the outermost `ThreadLocalHeap::minorGC` or `majorGC` call, so a minor that triggers a major counts once. The block gives percentiles, a log2 histogram and an MMU table.
-  - `Minor GC Phase Breakdown (threaded-gc-00)`. Covers the stack walk, each root phase, the Cheney drain vs the promoted-object drain, the tail, the large-body sweep, the unaccounted residual, sampled promotion-allocator and in-pause lazy-sweep estimates, and page faults.
-  - `External Root Scanners (threaded-gc-00)`. Per named scanner (`RootSet::addExternalRootScanner(fn, name)`): time and slot counts.
-- **Two timer brackets that differ.** The legacy "Minor GC Timing" bracket excludes the stack walk and the large-body sweep. Both are counted as mutator time by "Allocator Timings". The pause block includes them.
-- **There is no runtime switch.** If `ECO_GC_PHASE_TIMERS` is compiled in, the timers, sampling and pause log are on.
-- **`ECO_GC_EVENT_LOG=<path>`** (`ECO_GC_PHASE_TIMERS` builds) writes one tab-separated row per minor, major and pause. Summarise it with `benchmarks/gc-event-log-summary.py <log> [--json]`.
-- **`ECO_SURVIVOR_WRITE_CENSUS=1`** (heap-validate builds only) hashes every survivor at the end of a minor GC and re-checks it at the start of the next. It counts writes into objects that have already survived a GC, i.e. the P1 question of `design_docs/parallel-gc.md` §7.4.3, and prints a `[survivor-write-census]` table to stderr at exit.
-- **`ECO_VALIDATE_FREELIST_DUP_SCAN=0`** (heap-validate builds only) skips the O(list-length) duplicate-push scan in `pushSpanOnFreeLists`. Without it a validator self-compile takes days, because the post-major sweep pushes millions of cells onto lists up to 10^6 long.
-
-### Stack Root Tracing
-
-Precise GC stack root tracing is implemented via LLVM statepoints, with LLVM's upstream `RewriteStatepointsForGC` (RS4GC) doing the heavy lifting:
-
-1. **EcoGCStrategy** (`runtime/src/codegen/Passes/EcoGCStrategy.cpp`): Registers the `"eco-gc"` strategy with LLVM. `isGCManagedPointer()` returns true for any `ptr addrspace(1)`, and `UseRS4GC = true` drives `RewriteStatepointsForGC`. All non-external Eco functions are tagged `gc "eco-gc"`.
-2. **EcoGCPrepare** (MLIR Stage 2): Groups adjacent fixed-size allocations so that one allocation region covers multiple construct ops, and walks MLIR's inter-block `Liveness` analysis to attach live `!eco.value` roots to allocation-group leaders and call-like ops. These operands survive into LLVM IR, but RS4GC does not require them — it recomputes liveness itself.
-3. **Leaf annotations**: Runtime helpers that cannot trigger GC (`eco_*_fast`, `eco_store_*`, `eco_init_*_at`, `eco_get_*`, `eco_gc_add_root`, math kernels, etc.) carry `gc-leaf-function` on their LLVM declarations. Non-leaf functions (`eco_alloc_*`, `eco_alloc_*_slow`, `eco_gc_alloc_region_slow`, `eco_apply_closure`, `eco_pap_extend`, `eco_closure_call_saturated`, `eco_clone_array`, `eco_minor_gc`, `eco_major_gc`) are the calls RS4GC treats as safepoints. Under `ECO_GCFREE_LEAF` (CGEN_072, `plans/gc-free-function-propagation.md`; default-ON since Aug 9, 2026, `=0` to disable) the attribute additionally propagates to *generated* functions that provably cannot GC — a poison fixpoint run pre-RS4GC over `llvm::callsGCLeafFunction`, RS4GC's own per-call-site predicate — so calls to those functions lose their statepoints too. Note the attribute, not the name, is the contract: the `eco_alloc_*_fast` / `eco_init_*_at` family *is* gc-leaf (it returns null on miss and never collects), so no reasoning may key off an `eco_alloc_` prefix.
-4. **RewriteStatepointsForGC** (LLVM function pass, run between MLIR translation and the base optimizer): For every non-leaf call/invoke inside a `gc "eco-gc"` function, RS4GC (a) computes live `ptr addrspace(1)` values via type-based backward dataflow, (b) infers base pointers (trivial here — every HPointer is its own base), (c) wraps the call in `llvm.experimental.gc.statepoint` with a `gc-live` operand bundle, (d) emits `llvm.experimental.gc.relocate` for each live pointer, and (e) rewrites uses via one alloca per live pointer plus `PromoteMemToReg`. The result is clean SSA where every post-safepoint use observes the relocated pointer.
-5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format (concatenated one blob per codegen partition, so a split binary carries several — the parser loops over them, and `llvm-readobj --stackmap` decodes only the first). `collectStackRootsFromStackMap()` walks the stack with a libunwind/CFI cursor (`StackUnwind.cpp`: `unw_step` / `unw_get_reg`, `RtlVirtualUnwind` on Win64), resolving each stack-map location's DWARF register number through that cursor — it does **not** chase an `rbp` chain. That is what makes frame-pointer omission safe for functions whose stack maps are never consulted (CGEN_073).
-
-Because RS4GC identifies GC pointers purely by type (`ptr addrspace(1)`), the front-end/compiler does **not** need to hand-roll liveness: attaching `!eco.value` operands in EcoGCPrepare is belt-and-suspenders, and nothing can "fall through the cracks" because the LLVM type system enforces visibility.
-
-**StackRootGuard**: RAII helper in `HeapHelpers.hpp` that pushes HPointers onto `RootSet::stack_root_ranges` (as 1-element ranges) and restores on destruction. Used by kernel helpers (`allocTask`, `allocProcess`, `cons`, `tuple2`, etc.) to root captured HPointers across allocations that may trigger GC. Stackmap-derived roots live in a separate `StackMapRoots` container owned by `ThreadLocalHeap`, populated only by `collectStackRootsFromStackMap()` and cleared each GC cycle.
-
-**Shadow stack root ranges** *(Apr 13, 2026)*: Closure dispatch helpers (`eco_apply_closure`, `eco_apply_segmentation_unknown`, `eco_pap_extend`, `eco_closure_call_saturated`) alloca `uint64_t*` arg buffers at runtime — a layout static stack maps cannot describe. These buffers are pushed onto `RootSet::stack_ranges` (a "shadow stack") via `eco_gc_push_stack_range` before allocation and popped after. Each range carries an unboxed-bitmap mask so the GC visits only the HPointer slots.
-
-**Closure wrapper safepoints**: Generated `__closure_wrapper_*` functions carry `gc "eco-gc"` like any other Elm function. The target Elm call and every `eco_alloc_*` boxing call inside the wrapper are non-leaf, so `RewriteStatepointsForGC` automatically wraps each in a `gc.statepoint` that captures all live `ptr addrspace(1)` arg HPointers. `eco_resolve_hptr` is a `gc-leaf-function` — it is a non-allocating invariant and therefore never becomes a safepoint.
-
-**Closure pointer re-resolution** *(Apr 15, 2026)*: `buildEvaluatorArgs` takes `closure_hptr` (not raw `Closure*`) and re-resolves via `hpointerToPtr` before each `values[i]` load. `eco_pap_extend` re-resolves `old_closure` from the authoritative `closure_hptr` after `Allocator::allocate()` since GC may have relocated the old closure.
-
-**External GC roots** *(Apr 15, 2026)*: `MVar::s_mvars` and `Runtime::s_savedState` are registered as external root scanners (encode → evacuate → decode each stored HPointer) via `Eco_Kernel_{MVar,Runtime}_register_gc_roots` + aggregator `Eco_Kernel_register_all_gc_roots`, invoked after `Allocator::initThread()` in AOT (and weakly in JIT) entries.
-
-**GC diagnostics** *(Apr 15-16, 2026)*: `ECO_GC_DEBUG` CMake option (default on in Debug builds) adds ghost-data clearing — `clearToSpaceFreeRegion()` zeroes all free to-space bytes after each minor GC, and `debugAssertValidNurseryPointer` fires in `evacuate`/`Allocator::resolve` if a nursery pointer targets unallocated space. `ECO_GC_DEBUG_LIVENESS` enables `EcoGCLivenessAudit`, which audits `EcoGCPrepare`'s root sets against MLIR liveness (skipping `eco.gc_group_member` ops since their liveness is covered by the group leader's root set). See `guides/gc-diagnostics.md`.
-
-### Large Object Allocation
-
-*(Apr 2026)* Objects larger than a nursery block are allocated in a dedicated pinned large-object space within the old generation. Large objects are never copied — they are pinned in place and managed by mark-sweep.
-
-### Large-Object Split-Header Representation (HEAP_026) *(May 1-2, 2026)*
-
-Strings and byte buffers above ~2 KiB use a **split-header** representation. A small header (`Tag_LargeStringHeader` / `Tag_LargeByteHeader`) lives in the nursery and points at a pinned old-gen body. The body is never copied; the header forwards through Cheney evacuation like any other small nursery object. This avoids two problems at once: (a) repeatedly memcpying multi-kilobyte payloads through every minor GC, and (b) requiring large objects to be allocated directly in the old gen and thus rooted via the major-GC path.
-
-39 audited call sites in the kernel C++ now route through `alloc::resolveByteBufferBody` / `resolveStringBody` so they see the underlying payload regardless of whether the header is split (large) or inline (small). Released large bodies may be reclaimed in any old-gen GC state, not just `Idle`.
-
-Captured as invariant **HEAP_026** in `design_docs/invariants.csv`.
-
-For Elm's typical use case (short-lived web applications with message-passing concurrency), thread-local heaps match the programming model naturally.
-
-## Key Invariants
-
-1. **No old-to-young pointers**: Guaranteed by Elm's immutability. No write barrier needed.
-
-2. **Forwarding pointers are ephemeral**: Only exist during GC. All pointers are resolved before mutator resumes.
-
-3. **Objects are 8-byte aligned**: Enforced by all allocation paths. Required for pointer compression to work.
-
-4. **Headers are always first**: Every heap object starts with an 8-byte Header. Size calculation depends on this.
-
-5. **Constants are never heap-allocated**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are embedded in the pointer representation. String length zero anywhere in `StringOps` short-circuits to the embedded `Const_EmptyString` rather than allocating a zero-length leaf.
-
-6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects. Use `StackRootGuard` to root HPointers across allocation calls.
-
-7. **Space membership is O(1)**: Checking if a pointer is in from-space or to-space uses cached bounds (`low_base_`, `low_end_`, etc.) for simple range comparison.
-
-8. **Thread ownership is exclusive**: Each heap region is owned by exactly one thread. No cross-thread pointer sharing (Elm uses message passing).
-
-## Object Layout and Size Calculation
-
-The `getObjectSize()` function must match object layout exactly. This is a common source of bugs. Key points:
-
-- **Fixed-size types**: `ElmInt`, `ElmFloat`, `Tuple2`, etc. have known sizes.
-- **Variable-size types**: Use `hdr->size` to store element count (not byte size).
-- **Closure special case**: Uses `n_values` field, not header size.
-- **Always 8-byte aligned**: `(size + 7) & ~7`
-- **String tags**: `Tag_String` is variable-size (`sizeof(ElmString) + size * sizeof(u16)`); `Tag_StringSlice` and `Tag_StringRope` are fixed-size (`sizeof(ElmStringSlice)`, `sizeof(ElmStringRope)`). For all three, `header.size` is the logical UTF-16 length.
-
-When adding a new type, you must update:
-1. `Tag` enum in Heap.hpp
-2. Type struct definition
-3. `getObjectSize()` switch statement
-4. `scanObject()` in NurserySpace.cpp
-5. `markChildren()` in OldGenSpace.cpp
-
-## String Representation
-
-*(Apr 27, 2026)* `String` is the only Elm value with three concrete heap forms:
-
-- **`Tag_String`** — flat UTF-16 leaf (`Header + u16 chars[]`).
-- **`Tag_StringSlice`** — structural view: `Header + HPointer base + u32 offset + u32 _padding`. `base` always points to a leaf (slice-of-slice collapses at construction).
-- **`Tag_StringRope`** — concat-tree node: `Header + HPointer left + HPointer right + u32 height + u32 leafCount`.
-
-The compiler/MLIR allocates only `Tag_String` leaves (`eco_alloc_string*`, `Eco_StringLiteralOp`). Ropes and slices are produced exclusively inside `Elm::StringOps` to avoid copying for `++`, `slice`, `trim*`, `dropLeft`/`dropRight`, etc. `append` builds a rope when the total exceeds `FLATTEN_LIMIT` (32 K UTF-16 code units); below that it stays on the existing memcpy fast path. `slice` over a leaf builds a `Tag_StringSlice` for ranges above `TINY_SLICE_LIMIT` and a fresh leaf below it. `concat` over a long list of strings builds a balanced rope via an explicit merge stack to avoid `O(n²)` left-leaning shapes.
-
-`charAt` and `toStdU16String` are tag-dispatched: leaves index `chars[]` directly, slices add `offset`, ropes descend by left subtree length. Both are iterative / use an explicit DFS stack so deep ropes don't blow the C stack. `equal`/`compare` keep the leaf+leaf `memcmp` fast path; mixed shapes flatten under `FLATTEN_LIMIT` then `memcmp`, and fall back to a bounded-memory char walk above the limit.
-
-Kernel C++ code never reads `s->chars[i]` directly — all access goes through `Elm::StringOps::{length, charAt, toStdString, toStdU16String, ensureFlat}` or through `HeapHelpers::stringLength` / `isString` (which accept any string tag). `HeapHelpers::stringData` keeps a leaf-only contract (asserts `getTag == Tag_String`).
-
-See [String Rope Representation Theory](design_docs/theory/string_rope_representation_theory.md) for the full design and HEAP_025 in `design_docs/invariants.csv` for the formal contract.
-
-## Testing Philosophy
-
-The test suite uses RapidCheck for property-based testing with three core properties:
-
-1. **Preservation**: GC preserves all reachable objects with correct values
-2. **Collection**: GC reclaims unreachable objects
-3. **Stability**: Multiple GC cycles maintain correctness
-
-Key testing infrastructure:
-
-- `HeapSnapshot`: Captures heap state before/after GC for comparison
-- `HeapGraphDesc`: RapidCheck-shrinkable description of a heap graph
-- `GraphRoots`: RAII wrapper that auto-unregisters roots on scope exit
-
-When a test fails, RapidCheck provides a reproduction string. Use `--reproduce <string>` to reliably replay the failure for debugging.
-
-## Mental Model: Think in Threads, Generations, and Regions
-
-When reasoning about the GC, think in terms of thread ownership, where objects live, and when they move:
-
-```
-Thread initialization:
-  Allocator carves out regions → ThreadLocalHeap owns [Nursery] + [OldGen]
-
-Object lifecycle (within one thread):
-  allocate() → [Nursery low_blocks (from-space)]
-                       |
-                       v  (minor GC - threshold exceeded)
-                 [Nursery high_blocks (to-space)] or [Old gen]
-                       |
-                       v  (spaces swap: from_is_low_ flips)
-                 [Nursery low_blocks (now to-space)]
-                       |
-                       v  (next minor GC, if survived PROMOTION_AGE)
-                 [Old gen]  (promoted)
-```
-
-Old gen objects only die during major GC. They can never move back to nursery.
-
-**Key state variables during GC**:
-- `from_is_low_`: Which region is currently from-space (flips after each GC)
-- `bump_.ptr` / `bump_.end`: bump-pointer allocation state; `end` is `min(from-space extent end, proactive-GC threshold trip)`
-- `copy_ptr_`, `copy_end_`: evacuation destination state (one contiguous extent)
-- `scan_ptr_`: Cheney scan position — the scan is simply `scan_ptr_ < copy_ptr_`
-
-The key questions for debugging:
-1. Was it correctly evacuated? (forwarding pointer left behind)
-2. Were its children correctly updated? (scanObject/markChildren)
-3. Was its size calculated correctly? (getObjectSize)
-4. Is the pointer in the right region? (isInFromSpace vs isInToSpace)
-5. Which thread owns this memory? (check ThreadLocalHeap bounds)
-
-## Future Direction
-
-Several optimizations from PLAN.md §7 have been implemented:
-
-- ✓ **Segregated-fits + BBoP**: 32 small classes (8-256 B) plus medium classes (512 B..65536 B), backed by a Big Bag of Pages *(Apr 25, 2026)*
-- ✓ **Mark-driven live + lazy sweep**: live attribution at mark time, sweep paced on the allocation slow path *(Apr 26, 2026)*
-- ✓ **Per-block mark bitmap sidetable**: liveness no longer rides in object headers *(Apr 26, 2026)*
-- ✓ **Builder-bit nursery pinning**: in-construction kernel arrays survive mid-loop minor GCs without becoming old-gen→young edges *(May 10, 2026)*
-- ✓ **Large-object split-header**: > 2 KiB strings / byte buffers stay in pinned old-gen bodies; only the small header moves through Cheney (HEAP_026) *(May 2, 2026)*
-- ✓ **Thread-local heaps**: Eliminates cross-thread synchronization
-- ✓ **Incremental compaction**: Spreads defragmentation cost over time
-- ✓ **List locality optimization**: Contiguous spine copying for better cache behavior
-
-At the 0.1.0 milestone *(May 14, 2026)*, the runtime sustains the full Stage 7 bootstrap workload (~10⁹ allocations, many major GCs, sustained ~1 GB old gen) to a clean fixed point in the compiler's MLIR output. Stage 7 / Stage 8 MLIR outputs are byte-identical.
-
-Remaining opportunities:
-
-- **Stack-allocated values**: Escape analysis to avoid heap allocation entirely
-- **Reference counting for uniqueness**: Detect refcount==1 to enable safe in-place mutation
-- **Concurrent marking**: Mark phase running in parallel with mutator
-- **NUMA-aware allocation**: Thread affinity for memory locality on multi-socket systems
-
-The design philosophy is: start simple, prove correctness, then optimize. Complexity is added only when necessary.
-
----
-
-# Compiler Backend Pipeline
-
-The ECO compiler backend transforms Elm source code into native executables via MLIR and LLVM. This section provides an overview of the compilation pipeline; detailed theory documents for each pass are in [`design_docs/theory/`](design_docs/theory/).
-
-## Pipeline Overview
-
-The compiler backend consists of several phases:
-
-```
-Elm Source
-    ↓
-[Standard Elm Frontend: Parse, Canonicalize, Type Check]
-    ↓
-┌─────────────────────────────────────────────────────┐
-│  ECO Backend Pipeline                               │
-│                                                     │
-│  PostSolve                                          │
-│    - Fix remaining Group B types (Str, Chr, Float)  │
-│    - Infer kernel function types                    │
-│    ↓                                                │
-│  Typed Optimization                                 │
-│    - Preserve types through optimization            │
-│    - Pattern match compilation                      │
-│    ↓                                                │
-│  Monomorphization                                   │
-│    - Specialize polymorphic functions               │
-│    - Compute concrete layouts                       │
-│    - Preserve curried type structure (staging-agnostic)
-│    ↓                                                │
-│  Global Optimization (GlobalOpt)                    │
-│    - Canonicalize closure staging (GOPT_001)        │
-│    - Normalize case/if ABI (GOPT_003)               │
-│    - Compute call staging metadata                  │
-│    ↓                                                │
-│  MLIR Generation (ECO Dialect)                      │
-│    - Generate typed IR                              │
-│    - Build type table for debug printing            │
-│    ↓                                                │
-│  ECO Dialect Lowering (Stage 2)                     │
-│    - JoinPoint normalization                        │
-│    - Control flow to SCF                            │
-│    - RC elimination                                 │
-│    - EcoGCPrepare (attach GC roots to alloc ops)    │
-│    ↓                                                │
-│  LLVM Dialect (Stage 3)                             │
-│    - EcoToLLVM lowering                             │
-│    - Functions tagged gc "eco-gc"                   │
-│    ↓                                                │
-│  MLIR → LLVM IR Translation                         │
-│    ↓                                                │
-│  RewriteStatepointsForGC (LLVM)                     │
-│    - gc.statepoint/gc.relocate for every            │
-│      non-leaf call in gc "eco-gc" functions         │
-│    - Liveness, base inference, alloca+mem2reg       │
-│    ↓                                                │
-│  LLVM IR → Native Code + stackmap                   │
-└─────────────────────────────────────────────────────┘
-```
-
-## Key Backend Passes
-
-### PostSolve (Type Fixing)
-
-After type inference, some expressions have incomplete types:
-
-- **Group A expressions**: Most expressions now have solver-owned types, including containers (List, Tuple, Record), lambdas, accessors, let expressions, and all structural expressions *(expanded from Group B to Group A, Mar 28, 2026)*.
-- **Group B expressions**: Only scalar literals (String, Char, Float, Unit) remain in Group B — these get synthetic type variables that need structural type computation.
-- **Kernel functions**: `VarKernel` references don't have annotations; their types are inferred from usage patterns.
-
-The PostSolve pass walks the AST, computing concrete types and building a `KernelTypeEnv` for typed optimization.
-
-**See**: [PostSolve Theory](design_docs/theory/pass_post_solve_theory.md)
-
-### Typed Optimization
-
-The standard Elm compiler discards types after type checking since JavaScript doesn't need them. ECO's TypedOptimized AST preserves type information on every expression:
-
-```elm
-type Expr
-    = Bool A.Region Bool Can.Type
-    | Int A.Region Int Can.Type
-    | Call A.Region Expr (List Expr) Can.Type
-    -- Every variant carries Can.Type
-```
-
-This enables type-directed code generation and monomorphization.
-
-As part of Typed Optimization, the **NormalizeLambdaBoundaries** pass flattens nested lambda structures by lifting let-bindings and case expressions out of lambda boundaries. This reduces spurious staging boundaries for downstream GlobalOpt.
-
-**Short-circuit `&&`/`||`** *(Apr 24, 2026)*: The `Binop` arm of TypedOptimized rewrites `a && b` to `if a then b else False` and `a || b` to `if a then True else b`, so every backend inherits short-circuit semantics from the existing `If` codegen path. The strict `eco.bool.and` / `eco.bool.or` intrinsics and the JS `&&` / `||` infix arms remain for first-class uses of `Basics.and` / `Basics.or`.
-
-**See**: [Typed Optimization Theory](design_docs/theory/pass_typed_optimization_theory.md), [NormalizeLambdaBoundaries Theory](design_docs/theory/pass_normalize_lambda_boundaries_theory.md)
-
-### Monomorphization
-
-Elm's parametric polymorphism must be resolved for native code. The monomorphizer uses a worklist algorithm to generate specialized versions of polymorphic functions:
-
-```
-identity : a -> a
-identity x = x
-
--- With uses: identity 42, identity "hi"
--- Generates:
---   identity<Int> : Int -> Int
---   identity<String> : String -> String
-```
-
-Each specialization gets a unique `SpecId`. The pass also computes concrete layouts for records, tuples, and custom types.
-
-**Key concepts**:
-- `MonoType`: Monomorphized type (MInt, MFloat, MList MonoType, etc.)
-- `SpecKey`: (Global, [MonoType]) identifying a specialization
-- `SpecializationRegistry`: Maps SpecKey ↔ SpecId
-- `forceCNumberToInt`: Aggressively resolves unresolved `CNumber` type variables to `MInt`, ensuring no `CNumber` survives to codegen
-- **Let-bound multi-specialization**: When a polymorphic let-bound function is used at multiple distinct types, the monomorphizer creates separate specialized instances with fresh names (e.g., `identity_0 : Int -> Int`, `identity_1 : String -> String`)
-- **Int MVarIds** *(Mar 30 – Apr 1, 2026)*: Type variable names are now Int IDs (not Strings) from monomorphization onward. The `AssignMVarIds` module assigns globally unique Int IDs to all type variables in the TypedOptimized IR at the start of monomorphization.
-- **Solver root-backed MVarIds** *(Apr 4, 2026)*: The `SolverRoots` module normalizes solver variables to their union-find roots after constraint solving. `ensureMVarIdForRoot` guarantees that two type variables sharing the same solver root always receive the same MVarId, eliminating spurious specialization divergence caused by aliased type variables.
-- **Scheme freshening** *(Apr 1, 2026)*: Every time a callee's type scheme is instantiated, globally unique MVarIds are allocated. This prevents collision between scheme variables and the caller's existing substitution entries.
-- **Free-vars-aware substitution** *(Apr 2, 2026)*: `applySubstWithFreeVars` filters substitution to only MVarIds appearing in the canonical type being resolved (plus transitive closure), preventing cross-scheme contamination.
-- **PendingCall** *(Apr 5, 2026)*: When a nested Call has a still-polymorphic result type, specialization is deferred by wrapping it in `PendingCall`. The outer callee's expected parameter type is used to refine the substitution before specializing the inner call.
-- **Phantom type var normalization** *(Apr 11, 2026)*: Surviving `MVar _ CEcoValue` in specialization keys maps to sentinel values, ensuring fresh MVars from scheme bindings do not create different spec keys for identical specializations.
-- **Tuple / record specialised-element MonoType** *(May 14, 2026)*: `Compiler/Monomorphize/Specialize.elm` builds container `MonoType` for `TOpt.Tuple`, `TOpt.Record`, and `TOpt.TrackedRecord` from the **already-specialised element expressions**, not from `meta.tipe`. This guarantees the layout bitmap matches the SSA slot kinds even when an upstream constraint-flow gap leaves a slot's TVar unbound and `applySubst` falls through its `Nothing` / `CEcoValue` branch. Closes the tuple-slot boxing bug class (13 `TupleSlotBoxing*Test.elm` reproducers).
-
-**Important**: Monomorphization is staging-agnostic. It preserves curried type structure from Elm semantics (e.g., `MFunction [Int] (MFunction [Int] Int)`). All staging and calling-convention decisions are deferred to GlobalOpt.
-
-**See**: [Monomorphization Theory](design_docs/theory/pass_monomorphization_theory.md)
-
-### Global Optimization (GlobalOpt)
-
-After monomorphization, function types are still curried, one argument per stage. GlobalOpt resolves staging and ABI decisions:
-
-1. **Inline small functions** (before GlobalOpt): `MonoInlineSimplify` inlines small functions to reduce call overhead
-2. **Wrap top-level callables** (Phase 1): `wrapTopLevelCallables` ensures all top-level function values are closures
-3. **Regroup staging** (Phase 2): `Staging.regroup` rewrites every `MonoClosure`/`MonoTailFunc` type so its first stage takes exactly its params (GOPT_001); it creates no values
-4. **ABI cloning** (Phase 4): `AbiCloning.abiCloningPass` (homogeneous closure ABIs, LSS singleton stamps)
-5. **Compute call metadata** (Phase 5): `annotateCallStaging` builds `CallInfo` for MLIR codegen; Borrow inference (Phase 6) when enabled
-6. **After GlobalOpt**: `Compiler.Pipeline.Steps` (shared by `Builder.Generate` and the test harness) runs CSE, CAF dedupe and CAF hoist, each behind its flag, and under `mono.validate` checks GOPT_001 (`Steps.checkClosureStaging`)
-
-A function-valued case/if whose branches are staged differently keeps each branch's staging; GOPT_003 (rewritten Oct 6, 2026) forbids claiming a staging the branches do not all share, so calls through such a join are applied generically by the closure header.
-
-**The Staging Subsystem** (`compiler/src/Compiler/GlobalOpt/Staging.elm`): exposes `regroup` and `checkClosureStaging`. *(Oct 6, 2026)*: the former graph-based solver (`Staging/GraphBuilder`, `Solver`, `ProducerInfo`, `UnionFind`, `Types`, `Rewriter`: union-find with majority voting and eta-wrapping) was removed after measuring zero wrappers on the self-compile, E2E and elm-test corpora; output is byte-identical. Its `dynamicSlots` output is now `CallEnv.dynamicParams` in `MonoGlobalOptimize`. See [Staged Currying Theory](design_docs/theory/staged_currying_theory.md).
-
-**Key concepts**:
-- `Segmentation`: List of stage arities (e.g., `[2,1]` = take 2 args, return closure taking 1)
-- `CallModel`: `FlattenedExternal` (kernels) or `StageCurried` (user-defined)
-- `CallInfo`: Pre-computed metadata for each call site
-- `CallKind`: `CallDirectKnownSegmentation | CallDirectFlat | CallGenericApply` — determines calling convention
-- `segmentation_unknown` *(Mar 30, 2026)*: When compiler cannot statically determine arity, it uses `CallGenericApply` with runtime `eco_apply_*` wrappers for dynamic arity dispatch
-- `MonoTraverse`: Common iteration infrastructure for graph traversal (moved to `Monomorphize/`)
-- **isPureExpr** *(Apr 9, 2026)*: Fixed to check both body and bound expression in `MonoLet`, and Inline expressions inside Decider trees in `MonoCase`
-- **Value-only cycles** *(Apr 9, 2026)*: Zero-arg recursive bindings are now compiled as individual `MonoDefine` nodes instead of a single `MonoCycle` wrapping them in a spurious record
-
-This separation ensures Monomorphization stays simple while GlobalOpt handles all ABI complexity.
-
-**See**: [Global Optimization Theory](design_docs/theory/pass_global_optimization_theory.md), [Staged Currying Theory](design_docs/theory/staged_currying_theory.md)
-
-### MLIR Generation
-
-Converts MonoGraph to MLIR using the ECO dialect.
-
-**Architecture**: The codegen is organized into 11 focused modules under `Compiler/Generate/MLIR/`:
-- `Types.elm` - Eco types, MonoType→MlirType conversion
-- `Context.elm` - Context, signatures, type registry
-- `Ops.elm` - MLIR op builders (eco.*, arith.*, scf.*, func.*)
-- `Patterns.elm` - Decision tree path navigation, pattern test generation
-- `Expr.elm` - Expression lowering, call ABI (largest module)
-- `Functions.elm` - Node generation (define, ctor, extern, cycle)
-- `Backend.elm` - Program entry point
-
-**Key responsibilities**:
-- **ECO operations**: `eco.construct.list`, `eco.project.record`, `eco.call`, etc.
-- **Type table**: `eco.type_table` op with type descriptors for debug printing
-- **Closures**: Lambdas hoisted to top-level, captured values tracked
-- **Boxing/unboxing**: Primitives (i64, f64, i16) ↔ `eco.value` conversions
-
-**Bytes Fusion Optimization** (`BytesFusion/`): The compiler intercepts `Bytes.encode` and `Bytes.decode` calls and lowers them directly to fused BF dialect operations (cursor-based read/write) instead of going through the interpreter-style kernel:
-- `Reify.elm`: Pattern-matches Elm AST to build encoder/decoder node trees
-- `Emit.elm`: Emits fused BF dialect ops from reified nodes
-- `BFOps.td`: Defines the BF MLIR dialect (alloc, cursor, read/write ops)
-
-*(May 23, 2026)* **Phase 4 + 5** of the bytes-fusion roadmap landed alongside a raised per-function inliner cap so fused encoder/decoder pipelines can be inlined into their callers. A **partial-fusion escape hatch** falls back to the kernel path when the Elm AST does not fully reify to BF — previously any unrecognised shape failed the whole call. The runtime side of `elm/bytes` was reworked for zero-copy slices, single-copy memcpys, and large-object-table (LOT)-aware allocations. Plans: `plans/bytes-fusion-broader-recognition.md`, `plans/bytes-fusion-escape-hatch.md`.
-
-**Streaming bytecode emission** *(Apr 18-20, 2026)*: MLIR is emitted directly as MLIR binary bytecode in a streaming fashion rather than materialising a textual string. The bytecode encoder splits its attribute table into separate location and string buckets so location attrs don't inflate the string table. The streaming emitter dramatically reduces peak compiler memory for large programs; bootstrap-scale inputs are now tractable. Text-mode MLIR (`--text-mlir`) is retained for debugging.
-
-**`.ecot` size reduction** *(May 21, 2026)*: Cached typed-optimized artefacts (`.ecot`) shrank substantially through String interning into a per-file string table, plus dropping redundant fields that no downstream consumer read. Plan: `plans/complete-unified-id-space.md`. `.eco` and `artifacts.dat` files are now only written when the build is emitting JavaScript; the MLIR path skips them, and vice versa.
-
-**Front-end timing + telemetry** *(May 20-23, 2026)*: Front-end stages now record timing stats; a warm-cache GC cycle fix prevents `eco-boot-native` from accumulating from-space ghost data across repeated compiles. Stage 5 / 7a / 7b `.mlir` emits are wrapped in `/usr/bin/time -v` and aggregated by a `mlir-timing-report` target. Runtime tunables (heap parameters, inliner caps, fusion thresholds) are loaded from `eco-config.json` — plan: `plans/eco-config-tunable-parameters.md`. Default heap parameters were retuned after a sweep over the optimal combinations for the Stage 7 self-compile.
-
-**Mutually-recursive closure SCC allocation** *(Apr 24, 2026)*: `eco.papCreateGroup` atomically allocates an entire SCC of mutually recursive let-bound closures in one contiguous region. The Elm frontend detects contiguous closure-only SCCs of size ≥ 2 in let-chains and emits one group op instead of per-binding `papCreate`s with forward-referenced placeholders. Cross-sibling captures are written after all HPointers are known; same-generation, so no write barrier. Self-recursion and non-SCC bindings stay on the existing `fixSelfCaptures` path. This fixes a "operand #0 does not dominate this use" failure observed in mutually-recursive parsers.
-
-**See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [MLIR Bytecode Theory](design_docs/theory/mlir_bytecode_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
-
-### ECO Dialect Lowering
-
-Stage 2 passes transform ECO dialect toward LLVM:
-
-- **EcoGCPrepare** *(Apr 2026)*: Detects all potentially allocating ops and attaches live GC roots as explicit operands. Roots are pre-converted by the type-converter adaptor, eliminating races where `!eco.value` types were already erased to `i64` before liveness analysis.
-- **JoinPoint Normalization**: Ensures joinpoints have single entry
-- **ECO Control Flow to SCF**: Converts eco.case to scf.if/switch
-- **RC Elimination**: Removes reference counting ops (unused in tracing GC)
-- **Undefined Function Stubs**: Generates stubs for missing functions
-- **CheckEcoClosureCaptures** (verification): Validates closure capture consistency—ensures lambda free variables match closure captures
-
-**See**: [JoinPoint Normalization Theory](design_docs/theory/pass_joinpoint_normalization_theory.md), [ECO Control Flow to SCF Theory](design_docs/theory/pass_eco_control_flow_to_scf_theory.md), [RC Elimination Theory](design_docs/theory/pass_rc_elimination_theory.md), [Undefined Function Theory](design_docs/theory/pass_undefined_function_theory.md)
-
-### EcoToLLVM
-
-Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underwent significant simplification: all closure calling logic is centralized in `EcoToLLVMClosures.cpp`, and the pass no longer reverse-engineers kernel ABI types (the compiler is the sole ABI arbiter).
-
-- Type conversion: `!eco.value` → `ptr addrspace(1)` (GC-managed pointer; **REP_LLVM_001**, Apr 17, 2026). `ptrtoint`/`inttoptr` conversions appear only at heap/global/closure storage boundaries (i64 memory slots) and for embedded-constant encoding. `BFTypeConverter` is unified with `EcoTypeConverter` so all BF runtime LLVM decls use `ptr<1>` for HPtr params/returns.
-- Heap allocation via runtime calls (fast path: nursery bump; slow path: GC safepoint)
-- **Allocation groups** *(Apr 16, 2026)*: Adjacent fixed-size alloc ops lower to a single fast/slow/merge CFG using `eco_gc_alloc_region_fast`/`_slow`; members are initialized at fixed offsets via `eco_init_*_at` runtime functions.
-- GC roots attached to allocation ops, calls, and papExtend ops by `EcoGCPrepare`, passed through to `emitAllocWithSafepoint`
-- Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`), with shared `emitRootedBoxedArgsArray` for rooted boxed-args construction
-- Tagged pointer encoding for embedded constants
-- `_capture_abi` attribute drives type-aware `buildEvaluatorArgs` so captured Int/Float/Char are boxed with correct primitive tags (`eco_alloc_int`/`_float`/`_char`), enabling correct `Debug.log` output on primitives
-- `widenFieldToI64` handles Bool `ptr<1>` constants via `PtrToIntOp` (pointer ZExt would crash); ADT case bit manipulation lifts `ptr<1>` scrutinee to `i64` via `valueToI64` before `LShr`/`And`
-- Kernel calls reflect compiler-declared types without repair
-- GC safepoints: the `eco.safepoint` op was retired *(May 19, 2026)*. RS4GC wraps every non-leaf call inside a `gc "eco-gc"` function in a `gc.statepoint` directly; GC root hints that previously rode on the marker op are now carried by the existing `GCRootCarrier` ops (`eco.call`, `eco.papExtend`, allocation ops). `EcoGCPrepare` no longer emits liveness hints — RS4GC recomputes liveness from `ptr addrspace(1)` types alone.
-- All non-external functions carry `gc "eco-gc"` attribute; runtime helpers that cannot trigger GC are annotated `gc-leaf-function` so RS4GC skips them
-
-**PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
-
-- **Homogeneous call path**: When closure structure is statically known, captures are unpacked as direct arguments
-- **Heterogeneous call path**: When closure structure varies (e.g., across case branches), the closure pointer is passed
-- **ABI cloning** (`AbiCloning.elm`): Functions are cloned into direct and indirect entry points as needed
-
-**Inline papExtend**: The `eco.papExtend` operation is lowered inline (not as a runtime call), enabling LLVM to optimize saturated calls. Float arguments/results require `i64`↔`f64` bitcasts since closures store all values as `i64`.
-
-**See**: [EcoToLLVM Theory](design_docs/theory/pass_eco_to_llvm_theory.md)
-
-### Runtime: Platform & Scheduler
-
-At execution time, the Platform and Scheduler subsystem implements Elm's effect manager architecture. Commands and subscriptions produced by the Elm update cycle are collected into effect bag trees (`Fx_Leaf`/`Fx_Node`/`Fx_Map`), gathered per manager, and dispatched via `onEffects` callbacks. The Scheduler drives a cooperative task-based concurrency model: each process has a root task, a continuation stack, and a mailbox. The `stepProcess` loop interprets the Task ADT (Succeed/Fail/AndThen/OnError/Binding/Receive) to advance processes through their task chains.
-
-**GC safety** *(Apr 2026)*: `pushStack` and `mailboxPushBack` now take `HPointer` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC. The currently running Process is registered as a stack root while off the run queue. External GC root scanning is supported in `RootSet`. `StackRootGuard` RAII helper roots captured HPointers across allocations in kernel helpers. *(Apr 24, 2026)* Per-batch `FxBatch` and per-manager scratch lifted out of unrooted C++ locals into `PlatformRuntime::activeBatch_` / `effectsScratch_` member fields, scanned by an external root scanner while `dispatchActive_` is set; `dispatchEffects` builds Elm lists via `alloc::listFromPointers` rather than a manual `cons()` accumulator loop. *(Apr 24, 2026)* `eco-kernel-cpp/src/eco-kernel/MVar.cpp` reimplemented for thread-safe blocking semantics.
-
-**Deferred kernel Task IO via `Task_Binding`** *(May 31, 2026)*: A core invariant of the Eco kernel surface is that **every C++ symbol returning an Elm `Task` must perform its IO inside a `Task_Binding` callback, not at kernel-call time** (invariants **KERNEL_TASK_IO_001** / **KERNEL_TASK_IO_002**). Pre-May-2026, most kernel functions ran their syscalls eagerly at kernel-call time — e.g. `File.writeString` opened and wrote the file when the kernel function was invoked. That had three consequences: (a) the scheduler never observed two outstanding bindings, so it could not interleave them; (b) time-varying reads (`Time.now`, `Runtime.random`) silently froze to module-init time; (c) blocking kernels (`curl_easy_perform`, `waitpid`) stalled the scheduler thread.
-
-A `Task_Binding` HPointer wraps a callback closure. When the scheduler steps the binding it invokes the closure with the parked resume HPointer; the closure either delivers a Task synchronously (`sync` shape — `makeBinding`) or registers the resume into `Scheduler::pendingResumes_` and hands the syscall to a worker pool (`async-park` shape — `makeAsyncBinding`). Shared trampoline helpers in `runtime/src/platform/TaskBinding.hpp` factor out the closure-allocation, capture-rooting (via `StackRootGuard` for both the captured payload and the resume closure), and trampoline boilerplate. Eco-side `succeed*` / `fail*` HPointer wrappers live in `eco-kernel-cpp/src/eco-kernel/TaskBinding.hpp`.
-
-Listed exemptions: pure Task constructors (`succeed`/`fail`/`andThen`/`onError`/`spawn`/`kill`/`taskReceive`), terminator non-returners (`Process.exit`, `Crash.crash`), identity helpers (`Console.log`), and `MVar::read/take/put`'s partial-eager fast paths when the slot state already permits immediate resolution. See [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md).
-
-**See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md), [Kernel Task Deferral Theory](design_docs/theory/kernel-task-deferral.md)
-
-### Unified `eco` Backend
-
-*(May 19, 2026)* The compiler ships as a single `eco` binary that embeds the Elm frontend, MLIR backend, RS4GC + LLVM lowering pipeline, lld linker, and runtime libraries. JIT and AOT paths share `runEcoBackend` / `EcoBackend`: the JIT in-process ExecutionEngine and the AOT object emitter differ only in their final sink — every prior stage (TargetMachine + DataLayout setup, RS4GC, opt, code-emission) is run by the same code. This was previously two parallel pipelines that had to be kept in sync by hand; the May-19 unification eliminates that maintenance burden and the class of bugs where JIT- and AOT-built binaries diverged.
-
-The same binary supports a portable distribution mode: `-DECO_STATIC=ON` produces a fully-static musl + libc++ build (Stage B), and the Stage C distribution bundle ships `eco` together with its runtime/kernel archives so an end user can compile Elm without a system toolchain. Under static musl, `initStackMapFromSelf` accepts `dlpi_name="/proc/self/exe"` (musl reports an empty soname for the main executable, where glibc reports a basename); without this fix the GC stack-map probe missed the main binary and the bootstrap-stage-7 workload corrupted the heap.
-
-See PLAN.md §5.1.1 and §5.1.3 for Phase 1–5 (unified pipeline) and Stage A → C (static distribution) details.
-
-## Type Information Flow
-
-A key design principle is **type preservation**: type information flows through the entire pipeline.
-
-```
-Can.Type (Canonical)
-    ↓ PostSolve fixes incomplete types
-Can.Type (complete)
-    ↓ Typed Optimization preserves types
-TOpt.Expr with Can.Type
-    ↓ Monomorphization specializes to concrete types
-MonoType (MInt, MFloat, MList MonoType, ...)
-    ↓ MLIR Generation maps to MLIR types
-MlirType (i64, f64, !eco.value, ...)
-    ↓ EcoToLLVM
-LLVM types
-```
-
-This enables:
-- **Unboxing optimization**: Primitives stored inline in containers
-- **Type-specific operations**: Different code for Int vs Float arithmetic
-- **Debug printing**: Type table provides runtime type introspection
-
-## Kernel Functions
-
-Kernel functions are C++/runtime implementations called from Elm code. They're handled specially:
-
-1. **PostSolve** infers types from aliases and usage
-2. **Monomorphization** determines ABI mode (UseSubstitution, PreserveVars) and the per-instance ABI key for concrete-type-aware kernels
-3. **MLIR Generation** checks for intrinsics first, then emits kernel calls with boxing/unboxing
-4. **Linking** connects to C++ implementations in the runtime
-
-**Intrinsics**: Many `Basics`, `Bitwise`, `Utils`, and `JsArray` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`), typed array access (`JsArray.unsafeGet`, `JsArray.unsafeSet`, `JsArray.length`), and *(May 6-9, 2026)* `eco.compare → eco.{int,float,char}.cmp_order`, Char relational ops + `toCode`/`fromCode`, `String.fromNumber@Int` / `@Float`, and `JsArray.empty` / `singleton` / `push` / `slice` / `appendN`.
-
-**ABI Modes** (for operations without intrinsics):
-- **UseSubstitution**: Monomorphic kernels use typed parameters directly
-- **PreserveVars**: Polymorphic kernels use boxed `eco.value` for all type variables
-
-**Per-Instance Kernel ABI** *(May 6-8, 2026)*: Each `Elm_Kernel_*` that was previously a single polymorphic boxed-arg function now has per-type `_Int` / `_Float` / `_Char` variants with typed C++ ABIs (`KernelInstanceKey` / `KernelInstanceAbi` / `deriveKernelInstanceAbi`). 41 monomorphic variants landed across `Utils` equality/ordering, `List.cons`, `String.fromNumber`, `Json.wrap`, `JsArray`. The old `NumberBoxed` mode was retired by Phase F — number-polymorphic kernels now pass through the typed per-instance path. Typed args also flow through generic apply (`eco_apply_closure_typed`), so closure wrappers never re-box primitive captures.
-
-**Unboxed Primitive Return ABI** *(May 8-10, 2026)*: Closures returning Int / Float / Char now return them unboxed end-to-end through the generic-apply path. A `result_kind` byte (2 bits stolen from `Closure.unboxed`, dropping capture cap 26 → 25) drives wrapper return-ABI selection (`eco_apply_closure_eval`, `eco_closure_call_saturated_eval`). Stage 7 boxed `ElmInt` allocations dropped ~99.95 % cumulatively. New ops attrs `_result_kind` / `_result_kinds` on `PapCreate{,Group}` / `PapExtend`.
-
-**Backend ABI Policy**: The compiler's `kernelBackendAbiPolicy` (audited against C++ `KernelExports.h`) determines whether each kernel uses `AllBoxed` (uniform `uint64_t` C++ ABI — for the polymorphic root variants of List, Utils, JsArray, Json.wrap) or `ElmDerived` (typed C++ ABI — Basics, Bitwise, Char, all per-instance variants). The compiler is the **sole arbiter** of kernel ABI types (KERN_006); downstream passes (EcoToLLVM) simply reflect the declared types.
-
-**See**: [Intrinsics Theory](design_docs/theory/intrinsics_theory.md), [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
-
-## Detailed Documentation
-
-Each pass and subsystem has comprehensive documentation in [`design_docs/theory/`](design_docs/theory/):
-
-### Compilation Passes
-
-| Document | Description |
-|----------|-------------|
-| [pass_post_solve_theory.md](design_docs/theory/pass_post_solve_theory.md) | PostSolve type fixing |
-| [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
-| [pass_normalize_lambda_boundaries_theory.md](design_docs/theory/pass_normalize_lambda_boundaries_theory.md) | Lambda boundary flattening (let/case lifting) |
-| [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
-| [pass_global_optimization_theory.md](design_docs/theory/pass_global_optimization_theory.md) | Staging regroup, ABI cloning and call metadata |
-| [staged_currying_theory.md](design_docs/theory/staged_currying_theory.md) | Staged currying theory |
-| [pass_type_table_theory.md](design_docs/theory/pass_type_table_theory.md) | Runtime type metadata |
-| [pass_mlir_generation_theory.md](design_docs/theory/pass_mlir_generation_theory.md) | MLIR code generation |
-| [pass_joinpoint_normalization_theory.md](design_docs/theory/pass_joinpoint_normalization_theory.md) | Joinpoint cleanup |
-| [pass_eco_control_flow_to_scf_theory.md](design_docs/theory/pass_eco_control_flow_to_scf_theory.md) | Control flow lowering |
-| [pass_rc_elimination_theory.md](design_docs/theory/pass_rc_elimination_theory.md) | RC operation removal |
-| [pass_undefined_function_theory.md](design_docs/theory/pass_undefined_function_theory.md) | Missing function stubs |
-| [pass_eco_to_llvm_theory.md](design_docs/theory/pass_eco_to_llvm_theory.md) | Final LLVM lowering |
-
-### Optimizations and Subsystems
-
-| Document | Description |
-|----------|-------------|
-| [bytes_fusion_theory.md](design_docs/theory/bytes_fusion_theory.md) | Bytes.encode/decode fusion to BF dialect |
-| [typed_closure_calling_theory.md](design_docs/theory/typed_closure_calling_theory.md) | PAP wrapper elimination, ABI cloning |
-| [intrinsics_theory.md](design_docs/theory/intrinsics_theory.md) | Direct MLIR lowering for arithmetic/bitwise ops |
-| [kernel_abi_theory.md](design_docs/theory/kernel_abi_theory.md) | Kernel function ABI modes and type handling |
-| [json_heap_representation_theory.md](design_docs/theory/json_heap_representation_theory.md) | JSON values as heap-resident Custom objects |
-
-### Cross-Cutting Concerns
-
-| Document | Description |
-|----------|-------------|
-| [heap_representation_theory.md](design_docs/theory/heap_representation_theory.md) | Four representation models, unboxing, layouts |
-| [string_rope_representation_theory.md](design_docs/theory/string_rope_representation_theory.md) | String tags (leaf/rope/slice), structure sharing, flattening heuristics |
-| [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
-| [mlir_bytecode_theory.md](design_docs/theory/mlir_bytecode_theory.md) | MLIR bytecode format, streaming encoder |
-| [platform_scheduler_theory.md](design_docs/theory/platform_scheduler_theory.md) | Platform effect dispatch, task scheduling, process model |
-| [kernel-task-deferral.md](design_docs/theory/kernel-task-deferral.md) | `Task_Binding` discipline: every kernel returning a `Task` must do its IO when the scheduler steps the binding, not at kernel-call time |
-
-### Experimental
-
-| Document | Description |
-|----------|-------------|
-| [monodirect_theory.md](notes/monodirect_theory.md) | Solver-directed monomorphization (removed Mar 31, 2026; kept for reference) |
-
-## Invariant Testing Infrastructure
-
-The compiler backend is validated through a comprehensive invariant testing system that verifies correctness at each compilation phase.
-
-### Invariant Catalog
-
-All compiler invariants are documented in [`design_docs/invariants.csv`](design_docs/invariants.csv), organized by phase:
-
-| Phase | Invariants | Examples |
-|-------|------------|----------|
-| CANON | CANON_001-006 | Name resolution, unique IDs, no duplicates |
-| TYPE | TYPE_001-007 | Constraint generation, unification, occurs check, node variable constraints |
-| POST | POST_001-010 | Remaining Group B type fixing, kernel type inference, node type grounding |
-| TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
-| MONO | MONO_001-027 | MonoType completeness, layouts, specialization registry, arity consistency |
-| GOPT | GOPT_001-014 | Staging canonicalization, call information, closure arity |
-| CGEN | CGEN_001-060+ | Boxing rules, SSA consistency, operation attributes, kernel declarations, projection layout consistency; **CGEN_038** kernel decl-instance consistency, **CGEN_059** / **CGEN_060** typed-newargs lowering shape *(May 6-8, 2026)* |
-| REP_LLVM | REP_LLVM_001 | `!eco.value` → `ptr addrspace(1)` in LLVM dialect; conversions only at storage boundaries *(Apr 17, 2026)* |
-| REP_CONSTANT | REP_CONSTANT_001-003 | Embedded HPointer constants never heap-allocated; **REP_CONSTANT_003** treats them as type-minimum (not raw `nullptr`) in `compareUnboxableSlot` and equality kernels *(May 12, 2026)* |
-| HEAP | HEAP_001-026 | Heap layout, alignment, tracing rules; **HEAP_025** three-form `String` (leaf / slice / rope) *(Apr 27, 2026)*; **HEAP_026** large-object split-header *(May 1-2, 2026)*; **HEAP_BUILDER_001** builder bit forbids old-gen *(May 10, 2026)* |
-| KERNEL_TASK_IO | KERNEL_TASK_IO_001-002 | Every C++ kernel returning a `Task` must perform IO inside a `Task_Binding` callback; trampolines root captured payload and resume HPointers via `StackRootGuard` before invoking user code *(May 31, 2026)* |
-
-### MLIR AST Inspection
-
-The test infrastructure inspects the MLIR AST directly in Elm, avoiding MLIR text parsing:
-
-```elm
-type alias MlirOp =
-    { name : String
-    , operands : List String
-    , results : List ( String, MlirType )
-    , attrs : Dict String MlirAttr
-    , regions : List MlirRegion
-    , isTerminator : Bool
-    }
-```
-
-Shared verification logic in `Compiler/Generate/CodeGen/Invariants.elm` provides:
-- `walkAllOps`: Traverse all operations in a module
-- `findOpsNamed`: Find operations by name (e.g., "eco.case")
-- `getAttr`: Extract typed attributes from operations
-- Helpers for checking operand types, result types, and structural properties
-
-### Key Invariants
-
-**CGEN_001 (Boxing)**: MLIR codegen only inserts boxing/unboxing between primitive types and `eco.value`. Mismatches between different primitives (e.g., `i64` vs `f64`) indicate a monomorphization bug.
-
-**CGEN_032 (_operand_types)**: Every operation's `_operand_types` attribute must match the SSA types of its operands. This catches type declaration vs runtime type mismatches.
-
-**CGEN_037 (Case Scrutinee)**: For `case_kind="int"`, the scrutinee must be `i64`; for `case_kind="chr"`, it must be `i16`. The default `eco.value` is only valid for ADT/string matching.
-
-### Test Organization
-
-Tests are in `compiler/tests/Compiler/Generate/CodeGen/`:
-- One test file per invariant (e.g., `CaseKindScrutineeTest.elm`)
-- Corresponding property module (e.g., `CaseKindScrutinee.elm`)
-- `Invariants.elm` provides shared utilities
-
-Tests generate Elm code, compile it through the full pipeline, and verify the resulting `MlirModule` satisfies the invariant.
-
-### The Type Declaration vs Runtime Type Mismatch
-
-A key insight from invariant testing: the primary source of codegen bugs is mismatches between **declared types** (what the code says) and **runtime types** (what values actually are).
-
-| Scenario | Declared | Actual | Result |
-|----------|----------|--------|--------|
-| Case scrutinee for int patterns | `eco.value` | `i64` | Type mismatch error |
-| Heap extraction from ADT | `i64` | `eco.value` | Interpret pointer as int → crash |
-| Unbox primitive in wrong context | `eco.value` | `i64` | Interpret int as pointer → crash |
-
-The fix principle: **projection type must match physical storage**, not semantic type. If a field is stored boxed, project as `eco.value` then unbox; if stored unboxed, project as the primitive type then box if needed.
+- REP_*, CGEN_*, HEAP_*, FORBID_*: the representation models, code generation, heap layout, and forbidden assumptions.
+- HEAP_005, HEAP_031: generated code stores only into fresh objects.
+- HEAP_BUILDER_001: objects under construction in the runtime and kernels.
+- HEAP_007: one mutator per process. GC_DET_001: the collector's determinism.
+- HEAP_018: states that Elm values are acyclic; out of date, since closures can form cycles.
+- XPHASE_010: code generation trusts the compiler's call information.
+- KERN_006: the compiler alone decides kernel calling conventions.
+- MONO_029: unconstrained type variables are boxed.
+- SYS_003, SYS_004: service threads return plain values to the eco thread. SYS_007: spawn, never fork.
