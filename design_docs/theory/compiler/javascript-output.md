@@ -30,7 +30,7 @@ type alias MonoCodeGenConfig =
     }
 ```
 
-From `compiler/src/Compiler/Generate/CodeGen.elm`. The first kind takes the erased `Opt` graph and the list of entry points; the second takes the monomorphic graph, and only the MLIR generator implements it. The cut part of `CodeGen` holds two entry points for the interactive loop, which only the erased kind offers. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. The MLIR generator writes its bytecode through its own streaming writer, outside this interface, so the interface has no use for a binary result.
+From `compiler/src/Compiler/Generate/CodeGen.elm`. The first kind takes the erased `Opt` graph and the list of entry points; the second takes the monomorphic graph. The cut part of `CodeGen` holds two entry points for the interactive loop, which only the erased kind offers. Because the graph's type is fixed in the record, a JavaScript back end cannot be handed typed data by accident. Its result is text. Only the MLIR generator implements the second kind, and nothing calls through it: the build streams bytecode through the generator's own writer, and the test harnesses call the generator's functions directly. The second kind therefore only states, as a type, which graph MLIR generation reads, and the interface has no use for a binary result.
 
 The adapter that puts the stock generator behind the first interface is a few lines long. The build driver wraps it in three drivers, one per mode, that load the cached erased objects, assemble the graph and the entry points, and read module sources when source maps are wanted. The interface exists so that both targets share one driver instead of each carrying a fork of it.
 
@@ -45,7 +45,7 @@ The generator runs in one of three modes, and the options for debugging, for pro
 The generator turns the graph into a file in four steps, in the order they run.
 
 1. It walks the graph from each entry point and emits every reachable definition once, dependencies before the definitions that use them, in a fixed sorted order, inside one immediately invoked function. Code that no entry point reaches is never written.
-2. It lowers each definition, expression by expression, into a small syntax tree for JavaScript. Decision trees from pattern matching become chains of `if` and `switch`, tail calls become loops, and a reference to a kernel function (one of the library functions written directly in JavaScript) becomes a plain global name of the form `_Module_function`.
+2. It lowers each definition, expression by expression, into a small syntax tree for JavaScript. Decision trees from pattern matching become chains of `if` and `switch`, tail calls become loops, and a reference to one of the library functions written directly in JavaScript, a kernel function, becomes a plain global name of the form `_Module_function`.
 3. It prints the tree as text. The printer records the source position of each piece, so a version 3 source map can be built when one is asked for.
 4. It assembles the file. The file opens with the helpers that make curried calls of two to nine arguments cheap, then the kernel JavaScript of the libraries the program uses, then the exported entry points. It closes with a small block inherited from Guida that represents tuples of more than three elements and teaches the terminal debug printer to show them. Eco's front end rejects such tuples, so no program Eco accepts needs that block.
 
@@ -53,7 +53,7 @@ Identifiers are chosen to be legal JavaScript and free of collisions, and produc
 
 Kernel names are flat on purpose. A kernel module from Elm's libraries and one from Eco's libraries with the same module name map to the same JavaScript name. The compiler's own source imports Eco kernel modules, and when it runs as JavaScript, those imports reach the JavaScript functions that the kernel files define under the flat names. Separate names for the two families would leave the JavaScript-hosted compiler calling functions that no kernel file defines. The MLIR side has to keep the two families apart; the JavaScript side does not.
 
-For HTML output the JavaScript is placed in a page that starts the program on one element and shows an initialization error if startup fails. The page tells the source map that two lines precede the JavaScript, but it writes more than two, so line numbers in source maps for HTML output are likely off by the difference.
+For HTML output the JavaScript is placed in a page that starts the program on one element and shows an initialization error if startup fails.
 
 ## Why Eco keeps the stock generator
 
@@ -100,7 +100,7 @@ Code:
 - `compiler/src/Compiler/Generate/JavaScript/Name.elm`: identifier choice, including `fromKernel`, which gives Elm and Eco kernel modules the same name.
 - `compiler/src/Compiler/Generate/JavaScript/Builder.elm`, `SourceMap.elm`, `Functions.elm`: printing, source maps, and the `F2`..`F9` and `A2`..`A9` helpers.
 - `compiler/src/Compiler/Generate/Mode.elm`: `Dev (Maybe Types)` and `Prod ShortFieldNames`.
-- `compiler/src/Compiler/Generate/Html.elm`: the HTML page (`sandwich`) and its `leadingLines` mismatch.
+- `compiler/src/Compiler/Generate/Html.elm`: the HTML page (`sandwich`). It tells the source map that two lines precede the JavaScript (`leadingLines`) but writes more than two, so source-map line numbers for HTML output are likely off by the difference.
 - `compiler/src/Builder/Generate.elm`: `javascriptBackend` and the `debug`, `dev` and `prod` drivers.
 - `compiler/src/Terminal/Make.elm`: output selection (`parseOutput`, `handleArtifacts`) and the `--output`, `--debug`, `--optimize` and `--sourcemaps` options. `compiler/src/API/Make.elm`: the HTML path for the JSON entry point.
 - `compiler/review/src/EnforceBoundaries.elm`: the layer rule that keeps generation downstream of earlier phases.

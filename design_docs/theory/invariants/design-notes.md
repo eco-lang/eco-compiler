@@ -6,7 +6,7 @@ Eco's design notes record ideas that were investigated, both dead and still open
 
 A note is written while its investigation runs. It records the question, the method, the measurements and a recommendation, and it is finished when the investigation is. Status is kept elsewhere, in the plan files, because a plan is the document people edit while the work is built: it has phases, gates and a status describing what exists. Keeping status in one place avoids two records that disagree, but it leaves the note as it stood at the moment of writing. A note that says "nothing is built" keeps saying it after the passes land, and a note that recommends one design may sit beside code that chose another.
 
-The plans themselves are written in stages for the same reason. A large plan states its goal and its phases up front, but each phase's detailed plan is written only when the phase is about to start, since earlier phases move code and change the measurements that later detail depends on.
+Plans are themselves written in stages, each phase's detail only when the phase is about to start, for the reason [invariants-and-design.md](invariants-and-design.md) gives.
 
 ## Finding out what became of a note
 
@@ -46,7 +46,7 @@ The status table for the kernel optimization series shows the classification at 
 
 The deciding evidence is almost always one of two measurements on one workload, the compiler compiling itself. A census counts the population a change could affect, before anyone builds the change. A side-by-side comparison runs the compiler with and without it. The self-compile is the standard workload because it is the largest Elm program the project has, and because the compiler is itself a product: any slowdown it carries is paid on every later compile.
 
-Optimizations are judged on the work and the memory they remove, not on how many objects or calls they eliminate. Across the optimization experiments, wall time follows how much data is promoted to the old generation and retained there, and does not follow object or call counts. The same reports find that calls between generated code and kernel functions take a small share of the time while the collector dominates. So candidates are ranked by census first, and a change that fails its gate is kept dark or reverted whole.
+Optimizations are judged on the work and the memory they remove, not on how many objects or calls they eliminate. Across the optimization experiments, wall time follows how much data is promoted to the old generation and retained there, and does not follow object or call counts. The same reports find the kernel boundary a small share of the time ([kernels.md](../kernels/kernels.md)). So candidates are ranked by census first, and a change that fails its gate is kept dark or reverted whole.
 
 ## What the record holds
 
@@ -65,7 +65,7 @@ Strings, bytes, arrays and kernel calls each have an adopted note, and the strin
 
 The parallel collection report is the source of the threaded collector, but its recommendation is not followed as written. The report prefers parallel stop-the-world collection, which gives most of the throughput at lower risk for a batch compiler with one mutator thread. The threaded collector puts short pauses first and targets very large workloads, so concurrent marking is the default and parallel marking is the simpler mode beneath it. Both rest on a lemma the report states: heap contents never change once published, so no write barrier is needed.
 
-In the back end, parallel optimization is adopted with its proposal reshaped. One proposal turns off inter-procedural optimization entirely and puts each function in its own module. The binary being built is the compiler itself, and it would pay the lost optimization on every compile, so instead the program is split into partitions close in number to the core count and each partition is fully optimized. Whole-program facts are decided in MLIR before the split so that the LLVM side can work on each partition alone. All drivers share one back-end routine. It replaced three nearly identical copies of the steps that rewrite collection points, keep frame pointers and set the target's data layout, and those copies had come to run the steps in different orders in different tools.
+In the back end, parallel optimization is adopted with its proposal reshaped. One proposal turns off inter-procedural optimization entirely and puts each function in its own module. The binary being built is the compiler itself, and it would pay the lost optimization on every compile, so instead the program is split into partitions close in number to the core count and each partition is fully optimized. Whole-program facts are decided in MLIR before the split so that the LLVM side can work on each partition alone. All drivers share one back-end routine for the steps that rewrite collection points, keep frame pointers and set the target's data layout, because separate copies of those steps drift apart in the order they run them.
 
 ### Rejected on a measurement
 

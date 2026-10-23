@@ -28,7 +28,7 @@ The default nursery cannot survive a breach of these rules. It tenures an extent
 
 The heap is one reserved range of address space below 2^43 bytes, split by configuration into the old generation at the bottom and the nursery region at the top. A heap pointer is the object's address, as [runtime.md](runtime.md) explains, so asking whether an object is young is a bounds compare. That keeps the check cheap on the paths that run most often. The collector uses two more facts about the pointer word, whose full encoding [value-representation.md](../value-representation.md) gives: the address sits in its low 43 bits, which is why the reservation lies below 2^43, and a word whose pointer indicator bit is set, an embedded constant, is never traced.
 
-Every object starts with an eight-byte header. The tag alone gives the object's size and the layout of its children, so the collector never needs Elm types. For the kinds that may hold an unboxed Int, Float or Char, two bits per field say which fields are pointers to trace. Three other fields decide whether a survivor may be promoted.
+Every object starts with an eight-byte header. No live object is smaller than 16 bytes, because the forwarding table that tenuring keeps outside the headers has one entry per 16-byte granule. The tag alone gives the object's size and the layout of its children, so the collector never needs Elm types. For the kinds that may hold an unboxed Int, Float or Char, two bits per field say which fields are pointers to trace. Three other fields decide whether a survivor may be promoted.
 
 ```cpp
 typedef struct {
@@ -45,7 +45,7 @@ typedef struct {
 } Header;
 ```
 
-From `runtime/src/allocator/Heap.hpp`. A survivor is promoted only when its pin and builder bits are clear and its age has reached the promotion age. The age field has two bits, so the promotion age can be 1 to 3, and it is 1. The header also carries color bits and a reference count, which the cut hides: the collector does not use them to decide liveness, and the old generation's bitmaps do. No live object is smaller than 16 bytes, because the forwarding table that tenuring keeps outside the headers has one entry per 16-byte granule.
+From `runtime/src/allocator/Heap.hpp`. A survivor is promoted only when its pin and builder bits are clear and its age has reached the promotion age. The age field has two bits, so the promotion age can be 1 to 3, and it is 1. The header also carries color bits and a reference count, which the cut hides: the collector does not use them to decide liveness, and the old generation's bitmaps do.
 
 The nursery region is contiguous and holds eden and the survivor extents. Compiled code bumps eden's pointer inline, and the end of the bump area is clamped in advance to the point where a minor collection should start. One unsigned compare then means both "eden is full" and "time to collect", and the branch taken when it fails is compiled code's only safepoint. Eden is given whatever the nursery threshold leaves after the last minor collection's survivors, so collections come as often as they would with a plain nursery of that size. Fresh objects are zeroed at their allocation site rather than by clearing the space after each collection. That works because the collector scans a closure only up to its count of filled captures and never reads a slot that has not been written.
 

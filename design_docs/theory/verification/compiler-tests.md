@@ -10,7 +10,7 @@ The wide-object checkers show how this pays off. Three separate checkers cover a
 
 ## The corpus
 
-A corpus program is an Elm module built as a syntax tree, not written as text. A small builder library (`Compiler.AST.SourceBuilder`) constructs the tree. There are two reasons. The first phases under test, the canonicalizer and the type checker, consume the tree directly. And a builder lets one case module generate a family of related programs from parameters, which source text cannot do without a template language.
+A corpus program is an Elm module built as a syntax tree, not written as text. A small builder library constructs the tree. There are two reasons. The first phases under test, the canonicalizer and the type checker, consume the tree directly. And a builder lets one case module generate a family of related programs from parameters, which source text cannot do without a template language.
 
 The programs are grouped into case modules by language shape (lets, cases, records, closures and so on), under `compiler/tests/SourceIR/`. Each case module takes an expectation from its caller and applies it to every program it builds. A standard suite list (`StandardTestSuites.expectSuite`) applies one expectation to all the ordinary case modules at once. That list is what a checker hands its check to, and it is the one place where case modules are registered.
 
@@ -24,7 +24,7 @@ A few case modules sit outside the standard list, because the standard expectati
 
 The test pipeline reaches the compiler's middle end only through the list of pure whole-program steps (`Compiler.Pipeline.Steps`) that the build itself calls, under the production configuration. This is the rule that makes the suite worth running. A harness that assembles its own pipeline can pick a different monomorphization engine or skip a pass, and then its checkers vouch for code that no user runs and miss bugs in the code they do run. A static script on the test target (`check-test-pipeline-production.sh`) fails the run if the harness imports any compiler pass directly, so the rule cannot be broken unnoticed.
 
-The pipeline lives in one module, `TestLogic.TestPipeline`. It compiles a corpus program as a module of a fixed test package, against hand-written interfaces for a small set of core modules (`Compiler.Elm.Interface.Basic.testIfaces`) instead of real packages. What differs from a real build is therefore the inputs, not the passes: the interfaces are mocks, the check that pattern matches are exhaustive does not run, and MLIR is generated for one module rather than for a whole application. One module, and not one helper per area, because copies of pipeline setup in separate test files drift apart.
+The pipeline lives in one module, `TestLogic.TestPipeline`. It compiles a corpus program as a module of a fixed test package, against hand-written interfaces for a small set of core modules instead of real packages. What differs from a real build is therefore the inputs, not the passes: the interfaces are mocks, the check that pattern matches are exhaustive does not run, and MLIR is generated for one module rather than for a whole application. One module, and not one helper per area, because copies of pipeline setup in separate test files drift apart.
 
 The pipeline has a runner for each stopping point: canonical, typed, typed and optimized, monomorphic, globally optimized, and MLIR. Each runner returns a record of everything produced up to its stop. A checker for a late phase can then read an earlier form too, for example to compare an MLIR layout with the type it came from.
 
@@ -73,7 +73,7 @@ expectCaseTagsCount srcModule =
 
 From `compiler/tests/TestLogic/Generate/CodeGen/CaseTagsCountTest.elm` (`suite`) and `CaseTagsCount.elm` (`expectCaseTagsCount`). The check takes one program and knows nothing of the corpus, so a case module added to the standard list extends every check at once. A program that fails to compile fails the check; it does not count as a pass with nothing to inspect.
 
-The checkers are arranged by the phase they inspect, mirroring the compiler: canonicalization, type checking (including the pass that runs after the constraint solver), local optimization, monomorphization, global optimization, and MLIR generation. The MLIR checkers share a toolkit (`TestLogic.Generate.CodeGen.Invariants`) that walks the generated operations, reads their attributes and collects violations.
+The checkers are arranged by the phase they inspect, mirroring the compiler: canonicalization, type checking (including the pass that runs after the constraint solver), local optimization, monomorphization, global optimization, and MLIR generation. The MLIR checkers share a toolkit that walks the generated operations, reads their attributes and collects violations.
 
 A checker tests a rule, not an output. No checker compares MLIR with a golden copy. Each asks a question that must hold for every program, such as whether every SSA name is defined exactly once, or whether a partial application's arity matches its closure. This is how the whole theory treats a phase: it is checked against the numbered rules, not against the phase next to it, so a change to one phase's output that keeps the rules does not break another phase's tests. Each checker cites the invariant numbers it enforces in its module comment, and a companion design note (`design_docs/invariant-test-logic.md`) records the inputs and the oracle for each tested rule.
 
@@ -85,7 +85,7 @@ A bug that is found but not yet fixed is pinned by a test that fails for the sta
 
 ## Keeping the suite within memory
 
-One elm-test-rs test per program per invariant would mean tens of thousands of test nodes (about 700 programs and 57 checkers), and that exhausts the runner's memory. So a bulk check (`Compiler.BulkCheck.bulkCheck`) folds the programs of one case module into one test node. It stops at the first failing program and reports that program's label, so a failure still names the exact case. The cost is that one run shows only the first failure per case module and checker.
+One elm-test-rs test per program per invariant would mean tens of thousands of test nodes (about 700 programs and 57 checkers), and that exhausts the runner's memory. So a bulk check folds the programs of one case module into one test node. It stops at the first failing program and reports that program's label, so a failure still names the exact case. The cost is that one run shows only the first failure per case module and checker.
 
 The same pressure is why the corpus has no primitive fuzzing and no trivial variations of one program: each extra program is multiplied by every checker.
 
@@ -98,7 +98,7 @@ Some parts of the compiler have a contract that can be stated without compiling 
 3. Optimizer analyses: the lambda-set specialization helpers, and the borrow analysis's lifetime lattice, which is compared with a brute-force model that computes the same answer the slow, obvious way.
 4. Whole modules and deep input: a test that compiles the real array modules from the core library, and stack-safety tests that feed the compiler deeply nested lets so its own recursion cannot overflow.
 
-Coverage is measured with a fork of an Elm coverage tool, adapted to elm-test-rs, which instruments the compiler's sources and reports which expressions ran. One test (`TestLogic.TypedPipelineTest`) runs the whole corpus through the full pipeline and is the driver for coverage runs. The fork's own design note says its output is a picture, not a score. Its job is to show which compiler code no corpus program reaches, so that the corpus grows toward it. No build target runs it.
+Coverage is measured with a fork of an Elm coverage tool, adapted to elm-test-rs, which instruments the compiler's sources and reports which expressions ran. One test runs the whole corpus through the full pipeline and is the driver for coverage runs. The fork's own design note says its output is a picture, not a score. Its job is to show which compiler code no corpus program reaches, so that the corpus grows toward it. No build target runs it.
 
 ## Running the suite
 

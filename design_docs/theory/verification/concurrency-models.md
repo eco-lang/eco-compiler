@@ -145,8 +145,6 @@ Only the collector as built is modeled: one mutator in the process, with either 
 
 GenMC is the weak-memory tool because it runs the real headers. C11Tester tests randomly, so a pass from it is weaker evidence. herd7 needs hand-written litmus tests, which drift from the code they stand for.
 
-Some written sources lag the code, and where they disagree the code and `test/tla/README.md` are right. The invariant text and the verification plan say a canary failure fails the build; the code warns by default. The same two documents name seven models; the registry, the manifest and the README include the eighth, the block lifecycle model. The headers of some audit logs say the canary is not built, though those logs record many canary re-audits below the header.
-
 ## Examples of changes that fit the theory
 A change fits when the model, its mapping and its audit log move with the code, and the verdict is written down.
 
@@ -188,3 +186,5 @@ Parent: [verification.md](verification.md).
 - `docker/vendor/README.md`, `docker/vendor/tla2tools.jar` (TLC 1.8.0), `docker/eco-dev.Dockerfile`: the toolchain.
 
 Invariants: GC_MODEL_001 (the canary; investigate the named models, never just repair the hash), HEAP_007 (one mutator per process), HEAP_SNAPSHOT_001 and HEAP_SNAPSHOT_002 (relied on by M1), HEAP_074 (the CR-017 fix), GC_DET_001 (deterministic collection, enforced by a validator).
+
+Known disagreements in the repository's documents, where the code and `test/tla/README.md` are right: the GC_MODEL_001 text and `plans/threaded-gc-tla-verification.md` say a canary failure fails the build, while the code warns by default. The same two documents name seven models, while `models.txt`, `manifest.txt` and the README include the eighth, the block lifecycle model. The headers of some `AUDIT.md` files say the canary is not built, though they record many canary re-audits below the header.

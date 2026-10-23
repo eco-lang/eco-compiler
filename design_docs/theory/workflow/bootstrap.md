@@ -68,7 +68,9 @@ Stage 7 runs on the native host, where Node's heap limit does not apply, so it e
 
 Before stage 9, compiling a program takes two tools: the native compiler, which emits MLIR, and a separate native back end, which lowers MLIR to an executable. Stage 9 fuses them into one `eco` binary so a user installs one tool, and it starts only after stage 8 has passed.
 
-Stage 9 then has `eco` compile the compiler once, and it succeeds if that compile works. It does not compare `eco` with the result. Only `eco` embeds the LLVM and MLIR back end, so `eco` and any binary it produces differ by construction, and a byte comparison could never pass. The native fixed point is checked at stage 8 instead, on compilers that do not embed the back end. On a glibc build the chain's executables are linked with the GNU linker, because lld refuses the stack-map relocations in a position-independent executable; [build-system.md](build-system.md) gives the full rule for which linker links what.
+Stage 9 then has `eco` compile the compiler once, and it succeeds if that compile works. It does not compare `eco` with the result. Only `eco` embeds the LLVM and MLIR back end, so `eco` and any binary it produces differ by construction, and a byte comparison could never pass. The native fixed point is checked at stage 8 instead, on compilers that do not embed the back end.
+
+On a glibc build the chain's executables are linked with the GNU linker, because lld refuses the stack-map relocations in a position-independent executable; [build-system.md](build-system.md) gives the full rule for which linker links what.
 
 A quick relink target rebuilds `eco` from the stage-7 MLIR already on disk when only C++ has changed. The C++ code lowers and runs that MLIR but does not decide its contents, so the MLIR is still valid. The relink skips the stage-8 gate, so it serves local development and needs a full bootstrap to have run first.
 
@@ -78,7 +80,7 @@ Two end-to-end test gates sit at the earliest stages that can run them. The gate
 
 The full chain and the `eco` target are opt-in. Default and end-to-end builds stop at stage 1 or 2, and the final target is left out of the default build because its dependencies are the whole chain.
 
-## What the chain relies on
+## Outside inputs and assumptions
 
 The chain needs five things from outside itself, listed from the toolchain inward.
 

@@ -24,7 +24,7 @@ Plans and the rest of the repository point at each other. Plans cite the rule ca
 
 The benchmarks directory holds experiment protocols rather than one suite. Each protocol is a markdown file plus the scripts that run it, and each serves one area: back-end lowering, native compile time, the front end, the collector, the kernels, and two series of whole-program optimizations. A protocol fixes four things. The workload is usually the compiler compiling itself, with its input frozen for the whole series. The measure is wall time first, then peak memory, allocation counts and collector counters. The protocol also fixes the number of runs, and a recording format in which each run is appended to a log as a labeled row.
 
-The scripts beside the protocols do five jobs. Timing scripts take the median of several runs under GNU time. An interleaved script runs a reference and a candidate alternately in one sitting. Census scripts count what the compiler emits. Comparers check that two collector configurations behave identically and exit with an error when they do not. A sweep scorer ranks the cells of a parameter sweep. Heap configurations live as small JSON files in their own folder.
+The scripts beside the protocols time, count and compare runs. The comparers matter most to a change: they check that two collector configurations behave identically and exit with an error when they do not. Heap configurations live as small JSON files in their own folder.
 
 The comparison of Eco against stock Elm that users see lives with the examples. The protocols here exist to decide whether one change to Eco is worth keeping.
 
@@ -98,7 +98,7 @@ A protocol whose switches nothing in the code reads is marked expired with a ban
 
 A plan is where a change is argued, and it can be superseded without anyone noticing. A reason that must outlast the plan goes where readers look for it: a numbered rule in the catalog, a code comment or the commit message. A catalog row is cited by checks and code, so a change to it is visible, though rows can still go stale like any other text.
 
-## What the practice depends on
+## Where the practice meets the build and the runtime
 
 The practice leans on parts described elsewhere. Plans gate on and cite the rule catalog. Plans and loops quote the build targets from the parent document, and the self-compile's MLIR is the usual workload. The loop prompts call the project's documented test commands as their gates. The protocols assume GNU time and a quiet machine that runs nothing else.
 

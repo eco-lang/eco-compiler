@@ -64,7 +64,7 @@ Four phases always run, in a fixed order. Each one establishes what the next rea
 
 ### Every callable becomes a closure
 
-Every function-typed top-level definition or port value that is not already a closure becomes one. A bare reference to a global becomes a closure that calls it, and a kernel becomes a closure with the kernel's flat calling convention. Regrouping needs a parameter list to work from. And a partial application aimed directly at a kernel's C++ symbol has no compiled Elm function behind it for MLIR generation to find.
+Regrouping, the next phase, needs a parameter list to work from, so a function-typed top-level definition or port value without one is wrapped. A bare reference to a global becomes a closure that calls it, and a kernel becomes a closure with the kernel's flat calling convention. And a partial application aimed directly at a kernel's C++ symbol has no compiled Elm function behind it for MLIR generation to find.
 
 ### A closure's type follows its parameters
 

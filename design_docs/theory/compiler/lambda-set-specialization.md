@@ -109,7 +109,8 @@ signatureFor g:
         outside the unit and not memoized   -- callees first, no nested scratch
     withScratchStore:
       loadMemberSlots   -- each member's annotation-first type, one shared store,
-                        -- so self and sibling references share slots (Σ rule)
+                        -- so self and sibling references share slots
+                        -- (the paper's self-type rule, explained below)
       walkMembers       -- walkExpr each body, join its result into the spine
       zonkSignatures    -- slots -> ArrowFacts, own lambda id filtered out
     memoize every member's signature; remove members from lssInProgress
@@ -156,7 +157,7 @@ When the item ends its store is discarded, and set information leaves it in only
 
 ## Kernels are opaque unless licensed
 
-The analysis cannot see into the C++ kernels, so every arrow that crosses a kernel boundary becomes ⊤ by default. That is always sound, and a kernel left at ⊤ only costs precision. A kernel can instead carry a license in an audited table, and two kinds exist. Most licensed kernels are type faithful: function values cross the kernel only along the type variables its Elm type shares, so the set that comes out is the set that went in. One kernel, the bytes decoder, has a flow written out per parameter. About 250 kernels are licensed.
+The analysis cannot see into the C++ kernels, so every arrow that crosses a kernel boundary becomes ⊤ by default. That is always sound, and a kernel left at ⊤ only costs precision. A kernel can instead carry a license in an audited table, and two kinds exist. Most licensed kernels are type faithful: function values cross the kernel only along the type variables its Elm type shares, so the set that comes out is the set that went in. One kernel, the bytes decoder, has a flow written out per parameter.
 
 A wrong license is worse than none. It yields a populated set that is missing members, which becomes a direct call to the wrong code. Each row of the table therefore carries its audit evidence, the audited C++ files are pinned by hash in a manifest, and the default build fails when a hash no longer matches. The hash cannot see a change to a kernel's Elm type, so a type-faithful license's scope is checked again against the type at every occurrence instead of being trusted from the table.
 

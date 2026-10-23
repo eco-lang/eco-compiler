@@ -1,12 +1,12 @@
 # Runtime Data Structures
 
-Strings, lists and byte sequences each have several heap forms, and the runtime picks one for every value it builds. A String is a flat array of UTF-16 code units, a large array whose payload is split from its header, a slice of another string, a rope joining two strings, or one of two all-ASCII UTF-8 forms. A List is a chain of cells that can mix single cons cells with views over dense arrays. Bytes is a flat buffer, a slice of one, or a large buffer split from its header. The empty value of all three is one shared constant, never a heap object. The forms exist so that the runtime can share structure where copying would cost too much and copy where sharing would cost more, under size thresholds that only ever change speed and memory, never results. Kernels and compiled code depend only on a value's content and on the length recorded in its header, never on its form, and only the runtime's own operations look inside. That boundary is what lets the runtime add a form without touching the kernels that use the type.
+Strings, lists and byte sequences each have several heap forms, and the runtime picks one for every value it builds. A String is a flat array of UTF-16 code units, a large array whose payload is split from its header, a slice of another string, a rope joining two strings, or one of two all-ASCII UTF-8 forms. A List is a chain of cells that can mix single cons cells with views over dense arrays. Bytes is a flat buffer, a slice of one, or a large buffer split from its header. The empty value of all three is one shared constant, never a heap object. The forms exist so that the runtime can share structure where copying would cost too much and copy where sharing would cost more, under size thresholds that only ever change speed and memory, never results. Kernels depend only on a value's content and on the length recorded in its header, never on its form, and only the runtime's own operations look inside. Compiled code reads list cells inline as well, which is why a list form needs a program-wide switch. That boundary is what lets the runtime add a form without touching the kernels that use the type.
 
 ## One meaning, many layouts
 
 Every form of a type means the same thing, and code outside the runtime cannot tell them apart. Two equal strings in different forms compare equal, order the same way, print the same and serialize the same. A list built from cons cells and the same list built as a chain of views behave identically everywhere. Any code that compares two values by their tags first must therefore send strings and lists on to a comparison of content, as the generic comparison in the Elm kernel does ([elm-kernel.md](../kernels/elm-kernel.md)).
 
-A String's header records its length in UTF-16 code units, whatever its form. `String.length`, slice arithmetic and rope bookkeeping all count in those units, so making the header field mean exactly that lets compiled code read a string's length inline with no test of the form, and lets a rope add its children's lengths whatever their encodings. The UTF-8 forms hold only ASCII, so for them the code-unit count and the byte count are the same number.
+A String's header records its length in UTF-16 code units, whatever its form. `String.length`, slice arithmetic and rope bookkeeping all count in those units, so making the header field mean exactly that lets compiled code read a string's length inline with no test of the form, and lets a rope add its children's lengths even when one child is UTF-8 and the other UTF-16. The UTF-8 forms hold only ASCII, so for them the code-unit count and the byte count are the same number.
 
 The forms can share structure because no published object is ever written again ([garbage-collector.md](garbage-collector.md)). A slice can point into a buffer, a rope into its children and a chunk view into an array, because none of them will change underneath it. The same fact rules some things out. A widened copy of a UTF-8 string cannot be cached on the original, and a list's dense array cannot gain elements after the list is visible.
 
@@ -25,7 +25,9 @@ Each string form answers a cost that a single flat array would pay.
 
 The large-object space that holds large payloads belongs to the collector, and [garbage-collector.md](garbage-collector.md) explains it. What matters here is that a slice or view over a large string points at its header, never at its payload, because the header is what keeps the payload alive.
 
-Two rules keep slices shallow. A slice's base is always a leaf or a large header, and a UTF-8 view's base is always a byte buffer, a large byte header or a UTF-8 leaf. Slicing a slice adds the offsets and points at the deeper base, so a chain of slices never forms and a short slice never keeps a whole chain of objects alive. Ropes may mix UTF-8 and UTF-16 children.
+A non-empty string literal is allocated once and interned in a permanent space outside the heap's address range, so an operation can be handed a string that is not in the heap ([elm-kernel.md](../kernels/elm-kernel.md)). The literal `""` is the empty constant.
+
+Two rules keep slices shallow. A slice's base is always a leaf or a large header, and a UTF-8 view's base is always a byte buffer, a large byte header or a UTF-8 leaf. Slicing a slice adds the offsets and points at the deeper base, so a chain of slices never forms and a short slice never keeps a whole chain of objects alive.
 
 The UTF-8 forms hold only bytes below 0x80. For ASCII text the index of a code unit equals its byte offset, so `length`, `slice` and `charAt` stay constant-time with no index translation. Byte order then equals UTF-16 order, so comparison can use `memcmp`. No lone surrogate can arise, and the bytes are already valid UTF-8, so a string moves between Bytes and String without a copy in either direction. Text containing anything outside ASCII stays UTF-16 and behaves exactly as it would without the UTF-8 forms. Creating a UTF-8 form requires bytes known to be ASCII, and the scanner in `Utf8.hpp` that checks them validates exactly as the Bytes decoder does, so a UTF-8 string never holds content the decoder would reject.
 
@@ -55,7 +57,7 @@ slice(s, start, end):                              # after clamping
 
 Notice that a rope appears only above the flatten limit, which is 128 Ki code units by default. Below it, everyday strings stay on the flat path: `append`, `concat` and `join` copy into one leaf, and kernel loops, UTF-8 encoding and the parser get one contiguous buffer. Notice also that a slice of at most 128 code units is copied. Below that size a slice's own metadata is not worth having, and a short slice that is kept would otherwise hold a large buffer alive. The limit is low so that longer ranges, such as the substrings the parser takes, are shared rather than copied.
 
-`concat` and `join` build a rope in one pass with a merge stack: each part is pushed, and the top two are merged while the top is no longer than the one below it. Folding left with `++` would give a rope that leans to one side, and walking that is quadratic, while the merge stack keeps the rope balanced in linear time. Ropes are not rebalanced afterward. The tests for rebalancing are evaluated in the one function that decides whether to flatten, but the branch that would act on them is empty, so a long chain of separate `++` calls can stay tall.
+`concat` and `join` build a rope in one pass with a merge stack: each part is pushed, and the top two are merged while the top is no longer than the one below it. Folding left with `++` would give a rope that leans to one side, and walking that is quadratic, while the merge stack keeps the rope balanced in linear time. Ropes are not rebalanced afterward. The tests for rebalancing are evaluated in the one function that decides whether to flatten, but the branch that would act on them is empty, so a long chain of separate `++` calls can stay tall. The branch is also unreachable: it fires only for structural flattening, and the only caller, `ensureFlat`, asks for random access.
 
 `uncons` always returns a slice or view for the rest of the string and skips the copy of short ranges. A fold that calls `uncons` repeatedly then allocates in proportion to the string's length in total, instead of copying the rest at every step.
 
@@ -90,8 +92,7 @@ typedef struct {
 
 typedef struct {
     Header header;  // header.size = capacity (element count); unboxed bits 1:0 = kind.
-    u32 hd;         // Frontmost claimed slot (v1: always 0).
-    u32 _pad;
+    ...
     Unboxable elems[];
 } ListBacking;
 ```
@@ -118,7 +119,7 @@ Arrays have one form, and their layout is described in [value-representation.md]
 
 ## Who may look inside
 
-Outside the runtime, strings are reached only through the `StringOps` interface: length, `charAt`, conversion to a C++ string, `ensureFlat`, and the test for UTF-8 with access to its bytes, which the parser uses. A kernel may read a flat leaf's code units directly only after `ensureFlat`. Compiled code reads the length from the header inline and calls `charAt` as a call that cannot collect, and every other string operation is a call into the kernel or the runtime. Lists are reached through the cursors and the list builders, and Bytes through `byteBufferView`.
+Outside the runtime, strings are reached only through the `StringOps` interface: length, `charAt`, conversion to a C++ string, `ensureFlat`, and the test for UTF-8 with access to its bytes, which the parser uses. A kernel may read a flat leaf's code units directly only after `ensureFlat`. Compiled code reads the length from the header inline and calls `charAt` as a call that cannot collect, fused encoders and decoders reach strings and Bytes through the helpers that [bytes-fusion.md](../compiler/bytes-fusion.md) describes, and every other string operation is a call into the kernel or the runtime. Lists are reached through the cursors and the list builders, and Bytes through `byteBufferView`.
 
 The boundary is what makes an added form cheap. Because kernels read strings only through these functions, an added string form changes kernels only where they create strings. Lists keep the same boundary through the cursors and builders, and a list form that bypassed it would have to be taught to every kernel list walker and to the compiled projections together. Nothing checks the boundary mechanically; it is kept by review and by tests that run every operation on every form and require the results to agree.
 
@@ -126,7 +127,7 @@ The kernel decides what an operation means, and the runtime decides how the valu
 
 ## Holding values across an allocation
 
-Every operation here is C++ that the stack maps cannot see, so it must not keep a raw pointer to a heap object across an allocation: the allocation may collect and move the object. The parent document gives the general rule ([runtime.md](runtime.md)). The code keeps it with five idioms, each of which prevents a kind of bug that this code has had.
+Every operation here is C++ that the stack maps cannot see, so it must not keep a raw pointer to a heap object across an allocation: the allocation may collect and move the object. The parent document gives the general rule ([runtime.md](runtime.md)). The code keeps it with five idioms.
 
 1. Pass the live handles to the allocation call itself, in an array of roots. The allocator roots them only on its slow path, and the caller reads the moved values back from the array. The slice, rope and view constructors, `concat` and `join` do this.
 2. Wrap the raw pointer in a handle, root the handle with a stack guard for the allocation only, then resolve it again before reading. Every allocating string transform has this shape.
@@ -153,7 +154,7 @@ A change fits when every form still means the same content, the header still rec
 - An added string form is a tag placed before the free and forwarding tags, a structure, its size calculation and tracing in the collector, a case in each `StringOps` reader, and the sites that create it. The UTF-8 leaf and view have this shape, and they touch kernels only where kernels create strings, because no kernel reads string storage directly.
 - Retuning the flatten limit, the tiny-slice limit, the minimum UTF-8 view length or the rope limits is a heap configuration change. It changes speed and memory, never results, and the tests size their ropes from the configured limit, so they keep testing ropes.
 - Keeping more results in the cheaper ASCII form is a change to one constructor that can see the content, as character conversion, `cons`, short slices and mixed flattening are.
-- Implementing rope rebalancing goes in the single function that decides whether to flatten, `maybeFlattenOrRebalance`, where its tests are already evaluated. Its rebalance branch is empty and also unreachable, because it fires only for structural flattening and the only caller, `ensureFlat`, asks for random access. A rebalance therefore needs a caller as well as a body.
+- Implementing rope rebalancing goes in the single function that decides whether to flatten, `maybeFlattenOrRebalance`, where its tests are already evaluated. Because that branch is unreachable, a rebalance needs a caller as well as a body.
 - An added bulk list producer counts its input, tests whether a chain is eligible and fits, builds the chain, fills it with a chain writer and finishes it. Simpler still, it calls the existing builder that makes a list from a buffer of elements. Either way it produces cells or views under the same rules as `reverse` and `append`.
 - An added kernel string or list operation reads through `charAt`, the segment walker, `ensureFlat` or a cursor, and builds through the blank-string allocators or the list builders. It then works for every form there is and every form added later.
 - Allowing UTF-8 strings that are not all ASCII changes creation policy and index translation inside `StringOps`, not the layout of the view.

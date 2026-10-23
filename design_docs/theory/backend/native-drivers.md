@@ -47,7 +47,9 @@ Notice that balancing uses only operation counts, that a global follows the firs
 
 Each worker thread translates its partition and runs the shared routine in partition-worker mode, which marks the job as already split so the routine never splits it again. Every partition is optimized at full strength. Losing inlining across partition boundaries measures within noise on the compiler's own run time, so the design has no machinery for replicating functions across partitions or for cross-module optimization.
 
-When the requested output is a single object file and the module was split, the partition objects are joined into one by a relocatable link. Windows linkers have no relocatable link, so object output there is not split, while executables are. LLVM's own module splitter, working on the translated module, is used only for configurations the MLIR split cannot serve, such as statepoint rewriting placed after the optimizer or an MLIR context without threads. There LLVM's splitter is used as it comes: refining it with size balancing or call-graph clustering would help only if one partition finished well after the others, and measurements show that none does. Serializing the whole translated module and re-reading it lazily in each worker is not used at all: it costs exactly the serial round trip that splitting in MLIR avoids.
+When the requested output is a single object file and the module was split, the partition objects are joined into one by a relocatable link. Windows linkers have no relocatable link, so object output there is not split, while executables are.
+
+LLVM's own module splitter, working on the translated module, is used only for configurations the MLIR split cannot serve, such as statepoint rewriting placed after the optimizer or an MLIR context without threads. There LLVM's splitter is used as it comes: refining it with size balancing or call-graph clustering would help only if one partition finished well after the others, and measurements show that none does. Serializing the whole translated module and re-reading it lazily in each worker is not used at all: it costs exactly the serial round trip that splitting in MLIR avoids.
 
 ## Whole-program facts travel with each partition
 
@@ -57,13 +59,15 @@ The facts are checked at both ends of the hand-off. The splitter copies the modu
 
 ## The link
 
-The parent document explains why the link uses nothing from the host: users must be able to unpack a bundle and run `eco make` with no toolchain installed. The link step implements that with one link profile per output kind. Every input in the bundle's profiles is an absolute path into the bundle's runtime directory, worked out when the compiler runs, and the linker is the bundled `ld.lld`. Paths recorded when the compiler is configured would point at the machine that built it. Development builds use profiles that link with the host toolchain instead.
+The parent document explains why the Linux link uses nothing from the host: users must be able to unpack a bundle and run `eco make` with no toolchain installed. The link step implements that with one link profile per output kind. Every input in the bundle's profiles is an absolute path into the bundle's runtime directory, worked out when the compiler runs, and the linker is the bundled `ld.lld`. Paths recorded when the compiler is configured would point at the machine that built it. Development builds use profiles that link with the host toolchain instead.
 
 On Linux, executables link statically against musl. Shared libraries and Node addons cannot, because a static musl object cannot be loaded into a Node process built on glibc. They link against a second set of position-independent archives, built for the glibc interface and shipped in the same bundle, with a static libc++ whose symbols are hidden so it cannot clash with the libstdc++ that Node loads. So each output kind has one link mode that works: a dynamic executable is the hardest case to make work everywhere and is not the product, and a fully static shared library is a contradiction. There is no option to choose the mode.
 
 The memory copy and fill functions come from LLVM's C library and are placed ahead of musl on the link line, because musl's versions are a measurable cost on small copies. All five are replaced together, because musl's move routine jumps into its own copy routine.
 
 On macOS the link goes through the compiler driver that `xcrun` locates when the link runs. Tool paths recorded at configure time would point into the build server's Xcode and fail on other Macs. The oldest supported macOS version is pinned, so it does not drift with whatever machine built the compiler.
+
+On Windows the link goes through `clang-cl`, found on the path when the link runs, because that driver locates the Visual Studio build tools and the Windows SDK; unlike the Linux bundle, this link needs those tools on the host. The C runtime is linked statically, so the binary needs no separate runtime installed. Incremental linking is turned off, because it routes functions through a table of jump stubs and the stack maps would then record a stub's address instead of the function's. Windows builds produce executables and object files, not shared libraries.
 
 The link must keep the stack map section, since the collector reads it from the running image to find roots. Removing unused sections at link time is therefore opt-in, and it comes with an explicit rule that keeps the stack maps.
 

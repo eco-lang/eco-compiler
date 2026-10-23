@@ -77,7 +77,7 @@ Guides written as prompts let an agent run a fix loop unattended: pick one failu
 
 Commit subjects are specific, imperative and written in the codebase's own vocabulary, because the history is searched for the reason behind a line of code.
 
-## What the build relies on
+## Preconditions of the build
 
 The build works only while four conditions hold. They are listed from the machine inward.
 

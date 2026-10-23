@@ -66,7 +66,7 @@ Each checker is a pair of modules. A logic module exports an expectation functio
 
 The tests compile programs exactly as production does. The test pipeline calls the same list of pure steps that the build command runs, and a guard script fails if the test harness imports a compiler pass directly. A checker that runs a different middle end from the one users get proves nothing about their compiler, and a bug that only the production steps trigger would pass unseen.
 
-A checker that cannot check its rule honestly is deleted rather than kept. The record projection checker, for instance, could not relate a field read to the construction it reads from without use-def chains, so it is gone and the test design records that rule as documented but not enforced. A checker that claims coverage it does not give is worse than none, because the row's status then promises a check that is not there.
+A checker that cannot check its rule honestly is deleted rather than kept. The record projection checker, for instance, cannot relate a field read to the construction it reads from without use-def chains, so it is deleted and the test design records that rule as documented but not enforced. A checker that claims coverage it does not give is worse than none, because the row's status then promises a check that is not there.
 
 ### The test design document
 
@@ -86,8 +86,6 @@ A row drifts when the code under it moves and the row does not. The catalog is e
 2. A status outlives its check, as when checkers are deleted in a batch and their rows are left marked tested.
 3. The description outlives the mechanism. One code generation rule says an aggregate construction has no producer, when the code generator emits it by default.
 4. A number is cited for the wrong rule, as in the closure environment verifiers above.
-
-The narrative documents around the catalog drift the same way. The compiler's own theory file explains why purity licenses optimization and lists a few key invariants, but it describes a six-phase pipeline whose directory names do not match the tree and does not mention the specialization solver or the lambda set rules. The catalog and the code win where they disagree.
 
 The project builds a mechanical drift check only where drift is itself the danger, and each such check guards a single row. The TLA+ canary pins the code each collector model describes and warns when it changes, failing only under a strict build setting. The guard script for kernel claims fails the build when a C++ file cited as evidence changes without its hash being updated in the manifest, or when the manifest's pins and the cited files differ. The files it pins are those cited by the licensed rows of the lambda-set kernel table and by every row of the kernel type table; the table of purity and allocation facts that the optimizer reads cites C++ evidence in its rows but is not pinned, and neither is the runtime machinery that every kernel shares. The guard script for large heap objects checks that their bodies are read only through approved accessors. Elsewhere, when a checker turns out to be vacuous, the fix goes on the check side: the checker is rewritten and the row amended to say what is really checked.
 

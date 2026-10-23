@@ -27,7 +27,7 @@ type Expr id
     ...
 ```
 
-From `compiler/src/Compiler/AST/TypedOptimized.elm`. Notice that the metadata is the last argument of every variant, so any rewrite that builds a node must supply both halves. The variable is optional in the type, but monomorphization depends on it for function-typed definitions and references. The design notes for the phase describe a bare type on each node; the code carries this record.
+From `compiler/src/Compiler/AST/TypedOptimized.elm`. Notice that the metadata is the last argument of every variant, so any rewrite that builds a node must supply both halves. The variable is optional in the type, but monomorphization depends on it for function-typed definitions and references.
 
 The commonest way to break the metadata is to give a function-typed definition the variable of its body instead of the variable of the whole function. A local function used in several places must carry its full function type and variable, or monomorphization crashes or specializes it wrongly. The phase recovers the right variable from the binding that introduces the name. That lookup by name is unambiguous because name resolution forbids shadowing. Tail-call definitions carry a variable for the same reason.
 
@@ -146,12 +146,9 @@ Code:
 - `compiler/src/Compiler/AST/TypedOptimized.elm`: the typed optimized form (`TOpt`), `Meta`, `LocalGraph`.
 - `compiler/src/Compiler/LocalOpt/Erased/`: the untyped copy, used by `Compiler.Compile.compile`.
 
-Documents:
-
-
 Invariants (`design_docs/invariants.csv`):
 
-- TOPT_001, TOPT_005: a type on every node, full function types on lambdas. TOPT_002: complete decision trees. TOPT_003: annotations kept in the graph. TOPT_004: type preservation, documented and not checked. TOPT_006: ground wrapper types on unboxing paths. TOPT_002 and TOPT_003 name `Compiler.Optimize.Typed.*`, which is `Compiler.LocalOpt.Typed.*` in the code.
+- TOPT_001, TOPT_005: a type on every node, full function types on lambdas. TOPT_001 describes a bare type on each node; the code carries the `Meta` record. TOPT_002: complete decision trees. TOPT_003: annotations kept in the graph. TOPT_004: type preservation, documented and not checked. TOPT_006: ground wrapper types on unboxing paths. TOPT_002 and TOPT_003 name `Compiler.Optimize.Typed.*`, which is `Compiler.LocalOpt.Typed.*` in the code.
 - SNAP_TVAR_001: polymorphic metadata keeps its solver variable.
 - PORT_007: port and flags codecs.
 - ECOT_001 to ECOT_003: the cached typed format.

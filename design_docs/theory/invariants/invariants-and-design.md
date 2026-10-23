@@ -77,7 +77,7 @@ Several rules look arbitrary until the alternative they rule out is known. Each 
 
 Pointers are raw absolute addresses, with three embedded constants and a family of embedded constructors that have no fields. An offset design, with pointers measured from a heap base, many separate constants and a sentinel page, uses a small field in the pointer word to identify the constant, and treats a nonzero value in that field as the sign of a constant. That test cannot work when False's value in the field is zero. The marker test among the forbidden assumptions takes its place everywhere.
 
-A constructor with no fields, such as Nothing, lives in the pointer word and never on the heap. Equality compares raw words once either side is embedded, so a heap copy of such a constructor would compare unequal to the embedded one. A live zero-field custom object on the heap is therefore a bug.
+A constructor with no fields, such as Nothing, lives in the pointer word and never on the heap, so a live zero-field custom object on the heap is a bug; [value-representation.md](../value-representation.md) gives the equality argument behind this.
 
 Each heap slot has a two-bit kind instead of a one-bit boxed flag, so that the collector and debugging code can tell Int, Float and Char apart. Arrays that mix several primitive types are deliberately outside that design.
 

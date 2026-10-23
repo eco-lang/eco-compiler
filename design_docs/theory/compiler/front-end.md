@@ -4,7 +4,7 @@ Elm source becomes a typed, canonical program through Elm's own pipeline: the pa
 
 ## Faithful to Elm, with one grammar
 
-The front end is forked from Guida, which is a port of the stock Elm compiler from Haskell to Elm. Starting from that code gives Eco Elm's grammar, scoping rules, type system and error messages without writing them again, and those are what let Eco compile existing Elm packages unchanged. Guida also accepts syntax of its own, such as underscores in number literals, binary literals and tuples of more than three elements. Eco does not: it keeps one grammar, the standard one, and a smaller parser. Projects and packages may declare any Elm 0.19 release, because the language is the same across the 0.19 patch releases.
+The front end is forked from Guida, which is a port of the stock Elm compiler from Haskell to Elm. Starting from that code gives Eco Elm's grammar, scoping rules, type system and error messages without writing them again, and those are what let Eco compile existing Elm packages unchanged. Guida also accepts syntax of its own, such as underscores in number literals, binary literals and tuples of more than three elements. Eco does not: it keeps one grammar, the standard one, and a smaller parser.
 
 Errors follow Elm's model. Each phase collects every error and warning it finds instead of stopping at the first, and each error is rendered as a report that quotes the source lines it concerns. An addition to the front end that can fail reports through this same channel, so the user sees its errors in the same form as Elm's.
 
@@ -31,8 +31,6 @@ type alias ExprTypes =
 
 Expressions and patterns draw their numbers from one counter per module. A separate counter for each produces the same number for an expression and a pattern, and the tables then mix the two up. The counter is per module because each module is compiled on its own; numbers are unique within a module and mean nothing across modules.
 
-Two kinds of node get their types from somewhere other than the solver. Literals and references to kernel functions are filled in by the repair step after solving, described below.
-
 ## The phases
 
 The front end has five phases that transform a module, in this order:
@@ -43,9 +41,9 @@ The front end has five phases that transform a module, in this order:
 4. The solver runs rank-based Hindley-Milner inference over a union-find store, in which variables proved equal are merged into one set with a single representative, its root. A snapshot of the store is kept after solving, because the repair step reads it.
 5. The repair step completes and normalizes the recorded types.
 
-The result is the typed canonical module: each top-level body is paired with its type, and every inner expression's type is found by number in the table. The pattern checks run on the canonical patterns beside these phases, using Maranget's algorithm to find case expressions that miss a possible value and branches that can never match. A separate check for uses of Elm's `Debug` module lives in the same directory but runs later, on the optimized program.
+The result is the typed canonical module: each top-level body is paired with its type, and every inner expression's type is found by number in the table. The pattern checks run on the canonical patterns beside these phases, using Maranget's algorithm to find case expressions that miss a possible value and branches that can never match. A separate check for uses of Elm's `Debug` module lives in the same directory but runs later, when an optimized JavaScript build is generated, over the cached optimized modules. `Debug` is forbidden only in an optimized build, which is chosen per build, so checking at generation keeps each cached module the same in optimized and development builds.
 
-Several supporting layers serve all the phases. Besides error reporting, there is the package layer, which knows package names, versions, version constraints, interfaces and documentation, and recognizes Eco's own system package. A small data layer holds shared structures, including the typed integer ids and the numbers the runtime must agree with. A JSON layer reads and writes `elm.json` and documentation.
+Supporting layers for error reporting, packages and JSON serve all the phases. The one a change is most likely to touch is the small data layer, because it holds the typed integer ids and the numbers the runtime must agree with, both described below.
 
 The erased mode, used when the build targets JavaScript or HTML, runs the same five phases with recording switched off. The parent document explains why there is one constraint generator and not two. Saved fingerprints of the generator's output are compared in the tests, so a change that alters the constraints by accident fails there instead of surfacing as a type difference in some later phase.
 
@@ -96,7 +94,7 @@ A change fits when it records a fact while the solver can still see it, keeps on
 - A second constraint generator for a special pathway. Two copies drift apart and report errors at different places. Add a switch to the single generator.
 - Deriving type-variable identity or class membership from a variable's name. Names do not survive unification and collide across modules. Read the solver root.
 - Mutable state in the solver, or a global cache that Elm code could observe. It breaks the guarantee the compiler relies on and that it cannot check. Keep the store immutable and pass it by value.
-- An earlier phase importing a later one to save code. The early phase would then depend on a decision made later, and the layer rule rejects it. Move the shared definitions into the syntax tree or data layers.
+- An earlier phase importing a later one to save code. The early phase would then depend on a decision made later, and the layer rule rejects it. Move the shared definitions down to the earliest layer that uses them.
 - Recursion over structure of unbounded length, such as let chains, operator chains or lists. It overflows the stack on large programs and during self-compilation. Walk the spine with a self-tail-recursive loop.
 - Transformation logic in a syntax tree module. Every phase imports those modules, so the logic would hide which phase owns it. Put it in the phase that runs it.
 - A field added to the cached typed files without a format version bump. Files written by the previous compiler would then be misread rather than rejected. Bump the version in the same change.

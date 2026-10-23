@@ -21,7 +21,7 @@ harness --(dump stage, rejection, or expected crash)--> compiler subprocess --(I
 matcher --(CHECK lines from the fixture)--> pass or fail
 ```
 
-The byte-fusion harness is a near copy of the eco one that lacks several of its features. It does not check which nursery the heap uses, does not send crashing fixtures to a subprocess, and does not handle the reachability option or the directive that unsets an environment variable. Those are described below as the eco harness's behavior; a byte-fusion fixture that depends on one of them does not get it.
+The byte-fusion harness is a near copy of the eco one that lacks several of its features. It does not check which nursery the heap uses, does not send crashing fixtures to a subprocess, and does not handle the reachability option or the directive that unsets an environment variable. A byte-fusion fixture that depends on one of them does not get it.
 
 ## What a fixture looks like
 
@@ -79,7 +79,7 @@ The harness takes three facts from the RUN lines:
 2. whether the fixture expects the compile or run to fail, marked by `not %ecoc` anywhere in the file, which sends a JIT fixture to a subprocess and lets it fail;
 3. whether the closed-world reachability option is present, which it passes on to the compiler.
 
-Everything else on a RUN line, such as an environment prefix or a FileCheck option like a custom check prefix, has no effect.
+Everything else on a RUN line, such as an environment prefix or a FileCheck option like a custom check prefix, has no effect. Fourteen eco fixtures, `list_map_template_expand.mlir` among them, assert only under a custom prefix, so the harness finds no assertion in them and they pass whatever the compiler emits.
 
 The assertions are the comment lines that begin with the plain `// CHECK` prefix. A line under any other prefix is an ordinary comment to the harness. Each recognized form is matched against the whole output:
 

@@ -44,7 +44,7 @@ The platform tests cover the scheduler and the process-wide services:
 - liveness holds behave as the rule below requires;
 - the shared primitive for spawning processes works.
 
-A liveness hold is a token that keeps the program running while some work is outstanding, such as a sleep, an HTTP request or a timer. The rule behind it cuts across every kernel: a program stays alive only while it waits for something. Every kernel site that waits on outstanding work takes a hold rather than keeping a counter by hand. The tests check that a hold is released once and a double release aborts, that holds can be parked and resumed, that holds from several host threads work together, and that canceling or killing the work drops its hold.
+A liveness hold is a counted claim that keeps the program running while some work is outstanding, such as a sleep, an HTTP request or a timer; [scheduler-and-services.md](../runtime/scheduler-and-services.md) calls it a hold. The rule behind it cuts across every kernel: a program stays alive only while it waits for something. Every kernel site that waits on outstanding work takes a hold rather than keeping a counter by hand. The tests check that a hold is released once and a double release aborts, that holds can be parked and resumed, that holds from several host threads work together, and that canceling or killing the work drops its hold.
 
 These tests never run in the runner process. The services are single process-wide objects with detached threads, and the wait service reaps with a call that collects any child of the process, which would steal the runner's own test children. Much of the coverage is POSIX-only, and Windows skips those cases rather than faking them.
 
@@ -135,7 +135,7 @@ Two checks cover runtime code outside the collector, and both run in the smoke s
 
 ## Tests and the heap rules
 
-The tests are the executable form of the heap rules: object kind words, the nursery and its regions, stable metadata and the mark arena, bitmap allocation and gap sweeping, the helper handshake, deferred decommit, and incremental, parallel and concurrent marking. Citing a rule's number in a test is a convention, not a requirement, and fewer than half of the heap rules are cited anywhere in these directories. Several uncited rules are tested under another name, such as those for chunked lists, so read an uncited rule as unchecked only after looking.
+An uncited heap rule is not necessarily untested. Citing a rule's number in a test is a convention, not a requirement, and fewer than half of the heap rules are cited anywhere in these directories. Several uncited rules are tested under another name, such as those for chunked lists, so read an uncited rule as unchecked only after looking. The tests cover heap rules from object kind words and the nursery's regions to incremental, parallel and concurrent marking.
 
 One rule covers the collector's determinism: its decisions never depend on how far its helper threads have got. Tests compare counters across helper modes, and jitter settings perturb the helpers' schedule to show that the counters still agree.
 

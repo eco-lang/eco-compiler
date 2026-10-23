@@ -23,7 +23,7 @@ The pass needs four things from the front end:
 
 Variable identity and class come from the solver rather than from variable names because names collide across modules and type schemes, and deriving the class from a name silently drops `number`.
 
-After the pass come a check that every closure stays within the staging arity limit, the post-monomorphization inliner, a second prune, and global optimization.
+After the pass come a check that every closure's parameters and captured values fit within the arity limit of one closure stage ([global-optimization.md](global-optimization.md) explains stages), the post-monomorphization inliner, a second prune, and global optimization.
 
 ## Why the pass stays narrow
 

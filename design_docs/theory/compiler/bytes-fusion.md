@@ -8,7 +8,7 @@ Fusion is an optimization that takes its correctness from the kernel. It replace
 
 The speed is worth having because the kernel interprets. On the kernel path an encoder is a tree of values, one per combinator, which the kernel walks once to find its size and again to write the bytes, and a decoder is interpreted the same way. Fused code builds no tree and writes each byte straight from the values the program already holds.
 
-Partial fusion of encoders keeps the kernel as the reference. A part the compiler cannot read is handed to the same walker the kernel uses, sized by the same function, so the bytes agree with the kernel's byte for byte. Decoders have no partial form, because there is no way to hand the middle of a decode to the kernel and carry on, so a decoder fuses whole or not at all. Elm values are immutable and Elm expressions have no effects, which is what lets the fused code compile a value expression at a different point from the source, or twice, and get the same value.
+Partial fusion of encoders keeps the kernel as the reference. A part the compiler cannot read is handed to the same walker the kernel uses, sized by the same function, so the bytes agree with the kernel's byte for byte. Decoders have no partial form, because there is no way to hand the middle of a decode to the kernel and carry on, so a decoder fuses whole or not at all.
 
 ## Where fusion runs
 
@@ -57,7 +57,7 @@ Emission threads one cursor through the writes in source order. The loop becomes
 
 An opaque leaf is compiled as an ordinary `Encoder` value, sized by one operation and written at the cursor by another. Both are thin wrappers over the kernel's own size and write walkers, which already take a destination buffer and an offset, and neither allocates. Without the leaf, one subtree the compiler cannot read, typically a function parameter used as the per-element encoder, would send the whole encoder back to the kernel and lose all of its fixed-width writes. With it, only that subtree goes to the walker and everything else stays fused, in one buffer that agrees with the kernel's output. An encoder that reads as nothing but a single opaque leaf is left as a kernel call, because an allocation plus one walk costs strictly more than calling the kernel.
 
-Encoder fusion can be turned off in the project's settings and is on by default; decoder fusion is attempted whatever that setting says, and no reason for the difference is recorded.
+Encoder fusion can be turned off in the project's settings and is on by default; decoder fusion is attempted whatever that setting says.
 
 ## Decoders: whole or not at all
 
@@ -99,7 +99,7 @@ The dialect is separate from eco so that the eco dialect stays stable and byte f
 
 As the code stands, fused code is not safe against garbage collection when its buffer is in the nursery. This is a defect of the code, not a property of the design. It follows from three facts. The cursor lowers to plain pointers in LLVM's default address space, and the statepoint rewriting that relocates pointers across a collection only tracks pointers in the collector's address space, so a cursor is never updated when its buffer moves. A buffer smaller than 8 KiB is allocated in the nursery, which a minor collection copies, while a larger one keeps its bytes in the large-object space, which does not move ([garbage-collector.md](../runtime/garbage-collector.md)). And fused code allocates while a cursor is live, so a collection can run at those points and leave the cursor pointing into the nursery space the buffer was copied out of. The helper header itself warns that a buffer's data pointer does not survive a collection.
 
-The cases in which fused code allocates with a live cursor all occur:
+Fused code allocates with a live cursor in four places:
 
 - Reading a `Bytes` value allocates the result and then copies from the old cursor pointer.
 - A decode loop builds a list cell for each item while the read cursor is live, and `map` results are built the same way.
@@ -108,7 +108,7 @@ The cases in which fused code allocates with a live cursor all occur:
 
 The helpers that size and write an opaque encoder do not allocate, and the argument that the opaque leaf is safe rests on that, but nothing in the code marks or checks them as helpers that cannot collect. A stress test of fused count loops over 8,000-byte nursery buffers passes. Its count of about 700 minor collections assumes a small nursery set through the heap configuration, which the test runner does not set. A pass shows only that the hazard did not show up in that test; it is not evidence that the code is safe.
 
-A fix must give the fused region one of these properties, and this document does not choose among them:
+A fix must give the fused region one of these properties:
 
 - the buffer does not move while any cursor into it is live;
 - nothing allocates, and so no collection can run, while a cursor is live;
@@ -120,9 +120,9 @@ Until one of them holds, any change to fusion should be checked against the list
 
 The UTF-8 and bytes reads return a success flag that the emitter discards. The UTF-8 read reports failure on invalid input, and the lowering computes the flag, but the emitter branches only on the bounds check. A fused decode of invalid UTF-8 would therefore produce `Just` of a null string where the kernel produces `Nothing`. This is latent, because string decoders do not reach fusion in practice, and the fixture for the operation tests the flag itself, not the emitter's use of it.
 
-Three numbered rules are false for an encoder with an opaque leaf. One says fusion is all or nothing for encoders as well as decoders, which the opaque leaf makes false. The other two say a fused encoder makes no intermediate allocations and calls no interpreter, and an opaque leaf builds an `Encoder` value and runs the kernel's walker. The References list gives their identifiers.
+Three numbered rules are false for an encoder with an opaque leaf. One says fusion is all or nothing for encoders as well as decoders, which the opaque leaf makes false. The other two say fused code makes no intermediate allocations and calls no interpreter, and an opaque leaf builds an `Encoder` value and runs the kernel's walker. The rule against intermediate allocations is false for decoders too, which build a list cell for each loop item and the results of `map`. The References list gives their identifiers.
 
-The emitter compiles the expression of a string, a `Bytes` value or an opaque leaf twice, once for the size term and once for the write, so the string or the `Encoder` value is built twice. A comment calls this the same two passes the kernel makes, which understates it for an opaque leaf.
+The emitter compiles the expression of a string, a `Bytes` value or an opaque leaf twice, once for the size term and once for the write, so the string or the `Encoder` value is built twice. Elm values are immutable and Elm expressions have no effects, which is what lets the fused code compile a value expression at a different point from the source, or twice, and get the same value. A comment calls this the same two passes the kernel makes, which understates it for an opaque leaf.
 
 ## Examples of changes that fit the theory
 
@@ -168,7 +168,7 @@ Invariants (`design_docs/invariants.csv`):
 - BFOPS_006, BFOPS_007, BFOPS_010: exact width and one allocation.
 - BFOPS_012, BFOPS_029: no load without a passing check. BFOPS_016, BFOPS_017: failure is a branch to `Nothing`.
 - BFOPS_030, BFOPS_032: layout stays in the runtime helpers.
-- False for an encoder with an opaque leaf: BFUSE_001 (all or nothing), BFOPS_036 (no intermediate allocations), BFOPS_037 (no interpreter calls). BFOPS_021 cites `BFTypes.td`, which does not exist; the cursor type is in `BFOps.td`.
+- False for an encoder with an opaque leaf: BFUSE_001 (all or nothing), BFOPS_036 (no intermediate allocations, also false for decoders), BFOPS_037 (no interpreter calls). BFOPS_021 cites `BFTypes.td`, which does not exist; the cursor type is in `BFOps.td`.
 
 Design documents:
 

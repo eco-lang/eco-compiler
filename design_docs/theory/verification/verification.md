@@ -35,8 +35,6 @@ The checkers walk the canonical syntax tree, the typed optimized graph, the mono
 
 The driver reaches the compiler only through the same list of whole-program steps that the build uses. A test pipeline of its own can choose a different engine or skip passes, and then tests pass on a configuration no user runs. A static script fails `elm-tests` if the test harness calls the compiler any other way.
 
-The suite is kept small on purpose. Random primitive values reach no code that a single value does not, because the compiler treats `42` and `7` alike, so fuzzing covers only the structure of programs. Each invariant is checked over every module in one bulk test, since one test per case exhausts the runner's memory. Coverage reports show which shapes of syntax tree the corpus still misses, and those guide what to add.
-
 ### Whole programs
 
 Whole Elm programs are checked by compiling each one to MLIR with the real compiler, running it in its own freshly spawned process, and matching its output (and for system programs its exit status) against expected-output lines written in the program's own source. The same corpus is reused by several runners that differ in what they prove: the JIT runner for behavior, the stress runner for long runs under the collector, the JavaScript and AOT runners for agreement between back ends, and the conformance scripts for compliance with third-party protocols. See [program-tests.md](program-tests.md).
@@ -57,7 +55,7 @@ The runtime's unit tests are linked into the same executable as the codegen test
 
 ### The collector's concurrency
 
-The formal models are the collector's concurrency rules in a form a model checker can run. Small TLA+ models cover each concurrent protocol. Some cover marking: snapshot marking, and work stealing with its termination. Some cover moving objects: forwarding, promotion with the mark bitmap, and concurrent tenuring. The rest cover threads and memory: the helper-pool lifecycle and fork, page work and lock order, and the block lifecycle. A model checker explores each one exhaustively at small sizes. Weak-memory drivers, checks of traces from real runs against the models, and a hash canary tie the models to the C++. The models do not prove the C++ correct. They find design bugs early, and the canary reports when the code they describe changes. See [concurrency-models.md](concurrency-models.md).
+The formal models are the collector's concurrency rules in a form a model checker can run. Small TLA+ models, one per concurrent protocol, cover marking, moving objects, and the threads and memory beneath both, and a model checker explores each one exhaustively at small sizes. Weak-memory drivers, checks of traces from real runs against the models, and a hash canary tie the models to the C++. The models do not prove the C++ correct. They find design bugs early, and the canary reports when the code they describe changes. See [concurrency-models.md](concurrency-models.md).
 
 Ordinary tests cannot reach the interleavings that cause collector races, because those are rare schedules that a test run almost never produces. A model explores all of them at small sizes. Each model comes with deliberately broken variants, called mutants, that the checker must reject, which shows the model is able to fail at all.
 
@@ -77,7 +75,7 @@ A few scripts search the source for one structural rule each and run before anyt
 
 ## One harness for every runner
 
-Three pieces of test machinery are shared across layers, so a fix in one reaches every runner.
+Three pieces of test machinery are shared across layers.
 
 The first is the parser for `CHECK` directives, used by the codegen tests, the byte-fusion tests and both the JIT and AOT whole-program runners. An unknown directive variant is a parse error. If the parser skipped unknown variants, a fixture with a misspelled directive would pass while asserting nothing, and a check that cannot fail is worse than none. For the same reason, a marker that restricts a test to Linux or keeps it off the AOT path must state its reason.
 

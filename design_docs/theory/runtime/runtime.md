@@ -40,8 +40,6 @@ Inside the heap, strings, lists and byte sequences each have several forms, whic
 
 The scheduler is Elm's own scheduler, implemented again over the Eco heap. The eco thread steps tasks and processes, which are themselves immutable heap values, and calls every effect manager and port synchronously. Timers, HTTP and child-process waits run on service threads that hand back plain tokens, and input from a host program arrives through a queue that the eco thread drains. The program stays alive exactly as long as it holds a counted claim, called a hold, on something it asked for. Running all of Elm on one thread follows from the collector's one-mutator design. See [scheduler-and-services.md](scheduler-and-services.md).
 
-The two parts meet each other and the code around them in five places: where compiled code reaches the heap, where the collector finds live values, where work leaves and re-enters the eco thread, where a program ends, and where it starts.
-
 ## How compiled code reaches the heap
 
 Compiled code allocates in two ways. At points the compiler marks for it, it bumps the nursery pointer inline, so the commonest allocations cost no call. Every other heap operation, including larger allocations, applying a closure and building lists through a scratch stack, calls a C function the runtime exports.
@@ -66,7 +64,7 @@ A kernel function that returns a Task does no input or output when it is called.
 
 ## When a program ends
 
-A program stays alive exactly while it waits for something it asked for. Each such wait takes a hold, and the event loop exits when the run queue is empty and no holds remain. Opening a listener or a socket takes no hold; waiting for a connection or a read on it does. Holds are taken and released only through one interface, exactly once on every path. With a single count behind a single interface, a program that never exits can be diagnosed by listing the holds still open, which scattered keep-alive counters and flags could not offer.
+A program stays alive exactly while it waits for something it asked for. Each such wait takes a hold, and the event loop exits when the run queue is empty and no holds remain. Opening a listener or a socket takes no hold; waiting for a connection or a read on it does. Holds are taken and released only through one interface, exactly once on every path. With a single count behind a single interface, a program that never exits can be diagnosed by listing the holds still open, which separate counters and flags cannot offer.
 
 ## Start-up, embedding and platforms
 
@@ -85,7 +83,7 @@ The runtime depends on four properties of the code around it, and it has no way 
 3. Kernel libraries register every heap value they hold across an allocation, write only into objects still being built, and defer their input and output into Task callbacks.
 4. All Elm code runs on the eco thread, and a process has one mutator.
 
-The collector's concurrent protocols are also written as TLA+ models: formal specifications that a model checker explores exhaustively. A canary records hashes of the code each model describes and warns when that code changes. A warning means the model may no longer match the code, so the model is checked first and the hash updated only after.
+The collector's concurrent protocols are also written as TLA+ models: formal specifications that a model checker explores exhaustively. A canary records hashes of the code each model describes and warns when that code changes. A warning means the model may no longer match the code, so the model is checked first and the hash updated only after. [garbage-collector.md](garbage-collector.md) describes the models and the canary.
 
 ## Examples of changes that fit the theory
 A change fits the runtime when it leaves published objects unchanged, keeps all Elm code and allocation on the eco thread, and registers every heap value that C++ code holds.
@@ -104,7 +102,7 @@ A change fits the runtime when it leaves published objects unchanged, keeps all 
 - Doing a kernel's input or output when it is called, for speed. The Task stops being a description of work. Defer it into the Task's callback.
 - Changing the hold count directly, or adding a separate keep-alive flag. The open-hold listing then misses a reason the program is still running. Take a hold through the liveness interface.
 - Adding a second mutator, or sharing one heap between threads, to get parallelism. The collector, the scheduler and every service contract assume one mutator per heap. Put parallel work on service threads that exchange plain data; parallel Elm belongs to the heap-per-thread design, which needs its own plan, per-heap accounting and formal models.
-- Telling a constant from a heap address by its value or by a null test. Use the constant bit.
+- Telling a constant from a heap address by its value or by a null test. Use the pointer indicator bit.
 - Forking the process, in the runtime or in its tests. Spawn instead.
 - Updating the canary's hash to silence a warning. Check the model against the changed code first.
 

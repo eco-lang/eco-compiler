@@ -18,7 +18,7 @@ Most modules are a pair of files. `List.cpp` holds the logic in plain C++, where
 
 Each module builds as its own static library, and one module list in the back end's build drives both what is compiled and what the native linker is given. Adding a module is then one entry in that list, and each package's kernels stay a separate unit of the build.
 
-Arguments are not always heap pointers. A string literal in compiled Elm is allocated once, interned, in a permanent space outside the heap's address range, so a kernel can be passed an address that is not in the heap. Every export reads its heap arguments through one helper, `Export::toPtr`. It returns null for an embedded constant, follows any forwarding for an address inside the heap, and returns every other address unchanged, which is the case that serves the permanent space. Comments beside it that describe that case as literals in read-only data are stale.
+Arguments are not always heap pointers. A non-empty string literal in compiled Elm is allocated once, interned, in a permanent space outside the heap's address range, so a kernel can be passed an address that is not in the heap. The literal `""` is the empty constant, not an interned object. Every export reads its heap arguments through one helper, `Export::toPtr`. It returns null for an embedded constant, follows any forwarding for an address inside the heap, and returns every other address unchanged, which is the case that serves the permanent space. Comments beside it that describe that case as literals in read-only data are stale.
 
 Char arguments are read as 64-bit integers and masked to 16 bits, although the calling convention passes a 16-bit value. Calls from compiled Elm go through the garbage-collection statepoints that LLVM wraps around every call that may collect, and the statepoint drops the attribute that promises the caller has zeroed the upper bits of the register. A parameter declared as 16 bits would let the C++ compiler trust whatever is left in those bits. Reading the whole register and masking it is correct whatever the caller left there.
 
@@ -32,7 +32,7 @@ Empty values are constants, never heap objects. The empty string, the empty byte
 
 A kernel keeps no C++ object inside a heap value ([kernels.md](kernels.md)). Three packages in Elm's kernels show what that rule costs and where its one exception lies.
 
-JSON values are ordinary heap custom types, with a reserved range of constructor numbers for the JSON cases and long arrays stored in chunks. Parsing goes through the vendored nlohmann/json library, and the parsed C++ document is thrown away as soon as the heap value is built, so nothing outside the heap has to be freed with it.
+JSON values are ordinary heap custom types. Their constructor numbers are fixed in a table at the top of `JsonExports.cpp`, and a new JSON case takes the next free number there. A long array is split into chunks that each stay below the large-object threshold, so a decoded array never becomes a large object that holds pointers, which the collector would have to place in its young large-object space ([garbage-collector.md](../runtime/garbage-collector.md)). Code that reads a JSON array goes through the two accessors that hide the split, `jsonArrayLength` and `jsonArrayAt`. Parsing goes through the vendored nlohmann/json library, and the parsed C++ document is thrown away as soon as the heap value is built, so nothing outside the heap has to be freed with it.
 
 Regular expressions are the deliberate exception. A compiled regex lives in a C++ side table, and the Elm value holds only a handle id, the integer index into that table. The table never frees an entry. That matches the JavaScript runtime, which never frees a compiled regex either, so a program sees no difference, and the heap still holds nothing but an integer.
 
@@ -76,7 +76,7 @@ C++ cannot be generic over unboxed values, but many kernels are generic in Elm. 
 
 The compiler also replaces some kernels with eco-dialect operations, which the optimizers can fold with the code around them. Among them are string and list append, string ordering, reading one code unit of a string, and the ordering of Int, Float and Char. Each C++ export stays in the library, both as the function the operation lowers to and as the target for call sites whose type is still generic. Append shows why the typed form matters for correctness as well as for folding: the generic `Utils_append` works out at run time whether it has strings or lists, and returns its first argument for any pair it does not recognize. Where the type is known, the typed operation leaves nothing to guess.
 
-The kernel boundary as a whole takes a small share of a program's running time, and garbage collection dominates it. Removing a kernel call therefore pays in smaller code and in what the optimizers can see, not in speed, and work on the boundary is judged by what it removes.
+Because the boundary takes a small share of running time ([kernels.md](kernels.md)), removing a kernel call pays in smaller code and in what the optimizers can see, not in speed.
 
 ## Decode failures unwind
 
@@ -88,7 +88,7 @@ A kernel that returns a `Task` does its IO inside a task binding, a heap object 
 
 Only the eco thread, the one thread that runs Elm code and the scheduler, touches the heap. HTTP requests run on one worker thread built on libcurl, which receives plain C++ structs and a token, an integer that matches each result to the request that asked for it. The continuation that will receive the result stays rooted in the scheduler's registry of pending resumes until the result comes back. The timer thread works the same way and sees only pairs of a deadline and a token. Keeping heap work on one thread is what lets every kernel ignore concurrent mutation of the heap.
 
-A program exits when nothing more can happen. An outstanding request or a time subscription takes a liveness hold, which tells the runtime that a result is still expected, so the program stays alive until it arrives. [scheduler-and-services.md](../runtime/scheduler-and-services.md) describes the services these managers sit on.
+A program exits when nothing more can happen. An outstanding request or a time subscription takes a hold, a counted claim that tells the runtime a result is still expected, so the program stays alive until it arrives. [scheduler-and-services.md](../runtime/scheduler-and-services.md) describes the services these managers sit on.
 
 ## Claims the compiler trusts on audit
 
@@ -105,7 +105,7 @@ A change fits when it keeps the JavaScript contract, leaves representation to th
 - A typed sibling for a kernel that numbers pass through often: one C++ function with the suffix, and one case in the compiler's sibling selection.
 - A dialect operation for a small kernel whose type fixes its behavior, with the C++ export kept as its lowering target and generic fallback.
 - Another package backed natively: build its values as ordinary custom types, write the layout once in a header shared with the Elm declaration, and add a test that pins the match, as elm/html does.
-- Another IO kernel: a task binding built with the shared helpers, its payload and resume function rooted before the body runs, and a liveness hold for any long wait.
+- Another IO kernel: a task binding built with the shared helpers, its payload and resume function rooted before the body runs, and a hold for any long wait.
 - A fix to a representation bug in a kernel, such as a rebuilt list with the wrong kind of slot: the fix, a focused unit or end-to-end test, then a fresh audit of every pinned row whose file changed before the manifest is refreshed.
 
 ### Examples of changes that would break the theory
@@ -134,11 +134,11 @@ Code:
 - `elm-kernel-cpp/src/json/JsonExports.cpp`: heap-resident JSON values, decoders and encoders.
 - `elm-kernel-cpp/src/regex/RegexExports.cpp`: the regex side table.
 - `elm-kernel-cpp/src/bytes/BytesExports.cpp`: the decode interpreter and failure unwinding.
-- `elm-kernel-cpp/src/http/HttpExports.cpp`, `HttpEffectManager.cpp`, `elm-kernel-cpp/src/time/TimeExports.cpp`, `TimeEffectManager.cpp`, `elm-kernel-cpp/src/core/ProcessExports.cpp`: effect shape, threads and liveness holds. `time/Time.cpp` holds unused asserting stubs, and `core/Process.cpp` is empty on purpose.
+- `elm-kernel-cpp/src/http/HttpExports.cpp`, `HttpEffectManager.cpp`, `elm-kernel-cpp/src/time/TimeExports.cpp`, `TimeEffectManager.cpp`, `elm-kernel-cpp/src/core/ProcessExports.cpp`: effect shape, threads and holds. `time/Time.cpp` holds unused asserting stubs, and `core/Process.cpp` is empty on purpose.
 - `elm-kernel-cpp/src/virtual-dom/`: node layout, constructors, attribute filters and the HTML writer.
 - `elm-kernel-cpp/vendor/`: nlohmann/json and SRELL. HTTP uses libcurl with OpenSSL. `elm-kernel-cpp/LIBRARY_DEPENDENCIES.md` is the catalog written before implementation and names other libraries.
 - `runtime/src/allocator/`: string, list and bytes operations, allocation and roots.
-- `runtime/src/platform/TaskBinding.hpp`, `runtime/src/platform/Liveness.hpp`, `EffectManagerRegistry.cpp`: task bindings, liveness holds and effect manager registration.
+- `runtime/src/platform/TaskBinding.hpp`, `runtime/src/platform/Liveness.hpp`, `EffectManagerRegistry.cpp`: task bindings, holds and effect manager registration.
 - `compiler/src/Compiler/Generate/MLIR/KernelAbi.elm` (`deriveKernelInstanceAbi`), `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`, `compiler/src/Compiler/MonoSolver/KernelSetFacts.elm`: the compiler's half of the contract.
 - `compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt`, `test/scripts/check-kernel-license-manifest.sh`: the hash manifest.
 - `test/scripts/check-kernel-homes.sh`: keeps `eco/system` kernel homes from colliding with Elm's.

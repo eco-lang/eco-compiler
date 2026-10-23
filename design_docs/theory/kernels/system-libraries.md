@@ -49,7 +49,7 @@ Two kinds of integer cross between the eco thread and the services, and they mus
 An asynchronous body takes these steps, in this order:
 
 1. Copy every argument it needs out of the heap into plain C++ data. This comes first because the later steps can allocate, any allocation can move heap objects, and a pointer read afterward could be stale.
-2. Park the waiting task with the scheduler. Parking returns the token and takes a liveness hold, which keeps the program running for the length of the wait.
+2. Park the waiting task with the scheduler. Parking returns the token and takes a hold, which keeps the program running for the length of the wait. [scheduler-and-services.md](../runtime/scheduler-and-services.md) describes parking and holds.
 3. Hand the plain data and the token to a service. The service's thread never receives a heap pointer.
 4. Return a kill handle, the value the task holds while it waits.
 
@@ -78,7 +78,9 @@ HPointer fsPoolSubmit(FsOp op, FsKind kind, HPointer captured, HPointer resume) 
 }
 ```
 
-Notice the order. `unpack` reads the captured heap arguments into `FsArgs` before anything else, and `parkResume` takes the hold and returns the token in one call. The worker's lambda captures only the operation and the plain arguments. The completion function runs later in the pool's drain on the eco thread, where it builds the result or the file system's error tuple and resumes the task. The guard is told the error shape, the token and whether the hold has been taken, which it needs to fail the task cleanly if the body throws part way: it drops any registration the token made, resumes the task with the error for that shape, and only then releases the hold, if one was taken. The kill handle is unit because a pool job is short and is left to finish. The `G` comments cite numbered rules in the library's design notes, and every C++ file under `eco-system/` names the rooting templates from those notes that it uses.
+Notice the order. `unpack` reads the captured heap arguments into `FsArgs` before anything else, and `parkResume` takes the hold and returns the token in one call. The worker's lambda captures only the operation and the plain arguments. The completion function runs later in the pool's drain on the eco thread, where it builds the result or the file system's error tuple and resumes the task. The guard is told the error shape, the token and whether the hold has been taken, which it needs to fail the task cleanly if the body throws part way: it drops any registration the token made, resumes the task with the error for that shape, and only then releases the hold, if one was taken.
+
+The kill handle is unit because a pool job is short and is left to finish. The `G` comments cite numbered rules in the library's design notes, and every C++ file under `eco-system/` names the rooting templates from those notes that it uses.
 
 ## The services behind the drain
 
@@ -106,7 +108,7 @@ Counting by resource gives answers that depend on the resource and the target. A
 
 Underneath the holds sits the runtime's pending-work counter, the number the scheduler reads to decide whether anything is still outstanding. Kernels never change it directly. Only the hold type does, so every change to it has a matching release.
 
-A program can ask to be told when nothing is left to wait for. The notice fires once each time it is armed, and only an explicit `System.rearmEmptyEventLoop` from Elm arms it again, so the program decides each time whether it wants the next one.
+A program can ask to be told when nothing is left to wait for. The notice starts armed and fires once each time it is armed. Only an explicit `System.rearmEmptyEventLoop` from Elm arms it again, and subscribing again does not, so the program decides each time whether it wants the next one.
 
 ## Two targets, one Elm layer
 

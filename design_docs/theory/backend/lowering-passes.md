@@ -82,9 +82,11 @@ Notice that `liveRoots` is never read. Dropping the attached sets changes no emi
 
 Preparation has three effects that do matter, and they are why it keeps its place.
 
-1. It groups allocations. A group asks the nursery once for space for all its members, through a fast path and a slow path that may collect, and then initializes each member in place. A run in which every member has an inline bump allocation is split back into single allocations, because a group costs an out-of-line call plus one initialization call per member while a single allocation bumps the nursery pointer with no call. Capacity hoisting can also cover a straight-line run of single allocations with one check, while a group's out-of-line call ends the hoisted headroom. In practice only mixed runs, such as those containing a string allocation, stay grouped.
+1. It groups allocations, so that one request to the nursery can serve several objects.
 2. It strips the purity attribute from calls. After that MLIR treats every call as having unknown effects, which ends any merging or motion of calls.
 3. It is the fence. The rule that every consumer of purity runs before preparation is written in the pipeline source, and every merge, fold or move of eco operations belongs on the near side of it.
+
+A group asks the nursery once for space for all its members, through a fast path and a slow path that may collect, and then initializes each member in place. A run in which every member has an inline bump allocation is split back into single allocations, because a group costs an out-of-line call plus one initialization call per member while a single allocation bumps the nursery pointer with no call. Capacity hoisting can also cover a straight-line run of single allocations with one check, while a group's out-of-line call ends the hoisted headroom. In practice only mixed runs, such as those containing a string allocation, stay grouped.
 
 The allocation sizes that grouping uses come from a table that must equal the runtime's own size calculation, and compile-time assertions in the heap lowering check that the layout constants agree with the runtime's heap header.
 
@@ -94,7 +96,7 @@ After the byte-sequence dialect of [bytes-fusion.md](../compiler/bytes-fusion.md
 
 1. Allocation groups become their fast, slow and merge blocks.
 2. Every function signature becomes an LLVM function shell and every module-level global is lowered, serially or in shards.
-3. Every module-level artifact a body might need is created in advance: runtime declarations, string globals, closure wrappers and layouts. [closures-and-calls.md](../closures-and-calls.md) describes the wrappers and how closure calls lower. Then the symbol cache is frozen.
+3. Every module-level artifact a body might need is created in advance: runtime declarations, string globals, closure wrappers and layouts. Then the symbol cache is frozen. [closures-and-calls.md](../closures-and-calls.md) describes the wrappers and how closure calls lower.
 4. Function bodies are converted in parallel chunks that only read shared state.
 5. A closing step attaches the collector strategy to each function, adds guards to top-level constants that are computed on first use, builds the global initializer, and strips declarations nothing uses.
 

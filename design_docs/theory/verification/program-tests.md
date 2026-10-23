@@ -40,7 +40,7 @@ There is no assertion library for values. Every expectation is text, so it must 
 
 Directives are comments at the start of a line. They fall into three groups by what they constrain.
 
-1. Output directives say which lines must appear and which must not, in any order unless a same-line or next-line variant ties one match to the one before it. They borrow LLVM's FileCheck syntax: plain, unordered, negative, label, same-line and next-line variants, where the unordered and label variants mean only what the plain one means, with regular expressions in double braces inside a pattern. One variant matches the program's generated MLIR text instead of its run output, for a test whose point is the code the compiler emits.
+1. Output directives say which lines must appear and which must not. They borrow LLVM's FileCheck syntax, with plain, negative, unordered, label, same-line and next-line variants. The unordered and label variants mean only what the plain one means. Matches may come in any order unless a same-line or next-line variant ties one to the match before it. A pattern may hold regular expressions in double braces. One variant matches the program's generated MLIR text instead of its run output, for a test whose point is the code the compiler emits.
 2. A flags directive passes JSON to the program as its start-up flags.
 3. Process directives describe the program as an operating-system process: the exit status it must return (`-- EXIT:`), text to feed on its standard input (`-- STDIN:`), and markers that restrict a test to Linux or keep it off the JavaScript or AOT path. A restricting marker must state its reason.
 
@@ -65,7 +65,7 @@ Three directories sit beside the corpus without being part of it. Two hold C++ u
 
 The JIT runner works in two phases, and the other runners follow the same outline.
 
-In the first phase it compiles, in parallel, every Elm file whose MLIR is older than its source, using the JavaScript build of the compiler under Node; very wide programs get a larger Node stack. Compiling everything first keeps the slow step parallel and lets a run skip files that have not changed.
+In the first phase it compiles, in parallel, every Elm file whose MLIR is older than its source, using the JavaScript build of the compiler under Node; very wide programs get a larger Node stack, so that the compiler's recursion over them does not overflow. Compiling everything first keeps the slow step parallel and lets a run skip files that have not changed.
 
 In the second phase it runs each program on the MLIR JIT inside a freshly spawned child process, under a watchdog that kills a hung test, with a free network port reserved for it. The child writes its result to a mapped file that the parent reads. A fresh process per test keeps crashes, hangs and collector state from leaking between tests or into the harness, and it means the heap configuration under test is the production one.
 
@@ -107,7 +107,7 @@ The runners share the corpus and differ in what a pass proves. The table orders 
 
 ### Stress
 
-The stress runner is a separate binary because soak-length iteration counts would slow the everyday gate. Its programs read their size, loop count, seed and time limits as start-up flags, not as constants in the source, so a soak can be scaled without editing a program. The test and stress binaries accept the same vocabulary of command-line options. Every stress program reads the same flags record, because they all need the same handful of parameters, so no general decoder for arbitrary flags is needed.
+The stress runner is a separate binary because soak-length iteration counts would slow the everyday gate. Its programs read their size, loop count, seed and time limits as start-up flags, not as constants in the source, so a soak can be scaled without editing a program. Every stress program reads the same flags record, because they all need the same handful of parameters, so no general decoder for arbitrary flags is needed.
 
 The shared harness module (`StressHarness.elm`) runs one iteration per update cycle. A wall-clock deadline can then end a soak between iterations, and reaching it counts as a pass. A stress program is usually a scaled-up version of a functional test: round trips of bytes, JSON, dictionaries and lists across many collections, contention on the mutable variables, or file, socket, stream and HTTP load on the system library. Continuous integration runs the stress target on Linux, so it is a regression tier and not an optional extra.
 
