@@ -22,6 +22,15 @@
 > `solver-roots-super-constraint-export.md` +
 > `number-quiescence-symmetric-join-experiment.md`.
 
+> **Status (Oct 2026): parts of this report are out of date.** Line counts and
+> the "stable since Jun 12 / byte-stable" claims are a Jul 2026 snapshot;
+> `Specialize.elm` has kept changing (5,697 lines now). `SpecKey` is now
+> `SpecKey Global MonoType` (no `Maybe LambdaId` axis); lambda sets are carried
+> on the arrows of `MonoType` itself and the spec key tells arrows apart by
+> them. Since commit `9d4c39bc`, both MonoType keys treat `MVar _ CNumber` as
+> `MInt` (see the `Compiler.AST.Monomorphized` module doc), so Axiom 2 below is
+> corrected accordingly.
+
 ---
 
 ## 1. Executive summary
@@ -81,7 +90,7 @@ mutual recursion, higher-order functions, partial application, kernels).
 | Roc concept | Fate in Eco |
 |---|---|
 | Demand-driven worklist, seeded from entry points | **Survived intact** — the spine (`processWorklistPure`, `enqueueSpec`) |
-| `(Symbol, ProcLayout)` specialization keys | **Survived, improved** — `SpecKey(Global, MonoType, Maybe LambdaId)` interned to dense `SpecId` ints; the graph is SpecId-indexed and closed |
+| `(Symbol, ProcLayout)` specialization keys | **Survived, improved** — `SpecKey Global MonoType` interned to dense `SpecId` ints; the graph is SpecId-indexed and closed |
 | Specialization stack / suspend-on-recursion | **Simplified** — an `inProgress` BitSet; a recursive re-request is dropped (its SpecId already exists, so references stay valid) |
 | Lambda sets (closure unions, per-lambda specialization) | **Dead** — `Maybe LambdaId` threaded but always `Nothing`; `ClosureKind` has one constructor whose doc describes a deleted sibling; closure dispatch went the GlobalOpt ABI-cloning route with `CallGenericApply` fallback |
 | Closure conversion / lambda lifting into top-level procs | **Not adopted** — closures stay inline (`MonoClosure` inside parent nodes); lifting/staging is GlobalOpt's job |
@@ -122,10 +131,9 @@ Termination: demands are interned in the Registry keyed by
 **Axiom 2 — Specialization identity is type identity.** Two uses share code
 iff their demanded MonoTypes are equal *up to CEcoValue-erasure*. This is
 implemented in the comparable key: every `MVar _ CEcoValue` normalizes to one
-sentinel (so fresh phantom vars don't split specializations), while
-`MVar _ CNumber` keeps its real id (so a leaked unresolved number can never
-merge an Int and a Float specialization — a deliberately defensive asymmetry,
-Monomorphized.elm:903–908).
+sentinel (so fresh phantom vars don't split specializations), and
+`MVar _ CNumber` is keyed as `MInt` (since `9d4c39bc`; it previously kept its
+real id), matching the default it will be discharged to.
 
 **Axiom 3 — Pure type specialization.** The pass decides *what code exists at
 which types* and nothing else. Not layout (codegen owns unboxing bitmaps), not
@@ -390,7 +398,7 @@ identity fossil pending that cleanup.
 | `ResolveAccessorValues.elm` (674) | (Is itself a patch.) Internally principled: abstract-interpretation lattice (`VI_Unknown/VI_Accessor/VI_Record`) + context-rooted typed closure fallback | Runs per-node inside the worklist loop; "leave as-is" escape contradicting its header guarantee; stale MONO_027 citation; "TIER 2+3" renumbering scar |
 | `MonoTraverse.elm` (492) | Generic bottom-up rewrite + fold over the 18-variant IR | Serves only analyses; none of the scope-sensitive passes can use it |
 | `Prune.elm` (177) | MONO_022 reachability over cached callEdges; **nulls, never compacts** (SpecId stability) | Port/flags roots bolted on per feature (PORT_003), each needing a comment explaining why it would otherwise be swept |
-| `Registry.elm` (99) | Minimal SpecKey interner | Dead `Maybe LambdaId` axis |
+| `Registry.elm` (99) | Minimal SpecKey interner | Dead `Maybe LambdaId` axis *(since removed: `SpecKey` is `Global` + `MonoType`)* |
 | `Monomorphized.elm` (1,329) | Closed SpecId-indexed graph; two-constraint contract; shapes-not-layouts; staging as nested `MFunction` | `MonoAccessorValue` phase-leak; placeholder `CallInfo`/`closureKind` owned by GlobalOpt; identity `forceCNumberToInt`; three single-constructor enums whose docs describe deleted siblings |
 
 ---

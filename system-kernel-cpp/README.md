@@ -8,10 +8,10 @@ streams, the terminal, HTTP servers, sockets and WebSockets, from Elm.
 an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/latest/);
 `Http.Stream` adds streaming request and response bodies on top of it.
 
-> **Status:** every module is implemented for Eco's native backend and tested on Linux. The macOS
-> code paths are written but not yet tested. Windows is not supported yet: the package is meant to
-> build there (untested), with most IO functions reporting `ENOTSUP` or stopping with a "not
-> supported on Windows yet" message. On the JS target (Node), every module works and passes the
+> **Status:** every module is implemented for Eco's native backend and tested on Linux and macOS
+> (CI builds the package and runs its E2E suite on both). Windows is not supported yet: CI builds
+> the package there, but its tests do not run on Windows, and most IO functions report `ENOTSUP`
+> or stop with a "not supported on Windows yet" message. On the JS target (Node), every module works and passes the
 > same tests as the native backend, with small documented differences (for example, error
 > descriptions use Node's wording). See `plans/eco-system-library.md` in the Eco repository for the design and the
 > remaining follow-ups.

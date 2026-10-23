@@ -1,7 +1,7 @@
 // RUN: not %ecoc %s -emit=mlir 2>&1 | %FileCheck %s
 //
 // Phase 0 negative test: eco.to_heap rejects !eco.closure_env operands.
-// Closure realisation must go through eco.make.closure (Q-A, CGEN_029).
+// Closure realisation must go through eco.make.closure (Q-A, CGEN_062).
 
 module {
   func.func @bad_to_heap_closure_env(%a: i64, %b: !eco.value) -> !eco.value {

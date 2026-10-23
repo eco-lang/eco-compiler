@@ -679,8 +679,8 @@ void Scheduler::runEventLoop() {
             break;
         }
         // About to block: the worker has real work in flight only if the run
-        // queue is non-empty or pendingAsync_ exceeds the embedder's lifetime
-        // baseline (a pending timer/HTTP/task). Otherwise we are idle, waiting
+        // queue is non-empty or pendingAsync_ - hostHolds_ > 0 (a pending
+        // timer/HTTP/task; Host holds are not work). Otherwise we are idle, waiting
         // for external input — release the host loop. (runQueue_ is empty here,
         // but check both for clarity.)
         fireActivity(!runQueue_.empty() ||

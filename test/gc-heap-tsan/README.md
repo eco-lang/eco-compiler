@@ -54,11 +54,11 @@ gang and tenure collectors sleep a random [0, n) µs).
 | pool, jitter | `gc-heap-tsan pool 50` | CR-006 | as above |
 | pool, long jitter | `gc-heap-tsan pool 20000 3 2` | CR-006, CR-007 | as above. **Since CR-007's fix (2026-10-01)** no reuse waits inside a pause: per scenario 7-8 reuse waits, all outside a pause (the mutator's `Allowed` path), and a `nowait:` line (about 2,000 skipped extents, 9-11 MiB of fresh bumps instead, 0 cap fallbacks; old-gen hiwater 12.2 / 14.4 MiB vs 12.3 / 14.0 MiB before). Before the fix: 21-25 reuse waits per scenario, 9 of them in a parallel minor on a promotion worker holding `promo_mu_` (`ladderFrom2W` → `startVirginBlockShared` → `acquireOldGenBlock` → `PageWork::onReuse` → `GCHelperPool::wait`: CR-007's stall) |
 | ylos | `gc-heap-tsan ylos` | CR-020 | `heap_driver ylos PASS`, 0 TSan warnings |
-| ylos-sweep | `gc-heap-tsan ylos-sweep` | CR-019 | **clean since the fix (2026-10-01, relaxed atomic header word)**, and part of the default run (about 3 s): `ylos_sweep … PASS`, 0 TSan warnings; before it: TSan reported CR-019 in every run (below) |
+| ylos-sweep | `gc-heap-tsan ylos-sweep` | CR-019 | **clean since the fix (2026-10-01, relaxed atomic header word)**, and part of the default run (about 3 s): `ylos_sweep … PASS`, 0 TSan warnings; before it: TSan reported CR-019 in every run (below). **Route retired since HEAP_080 (2026-10-09)**: a YLOS now lives in an LOS block that no sweep walks, so the arm still runs and passes but no longer reaches the race |
 | det-cr014-live | `gc-heap-tsan det-cr014-live` | CR-014 | **clean since the fix (2026-09-30)**: REACHED (the tail path proven by `sweep_tail_in_promotion`), 0 warnings; before it: `flushCursorW` (atomic `live_bytes` add) vs `computeFragmentationStats` ← `onSweepComplete` ← the tail completion in `lazySweep`, every run |
 | det-cr001 | `gc-heap-tsan det-cr001 {rf,wf} {inloop,tail}` | CR-001 | **clean since the fix (2026-09-30, `atomic_ref`)**: REACHED, 0 warnings; before it: `finalizeBitmapCellW`'s `gc_phase_` read vs `lazySweep`'s completion write (in-loop or tail), every run |
 | det-cr002 | `gc-heap-tsan det-cr002` | CR-002 | **clean since the fix (2026-09-30: finalized under `promo_mu_`)**: REACHED, 0 warnings; before it: `bitscan::loadWord` ← `nextSetBit` ← `lazySweep` vs `setMarkBitAtomic` ← `finalizePoppedCellW`, every run |
-| det-cr019 | `gc-heap-tsan det-cr019 {t1first,t2first}` | CR-019 | **clean since the fix (2026-10-01: `loadHeaderRelaxed` / `storeHeaderRelaxed`)**: REACHED, 0 warnings, both orders; before it: `getObjectSizeFromHeader` ← `lazySweep` vs `promoteYoungLarge`, every run |
+| det-cr019 | `gc-heap-tsan det-cr019 {t1first,t2first}` | CR-019 | **route retired (2026-10-09, HEAP_080; `fork_arms.txt` status `retired`)**: both orders exit 0 printing `route RETIRED: Y lives in an LOS block, never swept`. Before that: clean since the fix (2026-10-01: `loadHeaderRelaxed` / `storeHeaderRelaxed`), REACHED, 0 warnings; before the fix: `getObjectSizeFromHeader` ← `lazySweep` vs `promoteYoungLarge`, every run |
 | cr012 | `gc-heap-tsan cr012 {a,e}` | CR-012 | CR-012 is **Won't-fix** (2026-10-01, option F: a second live mutator aborts in `initThread` unless `allowMultipleMutators(true)`, which these arms set). (a) **clean** since `old_gen_in_use_bytes_` became a relaxed atomic (REACHED, 0 warnings; the shared value stays won't-fix); (e) `wontfix`: REACHED, `materializeVirginBlock` vs `validatePageWork` (two reports: `unassigned_blocks_`, `BlockTable`), accepted under the opt-in |
 | promo, tail | `gc-heap-tsan promo <seed> 40 4 0 0 8 1` | CR-014 | prints tail-eligible and tail-hit counts (seeds 1-3: 36 tail hits each on 2026-09-30); 0 TSan warnings since CR-014's fix (before: `computeFragmentationStats` vs `flushCursorW`) |
 | promo, exact | `gc-heap-tsan promo <seed> 40 {4,6,8} 0 1` | CR-016, CR-002, CR-028 | clean since register-fixes Phases 1-2 (2026-09-30): 0 "Invalid tag" aborts (CR-016's fix), and 0 TSan warnings at seeds 1-2 × {4, 8} workers (CR-002, CR-001, CR-028 fixed). Before: `allocateFromEmptyRegularBlocks` flipped a block a worker still allocated in (5 of 7 seed/worker runs; 4 aborted in `Allocator::resolve`) |
@@ -87,7 +87,9 @@ so the workers sweep on demand while other workers age (`h->age++`) or promote
 the sweep at each minor's start and those the sweep walked in that minor (the
 race's precondition). Since CR-019's fix (2026-10-01) it is clean and the default
 run ends with it (defaults: seed 1, 12 rounds, 4 workers, age 2, 1024-byte
-slices). Before the fix it failed under TSan: every run with 4096-
+slices). Since HEAP_080 (2026-10-09) a YLOS lives in an LOS block that no sweep
+walks, so CR-019's route is retired: the arm still runs but no longer reaches
+the race. Before CR-019's fix it failed under TSan: every run with 4096-
 or 1024-byte sweep slices (the default is 1024) reports the pair
 `getObjectSizeFromHeader` ← `lazySweep` (the gap sweep's
 `walkStep(block, getObjectSize(live_obj))`, and the validate-only V11 walk) ←
@@ -111,11 +113,12 @@ exactly `alloc_buffer_size` bytes now and then. Odd rounds have a short sweep
 backlog under a large promotion volume. `sweep_bytes` is the sweep slice
 (default 144; 4096 and up let the workers complete the sweep inside a minor);
 `PROMO_DEBUG=1` prints the sweep's progress. It runs only when the first
-argument is `promo`, and it is **expected to fail** under TSan until the
-register's CR-002 (every slice size), CR-001 (large slices) and CR-016
-(`exact` = 1: heap corruption and an abort) are fixed; the validate-only V11
-walk in `lazySweep` also races, and a debug assert on the promotion ladder's bag
-rung (`allocateFromBagPage`) aborts some runs (see
+argument is `promo`. It is **clean** under TSan since register-fixes Phases
+1-2 (2026-09-30) fixed CR-002 (every slice size), CR-001 (large slices) and
+CR-016 (`exact` = 1: heap corruption and an abort); see the `promo` rows of
+the table above. Before those fixes it failed: the validate-only V11 walk in
+`lazySweep` also raced, and a debug assert on the promotion ladder's bag rung
+(`allocateFromBagPage`) aborted some runs (see
 `test/tla/M4-promotion-bitmap/AUDIT.md`, 2026-09-29 trace wave).
 
 Notes: `StackUnwind` is stubbed (no frames: every value is a RootSet root), and

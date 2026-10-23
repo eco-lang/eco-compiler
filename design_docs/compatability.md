@@ -18,12 +18,14 @@ dynamic-output link profile), and [../plans/static-link-eco-binary.md](../plans/
 | Static executable outputs | any Linux, any libc | n/a (no host libc) | modest | **x86-64-v3** |
 | Dynamic `.so`/`.node` outputs | any **glibc** Linux + **glibc Node** | **≥ 2.36** (today) | host's | **x86-64-v3** |
 
-Architecture is **x86-64 only** for all of the above (no ARM64, no 32-bit).
+Architecture is **x86-64** for all of the above Linux artifacts (no 32-bit). The codegen
+also supports Darwin arm64 (Apple Silicon, `mac-build` preset), where `kEcoTargetCPU` is
+pinned to `apple-m1` instead of `x86-64-v3`; this document covers the Linux floors.
 
 ## The CPU floor: x86-64-v3 (applies to everything)
 
 The code generator pins the target CPU to `x86-64-v3` with no host detection
-(`runtime/src/codegen/EcoBackend.h:47`, `kEcoTargetCPU`; matched by the `-march=x86-64-v3`
+(`runtime/src/codegen/EcoBackend.h:59-63`, `kEcoTargetCPU`, on x86-64 hosts; matched by the `-march=x86-64-v3`
 flag in `CMakePresets.json`). x86-64-v3 means SSE4.2 + **AVX2** + BMI1/2 + FMA — Intel
 Haswell (2013) / AMD Excavator-Zen or later. This is baked into the codegen, so it applies
 identically to static executables, dynamic `.so`/`.node`, and `eco`'s own C++.
@@ -33,7 +35,7 @@ instance that does not expose AVX2 to the guest, the binary **SIGILLs** (illegal
 instruction) — there is no runtime fallback. "Runs on any Linux" therefore means "any Linux
 on a v3-capable x86-64 CPU". The pin is deliberate: host-CPU detection
 (`getHostCPUName`/`getHostCPUFeatures`) previously bootstrapped AVX-512 on a build machine
-and SIGILL'd on plain v3 hosts (`EcoBackend.h:40-46`).
+and SIGILL'd on plain v3 hosts (`EcoBackend.h:45-51`).
 
 ## Static outputs (and `eco` itself): portable across distro and libc
 

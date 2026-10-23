@@ -22,7 +22,9 @@ in a single pass AFTER the fixpoint converges, so intermediate iterations
 never contribute to the counters.
 
 `deriveFacts` is the readback for code generation: sig fixpoint + lambda sigs distilled to SpecId/member-keyed
-borrowed-param sets, invoked at MLIR-emission time under `borrow.oracleOpt`.
+borrowed-param sets, invoked at MLIR-emission time under `borrow.oracleOpt`. The
+result is installed as `Context.oracleFacts`, which nothing in the code
+generator reads yet.
 
 `readbackSig` lives here (not in `Sig`) so `Sig` stays free of a `Solve`
 import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).

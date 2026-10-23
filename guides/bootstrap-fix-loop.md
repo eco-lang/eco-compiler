@@ -5,7 +5,7 @@ diagnosing the next failure, fixing it, and retrying.
 
 ## SETUP (run once)
 
-1. Read @guides/bootstrap.md and make sure you understand all 8 stages and
+1. Read @guides/bootstrap.md and make sure you understand all 9 stages and
    the exact commands they use.
 2. Run the bootstrap from where it currently is. If unsure where it is, start
    at the earliest stage whose output is missing or known stale. Capture all

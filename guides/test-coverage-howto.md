@@ -7,8 +7,11 @@ This guide explains how to run the Eco compiler's Elm test suite under
 ## Prerequisites
 
 - Node.js (v18+)
-- `elm` and `elm-test-rs` available on PATH (both are installed in
-  `compiler/node_modules/.bin/`)
+- `elm` and `elm-test-rs` available on PATH. Both are fetched by CMake
+  (`compiler/cmake/toolchain.cmake`) into `build/toolchain/bin/` at configure
+  time, so run `cmake --preset build` first. They are no longer in
+  `compiler/node_modules/.bin/` (the compiler's own Node dependencies are
+  installed with pnpm)
 
 ## First-Time Setup
 
@@ -16,11 +19,13 @@ The elm-coverage tool requires three one-time setup steps before it can run.
 From the `compiler/` directory:
 
 ```bash
-# 1. Install npm dependencies
+# 1. Install npm dependencies (elm-coverage is a standalone npm package, not
+#    part of the compiler's pnpm install; its .npmrc re-enables the binwrap
+#    install script that fetches elm-instrument)
 (cd elm-coverage && npm install)
 
 # 2. Compile the Analyzer Elm app to JS
-env PATH="$(pwd)/node_modules/.bin:$PATH" \
+env PATH="$(pwd)/../build/toolchain/bin:$PATH" \
   elm make elm-coverage/src/Analyzer.elm --output elm-coverage/lib/analyzer.js
 
 # 3. Symlink the elm-instrument binary into bin/
@@ -31,15 +36,15 @@ Step 1 installs runtime dependencies (bluebird, fs-extra, etc.). Step 2
 compiles the Elm report-generation app that `analyze.js` loads via
 `require("./analyzer")`. Step 3 makes the instrumentation binary available
 where `runner.js` expects it (`bin/elm-instrument`); the `npm install`
-binwrap step places it in `unpacked_bin/` but does not create the `bin/`
-entry.
+binwrap step places it in `elm-coverage/unpacked_bin/` but does not create the
+`bin/` entry.
 
 ## Quick Start
 
 From the `compiler/` directory:
 
 ```bash
-env PATH="$(pwd)/node_modules/.bin:$PATH" \
+env PATH="$(pwd)/../build/toolchain/bin:$PATH" \
   node elm-coverage/bin/elm-coverage src/ \
     --tests tests/ \
     --elm-test elm-test-rs \
@@ -88,10 +93,11 @@ Both `elm` and `elm-test-rs` must be on PATH because:
 - `elm` (the real compiler) is invoked by the `fake-elm` shim, which uses
   `which.sync("elm")` to locate it.
 
-The simplest way is to prepend `node_modules/.bin`:
+The simplest way is to prepend the CMake toolchain directory (from
+`compiler/`):
 
 ```bash
-export PATH="$(pwd)/node_modules/.bin:$PATH"
+export PATH="$(pwd)/../build/toolchain/bin:$PATH"
 ```
 
 Or pass it inline with `env` as shown in the Quick Start.
@@ -176,7 +182,7 @@ sources..."** -- The `elm-instrument` binary is missing from `bin/`. Create
 the symlink as shown in First-Time Setup.
 
 **`Error: not found: elm`** -- `elm` is not on PATH. Prepend
-`node_modules/.bin` as shown above.
+`build/toolchain/bin` as shown above.
 
 **`Error: spawn elm-test-rs ENOENT`** -- `elm-test-rs` is not on PATH. Same
 fix.

@@ -5,7 +5,7 @@
  * Elm Kernel Regex Module - Runtime Heap Integration
  *
  * Provides regular expression operations using GC-managed heap values.
- * Note: For full JS compatibility, PCRE2 should be used instead of std::regex.
+ * The exported kernel functions (RegexExports.cpp) are implemented with SRELL.
  */
 
 #include "allocator/Heap.hpp"

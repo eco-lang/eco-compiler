@@ -3,7 +3,10 @@
 On Debian based systems you can install the .deb release.
 This will install eco to /usr/local/bin:
 
-    sudo dpkg --install eco_0.1.0-RC2_amd64.deb
+    sudo dpkg --install eco_0.2.0_amd64.deb
+
+Nightly builds carry a build number in their asset names (for example
+`eco_0.2.0.b<N>.g<hash>_amd64.deb`); use the name of the file you downloaded.
 
 On other systems or if you want a local install, you can unpack the .zip or .tar.gz relase.
 Unpack it into `/usr/local/` or some other place. For the purposes of this guide, we will assume

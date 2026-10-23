@@ -1,4 +1,4 @@
-//===- EcoNativeDriver.h - Library API for MLIR-to-ELF lowering ----------===//
+//===- EcoNativeDriver.h - Library API for MLIR-to-native lowering -------===//
 //
 // Extracted from eco-boot.cpp so the same pipeline can be used by:
 //   1. eco-boot-native binary (CLI tool)
@@ -76,25 +76,28 @@ struct EcoNativeOptions {
 // across calls; safe to invoke from main() of a host that already did this.
 void initializeLLVMNativeTarget();
 
-// MLIR text file → linked ELF executable. Returns 0 on success, nonzero on
-// failure (with diagnostics on stderr). Steps:
+// MLIR text file → linked native executable (ELF / Mach-O / PE-COFF).
+// Returns 0 on success, nonzero on failure (with diagnostics on stderr).
+// Steps:
 //   1. Parse MLIR with the Eco dialect registry.
 //   2. Run the Eco→LLVM pass pipeline.
 //   3. Translate to LLVM IR (with main→eco_main rename).
 //   4. Create TargetMachine, run RS4GC + opt + object emission.
-//   5. Link via clang++ driver with the runtime/kernel static libraries.
+//   5. Link with the runtime/kernel static libraries (linkExecutable: the
+//      system linker directly on Linux, the clang driver on macOS,
+//      clang-cl + lld-link on Windows).
 int compileMlirFileToExecutable(const std::string &mlirPath,
                                 const std::string &outputPath,
                                 const EcoNativeOptions &opts);
 
-// MLIR text in memory → linked ELF executable. Phase 2 entry point — used by
-// the unified `eco` binary's in-memory MLIR transport. Same pipeline as the
-// file variant, just sourced from a buffer.
+// MLIR in memory → linked native executable (behind
+// eco_native_lower_and_link_bytes). Same pipeline as the file variant, just
+// sourced from a buffer; `eco make` uses the file variant instead.
 int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
                                   const std::string &outputPath,
                                   const EcoNativeOptions &opts);
 
-// Link an already-emitted object file into an ELF executable. Exposed so the
+// Link an already-emitted object file into a native executable. Exposed so the
 // eco-boot-native `--emit=obj` + re-link fast path can reuse the link step.
 // sharedLib: link a shared library (-shared, embed entry, no main())
 // instead of a PIE executable. Used for .so/.node output targets.

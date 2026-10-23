@@ -4,7 +4,8 @@
 - It records the design issues raised in a discussion between the user and Claude, and the
   evidence gathered for them.
 - The plan that moves the MLIR whole-program passes into the front end,
-  `plans/partitioned-mlir-handoff.md`, is separate and unchanged.
+  `plans/partitioned-mlir-handoff.md` (link removed: that file no longer exists in the repo), is
+  separate and unchanged.
 - This exploration names a few things that plan should keep open (`06-granularity-and-scheduling.md` §6).
 
 ## The question

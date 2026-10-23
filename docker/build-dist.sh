@@ -5,6 +5,8 @@
 # for example 0.2.0~b17.g1a2b3c4d5e6f. The ~ makes Debian sort these builds before the plain
 # release version, so a later 0.2.0 release upgrades over them. N comes from BUILD_NUMBER when
 # set (for CI), otherwise from the local counter in .build-number, which this script increments.
+# The ~ stays in the file names in ./dist; published nightly assets differ, because
+# .github/workflows/publish-nightly.yml renames them (~ -> - in the archives, ~ -> . in the .deb).
 #
 # Run from anywhere; extra arguments are passed on to docker build.
 set -euo pipefail

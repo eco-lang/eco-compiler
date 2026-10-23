@@ -17,7 +17,23 @@ This reference was verified against the project's `CMakeLists.txt` files.
 | `run-aot-e2e` | Build + run the AOT E2E suite (compile Elm → MLIR → native ELF → run) |
 | `run-mlir-equivalence` | Build mlir-equivalence + run Stage 2 vs Stage 6 MLIR diff |
 | `mlir-timing-report` | Emit an MLIR compile-timing report |
-| `elm-tests` | Run the Elm-side compiler frontend tests via `elm-test-rs` |
+| `elm-tests` | Run the Elm-side compiler tests (front, middle and MLIR-generation stages) via `elm-test-rs` |
+| `run-js-e2e` | Run the eco-system E2E suite on the JS target (Stage 1 `guida.js` + node; not on Windows) |
+| `eco-system-elm-tests` | Run the pure-Elm `eco/system` tests (`system-kernel-cpp/tests`) via `elm-test-rs` |
+| `eco-system-docs` | Build `system-kernel-cpp/docs.json` with stock elm (in ALL) |
+| `eco-system-examples` | Compile (not run) the example programs and benchmarks against `eco/system` |
+| `eco-glibc-runtime-tree` | Stage the glibc output-runtime archive tree for the bundle (only with `ECO_GLIBC_OUTPUT_RUNTIME`) |
+
+## Verification targets
+
+| Target | Purpose |
+|---|---|
+| `kernel-license-check` | Check the LSS_022 kernel license manifest (in ALL) |
+| `tla-canary` | TLA+ model canary, GC_MODEL_001 (in ALL; warn mode unless `ECO_TLA_CANARY_STRICT=ON`) |
+| `tla-check` / `tla-check-deep` | TLA+ models of the threaded GC, quick / deep tier (`test/tla/models.txt`; needs Java + tla2tools.jar) |
+| `tla-trace` | TLA+ trace validation (`test/tla/traces.txt`) |
+| `genmc-check` | Weak-memory drivers under GenMC (`test/genmc/`; needs the GenMC image) |
+| `register-guards` / `register-guards-stress` | Code guards for the GC concurrency register |
 
 ## Bootstrap chain
 
@@ -129,6 +145,8 @@ eco-quick` while iterating on code under `runtime/` or `*-kernel-cpp/`.
 | `EcoKernel_Crash` | `Eco.Crash` (Stage 2+ replacement for `Debug.todo`) |
 | `EcoKernel_Env` | `Eco.Env` environment variables |
 | `EcoKernel_File` | `Eco.File` IO |
+| `EcoKernel_GC` | Explicit collections (HEAP_076) |
+| `EcoKernel_Hash` | Allocation-free native string hashing |
 | `EcoKernel_Http` | `Eco.Http` IO |
 | `EcoKernel_MVar` | `Eco.MVar` synchronization |
 | `EcoKernel_NativeDriver` | In-process MLIR → ELF lowering intrinsic for the unified `eco` |
@@ -136,6 +154,29 @@ eco-quick` while iterating on code under `runtime/` or `*-kernel-cpp/`.
 | `EcoKernel_Runtime` | `Eco.Runtime` glue |
 
 (`EcoKernel` is an `INTERFACE` umbrella aggregating the above.)
+
+## Eco system libraries
+
+The kernels of the public `eco/system` package (`system-kernel-cpp/`), one
+static library per module, named `EcoSystem_<Module>`. The module list is
+`ECO_SYSTEM_MODS` in `runtime/src/codegen/CMakeLists.txt`.
+
+| Target | Purpose |
+|---|---|
+| `EcoSystem_Core` | Services shared by every module |
+| `EcoSystem_System` | `System` programs and their effect manager |
+| `EcoSystem_Stream` | Streams |
+| `EcoSystem_FileSystem` | Files and directories |
+| `EcoSystem_ChildProcess` | Child processes |
+| `EcoSystem_Terminal` | Terminal |
+| `EcoSystem_HttpServer` | HTTP server |
+| `EcoSystem_HttpStream` | Streaming HTTP bodies |
+| `EcoSystem_Socket` | Sockets |
+| `EcoSystem_Tls` | TLS |
+| `EcoSystem_WebSocket` | WebSockets |
+| `EcoSystem_Dom` | `Http.Dom` kernels (VirtualDom side door) |
+
+(`EcoSystem` is an `INTERFACE` umbrella aggregating the above.)
 
 ## Tablegen / generated headers
 

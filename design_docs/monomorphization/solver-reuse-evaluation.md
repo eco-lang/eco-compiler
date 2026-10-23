@@ -10,6 +10,17 @@ the eleven `plans/*monodirect*.md` documents; and a code-level post-mortem of
 the deleted MonoDirect experiment (recovered from the public mirror at
 `3a6fac7^`). Builds on `design-recovery.md` in this directory.*
 
+> **Status (Oct 2026): the proposal was built, but not exactly as written
+> here.** The solver engine lives in `compiler/src/Compiler/MonoSolver/`
+> (`Monomorphize`, `Engine`, `Store`, `Zonk`, ...). Two things differ from this
+> evaluation: (1) `Store.zonkToMono` does **not** default `number`; it leaves
+> `MVar _ CNumber` residuals, and the shared Prune close
+> (`Prune.pruneUnreachableSpecs`, MONO_028) discharges them to `MInt`, for both
+> engines; (2) `TypeSubst.elm` was **not** deleted: the subst engine
+> (`Compiler/Monomorphize/`) and the solver engine both remain and share
+> `EntryPrep`. Read the "Deleted" rows of §4 and the defaulting-at-zonk claims
+> as the plan of the time, not the current state.
+
 ---
 
 ## 1. Verdict

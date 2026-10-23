@@ -101,13 +101,12 @@ enum class BackendKind {
     /// Run RS4GC + optional FP; caller handles text-IR printing.
     DumpLLVMText,
 
-    /// Run RS4GC + optional FP; caller currently still owns opt + emit.
-    /// Phase 3.3 expands this to drive opt + object emission + exe link.
+    /// RS4GC + optional FP + opt + (optionally partitioned) object emission,
+    /// all inside `runEcoBackend`. Linking stays with the caller.
     EmitObjectFile,
 
     /// JIT consumer: RS4GC + FP + `makeOptimizingTransformer` against the
-    /// module's TargetMachine. Wired in Phase 4 — `runEcoBackend` returns
-    /// `llvm_unreachable` for this kind before Phase 4 lands.
+    /// module's TargetMachine, run by `runEcoBackend` (skipped on Windows).
     JITInvokePacked,
 };
 
@@ -128,9 +127,6 @@ enum class ParallelOpt {
     Cgu,
 };
 
-/// Backend job descriptor. Currently a thin façade over
-/// `runRS4GCAndMaybeFramePointers`; gains opt/emit/link fields in Phase 3.3
-/// and JIT-specific fields in Phase 4.
 /// (X) join (plan 02 Q7): what one partition's module stamps and declares.
 struct GcLeafPartitionReport {
     std::vector<std::string> stampedDefs, allDefs, leafDecls;
@@ -159,11 +155,15 @@ struct PartitionWorkerInfo {
     GcLeafPartitionReport gcReport;
 };
 
+/// Backend job descriptor consumed by `runEcoBackend`: RS4GC/FP options plus
+/// the opt, object-emission, partitioning and JIT settings for each
+/// `BackendKind`.
 struct EcoBackendJob {
     BackendKind kind = BackendKind::DumpLLVMText;
 
-    /// Target machine. Required for `EmitObjectFile` and `JITInvokePacked`
-    /// once those phases land; may be null for `DumpLLVMText`.
+    /// Target machine. Required for `EmitObjectFile`; typically null for
+    /// `JITInvokePacked` (EcoJIT supplies its own) and may be null for
+    /// `DumpLLVMText`.
     llvm::TargetMachine *tm = nullptr;
 
     /// Requested LLVM codegen optimisation level.

@@ -63,7 +63,9 @@ def Eco_Dialect : Dialect {
 
     Key design decisions:
     - `eco.value` is an opaque pointer to heap-allocated Elm values
-    - Primitives (Int, Float, Char, Bool) can be unboxed as i64, f64, i32, i1
+    - Int, Float and Char can be unboxed as i64, f64, i16 (in SSA and in
+      heap/closure fields); Bool is i1 in SSA only and is always
+      `!eco.value` (embedded True/False constant) in heap/closure storage
     - No write barriers needed due to Elm's immutability
     - GC integration via safepoints and stack maps
   }];
@@ -88,7 +90,8 @@ def Eco_ValueType : Eco_Type<"Value", "value"> {
 
     The underlying heap object has a 64-bit header containing:
     - tag: identifies the object type (Int, String, Cons, Custom, etc.)
-    - GC metadata: color, age, refcount
+    - GC metadata: color, age, pin, builder (a refcount field exists but is
+      unused; collection is tracing)
     - size: type-specific size information
   }];
 
@@ -1763,8 +1766,9 @@ def Eco_BoxOp : Eco_Op<"box", [Pure,
 ]> {
   let summary = "Box primitive value to eco.value";
   let description = [{
-    Box an unboxed primitive value (i64, f64, i32, i1) into a heap-allocated
-    eco.value. This allocates an ElmInt, ElmFloat, ElmChar, or Bool object.
+    Box an unboxed primitive value (i64, f64, i16, i1) into an eco.value.
+    This allocates an ElmInt, ElmFloat, or ElmChar object; Bool (i1) maps
+    to the embedded True/False constant.
 
     The optional live_roots operands are GC roots that must be tracked
     across this allocation (populated by EcoGCPrepare). For Bool boxing
@@ -3210,7 +3214,7 @@ def Eco_ToHeapOp : Eco_Op<"to_heap", [
     the corresponding `eco.construct.*` heap op produces.
 
     Accepts only data-aggregate inputs (tuple2/3, record, custom, cons).
-    `!eco.closure_env` is rejected by the verifier (CGEN_029) — closure
+    `!eco.closure_env` is rejected by the verifier (CGEN_062) — closure
     realisation goes through `eco.make.closure`.
 
     Heap-layout attributes (custom `tag`, cons `head_unboxed`/`head_kind`)
@@ -3290,7 +3294,7 @@ def Eco_MakeClosureOp : Eco_Op<"make.closure", [
     This is the **only** `eco.make.*` op that allocates; it is the only
     one that returns `!eco.value`; it is the only one that is a
     `GCRootCarrier` rather than `Pure`. Documented exception to the
-    `make.*` family convention (Q-A-b, see CGEN_028).
+    `make.*` family convention (Q-A-b, see CGEN_061).
 
     Example:
     ```mlir

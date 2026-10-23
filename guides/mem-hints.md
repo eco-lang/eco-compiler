@@ -1,5 +1,11 @@
 # Memory Optimization Hints — Stage 5 Bootstrap
 
+> **Historical baselines.** The figures below (March–April 2026) were measured on
+> an earlier compiler: before the solver + LSS mono engine became the default,
+> before Stage 5 was pinned to `ECO_MONO_ENGINE=subst`, and before the V8 heap
+> was raised to 16 GiB. Treat them as a record of what each fix changed at the
+> time, not as current numbers; re-measure before comparing against them.
+
 ## Baseline (2026-03-20)
 - Cold run peak: 9038MB RSS / 8579MB heap
 - Warm run peak: 10051MB RSS / 9587MB heap (inline+simplify)

@@ -9,6 +9,11 @@
 // 5. Computes and attaches live roots on call-like safepoints (eco.call,
 //    eco.papExtend, eco.papCreate) via the GCRootCarrier interface.
 //
+// These root operands are an MLIR-level analysis only: lowering discards them
+// (emitAllocWithSafepoint and emitSafepointMarker ignore their liveRoots).
+// The runtime GC roots, statepoints and stackmap entries are computed by
+// LLVM's RS4GC (CGEN_077(b)).
+//
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/Threading.h"

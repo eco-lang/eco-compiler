@@ -22,15 +22,20 @@
 extern "C" {
 #endif
 
-// MLIR file path -> ELF executable path. Returns 0 on success, nonzero on
-// failure (errors printed to stderr via the LLVM diagnostics machinery).
+// MLIR file path (text or bytecode) -> native executable path. This is the
+// hand-off `eco make` uses: Terminal/Make.elm `handleElfOutput` writes a temp
+// MLIR file (bytecode unless text MLIR is requested) and calls
+// `Eco.NativeDriver.lowerAndLink`, which forwards here. Returns 0 on success,
+// nonzero on failure (errors printed to stderr via the LLVM diagnostics
+// machinery).
 // rootModule (nullable/empty allowed) is baked into the program as the
 // __eco_root_module symbol so the N-API addon names the Elm.<RootModule>
 // export after the program's actual root module instead of "Main".
 int eco_native_lower_and_link(const char *mlirPath, const char *outputPath,
                               const char *rootModule);
 
-// In-memory MLIR text -> ELF executable. Phase 2 entry point.
+// In-memory MLIR -> native executable (`Eco.NativeDriver.lowerAndLinkBytes`).
+// Not on the `eco make` path, which goes through the file variant above.
 int eco_native_lower_and_link_bytes(const char *mlirBytes, size_t mlirLen,
                                     const char *outputPath);
 

@@ -7,9 +7,10 @@
 // through the existing POD queues (channel results, socket events), whose
 // drains run from the eco/system async source; the Scheduler is unchanged.
 //
-// Backends: epoll + eventfd (Linux); kqueue + EVFILT_USER/EV_CLEAR (macOS and
-// the BSDs, untested like the rest of eco/system on macOS); Windows: a stub
-// whose submit() drops work (Windows kernels fail ENOTSUP before reaching it).
+// Backends: epoll + eventfd (Linux); kqueue + EVFILT_USER/EV_CLEAR (macOS,
+// built and E2E-tested in CI, and the BSDs, untested); Windows: a stub whose
+// submit() drops work (Windows kernels fail ENOTSUP before reaching it; CI
+// builds it but runs no eco/system tests on Windows).
 //
 // Rules (§3.3.1, each a review fix; §9 N1, N14):
 //   1. Interest is level-triggered and demand-driven, and an fd with no

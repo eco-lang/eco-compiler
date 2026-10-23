@@ -10,7 +10,7 @@ From inside the Alpine Stage B build environment (see
 `docker/static-build.Dockerfile`):
 
 ```bash
-cmake --preset ninja-clang-lld-linux-musl
+cmake --preset release
 cmake --build build-static --target eco
 cmake --build build-static --target package
 ls build-static/eco-0.1.0-x86_64-linux-musl.{tar.gz,zip}
@@ -46,7 +46,8 @@ eco-0.1.0-x86_64-linux-musl/
 │  │  ├─ libEcoRuntimeStatic.a
 │  │  ├─ libEcoNativeDriverStatic.a
 │  │  ├─ libElmKernel_*.a                      (22 archives)
-│  │  └─ libEcoKernel_*.a                      ( 9 archives)
+│  │  ├─ libEcoKernel_*.a                      (11 archives)
+│  │  └─ libEcoSystem_*.a                      (12 archives, eco/system kernels)
 │  └─ glibc/                                   (second link-input set, glibc ABI, all PIC — Stage D)
 │     ├─ crt/
 │     │  ├─ crti.o, crtn.o                     (glibc, harvested from the Debian builder)
@@ -59,9 +60,11 @@ eco-0.1.0-x86_64-linux-musl/
 │        ├─ libEcoNodeGlue.a                   (N-API glue: napi_register_module_v1)
 │        ├─ libEcoRuntimeStatic.a
 │        ├─ libElmKernel_*.a                   (22)
-│        └─ libEcoKernel_*.a                   ( 9)
+│        ├─ libEcoKernel_*.a                   (11)
+│        └─ libEcoSystem_*.a                   (12)
 └─ share/eco/
    ├─ kernel/eco-kernel-cpp/                   (the eco/kernel Elm package sources)
+   ├─ system/system-kernel-cpp/                (the eco/system Elm package sources)
    └─ examples/                                (example project: elm.json + src/*.elm)
 ```
 

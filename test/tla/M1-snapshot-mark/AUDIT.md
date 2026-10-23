@@ -2,7 +2,8 @@
 
 Dated entries, newest last. Each records what was checked against which tree, the verdicts, and
 every change to the model. A canary re-audit (parent plan §7.4) adds an entry here quoting the new
-hash prefix. The canary is not built yet.
+hash prefix. The canary (`tla-canary`, `test/tla/manifest.txt`) has run in every build since
+2026-09-29 (entry below).
 
 ## 2026-09-28 — first implementation
 

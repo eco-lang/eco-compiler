@@ -2,13 +2,13 @@ See [docs/getting-started.md](docs/getting-started.md).
 # eco
 
 eco is a native compiler and runtime for the [Elm](https://elm-lang.org/) 
-programming language. Eco compiles Elm to native x86 binaries via MLIR and 
-LLVM. The compiler front-end is itself written in Elm. There is a C++ backend 
+programming language. Eco compiles Elm to native x86_64 and Apple Silicon (arm64) binaries via MLIR
+and LLVM. The compiler front-end is itself written in Elm. There is a C++ backend 
 for the MLIR and LLVM portion.
 
 ## Status
 
-The overall status of the 0.1.0 release is alpha, reflecting the immaturity of 
+The overall status of the 0.2.0 release is alpha, reflecting the immaturity of 
 the code at this time. There will be bugs (please find some!), possible ever 
 severe ones. The bundled kernel IO code is an internal compile API exposed for
 convenience; experiment with it but don't get too comfortable and don't rely
@@ -17,12 +17,13 @@ on it. A more complete set of IO APIs will follow and replace this API.
 The full pipeline works today: Elm source compiles through a typed AST,
 whole-program monomorphisation and optimisation, a custom MLIR dialect, and
 LLVM down to native binaries (AOT) or JIT execution, backed by a
-generational garbage collector and effect-manager runtime. Linux x86_64 and
-macOS arm64 (Apple Silicon) are both supported — see
-[docs/building.md](docs/building.md) and
-[docs/building-macos.md](docs/building-macos.md).
+generational garbage collector and effect-manager runtime. Linux x86_64,
+macOS arm64 (Apple Silicon) and Windows x86_64 are all supported — see
+[docs/building.md](docs/building.md),
+[docs/building-macos.md](docs/building-macos.md) and
+[docs/building-windows.md](docs/building-windows.md).
 
-The compiler is capable of building itself, which is a complex 160K LOC 
+The compiler is capable of building itself, which is a complex ~240K LOC 
 program, which goes along way towards proving the implementation is real-world
 capable.
 
@@ -33,6 +34,8 @@ capable.
   environment, CMake presets, and building on a Linux host.
 - [Building on macOS](docs/building-macos.md) — Apple Silicon native build:
   Xcode CLT, brew deps, mac presets, AOT bundle.
+- [Building on Windows](docs/building-windows.md) — Windows x86_64 native build:
+  MSVC Build Tools, clang-cl, win presets, `eco.exe` bundle.
 - [Testing](docs/testing.md) — the elm-test, end-to-end, and stress suites.
 - [Bootstrap](docs/bootstrap.md) — the 9-stage self-compilation pipeline.
 - [Build targets](docs/build-targets.md) — reference for every CMake target.

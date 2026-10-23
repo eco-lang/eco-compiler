@@ -478,8 +478,11 @@ void NurserySpace::checkAndGrow() {
  *
  * Note on old→young pointers: Elm's immutability guarantees no old→nursery
  * pointers can exist. An object can only reference values that already existed
- * when it was created, so any object's children are always at least as old as
- * the object itself. When a nursery object reaches promotion_age, all of its
+ * when it was created, except recursive closures: a self-capturing closure is
+ * patched with its own address and a mutually recursive group is allocated
+ * together and cross-wired, with no safepoint in between, so those edges form
+ * same-age cycles. Either way any object's children are always the same age as
+ * the object or older. When a nursery object reaches promotion_age, all of its
  * transitively-reachable children must also have reached promotion_age and are
  * promoted together in the same phase-3 scan. The assertion in evacuate() enforces
  * this: if phase 3 ever encounters a from-space child whose age < promotion_age,

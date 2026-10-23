@@ -3,15 +3,16 @@ module Compiler.MonoSolver.Translate exposing
     , demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
     )
 
-{-| Translate a TypedOptimized expression into a monomorphized expression — the
-M1 (monomorphic-spine) arms, ported from `Specialize.specializeExpr`.
+{-| Translate a TypedOptimized expression into a monomorphized expression for
+the solver engine, originally ported from `Specialize.specializeExpr`.
 
-Node types come from `Zonk.canTypeToMono` (the pure `applySubstPure`-with-empty-
-subst classification, correct for monomorphic globals). Kernel-call ABIs use the
-store (`Store.instantiate`-style fresh load + unify param slots with the concrete
-arg types + zonk) to reproduce `deriveKernelAbiType` exactly. Everything the M1
-spine does not yet cover returns `Engine.crashFailure (Unsupported …)` — never a fallback
-to the original engine.
+Node types are classified through the engine's store (`classifyAs`, i.e.
+`Store.classifyDirect`), with `Zonk.canTypeToMono` used where a type is already
+ground. Kernel-call ABIs use the store (`Store.instantiate`-style fresh load +
+unify param slots with the concrete arg types + zonk) to reproduce
+`deriveKernelAbiType` exactly. Every expression form is translated except
+`TOpt.Shader`, which returns `Engine.crashFailure (Unsupported …)` — never a
+fallback to the subst engine.
 
 @docs translate
 @docs demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine

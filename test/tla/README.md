@@ -330,4 +330,6 @@ canary greps only (for example `F.atfork`, `F.vnodeRegistry`: a new `pthread_atf
 latent unregistered store, needs a verdict) and are exempt from that check.
 
 **First pinned 2026-09-29:** 224 pins (16 files, 128 regions, 25 censuses, 54 greps, the toy's
-`nocode`), covering M1–M7 and the drivers W1–W5, `w_pool_done`, `w_running_chain`.
+`nocode`), covering M1–M7 and the drivers W1–W5, `w_pool_done`, `w_running_chain`. That count is
+historical: the manifest now holds 237 pins (18 files, 135 regions, 29 censuses, 54 greps, the
+toy's `nocode`) and also covers M8; `manifest.txt` is the authority.

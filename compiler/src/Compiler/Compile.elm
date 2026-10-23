@@ -9,12 +9,18 @@ This module provides the main entry points for compiling Elm modules. It coordin
 the complete transformation from parsed source code through canonicalization, type
 checking, pattern match verification, and optimization.
 
-The compilation pipeline consists of four phases:
+`compile` (the JavaScript path) runs four phases:
 
 1.  **Canonicalization** - Resolves all names to their home modules
 2.  **Type Checking** - Infers and verifies types via constraint solving
 3.  **Nitpicking** - Verifies pattern match exhaustiveness
 4.  **Optimization** - Produces efficient intermediate representation
+
+`compileTyped` (the native/MLIR path) runs the same canonicalization and
+nitpicking, but its type check keeps the solver state: it normalizes solver
+variables to union-find roots, runs PostSolve, and stamps arrow types with
+their root indices. It then runs the typed optimizer in place of the erased
+one, joining the results into a single `TypedArtifacts`.
 
 
 # Compilation
@@ -85,7 +91,7 @@ enables type-directed optimizations and direct lowering to MLIR.
 type alias TypedArtifactsData =
     { canonical : Can.Module
     , annotations : Dict.Dict Name (Can.Annotation Name)
-    , objects : Opt.LocalGraph -- Opt.emptyLocalGraph on the typed path (plan S5)
+    , objects : Opt.LocalGraph -- Opt.typedPathStub on the typed path (plan S5): empty but for a `main` marker
     , typedObjects : TOpt.LocalGraph Name
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
@@ -148,10 +154,9 @@ compile pkg ifaces modul =
             )
 
 
-{-| Phase boundary used as a Task scheduling point. Returning a fresh
-`Task.succeed ()` between phases lets the runtime interleave GC and other
-work between canonicalize/type-check/nitpick/optimize even when the pipeline
-is otherwise single-threaded.
+{-| Phase boundary between canonicalize/type-check/nitpick/optimize. These
+`Task.succeed ()` boundaries began as trace points (commit f177f7ac); any
+scheduling or GC benefit from them has not been measured.
 -}
 phase : Task Never ()
 phase =
@@ -160,10 +165,12 @@ phase =
 
 {-| Compiles an Elm module with typed optimization for native code generation.
 
-Performs canonicalization, type checking, nitpicking and typed optimization, producing:
+Performs canonicalization, type checking (with solver-root normalization,
+PostSolve and arrow-root stamping), nitpicking and typed optimization, producing:
 
-  - `Opt.LocalGraph` - always `Opt.emptyLocalGraph`: the erased optimizer does not run
-    on the typed path (plan S5), because nothing on that path reads the erased graph
+  - `Opt.LocalGraph` - `Opt.typedPathStub`: the erased optimizer does not run on the
+    typed path (plan S5), so this is an empty graph carrying only a presence marker
+    for `main` (see `Opt.typedPathStub`)
   - `TOpt.LocalGraph Name` - Typed optimized IR with preserved type information
 
 The typed optimization phase preserves type information needed for monomorphization

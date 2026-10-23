@@ -50,15 +50,18 @@ struct EcoPipelineOptions {
 /// Builds the Stage 1 pipeline: Eco -> Eco transformations.
 /// This includes:
 ///   - RC elimination (removes reference counting placeholders)
-///   - Undefined function stub generation
+///   - closure-capture check (ECO_LOWERING_VALIDATION builds only)
+///   - PAP simplification, compare/case-on-Order rewrite
+///   - undefined-function validation (fails on any eco.call to a symbol that
+///     is neither defined nor declared, CGEN_011; generates nothing)
 void buildEcoToEcoPipeline(mlir::PassManager &pm,
                            const EcoPipelineOptions &opts = {});
 
 /// Builds the Eco -> Eco + Stage 2 + M4-slot pipeline, stopping immediately
 /// before GC preparation. This includes:
 ///   - Stage 1: Eco -> Eco transformations
-///   - Stage 2: Eco -> Standard MLIR (SCF, CF)
-///   - the M4 slot: EcoFoldProject + CSE
+///   - Stage 2: Eco -> Standard MLIR (SCF; no CF until Stage 3)
+///   - the M4 slot: EcoFoldProject (+ CSE only under ECO_MLIR_CSE=1)
 ///
 /// This is the last point at which Eco-level `construct`/`project` ops still
 /// exist AND the M4 folders have already run, which makes it the only

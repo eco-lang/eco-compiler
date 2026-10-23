@@ -9,14 +9,13 @@ module Compiler.GlobalOpt.InlineSimplify exposing
 definition is monomorphized into N copies and each copy is inlined
 independently. This pass inlines once, before specialization.
 
-**Copying a polymorphic body needs its TYPE VARIABLES freshened** — see
-`suffixType`. `AssignMVarIds` keys a type variable's identity on its NAME within
-one top-level definition, so two copies spliced into the same caller would both
-say `TVar "a"`, receive one `MVarId`, and force the two call sites'
-instantiations to meet. Each copy therefore gets the same `_pi<n>` suffix on its
-type variables that its term-level binders get. Refusing polymorphic candidates
-instead — v1's answer — rejected ~98% of what the pass could inline
-(plan §11.2, §12).
+**Copying a polymorphic body needs its TYPE identity freshened** — see
+`freshenBody`. `AssignMVarIds` now runs BEFORE this pass, so the body already
+carries `MVarId`s, `SrcLambdaId`s and `ArrowId`s; two copies that kept them
+would force the two call sites' instantiations to meet. Each copy therefore goes
+through `PreMono.Fresh.freshenCopy`, which substitutes the call site's types and
+re-mints every other id. Refusing polymorphic candidates instead — v1's answer —
+rejected ~98% of what the pass could inline (plan §11.2, §12).
 
 Measured motivation (that plan's §8.1): the self-compile performs 65,949
 inlines over only 27,130 distinct SOURCE call sites — a redundancy factor of
@@ -44,16 +43,15 @@ body, so that class of capture cannot arise.
 in one caller would otherwise produce two `let x = …` with the same name, which
 the backend rejects as an SSA redefinition (`memory:
 eco-inliner-dup-let-names-ssa-redef` — a real shipped bug in the post-mono
-pass). `freshenBody` renames every binder, `Destruct` binders included; that is
-the exact shape whose omission caused the post-mono pass's destructure-binder
-capture bug.
+pass). `freshenBody` gives every local name a per-copy `_pi<n>` suffix,
+`Destruct` binders included; that is the exact shape whose omission caused the
+post-mono pass's destructure-binder capture bug.
 
-**`SrcLambdaId` duplication is safe here** (that plan's Step 0):
-`AssignMVarIds.assignIds` runs INSIDE monomorphization, downstream of this pass,
-and its `Function` arm discards the incoming id (`TOpt.Function _ args body
-meta ->` then `freshLamId`). Copies are renumbered before any LSS member is
-interned. If that ever changes to preserve incoming ids, this pass must freshen
-them too.
+**`SrcLambdaId` duplication is prevented by `PreMono.Fresh`**: because
+`AssignMVarIds` runs before the pre-mono passes, a copy that kept its lambda
+ids would put two bodies under one LSS member. `Fresh.freshenCopy` re-mints
+every `SrcLambdaId` and `ArrowId` in the copy, and `Fresh.assertMinted`
+(`mono.validate`) catches a repeated id.
 
 @docs Metrics, emptyMetrics
 @docs optimize
@@ -413,7 +411,7 @@ buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
                               -- rejected ~98% of what the pass could inline
                               -- (2,738 of 3,236 on the self-compile). It is
                               -- kept as a census of how much of the admitted
-                              -- set `suffixType`'s rename is carrying.
+                              -- set `PreMono.Fresh`'s type freshening is carrying.
                                 | polymorphic =
                                     if List.isEmpty tvs then
                                         a.polymorphic

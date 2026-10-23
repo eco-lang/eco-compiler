@@ -445,7 +445,7 @@ typedef struct {
     u16 padding3;
 } ElmChar;
 
-// Note: Empty strings use Const_EmptyString constant instead of heap allocation.
+// Note: Empty strings use the Const_Empty constant instead of heap allocation.
 // This prevents the issue where an 8-byte empty string would be overwritten by
 // a 16-byte forward pointer, corrupting adjacent heap objects.
 

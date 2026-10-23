@@ -67,7 +67,7 @@ public:
         // Per KERNEL_TASK_IO_001 / Phase 5 (Q10): Eco.Http submissions route
         // through a separate result queue so Eco's archive/SHA1 drain doesn't
         // race with Elm.Http's Response/Metadata drain on a shared queue.
-        // Both lanes share the SAME worker pool and tracking, just split at
+        // Both lanes share the SAME single worker thread and tracking, just split at
         // completion.
         bool          eco_lane = false;
         // Abort control (elm/http requests). nullptr: not abortable (Eco.Http,
@@ -92,7 +92,7 @@ public:
         std::string   body;
     };
 
-    // POD progress tick posted by the libcurl XFERINFO callback from a worker
+    // POD progress tick posted by the libcurl XFERINFO callback from the worker
     // thread. `isUpload` selects Sending (true) vs Receiving (false). `now` is
     // bytes transferred so far; `total` is the expected total (0 = unknown,
     // e.g. chunked download). No heap, no HPointer — the main thread turns
@@ -104,7 +104,7 @@ public:
         std::uint64_t total = 0;
     };
 
-    // Main-thread producer: enqueue a request for the worker pool.
+    // Main-thread producer: enqueue a request for the (single) worker thread.
     void submit(Request req);
 
     // Main-thread-only consumer API. tryPopResult returns true and moves the

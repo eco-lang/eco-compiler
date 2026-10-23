@@ -1,5 +1,15 @@
 # Escape Analysis & Unboxed Aggregates — Compilation Phase Status
 
+> **Status (2026-10-23): STALE — describes deleted passes.** The escape-analysis /
+> unboxed-aggregate pass stack this document describes (`EcoEscapeAnalysisPass`,
+> `EcoUnboxedAggSpecialize`, `EcoUnboxedAggCrossSpec`, `EcoFlattenAggBoundary`,
+> `EcoBoxAggregateOperands`, and the `-enable-unboxed-agg` pipeline) was
+> deleted on 2026-08-02 after a measured-failure postmortem
+> (`design_docs/globalopt/borrow-inference-design.md` §2.1-2.2). The `eco.make.*` /
+> value-aggregate types survive in the dialect with no producer pass (invariant CGEN_025; CGEN_066
+> is a retired-pass record). The planned successor is the aggregate-promotion work in
+> `plans/opt-tier1-aggregate-promotion.md`. Kept for historical reference only.
+
 Status snapshot of the escape-analysis / unboxed-aggregate work as of 2026-05-21. Cross-references the five active plans:
 
 - `plans/escape-analysis-implementation.md` (master plan — Phases 0–4)

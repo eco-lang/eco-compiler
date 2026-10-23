@@ -43,9 +43,10 @@ majority of nodes have none and pass through untouched.
 The blocked rule is load-bearing: `_fast_evaluator` dispatch calls the
 stamped instance's fast clone directly with typed capture loads and NO
 runtime identity check (EcoToLLVMClosures.cpp `emitFastClosureCall`).
-Staging wrappers and `wrapTopLevelCallables` eta-wrappers share a member's
-identity but not its code or capture layout — stamping across them is a
-silent miscompile.
+`wrapTopLevelCallables` eta-wrappers share a member's identity (adopted from
+a singleton annotation, LSS\_008) but not its code or capture layout —
+stamping across them is a silent miscompile. μ-tied members (LSS\_018) are
+force-blocked too.
 
 
 # API
@@ -73,8 +74,8 @@ import Dict exposing (Dict)
 {-| Census counters (reported behind `lss.report` / ECO\_MONO\_LSS\_REPORT).
 
   - dispatchUpgraded: call sites stamped for fast dispatch
-  - declinedBlocked: singleton member with a blocker instance (staging
-    wrapper stage or adopted synthetic eta-wrapper)
+  - declinedBlocked: singleton member with a blocker instance (adopted
+    synthetic eta-wrapper) or a μ-tied member (LSS\_018)
   - declinedNoInstance: singleton member with no MonoClosure instance
     (interned globals/ctors/kernels, tail-def'd lambdas)
   - declinedShape: no candidate matches the site's callee layout / arg
@@ -646,9 +647,7 @@ eqLayoutLists xs ys =
 identity was ADOPTED rather than stamped.
 
   - `srcLambda = Just m`: the stamped identity (mono-created instances,
-    inliner copies, local-multi retranslations — all verbatim copies —
-    plus staging wrapper stages via LSS\_008 propagation, separated into
-    blockers by their synthetic `lambdaId` home).
+    inliner copies, local-multi retranslations — all verbatim copies).
   - `srcLambda = Nothing` but the type's head annotation is a singleton
     `LSet [m]`: identity adoption (LSS\_008) — GlobalOpt-synthesized
     closures (alias/general wrappers from wrapTopLevelCallables) carry no

@@ -36,10 +36,10 @@ settings are the exception: the censuses `qCensus` and `arrowCensus` in
 `BorrowConfig`, change no generated code, yet each adds a token when on.
 
 The second is that the file is a partial override of `default`. Every key is
-optional, a missing key takes its value from `default`, and unknown keys are
-ignored. `decoder` lists the exceptions: four settings cannot be set from the
-file at all, and a `mono` object without an `engine` key does not select the
-default engine.
+optional, a missing key usually takes its value from `default`, and unknown keys
+are ignored. `decoder` lists the exceptions: five settings cannot be set from
+the file at all, and a `mono` object without an `engine` key selects
+`EngineSubst` rather than the default engine (see `monoDecoder`).
 
 Each block's decoder applies a function, the record's constructor or a lambda,
 to one key after another, so the order of its `D.apply` lines must follow the
@@ -184,8 +184,10 @@ of which function parameters are only borrowed.
 only when `report`, `validate` or `reify = RRc` is also on, and it returns the
 program unchanged, in both `BorrowReify` modes; its products are a census and
 checks, under `report` and `validate`. `oracleOpt` derives the analysis's
-facts when MLIR is generated, and keeps the lambda-set member origins they
-need through global optimization.
+facts when MLIR is generated (`Borrow.deriveFacts`, installed as
+`Context.oracleFacts`), and keeps the lambda-set member origins they need
+through global optimization. No code generator reads those facts yet, so
+turning it on costs compile time but changes no emitted code.
 
 `oracleOpt` is the only borrow setting with a token in `hash` (`bopt=1`, when
 on). The token keys the cache on the setting; it does not mean the emitted
@@ -574,8 +576,8 @@ exceptions are these:
     `default` selects `EngineSolver`. Only a document with no `mono` object
     at all gets the default engine. An `engine` or `borrow.reify` string that
     is not recognized gives the default.
-  - `list.report`, `cse.report`, `mono.diffDump` and `mono.validate` are not
-    read; they always take their default.
+  - `list.report`, `cse.report`, `mono.diffDump`, `mono.validate` and
+    `mono.stagingReport` are not read; they always take their default.
   - The two `LssStampConfig` settings are read from the `mono.lss` object
     itself, as `instanceQualMaxInstances` and `census`.
 

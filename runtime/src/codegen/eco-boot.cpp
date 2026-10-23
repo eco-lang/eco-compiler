@@ -1,12 +1,15 @@
 //===- eco-boot.cpp - Eco native compiler driver --------------------------===//
 //
-// Compiles Elm source files (or .mlir files) to standalone x86-64 Linux ELF
-// executables. Orchestrates:
+// Compiles Elm source files (or .mlir files) to standalone native
+// executables (ELF on Linux, Mach-O on macOS, PE/COFF on Windows).
+// Orchestrates:
 //   1. Elm frontend (Node.js eco-boot-2-runner.js) to produce .mlir
 //   2. MLIR lowering pipeline (Eco dialect -> LLVM dialect)
 //   3. Translation to LLVM IR
 //   4. Object file emission via TargetMachine
-//   5. Linking via clang++ driver with runtime/kernel static libraries
+//   5. Linking with runtime/kernel static libraries: the system linker
+//      directly on Linux, the clang driver on macOS, clang-cl + lld-link on
+//      Windows (eco::linkExecutable in EcoNativeDriver.cpp)
 //
 // A .o input short-circuits the pipeline straight to step 5, so an unchanged
 // .mlir can be re-linked against freshly-rebuilt runtime/kernel libraries
@@ -442,8 +445,9 @@ static std::unique_ptr<llvm::Module> translateToLLVMIR(
 
 //===----------------------------------------------------------------------===//
 // Linking — delegates to EcoNativeDriverStatic, which invokes the system
-// linker (ld.bfd) directly. The previous clang++ driver invocation is gone;
-// see EcoNativeDriver.cpp::linkExecutable for the full link line.
+// linker (ld.bfd) directly on Linux (the clang driver on macOS, clang-cl +
+// lld-link on Windows). The previous clang++ driver invocation on Linux is
+// gone; see EcoNativeDriver.cpp::linkExecutable for the full link line.
 //===----------------------------------------------------------------------===//
 
 #include "EcoNativeDriver.h"

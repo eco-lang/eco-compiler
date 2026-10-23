@@ -1,3 +1,13 @@
+> **Status (2026-10-23): STALE — describes deleted passes.** The escape-analysis /
+> unboxed-aggregate pass stack this document describes (`EcoEscapeAnalysisPass`,
+> `EcoUnboxedAggSpecialize`, `EcoUnboxedAggCrossSpec`, `EcoFlattenAggBoundary`,
+> `EcoBoxAggregateOperands`, and the `-enable-unboxed-agg` pipeline) was
+> deleted on 2026-08-02 after a measured-failure postmortem
+> (`design_docs/globalopt/borrow-inference-design.md` §2.1-2.2). The `eco.make.*` /
+> value-aggregate types survive in the dialect with no producer pass (invariant CGEN_025; CGEN_066
+> is a retired-pass record). The planned successor is the aggregate-promotion work in
+> `plans/opt-tier1-aggregate-promotion.md`. Kept for historical reference only.
+
 Below is a more “engineering‑level” design for the small‑aggregate escape analysis work, with concrete code locations and the main changes you’d need to make. It’s written so you can come back to it when you’re ready to implement.
 I’ll assume:
 - We **do not** touch Strings or ByteBuffers in this optimisation. They stay `!eco.value`, and their rope/slice machinery remains runtime‑only via `StringOps` and BF dialect【】.

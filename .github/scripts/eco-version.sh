@@ -9,7 +9,10 @@
 # rises along master, and is the same on every platform that builds a commit, so
 # the nightly's assets share one version. The ~ makes Debian sort these builds
 # before the plain release. docker/build-dist.sh uses the same format for local
-# builds, but counts N with its own .build-number file.
+# builds, but counts N with its own .build-number file. The ~ survives only in the
+# built file names and in the .deb's Version field: publish-nightly.yml renames the
+# nightly assets before upload (~ -> - in the archives, ~ -> . in the .deb),
+# because GitHub would rewrite ~ in asset names itself.
 #
 # Tag builds (refs/tags/v<version>): the plain version, which must match
 # version.txt.

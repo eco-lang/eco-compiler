@@ -2,11 +2,15 @@
 
 Dated entries, newest last. Each records what was checked against which tree, the tool, the
 verdicts, and every change to the drivers. Plan: `plans/threaded-gc-tla-W-weak-memory.md`. A
-canary re-audit (parent plan §7.4) adds an entry here quoting the new hash prefix. The canary is
-not built yet.
+canary re-audit (parent plan §7.4) adds an entry here quoting the new hash prefix. The canary
+(`tla-canary`, `test/tla/manifest.txt`) has run in every build since 2026-09-29 (entry below) and
+pins the code every W driver family covers.
 
 How to run: `cmake --build build --target genmc-check`, or directly
-`python3 test/genmc/run_drivers.py [--only NAME] [--log-dir DIR]`. Rows are in `drivers.txt`.
+`python3 test/genmc/run_drivers.py [--only NAME] [--log-dir DIR]`. Rows are in `drivers.txt`
+(62 rows today). `genmc-check` itself is run by hand (not in `check`, `full` or CI; budget 10 min),
+but a change to the code the drivers cover fires the canary in every build, and that pin's
+re-audit entry here is the point to re-run it.
 
 ## 2026-09-28 — first implementation (plan §12 steps 1–7)
 
@@ -28,7 +32,7 @@ How to run: `cmake --build build --target genmc-check`, or directly
 | Smoke test | C message passing passes and its relaxed mutant is flagged; a C++20 `std::atomic_ref` program compiled the drivers' way passes and its plain mutant is reported as a race |
 | Real headers | Compile **unchanged**. No shim of any allocator header, no transliteration |
 | Command line | `clang++-19 -std=c++20 -fno-exceptions -g -fno-discard-value-names -Xclang -disable-O0-optnone -DWDRIVER_GENMC [-D…] -I<mutant dir> -I runtime/src/allocator -idirafter /opt/genmc/include/genmc/runtime -S -emit-llvm -o d.ll test/genmc/<driver>.cpp`, then `genmc -rc11 -disable-estimation -disable-ipr -disable-sr [row flags] d.ll` |
-| Time | 49 rows in 20–22 s with 3 at a time; the slowest row 0.9–1.2 s (`w1_deque_2thieves` and its paper variant, 1,055 executions each). Budget 10 min |
+| Time | 49 rows (the registry at the time; `drivers.txt` now has 62) in 20–22 s with 3 at a time; the slowest row 0.9–1.2 s (`w1_deque_2thieves` and its paper variant, 1,055 executions each). Budget 10 min |
 
 What the spike found about GenMC, and what the drivers do about it. Items 1–4 are GenMC bugs or
 gaps; the rest are behaviours a driver has to respect.
@@ -370,7 +374,7 @@ The census still has 259 `memory_order` / `atomic_thread_fence` lines in `runtim
 | pause-only; relaxed counters a decision reads | no W |
 
 Every group now has a W driver or a written disposition. The per-line mapping belongs to the
-canary's census (parent §7.1), which is not built.
+canary's census (parent §7.1), which was not built yet (it was, the next day: entry below).
 
 ## 2026-09-29 — canary baseline (GC_MODEL_001)
 

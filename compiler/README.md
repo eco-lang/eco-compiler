@@ -10,7 +10,9 @@ The Eco compiler forked from the [Guida compiler](https://github.com/guida-lang/
 
 ## Architecture
 
-The compiler transforms Elm source code through six major phases:
+The compiler transforms Elm source code through these phases. The JavaScript
+path stops after local optimization and generates from the optimized AST; the
+native path continues through monomorphization and global optimization to MLIR.
 
 ```
 Source Code (.elm files)
@@ -37,13 +39,24 @@ Source Code (.elm files)
          │
          ▼
 ┌─────────────────┐
-│  5. OPTIMIZE    │  Canonical AST → Optimized AST
-└────────┬────────┘  (Case compilation, inlining, DCE)
+│ 5. LOCAL OPT    │  Canonical → Optimized AST (JS, LocalOpt/Erased)
+└────────┬────────┘  or Typed Optimized AST (native, LocalOpt/Typed)
+         │           (Case compilation into decision trees, tail calls)
+         ▼
+┌─────────────────┐
+│ 6. MONOMORPHIZE │  Typed Optimized AST → Monomorphized IR (native only)
+└────────┬────────┘  (Monomorphize/, MonoSolver/; preceded by the pre-mono
+         │           passes in GlobalOpt/PreMono and GlobalOpt/InlineSimplify)
          │
          ▼
 ┌─────────────────┐
-│  6. GENERATE    │  Optimized AST → Target Code
-└─────────────────┘  (JavaScript or MLIR)
+│ 7. GLOBAL OPT   │  Whole-program passes on Monomorphized IR (native only)
+└────────┬────────┘  (GlobalOpt/: inlining, CSE, CAF passes, ABI cloning)
+         │
+         ▼
+┌─────────────────┐
+│  8. GENERATE    │  Optimized AST → JavaScript, or
+└─────────────────┘  Monomorphized IR → MLIR
 ```
 
 The key insight enabling aggressive optimizations is Elm's purity guarantee: no side effects, immutable data, and referential transparency. This means inlining is always safe, dead code elimination is straightforward, and monomorphization is viable for native compilation.
@@ -147,15 +160,18 @@ build/toolchain/bin/elm-format compiler/src --yes
 ### Clear Cache
 
 ```bash
-rm -rf ~/.guida build/compiler
+rm -rf ~/.eco build/compiler
 cmake --build build --target guida
 ```
+
+`~/.eco` holds the package cache (override with `ECO_HOME`); each project's
+build artifacts live in its own `eco-stuff/` directory.
 
 ## Examples
 
 ```bash
 cd examples
-guida make --debug src/Hello.elm
+eco make --debug src/Hello.elm
 open index.html
 ```
 
@@ -173,10 +189,16 @@ src/Compiler/
 ├── Canonicalize/         # Canonicalization phase
 ├── Type/                 # Type checking phase
 ├── Nitpick/              # Post-typecheck verification
-├── Optimize/             # Optimization phase
+├── LocalOpt/             # Per-module optimization
+│   ├── Erased/           # Untyped (JavaScript path)
+│   └── Typed/            # Typed (native path)
+├── Monomorphize/         # Monomorphization (substitution engine, shared helpers)
+├── MonoSolver/           # Monomorphization (solver engine, the default)
+├── GlobalOpt/            # Whole-program optimization (pre-mono passes, then on monomorphized IR)
 ├── Generate/             # Code generation phase
 │   ├── JavaScript/       # JS backend
-│   └── CodeGen/          # MLIR backend
+│   ├── CodeGen/          # Backend wrapper for JS
+│   └── MLIR/             # MLIR backend
 ├── Reporting/            # Error reporting
 └── Data/                 # Internal data structures
 ```

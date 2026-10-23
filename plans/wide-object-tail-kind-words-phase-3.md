@@ -1292,7 +1292,7 @@ In `ToHeapOpLowering::matchAndRewrite` (`EcoToLLVMValueAgg.cpp:198ff`):
   closure packer in Phase 2.
 
 **Invariants:**
-- CGEN_029: to_heap stays the only boxing path for aggregates.
+- CGEN_062: to_heap stays the only boxing path for aggregates.
 - The kinds equal the element types, which is what the store dispatch uses.
 
 **Rollback:** with 3B.2–3B.5.

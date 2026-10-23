@@ -1,7 +1,7 @@
-// ChildStdin.hpp — stdin plumbing for forked E2E test children
+// ChildStdin.hpp — stdin plumbing for spawned E2E test children
 // (plans/eco-system-library.md Phase 1 step 8c).
 //
-// Called in a child between fork() and running the program:
+// Called in the spawned child (SpawnedChildren.hpp) before it runs the program:
 //   - no `-- STDIN:` text: stdin becomes /dev/null, so a program that reads
 //     stdin sees EOF instead of blocking on (or stealing) the runner's stdin;
 //   - with text: stdin becomes the read end of a pipe that already holds the

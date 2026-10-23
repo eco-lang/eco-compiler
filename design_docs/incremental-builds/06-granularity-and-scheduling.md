@@ -118,7 +118,7 @@ and stable (§3), the back end can be made incremental without dependency tracki
 
 ## 6. What the hand-off plan should keep open
 
-The hand-off plan (`plans/partitioned-mlir-handoff.md`) is unchanged for now. Choices in it that
+The hand-off plan (`plans/partitioned-mlir-handoff.md`, no longer in the repo) is unchanged for now. Choices in it that
 would make incremental builds harder later:
 - **The partition assignment function** (§5.9) should be pluggable: throughput (release) vs
   module-aligned (incremental).

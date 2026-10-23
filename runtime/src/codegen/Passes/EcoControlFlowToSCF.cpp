@@ -7,7 +7,8 @@
 // 1. eco.case with pure returns -> scf.if (2-way) or scf.index_switch (multi-way)
 // 2. SCF-candidate eco.joinpoint -> scf.while
 //
-// Non-eligible operations are left for createControlFlowLoweringPass to handle.
+// Non-eligible operations are left for EcoToLLVM's control-flow patterns
+// (EcoToLLVMControlFlow.cpp), which lower them to cf.
 //
 //===----------------------------------------------------------------------===//
 

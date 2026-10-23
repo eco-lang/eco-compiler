@@ -7,11 +7,13 @@
 # learns to lower `gc.statepoint` calls returning wider LLVM structs.
 # As of LLVM 21, N=1..3 lower cleanly and N=4..8 trip a SelectionDAG
 # StatepointLowering assertion (CallEnd != CALLSEQ_END at
-# StatepointLowering.cpp:354), which is why
-# EcoUnboxedAggCrossSpec.cpp caps kMaxDirectFields at 3.
+# StatepointLowering.cpp:354). That wall is why the (since deleted)
+# EcoUnboxedAggCrossSpec.cpp pass capped direct struct returns at
+# kMaxDirectFields = 3; no in-tree pass consumes the limit any more.
 #
 # Run this after bumping LLVM; if any of the XFAIL'd cases (N=4..8)
-# start XPASSing, kMaxDirectFields can be raised.
+# start XPASSing, wider direct struct returns across statepoints
+# become possible.
 
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -1,9 +1,9 @@
 module TestLogic.TypedPipelineTest exposing (suite)
 
 {-| Runs every program of the standard test catalogue through the whole
-substitution-engine pipeline, so that a catalogue program the front end
-rejects is noticed, and so that the back-end stages are executed on every
-program.
+production pipeline (the default configuration, with the solver engine), so
+that a catalogue program the front end rejects is noticed, and so that the
+back-end stages are executed on every program.
 
 The fixture is the catalogue that `SourceIR.Suite.StandardTestSuites` gathers:
 the Elm source programs built by the `SourceIR` case modules it includes, two
@@ -18,13 +18,14 @@ What the tests establish, for each program, through
     checked, run through PostSolve and optimized by the typed optimizer
     without any of those stages returning an error. An error fails the test
     with a message beginning "Invalid test case (frontend failure)".
+  - Monomorphization, global optimization and MLIR generation (`runToMlir`)
+    then run without returning an error; an `Err` from any of them fails the
+    test with that stage's message.
 
 Among what is not tested:
 
-  - Anything about monomorphization, global optimization or MLIR generation.
-    They run after the typed optimizer, but an error from any of them passes
-    and their output is not inspected. Only a crash in one of them ends the
-    test.
+  - The output of monomorphization, global optimization or MLIR generation:
+    it is not inspected.
   - That the program is valid Elm in full: the pattern match checker is not
     run.
 

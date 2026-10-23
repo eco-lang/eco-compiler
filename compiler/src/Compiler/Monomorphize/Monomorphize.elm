@@ -9,8 +9,9 @@ by specializing all polymorphic functions to their concrete type instantiations.
 The monomorphization algorithm works as follows:
 
 1.  Find the entry point (main function).
-2.  Use a worklist to process each (Global, MonoType, Maybe LambdaId) specialization.
-3.  For each work item, specialize the TOpt.Node Name into a MonoNode by:
+2.  Use a worklist of `SpecializeGlobal SpecId` items, where the registry maps
+    each `SpecId` to its (Global, MonoType) key.
+3.  For each work item, specialize the global's TOpt.Node into a MonoNode by:
     a. Unifying the polymorphic type with the concrete type to get a substitution.
     b. Applying the substitution to all types in the expression.
     c. Discovering new specializations needed and adding them to the worklist.

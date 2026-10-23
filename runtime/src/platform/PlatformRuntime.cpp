@@ -283,7 +283,9 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         managerStates_[home] = ms;
     }
 
-    // Return empty record (no ports for now)
+    // Return an empty record. Ports need nothing here: each port is registered
+    // as an effect manager (PortRuntime.cpp, PORT_001) and was set up by the
+    // loop above like any other manager.
     return emptyRecord();
 }
 

@@ -613,8 +613,8 @@ int lbabaMain(int argc, char** argv) {
 int main(int argc, char** argv) {
     // M4: `gc-heap-tsan promo [seed [rounds [workers [jitter_us [exact
     // [sweep_bytes]]]]]]`, parallel promotion during a pending lazy sweep
-    // (promo_sweep.cpp). Expected to fail under TSan until CR-001, CR-002 and
-    // CR-016 are fixed, so the default run below leaves it out.
+    // (promo_sweep.cpp). Clean since CR-001, CR-002 and CR-016 were fixed
+    // (register-fixes Phases 1-2); the default run below still leaves it out.
     if (argc >= 2 && std::strcmp(argv[1], "promo") == 0) return promoSweepMain(argc - 1, argv + 1);
     // CR-006 / CR-020 arms (armMain above).
     if (argc >= 2 && (std::strcmp(argv[1], "pool") == 0 || std::strcmp(argv[1], "ylos") == 0))

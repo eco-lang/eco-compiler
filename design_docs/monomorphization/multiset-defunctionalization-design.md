@@ -9,7 +9,10 @@ make it one. Companions: LSS design
 — the closest prior art, and this document must be read against its
 verdict), the HOF-elimination record
 (`plans/hof-elimination-closure-alloc-reduction.md`), staged currying
-(`design_docs/mono-uncurry.md`, `design_docs/mono-still-curried.md`), and
+(`design_docs/mono-uncurry.md` and `design_docs/mono-still-curried.md`, both
+since deleted; their implementation plans survive as
+`plans/mono-uncurry-implementation.md` and
+`plans/mono-still-curried-implementation.md`), and
 `plans/gc-free-function-propagation.md` (composition target).
 
 ## 1. The observation

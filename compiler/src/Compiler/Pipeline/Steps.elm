@@ -620,6 +620,9 @@ from, with every validator a build runs, as one function: `prepare`, `preMono`,
 `prune`, `checkPruned`, `globalOpt`, `checkStageArity`, `checkClosureStaging`.
 Returns the
 monomorphized graph (before inlining) and the final graph.
+
+Nothing calls this at present: `Builder.Generate` and `TestLogic.TestPipeline`
+each run the steps individually.
 -}
 toGlobalOpt : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String { monoGraph : Mono.MonoGraph, optimized : Mono.MonoGraph }
 toGlobalOpt ecoConfig globalTypeEnv typedGraph =

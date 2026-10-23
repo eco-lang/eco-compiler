@@ -4,7 +4,7 @@ The Eco compiler bootstraps through 9 stages:
 - Stages 1–4 produce a fixed-point JS compiler.
 - Stage 5 uses it to emit MLIR for the native code path, with the light `subst`
   monomorphization engine.
-- Stage 6 compiles that MLIR to a native ELF front-end.
+- Stage 6 compiles that MLIR to a native front-end executable for the host.
 - Stage 7 uses the native compiler to re-emit itself with the optimizing
   default engine (solver + LSS), and Stage 8 verifies a native fixed point.
 - Stage 9 lowers Stage 7's optimized MLIR into a single user-facing `eco`
@@ -46,17 +46,20 @@ itself):
 cmake --preset build
 ```
 
-Node.js needs a 12 GB heap for self-compilation (Stages 2+):
+Node.js needs a large heap for self-compilation (Stages 2+). The CMake recipes
+pin it themselves (`--max-old-space-size=16384`, V8's maximum); to match them
+when running a stage by hand:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 ```
 
 ## Stages
 
 ### Stage 1 — stock Elm compiler → `guida.js`
 
-The stock Elm compiler (from npm) compiles the Eco compiler source using
+The stock Elm compiler (a SHA256-pinned 0.19.1 binary fetched by
+`compiler/cmake/toolchain.cmake` into `build/toolchain/bin/`) compiles the Eco compiler source using
 XHR-based IO. This stage builds **without** `--optimize`, because the XHR
 variant of `Eco.Crash` uses `Debug.todo` (forbidden under `--optimize`). From
 Stage 2 onward the kernel variant of `Eco.Crash` is used instead, enabling
@@ -129,11 +132,13 @@ cmake --build build --target eco-compiler-mlir
 
 Output: `build/compiler/build-kernel/bin/eco-compiler.mlir`
 
-### Stage 6 — `eco-compiler.mlir` → native ELF
+### Stage 6 — `eco-compiler.mlir` → native executable
 
 The `eco-boot-native` tool lowers the MLIR through the full pipeline (Eco
 dialect → LLVM dialect → LLVM IR → object file), then links with the runtime
-and kernel static libraries to produce a standalone x86-64 Linux ELF.
+and kernel static libraries to produce a standalone native executable: an
+x86-64 Linux ELF, an arm64 macOS Mach-O, or an x86-64 Windows `.exe`. The
+same chain runs on all three hosts.
 
 ```bash
 cmake --build build --target eco-compiler
@@ -143,7 +148,7 @@ Output: `build/compiler/build-kernel/bin/eco-compiler`
 
 ### Stage 7 — native compiler self-compiles → `eco-compiler-boot`
 
-- **7a:** the native ELF compiler from Stage 6 compiles itself to
+- **7a:** the native compiler from Stage 6 compiles itself to
   `eco-compiler-boot.mlir`. It uses the compiler's default monomorphization
   engine, solver + LSS, so this is the optimized MLIR.
 - **7b:** `eco-boot-native` lowers that MLIR to a fully bootstrapped native
@@ -179,8 +184,8 @@ Output: `build/compiler/build-kernel/bin/eco-compiler-boot-2` (identical to
 ### Stage 9 — unified `eco` single-binary compiler
 
 Stage 9 fuses the front-end (Stage 6's `eco-compiler`) and the lowering
-back-end (`eco-boot-native`'s MLIR → ELF pipeline) into a single ELF binary
-called `eco` — the user-facing drop-in replacement for `elm make`. After Stage
+back-end (`eco-boot-native`'s MLIR → native pipeline) into a single native
+binary called `eco` — the user-facing drop-in replacement for `elm make`. After Stage
 9 there is one tool to install, not three.
 
 It reuses Stage 7a's optimized `eco-compiler-boot.mlir`. This is the MLIR whose
@@ -190,7 +195,7 @@ lowering passed the Stage 8 fixed point, not Stage 5's `subst`-engine output.
   Stage 8c stamp.
 - **9 link:** it links the object with `EcoEntryStatic`,
 `EcoRuntimeStatic`, every `ElmKernel_*` / `EcoKernel_*` static library, and
-`EcoNativeDriverStatic`. The link uses GNU ld (`-fuse-ld=bfd`) because lld
+`EcoNativeDriverStatic`. The glibc Linux link uses GNU ld (`-fuse-ld=bfd`) because lld
 rejects the absolute relocations the Elm-compiled object carries in its
 `.llvm_stackmaps` section.
 
@@ -201,7 +206,7 @@ one full bootstrap.
 CLI shape — output kind dispatched by extension:
 
 ```
-eco make src/Main.elm --output=foo            # → ELF executable "foo"
+eco make src/Main.elm --output=foo            # → native executable "foo"
 eco make src/Main.elm --output=foo.js         # → JavaScript
 eco make src/Main.elm --output=foo.html       # → HTML
 eco make src/Main.elm --output=foo.mlir       # → MLIR text
@@ -232,7 +237,7 @@ Output: `build/compiler/build-kernel/bin/eco-2`
 Each stage in sequence, with both E2E gates:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 
 cmake --build build --target guida                # Stage 1
 cmake --build build --target full                 # Gate A: JIT E2E suite
@@ -251,6 +256,6 @@ isolation from a clean tree — earlier stages build on demand. The minimal
 one-shot equivalent (skipping the two E2E gates) is just:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 cmake --build build --target bootstrap
 ```

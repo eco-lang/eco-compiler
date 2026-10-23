@@ -3,7 +3,9 @@
 The recommended path is the Docker dev image, which bundles LLVM/MLIR, the C++
 toolchain, Node/pnpm, and the Elm test runner. To build directly on a Linux
 host instead, see [Building on a Linux host](#building-on-a-linux-host) at the
-end of this document.
+end of this document. For macOS and Windows hosts, see
+[building-macos.md](building-macos.md) and
+[building-windows.md](building-windows.md).
 
 ## Docker Setup
 
@@ -75,14 +77,14 @@ for ahead-of-time linking. Building with `-o ./dist` exports them to the host
 docker build -f docker/static-build.Dockerfile --target eco-bundle -o ./dist .
 ```
 
-This drops three files into `./dist/` (the `0.1.0` baseline comes from
+This drops three files into `./dist/` (the `0.2.0` baseline comes from
 `version.txt`):
 
 | File | Format |
 |------|--------|
-| `eco-0.1.0-x86_64-linux-musl.tar.gz` | gzip tarball |
-| `eco-0.1.0-x86_64-linux-musl.zip`    | zip archive |
-| `eco_0.1.0_amd64.deb`                | Debian package |
+| `eco-0.2.0-x86_64-linux-musl.tar.gz` | gzip tarball |
+| `eco-0.2.0-x86_64-linux-musl.zip`    | zip archive |
+| `eco_0.2.0_amd64.deb`                | Debian package |
 
 **Overriding the version.** `version.txt` is the baseline. To stamp a different
 version, pass `--build-arg ECO_VERSION=<v>` — it sets both the archive names
@@ -97,6 +99,20 @@ docker build -f docker/static-build.Dockerfile --target eco-bundle \
 
 The package set and filenames are defined by the CPack configuration in the
 top-level `CMakeLists.txt`, all derived from the resolved version.
+
+**Numbered builds.** `docker/build-dist.sh` wraps the command above and stamps
+each local build as `<version.txt>~b<N>.g<12-char hash>` (plus `.dirty` when
+tracked files differ from HEAD), e.g. `0.2.0~b17.g1a2b3c4d5e6f`. `N` comes from
+`BUILD_NUMBER` when set, otherwise from a local `.build-number` counter the
+script increments. The `~` makes Debian sort these builds before the plain
+release. CI uses the same format via `.github/scripts/eco-version.sh`, with `N`
+the commit count; `publish-nightly.yml` rewrites the `~` in published asset
+names (`-` for the archives, `.` for the `.deb`), since GitHub would otherwise
+mangle it.
+
+```bash
+docker/build-dist.sh        # → dist/eco-0.2.0~b<N>.g<hash>-x86_64-linux-musl.tar.gz, ...
+```
 
 ### 3. Running the dev image interactively
 
@@ -119,7 +135,8 @@ For the musl dev image (`eco-static-dev:local`), add `--cap-add=SYS_PTRACE`
 
 ### Presets
 
-Three presets cover the day-to-day workflow:
+Seven configure presets exist (`cmake --list-presets`). Three cover the
+day-to-day Linux workflow:
 
 | Preset | Build dir | Purpose |
 |---|---|---|
@@ -132,6 +149,11 @@ cmake --preset build      # then: cmake --build build
 cmake --preset dev        # then: cmake --build debug
 cmake --preset release    # then: cmake --build build-static
 ```
+
+The other four are per-platform: `mac-build` / `mac-frontend` (see
+[building-macos.md](building-macos.md)) and `win-build` / `win-frontend` (see
+[building-windows.md](building-windows.md)). The `*-frontend` presets build
+only bootstrap Stages 1–5, with no native back-end.
 
 Two options can be flipped on any preset rather than via a separate preset:
 

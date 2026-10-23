@@ -974,9 +974,12 @@ inline u32 listLogicalLen(HPointer list) {
 // ============================================================================
 
 // Largest element count whose backing stays strictly below the large-object
-// threshold — the §2.2 nursery-born invariant every chain link preserves (an
-// over-LOT backing would land in pinned old gen and hold unrecorded
-// old→young edges once filled with nursery pointers).
+// threshold, so every chain link is an ordinary nursery-born object (§2.2).
+// The cap is kept, but its original rationale (an over-LOT backing would land
+// in pinned old gen and hold unrecorded old→young edges) no longer applies:
+// ThreadLocalHeap::allocate never places a pointer-bearing large object in the
+// old gen (it goes to the nursery up to the cap, else the young large-object
+// space); only pointer-free large objects are allocated old and pinned.
 inline u32 listBackingMaxElems() {
     return static_cast<u32>(
         (Allocator::instance().getLargeObjectThreshold() - 1

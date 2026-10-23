@@ -14,17 +14,17 @@ One-time CMake configure (only on a fresh checkout or after touching CMake itsel
 cmake --preset build
 ```
 
-Node.js needs a 12 GB heap for self-compilation (Stages 2+):
+Node.js needs a large heap for self-compilation (Stages 2+). The CMake recipes pin it themselves (`--max-old-space-size=16384`, V8's maximum); to match them when running a stage by hand:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 ```
 
 ## Stages
 
 ### Stage 1: Stock Elm compiler → `guida.js`
 
-The stock Elm compiler (from npm) compiles the Eco compiler source using XHR-based IO.
+The stock Elm compiler (a SHA256-pinned 0.19.1 binary fetched by `compiler/cmake/toolchain.cmake` into `build/toolchain/bin/`) compiles the Eco compiler source using XHR-based IO.
 This stage builds **without** `--optimize` because the XHR variant of `Eco.Crash` uses
 `Debug.todo` (which is forbidden by `--optimize`). Starting from Stage 2, the kernel
 variant of `Eco.Crash` (via `Eco.Kernel.Crash`) is used instead, enabling `--optimize`.
@@ -163,10 +163,10 @@ Output: `build/compiler/build-kernel/bin/eco-2`
 
 ## All stages in sequence
 
-Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`). Stages 6–8 produce and verify a fully bootstrapped native compiler. Stage 9 fuses everything into the user-facing `eco` binary.
+Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`). Stages 6–8 produce and verify a fully bootstrapped native compiler; the native self-compiles (Stages 7a, 8a and the Stage 9b `eco-2` check) also use `--optimize`. Stage 9 fuses everything into the user-facing `eco` binary.
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 
 cmake --build build --target guida                # Stage 1
 cmake --build build --target full                 # Gate A: JIT E2E suite via guida.js (XHR)
@@ -183,6 +183,6 @@ cmake --build build --target bootstrap            # Stages 8 + 9 + all fixed-poi
 CMake handles dependencies between targets, so any of these targets can also be built in isolation from a clean tree — earlier stages will be built on demand. The minimal one-shot equivalent (skipping the two E2E gates) is just:
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=12000"
+export NODE_OPTIONS="--max-old-space-size=16384"
 cmake --build build --target bootstrap
 ```

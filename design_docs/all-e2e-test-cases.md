@@ -5,7 +5,11 @@ each a standalone Elm program that compiles and runs through the full
 Eco pipeline (Elm → MLIR → LLVM → native). Expected outputs are
 verified against `Debug.log` output using `-- CHECK:` comments.
 
-**Total: 231 test files**
+**Total when this document was generated: 231 test files.** It is now stale: `test/elm/src/` holds
+679 `.elm` files (642 of them `*Test.elm`), and only the original 231 are listed below. It also
+covers only `test/elm/src/`; other E2E suites live in sibling directories (`test/elm-core/`,
+`test/elm-bytes/`, `test/elm-json/`, `test/elm-parser/`, `test/elm-http/`, `test/eco-system/`,
+`test/eco-kernel/`, and others under `test/`).
 
 ---
 

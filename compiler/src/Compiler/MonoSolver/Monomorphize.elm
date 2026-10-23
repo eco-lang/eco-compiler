@@ -63,8 +63,10 @@ import System.TypeCheck.IO as IO
 
 {-| Transform a typed optimized graph into a monomorphized graph, entering from
 the named entry point. Same as the original engine plus the LSS knobs (the
-original engine never computes sets; `lss.enabled = False` here is
-byte-identical to it).
+original engine never computes sets). With `lss.enabled = False` the output is
+intended to match the original engine's, but the `EngineDiff` gate checks only
+canonical equivalence (`Compiler.MonoSolver.Diff`: residual `MVar` ids erased,
+record fields ordered), not byte identity.
 -}
 monomorphize : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphize lssConfig entryPointName globalTypeEnv globalGraph =

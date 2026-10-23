@@ -2,7 +2,9 @@
  * Elm Kernel Regex Module - Runtime Heap Integration
  *
  * Provides regular expression operations using GC-managed heap values.
- * Note: This is a stub implementation - full regex support requires PCRE2.
+ * Note: these Elm::Kernel::Regex helpers are partial and unused. The exported
+ * Elm_Kernel_Regex_* kernel functions are implemented in full, with SRELL, in
+ * RegexExports.cpp.
  */
 
 #include "Regex.hpp"
@@ -71,7 +73,7 @@ bool contains(RegexPtr regex, void* str) {
 }
 
 HPointer findAtMost(i64 n, RegexPtr regex, void* str) {
-    // Return empty list - stub implementation
+    // Return empty list - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     (void)str;
@@ -79,7 +81,7 @@ HPointer findAtMost(i64 n, RegexPtr regex, void* str) {
 }
 
 HPointer replaceAtMost(i64 n, RegexPtr regex, ReplacerFn replacer, void* str) {
-    // Return original string - stub implementation
+    // Return original string - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     (void)replacer;
@@ -87,7 +89,7 @@ HPointer replaceAtMost(i64 n, RegexPtr regex, ReplacerFn replacer, void* str) {
 }
 
 HPointer splitAtMost(i64 n, RegexPtr regex, void* str) {
-    // Return list with single element (original string) - stub implementation
+    // Return list with single element (original string) - unused stub (see RegexExports.cpp)
     (void)n;
     (void)regex;
     HPointer strPtr = Allocator::instance().wrap(str);

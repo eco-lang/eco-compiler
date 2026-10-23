@@ -3,8 +3,8 @@
 # Times `eco-boot-native <flags>` lowering the self-host module to native, median
 # of N runs, with wall / CPU% / peak-RSS. See plans/parallel-llvm-opt-partitioning.md.
 #
-# Usage:   scripts/backend-bench.sh <label> [-- <eco-boot-native flags...>]
-# Example: scripts/backend-bench.sh dev -- -O 2 --parallel-opt=dev
+# Usage:   benchmarks/backend-bench.sh <label> [-- <eco-boot-native flags...>]
+# Example: benchmarks/backend-bench.sh dev -- -O 2 --parallel-opt=dev
 # Env: RUNS (default 3), INPUT, BIN, OUT (default backendstats-runs.txt).
 set -u
 

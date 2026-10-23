@@ -355,6 +355,17 @@ Phase 5    annotateCallStaging                  (CallInfo derivation;
 Phase 6    Borrow.run borrowConfig              ← THIS PASS
 ```
 
+> **As built (Oct 2026):** Borrow is the last phase of
+> `globalOptimizeWithStats`, but **not** the last Mono pass. The build's
+> global-optimization step (`Compiler/Pipeline/Steps.elm`) runs
+> `globalOptCore` (Phases 1-6 above) and then `MonoCse.run` (`cse.enabled`),
+> `CafDedupe.run` (`cafMemo.dedupe`) and `CafHoist.run`
+> (`cafMemo.hoist.enabled`) on its output. This is safe today only because
+> `reify = ROff` is the only implemented mode, so Borrow returns the graph
+> unchanged and no `MonoRcDup`/`MonoRcDrop` constructors exist. The "Last"
+> bullet below is the original design rationale; reifying RC ops would have
+> to either move after these passes or make them RC-aware.
+
 Why exactly here:
 
 - **After Phase 5:** `CallInfo.callKind`
@@ -364,7 +375,7 @@ Why exactly here:
 - **After Phase 4:** the AbiCloning stamps (`closureKind = Known …`,
   `captureAbi`, `fastEvaluator`, `fastPapPrefix`) are materialized,
   P4-verified singleton facts that §10.3's query consumes directly.
-- **Last:** no other Mono pass ever observes the reified
+- **Last** *(design intent; see the as-built note above)*: no other Mono pass ever observes the reified
   `MonoRcDup`/`MonoRcDrop` constructors (BORROW_002); MLIR emission is
   the only downstream consumer.
 - Staging wrappers and inliner copies are final, so per-def analysis sees

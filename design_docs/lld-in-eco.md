@@ -5,6 +5,14 @@ subprocess in `EcoNativeDriverStatic::linkExecutable` with an in-process
 call to `lld::elf::link()`, producing a single self-contained `eco` ELF
 that does not depend on any system linker at runtime.
 
+> **Status note (2026-10-23):** §1 "where we are today" is stale. `eco` still spawns a linker
+> subprocess (lld is not embedded), but it no longer always uses the system linker. The
+> musl-static distribution bundle ships a static `ld.lld` in `lib/eco-runtime/` and uses it for
+> its link profiles (static musl executables and the glibc `-shared` outputs); non-bundle builds
+> link with the host `ld` (`ld.bfd`) found at configure time (`ECO_SYSTEM_LD`). See
+> `EcoNativeDriver.cpp` (`linkerPath`: `bundledLinker` vs `systemLinker`) and
+> `runtime/src/codegen/CMakeLists.txt` (`ECO_SYSTEM_LD`, `ECO_BUNDLED_LD_LLD`).
+
 ## TL;DR
 
 - **Embedding `lld` is possible** and is what Phase 3 of the Stage 9

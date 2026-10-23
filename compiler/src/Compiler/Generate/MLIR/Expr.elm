@@ -1828,17 +1828,6 @@ gencallCalleeReason func =
             6
 
 
-{-| Generate a generic apply call: eco.papExtend without remaining\_arity.
-
-Saturation is determined at runtime from the closure header. The result
-type is always !eco.value since the outcome (PAP vs saturated result)
-is unknown at compile time.
-
-All arguments are boxed to !eco.value for the runtime helpers, since
-eco\_apply\_closure passes args through buildEvaluatorArgs which expects
-HPointer-encoded values.
-
--}
 callKindToAttrString : Mono.CallKind -> String
 callKindToAttrString callKind =
     case callKind of
@@ -1855,6 +1844,18 @@ callKindToAttrString callKind =
             "segmentation_unknown"
 
 
+{-| Generate a generic apply call: eco.papExtend without remaining\_arity.
+
+Saturation is determined at runtime from the closure header. The result type
+follows the call's Mono result type: when that is a primitive, the op's SSA
+result is that primitive and carries a matching non-zero `_result_kind`;
+otherwise (function-type result, boxed Custom, etc.) it is !eco.value.
+
+Only Bool (i1) arguments are boxed to !eco.value here; Int, Float and Char
+stay primitive, and EcoToLLVM's lowerGenericApply boxes them at the LLVM level
+from their SSA types.
+
+-}
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateGenericApply ctx func args resultType =
     let
@@ -1970,7 +1971,9 @@ boxes all primitives for eco\_apply\_closure, this path uses the callee's
 signature to determine boxing policy, preserving typed ABI through the
 closure boundary.
 
-Result type is always !eco.value since saturation is unknown at compile time.
+As in `generateGenericApply`, the result type follows the call's Mono result
+type: a primitive (with a matching non-zero `_result_kind`) when that type is
+primitive, !eco.value otherwise.
 
 -}
 generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult

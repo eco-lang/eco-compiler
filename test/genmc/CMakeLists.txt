@@ -9,7 +9,10 @@
 #
 # Not in `check` or `full`, and not in CI: it runs locally at each TLA+ model's
 # close-out and before a GC phase flips to default-on (parent plan §6.1-6.2;
-# budget 10 minutes). run_drivers.py does the work and keeps
+# budget 10 minutes). The code the drivers cover is pinned by the tla-canary
+# (test/tla/manifest.txt, every build), so a change to it fires the canary and
+# needs a test/genmc/AUDIT.md re-audit entry, the point to re-run this target.
+# run_drivers.py does the work and keeps
 # GenMC's logs in build/genmc-logs/. Tools: genmc (the opt-in dev layer
 # docker/eco-dev-genmc.Dockerfile installs it in /opt/genmc with docker/install-genmc.sh) and the clang of GenMC's LLVM (19). With
 # genmc missing the target FAILS with a clear message; it never skips silently.

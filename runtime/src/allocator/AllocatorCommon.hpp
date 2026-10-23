@@ -282,8 +282,9 @@ constexpr uint32_t MINOR_SPINE_RUN = 512;
 // during the next epoch). ECO_NURSERY_REGIONS / ECO_TENURE_MODE /
 // ECO_NURSERY_EDEN_FLIP override. NURSERY_REGIONS 2 = auto: the region
 // nursery whenever the config meets its requirements (promotion_age 1, bitmap
-// allocation, a class for every nursery object, room for one heap slot), the
-// legacy nursery otherwise; 1 = regions, and an incompatible config throws.
+// allocation, a class for every nursery object, room for one heap slot); an
+// incompatible config throws (auto never falls back to the legacy nursery:
+// select it explicitly with 0); 1 = regions, and an incompatible config throws.
 // Default (2026-09-28, TG7d): auto, concurrent tenuring with one collector —
 // chosen over the E4 keep-up rule (16-18 % of minors help a late job), plan
 // P§10.17.
@@ -393,7 +394,8 @@ constexpr size_t SWEEP_WORK_BUDGET = 4096;
 // Bytes of sweep work `finishMarkAndSweep` runs synchronously before returning (seeds free lists for the first allocations).
 constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
 
-// Incremental marking work ratio: bytes marked per byte allocated during the marking phase.
+// NO EFFECT (W0 item 13): HeapConfig::mark_work_ratio is parsed and validated but never read.
+// Allocation-paced marking was removed; marking is driven by its own steps, never per allocation.
 constexpr size_t MARK_WORK_RATIO = 2;
 
 // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested), pre pressure scaling.

@@ -497,7 +497,7 @@ HPtr Elm_Kernel_Http_toDataView(HPtr bytes);
 HPtr Elm_Kernel_Http_toFormData(HPtr parts);
 
 //===----------------------------------------------------------------------===//
-// Bytes Module (elm/bytes) - STUBS
+// Bytes Module (elm/bytes)
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_Bytes_width(HPtr bytes);
@@ -568,7 +568,7 @@ HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str);
 HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str);
 
 //===----------------------------------------------------------------------===//
-// Regex Module (elm/regex) - STUBS
+// Regex Module (elm/regex)
 //===----------------------------------------------------------------------===//
 
 HPtr Elm_Kernel_Regex_never();

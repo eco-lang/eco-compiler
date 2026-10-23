@@ -6,9 +6,12 @@
 // whatever base is passed, e.g. "-- CHECK-MLIR:" → "-- CHECK-MLIR-DAG:"):
 //   - CHECK:       pattern must appear somewhere in the output.
 //   - CHECK-NOT:   pattern must NOT appear anywhere.
-//   - CHECK-DAG:   alias of CHECK. (This harness is order-insensitive
-//                  everywhere, so DAG's "unordered within a block"
-//                  semantics collapse to plain presence.)
+//   - CHECK-DAG:   alias of CHECK, unlike FileCheck. (This harness is
+//                  order-insensitive everywhere -- plain CHECK lines are
+//                  NOT matched in order as FileCheck's are -- so DAG's
+//                  "unordered within a block" semantics collapse to plain
+//                  presence. A fixture ported from FileCheck that relies on
+//                  CHECK ordering or DAG grouping asserts less here.)
 //   - CHECK-LABEL: alias of CHECK. (No block partitioning here; the
 //                  label line is simply asserted present.)
 //   - CHECK-SAME:  continuation of the nearest preceding positive

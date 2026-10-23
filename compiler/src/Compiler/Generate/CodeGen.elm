@@ -8,11 +8,10 @@ module Compiler.Generate.CodeGen exposing
 {-| Backend interface definitions for code generation.
 
 This module defines the abstract interface that all compiler backends must implement.
-It supports three different backend types based on the level of type information needed:
+It supports two backend types based on the level of type information needed:
 
 1.  CodeGen - Standard backends working with optimized AST (JavaScript)
-2.  TypedCodeGen - Backends needing full type information (MLIR with type-directed optimizations)
-3.  MonoCodeGen - Backends working with fully monomorphized IR (MLIR production)
+2.  MonoCodeGen - Backends working with fully monomorphized IR (MLIR)
 
 
 # Output Types
@@ -50,7 +49,7 @@ import Data.Map exposing (Dict)
 -- ====== OUTPUT ======
 
 
-{-| Output from code generation - either a string or binary data.
+{-| Output from code generation: currently always text (`TextOutput`).
 -}
 type Output
     = TextOutput String

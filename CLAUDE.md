@@ -28,6 +28,13 @@ Before modifying GC concurrency code (`runtime/src/allocator/`), read `test/tla/
 TLA+ models under `test/tla/` describe that code. A `tla-canary` failure means investigate the
 models it names first (GC_MODEL_001); never just repair the hash.
 
+## Commit messages
+
+Follow `GITSTYLE.md` for every commit message. In particular, commits carry NO tool or
+assistant attribution trailers: no `Co-Authored-By:` naming an AI, no `Claude-Session:` link,
+no "Generated with ..." line. The few past commits that carry such trailers are mistakes, not
+precedent.
+
 ## Start up
 
 When Clause Code first starts running:
@@ -39,8 +46,9 @@ When Clause Code first starts running:
 
 ### Initial Setup
 ```bash
-# Configure build (RelWithDebInfo — the standard bootstrap config; use this
-# unless you specifically need one of the others)
+# Configure build (RelWithDebInfo type but -O2 -g -UNDEBUG, so asserts stay
+# on — the standard bootstrap config; use this unless you specifically need
+# one of the others)
 cmake --preset build
 
 # Configure build (Debug: full assertions + stats + kernel tracing)

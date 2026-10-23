@@ -215,7 +215,7 @@ option(ECO_STATIC
 # image (docker/static-build.Dockerfile). Selects the libc++ / libc++abi /
 # compiler-rt / LLVM-libunwind runtime stack and a `-static` (non-PIE) link,
 # instead of Stage A's glibc + libstdc++ + libgcc profile. Implies ECO_STATIC.
-# Set by the ninja-clang-lld-linux-musl preset. See
+# Set by the release preset. See
 # plans/static-link-eco-binary.md (Stage B).
 option(ECO_STATIC_MUSL
        "Stage B: fully-static MUSL build with libc++/compiler-rt (implies ECO_STATIC)"
@@ -1421,8 +1421,9 @@ add_custom_target(kernel-license-check ALL
 # each describe some GC concurrency code. test/tla/manifest.txt pins that code
 # (whole files, TLA-REGION marked regions, per-file censuses of every atomic and
 # lock line, and the footprint rows' re-derivation greps). When pinned code
-# changes, the build fails until every model the pin names has an AUDIT.md
-# verdict for the new code. Like kernel-license-check it lives HERE, in ALL,
+# changes, the canary reports it (a WARNING by default; with ECO_TLA_CANARY_STRICT=ON
+# the build fails) until every model the pin names has an AUDIT.md verdict for
+# the new code. Like kernel-license-check it lives HERE, in ALL,
 # because test/ is EXCLUDE_FROM_ALL. It needs only sh, awk and sha256sum, and
 # costs about a second, only when an input changed.
 #

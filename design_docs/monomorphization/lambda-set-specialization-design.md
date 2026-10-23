@@ -16,6 +16,17 @@ through Lambda Set Specialization" (PLDI 2023),
 `design_docs/auto-borrow-inference/lambda-set-specialization.pdf`.
 Engine-choice justification: `lss-foundation-report.md`.*
 
+> **Status (Oct 2026): the config and set-content sketches below are out of
+> date; the code is authoritative.** `LssConfig` (`Compiler/Eco/Config.elm`)
+> now defaults `enabled = True`, `maxSetSize = 0` and `maxSpecsPerGlobal = 0`
+> (zero means no limit), and has no `keyed` field: set keying became
+> unconditional under LSS (`ECO_MONO_LSS=keyed|unkeyed` are accepted as
+> no-ops). The set content is no longer `LambdaSet1 Bool Dict`: `FlatType`
+> (now in `Compiler/AST/TypeVars.elm`) has `LambdaSet1 LambdaSet` with
+> `type LambdaSet = LsTop Int | LsMembers (List Int) | LsFrom (List Int)
+> (List Variable)` (⊤ carries a provenance code; `LsFrom` is LSS_023). Read
+> §2.1 and §4.1 as the v1 design.
+
 ---
 
 ## 0. Decision summary — what changed from the v0 outline

@@ -300,7 +300,7 @@ int main(int argc, char* argv[]) {
     }
 
 #if ENABLE_GC_STATS
-    // Combine in-process stats with forked-child stats accumulated via shared memory.
+    // Combine in-process stats with spawned-child stats accumulated via shared memory.
     auto& alloc = Allocator::instance();
     GCStats combined = alloc.getCombinedStats();
     combined.combine(ElmE2EBase::getAccumulatedStats());

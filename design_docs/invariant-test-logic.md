@@ -444,7 +444,7 @@ logic: Identify remaining Group B expressions (Str, Chr, Float, Unit) whose pre-
     are now Group A with solver-owned types and do not need structural repair.
 inputs: TypedCanonical + pre-/post-PostSolve NodeTypes snapshots + syntheticExprIds from constraint generation
 oracle: No remaining Group B expression retains an unconstrained synthetic var.
-tests: compiler/tests/Compiler/Type/PostSolve/PostSolveGroupBStructuralTypesTest.elm
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveGroupBStructuralTypesTest.elm
 --
 --
 name: Kernel function types inferred from usage
@@ -468,7 +468,7 @@ logic: Scan NodeTypes for non-kernel expressions after PostSolve:
   * Use syntheticExprIds from constraint generation to identify which TVars were solver-allocated placeholders.
 inputs: PostSolve NodeTypes maps from many modules + syntheticExprIds from constraint generation
 oracle: NodeTypes is fully concrete for non-kernel expressions; any remaining synthetic variables are flagged as a violation.
-tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNoSyntheticHolesTest.elm
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveNoSyntheticHolesTest.elm
 --
 --
 name: PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels
@@ -494,7 +494,7 @@ logic:
       - if nodeTypesPre[id] is NOT a bare TVar, assert nodeTypesPost[id] is alpha-equivalent to nodeTypesPre[id].
 inputs: Canonical module + (annotations, nodeTypesPre) + nodeTypesPost
 oracle: PostSolve only fills placeholder TVars; it never changes already-structured solver types.
-tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
 --
 --
 name: PostSolve does not introduce new free type variables
@@ -508,7 +508,7 @@ logic:
       - assert freeVars(postType) ⊆ freeVars(preType)
 inputs: Canonical module + nodeTypesPre + nodeTypesPost
 oracle: PostSolve cannot make a node more polymorphic than what the solver inferred.
-tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
 --
 --
 name: Lambdas always get concrete structural function types
@@ -787,7 +787,7 @@ inputs: TypedOptimized LocalGraph from StandardTestSuites, plus targeted program
 oracle: Every TypedPath.Unbox segment carries a Can.Type that is ground, references a
   single-constructor Can.Unbox union, and that union has exactly one field. No Unbox
   segment exists for multi-constructor or multi-field types.
-tests: compiler/tests/TestLogic/LocalOpt/UnboxPathGroundTypeTest.elm
+tests: REMOVED. compiler/tests/TestLogic/LocalOpt/UnboxPathGroundTypeTest.elm no longer exists; no replacement checker.
 --
 
 ---
@@ -989,7 +989,7 @@ logic: For each entry in registry.reverseMapping:
   * nodeType extracts the MonoType from any MonoNode variant
 inputs: Monomorphized graphs
 oracle: Every live registry entry's MonoType matches the corresponding node's type.
-tests: compiler/tests/Compiler/Generate/Monomorphize/RegistryNodeTypeConsistencyTest.elm
+tests: compiler/tests/TestLogic/Monomorphize/RegistryNodeTypeConsistencyTest.elm
 --
 --
 name: MonoCase branches match case result type
@@ -1018,7 +1018,7 @@ logic: Collect all lambdaId values from:
 Assert the collected set has no duplicates.
 inputs: Monomorphized graphs with many closures
 oracle: Every closure/function has a unique lambdaId.
-tests: compiler/tests/TestLogic/Monomorphize/LambdaIdUniquenessTest.elm
+tests: REMOVED. compiler/tests/TestLogic/Monomorphize/LambdaIdUniquenessTest.elm no longer exists; no replacement checker.
 --
 --
 name: No CEcoValue MVar in user-defined function types
@@ -1195,7 +1195,7 @@ oracle: Every MonoUnbox segment's container type exists in ctorShapes with exact
   The CtorLayout unboxed bitmap correctly reflects whether the single field is an
   unboxable primitive. No MonoUnbox is present for multi-constructor or multi-field
   types.
-tests: compiler/tests/TestLogic/Monomorphize/UnboxCtorLayoutConsistencyTest.elm
+tests: REMOVED. compiler/tests/TestLogic/Monomorphize/UnboxCtorLayoutConsistencyTest.elm no longer exists; no replacement checker.
 --
 --
 name: MonoVarGlobal type arity matches referenced node arity
@@ -1241,19 +1241,15 @@ logic: For every MonoClosure with MFunction type after GlobalOpt:
   * Established by Staging.regroup in GlobalOpt; checked at compile time under mono.validate by Compiler.Pipeline.Steps.checkClosureStaging
 inputs: GlobalOpt output graphs
 oracle: All closures have param counts matching their stage arity.
-tests: compiler/tests/TestLogic/GlobalOpt/ClosureStageArityTest.elm
+tests: compiler/tests/TestLogic/Generate/MonoFunctionArityTest.elm (replaces the removed TestLogic/GlobalOpt/ClosureStageArityTest.elm)
 --
 --
-name: Returned closure param counts tracked
+name: Returned closure param counts tracked (REMOVED)
 phase: global optimization
-invariants: GOPT_002
-ir: MonoGraph.returnedClosureParamCounts
-logic: For every function that returns a closure:
-  * The returnedClosureParamCounts map entry equals the first-stage parameter count
-  * Computed by computeReturnedClosureParamCount after ABI normalization
-inputs: GlobalOpt output graphs
-oracle: Map is complete for all closure-returning functions.
-tests: NOT YET IMPLEMENTED
+invariants: GOPT_002 (removed; no longer in invariants.csv)
+status: REMOVED. MonoGraph.returnedClosureParamCounts and computeReturnedClosureParamCount
+  no longer exist in the compiler, and GOPT_002 has been dropped from invariants.csv.
+  There is nothing to test; this entry is kept only as a record.
 --
 --
 name: Case/if joins claim no staging beyond what all branches agree on
@@ -1384,7 +1380,7 @@ logic: For closure partial application and application ops:
   * Assert `_operand_types`, `unboxed_bitmap`, and `newargs_unboxed_bitmap` exactly match SSA operand types and layout.
 inputs: Monomorphized programs using closures
 oracle: Bitmaps match SSA types; no i1 in closure captures; attributes consistent with runtime expectations.
-tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
 name: Destruct paths follow destructor MonoType
@@ -1444,7 +1440,7 @@ logic: For each of these ops:
   * Assert exact one-to-one type equality and order.
 inputs: Generated MLIR modules
 oracle: No divergence between operand types and recorded attributes.
-tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypesAttrTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/OperandTypesAttrTest.elm
 --
 --
 name: Boolean constants use !eco.value except in control-flow
@@ -1468,7 +1464,7 @@ logic: For each `eco.case`:
   * Verify each `eco.yield` operand arity and types exactly match the eco.case result types.
 inputs: MLIR for pattern matches and cases
 oracle: All eco.case ops produce SSA values; all alternatives end with eco.yield matching result types.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: All eco.call targets exist as func.func
@@ -1522,7 +1518,7 @@ logic: Assert monoTypeToMlir maps MChar to i16 (Eco_Char), not i32:
   * All codegen char constants and ops must use i16.
 inputs: MLIR with char operations
 oracle: No i32 for char values; all use i16.
-tests: compiler/tests/Compiler/Generate/CodeGen/CharTypeMappingTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CharTypeMappingTest.elm
 --
 --
 name: List construction uses eco.construct.list
@@ -1535,7 +1531,7 @@ logic: List values are constructed:
   * Never with eco.construct.custom.
 inputs: MLIR with list operations
 oracle: No eco.construct.custom for lists.
-tests: compiler/tests/Compiler/Generate/CodeGen/ListConstructionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/ListConstructionTest.elm
 --
 --
 name: Tuple construction uses dedicated ops
@@ -1548,7 +1544,7 @@ logic: Tuples are constructed:
   * Never with eco.construct.custom.
 inputs: MLIR with tuple operations
 oracle: No eco.construct.custom for tuples.
-tests: compiler/tests/Compiler/Generate/CodeGen/TupleConstructionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/TupleConstructionTest.elm
 --
 --
 name: Record construction uses eco.construct.record or eco.constant
@@ -1560,7 +1556,7 @@ logic: Records are constructed:
   * With eco.constant EmptyRec for empty records (never heap allocated).
 inputs: MLIR with record operations
 oracle: Empty records are constants; non-empty use eco.construct.record.
-tests: compiler/tests/Compiler/Generate/CodeGen/RecordConstructionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/RecordConstructionTest.elm
 --
 --
 name: Well-known singletons use eco.constant
@@ -1571,7 +1567,7 @@ logic: These values are always created via eco.constant:
   * Never via eco.construct or allocation.
 inputs: MLIR with singleton values
 oracle: All singletons are eco.constant.
-tests: compiler/tests/Compiler/Generate/CodeGen/SingletonConstantsTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/SingletonConstantsTest.elm
 --
 --
 name: eco.construct.custom matches CtorLayout
@@ -1583,7 +1579,7 @@ logic: eco.construct.custom is used only for user-defined custom ADTs:
   * Operand count matches layout.
 inputs: MLIR with custom type construction
 oracle: Attributes match layout; no mismatched construction.
-tests: compiler/tests/Compiler/Generate/CodeGen/CustomConstructionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CustomConstructionTest.elm
 --
 --
 name: List destructuring uses dedicated projection ops
@@ -1595,7 +1591,7 @@ logic: List destructuring uses:
   * Never eco.project.custom or tuple or record projection ops.
 inputs: MLIR with list destructuring
 oracle: Only list-specific projection ops for lists.
-tests: compiler/tests/Compiler/Generate/CodeGen/ListProjectionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/ListProjectionTest.elm
 --
 --
 name: Tuple destructuring uses dedicated projection ops
@@ -1607,7 +1603,7 @@ logic: Tuple destructuring uses:
   * Never eco.project.custom or eco.project.record.
 inputs: MLIR with tuple destructuring
 oracle: Only tuple-specific projection ops for tuples.
-tests: compiler/tests/Compiler/Generate/CodeGen/TupleProjectionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/TupleProjectionTest.elm
 --
 --
 name: Record field access uses eco.project.record
@@ -1619,7 +1615,7 @@ logic: Record field access uses:
   * Never eco.project.custom.
 inputs: MLIR with record field access
 oracle: Only record projection ops for records.
-tests: compiler/tests/Compiler/Generate/CodeGen/RecordProjectionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/RecordProjectionTest.elm
 --
 --
 name: Custom ADT field access uses eco.project.custom
@@ -1631,7 +1627,7 @@ logic: Custom ADT field access uses:
   * No other projection op is used for custom ADT fields.
 inputs: MLIR with custom type destructuring
 oracle: Only eco.project.custom for custom types.
-tests: compiler/tests/Compiler/Generate/CodeGen/CustomProjectionTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CustomProjectionTest.elm
 --
 --
 name: All construct ops produce !eco.value
@@ -1642,7 +1638,7 @@ logic: All eco.construct.* operations produce !eco.value results:
   * Regardless of whether any fields are stored unboxed.
 inputs: MLIR with construction ops
 oracle: Result type is always !eco.value.
-tests: compiler/tests/Compiler/Generate/CodeGen/ConstructResultTypeTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/ConstructResultTypeTest.elm
 --
 --
 name: Container construct unboxed_bitmap matches SSA types
@@ -1653,7 +1649,7 @@ logic: For these ops, the unboxed_bitmap is derived solely from SSA operand MLIR
   * A bit is set iff the operand MLIR type is i64, f64, or i16.
 inputs: MLIR with container construction
 oracle: Bitmap bits match operand types exactly.
-tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
 name: List construct head_unboxed matches SSA type
@@ -1664,7 +1660,7 @@ logic: For eco.construct.list:
   * head_unboxed is true iff the SSA head operand MLIR type is i64, f64, or i16.
 inputs: MLIR with list construction
 oracle: head_unboxed matches head operand type.
-tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
 name: eco.case alternatives terminate with eco.yield
@@ -1677,7 +1673,7 @@ logic: Every eco.case alternative region:
   * No alternative falls through past the end of a region.
 inputs: MLIR with case expressions
 oracle: All alternatives terminate with eco.yield; no other terminators allowed.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: eco.case tags array length matches alternatives
@@ -1687,7 +1683,7 @@ ir: eco.case ops
 logic: eco.case tags array length equals the number of alternative regions.
 inputs: MLIR with case expressions
 oracle: Tag count matches alternative count.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTagsCountTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTagsCountTest.elm
 --
 --
 name: eco.jump targets valid joinpoints
@@ -1699,7 +1695,7 @@ logic: eco.jump target refers to:
   * Jump argument types match the joinpoint block argument types.
 inputs: MLIR with joinpoints
 oracle: All jumps target valid joinpoints with matching types.
-tests: compiler/tests/Compiler/Generate/CodeGen/JumpTargetTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/JumpTargetTest.elm
 --
 --
 name: Joinpoint IDs are unique within func.func
@@ -1711,7 +1707,7 @@ logic: Within a single func.func:
   * No duplicate IDs that could cause ambiguity during lowering.
 inputs: MLIR with multiple joinpoints
 oracle: All joinpoint IDs are unique within their function.
-tests: compiler/tests/Compiler/Generate/CodeGen/JoinpointUniqueIdTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/JoinpointUniqueIdTest.elm
 --
 --
 name: _operand_types required when operands present
@@ -1723,7 +1719,7 @@ logic: _operand_types is required and must match SSA operand types:
   * May be omitted for zero-operand ops.
 inputs: MLIR ops
 oracle: _operand_types present and correct when operands exist.
-tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypesAttrTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/OperandTypesAttrTest.elm
 --
 --
 name: eco.papCreate has valid arity and captures
@@ -1736,7 +1732,7 @@ logic: eco.papCreate requires:
   * num_captured < arity
 inputs: MLIR with closure creation
 oracle: Arity and capture constraints satisfied.
-tests: compiler/tests/Compiler/Generate/CodeGen/PapCreateArityTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapCreateArityTest.elm
 --
 --
 name: eco.papExtend produces !eco.value result
@@ -1747,7 +1743,7 @@ logic: MLIR codegen emits eco.papExtend with !eco.value result type:
   * Produces immediate results only by inserting eco.unbox after papExtend when expected result type is immediate.
 inputs: MLIR with closure application
 oracle: papExtend always returns !eco.value; unboxing is explicit.
-tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm
 --
 --
 name: eco.papCreate arity matches function parameter count
@@ -1760,7 +1756,7 @@ logic: eco.papCreate arity attribute must equal the number of parameters of the 
   * External kernel functions without definitions are skipped.
 inputs: MLIR with closure creation
 oracle: papCreate arity equals referenced function parameter count.
-tests: compiler/tests/Compiler/Generate/CodeGen/PapArityConsistencyTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapArityConsistencyTest.elm
 --
 --
 name: eco.papExtend remaining_arity matches source PAP remaining
@@ -1777,7 +1773,7 @@ logic: eco.papExtend remaining_arity must equal the source PAP's remaining arity
   * Verify: remaining_arity >= num_new_args (no over-application).
 inputs: MLIR with closure application
 oracle: remaining_arity equals source PAP's remaining; no over-application.
-tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendArityTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendArityTest.elm
 --
 --
 name: eco.yield only in eco.case alternatives
@@ -1791,7 +1787,7 @@ logic: eco.yield may only appear as the terminator of an eco.case alternative re
   * If eco.yield appears outside an eco.case alternative, it is a codegen bug.
 inputs: MLIR with eco.yield ops
 oracle: All eco.yield ops are inside eco.case alternative regions.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: eco.return forbidden in eco.case alternatives
@@ -1804,7 +1800,7 @@ logic: eco.return is forbidden inside eco.case alternative regions:
   * eco.return appearing in a case alternative is a codegen bug.
 inputs: MLIR with case expressions
 oracle: No eco.return ops inside eco.case alternatives.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: Single eco.type_table per module
@@ -1814,7 +1810,7 @@ ir: Module structure
 logic: Each module has at most one eco.type_table op at module scope.
 inputs: MLIR modules
 oracle: No duplicate type tables.
-tests: compiler/tests/Compiler/Generate/CodeGen/TypeTableUniquenessTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/TypeTableUniquenessTest.elm
 --
 --
 name: eco.dbg type IDs reference valid type table entries
@@ -1825,7 +1821,7 @@ logic: When eco.dbg carries arg_type_ids:
   * Each referenced type id must refer to a valid entry in the module eco.type_table.
 inputs: MLIR with debug info
 oracle: All type IDs are valid.
-tests: compiler/tests/Compiler/Generate/CodeGen/DbgTypeIdsTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/DbgTypeIdsTest.elm
 --
 --
 name: eco.case scrutinee type matches case_kind
@@ -1840,7 +1836,7 @@ logic: Scrutinee representation and case_kind agree:
   * case_kind="str" requires !eco.value scrutinee.
 inputs: MLIR with various case kinds
 oracle: Scrutinee type matches case_kind.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseScrutineeTypeTest.elm, compiler/tests/Compiler/Generate/CodeGen/CaseKindScrutineeTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseScrutineeTypeTest.elm, compiler/tests/TestLogic/Generate/CodeGen/CaseKindScrutineeTest.elm
 --
 --
 name: Kernel calls use types matching the func.func declaration
@@ -1866,7 +1862,7 @@ logic: MLIR codegen does not emit:
   * These allocation ops are introduced only by later lowering from eco.construct and related ops.
 inputs: MLIR before lowering
 oracle: No allocation ops in codegen output.
-tests: compiler/tests/Compiler/Generate/CodeGen/NoAllocateOpsTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/NoAllocateOpsTest.elm
 --
 --
 name: _operand_types attribute list matches SSA operand count and types
@@ -1878,7 +1874,7 @@ logic: For any operation with _operand_types:
   * Each declared type exactly matches the corresponding SSA operand type (same order).
 inputs: MLIR ops
 oracle: Perfect correspondence between attribute and SSA types.
-tests: compiler/tests/Compiler/Generate/CodeGen/OperandTypeConsistencyTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/OperandTypeConsistencyTest.elm
 --
 --
 name: Symbol definitions are unique within module
@@ -1890,7 +1886,7 @@ logic: Within a module:
   * No two symbol-bearing ops may define the same symbol.
 inputs: MLIR modules
 oracle: All symbol definitions are unique.
-tests: compiler/tests/Compiler/Generate/CodeGen/SymbolUniquenessTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/SymbolUniquenessTest.elm
 --
 --
 name: All blocks end with terminators
@@ -1903,7 +1899,7 @@ logic: Every block in every region:
   * Each eco.case alternative region must be properly terminated with eco.yield with no fallthrough.
 inputs: MLIR from codegen
 oracle: All blocks are properly terminated.
-tests: compiler/tests/Compiler/Generate/CodeGen/BlockTerminatorTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/BlockTerminatorTest.elm
 --
 --
 name: eco.call targets exist and are non-stub
@@ -1915,7 +1911,7 @@ logic: Every eco.call callee must:
   * Not target placeholder/stub implementations when a non-stub implementation is present.
 inputs: MLIR with calls
 oracle: All calls target valid, non-stub functions.
-tests: compiler/tests/Compiler/Generate/CodeGen/CallTargetValidityTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CallTargetValidityTest.elm
 --
 --
 name: eco.case is NOT a block terminator (value-producing)
@@ -1952,7 +1948,7 @@ logic: Every decider region that becomes an eco.case alternative:
   * Hitting a non-eco.yield tail in a case alternative is a codegen bug.
 inputs: MLIR with nested cases
 oracle: All alternative regions end with eco.yield.
-tests: compiler/tests/Compiler/Generate/CodeGen/CaseTerminationTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/CaseTerminationTest.elm
 --
 --
 name: EcoControlFlowToSCF matches value-producing eco.case
@@ -1977,7 +1973,7 @@ logic: For PAP ops:
   * Number of set bits in unboxed_bitmap equals count of immediate MLIR operand typed operands.
 inputs: MLIR with closures
 oracle: Bitmap constraints satisfied; bits match operand types.
-tests: compiler/tests/Compiler/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
 --
 --
 name: Lambda functions use typed signatures
@@ -2003,7 +1999,7 @@ logic: For every eco.papExtend that is a saturated call (isSaturatedCall) of som
   * Non-saturated papExtend ops (those producing a PAP, not a final result) are excluded from this check since they always return !eco.value.
 inputs: MLIR with closure applications including both saturated and partial applications
 oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug.
-tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm
 --
 --
 name: Kernel declaration completeness
@@ -2354,7 +2350,7 @@ logic: Compare MonoTypes before and after GlobalOpt:
   * No type information lost
 inputs: Monomorphized graphs before/after GlobalOpt
 oracle: Type mutations are limited to documented canonicalization.
-tests: compiler/tests/TestLogic/CrossPhase/TypeConsistencyTest.elm
+tests: REMOVED. compiler/tests/TestLogic/CrossPhase/TypeConsistencyTest.elm no longer exists; no replacement checker.
 --
 
 ---

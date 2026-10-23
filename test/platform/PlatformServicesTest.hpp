@@ -8,7 +8,7 @@
 // (step 3), TimerService::cancel (step 6), WaitService lanes / signal codes /
 // unclaimed children (step 5) and the exit-code export (step 2).
 //
-// Fork-isolated: the Scheduler, TimerService and WaitService are process
+// Child-process isolated (each case runs in a spawned child): the Scheduler, TimerService and WaitService are process
 // singletons with detached worker threads (WaitService's reaps every child of
 // the process with waitpid(-1)), so they must never be started in the test
 // runner process itself, whose E2E suites wait for their own children.

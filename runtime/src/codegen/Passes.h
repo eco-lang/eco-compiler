@@ -56,14 +56,18 @@ std::unique_ptr<mlir::Pass> createEcoPAPSimplifyPass();
 // See plans/string-cmp-order-intrinsic-and-postmono-compare-rewrite.md
 std::unique_ptr<mlir::Pass> createEcoCompareCaseRewritePass();
 
-// ========== Stage 2: Eco -> Standard MLIR (func/cf/arith) ==========
+// ========== Stage 2: Eco -> Standard MLIR (scf) ==========
+// Eligible eco.case/eco.joinpoint become scf ops. No cf is produced here: cf
+// first appears in Stage 3 (EcoToLLVM's control-flow patterns, and the scf->cf
+// step of EcoTailConversions).
 
 // Analyzes and classifies joinpoints for SCF lowering eligibility.
 // Marks looping, single-exit joinpoints with normalized continuations as SCF-candidates.
 std::unique_ptr<mlir::Pass> createJoinpointNormalizationPass();
 
 // Lowers eligible eco.case and eco.joinpoint ops to SCF dialect (scf.if, scf.while).
-// Non-eligible ops are left for createControlFlowLoweringPass.
+// Non-eligible ops are left for EcoToLLVM's control-flow patterns
+// (Passes/EcoToLLVMControlFlow.cpp).
 std::unique_ptr<mlir::Pass> createEcoControlFlowToSCFPass();
 
 /// Rewrites cons-accumulation scf.while loops to scratch-stack chunk builds
@@ -76,11 +80,14 @@ std::unique_ptr<mlir::Pass> createEcoListTemplatePass();
 std::unique_ptr<mlir::Pass> createEcoListCursorPass();
 
 /// Folds eco.project.* / eco.get_tag of a dominating eco.construct.* to the
-/// constructed field operand / constant ctor tag (kernel-opt-10). Func-nested;
-/// runs at the M4 slot before EcoGCPrepare. No-op under ECO_MLIR_FOLD=0.
+/// constructed field operand / constant ctor tag (kernel-opt-10). A module pass
+/// that folds functions in parallel chunks; runs at the M4 slot before
+/// EcoGCPrepare. No-op under ECO_MLIR_FOLD=0.
 std::unique_ptr<mlir::Pass> createEcoFoldProjectPass();
 
-// Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
+// Declared but not defined and never scheduled: eco control flow ops (case,
+// joinpoint, jump, return) are lowered to cf by EcoToLLVM's patterns in
+// Passes/EcoToLLVMControlFlow.cpp.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
 // ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
@@ -93,16 +100,19 @@ std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 // EcoGCPrepare.
 std::unique_ptr<mlir::Pass> createEcoMarkGCLeafCallsPass();
 
-// Computes GC root sets for all GCRootCarrier ops (allocations, calls,
-// PAP ops, construct ops) via SSA liveness analysis, unioned with each
-// op's front-end root hints. Groups adjacent allocations. Must run after
-// all Eco->Eco transformations and control flow lowering, before EcoToLLVM.
+// Computes MLIR-level root sets for all GCRootCarrier ops (allocations,
+// calls, PAP ops, construct ops) via SSA liveness analysis, unioned with each
+// op's front-end root hints, and groups adjacent allocations. These root
+// operands are NOT the runtime GC roots: lowering discards them
+// (emitAllocWithSafepoint / emitSafepointMarker ignore them); the real roots, statepoints and
+// stackmaps come from LLVM's RS4GC (CGEN_077(b)). Must run after all Eco->Eco
+// transformations and control flow lowering, before EcoToLLVM.
 std::unique_ptr<mlir::Pass> createEcoGCPreparePass();
 
 // Audits GC root sets attached by EcoGCPrepare against SSA liveness of
 // !eco.value values. Emits diagnostics and fails the pipeline if any
 // GCRootCarrier op is missing a root that is semantically live across it.
-// No-op in non-debug builds (gated on ECO_GC_DEBUG).
+// No-op unless built with ECO_LOWERING_VALIDATION (and only scheduled then).
 std::unique_ptr<mlir::Pass> createEcoGCLivenessAuditPass();
 
 // ========== Stage 3: Eco -> LLVM Dialect ==========
@@ -138,9 +148,9 @@ std::unique_ptr<mlir::Pass> createBFToLLVMPass();
 
 // ========== Tail Conversions (post-EcoToLLVM) ==========
 
-// Per-function scf->cf + cf->llvm + arith->llvm conversion, anchored on
-// LLVM::LLVMFuncOp so the pass manager parallelizes it across functions.
-// Replaces the module-anchored SCFToControlFlow / ConvertControlFlowToLLVM /
+// Per-function scf->cf, then arith+cf->llvm conversion. A ModuleOp-anchored
+// pass that converts the LLVM::LLVMFuncOps itself, in parallel chunks of
+// functions. Replaces the SCFToControlFlow / ConvertControlFlowToLLVM /
 // ArithToLLVM tail; cf.assert is deliberately unsupported (eco never emits it —
 // its lowering would require module-level symbol insertion, which is what
 // forces the stock cf-to-llvm pass to be module-anchored).
@@ -189,7 +199,7 @@ void populateEcoCallToLLVMPatterns(mlir::TypeConverter &typeConverter,
 //===----------------------------------------------------------------------===//
 
 // Creates the type converter for eco types to LLVM types.
-// Converts eco.value -> i64 (tagged pointer representation).
+// Converts eco.value -> ptr addrspace(1) (GC-managed HPointer, CGEN_012).
 std::unique_ptr<mlir::TypeConverter> createEcoToLLVMTypeConverter(mlir::MLIRContext *ctx);
 
 //===----------------------------------------------------------------------===//

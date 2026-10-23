@@ -103,7 +103,8 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Elm_Kernel_Utils_cmp3 declaration this pass may insert.
     pm.addPass(eco::createEcoCompareCaseRewritePass());
 
-    // Generate external declarations for undefined functions (kernel functions, etc.)
+    // Validate that every eco.call callee is defined or declared (CGEN_011);
+    // the pass only reports, it generates no declarations.
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
@@ -133,7 +134,7 @@ void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // Stage 1: Eco -> Eco transformations.
     buildEcoToEcoPipeline(pm, opts);
 
-    // Stage 2: Eco -> Standard MLIR (func/cf/arith).
+    // Stage 2: Eco -> Standard MLIR (scf; cf only appears in Stage 3).
     pm.addPass(eco::createJoinpointNormalizationPass());
     pm.addPass(eco::createEcoControlFlowToSCFPass());
     // Chunked-list Tier-B templates: rewrite cons-accumulation loops to
@@ -152,8 +153,8 @@ void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // codegen regression appears.
     // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
-    // Kernel-opt-10 (M4 slot). Two func-nested passes, so they merge into ONE
-    // parallel sweep over the ~64k functions. They MUST stay before
+    // Kernel-opt-10 (M4 slot): the module pass EcoFoldProject (default-on) and
+    // a func-nested CSE (default-off, ECO_MLIR_CSE=1). They MUST stay before
     // EcoGCPrepare: that pass appends root operands to carrier ops, after
     // which "structurally identical" ops differ by root set and CSE would
     // either miss every merge or merge ops with different root sets. Running
@@ -183,7 +184,7 @@ void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     // run) and `--emit=mlir-llvm` too late (the ops are gone).
     buildEcoToOptPipeline(pm, opts);
 
-    // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
+    // Stage 2.5: GC preparation (MLIR-level root sets, allocation grouping).
     // Publish the per-callee cannot-GC fact as a call-local attr first: by here
     // every kernel decl exists and every kernel call site is final (both
     // EcoCompareCaseRewrite, which can mint Elm_Kernel_Utils_cmp3, and

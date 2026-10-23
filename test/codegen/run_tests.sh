@@ -13,7 +13,13 @@
 #     of mis-scoring them; and
 #   * needs no external FileCheck or separately-built `ecoc`.
 #
-# See jit-test-tidy.md for the full write-up.
+# Note: the `// RUN: %ecoc ... | %FileCheck %s` headers in the .mlir
+# fixtures are not executed by lit (there is no lit config). The C++
+# driver only scans the RUN line for the `-emit=` mode, a leading
+# `not %ecoc` (expected non-zero exit) and a small whitelist of
+# pass-through ecoc flags (`--exe-reachability`); the rest of the
+# `%ecoc ... | %FileCheck %s` pipeline is decorative. CHECK lines are
+# matched by test/CheckPatterns.hpp, not by FileCheck.
 #
 # This stub forwards to the C++ driver so existing muscle memory /
 # scripts keep working.

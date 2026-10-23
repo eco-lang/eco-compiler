@@ -609,26 +609,27 @@ struct IsolatedSuites {
 static IsolatedSuites buildIsolatedSuites() {
     IsolatedSuites s;
     // Runtime platform services (Scheduler quiescence hook, TimerService
-    // cancel, WaitService lanes, exit code). Fork-isolated: their singletons
-    // start worker threads (WaitService reaps every child of the process).
+    // cancel, WaitService lanes, exit code). Spawned per case: their
+    // singletons start worker threads (WaitService reaps every child of the
+    // process).
     s.platformServices =
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("PlatformServices");
     registerPlatformServicesTests(*s.platformServices);
     registerSpawnTests(*s.platformServices);
 
     // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
-    // / Bytes.width on a slice under F3). Fork-isolated so each abort is reported
-    // as a single failed test rather than killing the binary.
+    // / Bytes.width on a slice under F3). Spawned per case so each abort is
+    // reported as a single failed test rather than killing the binary.
     s.sliceCrashers =
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("SliceCrashers");
     registerSliceCrasherTests(*s.sliceCrashers);
     registerKernelExportsCrasherTests(*s.sliceCrashers);
 
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
-    // Run each case in a forked child so a SEGV/abort in one test only fails
+    // Run each case in a spawned child so a SEGV/abort in one test only fails
     // that test instead of taking down the whole binary.
     // GC triggers for large-body allocation (plans/large-body-gc-trigger.md).
-    // Forked per case: before the fix the churn aborted the process.
+    // Spawned per case: before the fix the churn aborted the process.
     s.largeBodyChurn =
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
     s.largeBodyChurn->add(testLargeBodyChurnRunsMinors);
@@ -675,7 +676,7 @@ static IsolatedSuites buildIsolatedSuites() {
     s.gcPressure->add(testPanicSweepDrivesAllocationToCompletion);
     // Group F — the ensure primitive behind capacity-check hoisting
     // (HEAP_041). Reconfigures the heap to tiny/threshold-tripping shapes,
-    // so it rides the same fork isolation as the rest of this suite.
+    // so it rides the same child-process isolation as the rest of this suite.
     s.gcPressure->add(testEnsureHeadroomPostconditionAcrossAdvanceAndGC);
     s.gcPressure->add(testEnsureHeadroomEndBelowPtr);
     s.gcPressure->add(testGCPauseStatsMMU);
@@ -692,7 +693,7 @@ static IsolatedSuites buildIsolatedSuites() {
     s.gcPressure->add(testFailSoftUsesObjectBytes);
     s.gcPressure->add(testAllocEndCappedCounted);
     // Group G — contiguous nursery extents + the slice layer (HEAP_042).
-    // Reconfigures the heap geometry, so it rides the same fork isolation.
+    // Reconfigures the heap geometry, so it rides the same child-process isolation.
     s.gcPressure->add(testNurseryExtentsAreContiguousAndMirrored);
     s.gcPressure->add(testNurseryGrowthExtendsInPlaceAndSurvivesGC);
     s.gcPressure->add(testNurserySliceReleaseRetainsCommitAcrossReacquire);
@@ -1531,7 +1532,7 @@ int main(int argc, char* argv[]) {
     auto &alloc = Allocator::instance();
     GCStats combined_stats = alloc.getCombinedStats();
 
-    // Add accumulated stats from forked Elm test processes.
+    // Add accumulated stats from spawned Elm test processes.
     // All Elm E2E suites share ElmE2EBase::getAccumulatedStats().
     combined_stats.combine(ElmE2EBase::getAccumulatedStats());
 

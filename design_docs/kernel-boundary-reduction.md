@@ -1,5 +1,12 @@
 # Kernel Boundary Reduction
 
+> **Status (2026-10-23): historical snapshot of 2026-08-13.** The measured figures below (kernel
+> call counts, CPU shares such as "GC is 41.5%", wall times) predate the later GC, LSS and
+> backend optimization work and no longer describe the current compiler or runtime; code
+> anchors and section references may also have drifted. Treat the numbers as the state on
+> 2026-08-13 only. For the current kernel boundary see `design_docs/theory/kernels/` and
+> `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`.
+
 **State of the kernel boundary as of 2026-08-13**, after the kernel-opt series
 (items 01–14; full ledger `benchmarks/kernel-opt.md` Runs D–S + DONE,
 dispositions `kernel-opt-status.md`). This document describes what crosses the

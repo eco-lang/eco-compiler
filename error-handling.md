@@ -2,7 +2,7 @@
 
 ## TODO — remove silent drop of unhandled `Task.fail` in the scheduler
 
-`runtime/src/platform/Scheduler.cpp:737-742` currently absorbs an unhandled
+`runtime/src/platform/Scheduler.cpp:956-962` currently absorbs an unhandled
 top-level `Task.fail` with a warning to stderr and continues:
 
 ```cpp
@@ -39,7 +39,7 @@ not the silent default.
 
 ### Notes on what already works correctly
 
-`crashOnError` (`compiler/src/System/IO.elm:258-260`) wraps every fallible
+`crashOnError` (`compiler/src/System/IO.elm:264-266`) wraps every fallible
 internal IO with `Task.onError (\err -> crash ...)`, so the compiler's own
 build pipeline does NOT hit this silent path — IO errors crash loudly via the
 `Eco.Kernel.Crash.crash` exit. The drop path only fires for user code (or

@@ -666,7 +666,8 @@ LogicalResult PapExtendOp::verify() {
 
   // Typed mode: remaining_arity present.
   // CGEN_057 kernel existence is checked by PapCreateOp::verifySymbolUses (O(1)).
-  // Signature validation is in CheckEcoClosureCapturesPass.
+  // No signature validation against the callee is done here (or elsewhere:
+  // CheckEcoClosureCapturesPass checks only papCreate/papCreateGroup sites).
   return success();
 }
 
@@ -845,9 +846,11 @@ LogicalResult CallOp::verify() {
   unsigned realOperandCount = operands.size() - rootCount;
 
   // kernel-opt-12: the purity attr's structural preconditions. The rootCount
-  // arm is the only place the attr+roots combination is caught; the module
-  // verifier the PassManager runs after every pass makes it fire immediately
-  // after EcoGCPrepare if the strip there is ever removed.
+  // arm makes the after-each-pass module verifier fire immediately after
+  // EcoGCPrepare if the strip there is ever removed -- but only where that
+  // verifier runs (ecoc, the JIT runner, validation builds; the release
+  // native driver and eco-boot disable it). EcoGCLivenessAudit (validation
+  // builds) also reports a surviving 'eco.cse_safe'.
   if ((*this)->hasAttr(kCseSafeAttrName)) {
     if (!calleeAttr)
       return emitOpError("'eco.cse_safe' is only valid on a direct call "
@@ -866,8 +869,9 @@ LogicalResult CallOp::verify() {
       return emitOpError("must not have both 'callee' and 'remaining_arity' attributes");
     }
 
-    // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
-    // O(N) module walks on every verifier invocation during conversion.
+    // No signature validation against the callee: it would need an O(N)
+    // module walk on every verifier invocation during conversion, and no
+    // later pass checks direct-call signatures either.
     return success();
   }
 
@@ -1090,9 +1094,10 @@ void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
 //
 // The guard demands EXACT SSA type equality. The construct verifiers tie the
 // 2-bit slot kind to the field's SSA type, BUT a kind=0 (boxed) slot legally
-// accepts an aggregate-typed or i1 operand which the construct lowering boxes
-// via eco.to_heap — there the projected !eco.value is NOT the operand, so the
-// fold must bail. Type equality is exactly that test.
+// accepts an aggregate-typed operand which the construct lowering boxes via
+// eco.to_heap — there the projected !eco.value is NOT the operand, so the
+// fold must bail. Type equality is exactly that test. (An i1 field is not
+// accepted: verifySlotKinds rejects it, Bool is boxed first — B14.)
 //
 // The index guard is against the DECLARED field count, never fields.size():
 // EcoGCPrepare splices root operands into the same variadic after the declared
@@ -1335,12 +1340,12 @@ LogicalResult ClosureEnvMakeOp::verify() {
 }
 
 LogicalResult ToHeapOp::verify() {
-  // CGEN_029: !eco.closure_env operands are rejected; closure realisation
+  // CGEN_062: !eco.closure_env operands are rejected; closure realisation
   // goes through eco.make.closure.
   Type valTy = getValue().getType();
   if (isa<eco::ClosureEnvType>(valTy)) {
     return emitOpError("eco.to_heap rejects !eco.closure_env operands; use "
-                       "eco.make.closure to realise heap closures (CGEN_029)");
+                       "eco.make.closure to realise heap closures (CGEN_062)");
   }
   // The TableGen Eco_DataAggregate constraint already restricts to
   // tuple2/3/record/custom/cons; this is just defensive belt-and-braces.
@@ -1374,7 +1379,7 @@ LogicalResult ToHeapOp::verify() {
 }
 
 LogicalResult FromHeapOp::verify() {
-  // CGEN_063 mirror of CGEN_029: !eco.closure_env results are rejected;
+  // CGEN_063 mirror of CGEN_062: !eco.closure_env results are rejected;
   // closure environments are produced by eco.make.closure_env (or read out
   // of the closure header at lower levels), not from heap-aggregate loads.
   Type resTy = getResult().getType();

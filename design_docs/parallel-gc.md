@@ -3,7 +3,15 @@
 **Status:** investigation report, 2026-09-24. Not an implementation plan. Nothing in the runtime was
 changed to produce it.
 
-**Question:** Eco's collector runs entirely on the mutator thread (THEORY.md §Execution Model).
+> **Status note (2026-10-23):** this report describes the collector as it was on 2026-09-24.
+> Since then the threaded-gc phases have shipped: GC work now also runs on a helper thread pool
+> (`runtime/src/allocator/GCHelperPool.cpp`: parallel minor copying, parallel marking, deferred
+> decommit) and old-gen marking can run concurrently with the mutator. Statements below that the
+> collector "runs entirely on the mutator thread" describe the 2026-09-24 baseline, not today's
+> runtime. See `plans/threaded-gc-master-plan.md` and the HEAP_06x/HEAP_07x rows of
+> `invariants.csv` for the current design.
+
+**Question:** Eco's collector ran entirely on the mutator thread at the time of writing (THEORY.md §Execution Model; see the status note above).
 How much GC work can move to other threads, to improve throughput and pause times? Four headline
 ideas were examined: (1) incremental marking, (2) concurrent marking, (3) concurrent sweeping and
 (4) concurrent copying in the nursery. The study also looks at the space around them and at what
@@ -815,7 +823,11 @@ residency snapshot].
 
 ### 8.2 Collector-side reference counting for the old gen
 
-HEAP_018 (acyclic) makes RC complete, and the old gen has a property no mainstream RC system has:
+HEAP_018 (acyclic) would make RC complete for value data (lists, records, custom types), but **not
+for closures**: a self-capturing recursive closure stores its own address, and a mutually recursive
+let-group is allocated together and cross-wired (`eco.papCreateGroup`), so closure graphs can form
+cycles. Pure RC would leak those, so any RC scheme still needs a backup tracing pass (or cycle
+handling for closures). Beyond that, the old gen has a property no mainstream RC system has:
 **old→old references are created only by the GC at promotion, and never change afterwards.** That
 makes a collector-owned scheme possible:
 - **Increments** happen only in the promoting minor GC.

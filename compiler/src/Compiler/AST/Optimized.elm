@@ -246,8 +246,8 @@ empty =
 
 
 {-| An empty local graph: no main, no nodes, no fields. The typed path stores
-it in place of the erased graph it no longer computes (cache-serialization plan
-S5).
+`typedPathStub` (which is this graph for a module without `main`) in place of
+the erased graph it no longer computes (cache-serialization plan S5).
 -}
 emptyLocalGraph : LocalGraph
 emptyLocalGraph =

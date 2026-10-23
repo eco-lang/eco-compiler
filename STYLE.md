@@ -13,8 +13,10 @@ This document defines the coding conventions for the eco-runtime project.
 ### Header Files
 
 - Use `#ifndef` include guards with format: `ECO_<FILENAME>_H`
-- Example: `#ifndef ECO_GARBAGECOLLECTOR_H`
+- Example: `#ifndef ECO_ALLOCATOR_H`
 - Place include guards on lines 1 and last line
+- `#pragma once` is also in use (e.g. 14 headers under `runtime/src/allocator/`) and is
+  acceptable; match the style of the surrounding directory
 - Organize includes in this order:
   1. Standard library headers (`<memory>`, `<mutex>`, etc.)
   2. Project headers (`"AllocatorCommon.hpp"`, etc.)
@@ -451,12 +453,12 @@ See the **Comments** section above for detailed guidance on writing comments. Ke
 
 - Use `HPointer` for heap references
 - Convert with `fromPointer()` and `toPointer()` helpers
-- Pointers are 40-bit offsets, not absolute addresses
+- Pointers are absolute addresses (pointer indicator bit 0), not offsets from a heap base;
+  embedded constants set the indicator bit (see `design_docs/theory/value-representation.md`)
 
 #### GC Integration
 
-- Use `GarbageCollector::instance()` singleton
-- Thread-local nurseries via `getNursery()`
+- Use `Allocator::instance()` singleton
 - Root set management via `getRootSet()`
 
 #### Statistics
@@ -490,4 +492,5 @@ RC_GTEST_PROP(GarbageCollector, PreservesReachableObjects, (const HeapGraphDesc 
 ## References
 
 - See `CLAUDE.md` for project architecture and build instructions
-- See design documents in `design_docs/gc/` for GC algorithms
+- See `design_docs/theory/runtime/garbage-collector.md` for the GC design, and
+  `design_docs/gc_handbook/` for background on GC algorithms
