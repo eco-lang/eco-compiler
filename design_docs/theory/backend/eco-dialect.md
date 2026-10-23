@@ -236,7 +236,7 @@ Invariants (`design_docs/invariants.csv`):
 - REP_SSA_001, REP_BOUNDARY_002, REP_BOUNDARY_003, REP_CLOSURE_001, REP_CLOSURE_002, REP_AGG_001, FORBID_CLOSURE_001: representation of values, Bool boxing, aggregates.
 - CGEN_003, CGEN_010, CGEN_020, CGEN_026, CGEN_028, CGEN_029, CGEN_037, CGEN_039, CGEN_053, CGEN_057, CGEN_061, CGEN_062, CGEN_063, CGEN_079: the dialect contract.
 - HEAP_015, HEAP_019, HEAP_044, HEAP_078: layout tags, field kinds, embedded constants, size limits.
-- Stale rows: CGEN_028 names a nonexistent `eco.unreachable`. (CGEN_025, REP_AGG_001, CGEN_034, CGEN_056, CGEN_039 and CGEN_079 were brought into line with the code on 2026-10-23, and the code comments now cite CGEN_061 and CGEN_062 for their rules.)
+- Stale rows: none known. (CGEN_028 named a nonexistent `eco.unreachable` until 2026-10-23; CGEN_025, REP_AGG_001, CGEN_034, CGEN_056, CGEN_039 and CGEN_079 were brought into line with the code on 2026-10-23, and the code comments now cite CGEN_061 and CGEN_062 for their rules.)
 
 Design documents:
 

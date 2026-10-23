@@ -11,7 +11,7 @@ The cost is that the file has no reliable field structure. The header names six 
 ```text
 id;phase;category;status;description;source
 ...
-CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.yield and no alternative falls through past the end of a region; eco.return, eco.jump, eco.crash, and eco.unreachable are forbidden inside eco.case alternatives (except if nested under other non-eco.case regions that are never emitted directly by MLIR codegen);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
+CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.yield and no alternative falls through past the end of a region; any terminator other than eco.yield (e.g. eco.return, eco.jump, eco.crash) is forbidden inside eco.case alternatives (except if nested under other non-eco.case regions that are never emitted directly by MLIR codegen);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 ```
 
 From `design_docs/invariants.csv`. Notice the semicolon in the middle of the description, which a naive split would treat as a column break. The source column here is free text joined with "and"; most rows use a list separated by vertical bars instead, naming Elm modules, C++ files, related rule numbers and plans.

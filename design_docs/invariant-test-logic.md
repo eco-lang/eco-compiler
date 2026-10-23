@@ -1681,7 +1681,7 @@ invariants: CGEN_028
 ir: eco.case ops
 logic: Every eco.case alternative region:
   * Terminates with eco.yield only.
-  * eco.return, eco.jump, eco.crash, and eco.unreachable are forbidden inside eco.case alternatives.
+  * Any terminator other than eco.yield (e.g. eco.return, eco.jump, eco.crash) is forbidden inside eco.case alternatives.
   * No alternative falls through past the end of a region.
 inputs: MLIR with case expressions
 oracle: All alternatives terminate with eco.yield; no other terminators allowed.
@@ -1909,7 +1909,7 @@ phase: MLIR codegen
 invariants: CGEN_042
 ir: MLIR blocks
 logic: Every block in every region:
-  * Must end with a terminator operation (eco.return, eco.jump, eco.crash, eco.unreachable, eco.yield, scf.yield, cf.br, cf.cond_br, etc.).
+  * Must end with a terminator operation (eco.return, eco.jump, eco.crash, eco.yield, scf.yield, cf.br, cf.cond_br, etc.).
   * Note: eco.case is NOT a terminator; it is a value-producing expression.
   * Each eco.case alternative region must be properly terminated with eco.yield with no fallthrough.
 inputs: MLIR from codegen

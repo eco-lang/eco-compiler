@@ -280,7 +280,7 @@ CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.record and eco.co
 
 CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed boolean is true iff the SSA head operand type is unboxable and the paired head_kind attribute encodes the 2-bit slot kind (00=boxed, 01=Int, 10=Float, 11=Char) stored into cons->header.unboxed slot 0 (Updated 2026-04-20: head_kind attribute added alongside head_unboxed);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
 
-CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.yield and no alternative falls through past the end of a region; eco.return, eco.jump, eco.crash, and eco.unreachable are forbidden inside eco.case alternatives (except if nested under other non-eco.case regions that are never emitted directly by MLIR codegen);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
+CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.yield and no alternative falls through past the end of a region; any terminator other than eco.yield (e.g. eco.return, eco.jump, eco.crash) is forbidden inside eco.case alternatives (except if nested under other non-eco.case regions that are never emitted directly by MLIR codegen);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 
 CGEN_029;MLIR_Codegen;ControlFlow;enforced;eco.case tags array length equals the number of alternative regions;runtime/src/codegen/Ops.td
 
@@ -308,7 +308,7 @@ CGEN_040;MLIR_Codegen;OperandTypes;enforced;For any operation that carries an `_
 
 CGEN_041;MLIR_Codegen;ModuleStructure;enforced;Within a module, all symbol definitions must be unique: no two `func.func` operations may have the same `sym_name` (and, more generally, no two symbol-bearing ops may define the same symbol);compiler/tests/TestLogic/Generate/CodeGen/SymbolUniqueness.elm and MLIR func dialect (func.func sym_name)
 
-CGEN_042;MLIR_Codegen;ControlFlow;enforced;Every block in every region emitted by MLIR codegen must end with a terminator operation (e.g. eco.return eco.jump eco.crash eco.unreachable eco.yield scf.yield cf.br cf.cond_br), and each eco.case alternative region must be properly terminated with eco.yield with no fallthrough past the end of the region;compiler/tests/TestLogic/Generate/CodeGen/BlockTerminator.elm and runtime/src/codegen/Ops.td
+CGEN_042;MLIR_Codegen;ControlFlow;enforced;Every block in every region emitted by MLIR codegen must end with a terminator operation (e.g. eco.return eco.jump eco.crash eco.yield scf.yield cf.br cf.cond_br), and each eco.case alternative region must be properly terminated with eco.yield with no fallthrough past the end of the region;compiler/tests/TestLogic/Generate/CodeGen/BlockTerminator.elm and runtime/src/codegen/Ops.td
 
 CGEN_043;MLIR_Codegen;Case;enforced;`eco.case` scrutinee representation and `case_kind` agree: `case_kind="bool"` requires an `i1` scrutinee, `case_kind="int"` requires an `i64` scrutinee, `case_kind="chr"` requires an ECO char scrutinee type, `case_kind="ctor"` requires a boxed `!eco.value` scrutinee, and `case_kind="str"` requires a boxed `!eco.value` scrutinee;runtime/src/codegen/Ops.td and compiler/tests/TestLogic/Generate/CodeGen/CaseKindScrutinee.elm
 
