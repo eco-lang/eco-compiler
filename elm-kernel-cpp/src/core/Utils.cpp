@@ -83,6 +83,14 @@ static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
         ua.hp = ap;
         ub.hp = bp;
         *eqResult = (ua.val == ub.val);
+        // SD-26 (HEAP_071): the Empty constant ("") equals a zero-length
+        // heap String.
+        if (!*eqResult && aConst != bConst) {
+            HPointer c = aConst ? ap : bp;
+            HPointer h = aConst ? bp : ap;
+            *eqResult = alloc::isEmptyString(c) &&
+                        alloc::isZeroLengthString(allocator.resolve(h));
+        }
         return 0;  // Comparison determined
     }
 
@@ -286,10 +294,11 @@ static int cmpListHybrid(void* a, void* b) {
 
 // Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
 static int cmp(void* a, void* b) {
-    // Null checks
+    // Null checks. A null is an embedded constant; against a String it is ""
+    // and equals a zero-length heap String (SD-26, HEAP_071).
     if (!a && !b) return 0;
-    if (!a) return -1;
-    if (!b) return 1;
+    if (!a) return alloc::isZeroLengthString(b) ? 0 : -1;
+    if (!b) return alloc::isZeroLengthString(a) ? 0 : 1;
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
@@ -508,8 +517,9 @@ static bool eqHelp(void* a, void* b, int depth) {
     // Reference equality
     if (a == b) return true;
 
-    // Null checks
-    if (!a || !b) return false;
+    // Null checks. A null is an embedded constant; against a String it is ""
+    // and equals a zero-length heap String (SD-26, HEAP_071).
+    if (!a || !b) return alloc::isZeroLengthString(a ? a : b);
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);

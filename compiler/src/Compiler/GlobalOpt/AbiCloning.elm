@@ -131,9 +131,9 @@ type alias AbiCloningStats =
     , declinedAbiMismatch : Int
     , declinedBodyMismatch : Int -- Fingerprint fence: fingerprint-divergent same-layout groups declined (each one is a fenced E11-class hazard — investigate when non-zero)
 
-    -- E9.5 + lss-lpartial counters bundled in ONE field: the flat stats
-    -- record sits at the 32-slot GC-scan cap (the Engine.S lesson) — a
-    -- nested record is a single slot.
+    -- E9.5 + lss-lpartial counters bundled in ONE field: bundled when the
+    -- native runtime capped records at 32 fields and this flat stats record
+    -- was at that cap (records now take up to 2047 fields).
     -- fn/ctor: noInstance singleton sites rewritten to direct calls
     -- (E9.5, unconditional since 2026-09-18). noSpec: candidate passed
     -- every guard but no registry spec eqLayout-matched (expect ~0).
@@ -159,7 +159,7 @@ type alias AbiCloningStats =
     , multiSetMembers : Dict Int Int -- E3 de-risk: member id -> occurrences across multi-set sites
     , topSiteShapes : Dict String Int -- E8 split: LTop-annotated call sites by callee-expression shape (escape proxy: recordAccess/callResult vs local/global)
     , varSiteShapes : Dict String Int -- Phase 1a/3 (plans/lss-unknown-elimination.md §2.5, plans/lss-set-variable.md): the same census for LVar-annotated sites — the "still a variable" half of what used to be one undifferentiated ⊤ population. Same shape keys as topSiteShapes; same TRAP (stampCall consults EVERY call, so these are SITE counts, not dispatch weight).
-    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record because the flat stats record is near the 32-slot GC-scan cap.
+    , instQual : { byHost : Dict String Int, flatStamped : Int, shape : Dict String Int, niGuard : Dict String Int, papSites : Dict String Int, absentL : Dict String Int, multiSites : Dict String Int } -- Per-site census Dicts, ALL gated on `lss.census` (`StampCtx.census`). Split from `lss.report` deliberately: the benchmark protocol mandates ECO_MONO_LSS_REPORT=1, so anything billed under `report` distorts every timed run (the `qCensus` precedent, Eco/Config.elm). Each of these builds a String key and inserts a Dict node at ~43,000 AbiCloning sites per self-compile; the scalar counters beside them are field increments and stay unconditional because they are the A/B gate numbers. `byHost`: "<host global>|<reason>" — the join key against the runtime dispatch census. One nested record, nested when the runtime capped records at 32 fields (now 2047).
     , blockedMembers : List ( Int, Maybe Mono.LambdaId ) -- LSS_026 §11 census: every blocked member with its BLOCKER instance (the adopting synthetic closure; Nothing = μ-tie / no attribution). Print-only, never consulted by stamping. The instrument that named `Compiler_Type_Type_lambda_41139` as the 146-site blocker — member IDS shift with the corpus, the SYMBOL is the stable join key, which is why the blocker travels with the id. (It did NOT explain the de-stamp — see §11.5 — but it is what made that refutable.) Cost: one Dict fold over the index per COMPILE, alongside the existing `countMultiInstanceGroups` fold; nothing per site.
     }
 

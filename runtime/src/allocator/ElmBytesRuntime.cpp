@@ -105,6 +105,18 @@ void elm_bytebuffer_with_data(HPtr bbVal, elm_bytebuffer_callback fn, void* ctx)
     fn(v.data, static_cast<u32>(v.length), ctx);
 }
 
+void elm_bytebuffer_builder_begin(HPtr bbVal) {
+    void* ptr = u64ToPtr(bbVal.toBits());
+    if (!ptr) return;
+    Elm::alloc::mark_as_builder(static_cast<Elm::Header*>(ptr));
+}
+
+void elm_bytebuffer_builder_end(HPtr bbVal) {
+    void* ptr = u64ToPtr(bbVal.toBits());
+    if (!ptr) return;
+    Elm::alloc::clear_builder(static_cast<Elm::Header*>(ptr));
+}
+
 // ============================================================================
 // String Operations (UTF-8 encoding/decoding)
 // ============================================================================
@@ -217,16 +229,16 @@ u32 elm_utf8_copy(HPtr strVal, u8* dst) {
     return static_cast<u32>(dst - start);
 }
 
-HPtr elm_utf8_decode(const u8* src, u32 len) {
+HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len) {
     if (len == 0) {
         Elm::HPointer empty = Elm::alloc::emptyString();
         return Elm::HPtr::fromBits(hpointerToU64(empty));
     }
 
-    // Pass 1: validate UTF-8 and count UTF-16 code units. `src` is a raw
-    // pointer from generated MLIR code; we treat it as non-moving for the
-    // duration of this call (the caller is responsible for the lifetime —
-    // BFOPS_032).
+    // Pass 1: validate UTF-8 and count UTF-16 code units. `src` points into
+    // the buffer's body, which is Elm heap memory: it stays valid only until
+    // the allocation below.
+    const u8* src = elm_bytebuffer_data(buffer) + offset;
     size_t units = 0;
     for (u32 i = 0; i < len; ) {
         u8 c = src[i];
@@ -263,9 +275,16 @@ HPtr elm_utf8_decode(const u8* src, u32 len) {
     }
 
     // Pass 2: allocate ElmString of exact size and decode directly into
-    // chars[]. `src` is a raw pointer — it lives in caller-supplied memory
-    // that is not Elm GC heap, so allocStringBlank cannot relocate it.
-    Elm::alloc::BlankString bs = Elm::alloc::allocStringBlank(units);
+    // chars[]. The allocation may run a GC that moves the buffer (a nursery
+    // ByteBuffer under the large-object threshold), so the buffer is rooted
+    // across it and `src` is re-derived afterwards (BFOPS_039).
+    Elm::HPointer bufHp = u64ToHPointer(buffer.toBits());
+    Elm::alloc::BlankString bs;
+    {
+        Elm::StackRootGuard guard(&bufHp);
+        bs = Elm::alloc::allocStringBlank(units);
+    }
+    src = elm_bytebuffer_data(Elm::HPtr::fromBits(hpointerToU64(bufHp))) + offset;
     size_t dst = 0;
     for (u32 i = 0; i < len; ) {
         u8 c = src[i];

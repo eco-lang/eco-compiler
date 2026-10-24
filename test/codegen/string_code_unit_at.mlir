@@ -21,33 +21,34 @@ module {
     %i3 = arith.constant 3 : i64
     %ineg = arith.constant -1 : i64
 
-    // In range: 'a' = 97, 'b' = 98, 'c' = 99.
+    // In range: 'a' = 97, 'b' = 98, 'c' = 99. eco.dbg prints an i16 as a
+    // character (code unit 0 as '\u0000').
     %c0 = eco.string.code_unit_at %s, %i0
     eco.dbg %c0 : i16
-    // JIT: 97
+    // JIT: [eco.dbg] 'a'
     %c1 = eco.string.code_unit_at %s, %i1
     eco.dbg %c1 : i16
-    // JIT: 98
+    // JIT: [eco.dbg] 'b'
     %c2 = eco.string.code_unit_at %s, %i2
     eco.dbg %c2 : i16
-    // JIT: 99
+    // JIT: [eco.dbg] 'c'
 
     // One past the end -> 0, not a trap.
     %c3 = eco.string.code_unit_at %s, %i3
     eco.dbg %c3 : i16
-    // JIT: 0
+    // JIT: [eco.dbg] '\u0000'
 
     // Negative index -> 0.
     %cneg = eco.string.code_unit_at %s, %ineg
     eco.dbg %cneg : i16
-    // JIT: 0
+    // JIT: [eco.dbg] '\u0000'
 
     // Empty string: an embedded constant, so Export::toPtr yields null and the
     // export's own guard returns 0 before charAt is reached.
     %e = eco.string_literal "" : !eco.value
     %ce = eco.string.code_unit_at %e, %i0
     eco.dbg %ce : i16
-    // JIT: 0
+    // JIT: [eco.dbg] '\u0000'
 
     %z = arith.constant 0 : i64
     return %z : i64

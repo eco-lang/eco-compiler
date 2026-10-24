@@ -17,6 +17,8 @@
 #include "../../elm-kernel-cpp/src/ExportHelpers.hpp"
 #include "../allocator/TestHelpers.hpp"
 #include "../TestSuite.hpp"
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -453,15 +455,20 @@ static void test_decoder_read_string_goldens() {
 
 // ---- K8d: kernel read_string agrees with the fused decoder ------------------
 //
-// The fused Bytes.Decode path calls elm_utf8_decode(ptr, len) after its own
-// bounds check; the non-fused fallback calls Elm_Kernel_Bytes_read_string.
+// The fused Bytes.Decode path calls elm_utf8_decode(buffer, offset, len) after
+// its own bounds check; the non-fused fallback calls Elm_Kernel_Bytes_read_string.
 // Whatever the compiler decides to fuse, a program must see the same result:
 // same Just/Nothing, same code units, for every row of the battery.
 static void test_decoder_read_string_agrees_with_fused() {
     initAllocator();
     std::string failures;
     for (auto& g : decodeGoldenBattery()) {
-        HPtr fused = elm_utf8_decode(g.prefix.data(), static_cast<u32>(g.prefix.size()));
+        // The bytes at offset 1 of a buffer whose first byte is junk.
+        HPtr buf = elm_alloc_bytebuffer(static_cast<u32>(g.prefix.size() + 1));
+        u8* data = elm_bytebuffer_data(buf);
+        data[0] = 0xFF;
+        if (!g.prefix.empty()) std::memcpy(data + 1, g.prefix.data(), g.prefix.size());
+        HPtr fused = elm_utf8_decode(buf, 1, static_cast<u32>(g.prefix.size()));
         bool fusedOk = fused.toBits() != 0;
         std::vector<u16> fusedUnits;
         if (fusedOk) {
@@ -572,7 +579,41 @@ static void test_decoder_read_string_representation() {
 
 }  // namespace
 
+// ---- K14/K15 : integer division and shift-count semantics -----------------
+//
+// The kernel C++ path must agree with the inline lowering (EcoToLLVMArith.cpp):
+// CGEN_084 (division total, wrapping) and CGEN_085 (shift count mod 64). The
+// operands are volatile so the compiler cannot fold the calls; without the
+// guards MIN_INT / -1 and x % 0 raise SIGFPE here.
+
+static void test_kernel_int_division_total() {
+    volatile int64_t minInt = INT64_MIN, neg1 = -1, zero = 0, seven = 7;
+    TEST_ASSERT(Elm_Kernel_Basics_idiv(minInt, neg1) == INT64_MIN);
+    TEST_ASSERT(Elm_Kernel_Basics_idiv(seven, neg1) == -7);
+    TEST_ASSERT(Elm_Kernel_Basics_idiv(seven, zero) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_idiv(-seven, 2) == -3);
+    TEST_ASSERT(Elm_Kernel_Basics_remainderBy(neg1, minInt) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_remainderBy(zero, seven) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_remainderBy(4, -seven) == -3);
+    TEST_ASSERT(Elm_Kernel_Basics_modBy(neg1, minInt) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_modBy(4, -seven) == 1);
+}
+
+static void test_kernel_shift_count_mod_64() {
+    volatile int64_t c64 = 64, c65 = 65, c100 = 100, cm1 = -1, one = 1, neg1 = -1;
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftLeftBy(c64, one) == 1);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftLeftBy(c65, one) == 2);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftLeftBy(c100, one) == (int64_t{1} << 36));
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftLeftBy(cm1, one) == INT64_MIN);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftRightBy(c64, neg1) == -1);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftRightBy(c65, neg1) == -1);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftRightZfBy(c64, neg1) == UINT64_MAX);
+    TEST_ASSERT(Elm_Kernel_Bitwise_shiftRightZfBy(c65, neg1) == static_cast<uint64_t>(INT64_MAX));
+}
+
 void registerKernelExportsTests(Testing::TestSuite& suite) {
+    suite.add(Testing::UnitTest("K14 kernel integer division is total (CGEN_084)", test_kernel_int_division_total));
+    suite.add(Testing::UnitTest("K15 kernel shift count mod 64 (CGEN_085)", test_kernel_shift_count_mod_64));
     suite.add(Testing::UnitTest("K1 encoder size matches write", test_encoder_size_matches_write));
     suite.add(Testing::UnitTest("K2 encoder endianness bytes", test_encoder_endianness_bytes));
     suite.add(Testing::UnitTest("K3 encoder utf8 astral", test_encoder_utf8_astral));

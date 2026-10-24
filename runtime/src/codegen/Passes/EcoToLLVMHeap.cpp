@@ -410,7 +410,8 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         // THREE runtime calls per cell (alloc + head store + tail store,
         // the R5 Part 1 leftovers) to zero on the fast path. The head
         // operand's type corresponds 1:1 with head_kind (Bool heads are
-        // always boxed !eco.value, REP invariants), so emitFreshFieldStore's
+        // always boxed !eco.value, REP invariants; ListConstructOp::verify
+        // checks both, SD-4), so emitFreshFieldStore's
         // type dispatch reproduces the kind switch below exactly. No
         // zero-init: no safepoint can observe the cell before its stores.
         if (inlineAllocEnabled()) {

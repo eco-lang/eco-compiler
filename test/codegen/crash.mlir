@@ -1,4 +1,4 @@
-// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
+// RUN: not %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test eco.crash operation - unconditional panic with message.
 

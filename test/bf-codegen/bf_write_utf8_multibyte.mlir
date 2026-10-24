@@ -1,8 +1,6 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
 //
 // Test bf.write.utf8 with multi-byte UTF-8 characters
-// XFAIL: Requires eco.value <-> i64 type interop in bf dialect
 
 module {
   func.func @main() -> i64 {
@@ -20,7 +18,7 @@ module {
     %buffer = bf.alloc %size : !eco.value
     %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
-    %cursor1 = bf.write.utf8 %cursor0, %str : !bf.cursor
+    %cursor1 = bf.write.utf8 %cursor0, %str : (!eco.value) -> !bf.cursor
 
     // Read back first byte (0xC3 = 195)
     %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor

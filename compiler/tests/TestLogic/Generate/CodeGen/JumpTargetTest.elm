@@ -19,8 +19,8 @@ What the tests establish:
     enclosing joinpoint with as many parameters as it has operands, each of
     the operand's defined type. The code generator emits no `eco.joinpoint`
     (tail recursion becomes `scf.while`), so on these programs the check
-    amounts to: no `eco.jump` is generated, which would mean the dangling
-    `Expr.generateTailCall` fallback was reached.
+    amounts to: no `eco.jump` is generated. (`Expr.generateExpr` crashes on a
+    `MonoTailCall` that `TailRec` did not lower, instead of emitting one.)
   - `checkerTests` runs `checkJumpTargets` on three hand-built modules: a jump
     inside the joinpoint it targets, with matching arguments, passes; a jump
     to an id that no enclosing joinpoint has (the joinpoint is a sibling, not

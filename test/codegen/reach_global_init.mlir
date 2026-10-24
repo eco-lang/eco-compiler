@@ -5,8 +5,8 @@
 // a dead global's initializer dies with it; one reached from a live global's
 // initializer lives (and both become internal).
 //
-// CHECK: llvm.mlir.global internal constant @glive(
 // CHECK: llvm.func internal @flive(
+// CHECK: llvm.mlir.global internal constant @glive(
 // CHECK-NOT: @gdead
 // CHECK-NOT: @fdead
 

@@ -66,7 +66,7 @@ typedef double f64;                  // 64-bit floating point.
 #define TAG_BITS 5
 #define CTOR_BITS 16
 #define POINTER_BITS 40
-#define ID_BITS 16  // Process and Task ID field
+#define ID_BITS 16  // Task ID field (a Process id is a full word, see Process)
 
 // Upper bound (exclusive) on any raw heap address. The HPointer `ptr` field is
 // POINTER_BITS wide and sits at bit offset 3 (above the 3-bit constant/ptr_ind
@@ -870,14 +870,17 @@ inline const EvalParamLayout* asLayout(const EvalParamLayoutN<N>* p) {
 }
 #endif
 
+// `id` is a full 64-bit word (SD-1): the scheduler's id counter never wraps,
+// so no two processes ever share an id. It took the old 16-bit id and its
+// 48-bit padding, so the size and field offsets are unchanged.
 typedef struct {
     Header header;
-    u64 id : ID_BITS;
-    u64 padding : 48;
+    u64 id;
     HPointer root;
     HPointer stack;
     HPointer mailbox;
 } Process;
+static_assert(sizeof(Process) == 40, "Process layout: header, id word, 3 HPointers");
 
 // Task.value carries either a boxed HPointer (header.unboxed slot 0 == 0) or
 // an unboxed primitive (slot 0 == 1=Int, 2=Float, 3=Char). The other Unboxable

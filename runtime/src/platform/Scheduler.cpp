@@ -64,6 +64,9 @@ Scheduler::Scheduler() {
             for (auto& [id, enc] : latestProc_) {
                 evacuate(enc);
             }
+            for (auto& [id, enc] : finishedProc_) {
+                evacuate(enc);
+            }
             // Resume closures held by in-flight async ops. The lock
             // guards against concurrent register/take from other threads.
             std::lock_guard<std::mutex> lock(resumeMutex_);
@@ -76,17 +79,39 @@ Scheduler::Scheduler() {
 void Scheduler::registerLatestProcess(HPointer proc) {
     void* ptr = resolveHP(proc);
     if (!ptr) return;
-    u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
+    u64 id = static_cast<Process*>(ptr)->id;
     latestProc_[id] = encodeHP(proc);
 }
 
-HPointer Scheduler::latestProcessById(u32 id) {
+HPointer Scheduler::latestProcessById(u64 id) {
     auto it = latestProc_.find(id);
     if (it == latestProc_.end()) return listNil();
     return decodeHP(it->second);
 }
 
-void Scheduler::registerSelfProcess(u32 procId,
+void Scheduler::processFinished(HPointer proc) {
+    void* ptr = resolveHP(proc);
+    if (!ptr) return;
+    u64 id = static_cast<Process*>(ptr)->id;
+    latestProc_.erase(id);
+    selfMsgHandlers_.erase(id);
+    if (keepResult_.erase(id)) finishedProc_[id] = encodeHP(proc);
+}
+
+void Scheduler::keepResultOnFinish(u64 id) {
+    keepResult_.insert(id);
+}
+
+HPointer Scheduler::takeFinishedProcess(u64 id) {
+    keepResult_.erase(id);
+    auto it = finishedProc_.find(id);
+    if (it == finishedProc_.end()) return listNil();
+    HPointer hp = decodeHP(it->second);
+    finishedProc_.erase(it);
+    return hp;
+}
+
+void Scheduler::registerSelfProcess(u64 procId,
                                     std::function<void(HPointer)> handler) {
     selfMsgHandlers_[procId] = std::move(handler);
 }
@@ -115,8 +140,7 @@ void Scheduler::registerAsyncSource(std::function<void()> drain,
 HPointer Scheduler::latestProcessByHPtr(HPointer originalHP) {
     void* ptr = resolveHP(originalHP);
     if (!ptr) return listNil();
-    u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
-    return latestProcessById(id);
+    return latestProcessById(static_cast<Process*>(ptr)->id);
 }
 
 // ============================================================================
@@ -228,7 +252,7 @@ HPointer Scheduler::procWithRoot(HPointer srcHP, HPointer newRoot) {
     void* srcPtr = resolveHP(srcHP);
     if (!srcPtr) return listNil();
     Process* src = static_cast<Process*>(srcPtr);
-    u16 id = static_cast<u16>(src->id);
+    u64 id = src->id;
     HPointer oldStack = src->stack;
     HPointer oldMailbox = src->mailbox;
     // Root the by-value locals across allocProcess (see procWithStack).
@@ -242,7 +266,7 @@ HPointer Scheduler::procWithStack(HPointer srcHP, HPointer newStack) {
     void* srcPtr = resolveHP(srcHP);
     if (!srcPtr) return listNil();
     Process* src = static_cast<Process*>(srcPtr);
-    u16 id = static_cast<u16>(src->id);
+    u64 id = src->id;
     HPointer oldRoot = src->root;
     HPointer oldMailbox = src->mailbox;
     // Root the by-value locals across allocProcess: the Process object
@@ -259,7 +283,7 @@ HPointer Scheduler::procWithMailbox(HPointer srcHP, HPointer newMailbox) {
     void* srcPtr = resolveHP(srcHP);
     if (!srcPtr) return listNil();
     Process* src = static_cast<Process*>(srcPtr);
-    u16 id = static_cast<u16>(src->id);
+    u64 id = src->id;
     HPointer oldRoot = src->root;
     HPointer oldStack = src->stack;
     HPointer newHP = allocProcess(id, oldRoot, oldStack, newMailbox);
@@ -427,9 +451,9 @@ Scheduler::PopStackResult Scheduler::popStackMatching(HPointer procHP, u64 tag) 
 // ============================================================================
 
 HPointer Scheduler::rawSpawn(HPointer rootTask) {
-    u32 id = nextProcessId();
+    u64 id = nextProcessId();
     HPointer nil = listNil();
-    HPointer proc = allocProcess(static_cast<u16>(id), rootTask, nil, nil);
+    HPointer proc = allocProcess(id, rootTask, nil, nil);
 
     // Register as the current-latest Process for this id so external holders
     // of the returned HPointer can find subsequent versions after drain.
@@ -496,16 +520,14 @@ void Scheduler::rawSend(HPointer procHP, HPointer msg) {
 // id (plans/eco-system-library.md F13, Phase 2 step 4): Process values are
 // immutable snapshots, so the HPointer `spawn` returned is usually stale by
 // the time Elm kills it — its root is the pre-step task, not the parked
-// Task_Binding that carries the kill handle. Falls back to the given snapshot
-// when the id has no registry entry.
+// Task_Binding that carries the kill handle. An id with no registry entry
+// names a finished process (ids are never reused, SD-1): the kill is a no-op.
 static HPointer killBindingBody(HPointer targetProcHP) {
     void* ptr = resolveHP(targetProcHP);
     if (ptr) {
-        u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
-        HPointer latest = Scheduler::instance().latestProcessById(id);
-        if (void* latestPtr = resolveHP(latest)) {
-            ptr = latestPtr;
-        }
+        HPointer latest = Scheduler::instance().latestProcessById(
+            static_cast<Process*>(ptr)->id);
+        ptr = resolveHP(latest);
     }
     if (ptr) {
         Process* proc = static_cast<Process*>(ptr);
@@ -887,7 +909,11 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         if (!proc) break;
 
         Task* task = resolveRoot(proc);
-        if (!task) break;
+        if (!task) {
+            // No root Task: nothing can ever run this process again.
+            processFinished(currentProcHP());
+            break;
+        }
         u16 ctor = task->ctor;
 
         if (ctor == Task_Succeed || ctor == Task_Fail) {
@@ -958,6 +984,7 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                         "(no surrounding Task.onError) — failure value dropped\n");
                     std::fflush(stderr);
                 }
+                processFinished(currentProcHP());
                 break;
             }
         }
@@ -1055,7 +1082,7 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 // is still Task_Receive, so after the handler runs we just
                 // `continue` to pop the next message or block. procEncoded is
                 // rooted, so any GC inside the handler is tracked here.
-                u32 procId = static_cast<u32>(proc->id);
+                u64 procId = proc->id;
                 auto selfIt = selfMsgHandlers_.find(procId);
                 if (selfIt != selfMsgHandlers_.end()) {
                     HPointer selfMsg = popRes.msg;
@@ -1084,7 +1111,8 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             }
         }
         else {
-            // Unknown task ctor
+            // Unknown task ctor: nothing can ever run this process again.
+            processFinished(currentProcHP());
             break;
         }
     }

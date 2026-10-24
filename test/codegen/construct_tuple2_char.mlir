@@ -8,7 +8,7 @@ module {
     %a = arith.constant 42 : i64
     %b = arith.constant 65 : i16
 
-    %tuple = eco.construct.tuple2 %a, %b {unboxed_bitmap = 3} : i64, i16 -> !eco.value
+    %tuple = eco.construct.tuple2 %a, %b {unboxed_bitmap = 13} : i64, i16 -> !eco.value
 
     %fb = eco.project.tuple2 %tuple[1] : !eco.value -> i16
     %fb_wide = arith.extui %fb : i16 to i64

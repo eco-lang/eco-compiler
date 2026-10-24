@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
-    , generateExpr
+    , generateExpr, unscopedTailCallError
     , coerceResultToType
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
@@ -19,7 +19,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Expression Generation
 
-@docs generateExpr
+@docs generateExpr, unscopedTailCallError
 
 
 # Data Structure Generation
@@ -431,8 +431,8 @@ generateExpr ctx0 expr =
                 Nothing ->
                     generateCall ctx func args resultType callInfo
 
-        Mono.MonoTailCall _ args _ ->
-            generateTailCall ctx args
+        Mono.MonoTailCall name _ _ ->
+            crash (unscopedTailCallError name)
 
         Mono.MonoIf branches final monoType ->
             -- Step 10a: `if` IS part of the result spine now. The flag is
@@ -1192,7 +1192,7 @@ generateClosure ctx closureInfo body monoType =
 
         -- Box Bool (i1) captures at closure boundary per REP_CLOSURE_001 / FORBID_CLOSURE_001
         ( boxOps, boxedCaptureVarsWithTypes, ctx1a ) =
-            boxArgsForClosureBoundary False ctx1 captureVarsWithTypes
+            boxArgsForClosureBoundary ctx1 captureVarsWithTypes
 
         captureVarNames : List String
         captureVarNames =
@@ -1844,7 +1844,7 @@ generateGenericApply ctx func args resultType =
         -- Only box Bool (i1) to !eco.value; Int/Float/Char stay as primitives,
         -- passed unboxed with their kinds; the runtime re-boxes (CGEN_059).
         ( boxOps, argsForClosure, ctx2 ) =
-            boxArgsForClosureBoundary False ctx1 argsWithTypes
+            boxArgsForClosureBoundary ctx1 argsWithTypes
 
         -- Build operand list: closure + all args
         allOperandNames =
@@ -1923,10 +1923,11 @@ generateGenericApply ctx func args resultType =
 {-| Generate a segmentation-unknown call: eco.papExtend without remaining\_arity,
 but with typed boxing (args boxed to the callee evaluator's param ABI, `boxArgsToEvaluatorParams`).
 
-This is the "known ABI + unknown staging" path. Unlike generic\_apply which
-boxes all primitives for eco\_apply\_closure, this path uses the callee's
-signature to determine boxing policy, preserving typed ABI through the
-closure boundary.
+This is the "known ABI + unknown staging" path. Generic\_apply boxes only
+Bool (i1) and passes Int, Float and Char unboxed in a typed args buffer, so
+that `eco_apply_closure_eval` reboxes them as the closure needs (CGEN\_059);
+this path instead uses the callee's signature to determine boxing policy,
+preserving typed ABI through the closure boundary.
 
 As in `generateGenericApply`, the result type follows the call's Mono result
 type: a primitive (with a matching non-zero `_result_kind`) when that type is
@@ -2093,7 +2094,7 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
             generateExprListTyped ctx args
 
         ( boxOps, argsForClosure, ctx2 ) =
-            boxArgsForClosureBoundary False ctx1 argsWithTypes
+            boxArgsForClosureBoundary ctx1 argsWithTypes
 
         allOperandNames =
             funcVar :: List.map Tuple.first argsForClosure
@@ -2778,33 +2779,16 @@ generateClosureApplication ctx func args resultType callInfo =
                 }
 
 
-{-| Box arguments for closure boundary.
-
-When boxAllPrimitives is True (unknown callee), boxes ALL primitive types
-(i64, f64, i16, i1) to !eco.value since the target function's expected
-parameter types are unknown.
-
-When boxAllPrimitives is False (known callee), only boxes i1 (Bool) per
-REP\_CLOSURE\_001, leaving i64/f64/i16 as-is for known function signatures.
-
+{-| Box arguments for closure boundary: only i1 (Bool) is boxed, per
+REP\_CLOSURE\_001, leaving i64/f64/i16 as they are.
 -}
-boxArgsForClosureBoundary : Bool -> Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
-boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
+boxArgsForClosureBoundary : Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+boxArgsForClosureBoundary ctx argsWithTypes =
     let
         ( opsReversed, argsReversed, ctxFinal ) =
             List.foldl
                 (\( var, mlirTy ) ( opsAcc, argsAcc, ctxAcc ) ->
-                    let
-                        needsBoxing =
-                            if boxAllPrimitives then
-                                -- Unknown callee: box ALL primitives (i64, f64, i16, i1) to !eco.value
-                                not (Types.isEcoValueType mlirTy)
-
-                            else
-                                -- Known callee: only box Bool (i1) per REP_CLOSURE_001
-                                mlirTy == I1
-                    in
-                    if needsBoxing then
+                    if mlirTy == I1 then
                         let
                             ( boxOps, boxedVar, ctx1 ) =
                                 boxToEcoValue ctxAcc var mlirTy
@@ -4663,71 +4647,24 @@ generateExprListTyped ctx exprs =
 -- ====== TAIL CALL GENERATION ======
 
 
-{-| Generate MLIR code for a tail call.
+{-| The message `generateExpr` crashes with when it is handed a
+`MonoTailCall` to function `name`.
+
+`TailRec.compileTailFuncToWhile` lowers every tail-recursive function to an
+`scf.while` loop, and its `compileStep` turns each `MonoTailCall` in tail
+position into a "continue" step, so none reaches `generateExpr`. The code
+generator never emits an `eco.joinpoint`, so there is nothing an `eco.jump`
+could target: a jump built here would be unscoped and break CGEN\_030. A
+`MonoTailCall` that does reach `generateExpr` is therefore a compiler bug,
+reported rather than lowered.
+
 -}
-generateTailCall : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
-generateTailCall ctx args =
-    let
-        -- Generate arguments and track actual SSA types
-        ( argsOpsReversed, argsWithTypesReversed, ctx1 ) =
-            List.foldl
-                (\( _, expr ) ( accOps, accVarsWithTypes, accCtx ) ->
-                    let
-                        result : ExprResult
-                        result =
-                            generateExpr accCtx expr
-                    in
-                    ( List.reverse result.ops ++ accOps
-                    , ( result.resultVar, result.resultType ) :: accVarsWithTypes
-                    , result.ctx
-                    )
-                )
-                ( [], [], ctx )
-                args
-
-        argsOps =
-            List.reverse argsOpsReversed
-
-        argsWithTypes =
-            List.reverse argsWithTypesReversed
-
-        -- Extract variable names and their actual SSA types
-        argVarNames : List String
-        argVarNames =
-            List.map Tuple.first argsWithTypes
-
-        argVarTypes : List MlirType
-        argVarTypes =
-            List.map Tuple.second argsWithTypes
-
-        -- eco.jump target is a joinpoint ID (integer), not a symbol name.
-        -- For tail-recursive functions, the joinpoint ID is 0.
-        jumpAttrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argVarTypes) )
-                , ( "target", IntAttr Nothing 0 )
-                ]
-
-        -- Back-edges carry no GC poll: non-allocating non-calling loops
-        -- already lack one today (eco.safepoint was
-        -- erased pre-RS4GC), so this is not a regression. If we ever need GC
-        -- progress on such loops, the fix belongs in the LLVM backend, not
-        -- here.
-        ( ctx2, jumpOp ) =
-            Ops.mlirOp ctx1 "eco.jump"
-                |> Ops.opBuilder.withOperands argVarNames
-                |> Ops.opBuilder.withAttrs jumpAttrs
-                |> Ops.opBuilder.isTerminator True
-                |> Ops.opBuilder.build
-    in
-    -- eco.jump is a terminator - it does not produce a result value.
-    -- INVARIANT: resultVar is meaningless when isTerminated=True, must not be used.
-    { ops = argsOps ++ [ jumpOp ]
-    , resultVar = "" -- INVARIANT: meaningless when isTerminated=True
-    , resultType = Types.ecoValue
-    , ctx = ctx2
-    , isTerminated = True -- eco.jump is a terminator
-    }
+unscopedTailCallError : Name.Name -> String
+unscopedTailCallError name =
+    "Expr.generateExpr: tail call to `"
+        ++ name
+        ++ "` outside its tail-recursive loop. TailRec.compileTailFuncToWhile must lower every MonoTailCall"
+        ++ " as a loop continue; there is no eco.joinpoint for an eco.jump to target (CGEN_030)."
 
 
 
@@ -5897,7 +5834,7 @@ generateLetSingle ctx def body =
                 -- The lambda side already takes them as !eco.value
                 -- (mlirTypeToApproxMonoType I1 = MBool).
                 ( captureBoxOps, boxedCaptures, ctxBoxed ) =
-                    boxArgsForClosureBoundary False
+                    boxArgsForClosureBoundary
                         ctxCaptured
                         (List.map (\( _, ssaVar, mlirTy ) -> ( ssaVar, mlirTy )) captureInfos)
 
@@ -6134,7 +6071,7 @@ generateLetGroup ctx members body =
 
                 -- Box primitives at the closure boundary (REP_CLOSURE_001).
                 ( boxOps, capVarsBoxed, ctxAfterBox ) =
-                    boxArgsForClosureBoundary False ctxAfter capVars0
+                    boxArgsForClosureBoundary ctxAfter capVars0
 
                 captureVarNames =
                     List.map Tuple.first capVarsBoxed

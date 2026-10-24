@@ -1,20 +1,20 @@
 #pragma once
 
-#include "../CheckPatterns.hpp"
+// Driver for the bf-codegen .mlir suite (test/bf-codegen/*.mlir: ByteFusion
+// dialect fixtures). Each fixture runs through the codegen suite's fixture
+// runner (CodegenIsolatedTest::runFixture), so the RUN-line, exit-status,
+// FileCheck-prefix and CHECK-order rules, the region-nursery guard and the
+// subprocess routing of crashing fixtures are the same in both suites; see
+// the header comment of codegen/CodegenIsolatedTest.hpp.
+
+#include "../codegen/CodegenIsolatedTest.hpp"
 #include "../IsolatedTestRunner.hpp"
 #include "../TestSuite.hpp"
-#include "../../runtime/src/codegen/EcoRunner.hpp"
 
 #include <algorithm>
-#include <array>
-#include <cstdio>
-#include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,118 +23,6 @@ namespace BFCodegenTest {
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Execute a command and capture its output.
- * Returns a pair of (exit_code, output).
- */
-inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
-    std::array<char, 4096> buffer;
-    std::string result;
-
-#if defined(_WIN32)
-#  define _eco_popen  ::_popen
-#  define _eco_pclose ::_pclose
-#else
-#  define _eco_popen  ::popen
-#  define _eco_pclose ::pclose
-#endif
-
-    std::string fullCmd = cmd + " 2>&1";
-    std::unique_ptr<FILE, decltype(&_eco_pclose)> pipe(_eco_popen(fullCmd.c_str(), "r"), _eco_pclose);
-
-    if (!pipe) {
-        throw std::runtime_error("popen() failed for command: " + cmd);
-    }
-
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-    }
-
-    int status = _eco_pclose(pipe.release());
-#if defined(_WIN32)
-    int exitCode = status;
-#else
-    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-#endif
-#undef _eco_popen
-#undef _eco_pclose
-
-    return {exitCode, result};
-}
-
-/**
- * Read entire file contents.
- */
-inline std::string readFile(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        throw std::runtime_error("Cannot open file: " + path);
-    }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
-}
-
-/**
- * Parse the // RUN: line from a test file.
- * Returns the emit mode (jit, mlir-llvm, llvm, mlir).
- */
-inline std::string parseEmitMode(const std::string& content) {
-    std::istringstream stream(content);
-    std::string line;
-
-    while (std::getline(stream, line)) {
-        if (line.find("// RUN:") != std::string::npos) {
-            if (line.find("-emit=jit") != std::string::npos) {
-                return "jit";
-            } else if (line.find("-emit=llvm") != std::string::npos &&
-                       line.find("-emit=mlir-llvm") == std::string::npos) {
-                return "llvm";
-            } else if (line.find("-emit=mlir-llvm") != std::string::npos) {
-                return "mlir-llvm";
-            } else if (line.find("-emit=mlir") != std::string::npos) {
-                return "mlir";
-            }
-        }
-    }
-    return "jit";  // Default for bf tests is JIT
-}
-
-/**
- * Check if the test is expected to fail (has XFAIL marker).
- */
-inline bool isExpectedFail(const std::string& content) {
-    return content.find("XFAIL:") != std::string::npos;
-}
-
-// CHECK / CHECK-NOT machinery lives in /work/test/CheckPatterns.hpp.
-// Re-export the names into this namespace so existing call sites
-// keep compiling unchanged.
-using eco_test::CheckPattern;
-using eco_test::trimCheckPattern;
-using eco_test::extractCheckPatterns;
-using eco_test::patternMatches;
-using eco_test::verifyPatterns;
-
-/**
- * Get path to ecoc binary.
- */
-inline std::string getEcocPath() {
-    std::vector<std::string> candidates = {
-        "./build/runtime/src/codegen/ecoc",
-        "../build/runtime/src/codegen/ecoc",
-        "../../build/runtime/src/codegen/ecoc",
-    };
-
-    for (const auto& path : candidates) {
-        if (std::filesystem::exists(path)) {
-            return std::filesystem::absolute(path).string();
-        }
-    }
-
-    return "build/runtime/src/codegen/ecoc";
-}
 
 /**
  * Get the bf-codegen test directory path.
@@ -155,93 +43,12 @@ inline std::string getBFCodegenTestDir() {
     return "/work/test/bf-codegen";
 }
 
-// ============================================================================
-// EcoRunner-based Test Execution
-// ============================================================================
-
 /**
- * Shared EcoRunner instance for all tests.
- * Thread-local to support parallel test execution.
- */
-inline eco::EcoRunner& getRunner() {
-    static thread_local eco::EcoRunner runner;
-    return runner;
-}
-
-/**
- * Run a JIT test using EcoRunner (in-process).
- */
-inline void runJITTest(const std::string& testPath, const std::string& content) {
-    auto& runner = getRunner();
-
-    runner.reset();
-
-    auto result = runner.runFile(testPath);
-
-    auto patterns = extractCheckPatterns(content);
-
-    std::string error = verifyPatterns(result.output, patterns);
-    if (!error.empty()) {
-        std::ostringstream msg;
-        msg << error << "\n";
-        msg << "Output was:\n" << result.output.substr(0, 500);
-        if (result.output.length() > 500) {
-            msg << "\n... (truncated)";
-        }
-        throw std::runtime_error(msg.str());
-    }
-
-    if (!result.success) {
-        std::ostringstream msg;
-        msg << "Test failed: " << result.errorMessage << "\n";
-        msg << "Output:\n" << result.output.substr(0, 500);
-        throw std::runtime_error(msg.str());
-    }
-}
-
-/**
- * Run a non-JIT test using subprocess.
- */
-inline void runSubprocessTest(const std::string& testPath, const std::string& content,
-                               const std::string& emitMode) {
-    std::string ecocPath = getEcocPath();
-    std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
-
-    auto [exitCode, output] = executeCommand(cmd);
-
-    auto patterns = extractCheckPatterns(content);
-    std::string error = verifyPatterns(output, patterns);
-    if (!error.empty()) {
-        std::ostringstream msg;
-        msg << error << "\n";
-        msg << "Output was:\n" << output.substr(0, 500);
-        if (output.length() > 500) {
-            msg << "\n... (truncated)";
-        }
-        throw std::runtime_error(msg.str());
-    }
-}
-
-/**
- * Run a single bf-codegen test.
- * Uses EcoRunner for JIT tests (in-process), subprocess for others.
+ * Run a single bf-codegen test (every RUN line).
  * Throws std::runtime_error on failure.
  */
 inline void runBFCodegenTest(const std::string& testPath) {
-    std::string content = readFile(testPath);
-
-    if (isExpectedFail(content)) {
-        std::cout << "  (XFAIL - skipped)" << std::endl;
-        return;
-    }
-
-    std::string emitMode = parseEmitMode(content);
-
-    if (emitMode == "jit") {
-        runJITTest(testPath, content);
-    } else {
-        runSubprocessTest(testPath, content, emitMode);
-    }
+    CodegenIsolatedTest::runFixture(testPath);
 }
 
 // ============================================================================

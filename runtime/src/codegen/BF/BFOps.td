@@ -524,3 +524,75 @@ def BF_DecoderCursorInitOp : BF_Op<"decoder.cursor.init", []> {
 
   let assemblyFormat = "$bytes attr-dict `:` type($bytes) `->` type($cursor)";
 }
+
+//===----------------------------------------------------------------------===//
+// Cursor Re-derivation across GC points (BFOPS_039)
+//===----------------------------------------------------------------------===//
+//
+// A cursor holds raw pointers into its buffer's body, and a GC may move the
+// buffer (a nursery ByteBuffer under the large-object threshold). BFToLLVM
+// inserts this pair around every op that may collect while a cursor is live:
+// bf.cursor.offsets before the op, bf.cursor.rebase after it. The buffer is
+// an eco.value, so the GC relocates it across the op; the rebase rebuilds the
+// cursor at the same offsets in the (possibly moved) body.
+//
+// An encoder that keeps writing after a GC point writes into an object that
+// has survived a GC, which HEAP_SNAPSHOT_001 forbids unless the object is a
+// builder (the concurrent tenure job may be copying it). BFToLLVM brackets
+// such a buffer with bf.builder.begin right after its bf.alloc and
+// bf.builder.end after its last write (HEAP_BUILDER_001..003).
+
+def BF_CursorOffsetsOp : BF_Op<"cursor.offsets", [MemoryEffects<[MemRead]>]> {
+  let summary = "Offsets of a cursor's pointers from its buffer's data start";
+  let description = [{
+    Returns (ptr - data, end - data) for a cursor into `buffer`, where data is
+    elm_bytebuffer_data(buffer). Paired with bf.cursor.rebase across an op
+    that may run a GC (BFOPS_039).
+  }];
+
+  let arguments = (ins BF_Cursor:$cursor, AnyType:$buffer);
+  let results = (outs I64:$pos, I64:$end);
+
+  let assemblyFormat = "$cursor `,` $buffer attr-dict `:` type($buffer)";
+}
+
+def BF_CursorRebaseOp : BF_Op<"cursor.rebase", [MemoryEffects<[MemRead]>]> {
+  let summary = "Rebuild a cursor from its buffer and offsets";
+  let description = [{
+    Returns the cursor (data + pos, data + end), where data is
+    elm_bytebuffer_data(buffer) read now, after a possible GC moved the
+    buffer. The offsets come from bf.cursor.offsets (BFOPS_039).
+  }];
+
+  let arguments = (ins AnyType:$buffer, I64:$pos, I64:$end);
+  let results = (outs BF_Cursor:$cursor);
+
+  let assemblyFormat = "$buffer `,` $pos `,` $end attr-dict `:` type($buffer) `->` type($cursor)";
+}
+
+def BF_BuilderBeginOp : BF_Op<"builder.begin", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Mark a fresh ByteBuffer as a builder while it is filled";
+  let description = [{
+    Sets the builder bit of a ByteBuffer just allocated by bf.alloc, so the
+    GC keeps it young and never tenures it while fused code writes into it
+    across GC points (HEAP_BUILDER_001, HEAP_SNAPSHOT_001). Lowers to
+    elm_bytebuffer_builder_begin. Inserted by BFToLLVM (BFOPS_039).
+  }];
+
+  let arguments = (ins AnyType:$buffer);
+
+  let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
+}
+
+def BF_BuilderEndOp : BF_Op<"builder.end", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Clear the builder bit of a ByteBuffer after its last write";
+  let description = [{
+    Clears the builder bit set by bf.builder.begin, before the buffer is
+    published (HEAP_BUILDER_003). Lowers to elm_bytebuffer_builder_end.
+    Inserted by BFToLLVM (BFOPS_039).
+  }];
+
+  let arguments = (ins AnyType:$buffer);
+
+  let assemblyFormat = "$buffer attr-dict `:` type($buffer)";
+}

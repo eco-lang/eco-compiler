@@ -1,8 +1,6 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
 //
 // Test length-prefixed string roundtrip:
-// XFAIL: Requires eco.value <-> i64 type interop in bf dialect
 // [length: u32] [utf8_bytes]
 
 module {
@@ -24,7 +22,7 @@ module {
     %c1 = bf.write.u32 %c0, %width64 (le) : !bf.cursor
 
     // Write UTF-8 string
-    %c2 = bf.write.utf8 %c1, %str : !bf.cursor
+    %c2 = bf.write.utf8 %c1, %str : (!eco.value) -> !bf.cursor
 
     // Decode: read length then string
     %rc0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor

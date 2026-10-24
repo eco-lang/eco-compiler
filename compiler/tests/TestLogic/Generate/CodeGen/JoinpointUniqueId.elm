@@ -17,8 +17,8 @@ joinpoint that does appear.
     `MonoTailCall`, when the module has a top-level `func.func` named for it
     (`sym_name` ending in `_$_<SpecId>`): that function holds no `scf.while`
     (the tail call was not lowered to a loop), or holds an `eco.jump` (the
-    fallback `Compiler.Generate.MLIR.Expr.generateTailCall` was reached; it
-    jumps to a joinpoint 0 that nothing defines);
+    code generator emits none: `Compiler.Generate.MLIR.Expr.generateExpr`
+    crashes on a `MonoTailCall` that `TailRec` did not lower);
   - within any top-level `func.func`, an `eco.joinpoint` with no integer `id`,
     or one whose `id` an earlier joinpoint of the same function already has.
 
@@ -109,7 +109,7 @@ checkTailLoops (Mono.MonoGraph data) mlirModule =
                                     Just { opId = funcOp.id, opName = funcOp.name, message = message }
                             in
                             if List.member "eco.jump" opNames then
-                                violation "tail-recursive function holds an eco.jump (Expr.generateTailCall fallback) instead of an scf.while loop"
+                                violation "tail-recursive function holds an eco.jump instead of an scf.while loop"
 
                             else if not (List.member "scf.while" opNames) then
                                 violation "tail-recursive function was not lowered to an scf.while loop"

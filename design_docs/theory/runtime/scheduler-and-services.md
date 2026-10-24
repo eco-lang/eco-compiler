@@ -21,8 +21,7 @@ Both layouts are short. Besides the header and the small integer fields (the id 
 ```cpp
 typedef struct {
     Header header;
-    u64 id : ID_BITS;
-    u64 padding : 48;
+    u64 id;
     HPointer root;
     HPointer stack;
     HPointer mailbox;
@@ -40,7 +39,7 @@ typedef struct {
 } Task;
 ```
 
-From `runtime/src/allocator/Heap.hpp`, where `ID_BITS` is 16. Notice two things. A Task's `value` is not always a pointer: a kind bit in the header says whether it holds a boxed value or a raw Int, Float or Char, so a primitive result reaches its callback unboxed. And the process id is 16 bits wide, which matters below.
+From `runtime/src/allocator/Heap.hpp`, where `ID_BITS` (the Task id) is 16. Notice two things. A Task's `value` is not always a pointer: a kind bit in the header says whether it holds a boxed value or a raw Int, Float or Char, so a primitive result reaches its callback unboxed. And the process id is a full 64-bit word, which matters below.
 
 The scheduler steps a process by reading its root task and acting on the constructor it finds there. The order of steps within each case is the design.
 
@@ -79,13 +78,7 @@ Every change to a process, whether to its root, its stack or its mailbox, alloca
 
 A process is replaced rather than written because it is often old and the value written into it is young. Writing a nursery pointer into an old process's root, stack or mailbox creates an old-to-young pointer that the barrier-free collector cannot see, and in programs that use MVars or spawn processes it corrupts the heap. Replacing the process costs one allocation per step. It also means that any pointer to a process is a snapshot that may already be out of date. That is why the router handed to an effect manager stores its self-process as an id, and why a kill finds its target by id.
 
-The process id is 16 bits wide, and nothing in the design keeps ids unique past 65,536 spawns. Ids come from a 32-bit counter that is cut to 16 bits when a process is spawned. Nothing recycles an id, and nothing removes an entry from the table. Every update spawns one process for each registered manager and port, and every self-message and every `Task.perform` spawns one more. With only the three elm/* managers registered, the counter passes 65,536 after about 22,000 updates, so an ordinary long-running program reaches the limit, not only one that spawns many children. From then on a freshly spawned process takes the id of an older one and replaces it in the table. By the code, three things follow:
-
-- A message a manager sends to itself goes to the younger process, which is not waiting for a message, so it is dropped, and the real self-process never runs again. HTTP progress tracking uses this path.
-- A kill aimed at an older process can resolve to the younger one and run that process's kill handle.
-- Up to 65,536 finished processes stay reachable through the table.
-
-No test runs a program past this point. The remedy keeps the lookup by id and makes it exact: a full-width id, and table entries removed when their process finishes.
+The lookup by id is exact because an id names one process for the life of the program and a finished process leaves the table (SD-1, fixed 2026-10-24). The id is a full 64-bit word taken from a counter that never wraps; it was 16 bits until then, and every update spawns one process per registered manager and port, so an ordinary program reused ids after about 22,000 updates, misdelivered self-messages and could kill the wrong process. When a process finishes (its root is Succeed or Fail with no handler on its stack), the stepper drops its table entry and its self-message handler, so neither the process nor its result stays rooted, and a kill aimed at it resolves to nothing and does nothing. Effect dispatch still needs the result of the state process it spawned after the drain: it asks for it before draining (`keepResultOnFinish`), the stepper then moves the finished process to a rooted hand-over slot, and dispatch empties that slot (`takeFinishedProcess`). Pinned by the `platform-services/SD-1` cases in `test/platform/SchedulerPidTest.cpp`.
 
 ## The run queue and the event loop
 
@@ -185,7 +178,6 @@ A change fits when it keeps every heap interaction on the eco thread, finds proc
 - A cancelable wait returns a kill handle that withdraws the work and releases the hold exactly once, in the manner of `withdrawParkedTimer` and `RequestControl`.
 - A consumer that must act when the program goes quiet, or a host that must watch the loop, uses a quiescence listener, a stop hook or the activity hook, and keeps its arming state to itself.
 - A fast path for a primitive result goes in the stepper, beside the unboxed Succeed path.
-- Wider process ids keep the theory intact: widen the id field, or key the latest-process table and the router by a full-width id, and remove a table entry when its process finishes. Either way, finding a process by id stays the rule, and it becomes exact.
 
 ## Examples of changes that would break the theory
 Each of these breaks one of the three rules: Elm only on the eco thread, processes found by id, liveness only through holds.
@@ -215,7 +207,7 @@ Parent: [runtime.md](runtime.md). Sibling: [garbage-collector.md](garbage-collec
 
 Code:
 
-- `runtime/src/platform/Scheduler.hpp`, `Scheduler.cpp`: `stepProcess`, `procWithRoot` and the other `procWith*` functions, `enqueue`, `drain`, `runEventLoop`, `processReadyAsync`, `latestProc_`, `latestProcessById`, `rawSpawn` (the 16-bit id cut), `registerAsyncSource`, `addQuiescenceListener`, the self-process registry.
+- `runtime/src/platform/Scheduler.hpp`, `Scheduler.cpp`: `stepProcess`, `procWithRoot` and the other `procWith*` functions, `enqueue`, `drain`, `runEventLoop`, `processReadyAsync`, `latestProc_`, `latestProcessById`, `rawSpawn` (the 64-bit id), `processFinished`, `keepResultOnFinish`, `takeFinishedProcess`, `registerAsyncSource`, `addQuiescenceListener`, the self-process registry.
 - `runtime/src/platform/TaskBinding.hpp`: `makeBinding`, `makeAsyncBinding`, `parkResume`.
 - `runtime/src/platform/Liveness.hpp`: hold tokens, `HoldKind`, `LivenessHold`, `HoldRelease`.
 - `runtime/src/platform/PlatformRuntime.hpp`, `PlatformRuntime.cpp`: the manager table, `initWorker`, `setupEffects`, `enqueueEffects`, `gatherEffects`, `dispatchEffects`, `handleSelfMsg`, `sendToSelf`, flags.

@@ -1489,6 +1489,8 @@ add_custom_target(check
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
+    # Reserved ctor tags in Compiler.Data.CtorTag must equal the runtime's (SD-18).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
@@ -1532,6 +1534,8 @@ add_custom_target(full
     # Large bodies only through the accessors, never resolved (plans/large-object-space.md D4).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-large-body-access.sh ${CMAKE_SOURCE_DIR}
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
+    # Reserved ctor tags in Compiler.Data.CtorTag must equal the runtime's (SD-18).
+    COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples

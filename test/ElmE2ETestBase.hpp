@@ -380,7 +380,14 @@ inline std::string extractExpectedOutput(const std::string& content) {
 using eco_test::CheckPattern;
 using eco_test::trimCheckPattern;
 using eco_test::patternMatches;
-using eco_test::verifyPatterns;
+
+// The Elm E2E fixtures were written against the order-insensitive matcher
+// and have not been audited for output order, so they keep it
+// (CheckOrder::Unordered); the codegen harnesses use FileCheck order.
+inline std::string verifyE2EPatterns(const std::string& output,
+                                     const std::vector<CheckPattern>& patterns) {
+    return eco_test::verifyPatterns(output, patterns, eco_test::CheckOrder::Unordered);
+}
 
 inline std::vector<CheckPattern> extractCheckPatterns(const std::string& content) {
     return eco_test::extractCheckPatterns(content,
@@ -735,7 +742,7 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     // a runtime crash or a wrong-output failure.
     if (!checkMlirPatterns.empty()) {
         std::string mlirText = readMlirAsText(mlirPath);
-        std::string error = verifyPatterns(mlirText, checkMlirPatterns);
+        std::string error = verifyE2EPatterns(mlirText, checkMlirPatterns);
         if (!error.empty()) {
             std::ostringstream msg;
             msg << "MLIR-shape check failed: " << error << "\n";
@@ -775,7 +782,7 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
     }
 
     if (!checkPatterns.empty()) {
-        std::string error = verifyPatterns(result.output, checkPatterns);
+        std::string error = verifyE2EPatterns(result.output, checkPatterns);
         if (!error.empty()) {
             std::ostringstream msg;
             msg << error << "\n";
@@ -853,7 +860,7 @@ inline int runElmProgramForProcessCheck(const std::string& mlirPath,
     }
     if (!checkMlirPatterns.empty()) {
         std::string mlirText = readMlirAsText(mlirPath);
-        std::string error = verifyPatterns(mlirText, checkMlirPatterns);
+        std::string error = verifyE2EPatterns(mlirText, checkMlirPatterns);
         if (!error.empty()) {
             throw std::runtime_error("MLIR-shape check failed: " + error +
                                      "\nMLIR file: " + mlirPath);
@@ -926,7 +933,7 @@ inline std::string verifyProcessOutcome(const std::string& elmPath,
 
     std::string error;
     if (!checkPatterns.empty()) {
-        error = verifyPatterns(combinedOut, checkPatterns);
+        error = verifyE2EPatterns(combinedOut, checkPatterns);
     }
     if (error.empty() && exitStatus != expectedExit) {
         error = "Exit code " + std::to_string(exitStatus) + ", expected " +

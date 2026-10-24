@@ -18,6 +18,9 @@ module {
 }
 
 // CHECK: llvm.func @extend70
+// The rooting follows the spill of the last newarg (%arg70); an earlier
+// constant(64) is the spill index of %arg64.
+// CHECK: llvm.call @__eco_hptr_to_slot(%arg70)
 // CHECK: llvm.mlir.constant(64 : i64)
 // CHECK-NEXT: llvm.mlir.constant(-1 : i64)
 // CHECK-NEXT: llvm.call @eco_gc_push_stack_range

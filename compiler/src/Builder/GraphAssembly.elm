@@ -26,7 +26,6 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Elm.Package as Pkg
 import Data.Map
 import Data.Set as EverySet
 import Dict
@@ -54,14 +53,23 @@ addOptLocalGraph (Opt.LocalGraph _ nodes1 fields1) (Opt.GlobalGraph nodes2 field
         (Dict.union fields1 fields2)
 
 
-{-| Add a kernel definition to the global graph.
+{-| Add a kernel definition to the global graph, given the kernel module's
+name (`Elm.Kernel.File`, `Eco.Kernel.File`) and its parsed chunks.
+
+The node is keyed by `Opt.toKernelGlobal`, which keeps the kernel prefix of an
+`Eco` kernel, so a package's `Eco.Kernel.File` and another's `Elm.Kernel.File`
+stay two nodes when the graphs are merged.
+
 -}
-addOptKernel : Name -> List K.Chunk -> Opt.GlobalGraph -> Opt.GlobalGraph
-addOptKernel shortName chunks (Opt.GlobalGraph nodes fields) =
+addOptKernel : ModuleName.Raw -> List K.Chunk -> Opt.GlobalGraph -> Opt.GlobalGraph
+addOptKernel moduleName chunks (Opt.GlobalGraph nodes fields) =
     let
+        ( kernelPrefix, home ) =
+            Name.getKernel moduleName
+
         global : Opt.Global
         global =
-            toKernelGlobal shortName
+            Opt.toKernelGlobal kernelPrefix home
 
         node : Opt.Node
         node =
@@ -81,8 +89,8 @@ addKernelDep chunk deps =
         K.ElmVar home name ->
             EverySet.insert Opt.toComparableGlobal (Opt.Global home name) deps
 
-        K.JsVar shortName _ ->
-            EverySet.insert Opt.toComparableGlobal (toKernelGlobal shortName) deps
+        K.JsVar kernelPrefix home _ ->
+            EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal kernelPrefix home) deps
 
         K.ElmField _ ->
             deps
@@ -98,11 +106,6 @@ addKernelDep chunk deps =
 
         K.Prod ->
             deps
-
-
-toKernelGlobal : Name.Name -> Opt.Global
-toKernelGlobal shortName =
-    Opt.Global (ModuleName.Canonical Pkg.kernel shortName) Name.dollar
 
 
 

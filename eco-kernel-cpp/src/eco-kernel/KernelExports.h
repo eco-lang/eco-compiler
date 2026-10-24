@@ -78,7 +78,8 @@ HPtr Eco_Kernel_File_open(HPtr path, HPtr mode);
 // Close file handle. Returns Task Never ().
 HPtr Eco_Kernel_File_close(HPtr handle);
 
-// Get file size via handle. Returns Int (unboxed).
+// Get file size via handle. Returns Task IOError Int (the Task word travels
+// in the uint64_t return).
 uint64_t Eco_Kernel_File_size(HPtr handle);
 
 // Acquire file lock (blocks). Returns Task Never ().
@@ -87,31 +88,33 @@ HPtr Eco_Kernel_File_lock(HPtr path);
 // Release file lock. Returns Task Never ().
 HPtr Eco_Kernel_File_unlock(HPtr path);
 
-// Check if file exists. Returns Bool (boxed True/False constant).
+// Check if file exists. Returns Task Never Bool.
 HPtr Eco_Kernel_File_fileExists(HPtr path);
 
-// Check if directory exists. Returns Bool (boxed True/False constant).
+// Check if directory exists. Returns Task Never Bool.
 HPtr Eco_Kernel_File_dirExists(HPtr path);
 
-// Find executable on PATH. Returns Maybe String (boxed).
+// Find executable on PATH. Returns Task Never (Maybe String).
 HPtr Eco_Kernel_File_findExecutable(HPtr name);
 
-// List directory contents. Returns List String (boxed).
+// List directory contents. Returns Task IOError (List String).
 HPtr Eco_Kernel_File_list(HPtr path);
 
-// Get file modification time. Returns Int (milliseconds since epoch, unboxed).
+// Get file modification time. Returns Task IOError Int (milliseconds since
+// epoch; Eco.File maps it to Time.Posix). The Task word travels in the
+// uint64_t return.
 uint64_t Eco_Kernel_File_modificationTime(HPtr path);
 
-// Get current working directory. Returns String (boxed).
+// Get current working directory. Returns Task Never String.
 HPtr Eco_Kernel_File_getCwd();
 
 // Set current working directory. Returns Task Never ().
 HPtr Eco_Kernel_File_setCwd(HPtr path);
 
-// Canonicalize path (resolve symlinks, normalize). Returns String (boxed).
+// Canonicalize path (resolve symlinks, normalize). Returns Task IOError String.
 HPtr Eco_Kernel_File_canonicalize(HPtr path);
 
-// Get app-specific user data directory. Returns String (boxed).
+// Get app-specific user data directory. Returns Task Never String.
 HPtr Eco_Kernel_File_appDataDir(HPtr name);
 
 // Create directory, optionally with parents. Returns Task Never ().
@@ -144,10 +147,10 @@ HPtr Eco_Kernel_Crash_crash(HPtr message);
 // Write string to console handle (stdout/stderr). Returns Task Never ().
 HPtr Eco_Kernel_Console_write(HPtr handle, HPtr content);
 
-// Read one line from stdin. Returns String (boxed).
+// Read one line from stdin. Returns Task IOError String.
 HPtr Eco_Kernel_Console_readLine();
 
-// Read all of stdin as string. Returns String (boxed).
+// Read all of stdin as string. Returns Task IOError String.
 HPtr Eco_Kernel_Console_readAll();
 
 // log(tag, value): write tag to stderr, return value unchanged.
@@ -158,10 +161,10 @@ HPtr Eco_Kernel_Console_log(HPtr tag, HPtr value);
 // Env Module - environment variables and CLI args
 //===----------------------------------------------------------------------===//
 
-// Look up environment variable. Returns Maybe String (boxed).
+// Look up environment variable. Returns Task Never (Maybe String).
 HPtr Eco_Kernel_Env_lookup(HPtr name);
 
-// Get raw CLI args. Returns List String (boxed).
+// Get raw CLI args. Returns Task Never (List String).
 HPtr Eco_Kernel_Env_rawArgs();
 
 //===----------------------------------------------------------------------===//
@@ -171,32 +174,33 @@ HPtr Eco_Kernel_Env_rawArgs();
 // Exit process with exit code (unboxed Int). Never returns.
 HPtr Eco_Kernel_Process_exit(int64_t code);
 
-// Spawn external process with inherited stdio. Returns pid (unboxed Int).
+// Spawn external process with inherited stdio. Returns Task ProcessError
+// ProcessHandle (the Task word travels in the uint64_t return).
 uint64_t Eco_Kernel_Process_spawn(HPtr cmd, HPtr args);
 
 // Spawn external process with configurable stdio.
 // stdin_/stdout_/stderr_ are boxed Strings ("inherit" or "pipe").
-// Returns record { stdinHandle: Maybe Int, processHandle: Int } (boxed).
+// Returns Task ProcessError { stdinHandle : Maybe Int, processHandle : ProcessHandle }.
 HPtr Eco_Kernel_Process_spawnProcess(HPtr cmd, HPtr args,
     HPtr stdin_, HPtr stdout_, HPtr stderr_);
 
-// Wait for process to exit. Returns Int (exit code, unboxed).
+// Wait for process to exit. Returns Task Never ExitCode (the Task word travels
+// in the uint64_t return).
 uint64_t Eco_Kernel_Process_wait(HPtr handle);
 
 //===----------------------------------------------------------------------===//
 // MVar Module - concurrency primitives
 //===----------------------------------------------------------------------===//
 
-// Create new empty MVar. Returns Int (MVar id, unboxed).
-// Returns a Task that succeeds with a freshly-allocated MVar id (boxed Int).
+// Create new empty MVar. Returns a Task that succeeds with a freshly-allocated MVar id (boxed Int).
 // (Elm side: `Eco.Kernel.MVar.new : Task Never Int`, then `Task.map MVar` in
 // Eco.MVar wraps the Int in the MVar constructor.)
 HPtr Eco_Kernel_MVar_new();
 
-// Read MVar (blocks until full). Returns value (boxed).
+// Read MVar (blocks until full). Returns Task Never a.
 HPtr Eco_Kernel_MVar_read(uint64_t id);
 
-// Take MVar (blocks until full, empties). Returns value (boxed).
+// Take MVar (blocks until full, empties). Returns Task Never a.
 HPtr Eco_Kernel_MVar_take(uint64_t id);
 
 // Put value into MVar (blocks until empty). Returns Task Never ().
@@ -228,16 +232,18 @@ int64_t Eco_Kernel_Hash_string64(int64_t seed, HPtr str);
 // Runtime Module - Node.js specific and REPL state
 //===----------------------------------------------------------------------===//
 
-// Get directory of current script/binary. Returns String (boxed).
+// Get directory of current script/binary. Returns Task Never String.
 HPtr Eco_Kernel_Runtime_dirname();
 
-// Get random Float. Returns Float (unboxed).
+// Get random Float. Returns Task Never Float (the Task word travels in the
+// uint64_t return).
 uint64_t Eco_Kernel_Runtime_random();
 
 // Persist REPL state to runtime storage. Returns Task Never ().
 HPtr Eco_Kernel_Runtime_saveState(HPtr state);
 
-// Load persisted REPL state from runtime storage. Returns boxed value.
+// Load persisted REPL state from runtime storage. Returns Task Never Value
+// (a JSON value).
 HPtr Eco_Kernel_Runtime_loadState();
 
 //===----------------------------------------------------------------------===//

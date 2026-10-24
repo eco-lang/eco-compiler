@@ -36,10 +36,10 @@ a module of those operations.
 
 A `StringAttr` holds its text with escape sequences written out, as
 `Mlir.Mlir` describes, and is rewritten on the way out: a `\uXXXX` escape
-becomes the character it names, `\n`, `\t`, `\"` and `\\` are kept, and so is a
-`\u` not followed by four hexadecimal digits. Any other escape loses its
-backslash, so that `\r` becomes the letter `r`, and a `"` that no backslash
-escapes gains one.
+becomes the character it names (a control character or a backslash as a
+two-hex-digit escape), `\n`, `\t`, `\"` and `\\` are kept, and so is a `\u` not
+followed by four hexadecimal digits. `\r` becomes `\0D`, any other escape
+loses its backslash, and a `"` that no backslash escapes gains one.
 
 The file also holds a walk that collects, under its `sym_name`, every operation
 that has one. Nothing uses it.
@@ -49,7 +49,6 @@ that has one. Nothing uses it.
 -}
 
 import Dict exposing (Dict)
-import FormatNumber as Fmt
 import Mlir.Mlir
     exposing
         ( MlirAttr(..)
@@ -541,10 +540,10 @@ and `\\` are kept, and so is a `\u` not followed by four hexadecimal digits.
 escape loses its backslash, so `\'` becomes `'`. Last, a `"` that no backslash escapes, as the text of a
 multi-line string can hold, gains one.
 
-A character that a `\uXXXX` escape names is written as itself, so a newline or
-a backslash named that way reaches the literal unescaped; a `"` is escaped by
-the last step like any other. The two `\uXXXX` escapes of a surrogate pair are
-converted one at a time.
+A character that a `\uXXXX` escape names is written as itself, except a
+control character or a backslash, which becomes a two-hex-digit escape (see
+`escapeCodePoint`); a `"` is escaped by the last step like any other. The two
+`\uXXXX` escapes of a surrogate pair are converted one at a time.
 
 -}
 escapeForMlir : String -> String
@@ -582,9 +581,9 @@ escapeUnescapedQuotes s =
     go False [] (String.toList s)
 
 
-{-| Returns `s` with each `\uXXXX` escape replaced by the character it names,
-the escapes `\n`, `\t`, `\"` and `\\` kept as written, and the backslash
-dropped from any other escape.
+{-| Returns `s` with each `\uXXXX` escape replaced by the character it names
+(spelled by `escapeCodePoint`), `\r` replaced by `\0D`, the escapes `\n`, `\t`,
+`\"` and `\\` kept as written, and the backslash dropped from any other escape.
 
 A `\u` not followed by four hexadecimal digits is kept as written, and so is a
 backslash at the very end of `s`. Despite the name, the result is characters,
@@ -614,7 +613,7 @@ convertUnicodeEscapesToUtf8 s =
                                             afterHex =
                                                 String.dropLeft 4 afterU
                                         in
-                                        go (Char.fromCode codePoint :: revAcc) afterHex
+                                        go (List.reverse (escapeCodePoint codePoint) ++ revAcc) afterHex
 
                                     Nothing ->
                                         go ('u' :: '\\' :: revAcc) afterU
@@ -640,6 +639,32 @@ convertUnicodeEscapesToUtf8 s =
                     go (c :: revAcc) rest
     in
     go [] s
+
+
+{-| Returns the characters that spell code point `cp`, named by a `\uXXXX`
+escape, inside an MLIR string literal: the character itself, except that a
+control character (below U+0020, or U+007F) and a backslash become MLIR's
+two-hex-digit escape (`\0A`, `\5C`), which its lexer requires. A `"` is left
+for `escapeUnescapedQuotes`.
+-}
+escapeCodePoint : Int -> List Char
+escapeCodePoint cp =
+    if cp < 0x20 || cp == 0x7F || cp == 0x5C then
+        [ '\\', hexDigitChar (cp // 16), hexDigitChar (modBy 16 cp) ]
+
+    else
+        [ Char.fromCode cp ]
+
+
+{-| Returns the upper-case hexadecimal digit for `n`, which is 0 to 15.
+-}
+hexDigitChar : Int -> Char
+hexDigitChar n =
+    if n < 10 then
+        Char.fromCode (48 + n)
+
+    else
+        Char.fromCode (55 + n)
 
 
 {-| Returns the number `s` spells in hexadecimal, in either case, or `Nothing`
@@ -678,14 +703,54 @@ parseHex s =
         s
 
 
+{-| Returns the MLIR literal for an `f64` value, one that reads back as
+exactly `f`.
+
+A finite value is `String.fromFloat`'s text, the shortest decimal that reads
+back as `f`, with `.0` put in when that text has no `.` (MLIR lexes a decimal
+float only when it has one): `3` becomes `3.0` and `1e-7` becomes `1.0e-7`.
+Negative zero prints as `-0.0`. NaN and the infinities, which have no decimal
+spelling, print as MLIR's hexadecimal bit patterns: the canonical quiet NaN
+`0x7FF8000000000000`, `0x7FF0000000000000` and `0xFFF0000000000000`.
+
+-}
+ppFloatLiteral : Float -> String
+ppFloatLiteral f =
+    if isNaN f then
+        "0x7FF8000000000000"
+
+    else if isInfinite f then
+        if f > 0 then
+            "0x7FF0000000000000"
+
+        else
+            "0xFFF0000000000000"
+
+    else if f == 0 && 1 / f < 0 then
+        "-0.0"
+
+    else
+        let
+            str =
+                String.fromFloat f
+        in
+        if String.contains "." str then
+            str
+
+        else
+            case String.indexes "e" str of
+                i :: _ ->
+                    String.left i str ++ ".0" ++ String.dropLeft i str
+
+                [] ->
+                    str ++ ".0"
+
+
 {-| Returns the MLIR spelling of an attribute's value.
 
 A `StringAttr` is quoted, its text rewritten by `escapeForMlir`. An `IntAttr`
-is followed by `: type` when it has a type, and a `TypedFloatAttr` always is.
-A finite float whose `String.fromFloat` text has no `.` is instead formatted
-with exactly one decimal place, so that a whole number reads as a float; this
-rounds a value that `String.fromFloat` writes in exponent form without a `.`.
-NaN and the infinities print as nothing before the `: type`. An
+is followed by `: type` when it has a type, and a `TypedFloatAttr` always is;
+`ppFloatLiteral` spells its value. An
 `ArrayAttr (Just t)` prints as `array<t: ...>` (`array<t>` when empty) and an `ArrayAttr Nothing` as
 `[...]`, with each element spelled by this function. A `SymbolRefAttr` gets
 MLIR's leading `@`, a `UnitAttr` prints as nothing, and a `VisibilityAttr`
@@ -714,26 +779,7 @@ ppAttr attr =
                     String.fromInt i
 
         TypedFloatAttr f t ->
-            let
-                str =
-                    String.fromFloat f
-            in
-            if String.contains "." str then
-                str ++ " : " ++ ppType t
-
-            else
-                Fmt.format
-                    { decimals = 1
-                    , thousandSeparator = ""
-                    , decimalSeparator = "."
-                    , negativePrefix = "-"
-                    , negativeSuffix = ""
-                    , positivePrefix = ""
-                    , positiveSuffix = ""
-                    }
-                    f
-                    ++ " : "
-                    ++ ppType t
+            ppFloatLiteral f ++ " : " ++ ppType t
 
         TypeAttr t ->
             ppType t

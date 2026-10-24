@@ -450,7 +450,9 @@ TestResult run_one(const TestCase& tc) {
         r.passed = true;
         return r;
     }
-    std::string err = eco_test::verifyPatterns(elf_output, patterns);
+    // Order-insensitive like the JIT E2E host (ElmE2ETestBase.hpp).
+    std::string err = eco_test::verifyPatterns(elf_output, patterns,
+                                               eco_test::CheckOrder::Unordered);
     if (!err.empty()) {
         r.failure_reason = err;
         std::ostringstream d;

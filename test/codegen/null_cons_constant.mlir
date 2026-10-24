@@ -11,10 +11,19 @@
 //     null-cons arm (JIT leg) — the third tag extractor, EcoToLLVMControlFlow.
 
 module {
+  // The EXP leg reads the word here: @main's own uses of it fold away
+  // (get_tag of a constant), so it never reaches main's IR. A public
+  // function's return value has to be materialized.
+  func.func @null_cons_word_5() -> !eco.value {
+    %v = eco.constant.null_cons 5 : !eco.value
+    eco.return %v : !eco.value
+  }
+  // EXP: define{{.*}}@null_cons_word_5()
+  // EXP-NEXT: ret ptr addrspace(1) inttoptr (i64 43980465111047 to ptr addrspace(1))
+
   func.func @main() -> i64 {
     // (5 << 43) | 0b111
     %v5 = eco.constant.null_cons 5 : !eco.value
-    // EXP: 43980465111047
 
     %t5 = eco.get_tag %v5 : !eco.value -> i32
     %i5 = arith.extui %t5 : i32 to i64

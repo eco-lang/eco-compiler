@@ -15,8 +15,10 @@
 // EXP leg: expandValueEqFastPath has replaced the marker with the three-arm
 // diamond and erased the declaration. Arm 1 is word equality (which never
 // disagrees with the kernel: eqHelp's `if (a == b) return true` runs before the
-// tag switch). Arm 2 is the ptr_ind bit test, exactly equalRespectingConstants.
-// Arm 3 calls the kernel and decodes against the True word 0x5.
+// tag switch). Arm 2 is the ptr_ind bit test, exactly equalRespectingConstants:
+// a pair with a constant is unequal, except the Empty constant (0x6) against a
+// heap pointer, which takes arm 3 because "" equals a zero-length heap String
+// (SD-26, HEAP_071). Arm 3 calls the kernel and decodes against the True word 0x5.
 //
 // JIT leg: executes all three arms end to end.
 
@@ -33,6 +35,7 @@ module {
     //
     // EXP: eq.same
     // EXP: eq.anyconst
+    // EXP: eq.emptyvsheap
     // EXP: @Elm_Kernel_Utils_equal
     // EXP-NOT: @__eco_value_eq
 
@@ -66,6 +69,14 @@ module {
     %nec = eco.value.eq %s1, %s3 : !eco.value
     %nec64 = arith.extui %nec : i1 to i64
     eco.dbg %nec64 : i64
+    // JIT: 0
+
+    // Arm 3 via the Empty constant: "" against a non-empty heap String goes to
+    // the kernel (SD-26) and is unequal.
+    %e = eco.constant Empty : !eco.value
+    %emp = eco.value.eq %e, %s1 : !eco.value
+    %emp64 = arith.extui %emp : i1 to i64
+    eco.dbg %emp64 : i64
     // JIT: 0
 
     %z = arith.constant 0 : i64

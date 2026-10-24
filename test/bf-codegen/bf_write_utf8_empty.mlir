@@ -1,8 +1,6 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
 //
 // Test bf.write.utf8 with empty string
-// XFAIL: Requires eco.value <-> i64 type interop in bf dialect
 
 module {
   func.func @main() -> i64 {
@@ -23,7 +21,7 @@ module {
     %cursor1 = bf.write.u8 %cursor0, %marker1 : !bf.cursor
 
     // Write empty string (should not advance cursor)
-    %cursor2 = bf.write.utf8 %cursor1, %str : !bf.cursor
+    %cursor2 = bf.write.utf8 %cursor1, %str : (!eco.value) -> !bf.cursor
 
     // Write marker after
     %marker2 = arith.constant 0xBB : i64

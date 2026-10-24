@@ -1,4 +1,4 @@
-// RUN: %ecoc %s 2>&1 | %FileCheck %s
+// RUN: not %ecoc %s 2>&1 | %FileCheck %s
 //
 // Test that eco.case without result_types fails parsing.
 // The new syntax requires -> (types) for result types.

@@ -143,14 +143,16 @@ generate =
 {-| Register a dependency on a kernel function and return the given value.
 
 Kernel functions are JavaScript primitives exposed to Elm code.
-Registering them ensures they are included in the final output.
+Registering them ensures they are included in the final output. The kernel
+module is given by its kernel prefix (`Elm` or `Eco`) and home, as
+`Opt.toKernelGlobal` takes them.
 
 -}
-registerKernel : Name -> a -> Tracker a
-registerKernel home value =
+registerKernel : Name -> Name -> a -> Tracker a
+registerKernel kernelPrefix home value =
     Tracker <|
         \uid deps fields ->
-            tResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal home) deps) fields value
+            tResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal kernelPrefix home) deps) fields value
 
 
 {-| Register a dependency on a global function or value and return a reference to it.

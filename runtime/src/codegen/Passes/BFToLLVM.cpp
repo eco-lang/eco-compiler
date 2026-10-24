@@ -2,7 +2,9 @@
 //
 // This file implements the pass for lowering BF (ByteFusion) dialect operations
 // to LLVM dialect. The bf.cursor type is lowered to a struct {i8*, i8*} and
-// operations are lowered to runtime helper calls and inline LLVM ops.
+// operations are lowered to runtime helper calls and inline LLVM ops. Before
+// the conversion, cursors live across an op that may run a GC are re-derived
+// from their buffers (CursorGCSafety, BFOPS_039).
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,14 +14,21 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../Passes.h"
+#include "EcoMarkerFacts.h"
 #include "EcoParallel.h"
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 
 using namespace mlir;
 using namespace bf;
@@ -79,6 +88,8 @@ struct BFRuntimeFuncs {
     LLVM::LLVMFuncOp allocBytebuffer;
     LLVM::LLVMFuncOp bytebufferLen;
     LLVM::LLVMFuncOp bytebufferData;
+    LLVM::LLVMFuncOp builderBegin;
+    LLVM::LLVMFuncOp builderEnd;
     LLVM::LLVMFuncOp utf8Width;
     LLVM::LLVMFuncOp utf8Copy;
     LLVM::LLVMFuncOp utf8Decode;
@@ -87,14 +98,12 @@ struct BFRuntimeFuncs {
 };
 
 /// Ensure runtime functions are declared in the module, then cache them.
-static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder) {
+static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder,
+                                             mlir::SymbolTable &symTable) {
     auto loc = module.getLoc();
     auto ctx = module.getContext();
     auto i8Ptr = LLVM::LLVMPointerType::get(ctx);
     auto i32 = builder.getI32Type();
-
-    // Build a symbol table for O(1) lookups during declaration
-    mlir::SymbolTable symTable(module);
 
     auto declareFunc = [&](StringRef name, Type resultType,
                            ArrayRef<Type> argTypes) -> LLVM::LLVMFuncOp {
@@ -115,11 +124,14 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
     funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", hptr, {i32});
     funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {hptr});
     funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {hptr});
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    funcs.builderBegin = declareFunc("elm_bytebuffer_builder_begin", voidTy, {hptr});
+    funcs.builderEnd = declareFunc("elm_bytebuffer_builder_end", voidTy, {hptr});
 
     // UTF-8 operations
     funcs.utf8Width = declareFunc("elm_utf8_width", i32, {hptr});
     funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {hptr, i8Ptr});
-    funcs.utf8Decode = declareFunc("elm_utf8_decode", hptr, {i8Ptr, i32});
+    funcs.utf8Decode = declareFunc("elm_utf8_decode", hptr, {hptr, i32, i32});
 
     // Encoder-tree operations (bytes-fusion escape hatch)
     funcs.encoderSize = declareFunc("elm_encoder_size", i32, {hptr});
@@ -173,6 +185,406 @@ static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
 
     return createCursor(builder, loc, newPtr, end, cursorLLVMType);
 }
+
+//===----------------------------------------------------------------------===//
+// Cursors across GC points (BFOPS_039)
+//===----------------------------------------------------------------------===//
+//
+// A cursor is a pair of raw pointers into its buffer's body. A ByteBuffer
+// under the large-object threshold lives in the nursery, so any op that may
+// run a GC (an allocation, or a call not known to be gc-leaf) can move the
+// buffer and leave a live cursor pointing at evacuated memory. Before the
+// conversion, every cursor live across such an op is re-derived from its
+// buffer: bf.cursor.offsets before the op, bf.cursor.rebase after it. The
+// buffer is an eco.value, which RS4GC relocates across the op. A structural
+// check then rejects any cursor use still reachable from its definition
+// through an op that may collect. bf.read.bytes and bf.read.utf8 allocate
+// themselves; their lowerings re-derive the source pointer after the
+// allocation from the buffer this analysis finds for their cursor.
+
+/// The analysis and rewrite above, run on each top-level op holding bf ops.
+class CursorGCSafety {
+public:
+    explicit CursorGCSafety(SymbolTable &symbols) : symbols(symbols) {}
+
+    /// Inserts the rebases in `top` and checks the result. Emits an error and
+    /// fails when a cursor that must survive a GC point has no known buffer.
+    LogicalResult run(Operation *top) {
+        buildClasses(top);
+        if (failed(insertRebases(top)) || failed(insertBuilders(top)))
+            return failure();
+        return verify(top);
+    }
+
+    /// The buffer `cursor` points into, or null when unknown or ambiguous.
+    Value bufferOf(Value cursor) {
+        Value rep = find(cursor);
+        auto it = buffers.find(rep);
+        return it == buffers.end() || ambiguous.contains(rep) ? Value() : it->second;
+    }
+
+    /// Does `op` (or any op nested in it) possibly run a GC? Conservative: an
+    /// op not known to be GC-free is a GC point; a wrong "yes" only costs a
+    /// rebase.
+    bool mayCollect(Operation *op) {
+        auto it = memo.find(op);
+        if (it != memo.end())
+            return it->second;
+        bool r = computeMayCollect(op);
+        memo[op] = r;
+        return r;
+    }
+
+private:
+    SymbolTable &symbols;
+    DenseMap<Operation *, bool> memo;
+    // Union-find over cursor values: one class per chain of cursors that
+    // point into the same buffer.
+    DenseMap<Value, Value> parent;
+    DenseMap<Value, Value> buffers;       // class representative -> buffer
+    llvm::DenseSet<Value> ambiguous;      // representatives with two buffers
+    SmallVector<Value> cursors;
+    SmallVector<Value> rebasedCursors;    // one member per rebased class
+
+    static bool isCursor(Value v) { return isa<bf::CursorType>(v.getType()); }
+
+    static bool inDialect(Operation *op, StringRef ns) {
+        return op->getName().getDialectNamespace() == ns;
+    }
+
+    bool leafCallee(StringRef name) {
+        if (eco::markers::isScratchHelper(name) || eco::markers::isCursorMarker(name))
+            return true;
+        if (auto fn = symbols.lookup<LLVM::LLVMFuncOp>(name)) {
+            if (auto pt = fn.getPassthrough())
+                for (Attribute a : *pt)
+                    if (auto s = dyn_cast<StringAttr>(a); s && s.getValue() == "gc-leaf-function")
+                        return true;
+        }
+        return false;
+    }
+
+    bool computeMayCollect(Operation *op) {
+        if (op->getNumRegions() > 0) {
+            // Structured control flow collects iff something inside it does;
+            // any other region-holding op is assumed to collect.
+            if (!inDialect(op, "scf") && !isa<eco::CaseOp>(op))
+                return true;
+            for (Region &region : op->getRegions())
+                for (Block &block : region)
+                    for (Operation &nested : block)
+                        if (mayCollect(&nested))
+                            return true;
+            return false;
+        }
+        if (inDialect(op, "bf"))
+            return isa<bf::AllocOp, bf::ReadBytesOp, bf::ReadUtf8Op>(op);
+        if (isa<eco::CallOp>(op)) {
+            if (op->hasAttr("eco.callee_gc_leaf"))
+                return false;
+            auto callee = op->getAttrOfType<FlatSymbolRefAttr>("callee");
+            return !(callee && leafCallee(callee.getValue()));
+        }
+        if (auto call = dyn_cast<func::CallOp>(op))
+            return !leafCallee(call.getCallee());
+        if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+            auto callee = call.getCallee();
+            return !(callee && leafCallee(*callee));
+        }
+        if (op->hasTrait<OpTrait::IsTerminator>())
+            return false;
+        if (inDialect(op, "llvm"))
+            return false; // non-call LLVM ops
+        if (isPure(op))
+            // Pure but allocating (EcoGCPrepare's may-alloc set).
+            return isa<eco::ListConstructOp, eco::Tuple2ConstructOp,
+                       eco::Tuple3ConstructOp, eco::RecordConstructOp,
+                       eco::CustomConstructOp, eco::BoxOp>(op);
+        return true;
+    }
+
+    Value find(Value v) {
+        auto it = parent.find(v);
+        if (it == parent.end() || it->second == v)
+            return v;
+        Value root = find(it->second);
+        parent[v] = root;
+        return root;
+    }
+
+    void unite(Value a, Value b) {
+        if (!isCursor(a) || !isCursor(b))
+            return;
+        Value ra = find(a), rb = find(b);
+        if (ra == rb)
+            return;
+        parent[ra] = rb;
+        auto ia = buffers.find(ra);
+        if (ia != buffers.end()) {
+            Value buffer = ia->second;
+            buffers.erase(ia);
+            setBuffer(rb, buffer);
+        }
+        if (ambiguous.erase(ra))
+            ambiguous.insert(rb);
+    }
+
+    void setBuffer(Value rep, Value buffer) {
+        auto [it, inserted] = buffers.try_emplace(rep, buffer);
+        if (!inserted && it->second != buffer)
+            ambiguous.insert(rep);
+    }
+
+    void uniteRange(ValueRange a, ValueRange b) {
+        for (auto [x, y] : llvm::zip(a, b))
+            unite(x, y);
+    }
+
+    void buildClasses(Operation *top) {
+        top->walk([&](Block *block) {
+            for (BlockArgument arg : block->getArguments())
+                if (isCursor(arg))
+                    cursors.push_back(arg);
+        });
+        top->walk([&](Operation *op) {
+            for (Value r : op->getResults())
+                if (isCursor(r))
+                    cursors.push_back(r);
+        });
+        top->walk([&](Operation *op) {
+            if (auto init = dyn_cast<bf::CursorInitOp>(op)) {
+                parent.try_emplace(init.getCursor(), init.getCursor());
+                setBuffer(find(init.getCursor()), init.getBuffer());
+            } else if (auto init = dyn_cast<bf::DecoderCursorInitOp>(op)) {
+                parent.try_emplace(init.getCursor(), init.getCursor());
+                setBuffer(find(init.getCursor()), init.getBytes());
+            } else if (inDialect(op, "bf")) {
+                // A cursor-threading op: its new cursor points into the
+                // same buffer as the cursor it consumed.
+                for (Value in : op->getOperands())
+                    for (Value out : op->getResults())
+                        unite(out, in);
+            } else if (auto w = dyn_cast<scf::WhileOp>(op)) {
+                uniteRange(w.getInits(), w.getBeforeArguments());
+                auto cond = w.getConditionOp();
+                uniteRange(cond.getArgs(), w.getAfterArguments());
+                uniteRange(cond.getArgs(), w.getResults());
+                uniteRange(w.getYieldOp()->getOperands(), w.getBeforeArguments());
+            } else if (auto f = dyn_cast<scf::ForOp>(op)) {
+                uniteRange(f.getInitArgs(), f.getRegionIterArgs());
+                uniteRange(f.getBody()->getTerminator()->getOperands(), f.getRegionIterArgs());
+                uniteRange(f.getInitArgs(), f.getResults());
+            } else if (op->getNumRegions() > 0) {
+                // scf.if, scf.index_switch, eco.case: each region's
+                // terminator yields the op's results.
+                for (Region &region : op->getRegions())
+                    for (Block &block : region)
+                        if (!block.empty() && block.back().hasTrait<OpTrait::IsTerminator>() &&
+                            block.back().getNumOperands() == op->getNumResults())
+                            uniteRange(block.back().getOperands(), op->getResults());
+            } else if (auto br = dyn_cast<BranchOpInterface>(op)) {
+                for (unsigned i = 0, e = op->getNumSuccessors(); i < e; ++i) {
+                    SuccessorOperands so = br.getSuccessorOperands(i);
+                    Block *dest = op->getSuccessor(i);
+                    for (unsigned k = 0, n = so.size(); k < n; ++k)
+                        if (Value v = so[k])
+                            unite(v, dest->getArgument(k));
+                }
+            }
+        });
+    }
+
+    /// Is `v` defined at a point that dominates `op` (structurally)?
+    static bool visibleAt(Value v, Operation *op) {
+        Block *defBlock = v.getParentBlock();
+        Operation *anc = defBlock->findAncestorOpInBlock(*op);
+        if (!anc)
+            return false;
+        Operation *def = v.getDefiningOp();
+        return !def || (def != anc && def->isBeforeInBlock(anc));
+    }
+
+    /// Is `v` used by an op that comes after `op` in `op`'s block?
+    static bool usedAfter(Value v, Operation *op) {
+        Block *block = op->getBlock();
+        for (Operation *user : v.getUsers()) {
+            Operation *anc = block->findAncestorOpInBlock(*user);
+            if (anc && anc != op && op->isBeforeInBlock(anc))
+                return true;
+        }
+        return false;
+    }
+
+    LogicalResult bufferFor(Value cursor, Operation *at, Value &buffer) {
+        buffer = bufferOf(cursor);
+        if (!buffer) {
+            at->emitError("bf: a cursor is live across this op, which may run a GC, "
+                          "and its buffer is unknown, so it cannot be re-derived (BFOPS_039)");
+            return failure();
+        }
+        if (!isa<eco::ValueType>(buffer.getType()) || !visibleAt(buffer, at)) {
+            at->emitError("bf: the buffer of a cursor live across this op, which may run "
+                          "a GC, is not an eco.value in scope here (BFOPS_039)");
+            return failure();
+        }
+        return success();
+    }
+
+    LogicalResult insertRebases(Operation *top) {
+        SmallVector<Block *> blocks;
+        top->walk([&](Block *b) { blocks.push_back(b); });
+        OpBuilder builder(top->getContext());
+        for (Block *block : blocks) {
+            SmallVector<Operation *> ops;
+            for (Operation &op : *block)
+                ops.push_back(&op);
+            for (Operation *gcPoint : ops) {
+                if (!mayCollect(gcPoint))
+                    continue;
+                // The cursor results of bf.read.bytes / bf.read.utf8 are
+                // re-derived by their own lowering; only cursors defined
+                // before the op need a rebase.
+                for (size_t i = 0; i < cursors.size(); ++i) {
+                    Value cursor = cursors[i];
+                    if (!visibleAt(cursor, gcPoint) || !usedAfter(cursor, gcPoint))
+                        continue;
+                    Value buffer;
+                    if (failed(bufferFor(cursor, gcPoint, buffer)))
+                        return failure();
+                    Location loc = gcPoint->getLoc();
+                    builder.setInsertionPoint(gcPoint);
+                    auto offsets = builder.create<bf::CursorOffsetsOp>(
+                        loc, builder.getI64Type(), builder.getI64Type(), cursor, buffer);
+                    builder.setInsertionPointAfter(gcPoint);
+                    auto rebase = builder.create<bf::CursorRebaseOp>(
+                        loc, cursor.getType(), buffer, offsets.getPos(), offsets.getEnd());
+                    Value fresh = rebase.getCursor();
+                    cursor.replaceUsesWithIf(fresh, [&](OpOperand &use) {
+                        Operation *anc = block->findAncestorOpInBlock(*use.getOwner());
+                        return anc && anc != gcPoint && gcPoint->isBeforeInBlock(anc);
+                    });
+                    parent.try_emplace(fresh, fresh);
+                    unite(fresh, cursor);
+                    cursors.push_back(fresh);
+                    rebasedCursors.push_back(cursor);
+                }
+            }
+        }
+        // The two allocating reads re-derive their source pointer from the
+        // buffer after allocating (their lowerings).
+        WalkResult wr = top->walk([&](Operation *op) {
+            if (!isa<bf::ReadBytesOp, bf::ReadUtf8Op>(op))
+                return WalkResult::advance();
+            Value buffer;
+            if (failed(bufferFor(op->getOperand(0), op, buffer)))
+                return WalkResult::interrupt();
+            return WalkResult::advance();
+        });
+        return failure(wr.wasInterrupted());
+    }
+
+    /// An encoder that writes after a GC point writes into an object that has
+    /// survived a GC, which HEAP_SNAPSHOT_001 allows only for a builder: the
+    /// concurrent tenure job may copy the buffer, and writes into the old copy
+    /// would be lost. Brackets each such buffer with bf.builder.begin right
+    /// after its bf.alloc and bf.builder.end after its last cursor use.
+    LogicalResult insertBuilders(Operation *top) {
+        llvm::DenseSet<Value> rebasedReps;
+        for (Value v : rebasedCursors)
+            rebasedReps.insert(find(v));
+        llvm::MapVector<Value, SmallVector<Value, 2>> writers; // buffer -> classes
+        top->walk([&](bf::CursorInitOp init) {
+            Value rep = find(init.getCursor());
+            if (rebasedReps.contains(rep))
+                writers[init.getBuffer()].push_back(rep);
+        });
+        OpBuilder builder(top->getContext());
+        for (auto &[buffer, reps] : writers) {
+            auto alloc = buffer.getDefiningOp<bf::AllocOp>();
+            if (!alloc) {
+                top->emitError("bf: an encoder writes after a GC point into a buffer "
+                               "not allocated by bf.alloc, which cannot be a builder "
+                               "(BFOPS_039)");
+                return failure();
+            }
+            Block *block = alloc->getBlock();
+            Operation *last = nullptr;
+            for (Value c : cursors) {
+                if (!llvm::is_contained(reps, find(c)))
+                    continue;
+                for (Operation *user : c.getUsers()) {
+                    Operation *anc = block->findAncestorOpInBlock(*user);
+                    if (!anc || anc->hasTrait<OpTrait::IsTerminator>()) {
+                        user->emitError("bf: an encoder cursor that crosses a GC point "
+                                        "leaves the block of its bf.alloc (BFOPS_039)");
+                        return failure();
+                    }
+                    if (!last || last->isBeforeInBlock(anc))
+                        last = anc;
+                }
+            }
+            builder.setInsertionPointAfter(alloc);
+            builder.create<bf::BuilderBeginOp>(alloc.getLoc(), buffer);
+            builder.setInsertionPointAfter(last);
+            builder.create<bf::BuilderEndOp>(last->getLoc(), buffer);
+        }
+        return success();
+    }
+
+    /// An op that may collect on some path from `v`'s definition to `user`,
+    /// or null. Climbing out of a loop that may collect counts as one: a
+    /// later iteration reuses the cursor after the GC.
+    Operation *collectBetween(Value v, Operation *user) {
+        Block *defBlock = v.getParentBlock();
+        Operation *cur = user;
+        while (cur->getBlock() != defBlock) {
+            Block *b = cur->getBlock();
+            for (Operation &o : *b) {
+                if (&o == cur)
+                    break;
+                if (mayCollect(&o))
+                    return &o;
+            }
+            Operation *parentOp = b->getParentOp();
+            if (!parentOp || !defBlock->getParentOp() ||
+                !defBlock->getParentOp()->isAncestor(parentOp)) {
+                // Different blocks of one region (unstructured control
+                // flow): only safe when nothing in the region collects.
+                for (Block &rb : *defBlock->getParent())
+                    for (Operation &o : rb)
+                        if (mayCollect(&o))
+                            return &o;
+                return nullptr;
+            }
+            if (isa<scf::WhileOp, scf::ForOp>(parentOp) && mayCollect(parentOp))
+                return parentOp;
+            cur = parentOp;
+        }
+        Operation *def = v.getDefiningOp();
+        Operation *o = def ? def->getNextNode() : &defBlock->front();
+        for (; o && o != cur; o = o->getNextNode())
+            if (mayCollect(o))
+                return o;
+        return nullptr;
+    }
+
+    LogicalResult verify(Operation *top) {
+        WalkResult wr = top->walk([&](Operation *user) {
+            for (Value v : user->getOperands()) {
+                if (!isCursor(v))
+                    continue;
+                if (Operation *gc = collectBetween(v, user)) {
+                    user->emitError("bf: a cursor is used after an op that may run a GC "
+                                    "without being re-derived (BFOPS_039): ")
+                        << gc->getName() << " at " << gc->getLoc();
+                    return WalkResult::interrupt();
+                }
+            }
+            return WalkResult::advance();
+        });
+        return failure(wr.wasInterrupted());
+    }
+};
 
 //===----------------------------------------------------------------------===//
 // Lowering Patterns
@@ -936,24 +1348,121 @@ struct ReadF64OpLowering : public OpConversionPattern<bf::ReadF64Op> {
     }
 };
 
-/// Lower bf.read.bytes to runtime call + cursor advance.
+/// The converted buffer `cursor` points into (CursorGCSafety found it
+/// before the conversion), as the ptr addrspace(1) the runtime helpers take.
+static Value convertedBufferOf(CursorGCSafety &gc, Value cursor,
+                               ConversionPatternRewriter &rewriter) {
+    Value buffer = gc.bufferOf(cursor);
+    return buffer ? rewriter.getRemappedValue(buffer) : Value();
+}
+
+/// (ptr - data, end - data) for a cursor into a buffer whose data starts at
+/// `data`, as i64 offsets.
+static std::pair<Value, Value> cursorOffsets(OpBuilder &builder, Location loc,
+                                             Value cursor, Value data) {
+    auto i64 = builder.getI64Type();
+    Value base = builder.create<LLVM::PtrToIntOp>(loc, i64, data);
+    Value ptr = builder.create<LLVM::PtrToIntOp>(loc, i64, extractPtr(builder, loc, cursor));
+    Value end = builder.create<LLVM::PtrToIntOp>(loc, i64, extractEnd(builder, loc, cursor));
+    return {builder.create<LLVM::SubOp>(loc, ptr, base),
+            builder.create<LLVM::SubOp>(loc, end, base)};
+}
+
+/// Lower bf.cursor.offsets to the cursor's offsets from its buffer's data.
+struct CursorOffsetsOpLowering : public OpConversionPattern<bf::CursorOffsetsOp> {
+    const BFRuntimeFuncs &rt;
+    CursorOffsetsOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
+
+    LogicalResult
+    matchAndRewrite(bf::CursorOffsetsOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        Value data = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()}).getResult();
+        auto [pos, end] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data);
+        rewriter.replaceOp(op, {pos, end});
+        return success();
+    }
+};
+
+/// Lower bf.cursor.rebase to a cursor at the offsets from the buffer's data,
+/// read now (after a GC that may have moved the buffer).
+struct CursorRebaseOpLowering : public OpConversionPattern<bf::CursorRebaseOp> {
+    const BFRuntimeFuncs &rt;
+    CursorRebaseOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
+
+    LogicalResult
+    matchAndRewrite(bf::CursorRebaseOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        Value data = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()}).getResult();
+        Value ptr = rewriter.create<LLVM::GEPOp>(
+            loc, data.getType(), rewriter.getI8Type(), data, adaptor.getPos());
+        Value end = rewriter.create<LLVM::GEPOp>(
+            loc, data.getType(), rewriter.getI8Type(), data, adaptor.getEnd());
+        Type cursorType = getTypeConverter()->convertType(op.getType());
+        rewriter.replaceOp(op, createCursor(rewriter, loc, ptr, end, cursorType));
+        return success();
+    }
+};
+
+/// Lower bf.builder.begin / bf.builder.end to the runtime calls that set and
+/// clear the buffer's builder bit.
+template <typename OpT>
+struct BuilderBitOpLowering : public OpConversionPattern<OpT> {
+    LLVM::LLVMFuncOp fn;
+    BuilderBitOpLowering(const TypeConverter &tc, MLIRContext *ctx, LLVM::LLVMFuncOp fn)
+        : OpConversionPattern<OpT>(tc, ctx), fn(fn) {}
+
+    LogicalResult
+    matchAndRewrite(OpT op, typename OpT::Adaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        rewriter.create<LLVM::CallOp>(op.getLoc(), fn, ValueRange{adaptor.getBuffer()});
+        rewriter.eraseOp(op);
+        return success();
+    }
+};
+
+/// Lower bf.read.bytes to allocate + memcpy + cursor advance. The allocation
+/// may run a GC that moves the source buffer, so the source pointer and the
+/// new cursor are re-derived from the (relocated) buffer after it
+/// (BFOPS_039).
 struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
     const BFRuntimeFuncs &rt;
-    ReadBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
-        : OpConversionPattern(tc, ctx), rt(rt) {}
+    CursorGCSafety &gc;
+    ReadBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt,
+                        CursorGCSafety &gc)
+        : OpConversionPattern(tc, ctx), rt(rt), gc(gc) {}
 
     LogicalResult
     matchAndRewrite(ReadBytesOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         Type cursorType = getTypeConverter()->convertType(op.getNewCursor().getType());
+        Value source = convertedBufferOf(gc, op.getCursor(), rewriter);
+        if (!source)
+            return rewriter.notifyMatchFailure(op, "buffer of the cursor unknown");
 
-        Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
+        // Offsets of the cursor in the source, before the allocation.
+        Value data0 = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{source}).getResult();
+        auto [pos, endOff] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data0);
 
-        // Allocate new ByteBuffer
+        // Allocate new ByteBuffer (may run a GC).
         auto allocCall = rewriter.create<LLVM::CallOp>(
             loc, rt.allocBytebuffer, ValueRange{adaptor.getLen()});
         Value newBuffer = allocCall.getResult();
+
+        // Re-derive the source pointer from the relocated buffer.
+        Value data1 = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{source}).getResult();
+        Value srcPtr = rewriter.create<LLVM::GEPOp>(
+            loc, data1.getType(), rewriter.getI8Type(), data1, pos);
+        Value end = rewriter.create<LLVM::GEPOp>(
+            loc, data1.getType(), rewriter.getI8Type(), data1, endOff);
 
         // Get destination data pointer
         auto dataCall = rewriter.create<LLVM::CallOp>(
@@ -963,11 +1472,12 @@ struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
         // Copy bytes: memcpy(dst, src, len)
         Value len64 = rewriter.create<LLVM::ZExtOp>(
             loc, rewriter.getI64Type(), adaptor.getLen());
-        rewriter.create<LLVM::MemcpyOp>(loc, dstPtr, ptr, len64, /*isVolatile=*/false);
+        rewriter.create<LLVM::MemcpyOp>(loc, dstPtr, srcPtr, len64, /*isVolatile=*/false);
 
         // Advance cursor by len
-        Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
-                                        adaptor.getLen(), cursorType);
+        Value newCursor = advanceCursor(
+            rewriter, loc, createCursor(rewriter, loc, srcPtr, end, cursorType),
+            adaptor.getLen(), cursorType);
 
         // ok = true (allocation success assumed for simplicity)
         Value ok = rewriter.create<LLVM::ConstantOp>(
@@ -978,23 +1488,34 @@ struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
     }
 };
 
-/// Lower bf.read.utf8 to runtime call + cursor advance.
+/// Lower bf.read.utf8 to runtime call + cursor advance. elm_utf8_decode takes
+/// the buffer and the offset (it allocates, and roots the buffer across
+/// that); the new cursor is re-derived from the relocated buffer after the
+/// call (BFOPS_039).
 struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
     const BFRuntimeFuncs &rt;
-    ReadUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
-        : OpConversionPattern(tc, ctx), rt(rt) {}
+    CursorGCSafety &gc;
+    ReadUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt,
+                       CursorGCSafety &gc)
+        : OpConversionPattern(tc, ctx), rt(rt), gc(gc) {}
 
     LogicalResult
     matchAndRewrite(ReadUtf8Op op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
         Type cursorType = getTypeConverter()->convertType(op.getNewCursor().getType());
+        Value source = convertedBufferOf(gc, op.getCursor(), rewriter);
+        if (!source)
+            return rewriter.notifyMatchFailure(op, "buffer of the cursor unknown");
 
-        Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
+        Value data0 = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{source}).getResult();
+        auto [pos, endOff] = cursorOffsets(rewriter, loc, adaptor.getCursor(), data0);
+        Value pos32 = rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), pos);
 
-        // Call elm_utf8_decode(ptr, len) -> eco.value (0 on failure)
+        // Call elm_utf8_decode(buffer, offset, len) -> eco.value (0 on failure)
         auto decodeCall = rewriter.create<LLVM::CallOp>(
-            loc, rt.utf8Decode, ValueRange{ptr, adaptor.getLen()});
+            loc, rt.utf8Decode, ValueRange{source, pos32, adaptor.getLen()});
         Value stringVal = decodeCall.getResult();
 
         // ok = (stringVal != null)
@@ -1003,9 +1524,16 @@ struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
         Value ok = rewriter.create<LLVM::ICmpOp>(
             loc, LLVM::ICmpPredicate::ne, stringVal, nullPtr);
 
-        // Advance cursor by len
-        Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),
-                                        adaptor.getLen(), cursorType);
+        // Re-derive the cursor from the relocated buffer, advanced by len.
+        Value data1 = rewriter.create<LLVM::CallOp>(
+            loc, rt.bytebufferData, ValueRange{source}).getResult();
+        Value ptr = rewriter.create<LLVM::GEPOp>(
+            loc, data1.getType(), rewriter.getI8Type(), data1, pos);
+        Value end = rewriter.create<LLVM::GEPOp>(
+            loc, data1.getType(), rewriter.getI8Type(), data1, endOff);
+        Value newCursor = advanceCursor(
+            rewriter, loc, createCursor(rewriter, loc, ptr, end, cursorType),
+            adaptor.getLen(), cursorType);
 
         rewriter.replaceOp(op, {stringVal, newCursor, ok});
         return success();
@@ -1115,8 +1643,20 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
             return;
 
         // Ensure runtime functions are declared and cache their references
+        // (one symbol table for O(1) lookups, shared with the GC analysis).
         OpBuilder builder(ctx);
-        BFRuntimeFuncs rtFuncs = ensureRuntimeFunctions(module, builder);
+        mlir::SymbolTable symTable(module);
+        BFRuntimeFuncs rtFuncs = ensureRuntimeFunctions(module, builder, symTable);
+
+        // Re-derive every cursor live across an op that may run a GC, and
+        // check that none is left (BFOPS_039). Before the conversion, on the
+        // bf ops; the read.bytes / read.utf8 lowerings use its buffer map.
+        CursorGCSafety gcSafety(symTable);
+        for (Operation *top : bfTops)
+            if (failed(gcSafety.run(top))) {
+                signalPassFailure();
+                return;
+            }
 
         // Set up type converter
         BFTypeConverter typeConverter(ctx);
@@ -1142,8 +1682,14 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         patterns.add<BytesWidthOpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<EncoderWidthOpLowering>(typeConverter, ctx, rtFuncs);
         patterns.add<WriteEncoderOpLowering>(typeConverter, ctx, rtFuncs);
-        patterns.add<ReadBytesOpLowering>(typeConverter, ctx, rtFuncs);
-        patterns.add<ReadUtf8OpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<ReadBytesOpLowering>(typeConverter, ctx, rtFuncs, gcSafety);
+        patterns.add<ReadUtf8OpLowering>(typeConverter, ctx, rtFuncs, gcSafety);
+        patterns.add<CursorOffsetsOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<CursorRebaseOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<BuilderBitOpLowering<bf::BuilderBeginOp>>(typeConverter, ctx,
+                                                                rtFuncs.builderBegin);
+        patterns.add<BuilderBitOpLowering<bf::BuilderEndOp>>(typeConverter, ctx,
+                                                              rtFuncs.builderEnd);
 
         // Patterns that don't need runtime function lookups
         patterns.add<

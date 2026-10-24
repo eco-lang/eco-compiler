@@ -69,10 +69,13 @@
 #include "allocator/HPointerLayoutTest.hpp"
 #include "allocator/ConcurrencyRegisterTest.hpp"
 #include "kernel/KernelExportsTest.hpp"
+#include "kernel/UtilsAppendEqualityTest.hpp"
 #include "kernel/VirtualDomKernelTest.hpp"
 #include "platform/PlatformServicesTest.hpp"
 #include "platform/SpawnTest.hpp"
+#include "platform/SchedulerPidTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
+#include "codegen/CodegenHarnessSelfTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "elm-bytes/ElmBytesTest.hpp"
@@ -618,6 +621,7 @@ static IsolatedSuites buildIsolatedSuites() {
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("PlatformServices");
     registerPlatformServicesTests(*s.platformServices);
     registerSpawnTests(*s.platformServices);
+    registerSchedulerPidTests(*s.platformServices);  // SD-1
 
     // Crash-risk representation tests (byte-slice GC under F1; elm_bytebuffer_len
     // / Bytes.width on a slice under F3). Spawned per case so each abort is
@@ -1259,9 +1263,20 @@ int main(int argc, char* argv[]) {
     concurrencyRegisterTests.add(testCR039DeadYlosGreysFreedYlos);
     concurrencyRegisterTests.add(testCR039Control);
 
+    // Self-tests of the codegen .mlir harness itself (SD-21, SD-5, CHECK order).
+    Testing::TestSuite codegenHarnessSelfTests("CodegenHarnessSelfTest");
+#if !defined(_WIN32)
+    CodegenHarnessSelfTest::registerCodegenHarnessSelfTests(codegenHarnessSelfTests);
+#endif
+
     // Kernel extern-"C" ABI tests (encoder/decoder/string ABI).
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
+
+    // SD-17 / SD-26 (review-bug-list.md): append over every form; Empty vs
+    // zero-length heap String through each equality/ordering path.
+    Testing::TestSuite utilsAppendEqualityTests("UtilsAppendEquality");
+    registerUtilsAppendEqualityTests(utilsAppendEqualityTests);
 
     // Native elm/html kernels (plans/elm-html-native-kernel.md P2/P4).
     Testing::TestSuite virtualDomKernelTests("VirtualDomKernel");
@@ -1350,10 +1365,12 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(hpointerLayoutTests));
     suite.add(std::move(concurrencyRegisterTests));
     suite.add(std::move(kernelExportsTests));
+    suite.add(std::move(utilsAppendEqualityTests));
     suite.add(std::move(virtualDomKernelTests));
     suite.add(std::move(platformServicesTests));
     suite.add(std::move(gcPressureTests));
     suite.add(std::move(largeBodyChurnTests));
+    suite.add(std::move(codegenHarnessSelfTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));

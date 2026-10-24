@@ -85,8 +85,8 @@ double fdiv(double a, double b) {
     return a / b;
 }
 
-long long idiv(long long a, long long b) {
-    return a / b;
+long long idiv(long long a, long long b) {  // CGEN_084: x // 0 = 0, x // -1 = wrapping -x
+    return b == 0 ? 0 : b == -1 ? static_cast<long long>(0ULL - static_cast<unsigned long long>(a)) : a / b;
 }
 
 long long modBy(long long modulus, long long x) {
@@ -95,15 +95,15 @@ long long modBy(long long modulus, long long x) {
     if (modulus == 0) {
         throw std::runtime_error("Elm.Kernel.Basics.modBy: modulus was zero");
     }
-    long long answer = x % modulus;
+    long long answer = modulus == -1 ? 0 : x % modulus;  // CGEN_084: MIN_INT % -1 is UB
     if ((answer > 0 && modulus < 0) || (answer < 0 && modulus > 0)) {
         return answer + modulus;
     }
     return answer;
 }
 
-long long remainderBy(long long divisor, long long x) {
-    return x % divisor;
+long long remainderBy(long long divisor, long long x) {  // CGEN_084: divisor 0 or -1 gives 0
+    return (divisor == 0 || divisor == -1) ? 0 : x % divisor;
 }
 
 // ============================================================================

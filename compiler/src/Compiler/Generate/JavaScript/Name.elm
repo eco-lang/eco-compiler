@@ -2,7 +2,7 @@ module Compiler.Generate.JavaScript.Name exposing
     ( Name
     , fromLocal, fromLocalHumanReadable
     , fromGlobal, fromGlobalHumanReadable, fromCycle
-    , fromKernel
+    , fromKernel, fromEcoKernel
     , fromIndex, fromInt, makeF, makeA, makeLabel, makeTemp
     , dollar
     )
@@ -24,7 +24,9 @@ spelled differently here:
   - A top-level value is spelled with the whole of its module's canonical name
     in front: `fromGlobal` gives `$author$project$Module$Sub$name`.
   - A kernel value, one the runtime implements in JavaScript, is
-    `_Module_name` (`fromKernel`).
+    `_Module_name` (`fromKernel`), or `_Eco_Module_name` (`fromEcoKernel`)
+    when it is from an `Eco.Kernel` module, so that it cannot clash with the
+    same name in an `Elm.Kernel` module of the same home.
 
 `fromInt` and `fromIndex` turn a number into a short name, shortest names
 first: `a` to `z`, `A` to `Z`, `_`, then names of two characters, and so on.
@@ -64,7 +66,7 @@ with its `.`, is not even a valid JavaScript identifier.
 
 # Kernel Names
 
-@docs fromKernel
+@docs fromKernel, fromEcoKernel
 
 
 # Generated Names
@@ -189,6 +191,16 @@ fromCycle home name =
 fromKernel : Name.Name -> Name.Name -> Name
 fromKernel home name =
     "_" ++ home ++ "_" ++ name
+
+
+{-| Returns the JavaScript name of the kernel value `name` in the `Eco` kernel
+module `home`, `_Eco_home_name`, so `fromEcoKernel "File" "size"` is
+`_Eco_File_size` while `fromKernel "File" "size"` (elm/file) is `_File_size`
+(SD-16).
+-}
+fromEcoKernel : Name.Name -> Name.Name -> Name
+fromEcoKernel home name =
+    "_Eco_" ++ home ++ "_" ++ name
 
 
 {-| Returns the prefix `fromGlobal` and `fromCycle` put in front of a value

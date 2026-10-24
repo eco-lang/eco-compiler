@@ -1,4 +1,4 @@
-// RUN: %ecoc %s 2>&1 | %FileCheck %s
+// RUN: not %ecoc %s 2>&1 | %FileCheck %s
 //
 // Test that eco.case with mismatched eco.yield types fails verification.
 // CGEN_010 invariant: eco.yield operand types must match result types.

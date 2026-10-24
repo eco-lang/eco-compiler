@@ -141,9 +141,11 @@ add_executable(test
         allocator/HPointerLayoutTest.cpp
         allocator/ConcurrencyRegisterTest.cpp
         kernel/KernelExportsTest.cpp
+        kernel/UtilsAppendEqualityTest.cpp
         kernel/VirtualDomKernelTest.cpp
         platform/PlatformServicesTest.cpp
         platform/SpawnTest.cpp
+        platform/SchedulerPidTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

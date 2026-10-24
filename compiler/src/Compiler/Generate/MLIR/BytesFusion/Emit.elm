@@ -46,6 +46,7 @@ type alias EmitState =
     , bufferVar : String -- The allocated ByteBuffer eco.value
     , ops : List MlirOp
     , compileExpr : ExprCompiler -- Callback to compile MonoExpr
+    , hoisted : List ( String, MlirType ) -- Values compiled before bf.alloc, in op order
     }
 
 
@@ -74,12 +75,104 @@ emitFusedEncoderTagged compileExpr ctx ops =
             , bufferVar = ""
             , ops = []
             , compileExpr = compileExpr
+            , hoisted = []
             }
 
         finalState =
-            List.foldl emitOp initialState ops
+            List.foldl emitOp (hoistValues ops initialState) ops
     in
     ( List.reverse finalState.ops, finalState.bufferVar, finalState.ctx )
+
+
+{-| Compiles the value of every top-level write (and the list a loop walks)
+before `bf.alloc`, in op order, and queues the results for the writes to take
+(`compileValue`). A value expression may call a function that allocates, and
+an allocation while the cursor is live is a GC point that BFToLLVM must
+bracket with a cursor rebase and make the buffer a builder for (BFOPS\_039);
+compiled first, it leaves the cursor's live range free of GC points. Elm
+values are immutable, so compiling them earlier gives the same values. The
+per-item values of a loop stay inside the loop.
+-}
+hoistValues : List Op -> EmitState -> EmitState
+hoistValues ops state =
+    case ops of
+        (InitCursor _ _) :: rest ->
+            let
+                hoistOne op st =
+                    case writtenValue op of
+                        Just expr ->
+                            let
+                                r =
+                                    st.compileExpr expr st.ctx
+                            in
+                            { st
+                                | ctx = r.ctx
+                                , ops = List.reverse r.ops ++ st.ops
+                                , hoisted = ( r.resultVar, r.resultType ) :: st.hoisted
+                            }
+
+                        Nothing ->
+                            st
+
+                done =
+                    List.foldl hoistOne state rest
+            in
+            { done | hoisted = List.reverse done.hoisted }
+
+        _ ->
+            state
+
+
+{-| The expression a top-level encoder op compiles for its value, if any.
+-}
+writtenValue : Op -> Maybe Mono.MonoExpr
+writtenValue op =
+    case op of
+        WriteU8 _ e ->
+            Just e
+
+        WriteU16 _ _ e ->
+            Just e
+
+        WriteU32 _ _ e ->
+            Just e
+
+        WriteF32 _ _ e ->
+            Just e
+
+        WriteF64 _ _ e ->
+            Just e
+
+        WriteBytesCopy _ e ->
+            Just e
+
+        WriteUtf8 _ e ->
+            Just e
+
+        WriteOpaque _ e ->
+            Just e
+
+        WriteEachItem r ->
+            Just r.iterExpr
+
+        InitCursor _ _ ->
+            Nothing
+
+        ReturnBuffer ->
+            Nothing
+
+
+{-| The value of a write: the next hoisted value when `hoistValues` compiled
+it, else `valueExpr` compiled here.
+-}
+compileValue : Mono.MonoExpr -> EmitState -> ( CompileExprResult, List ( String, MlirType ) )
+compileValue valueExpr state =
+    case state.hoisted of
+        ( var, ty ) :: rest ->
+            ( { ops = [], resultVar = var, resultType = ty, ctx = state.ctx }, rest )
+
+        [] ->
+            ( state.compileExpr valueExpr state.ctx, [] )
 
 
 {-| Emit a single Loop IR operation.
@@ -378,8 +471,8 @@ ensureUnboxed targetType valueVar valueType ctx =
 emitWriteU8 : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU8 valueExpr state =
     let
-        exprResult =
-            state.compileExpr valueExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue valueExpr state
 
         ( valueVar, unboxOps, ctxU ) =
             ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
@@ -401,6 +494,7 @@ emitWriteU8 valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
@@ -410,8 +504,8 @@ emitWriteU8 valueExpr state =
 emitWriteU16 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU16 endian valueExpr state =
     let
-        exprResult =
-            state.compileExpr valueExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue valueExpr state
 
         ( valueVar, unboxOps, ctxU ) =
             ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
@@ -435,6 +529,7 @@ emitWriteU16 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
@@ -444,8 +539,8 @@ emitWriteU16 endian valueExpr state =
 emitWriteU32 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU32 endian valueExpr state =
     let
-        exprResult =
-            state.compileExpr valueExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue valueExpr state
 
         ( valueVar, unboxOps, ctxU ) =
             ensureUnboxed I64 exprResult.resultVar exprResult.resultType exprResult.ctx
@@ -469,6 +564,7 @@ emitWriteU32 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
@@ -478,8 +574,8 @@ emitWriteU32 endian valueExpr state =
 emitWriteF32 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteF32 endian valueExpr state =
     let
-        exprResult =
-            state.compileExpr valueExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue valueExpr state
 
         ( valueVar, unboxOps, ctxU ) =
             ensureUnboxed F64 exprResult.resultVar exprResult.resultType exprResult.ctx
@@ -503,6 +599,7 @@ emitWriteF32 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
@@ -512,8 +609,8 @@ emitWriteF32 endian valueExpr state =
 emitWriteF64 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteF64 endian valueExpr state =
     let
-        exprResult =
-            state.compileExpr valueExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue valueExpr state
 
         ( valueVar, unboxOps, ctxU ) =
             ensureUnboxed F64 exprResult.resultVar exprResult.resultType exprResult.ctx
@@ -537,6 +634,7 @@ emitWriteF64 endian valueExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: List.reverse unboxOps ++ List.reverse exprResult.ops ++ state.ops
     }
 
@@ -546,8 +644,8 @@ emitWriteF64 endian valueExpr state =
 emitWriteBytes : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteBytes bytesExpr state =
     let
-        exprResult =
-            state.compileExpr bytesExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue bytesExpr state
 
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
@@ -567,6 +665,7 @@ emitWriteBytes bytesExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
@@ -578,8 +677,8 @@ walker via elm\_encoder\_write\_into; cursor advances by bytes-written.
 emitWriteOpaque : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteOpaque encoderExpr state =
     let
-        exprResult =
-            state.compileExpr encoderExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue encoderExpr state
 
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
@@ -598,6 +697,7 @@ emitWriteOpaque encoderExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
@@ -607,8 +707,8 @@ emitWriteOpaque encoderExpr state =
 emitWriteUtf8 : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteUtf8 strExpr state =
     let
-        exprResult =
-            state.compileExpr strExpr state.ctx
+        ( exprResult, hoisted ) =
+            compileValue strExpr state
 
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
@@ -628,6 +728,7 @@ emitWriteUtf8 strExpr state =
     { state
         | ctx = ctx3
         , cursor = newCursor
+        , hoisted = hoisted
         , ops = writeOp :: (List.reverse exprResult.ops ++ state.ops)
     }
 
@@ -674,9 +775,9 @@ emitWriteEachItem :
     -> EmitState
 emitWriteEachItem r state =
     let
-        -- 1. Compile iterExpr to get the list SSA.
-        iterResult =
-            state.compileExpr r.iterExpr state.ctx
+        -- 1. Compile iterExpr to get the list SSA (or take it hoisted).
+        ( iterResult, hoisted ) =
+            compileValue r.iterExpr state
 
         ctx0 =
             iterResult.ctx
@@ -833,7 +934,7 @@ emitWriteEachItem r state =
         -- fresh `ops` accumulator (these belong inside the region, not the
         -- outer scope).
         bodyInitState =
-            { state | ctx = ctxBody, cursor = afterCursorArg, ops = [] }
+            { state | ctx = ctxBody, cursor = afterCursorArg, ops = [], hoisted = [] }
 
         finalBodyState =
             List.foldl emitOp bodyInitState r.bodyOps
@@ -870,6 +971,7 @@ emitWriteEachItem r state =
     { state
         | ctx = ctx24
         , cursor = whileCursorResult
+        , hoisted = hoisted
         , ops = whileOp :: (List.reverse iterResult.ops ++ state.ops)
     }
 
@@ -964,6 +1066,9 @@ scf.yield %innerResult
 %nothing = call @elm\_maybe\_nothing()
 scf.yield %nothing
 }
+
+A UTF-8 string read nests one more `scf.if` on its own `ok` result (valid
+UTF-8) around the remaining ops, with the same `Nothing` else-branch.
 
 Non-read ops (Apply, PushValue) are emitted directly without scf.if wrapping.
 
@@ -1279,7 +1384,8 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
     ( lenResult.ops ++ [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit ReadUtf8 with nested scf.if pattern.
+{-| Emit ReadUtf8 with nested scf.if pattern: `bf.require` guards the read,
+and the read's `ok` (valid UTF-8) result guards the rest of the decoder.
 -}
 emitReadUtf8Nested : Mono.MonoExpr -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadUtf8Nested lenExpr placeholderVar restOps state =
@@ -1345,16 +1451,19 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
                 , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
-        ( thenBodyOps, thenResultVar, ctx6 ) =
-            emitDecoderOpsNested restOps updatedState
+        -- The rest of the decoder runs only when the bytes are valid UTF-8
+        -- (`ok` of bf.read.utf8); otherwise the decode is Nothing, like a
+        -- failed bf.require (BFOPS_016).
+        ( validIfOp, validIfVar, ctx6 ) =
+            emitIfElseNothing readOkVar (emitDecoderOpsNested restOps updatedState)
 
         ( ctx7, thenYieldOp ) =
             Ops.mlirOp ctx6 "scf.yield"
-                |> Ops.opBuilder.withOperands [ thenResultVar ]
+                |> Ops.opBuilder.withOperands [ validIfVar ]
                 |> Ops.opBuilder.build
 
         thenRegion =
-            Ops.mkRegion [] (readOp :: thenBodyOps) thenYieldOp
+            Ops.mkRegion [] [ readOp, validIfOp ] thenYieldOp
 
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
@@ -1494,6 +1603,7 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
 
 
 {-| Emit ReadUtf8Var with nested scf.if pattern (length from previously decoded SSA var).
+As in `emitReadUtf8Nested`, the read's `ok` result guards the rest of the decoder.
 Looks up the lenPlaceholderVar in varMapping to get the actual SSA variable.
 -}
 emitReadUtf8VarNested : String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
@@ -1565,16 +1675,19 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
-        ( thenBodyOps, thenResultVar, ctx6 ) =
-            emitDecoderOpsNested restOps updatedState
+        -- The rest of the decoder runs only when the bytes are valid UTF-8
+        -- (`ok` of bf.read.utf8); otherwise the decode is Nothing, like a
+        -- failed bf.require (BFOPS_016).
+        ( validIfOp, validIfVar, ctx6 ) =
+            emitIfElseNothing readOkVar (emitDecoderOpsNested restOps updatedState)
 
         ( ctx7, thenYieldOp ) =
             Ops.mlirOp ctx6 "scf.yield"
-                |> Ops.opBuilder.withOperands [ thenResultVar ]
+                |> Ops.opBuilder.withOperands [ validIfVar ]
                 |> Ops.opBuilder.build
 
         thenRegion =
-            Ops.mkRegion [] (readOp :: thenBodyOps) thenYieldOp
+            Ops.mkRegion [] [ readOp, validIfOp ] thenYieldOp
 
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7

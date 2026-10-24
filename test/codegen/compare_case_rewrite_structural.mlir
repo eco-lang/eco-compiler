@@ -64,7 +64,6 @@ module {
   }
   // CHECK-LABEL: @rw_boxed
   // CHECK: callee = @Elm_Kernel_Utils_cmp3
-  // CHECK: func.func private @Elm_Kernel_Utils_cmp3(!eco.value, !eco.value) -> i64
 
   // Tag order is data, not position: region i handles tags[i]. These regions
   // are in GT, LT, EQ order and must be re-nested accordingly.
@@ -81,6 +80,8 @@ module {
     eco.return %res : !eco.value
   }
   // CHECK-LABEL: @rw_permuted
+  // The rewrite's cmp3 declaration is appended at the end of the module.
+  // CHECK: func.func private @Elm_Kernel_Utils_cmp3(!eco.value, !eco.value) -> i64
 
   // Nothing anywhere in the output still materializes an Order and cases on
   // its constructor tag.

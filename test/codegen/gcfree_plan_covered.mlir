@@ -7,10 +7,10 @@
 // function's markers keep a slow call or an ensure; a non-covered caller of
 // a covered callee holds an ensure. The cap plan here is forged.
 //
+// CHECK: "eco-gcfree-plan", "v1;veq=0;cov=1"
 // CHECK: llvm.func internal @c() {{.*}}"gc-leaf-function"
 // CHECK-NOT: @n() {{.*}}gc-leaf-function
 // CHECK-NOT: @k() {{.*}}gc-leaf-function
-// CHECK: "eco-gcfree-plan", "v1;veq=0;cov=1"
 
 module {
   llvm.module_flags [#llvm.mlir.module_flag<warning, "eco-cap-plan", "v1;K=512;m2=1;cw=0;veq=0">]

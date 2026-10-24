@@ -20,7 +20,7 @@ module {
     %t = eco.make.tuple2 %n, %p : (i64, !eco.value) -> !eco.tuple2<i64, !eco.value>
     %x = eco.project.tuple2 %t[0] : !eco.tuple2<i64, !eco.value> -> i64
     %q = eco.project.tuple2 %t[1] : !eco.tuple2<i64, !eco.value> -> !eco.value
-    %r = eco.construct.tuple2 %x, %q : i64, !eco.value -> !eco.value
+    %r = eco.construct.tuple2 %x, %q {unboxed_bitmap = 1} : i64, !eco.value -> !eco.value
     return %r : !eco.value
   }
 }

@@ -63,6 +63,17 @@ u8* elm_bytebuffer_data(HPtr bb);
 typedef void (*elm_bytebuffer_callback)(const u8* data, u32 length, void* ctx);
 void elm_bytebuffer_with_data(HPtr bb, elm_bytebuffer_callback fn, void* ctx);
 
+/**
+ * Set / clear the builder bit of a ByteBuffer that fused code fills across
+ * GC points (bf.builder.begin / bf.builder.end, BFOPS_039). `begin` is
+ * called right after elm_alloc_bytebuffer, `end` after the last write and
+ * before the buffer is published (HEAP_BUILDER_001..003): while the bit is
+ * set the GC keeps the buffer young and never tenures it, so writes into it
+ * after a GC do not break HEAP_SNAPSHOT_001. No-ops on the empty constant.
+ */
+void elm_bytebuffer_builder_begin(HPtr bb);
+void elm_bytebuffer_builder_end(HPtr bb);
+
 // ============================================================================
 // String operations (heap values are u64)
 // ============================================================================
@@ -84,14 +95,21 @@ u32 elm_utf8_width(HPtr elmString);
 u32 elm_utf8_copy(HPtr elmString, u8* dst);
 
 /**
- * Decode UTF-8 bytes into an ElmString.
+ * Decode the UTF-8 bytes [offset, offset + len) of a ByteBuffer's data into
+ * an ElmString.
  * Returns eco.value (u64) representing the ElmString, or 0 on failure.
+ *
+ * Takes the buffer, not a raw pointer: the source is Elm heap memory (a
+ * nursery ByteBuffer under the large-object threshold can move), and this
+ * helper allocates between its validation and copy passes. It roots the
+ * buffer across that allocation and re-derives the data pointer after it
+ * (BFOPS_039).
  *
  * Failure semantics: Returns 0 on invalid UTF-8 input.
  * eco.value == 0 is guaranteed to never represent a valid Elm heap value
  * (null pointer is invalid in the Elm runtime).
  */
-HPtr elm_utf8_decode(const u8* src, u32 len);
+HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len);
 
 // ============================================================================
 // Encoder-tree operations (bytes-fusion escape hatch)

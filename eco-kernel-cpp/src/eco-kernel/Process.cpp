@@ -102,19 +102,19 @@ HPointer spawnProcessBody(HPointer captured) {
     if (child.err != 0) return failErrno(child.err, cmdStr, "spawn failed");
 
     using namespace Elm::alloc;
-    std::vector<Unboxable> fields(2);
-    fields[0].i = child.pid;
-
+    HPointer stdinMaybe = nothing();
     if (pipeStdin) {
         int64_t handleId = child.stdinFd;
         s_streamHandles[handleId] = child.stdinFd;
-        fields[1].p = justKind(unboxedInt(handleId), 1);
-    } else {
-        fields[1].p = nothing();
+        stdinMaybe = justKind(unboxedInt(handleId), 1);
     }
 
-    HPointer rec = record(fields, 0b01);
-    return succeed(rec);
+    // Eco.Process.spawnProcess destructures ( stdinHandle, processHandle ):
+    // a Tuple2 of (Maybe Int boxed, Int unboxed: slot 1 kind 1 = 0x4). It
+    // used to be a Record {pid, maybe}, whose `unboxed` word the tuple
+    // projection read back as the stdinHandle (raw word 0x1, found by SD-26).
+    HPointer tup = tuple2(boxed(stdinMaybe), unboxedInt(child.pid), 0x4);
+    return succeed(tup);
 }
 
 // PHASE-4b WaitService drain. Pops (token, exitCode) pairs queued by the

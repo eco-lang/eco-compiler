@@ -3056,20 +3056,22 @@ void invokeSaturatedTyped(uint64_t closure_bits,
 //===----------------------------------------------------------------------===//
 
 extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
-    // message_val must be an HPointer to a heap-allocated string (any form).
+    // message_val is a String: a heap string (any form), or the embedded
+    // empty-string constant, which has no heap object (hpointerToPtr gives
+    // null). The prefix is printed either way.
     void* message = hpointerToPtr(message_val.toBits());
 
+    fprintf(stderr, "Elm runtime error: ");
     if (message && alloc::isString(message)) {
         // Read via charAt so this works for both flat leaves and slices.
         size_t len = static_cast<Header*>(message)->size;
-        fprintf(stderr, "Elm runtime error: ");
         for (size_t i = 0; i < len; i++) {
             u16 cu = Elm::StringOps::charAt(message, static_cast<i64>(i));
             char c = (cu < 128) ? static_cast<char>(cu) : '?';
             fputc(c, stderr);
         }
-        fputc('\n', stderr);
     }
+    fputc('\n', stderr);
 
     // Use exit(1) instead of abort() to avoid triggering LLVM's signal handlers
     // which would print a misleading "PLEASE submit a bug report" message.
@@ -3148,6 +3150,16 @@ static void print_char(u16 c) {
 //                   (2) type graph says field type is primitive.
 // NEVER called from eco_dbg_print_typed directly - that always receives
 // boxed HPointer values.
+/// Primitive kind of a nonzero 2-bit heap slot kind (1 Int, 2 Float, 3 Char),
+/// for an unboxed slot whose type-graph entry is not a Primitive.
+static Elm::EcoPrimKind primKindOfSlotKind(uint32_t slotKind) {
+    switch (slotKind) {
+    case 2: return Elm::EcoPrimKind::Float;
+    case 3: return Elm::EcoPrimKind::Char;
+    default: return Elm::EcoPrimKind::Int;
+    }
+}
+
 static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
     switch (kind) {
     case Elm::EcoPrimKind::Int:
@@ -3773,12 +3785,13 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             // Handle both Tag_Cons and Tag_Custom (ctor=1) for list cons cells
             uint64_t head_val;
             uint64_t tail_val;
-            bool head_unboxed = false;
+            // 2-bit slot kind of the head (0 boxed, 1 Int, 2 Float, 3 Char).
+            uint32_t head_kind = 0;
 
             if (header->tag == Tag_Cons) {
                 Cons* cons = static_cast<Cons*>(ptr);
                 head_val = static_cast<uint64_t>(cons->head.i);
-                head_unboxed = (tupleFieldKind(cons->header.unboxed, 0) != 0);
+                head_kind = tupleFieldKind(cons->header.unboxed, 0);
                 tail_val = hpBits(cons->tail);
             } else if (header->tag == Tag_ConsChunk) {
                 // Chunk view (hybrid spines): head is the first live slot of
@@ -3793,7 +3806,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 u32 cap = lb->header.size;
                 u32 run = cap - cv->offset;
                 u32 k = (cv->len < run) ? cv->len : run;
-                bool ub = (header->unboxed & 0x3) != 0;
+                uint32_t ubKind = header->unboxed & 0x3;
+                bool ub = ubKind != 0;
                 for (u32 i = 0; i < k && count < MAX_LIST_ITEMS; i++, count++) {
                     if (!first) output_text(", ");
                     first = false;
@@ -3805,7 +3819,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                         if (elemType->kind == Elm::EcoTypeKind::Primitive) {
                             printPrimitive(hv, elemType->data.primitive.prim_kind);
                         } else {
-                            printPrimitive(hv, Elm::EcoPrimKind::Int);
+                            printPrimitive(hv, primKindOfSlotKind(ubKind));
                         }
                     } else {
                         print_typed_value(hv, elem_type_id, depth + 1);
@@ -3817,7 +3831,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 Custom* custom = static_cast<Custom*>(ptr);
                 if (!is_list_cons(custom)) break;
                 head_val = static_cast<uint64_t>(custom->values[0].i);
-                head_unboxed = (fieldKind(custom->unboxed, 0) != 0);
+                head_kind = fieldKind(custom->unboxed, 0);
                 tail_val = static_cast<uint64_t>(custom->values[1].i);
             } else {
                 break;
@@ -3827,15 +3841,16 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             first = false;
 
             // Print head with type info
-            if (head_unboxed) {
+            if (head_kind != 0) {
                 // Value is unboxed - use printPrimitive based on element type
                 const Elm::EcoTypeInfo* elemType = &g_type_graph->types[elem_type_id];
                 if (elemType->kind == Elm::EcoTypeKind::Primitive) {
                     printPrimitive(head_val, elemType->data.primitive.prim_kind);
-                } else if (elemType->kind == Elm::EcoTypeKind::Polymorphic &&
-                           elemType->data.polymorphic.constraint == Elm::EcoConstraintKind::Number) {
-                    // Number constraint with unboxed value - assume Int
-                    printPrimitive(head_val, Elm::EcoPrimKind::Int);
+                } else if (elemType->kind == Elm::EcoTypeKind::Polymorphic) {
+                    // A type variable that leaked through monomorphization
+                    // (either constraint, SD-25): the cell's own slot kind
+                    // says what the unboxed head is.
+                    printPrimitive(head_val, primKindOfSlotKind(head_kind));
                 } else {
                     // Unboxed but type graph says non-primitive - type mismatch
                     assert(false && "List head is unboxed but element type is not primitive");

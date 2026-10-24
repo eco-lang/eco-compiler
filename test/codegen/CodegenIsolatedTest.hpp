@@ -1,12 +1,26 @@
 #pragma once
 
-// Driver for the codegen .mlir suite (test/codegen/*.mlir), run in-process from test/test.
+// Driver for the codegen .mlir suite (test/codegen/*.mlir), run in-process from test/test. The
+// bf-codegen suite (test/bf-codegen/BFCodegenTest.hpp) uses the same fixture runner.
 //
-// The `// RUN: %ecoc ... | %FileCheck %s` headers in the fixtures are not executed by lit (there is
-// no lit config). This driver only scans the RUN line for the `-emit=` mode, a leading `not %ecoc`
-// (expected non-zero exit) and a small whitelist of pass-through ecoc flags
-// (`--exe-reachability`); the rest of the pipeline is decorative. CHECK lines are matched by
-// test/CheckPatterns.hpp, not by FileCheck.
+// There is no lit config: this driver interprets the fixtures' `// RUN:` lines itself, and runs
+// EVERY one of them. A RUN line has the form
+//
+//   // RUN: [not [--crash]] [env NAME=VALUE...] %ecoc %s [-emit=MODE] [ARGS...] [2>&1]
+//   //        | %FileCheck %s [--check-prefix=P | --check-prefixes=P,Q]
+//
+// and anything else is a hard error, so a RUN line cannot silently assert less than it says.
+// ARGS are passed to ecoc verbatim. The exit status is checked as lit does (SD-21): without
+// `not` ecoc must exit 0; `not` needs a non-zero exit (a crash does not count); `not --crash`
+// needs a crash (a fatal signal, e.g. the SIGABRT of LLVM's report_fatal_error). The output
+// (stdout + stderr) must satisfy the directives of the line's FileCheck prefixes (default CHECK),
+// matched by test/CheckPatterns.hpp in FileCheck order, not by FileCheck itself; a prefix with no
+// directive in the file is an error, as in FileCheck.
+//
+// `-emit=jit` lines with no `not`, env or ARGS, in a fixture without `eco.crash`, run in-process
+// (EcoRunner, on the region nursery); all other lines run ecoc as a subprocess. A fixture without
+// any RUN line (the llvm_statepoint_struct_return_* probes, which their own script drives) is
+// still parsed and lowered here: `%ecoc %s` must exit 0.
 
 #include "../CheckPatterns.hpp"
 #include "../IsolatedTestRunner.hpp"
@@ -33,12 +47,18 @@ namespace CodegenIsolatedTest {
 // Helper Functions
 // ============================================================================
 
+/// How a subprocess ended.
+struct CommandResult {
+    int exitCode = 0;   ///< exit status of a normal exit
+    int signal = 0;     ///< the fatal signal, or 0 for a normal exit
+    std::string output; ///< stdout + stderr
+};
+
 /**
- * Execute a command and capture its output.
- * Returns a pair of (exit_code, output).
- * Used for non-JIT tests that need subprocess execution.
+ * Execute a command and capture its output (stdout and stderr).
+ * Used for the RUN lines that run ecoc as a subprocess.
  */
-inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
+inline CommandResult executeCommand(const std::string& cmd) {
     std::array<char, 4096> buffer;
     std::string result;
 
@@ -66,15 +86,28 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
     int status = _eco_pclose(pipe.release());
 #undef _eco_popen
 #undef _eco_pclose
+    CommandResult r;
+    r.output = std::move(result);
 #if defined(_WIN32)
     // _pclose returns the child's raw exit code on Windows (or -1 on
     // wait failure) — no WIFEXITED wrapper.
-    int exitCode = status;
+    r.exitCode = status;
 #else
-    int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    if (WIFSIGNALED(status)) {
+        r.signal = WTERMSIG(status);
+    } else if (WIFEXITED(status)) {
+        r.exitCode = WEXITSTATUS(status);
+        // A shell that did not exec its last command reports a fatal
+        // signal as 128 + signal.
+        if (r.exitCode > 128 && r.exitCode < 128 + 32) {
+            r.signal = r.exitCode - 128;
+            r.exitCode = 0;
+        }
+    } else {
+        r.exitCode = -1;
+    }
 #endif
-
-    return {exitCode, result};
+    return r;
 }
 
 /**
@@ -90,35 +123,104 @@ inline std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
+/// One `// RUN:` line (see the header comment).
+struct RunLine {
+    std::string text;                   ///< the line as written, for diagnostics
+    bool expectFail = false;            ///< `not`: ecoc must exit non-zero (no crash)
+    bool expectCrash = false;           ///< `not --crash`: ecoc must die from a signal
+    std::vector<std::string> env;       ///< NAME=VALUE pairs of a leading `env`
+    std::string emitMode;               ///< the `-emit=` mode
+    std::vector<std::string> ecocArgs;  ///< further ecoc arguments, verbatim
+    std::vector<std::string> prefixes;  ///< FileCheck prefixes
+};
+
+/// ecoc's -emit mode when the command line names none (ecoc.cpp).
+inline constexpr const char* kEcocDefaultEmit = "mlir-llvm";
+
 /**
- * Parse the // RUN: line from a test file.
- * Returns the emit mode (jit, mlir-llvm, llvm, mlir-eco, mlir).
+ * Parse every `// RUN:` line of a fixture. Throws on anything the harness
+ * cannot honour. A fixture without RUN lines yields `%ecoc %s` with no
+ * FileCheck (prefixes empty).
  */
-inline std::string parseEmitMode(const std::string& content) {
+inline std::vector<RunLine> parseRunLines(const std::string& content) {
+    std::vector<RunLine> runs;
     std::istringstream stream(content);
     std::string line;
-
+    const std::string tag = "// RUN:";
     while (std::getline(stream, line)) {
-        if (line.find("// RUN:") != std::string::npos) {
-            if (line.find("-emit=jit") != std::string::npos) {
-                return "jit";
-            } else if (line.find("-emit=llvm") != std::string::npos &&
-                       line.find("-emit=mlir-llvm") == std::string::npos) {
-                return "llvm";
-            } else if (line.find("-emit=mlir-llvm") != std::string::npos) {
-                return "mlir-llvm";
-            } else if (line.find("-emit=mlir-eco") != std::string::npos) {
-                // Must come before the "-emit=mlir" substring check, which
-                // would otherwise shadow it and run an INPUT dump (no
-                // passes), making structural CHECKs of eco-to-eco passes
-                // vacuous.
-                return "mlir-eco";
-            } else if (line.find("-emit=mlir") != std::string::npos) {
-                return "mlir";
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos || line.compare(start, tag.size(), tag) != 0)
+            continue;
+        RunLine run;
+        run.text = line.substr(start);
+        run.emitMode = kEcocDefaultEmit;
+        auto fail = [&](const std::string& why) {
+            throw std::runtime_error("unsupported RUN line (" + why + "): " + run.text);
+        };
+        std::string body = line.substr(start + tag.size());
+        size_t bar = body.find('|');
+        if (bar == std::string::npos) fail("no `| %FileCheck %s`");
+        if (body.find('|', bar + 1) != std::string::npos) fail("more than one pipe");
+
+        std::istringstream left(body.substr(0, bar));
+        std::vector<std::string> toks;
+        for (std::string t; left >> t;) toks.push_back(t);
+        size_t i = 0;
+        if (i < toks.size() && toks[i] == "not") {
+            run.expectFail = true;
+            ++i;
+            if (i < toks.size() && toks[i] == "--crash") {
+                run.expectCrash = true;
+                ++i;
             }
         }
+        if (i < toks.size() && toks[i] == "env") {
+            for (++i; i < toks.size() && toks[i].find('=') != std::string::npos &&
+                      toks[i][0] != '-' && toks[i][0] != '%';
+                 ++i)
+                run.env.push_back(toks[i]);
+        }
+        if (i >= toks.size() || toks[i] != "%ecoc") fail("expected %ecoc");
+        bool sawInput = false;
+        for (++i; i < toks.size(); ++i) {
+            const std::string& t = toks[i];
+            if (t == "%s") sawInput = true;
+            else if (t == "2>&1") continue;
+            else if (t.rfind("-emit=", 0) == 0) run.emitMode = t.substr(6);
+            else if (t[0] == '%' || t[0] == '<' || t[0] == '>' || t.find('>') != std::string::npos)
+                fail("unknown token `" + t + "`");
+            else run.ecocArgs.push_back(t);
+        }
+        if (!sawInput) fail("ecoc input is not %s");
+
+        std::istringstream right(body.substr(bar + 1));
+        std::vector<std::string> fc;
+        for (std::string t; right >> t;) fc.push_back(t);
+        if (fc.size() < 2 || fc[0] != "%FileCheck" || fc[1] != "%s")
+            fail("expected `%FileCheck %s`");
+        for (size_t j = 2; j < fc.size(); ++j) {
+            const std::string& t = fc[j];
+            std::string list;
+            if (t.rfind("--check-prefix=", 0) == 0) list = t.substr(15);
+            else if (t.rfind("--check-prefixes=", 0) == 0) list = t.substr(17);
+            else fail("unsupported FileCheck option `" + t + "`");
+            std::istringstream names(list);
+            for (std::string n; std::getline(names, n, ',');) {
+                if (n.empty()) fail("empty check prefix");
+                run.prefixes.push_back(n);
+            }
+        }
+        if (run.prefixes.empty()) run.prefixes.push_back("CHECK");
+        runs.push_back(std::move(run));
     }
-    return "mlir-llvm";  // Default
+    if (runs.empty()) {
+        RunLine run;
+        run.text = "(no RUN line: %ecoc %s must exit 0)";
+        run.emitMode = kEcocDefaultEmit;
+        runs.push_back(std::move(run));
+    }
+    return runs;
 }
 
 /**
@@ -191,105 +293,40 @@ inline eco::EcoRunner& getRunner() {
     return runner;
 }
 
-/**
- * Check if a test is expected to crash (uses eco.crash or similar).
- * Such tests must be run via subprocess to avoid killing the test runner.
- */
-inline bool isExpectedCrash(const std::string& content) {
-    return content.find("eco.crash") != std::string::npos ||
-           content.find("not %ecoc") != std::string::npos;
+/// The `// UNSETENV: NAME...` names: ecoc runs without them, for fixtures
+/// that must not inherit a gate-wide setting (e.g. forged cap-hoist plans,
+/// which ECO_CAPHOIST_VALIDATE=1 would reject by design).
+inline std::vector<std::string> unsetEnvNames(const std::string& content) {
+    std::vector<std::string> out;
+    std::istringstream lines(content);
+    std::string line;
+    const std::string tag = "// UNSETENV:";
+    while (std::getline(lines, line)) {
+        auto pos = line.find(tag);
+        if (pos == std::string::npos)
+            continue;
+        std::istringstream names(line.substr(pos + tag.size()));
+        for (std::string name; names >> name;)
+            out.push_back(name);
+    }
+    return out;
 }
 
-/**
- * Run a JIT test using EcoRunner (in-process).
- * This provides faster execution and direct output capture.
- */
-inline void runJITTest(const std::string& testPath, const std::string& content) {
-    auto& runner = getRunner();
-
-    // Reset heap for test isolation
-    runner.reset();
-    eco_test::requireRegionNursery();
-
-    // Run the test
-    auto result = runner.runFile(testPath);
-
-    // Extract patterns
-    auto patterns = extractCheckPatterns(content);
-
-    // Verify patterns in output
-    std::string error = verifyPatterns(result.output, patterns);
+/// Check `output` against the RUN line's FileCheck directives; throws on failure.
+inline void checkRunOutput(const RunLine& run, const std::string& content,
+                           const std::string& output, const std::string& status) {
+    if (run.prefixes.empty()) return;  // the implicit no-RUN-line run
+    auto patterns = eco_test::extractCheckPatternsForPrefixes(content, run.prefixes);
+    std::string error;
+    if (patterns.empty()) {
+        error = "no directive for check prefix(es) of this RUN line";
+    } else {
+        error = verifyPatterns(output, patterns);
+    }
     if (!error.empty()) {
         std::ostringstream msg;
-        msg << error << "\n";
-        msg << "Output was:\n" << result.output.substr(0, 500);
-        if (result.output.length() > 500) {
-            msg << "\n... (truncated)";
-        }
-        throw std::runtime_error(msg.str());
-    }
-
-    // Check if test expects non-zero exit (e.g., crash.mlir, expect_fail.mlir)
-    bool expectsFailure = (content.find("eco.crash") != std::string::npos) ||
-                          (content.find("not %ecoc") != std::string::npos);
-
-    if (!expectsFailure && !result.success) {
-        std::ostringstream msg;
-        msg << "Test failed: " << result.errorMessage << "\n";
-        msg << "Output:\n" << result.output.substr(0, 500);
-        throw std::runtime_error(msg.str());
-    }
-}
-
-/**
- * Run a non-JIT test using subprocess (for MLIR/LLVM IR dump tests).
- */
-inline void runSubprocessTest(const std::string& testPath, const std::string& content,
-                               const std::string& emitMode) {
-    std::string ecocPath = getEcocPath();
-    std::string cmd = ecocPath + " \"" + testPath + "\" -emit=" + emitMode;
-    // Pass-through ecoc flags named on the RUN line (before the pipe).
-    // Whitelisted, so no existing fixture changes meaning.
-    {
-        std::istringstream lines(content);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.find("// RUN:") == std::string::npos)
-                continue;
-            const std::string head = line.substr(0, line.find('|'));
-            for (const char *flag : {"--exe-reachability"})
-                if (head.find(flag) != std::string::npos)
-                    cmd += std::string(" ") + flag;
-            break;
-        }
-    }
-#ifndef _WIN32
-    // `// UNSETENV: NAME` runs ecoc without NAME — for fixtures that must not
-    // inherit a gate-wide setting (e.g. forged cap-hoist plans, which
-    // ECO_CAPHOIST_VALIDATE=1 would reject by design).
-    {
-        std::istringstream lines(content);
-        std::string line;
-        const std::string tag = "// UNSETENV:";
-        while (std::getline(lines, line)) {
-            auto pos = line.find(tag);
-            if (pos == std::string::npos)
-                continue;
-            std::istringstream names(line.substr(pos + tag.size()));
-            std::string name;
-            while (names >> name)
-                cmd = "env -u " + name + " " + cmd;
-        }
-    }
-#endif
-
-    auto [exitCode, output] = executeCommand(cmd);
-
-    auto patterns = extractCheckPatterns(content);
-    std::string error = verifyPatterns(output, patterns);
-    if (!error.empty()) {
-        std::ostringstream msg;
-        msg << error << "\n";
+        msg << run.text << "\n" << error << "\n";
+        if (!status.empty()) msg << status << "\n";
         msg << "Output was:\n" << output.substr(0, 500);
         if (output.length() > 500) {
             msg << "\n... (truncated)";
@@ -298,33 +335,119 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
     }
 }
 
+/// Should this RUN line run in-process (EcoRunner) rather than as an ecoc subprocess?
+inline bool runsInProcess(const RunLine& run, const std::string& content) {
+    // eco.crash and `not` fixtures exit the process: never in-process.
+    return run.emitMode == "jit" && !run.expectFail && run.env.empty() &&
+           run.ecocArgs.empty() && unsetEnvNames(content).empty() &&
+           content.find("eco.crash") == std::string::npos;
+}
+
 /**
- * Run a single codegen test.
- * Uses EcoRunner for JIT tests (in-process), subprocess for others.
- * Tests that are expected to crash are always run via subprocess.
- * Throws std::runtime_error on failure.
+ * Run a JIT RUN line using EcoRunner (in-process).
+ * This provides faster execution and direct output capture.
  */
-inline void runCodegenTest(const std::string& testPath) {
-    // Read test file
+inline void runJITTest(const std::string& testPath, const std::string& content,
+                       const RunLine& run) {
+    auto& runner = getRunner();
+
+    // Reset heap for test isolation
+    runner.reset();
+    eco_test::requireRegionNursery();
+
+    auto result = runner.runFile(testPath);
+
+    checkRunOutput(run, content, result.output, "");
+
+    if (!result.success) {
+        std::ostringstream msg;
+        msg << run.text << "\n";
+        msg << "Test failed: " << result.errorMessage << "\n";
+        msg << "Output:\n" << result.output.substr(0, 500);
+        throw std::runtime_error(msg.str());
+    }
+}
+
+/**
+ * Run a RUN line as an ecoc subprocess and check its exit status (SD-21) and output.
+ */
+inline void runSubprocessTest(const std::string& testPath, const std::string& content,
+                              const RunLine& run) {
+    std::string cmd = getEcocPath() + " \"" + testPath + "\" -emit=" + run.emitMode;
+    for (const auto& arg : run.ecocArgs)
+        cmd += " " + arg;
+#ifndef _WIN32
+    if (!run.env.empty()) {
+        std::string assigns;
+        for (const auto& kv : run.env)
+            assigns += " " + kv;
+        cmd = "env" + assigns + " " + cmd;
+    }
+    for (const auto& name : unsetEnvNames(content))
+        cmd = "env -u " + name + " " + cmd;
+#else
+    if (!run.env.empty())
+        throw std::runtime_error("RUN-line env is not supported on Windows: " + run.text);
+#endif
+
+    CommandResult r = executeCommand(cmd);
+    std::string status = r.signal ? "ecoc died from signal " + std::to_string(r.signal)
+                                  : "ecoc exited with status " + std::to_string(r.exitCode);
+
+    std::string exitError;
+    if (run.expectCrash) {
+        if (!r.signal) exitError = "`not --crash` expects ecoc to crash";
+    } else if (r.signal) {
+        exitError = run.expectFail
+            ? "`not` expects a non-zero exit, not a crash (use `not --crash` if a crash is "
+              "the designed failure mode)"
+            : "ecoc crashed";
+    } else if (run.expectFail && r.exitCode == 0) {
+        exitError = "`not` expects a non-zero exit";
+    } else if (!run.expectFail && r.exitCode != 0) {
+        exitError = "ecoc failed (add `not` if the fixture expects an error)";
+    }
+    if (!exitError.empty()) {
+        std::ostringstream msg;
+        msg << run.text << "\n" << exitError << "; " << status << "\n";
+        msg << "Output was:\n" << r.output.substr(0, 500);
+        if (r.output.length() > 500) {
+            msg << "\n... (truncated)";
+        }
+        throw std::runtime_error(msg.str());
+    }
+
+    checkRunOutput(run, content, r.output, status);
+}
+
+/**
+ * Run every RUN line of one fixture (codegen and bf-codegen suites).
+ * Throws std::runtime_error on the first failing line.
+ */
+inline void runFixture(const std::string& testPath) {
     std::string content = readFile(testPath);
 
-    // Check for XFAIL
     if (isExpectedFail(content)) {
         std::cout << "  (XFAIL - skipped)" << std::endl;
         return;
     }
 
-    // Parse emit mode
-    std::string emitMode = parseEmitMode(content);
-
-    // Use in-process execution for JIT tests (unless they're expected to crash)
-    // Tests with eco.crash must run via subprocess to avoid killing the test runner
-    if (emitMode == "jit" && !isExpectedCrash(content)) {
-        runJITTest(testPath, content);
-    } else {
-        runSubprocessTest(testPath, content, emitMode);
+    for (const RunLine& run : parseRunLines(content)) {
+        if (runsInProcess(run, content)) {
+            runJITTest(testPath, content, run);
+        } else {
+            runSubprocessTest(testPath, content, run);
+        }
     }
 }
+
+/**
+ * Run a single codegen test. Throws std::runtime_error on failure.
+ */
+inline void runCodegenTest(const std::string& testPath) {
+    runFixture(testPath);
+}
+
 
 // ============================================================================
 // Test Discovery

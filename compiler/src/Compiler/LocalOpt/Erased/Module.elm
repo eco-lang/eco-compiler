@@ -396,7 +396,7 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
                 if hm == ModuleName.virtualDom && nm == Name.node then
-                    Names.registerKernel Name.virtualDom Opt.Static |> Names.run |> addMain |> ReportingResult.ok
+                    Names.registerKernel "Elm" Name.virtualDom Opt.Static |> Names.run |> addMain |> ReportingResult.ok
 
                 else
                     ReportingResult.throw (E.BadType region tipe)

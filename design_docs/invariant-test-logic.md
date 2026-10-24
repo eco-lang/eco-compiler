@@ -1396,8 +1396,9 @@ logic: For closure partial application and application ops:
   * Bool (i1) and all other operands must be treated as !eco.value.
   * Assert `_operand_types`, `unboxed_bitmap`, and `newargs_unboxed_bitmap` exactly match SSA operand types and layout.
 inputs: Monomorphized programs using closures
+  * In the C++ dialect, PapExtendOp::verifySymbolUses checks a typed papExtend's newarg types against the evaluator params: the papCreate the closure traces to (through partial typed extends and block arguments whose incoming values share one creation), and the _fast_evaluator clone of a saturated stamped site (SD-7).
 oracle: Bitmaps match SSA types; no i1 in closure captures; attributes consistent with runtime expectations.
-tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm, test/codegen/sd7_pap_extend_newarg_via_block_arg.mlir, test/codegen/sd7_pap_extend_newarg_via_param_fast_evaluator.mlir (C++ verifier)
 --
 --
 name: Destruct paths follow destructor MonoType
@@ -1493,8 +1494,10 @@ ir: MLIR functions and eco.call ops
 logic: Use the UndefinedFunction pass or equivalent:
   * Collect all `eco.call` targets.
   * Ensure for each target there is a `func.func` definition or declaration with matching signature.
+  * In the C++ dialect, CallOp::verifySymbolUses compares each direct eco.call's operand and result types with the callee func.func signature (SD-6).
 inputs: Generated MLIR modules
 oracle: No undefined function symbols; mismatches are caught and fail tests.
+tests: test/codegen/sd6_direct_call_arg_type_mismatch.mlir, test/codegen/sd6_direct_call_arg_count_mismatch.mlir (C++ verifier)
 --
 --
 name: CEcoValue MVars always lower to eco.value
@@ -1659,9 +1662,10 @@ invariants: CGEN_026
 ir: eco.construct.tuple2, eco.construct.tuple3, eco.construct.record, eco.construct.custom
 logic: For these ops, the unboxed_bitmap is derived solely from SSA operand MLIR types:
   * A bit is set iff the operand MLIR type is i64, f64, or i16.
+  * For tuple2/tuple3, Tuple2ConstructOp/Tuple3ConstructOp::verify recompute the 2-bit-per-slot bitmap from the operand types and reject a different one or an i1 operand (SD-4).
 inputs: MLIR with container construction
 oracle: Bitmap bits match operand types exactly.
-tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm, test/codegen/sd4_tuple2_unboxed_bitmap_mismatch.mlir, test/codegen/sd4_tuple3_unboxed_bitmap_mismatch.mlir (C++ verifier)
 --
 --
 name: List construct head_unboxed matches SSA type
@@ -1670,9 +1674,10 @@ invariants: CGEN_027
 ir: eco.construct.list ops
 logic: For eco.construct.list:
   * head_unboxed is true iff the SSA head operand MLIR type is i64, f64, or i16.
+  * head_kind equals the head operand's type kind (0 boxed, 1 i64, 2 f64, 3 i16); ListConstructOp::verify rejects a mismatch or an i1 head (SD-4).
 inputs: MLIR with list construction
-oracle: head_unboxed matches head operand type.
-tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm
+oracle: head_unboxed and head_kind match head operand type.
+tests: compiler/tests/TestLogic/Generate/CodeGen/UnboxedBitmapTest.elm, test/codegen/sd4_list_head_kind_mismatch.mlir (C++ verifier)
 --
 --
 name: eco.case alternatives terminate with eco.yield
@@ -1755,9 +1760,9 @@ logic: For every eco.papExtend in generic mode (no remaining_arity):
   * Assert the result type is !eco.value, i64, f64 or i16 - the set PapExtendOp::verify accepts in generic mode.
   * Reject i1: a Bool result is !eco.value (bug SD-8 was the checker accepting i1).
   * A primitive result comes from the call's Mono result type and carries a matching non-zero `_result_kind`.
-  For typed-mode papExtend (remaining_arity present), the result follows the callee signature (CGEN_056); the checker also requires remaining_arity unless `_call_kind` is generic_apply or segmentation_unknown.
+  For typed-mode papExtend (remaining_arity present), the result follows the callee signature (CGEN_056), which is never i1, so the checker applies the same set there too (SD-8: it used to accept a typed-mode i1; pinned by PapExtendResultCheckerTest.elm); it also requires remaining_arity unless `_call_kind` is generic_apply or segmentation_unknown.
 inputs: MLIR with closure application (standard test catalogue)
-oracle: Every generic papExtend result type is in {!eco.value, i64, f64, i16}; i1 is a violation.
+oracle: Every papExtend result type, generic or typed, is in {!eco.value, i64, f64, i16}; i1 is a violation.
 tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendResultTest.elm (checker compiler/tests/TestLogic/Generate/CodeGen/PapExtendResult.elm)
 --
 --
@@ -2014,7 +2019,7 @@ logic: For every eco.papExtend that is a saturated call (isSaturatedCall) of som
   * Non-saturated papExtend ops (those producing a PAP, not a final result) are excluded from this check since they always return !eco.value.
   * Generic-mode papExtend (no remaining_arity) is excluded: its result is governed by CGEN_034.
 inputs: MLIR with closure applications including both saturated and partial applications
-oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug. No C++ verifier checks this half.
+oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug. The C++ verifier also checks it where it can see the evaluator (PapExtendOp::verifySymbolUses, SD-8), and PapExtendOp::verify requires !eco.value for a partial typed extend and !eco.value/i64/f64/i16 for a saturated one.
 tests: compiler/tests/TestLogic/Generate/CodeGen/PapExtendSaturatedResultTypeTest.elm; E2E test/elm/src/HofResidualPartialTest.elm
 --
 --
@@ -2416,7 +2421,7 @@ oracle: No runtime value inspection in fusion decisions.
 
 ## Bytes Fusion Ops Phase (BFOPS_*)
 
-Note: See invariants.csv for the full list of BFOPS invariants (BFOPS_001 through BFOPS_038).
+Note: See invariants.csv for the full list of BFOPS invariants (BFOPS_001 through BFOPS_039).
 These cover cursor state, SSA threading, encoder/decoder bounds checking, lowering, and ABI rules.
 
 --
@@ -2430,6 +2435,19 @@ logic: Inspect the lowered fused kernels:
 inputs: Programs with fused encoders (with and without opaque parts) and list decoders
 oracle: No other interpreter or kernel call inside a fused kernel.
 tests: test/elm-bytes/src/FusionPartialOpaqueTest.elm (pins the elm_encoder_write_into delegation)
+--
+--
+name: No raw cursor pointer is live across a GC point
+phase: bytes fusion
+invariants: BFOPS_039
+ir: bf dialect before BFToLLVM's conversion; LLVM IR of fused kernels
+logic: Make a GC happen while cursors are live and check the bytes:
+  * Explicit minor GCs (and fresh nursery allocations that reuse the evacuated memory) between decoder cursor reads, before a bf.read.bytes and between encoder writes must leave every read and write correct.
+  * A fused list encoder whose per-item value allocates must produce the same bytes as the values computed directly, across many minor GCs (re-derived cursor plus builder bit).
+  * A cursor with no known buffer, or one used inside a collecting loop it is not threaded through, is a compile error.
+inputs: Hand-written bf fixtures; an Elm program with a fused length-prefixed list encoder
+oracle: Correct bytes; rejection fixtures fail with the BFOPS_039 diagnostic.
+tests: test/bf-codegen/bf_cursor_survives_minor_gc.mlir, test/elm-bytes/src/BytesFusedEncodeCursorSurvivesGCTest.elm, test/bf-codegen/bf_cursor_gc_unknown_buffer_rejected.mlir, test/bf-codegen/bf_cursor_gc_loop_outer_cursor_rejected.mlir
 --
 
 ---

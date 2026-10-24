@@ -84,7 +84,7 @@ optimize cycle (A.At region exprInfo) =
                 Names.registerGlobal region home name
 
         Can.VarKernel kernelPrefix home name ->
-            Names.registerKernel home (Opt.VarKernel region kernelPrefix home name)
+            Names.registerKernel kernelPrefix home (Opt.VarKernel region kernelPrefix home name)
 
         Can.VarForeign home name _ ->
             Names.registerGlobal region home name
@@ -99,7 +99,7 @@ optimize cycle (A.At region exprInfo) =
             Names.registerGlobal region home name
 
         Can.Chr chr ->
-            Names.registerKernel Name.utils (Opt.Chr region chr)
+            Names.registerKernel "Elm" Name.utils (Opt.Chr region chr)
 
         Can.Str str ->
             Names.pure (Opt.Str region str)
@@ -112,7 +112,7 @@ optimize cycle (A.At region exprInfo) =
 
         Can.List entries ->
             Names.traverse (optimize cycle) entries
-                |> Names.andThen (Names.registerKernel Name.list << Opt.List region)
+                |> Names.andThen (Names.registerKernel "Elm" Name.list << Opt.List region)
 
         Can.Negate expr ->
             Names.registerGlobal region ModuleName.basics Name.negate
@@ -281,7 +281,7 @@ optimize cycle (A.At region exprInfo) =
                     )
 
         Can.Unit ->
-            Names.registerKernel Name.utils Opt.Unit
+            Names.registerKernel "Elm" Name.utils Opt.Unit
 
         Can.Tuple a b cs ->
             optimize cycle a
@@ -291,7 +291,7 @@ optimize cycle (A.At region exprInfo) =
                             |> Names.andThen
                                 (\optB ->
                                     Names.traverse (optimize cycle) cs
-                                        |> Names.andThen (Names.registerKernel Name.utils << Opt.Tuple region optA optB)
+                                        |> Names.andThen (Names.registerKernel "Elm" Name.utils << Opt.Tuple region optA optB)
                                 )
                     )
 

@@ -15,6 +15,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 using namespace mlir;
@@ -35,8 +36,40 @@ static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
 }
 
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  if (auto callee = getCalleeAttr())
-    return verifySymRef(*this, callee, symbolTable, "function");
+  auto callee = getCalleeAttr();
+  if (!callee)
+    return success();
+  if (failed(verifySymRef(*this, callee, symbolTable, "function")))
+    return failure();
+  // SD-6 (REP_ABI_001, CGEN_011): a direct call's operand and result types
+  // must be the callee's func.func signature exactly; otherwise the mismatch
+  // surfaces only as LLVM's "Calling a function with a bad signature!" (or
+  // not at all). A callee that is already an llvm.func (mid-lowering) is not
+  // checked here.
+  auto fn = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, callee);
+  if (!fn)
+    return success();
+  FunctionType fnTy = fn.getFunctionType();
+  auto operandTypes = getOperands().getTypes();
+  if (fnTy.getNumInputs() != operandTypes.size())
+    return emitOpError("passes ") << operandTypes.size()
+           << " operands but callee '" << callee.getValue() << "' takes "
+           << fnTy.getNumInputs();
+  for (auto [i, pair] : llvm::enumerate(llvm::zip(operandTypes, fnTy.getInputs())))
+    if (std::get<0>(pair) != std::get<1>(pair))
+      return emitOpError("operand ") << i << " has type " << std::get<0>(pair)
+             << " but callee '" << callee.getValue() << "' expects "
+             << std::get<1>(pair);
+  auto resultTypes = getResultTypes();
+  if (fnTy.getNumResults() != resultTypes.size())
+    return emitOpError("has ") << resultTypes.size()
+           << " results but callee '" << callee.getValue() << "' returns "
+           << fnTy.getNumResults();
+  for (auto [i, pair] : llvm::enumerate(llvm::zip(resultTypes, fnTy.getResults())))
+    if (std::get<0>(pair) != std::get<1>(pair))
+      return emitOpError("result ") << i << " has type " << std::get<0>(pair)
+             << " but callee '" << callee.getValue() << "' returns "
+             << std::get<1>(pair);
   return success();
 }
 
@@ -51,6 +84,114 @@ LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
              << "' has no func.func declaration; compiler must emit one (CGEN_057)";
   }
   return success();
+}
+
+/// Where a closure value came from: the papCreate's evaluator and arity, and
+/// how many of its parameters are already filled (captures plus the newargs
+/// of partial typed extends on the way).
+namespace {
+struct PapOrigin {
+  FlatSymbolRefAttr function;
+  int64_t arity = 0;
+  size_t offset = 0;
+};
+/// Found: `origin` is set. Cycle: the value only reaches itself through
+/// block arguments (no offset added), so it says nothing on its own.
+enum class TraceResult { Unknown, Found, Cycle };
+} // namespace
+
+static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
+                                      llvm::SmallPtrSetImpl<Value> &visiting);
+
+/// The values a block argument receives: from the eco.jumps to its joinpoint
+/// (when it is a joinpoint parameter) or from the branch terminators of its
+/// predecessor blocks. Returns false when some incoming value is unknown.
+static bool collectIncoming(BlockArgument arg, SmallVectorImpl<Value> &in) {
+  Block *block = arg.getOwner();
+  unsigned idx = arg.getArgNumber();
+  Operation *parent = block->getParentOp();
+  if (auto jp = dyn_cast_or_null<JoinpointOp>(parent)) {
+    if (block != &jp.getBody().front())
+      return false;
+    uint64_t id = jp.getId();
+    bool ok = true;
+    // A jump targets the nearest enclosing joinpoint with its id, which is
+    // `jp` unless another joinpoint with the same id lies in between.
+    auto visit = [&](JumpOp jump) {
+      if (jump.getTarget() != id)
+        return WalkResult::advance();
+      for (Operation *p = jump->getParentOp(); p && p != jp.getOperation();
+           p = p->getParentOp())
+        if (auto inner = dyn_cast<JoinpointOp>(p))
+          if (inner.getId() == id)
+            return WalkResult::advance();
+      if (idx >= jump.getArgs().size()) {
+        ok = false;
+        return WalkResult::interrupt();
+      }
+      in.push_back(jump.getArgs()[idx]);
+      return WalkResult::advance();
+    };
+    jp.getBody().walk(visit);
+    if (ok)
+      jp.getContinuation().walk(visit);
+    return ok && !in.empty();
+  }
+  if (block->isEntryBlock())
+    return false;  // a function parameter or a region argument
+  for (auto it = block->pred_begin(), e = block->pred_end(); it != e; ++it) {
+    auto br = dyn_cast<BranchOpInterface>((*it)->getTerminator());
+    if (!br)
+      return false;
+    Value v = br.getSuccessorOperands(it.getSuccessorIndex())[idx];
+    if (!v)
+      return false;  // produced by the terminator itself
+    in.push_back(v);
+  }
+  return !in.empty();
+}
+
+static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
+                                      llvm::SmallPtrSetImpl<Value> &visiting) {
+  if (Operation *def = clo.getDefiningOp()) {
+    if (auto c = dyn_cast<PapCreateOp>(def)) {
+      origin = {c.getFunctionAttr(), static_cast<int64_t>(c.getArity()),
+                static_cast<size_t>(c.getNumCaptured())};
+      return TraceResult::Found;
+    }
+    auto prev = dyn_cast<PapExtendOp>(def);
+    if (!prev || !prev.getRemainingArityAttr())
+      return TraceResult::Unknown;
+    size_t prevReal = prev.getNewargs().size();
+    if (static_cast<int64_t>(prevReal) >= prev.getRemainingArityAttr().getInt())
+      return TraceResult::Unknown;  // saturated: whatever the evaluator returned
+    // A cycle through an extend adds newargs per round: unknown, not neutral.
+    if (traceClosureOrigin(prev.getClosure(), origin, visiting) != TraceResult::Found)
+      return TraceResult::Unknown;
+    origin.offset += prevReal;
+    return TraceResult::Found;
+  }
+  auto arg = cast<BlockArgument>(clo);
+  if (!visiting.insert(clo).second)
+    return TraceResult::Cycle;
+  SmallVector<Value, 4> incoming;
+  if (!collectIncoming(arg, incoming))
+    return TraceResult::Unknown;
+  bool found = false;
+  for (Value v : incoming) {
+    PapOrigin o;
+    TraceResult r = traceClosureOrigin(v, o, visiting);
+    if (r == TraceResult::Unknown)
+      return TraceResult::Unknown;
+    if (r == TraceResult::Cycle)
+      continue;
+    if (found && (o.function != origin.function || o.arity != origin.arity ||
+                  o.offset != origin.offset))
+      return TraceResult::Unknown;  // incoming values from different creations
+    origin = o;
+    found = true;
+  }
+  return found ? TraceResult::Found : TraceResult::Cycle;
 }
 
 LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
@@ -96,51 +237,67 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
   // kinds for uncaptured params come from that signature, and EcoPAPSimplify
   // turns a saturated extend into a direct eco.call with these operands — a
   // mismatch otherwise surfaces only as LLVM's "Calling a function with a bad
-  // signature!"). Checked when the closure traces to a papCreate through
-  // partial typed extends only; generic mode and other sources are unknown.
-  if (!getRemainingArityAttr())
+  // signature!"). CGEN_056: a saturated typed extend's result type is the
+  // evaluator's result type. The evaluator is known from two sources, each
+  // checked when present: the `_fast_evaluator` stamp of a saturated site
+  // (what emitFastClosureCall calls, with the `_capture_abi` captures first),
+  // and the papCreate the closure traces to (traceClosureOrigin: through
+  // partial typed extends and through block arguments whose incoming values
+  // all trace to the same creation, SD-7). Generic mode is unknown.
+  auto remainingArityAttr = getRemainingArityAttr();
+  if (!remainingArityAttr)
     return success();
-  size_t offset = 0;
-  Value clo = getClosure();
-  PapCreateOp create;
-  while (Operation *def = clo.getDefiningOp()) {
-    if (auto c = dyn_cast<PapCreateOp>(def)) {
-      create = c;
-      offset += static_cast<size_t>(c.getNumCaptured());
-      break;
+  auto newargs = getNewargs();
+  const bool saturated =
+      static_cast<int64_t>(newargs.size()) == remainingArityAttr.getInt();
+  Type resultType = getResult().getType();
+
+  auto checkAgainst = [&](func::FuncOp callee, StringRef role, size_t offset,
+                          bool appliesAll) -> LogicalResult {
+    auto inputs = callee.getFunctionType().getInputs();
+    for (size_t i = 0; i < newargs.size() && offset + i < inputs.size(); ++i) {
+      Type actual = newargs[i].getType();
+      Type expected = inputs[offset + i];
+      if (actual != expected)
+        return emitOpError("CGEN_003: typed papExtend newarg ")
+               << i << " has type " << actual << " but " << role << " '"
+               << callee.getSymName() << "' expects " << expected
+               << " at parameter " << (offset + i)
+               << " (box/unbox the arg to the callee's param ABI)";
     }
-    auto prev = dyn_cast<PapExtendOp>(def);
-    if (!prev || !prev.getRemainingArityAttr())
-      return success();
-    size_t prevReal = prev.getNewargs().size();
-    if (static_cast<int64_t>(prevReal) >= prev.getRemainingArityAttr().getInt())
-      return success();  // saturated: result is whatever the evaluator returned
-    offset += prevReal;
-    clo = prev.getClosure();
+    auto results = callee.getFunctionType().getResults();
+    if (appliesAll && results.size() == 1 && results[0] != resultType)
+      return emitOpError("CGEN_056: saturated typed papExtend result type ")
+             << resultType << " does not match " << role << " '"
+             << callee.getSymName() << "' result type " << results[0];
+    return success();
+  };
+
+  auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+  auto captureAbi = getOperation()->getAttrOfType<ArrayAttr>("_capture_abi");
+  if (saturated && fast && captureAbi) {
+    if (auto clone = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, fast)) {
+      size_t nInputs = clone.getFunctionType().getNumInputs();
+      if (failed(checkAgainst(clone, "fast evaluator", captureAbi.size(),
+                              captureAbi.size() + newargs.size() == nInputs)))
+        return failure();
+    }
   }
-  if (!create)
+
+  PapOrigin origin;
+  llvm::SmallPtrSet<Value, 8> visiting;
+  if (traceClosureOrigin(getClosure(), origin, visiting) != TraceResult::Found)
     return success();
   // The evaluator (`$cap` for a capturing closure) takes
   // (captures..., params...).
-  auto calleeSym = create.getFunctionAttr();
-  auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, calleeSym);
+  auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, origin.function);
   if (!callee)
     return success();
-  auto inputs = callee.getFunctionType().getInputs();
-  if (static_cast<uint64_t>(inputs.size()) != create.getArity())
+  size_t nInputs = callee.getFunctionType().getNumInputs();
+  if (static_cast<int64_t>(nInputs) != origin.arity)
     return success();  // not a captures+params evaluator layout
-  auto newargs = getNewargs();
-  for (size_t i = 0; i < newargs.size() && offset + i < inputs.size(); ++i) {
-    Type actual = newargs[i].getType();
-    Type expected = inputs[offset + i];
-    if (actual != expected)
-      return emitOpError("CGEN_003: typed papExtend newarg ")
-             << i << " has type " << actual << " but evaluator '"
-             << calleeSym.getValue() << "' expects " << expected
-             << " at parameter " << (offset + i)
-             << " (box/unbox the arg to the callee's param ABI)";
-  }
-  return success();
+  return checkAgainst(callee, "evaluator", origin.offset,
+                      saturated && origin.offset + newargs.size() == nInputs);
 }
 
 LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
@@ -531,6 +688,76 @@ LogicalResult RecordConstructOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// Tuple / Cons header kinds (SD-4, CGEN_026)
+//===----------------------------------------------------------------------===//
+
+/// Kind of one Tuple2/Tuple3/Cons-head operand, or failure. The lowerings
+/// copy `unboxed_bitmap` / `head_kind` straight into the heap header but store
+/// each field by its SSA type, so the two must agree or the GC traces a raw
+/// primitive as a pointer (or skips a real one). Bool (i1) never reaches a
+/// heap field (CGEN_009, REP_CLOSURE_001); aggregate operands are boxed by the
+/// lowering (kind 0), like verifySlotKinds.
+static FailureOr<uint8_t> heapOperandKind(Operation *op, Type t,
+                                          StringRef what) {
+  if (t.isInteger(1)) {
+    op->emitOpError(what)
+        << " has i1 type: Bool must be boxed to !eco.value before construction";
+    return failure();
+  }
+  const uint8_t k = fieldKind(t);
+  if (k == 0 && !isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
+                      eco::RecordType, eco::CustomType, eco::ConsType>(t)) {
+    op->emitOpError(what) << " has kind=boxed but non-boxed SSA type " << t;
+    return failure();
+  }
+  return k;
+}
+
+/// CGEN_026: a tuple's unboxed_bitmap equals the operand kinds, slot i at
+/// bits [2i, 2i+1], and has no bits beyond the last slot.
+static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
+                                       int64_t bitmap) {
+  int64_t want = 0;
+  for (auto [i, t] : llvm::enumerate(slots)) {
+    FailureOr<uint8_t> k =
+        heapOperandKind(op, t, ("operand " + Twine(i)).str());
+    if (failed(k))
+      return failure();
+    want |= int64_t(*k) << (2 * i);
+  }
+  if (bitmap != want)
+    return op->emitOpError("unboxed_bitmap = ") << bitmap
+           << " does not match the operand types (expected " << want
+           << "; 2 bits per slot: 0 boxed, 1 i64, 2 f64, 3 i16) (CGEN_026)";
+  return success();
+}
+
+LogicalResult Tuple2ConstructOp::verify() {
+  Type slots[2] = {getA().getType(), getB().getType()};
+  return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
+}
+
+LogicalResult Tuple3ConstructOp::verify() {
+  Type slots[3] = {getA().getType(), getB().getType(), getC().getType()};
+  return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
+}
+
+LogicalResult ListConstructOp::verify() {
+  FailureOr<uint8_t> k =
+      heapOperandKind(getOperation(), getHead().getType(), "head");
+  if (failed(k))
+    return failure();
+  if (getHeadKind() != int64_t(*k))
+    return emitOpError("head_kind = ") << getHeadKind()
+           << " does not match head type " << getHead().getType()
+           << " (kind " << int(*k) << ") (CGEN_026)";
+  if (getHeadUnboxed() != (*k != 0))
+    return emitOpError("head_unboxed = ") << getHeadUnboxed()
+           << " disagrees with head_kind = " << getHeadKind();
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Closure slot kinds (plans/wide-object-tail-kind-words.md §S.5, Phase 2)
 //===----------------------------------------------------------------------===//
 
@@ -671,10 +898,26 @@ LogicalResult PapExtendOp::verify() {
     return success();
   }
 
-  // Typed mode: remaining_arity present.
+  // Typed mode: remaining_arity present (SD-8, CGEN_056). A partial extend
+  // builds a new closure, so its result is !eco.value; a saturated one
+  // returns the evaluator's result, an ABI type (REP_ABI_001): !eco.value or
+  // i64/f64/i16, never i1 (Bool is boxed, CGEN_009). verifySymbolUses checks
+  // the saturated result against the evaluator's signature when it is known.
   // CGEN_057 kernel existence is checked by PapCreateOp::verifySymbolUses (O(1)).
-  // No signature validation against the callee is done here (or elsewhere:
-  // CheckEcoClosureCapturesPass checks only papCreate/papCreateGroup sites).
+  Type resultType = getResult().getType();
+  int64_t remainingArity = remainingArityAttr.getInt();
+  if (static_cast<int64_t>(newargs.size()) < remainingArity) {
+    if (!isa<eco::ValueType>(resultType))
+      return emitOpError("partial typed-mode papExtend (")
+             << newargs.size() << " of " << remainingArity
+             << " remaining args) must have !eco.value (closure) result type, got "
+             << resultType;
+  } else if (!isa<eco::ValueType>(resultType) && !resultType.isInteger(64) &&
+             !resultType.isF64() && !resultType.isInteger(16)) {
+    return emitOpError("saturated typed-mode papExtend must have !eco.value "
+                       "or primitive (i64/f64/i16) result type, got ")
+           << resultType;
+  }
   return success();
 }
 
@@ -868,9 +1111,8 @@ LogicalResult CallOp::verify() {
       return emitOpError("must not have both 'callee' and 'remaining_arity' attributes");
     }
 
-    // No signature validation against the callee: it would need an O(N)
-    // module walk on every verifier invocation during conversion, and no
-    // later pass checks direct-call signatures either.
+    // The signature check against the callee (SD-6) is in verifySymbolUses,
+    // which gets a cached symbol table.
     return success();
   }
 

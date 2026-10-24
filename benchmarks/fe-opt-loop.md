@@ -932,6 +932,35 @@ Default leg (flag off):
   test sizing. It was resized from 100 to 10 files per `maxSize` (10,000 to 1,000 per cycle), and
   `stress` is now **114/114**. The rest are in plans/large-object-space.md §10.
 
+### review-bug-list fixes (plans/review-bug-list-fixes.md, 2026-10-24): **regression check, no regression visible (across a moved tree)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 67.14 | 24.6 | 25.3 | 11.7 | 2.70 | 1289 | 7 | 6245 | 6235440 | 12296661 | same |
+| r2 | 66.24 | 24.1 | 25.1 | 11.7 | 2.61 | 1289 | 7 | 6245 | 6255760 | 12296661 | same |
+| r3 | 66.34 | 24.2 | 25.0 | 11.6 | 2.66 | 1289 | 7 | 6245 | 6286820 | 12296661 | same |
+| **median** | **66.34** | 24.2 | 25.1 | 11.7 | 2.66 | 1289 | 7 | 6245 | 6255760 | 12296661 | |
+| Δ vs LOS | −2.36 (spread 0.90) | −0.5 | −0.8 | −0.8 | −0.08 | −55 | 0 | −194 | −139,720 | −1,204,123 (−8.9 %, source moved) | |
+
+- **What:** not a front-end step. This is the bug-fix series of plans/review-bug-list-fixes.md:
+  runtime (64-bit process ids, Bytes-fusion cursor rebasing, division and shift guards, comparison
+  paths that equate Empty with a zero-length String), dialect verifiers, and front-end fixes
+  (config default, JS kernel keys, text printer). The candidate is today's bootstrap
+  `eco-compiler-boot` (copied to `eco-optfix`, its MLIR to `ecofix.mlir`), so Phases 1.3-1.4 were
+  done by the bootstrap chain. One untimed warm-up preceded the triple, because the package
+  `*artifacts.dat` caches had been wiped for the E2E gate. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0 on every run, the three runs are deterministic, and r1 equals `ecofix.mlir`
+  (fixed point). `.ecot` 8,691,134 B.
+- **Verdict:** **not an A/B.** No pre-fix native compiler of today's tree survived (no git, no
+  snapshot), so the reference is the last recorded row, LOS (2026-10-09). Since then the tree took
+  the eco/system API work and the invariant cleanup as well as these fixes; out.mlir is 8.9 % smaller,
+  so the workload moved. Every stat is at or below LOS: wall −2.36 s, every phase lower, GC time
+  flat, minors −55, promoted −194 MiB, RSS −140 MB. The fixes' hot-path costs (an extra branch on
+  the constant-mismatch arm of string equality, the rebase of fused encoders only around allocating
+  calls, masks on shifts and division) are not visible on this workload. No significant regression.
+- **Gates (fresh, before the triple):** elm-tests 918/0 + 14,436/0; `full` 2,491/2,491 and JS
+  208/208 (4 skips); `stress` 114/114; `bootstrap` (4b and 8c fixed points, 9b) green.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec

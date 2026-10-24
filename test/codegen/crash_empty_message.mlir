@@ -1,9 +1,8 @@
 // RUN: not %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
 //
-// Test eco.crash with an empty string message.
-// Currently crashes without printing the error message prefix.
-// TODO: Fix eco_crash to handle empty strings gracefully.
+// Test eco.crash with an empty string message: the empty string is an
+// embedded constant with no heap object, and eco_crash still prints the
+// error prefix before exiting with status 1.
 
 module {
   func.func @main() -> i64 {

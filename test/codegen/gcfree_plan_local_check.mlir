@@ -1,10 +1,16 @@
-// RUN: not %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
+// RUN: not --crash %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 // UNSETENV: ECO_CAPHOIST_VALIDATE ECO_GCFREE_VALIDATE
 //
 // plans/mlir-split-backend-02-gc-leaf-propagation.md fixture (Q7 local check,
 // F6): with a forged gc-free plan, a definition stamped gc-leaf that calls a
 // declaration that can GC must be rejected before RS4GC. @f has no GC
 // strategy, so the post-RS4GC statepoint assert alone would never see it.
+//
+// `not --crash`: the check fails through report_fatal_error, which aborts
+// (SIGABRT). That is its designed failure mode: the gc-free plan is written by
+// the compiler itself, so a violation is an internal invariant failure, not a
+// user error, and it fails like the backend's other self-checks
+// (EcoBackend.cpp checkStampedBodies, expandInlineAllocs, applyCapacityHoisting).
 //
 // CHECK: stamped function 'f' calls 'g', which may GC
 

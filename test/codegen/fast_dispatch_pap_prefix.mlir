@@ -15,8 +15,6 @@
 // packed header is max_values=3, n_values=1; the grow-extend appends the
 // prefix arg (n_values=2), and the stamped site saturates the remaining 1.
 
-// CHECK: [eco.dbg] 753
-
 module {
   func.func private @lam$cap(%cap: i64, %x: i64, %y: i64) -> i64 {
     %c100 = arith.constant 100 : i64

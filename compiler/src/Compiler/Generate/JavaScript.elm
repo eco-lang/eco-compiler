@@ -420,7 +420,7 @@ addGlobalHelp mode graph ((Opt.Global home _) as global) state =
                 state
 
             else
-                addKernel (addDeps deps state) (generateKernel mode chunks)
+                addKernel (addDeps (resolveKernelDeps graph deps) state) (generateKernel mode graph global chunks)
 
         Opt.Enum index ->
             addStmt state
@@ -571,26 +571,63 @@ drawCycle names =
     String.concat (topLine :: List.intersperse midLine (List.map nameLine names) ++ [ bottomLine ])
 
 
-{-| Generate JavaScript code from kernel chunks.
+{-| Generate JavaScript code from the chunks of the kernel module keyed by
+`global`.
+
+An `Eco` kernel's values are named `_Eco_Home_name` (`JsName.fromEcoKernel`)
+so that they cannot clash with an `Elm` kernel of the same home, such as
+`Eco.Kernel.File` and elm/file's `Elm.Kernel.File`, which both define
+`_File_size` in their source (SD-16). An `Elm` kernel's text is emitted as
+written, as in stock Elm. A kernel's source, though, spells its own values
+`_Home_name` in its plain JavaScript text, and eco/kernel's also reads another
+of its modules' values that way (`_Process_streamHandles`). So in the text of
+an `Eco` kernel each identifier `_Home_...` whose `Home` is an `Eco` kernel of
+the program becomes `_Eco_Home_...` (`qualifyEcoKernelNames`), and the rest of
+its text is left alone.
+
+A value imported with a kernel import (`JsVar`) is named the way
+`resolveKernelGlobal` resolves its module, which is how `resolveKernelDeps`
+resolves the node's dependencies.
+
 -}
-generateKernel : Mode.Mode -> List K.Chunk -> String
-generateKernel mode chunks =
-    List.foldr (addChunk mode) "" chunks
+generateKernel : Mode.Mode -> Graph -> Opt.Global -> List K.Chunk -> String
+generateKernel mode graph global chunks =
+    let
+        isEcoHome : Name -> Bool
+        isEcoHome home =
+            DataMap.member Opt.toComparableGlobal (Opt.toKernelGlobal "Eco" home) graph
+
+        qualifyText : String -> String
+        qualifyText =
+            case Opt.ecoKernelHome global of
+                Just _ ->
+                    qualifyEcoKernelNames isEcoHome
+
+                Nothing ->
+                    identity
+    in
+    List.foldr (addChunk mode isEcoHome qualifyText) "" chunks
 
 
-{-| Add a single kernel chunk to the generated JavaScript string.
+{-| Add a single kernel chunk to the generated JavaScript string. `isEcoHome`
+tells whether the program has an `Eco` kernel of a home, and `qualifyText`
+rewrites plain JavaScript text, as `generateKernel` describes.
 -}
-addChunk : Mode.Mode -> K.Chunk -> String -> String
-addChunk mode chunk builder =
+addChunk : Mode.Mode -> (Name -> Bool) -> (String -> String) -> K.Chunk -> String -> String
+addChunk mode isEcoHome qualifyText chunk builder =
     case chunk of
         K.JS javascript ->
-            javascript ++ builder
+            qualifyText javascript ++ builder
 
         K.ElmVar home name ->
             JsName.fromGlobal home name ++ builder
 
-        K.JsVar home name ->
-            JsName.fromKernel home name ++ builder
+        K.JsVar kernelPrefix home name ->
+            if kernelPrefix == "Eco" && isEcoHome home then
+                JsName.fromEcoKernel home name ++ builder
+
+            else
+                JsName.fromKernel home name ++ builder
 
         K.ElmField name ->
             Expr.generateField mode name ++ builder
@@ -616,6 +653,107 @@ addChunk mode chunk builder =
 
                 Mode.Prod _ ->
                     builder
+
+
+
+{-| Returns the global a kernel node's dependency `global` stands for in
+`graph`.
+
+A kernel import `import Eco.Kernel.Home` names the `Eco` kernel `Home`. When the
+program has none, it names the `Elm` kernel `Home` instead: eco/kernel's
+JavaScript imports `Eco.Kernel.Scheduler` and `Eco.Kernel.Utils`, which are
+elm/core's `Elm.Kernel.Scheduler` and `Elm.Kernel.Utils`. That was harmless while
+kernels were keyed by home alone, and this keeps it working. Every other global
+is returned as it is.
+
+-}
+resolveKernelGlobal : Graph -> Opt.Global -> Opt.Global
+resolveKernelGlobal graph global =
+    case Opt.ecoKernelHome global of
+        Just home ->
+            if DataMap.member Opt.toComparableGlobal global graph then
+                global
+
+            else
+                Opt.toKernelGlobal "Elm" home
+
+        Nothing ->
+            global
+
+
+{-| A kernel node's dependencies, each resolved by `resolveKernelGlobal`.
+-}
+resolveKernelDeps : Graph -> EverySet String Opt.Global -> EverySet String Opt.Global
+resolveKernelDeps graph deps =
+    EverySet.fromList Opt.toComparableGlobal (List.map (resolveKernelGlobal graph) (EverySet.toList deps))
+
+
+{-| Rewrites each identifier `_Home_rest` in the JavaScript text `js` whose
+`Home` satisfies `isEcoHome` to `_Eco_Home_rest`, the name
+`JsName.fromEcoKernel` gives the values of `Eco` kernel `Home`.
+
+An identifier here is a `_` that does not follow a letter, digit, `_` or `$`,
+then a capital letter and more letters and digits (`Home`), then `_`. The text
+of a kernel chunk starts at such a boundary: a tag before it would have taken
+any identifier characters that followed it. The scan does not tell code from
+strings and comments, so it would rewrite `_Home_` there too; eco/kernel and
+eco/system put no such text in their strings.
+
+-}
+qualifyEcoKernelNames : (Name -> Bool) -> String -> String
+qualifyEcoKernelNames isEcoHome js =
+    let
+        charAt : Int -> String
+        charAt i =
+            String.slice i (i + 1) js
+
+        isIdentChar : String -> Bool
+        isIdentChar c =
+            c == "_" || c == "$" || String.all Char.isAlphaNum c && c /= ""
+
+        homeEnd : Int -> Int
+        homeEnd i =
+            if String.all Char.isAlphaNum (charAt i) && charAt i /= "" then
+                homeEnd (i + 1)
+
+            else
+                i
+
+        -- The index at which "Eco_" goes in when the `_` at `idx` starts a
+        -- `_Home_` identifier of an `Eco` kernel.
+        insertionPoint : Int -> Maybe Int
+        insertionPoint idx =
+            if (idx == 0 || not (isIdentChar (charAt (idx - 1)))) && String.all Char.isUpper (charAt (idx + 1)) && charAt (idx + 1) /= "" then
+                let
+                    end =
+                        homeEnd (idx + 1)
+                in
+                if charAt end == "_" && isEcoHome (String.slice (idx + 1) end js) then
+                    Just (idx + 1)
+
+                else
+                    Nothing
+
+            else
+                Nothing
+
+        insertions : List Int
+        insertions =
+            List.filterMap insertionPoint (String.indexes "_" js)
+    in
+    case insertions of
+        [] ->
+            js
+
+        _ ->
+            let
+                ( last, revPieces ) =
+                    List.foldl
+                        (\at ( from, acc ) -> ( at, "Eco_" :: String.slice from at js :: acc ))
+                        ( 0, [] )
+                        insertions
+            in
+            String.concat (List.reverse (String.dropLeft last js :: revPieces))
 
 
 

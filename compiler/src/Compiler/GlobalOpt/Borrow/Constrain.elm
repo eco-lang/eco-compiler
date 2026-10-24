@@ -15,8 +15,8 @@ kernel call applies its entry in `KernelSigs`, and a closure call can be
 routed through the LSS facts in `Env.lssFacts`. A call with none of these, or
 a partial application, makes its arguments owned.
 
-Walk-time census counters live on `Gen` (flat `Int` fields, well under the
-32-slot record cap); the driver reads them off the final `Gen` per def.
+Walk-time census counters live on `Gen` (flat `Int` fields); the driver reads
+them off the final `Gen` per def.
 
 
 # Environment

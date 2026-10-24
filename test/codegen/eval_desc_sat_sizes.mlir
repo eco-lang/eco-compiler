@@ -29,8 +29,8 @@ module {
   }
 }
 
-// CHECK: @__eco_evaldesc_{{.*}}ar20{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<21 x ptr>)>
-// CHECK: @__eco_evaldesc_{{.*}}ar21{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<0 x ptr>)>
-// CHECK: @__eco_evaldesc_{{.*}}ar2047{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<0 x ptr>)>
+// CHECK-DAG: @__eco_evaldesc_{{.*}}ar20{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<21 x ptr>)>
+// CHECK-DAG: @__eco_evaldesc_{{.*}}ar21{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<0 x ptr>)>
+// CHECK-DAG: @__eco_evaldesc_{{.*}}ar2047{{[^0-9].*}}!llvm.struct<(ptr, i64, i8, i8, i16, i32, array<0 x ptr>)>
 // CHECK-NOT: array<22 x ptr>
 // CHECK-NOT: array<2048 x ptr>

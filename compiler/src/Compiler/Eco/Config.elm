@@ -38,8 +38,7 @@ each adds a token when on.
 The second is that the file is a partial override of `default`. Every key is
 optional, a missing key usually takes its value from `default`, and unknown keys
 are ignored. `decoder` lists the exceptions: five settings cannot be set from
-the file at all, and a `mono` object without an `engine` key selects
-`EngineSubst` rather than the default engine (see `monoDecoder`).
+the file at all.
 
 Each block's decoder applies a function, the record's constructor or a lambda,
 to one key after another, so the order of its `D.apply` lines must follow the
@@ -564,10 +563,8 @@ Every key is optional, in the document and in each object within it, and a
 missing key takes its value from `default`. Unknown keys are ignored. The
 exceptions are these:
 
-  - A `mono` object without an `engine` key selects `EngineSubst`, though
-    `default` selects `EngineSolver`. Only a document with no `mono` object
-    at all gets the default engine. An `engine` or `borrow.reify` string that
-    is not recognized gives the default.
+  - An `engine` or `borrow.reify` string that is not recognized gives the
+    default.
   - `list.report`, `cse.report`, `mono.diffDump`, `mono.validate` and
     `mono.stagingReport` are not read; they always take their default.
   - The two `LssStampConfig` settings are read from the `mono.lss` object
@@ -757,16 +754,16 @@ borrowReifyFromString s =
 {-| A decoder for the `mono` object, which has the keys `engine`, `lss` and
 `limits`.
 
-A missing `engine` gives `EngineSubst`, not `default`'s `EngineSolver`, while
-one that is not recognized gives `EngineSolver`. `diffDump`, `validate` and
-`stagingReport` are not read and keep their defaults.
+A missing `engine`, or one that is not recognized, gives `default`'s engine.
+`diffDump`, `validate` and `stagingReport` are not read and keep their
+defaults.
 
 -}
 monoDecoder : D.Decoder x MonoConfig
 monoDecoder =
     D.pure
-        (\s lss limits ->
-            { engine = Maybe.withDefault default.mono.engine (monoEngineFromString s)
+        (\engine lss limits ->
+            { engine = Maybe.withDefault default.mono.engine engine
             , diffDump = default.mono.diffDump
             , validate = default.mono.validate
             , stagingReport = default.mono.stagingReport
@@ -774,7 +771,7 @@ monoDecoder =
             , limits = limits
             }
         )
-        |> D.apply (D.optionalField "engine" D.string "subst")
+        |> D.apply (D.optionalField "engine" (D.map monoEngineFromString D.string) Nothing)
         |> D.apply (D.optionalField "lss" lssDecoder defaultLss)
         |> D.apply (D.optionalField "limits" specLimitsDecoder defaultLimits)
 

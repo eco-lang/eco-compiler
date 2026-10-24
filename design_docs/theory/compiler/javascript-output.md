@@ -38,13 +38,13 @@ The generator runs in one of three modes, and the options for debugging, for pro
 The generator turns the graph into a file in four steps, in the order they run.
 
 1. It walks the graph from each entry point and emits every reachable definition once, dependencies before the definitions that use them, in a fixed sorted order, inside one immediately invoked function. Code that no entry point reaches is never written.
-2. It lowers each definition, expression by expression, into a small syntax tree for JavaScript. Decision trees from pattern matching become chains of `if` and `switch`, tail calls become loops, and a reference to one of the library functions written directly in JavaScript, a kernel function, becomes a plain global name of the form `_Module_function`.
+2. It lowers each definition, expression by expression, into a small syntax tree for JavaScript. Decision trees from pattern matching become chains of `if` and `switch`, tail calls become loops, and a reference to one of the library functions written directly in JavaScript, a kernel function, becomes a plain global name of the form `_Module_function` (`_Eco_Module_function` for an `Eco.Kernel` module).
 3. It prints the tree as text. The printer records the source position of each piece, so a version 3 source map can be built when one is asked for.
 4. It assembles the file. The file opens with the helpers that make curried calls of two to nine arguments cheap, then the kernel JavaScript of the libraries the program uses, then the exported entry points. It closes with a small block inherited from Guida that represents tuples of more than three elements and teaches the terminal debug printer to show them. Eco's front end rejects such tuples, so no program Eco accepts needs that block.
 
 Identifiers are chosen to be legal JavaScript and free of collisions, and production mode uses short generated names.
 
-Kernel names are flat on purpose. A kernel module from Elm's libraries and one from Eco's libraries with the same module name map to the same JavaScript name. The compiler's own source imports Eco kernel modules, and when it runs as JavaScript, those imports reach the JavaScript functions that the kernel files define under the flat names. Separate names for the two families would leave the JavaScript-hosted compiler calling functions that no kernel file defines. The MLIR side has to keep the two families apart; the JavaScript side does not.
+Kernel names keep the two families apart. An `Elm.Kernel` module's values keep stock Elm's `_Module_name`, so output for programs on Elm's libraries is unchanged. An `Eco.Kernel` module is keyed in the program graph by its whole module name and its values are named `_Eco_Module_name`, because eco/kernel shares homes with Elm's libraries (`File`, `Http`, `Process`) and both `File` kernels define `_File_size`; with flat names one kernel replaced the other and the program failed at load (SD-16). An Eco kernel file spells its own values `_Module_name` in its JavaScript text, so the generator rewrites each `_Module_` identifier in an Eco kernel's text whose `Module` is an Eco kernel of the program. A kernel import `Eco.Kernel.Module` with no such Eco kernel names the Elm kernel `Module` (eco/kernel's files import elm/core's `Scheduler` and `Utils` that way). The JavaScript-hosted compiler builds and runs with these names: its Eco kernel calls and the kernel files' definitions are renamed together.
 
 For HTML output the JavaScript is placed in a page that starts the program on one element and shows an initialization error if startup fails.
 
@@ -76,7 +76,7 @@ A change fits when it keeps the generator a faithful Elm back end over the erase
 ### Examples of changes that would break the theory
 - Making the generator read typed or specialized data to improve its output ties it to the native path's representation, which is free to change for native reasons. If both back ends would benefit, put the improvement in the optimizer that builds the erased program.
 - Changing what a program does, such as evaluation order, in the JavaScript emitter alone makes the reference disagree with the native path. Change the shared front end or optimizer so every back end inherits it.
-- Giving Elm and Eco kernel modules separate JavaScript names breaks the JavaScript-hosted compiler, whose Eco kernel calls rely on the flat names. Keep the naming flat.
+- Giving Elm and Eco kernel modules the same JavaScript names or graph keys again lets a kernel of one family replace the other's when a program uses both (SD-16). Keep the `Eco` prefix in both.
 - Bringing heap layouts, calling conventions or boxing into the JavaScript generator imports decisions that have no meaning there and that change with the native back end. Keep them in global optimization and MLIR generation.
 - Copying a native behavior into JavaScript to make the two agree reverses the direction of parity, since the parity rules make native match JavaScript. Check those rules first, and fix the native side if it is the one that differs.
 
@@ -90,7 +90,7 @@ Code:
 - `compiler/src/Compiler/Generate/CodeGen/JavaScript.elm`: the adapter to the stock generator.
 - `compiler/src/Compiler/Generate/JavaScript.elm`: the graph walk, the helpers, kernel chunks, the closing `EXTRA GUIDA CORE` block (`_Utils_TupleN` and its `_Debug_toAnsiString` wrapper), REPL output and source maps.
 - `compiler/src/Compiler/Generate/JavaScript/Expression.elm`: lowering of each expression.
-- `compiler/src/Compiler/Generate/JavaScript/Name.elm`: identifier choice, including `fromKernel`, which gives Elm and Eco kernel modules the same name.
+- `compiler/src/Compiler/Generate/JavaScript/Name.elm`: identifier choice, including `fromKernel` (Elm kernel modules, `_Module_name`) and `fromEcoKernel` (Eco kernel modules, `_Eco_Module_name`).
 - `compiler/src/Compiler/Generate/JavaScript/Builder.elm`, `SourceMap.elm`, `Functions.elm`: printing, source maps, and the `F2`..`F9` and `A2`..`A9` helpers.
 - `compiler/src/Compiler/Generate/Mode.elm`: `Dev (Maybe Types)` and `Prod ShortFieldNames`.
 - `compiler/src/Compiler/Generate/Html.elm`: the HTML page (`sandwich`). It tells the source map that two lines precede the JavaScript (`leadingLines`) but writes more than two, so source-map line numbers for HTML output are likely off by the difference.

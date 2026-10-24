@@ -85,7 +85,7 @@ Fewer decoders reach the recognizer than its patterns cover. A decoder that take
 
 ## The bf dialect
 
-The `bf` dialect is the language fused code is written in. Its one type, `!bf.cursor`, is a position in a buffer, held as a pair of plain pointers: the current position and the end of the buffer. Every read or write takes a cursor and returns the advanced one, so the order of the accesses is explicit in the data flow and the emitter threads a single cursor through them. Its 26 operations allocate a buffer and place a cursor in it, read and write fixed-width values, copy bytes and UTF-8 strings, compute the run-time widths that an encoder's size needs, check bounds, and hand an opaque `Encoder` value to the kernel's walker for sizing and writing. All of them are declared in one TableGen file.
+The `bf` dialect is the language fused code is written in. Its one type, `!bf.cursor`, is a position in a buffer, held as a pair of plain pointers: the current position and the end of the buffer. Every read or write takes a cursor and returns the advanced one, so the order of the accesses is explicit in the data flow and the emitter threads a single cursor through them. Its 30 operations allocate a buffer and place a cursor in it, read and write fixed-width values, copy bytes and UTF-8 strings, compute the run-time widths that an encoder's size needs, check bounds, and hand an opaque `Encoder` value to the kernel's walker for sizing and writing; four more are inserted by the lowering itself, to rebuild a cursor across a point that may collect and to mark a buffer as a builder. All of them are declared in one TableGen file.
 
 Reads are unchecked loads. A bounds check operation, `bf.require`, says whether a given number of bytes remain, and every read must sit inside a region that a passing check dominates. Separating the check from the read lets one check cover many reads, as the count loop's does, and lets the emitter decide where the failure branch goes. The dialect has no hand-written verifiers, so the rule that every read follows a passing check is kept by the emitter, and nothing in the dialect checks it.
 
@@ -97,24 +97,13 @@ The dialect is separate from eco so that the eco dialect stays stable and byte f
 
 ## The cursor and the collector
 
-As the code stands, fused code is not safe against garbage collection when its buffer is in the nursery. This is a defect of the code, not a property of the design. It follows from three facts. The cursor lowers to plain pointers in LLVM's default address space, and the statepoint rewriting that relocates pointers across a collection only tracks pointers in the collector's address space, so a cursor is never updated when its buffer moves. A buffer smaller than 8 KiB is allocated in the nursery, which a minor collection copies, while a larger one keeps its bytes in the large-object space, which does not move ([garbage-collector.md](../runtime/garbage-collector.md)). And fused code allocates while a cursor is live, so a collection can run at those points and leave the cursor pointing into the nursery space the buffer was copied out of. The helper header itself warns that a buffer's data pointer does not survive a collection.
+The cursor lowers to plain pointers in LLVM's default address space, and the statepoint rewriting that relocates pointers across a collection only tracks pointers in the collector's address space, so a cursor is never updated when its buffer moves. A buffer smaller than 8 KiB is allocated in the nursery, which a minor collection copies, while a larger one keeps its bytes in the large-object space, which does not move ([garbage-collector.md](../runtime/garbage-collector.md)). And fused code can run a collection while a cursor is live: an encoder compiles the values it writes after the cursor is set up, and any of those expressions may allocate; reading a `Bytes` value or a UTF-8 string allocates the result while the cursor is live.
 
-Fused code allocates with a live cursor in four places:
+`BFToLLVM` therefore re-derives the cursor from the buffer after every point that may collect (BFOPS_039). Before its conversion, it treats as such a point every operation not known to be free of collection: an allocation, and any call that is not to a helper or declaration marked as unable to collect. It finds each cursor's buffer by following the cursor back through the operations and loops that thread it to the operation that placed it, and around each such point where the cursor is live it takes the cursor's offsets from the buffer's start before, and rebuilds the cursor from the buffer after. The buffer is a heap value, which the statepoint rewriting does relocate, so the rebuilt cursor points at the same offsets in the moved buffer. The two allocating reads do the same inside their own lowering, and the UTF-8 helper takes the buffer and an offset instead of a pointer, and keeps the buffer rooted across its allocation. Afterwards a check rejects the function at compile time if any use of a cursor can still be reached from its definition through a point that may collect, including a cursor that is used inside a collecting loop without being threaded through it.
 
-- Reading a `Bytes` value allocates the result and then copies from the old cursor pointer.
-- A decode loop builds a list cell for each item while the read cursor is live, and `map` results are built the same way.
-- Strict UTF-8 decoding allocates the string and then reads its source bytes.
-- An encoder compiles the values it writes, and any opaque subtree, after the cursor is set up, and any of those expressions may allocate.
+Re-deriving the pointers is not enough for an encoder that keeps writing after a collection. The buffer has then survived a collection, and the collector's concurrent tenuring may copy such an object while the program runs, on the rule that nothing writes an object after it has survived one; writes into the old copy would be lost. So a buffer that an encoder writes after a point that may collect is marked as a builder from its allocation to its last write: the collector keeps a builder young and never tenures it.
 
-The helpers that size and write an opaque encoder do not allocate, and the argument that the opaque leaf is safe rests on that, but nothing in the code marks or checks them as helpers that cannot collect. A stress test of fused count loops over 8,000-byte nursery buffers passes. Its count of about 700 minor collections assumes a small nursery set through the heap configuration, which the test runner does not set. A pass shows only that the hazard did not show up in that test; it is not evidence that the code is safe.
-
-A fix must give the fused region one of these properties:
-
-- the buffer does not move while any cursor into it is live;
-- nothing allocates, and so no collection can run, while a cursor is live;
-- the cursor's pointers are derived again from the buffer, held as a value the collector tracks, after every point that may allocate.
-
-Until one of them holds, any change to fusion should be checked against the list of allocation points above, and should not add to it.
+This costs nothing where nothing between the cursor's uses can collect, which is the common case. A fused decode loop builds a list cell per item, but a backend pass turns those cells into pushes onto a scratch stack that do not collect and builds the list after the loop, so the loop has no point that may collect and its cursor is never rebuilt. An encoder pays two helper calls per point only when a written value is computed by a call that may allocate, and such a call already costs far more.
 
 ## Where the code and its stated rules disagree
 
@@ -131,7 +120,7 @@ The emitter compiles the expression of a string, a `Bytes` value or an opaque le
 - Carrying a fact from recognition to emission: put it in the node, as the loop's element type is carried, rather than working it out again in the emitter.
 - Another buffer or string representation: change only the runtime helpers. Buffer slices and the UTF-8 string forms are handled this way, in the helpers alone.
 - More decoders fusing: extend the decoder recognizer to read the inlined form of a decoder that takes arguments, a decoder around a kernel read, as the loop recognizer already reads inlined `succeed`, `map` and `andThen`.
-- Making the fused code safe against the collector by any of the three properties in the section on the cursor and the collector, applied to every allocation point listed there.
+- A new operation that allocates: list it in the lowering's set of points that may collect, and if it consumes a cursor and continues through it, re-derive the cursor from the buffer after its allocation, as the two allocating reads do.
 
 ## Examples of changes that would break the theory
 
@@ -141,7 +130,8 @@ The emitter compiles the expression of a string, a `Bytes` value or an opaque le
 - Reading a buffer or string header from generated code, for example computing the address of a length field. It ties generated code to one representation. Add or extend a runtime helper instead.
 - An unchecked read that no passing bounds check dominates, or a write whose bytes were not counted in the size. Either one reads or writes past the buffer. Give every read a check and every write a size term.
 - A fused failure path that traps or throws. The kernel returns `Nothing`, and the fused code must return the same. Branch to the `Nothing` constant.
-- Adding a fused operation that allocates while a cursor is live, such as a read that builds its result on the heap and then continues reading through the same cursor, or making a helper called with a live cursor allocate, such as the opaque encoder's walker or the UTF-8 copy. Each one adds a point where a minor collection can move a nursery buffer under a cursor that is never updated. Keep allocation out of the region where a cursor is live, or make the change together with a fix that gives the region one of the three properties above.
+- Holding a raw pointer into a buffer across a point that may collect outside the cursor, or making a helper that takes a raw pointer allocate, such as the opaque encoder's walker or the UTF-8 copy. The lowering re-derives only cursors, so such a pointer is left pointing at memory the buffer was copied out of. Pass the buffer and an offset to the helper and keep the buffer rooted, as the UTF-8 decode does.
+- Marking as unable to collect a call or operation that can collect. The lowering would then leave the cursor unrebuilt across it.
 
 ## References
 
@@ -157,7 +147,7 @@ Code:
 - `compiler/src/Compiler/Generate/MLIR/Expr.elm`: `generateSaturatedCallFusionGate`, `tryBytesEncodeFusion`, `tryEncoderFusionWithBindings`, `tryInlinedDecodeFusion`, `bfExprCompiler`, and the kernel fallbacks in `generateSaturatedCallNoFusion`.
 - `compiler/src/Compiler/GlobalOpt/MonoInlineSimplify.elm`: `defaultWhitelist`, `buildBodyLookup`.
 - `compiler/src/Compiler/Eco/Config.elm`: `BytesFusionConfig` (`bytesFusion.enabled`, hash token `bf=`).
-- `runtime/src/codegen/BF/BFOps.td`: the dialect and `!bf.cursor`; `runtime/src/codegen/BF/`: `BFToLLVM`.
+- `runtime/src/codegen/BF/BFOps.td`: the dialect and `!bf.cursor`; `runtime/src/codegen/Passes/BFToLLVM.cpp`: `BFToLLVM`, including the rebuilding of cursors across points that may collect (`CursorGCSafety`).
 - `runtime/src/allocator/ElmBytesRuntime.h`, `runtime/src/allocator/ElmBytesRuntime.cpp`: the helper interface (`elm_alloc_bytebuffer`, `elm_utf8_decode`, the buffer and UTF-8 helpers).
 - `elm-kernel-cpp/src/bytes/BytesExports.cpp`: `elm_encoder_size`, `elm_encoder_write_into`, and the kernel `Elm_Kernel_Bytes_encode` and `Elm_Kernel_Bytes_decode` used as the fallback.
 - `test/elm-bytes/src/` (for example `FusionPartialOpaqueTest`, `BytesLoopFusionShapesTest`, `DecodeFailureInCombinatorTest`, `DecodeStringStrictFusedTest`, `BytesLoopFusionGcStressTest`), pinned with `CHECK-MLIR` where fusion must fire; `test/bf-codegen/` for the dialect.
@@ -168,6 +158,7 @@ Invariants (`design_docs/invariants.csv`):
 - BFOPS_006, BFOPS_007, BFOPS_010: exact width and one allocation.
 - BFOPS_012, BFOPS_029: no load without a passing check. BFOPS_016, BFOPS_017: failure is a branch to `Nothing`.
 - BFOPS_030, BFOPS_032: layout stays in the runtime helpers.
+- BFOPS_039: no raw cursor pointer is live across a point that may collect; cursors are rebuilt from their buffer, and a buffer written after such a point is a builder. Pinned by `test/bf-codegen/bf_cursor_survives_minor_gc.mlir` and `BytesFusedEncodeCursorSurvivesGCTest`.
 - False for an encoder with an opaque leaf: BFUSE_001 (all or nothing), BFOPS_036 (no intermediate allocations, also false for decoders), BFOPS_037 (no interpreter calls). BFOPS_021 cites `BFTypes.td`, which does not exist; the cursor type is in `BFOps.td`.
 
 Design documents:

@@ -61,7 +61,9 @@ Kernel code is parsed into chunks that represent different types of content:
 
   - JS: Raw JavaScript code
   - ElmVar: Reference to an Elm variable from another module
-  - JsVar: Reference to a JavaScript variable from a kernel module
+  - JsVar: Reference to a JavaScript variable from a kernel module, given by
+    the kernel prefix (`Elm` or `Eco`) and home of the module it is imported
+    from, as in `import Eco.Kernel.File exposing (size)`, and its name
   - ElmField: Reference to an Elm record field (\_\_$fieldName)
   - JsField: Reference to a JavaScript field by index
   - JsEnum: Reference to an enumeration value by index
@@ -72,7 +74,7 @@ Kernel code is parsed into chunks that represent different types of content:
 type Chunk
     = JS String
     | ElmVar ModuleName.Canonical Name
-    | JsVar Name Name
+    | JsVar Name Name Name
     | ElmField Name
     | JsField Int
     | JsEnum Int
@@ -104,7 +106,7 @@ addField chunk fields =
         ElmVar _ _ ->
             fields
 
-        JsVar _ _ ->
+        JsVar _ _ _ ->
             fields
 
         ElmField f ->
@@ -409,13 +411,12 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
 
             Nothing ->
                 let
-                    home : Name
-                    home =
-                        Tuple.second (Name.getKernel importName)
+                    ( kernelPrefix, home ) =
+                        Name.getKernel importName
 
                     add : Name -> Dict Name Chunk -> Dict Name Chunk
                     add name table =
-                        Dict.insert (Name.sepBy '_' home name) (JsVar home name) table
+                        Dict.insert (Name.sepBy '_' home name) (JsVar kernelPrefix home name) table
                 in
                 List.foldl add vtable (toNames exposing_)
 
@@ -483,7 +484,9 @@ toName exposed =
 {-| Encode a Chunk to bytes for serialization.
 
 Each chunk type is encoded with a tag byte followed by its data. Used for caching
-parsed kernel modules in artifact files.
+parsed kernel modules in artifact files. A `JsVar` of an `Elm` kernel keeps the
+tag (2) it had before `JsVar` carried a prefix, so cached `Elm` kernels still
+decode the same; one of an `Eco` kernel has a tag of its own (8).
 
 -}
 chunkEncoder : Chunk -> Bytes.Encode.Encoder
@@ -502,9 +505,15 @@ chunkEncoder chunk =
                 , BE.string name
                 ]
 
-        JsVar home name ->
+        JsVar kernelPrefix home name ->
             Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 2
+                [ Bytes.Encode.unsignedInt8
+                    (if kernelPrefix == "Eco" then
+                        8
+
+                     else
+                        2
+                    )
                 , BE.string home
                 , BE.string name
                 ]
@@ -555,7 +564,7 @@ chunkDecoder =
                             BD.string
 
                     2 ->
-                        Bytes.Decode.map2 JsVar
+                        Bytes.Decode.map2 (JsVar "Elm")
                             BD.string
                             BD.string
 
@@ -573,6 +582,11 @@ chunkDecoder =
 
                     7 ->
                         Bytes.Decode.succeed Prod
+
+                    8 ->
+                        Bytes.Decode.map2 (JsVar "Eco")
+                            BD.string
+                            BD.string
 
                     _ ->
                         Bytes.Decode.fail

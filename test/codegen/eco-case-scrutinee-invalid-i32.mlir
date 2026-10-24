@@ -1,4 +1,4 @@
-// RUN: %ecoc %s 2>&1 | %FileCheck %s
+// RUN: not %ecoc %s 2>&1 | %FileCheck %s
 //
 // Test unsupported scrutinee type (i32).
 

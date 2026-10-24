@@ -14,6 +14,7 @@
 
 // Include runtime exports for JIT symbol registration.
 #include "../allocator/RuntimeExports.h"
+#include "../allocator/PermanentSpace.hpp"
 
 // Include byte fusion runtime exports for fused Bytes.Encode/Decode operations.
 #include "../allocator/ElmBytesRuntime.h"
@@ -410,6 +411,12 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_add_root),
                 llvm::JITSymbolFlags::Exported);
+        // CAF memo guard (CGEN_068): publishes a caf_memo thunk's result
+        // and roots its slot when the value stays heap-resident.
+        symbolMap[interner("eco_caf_promote")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_caf_promote),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_gc_remove_root")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_remove_root),
@@ -537,6 +544,14 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         symbolMap[interner("elm_bytebuffer_data")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_data),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_bytebuffer_builder_begin")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_builder_begin),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("elm_bytebuffer_builder_end")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&elm_bytebuffer_builder_end),
                 llvm::JITSymbolFlags::Exported);
 
         // UTF-8 string operations

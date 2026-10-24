@@ -35,15 +35,16 @@ int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b) {
 // general lockstep, whose only scratch is a C++-heap std::vector).
 // Lives here, not in RuntimeExports, because Export::toPtr's full resolution
 // (embedded-constant -> nullptr; isInHeap -> resolveFast; else raw non-heap
-// pointer for rodata literals) is required for parity with the kernel path,
+// pointer for PermanentSpace literals) is required for parity with the kernel path,
 // and RuntimeExports' local hpointerToPtr is NOT equivalent.
 // Same return-width trap as above.
 int64_t eco_string_cmp3(HPtr a, HPtr b) {
     void* pa = Export::toPtr(a.toBits());
     void* pb = Export::toPtr(b.toBits());
     if (pa == pb) return 0;  // includes both-Empty (both nullptr)
-    if (!pa) return -1;      // empty < non-empty
-    if (!pb) return 1;
+    // empty < non-empty; "" equals a zero-length heap String (SD-26, HEAP_071)
+    if (!pa) return alloc::isZeroLengthString(pb) ? 0 : -1;
+    if (!pb) return alloc::isZeroLengthString(pa) ? 0 : 1;
     return StringOps::compare(pa, pb);
 }
 
@@ -99,8 +100,18 @@ static bool equalRespectingConstants(uint64_t aBits, uint64_t bBits) {
     // different types, so a merged empty can only ever be compared against the
     // same-type empty — a whole-word compare is correct under both the legacy
     // and the merged representations (plan D6/P0.6).
-    if (isConstantBits(aBits) || isConstantBits(bBits)) {
-        return aBits == bBits;
+    //
+    // One exception (SD-26, HEAP_071): the Empty constant ("") equals a
+    // zero-length heap String. No producer allocates one, but every
+    // comparison path agrees on it; checked only when exactly one side is a
+    // constant and the words differ.
+    const bool aConst = isConstantBits(aBits);
+    const bool bConst = isConstantBits(bBits);
+    if (aConst || bConst) {
+        if (aBits == bBits) return true;
+        if (aConst == bConst) return false;
+        return isEmptyBits(aConst ? aBits : bBits) &&
+               alloc::isZeroLengthString(Export::toPtr(aConst ? bBits : aBits));
     }
     return Utils::equal(Export::toPtr(aBits), Export::toPtr(bBits));
 }

@@ -28,8 +28,8 @@ module {
   func.func @main() -> i64 {
     %a = eco.string_literal "x" : !eco.value
     %b = eco.string_literal "y" : !eco.value
-    %e = eco.call @Elm_Kernel_Utils_equal(%a, %b) : (!eco.value, !eco.value) -> !eco.value
-    %c = eco.call @Elm_Kernel_Utils_append(%a, %b) : (!eco.value, !eco.value) -> !eco.value
+    %e = "eco.call"(%a, %b) {callee = @Elm_Kernel_Utils_equal} : (!eco.value, !eco.value) -> !eco.value
+    %c = "eco.call"(%a, %b) {callee = @Elm_Kernel_Utils_append} : (!eco.value, !eco.value) -> !eco.value
     eco.dbg %c : !eco.value
     %z = arith.constant 0 : i64
     return %z : i64
@@ -43,4 +43,7 @@ module {
   // STAMP-NOT: memory{{.*}}@Elm_Kernel_Utils_equal
   // STAMP-NOT: speculatable
   // STAMP-NOT: willreturn
+  //
+  // The ineligible decl carries no passthrough at all.
+  // STAMP: llvm.func @Elm_Kernel_Utils_append({{[^"]*$}}
 }

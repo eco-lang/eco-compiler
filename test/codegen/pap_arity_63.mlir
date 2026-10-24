@@ -1,11 +1,13 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
 //
-// Test PAP with maximum arity of 63 (6-bit field limit).
-// The packed PAP field uses 6 bits for n_values and max_values.
-// NOTE: This test may be impractical due to the large number of arguments.
-// Marking XFAIL as generating a 63-arg function is complex.
-
+// PAP creation and partial extension at a larger arity than the other small
+// PAP fixtures: papCreate of an arity-10 llvm.func evaluator, then a 3-arg
+// papExtend that leaves 7 remaining; both print as <fn>.
+//
+// The name is historical: the packed PAP header's old 6-bit n_values /
+// max_values fields capped arity at 63, which the file once meant to probe.
+// Closure arity now goes up to 2047 (wide objects); papextend_70_args_root_chunks
+// and eval_desc_sat_sizes cover the wide cases.
 module {
   // A function that takes many arguments - we'll test with arity 10
   // as a proxy for testing larger arities (63 is impractical to write out)

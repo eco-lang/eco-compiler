@@ -12,20 +12,20 @@ The cost is that a fixture says nothing about whether the compiler ever emits th
 
 ## How the fixtures run
 
-Each set's harness finds its fixtures by listing every `.mlir` file in its directory and makes each file one test, named `codegen/<file>` for the eco set and `codegen-bf/<file>` for the byte-fusion set, so a `codegen` filter selects both. The harness reads the stage from the first `// RUN:` comment line that names one. Every test runs in its own spawned child process, in parallel with the others, so a crash or a corrupted heap fails one fixture and leaves the rest alone. Both sets are suites inside the main test executable rather than separate runners, which is how they share the isolated-child runner and the `CHECK` parser with the whole-program tests. On Windows both suites are built over a directory that does not exist and run nothing.
+Each set's harness finds its fixtures by listing every `.mlir` file in its directory and makes each file one test, named `codegen/<file>` for the eco set and `codegen-bf/<file>` for the byte-fusion set, so a `codegen` filter selects both. The harness runs every `// RUN:` comment line of the fixture in turn, and the fixture passes only if each one does. Every test runs in its own spawned child process, in parallel with the others, so a crash or a corrupted heap fails one fixture and leaves the rest alone. Both sets are suites inside the main test executable rather than separate runners, which is how they share the isolated-child runner and the `CHECK` parser with the whole-program tests. On Windows both suites are built over a directory that does not exist and run nothing.
 
 ```
-fixture.mlir --(stage, from the first RUN line)--> harness
-harness --(JIT stage)--> in-process runner --(printed values)--> matcher
-harness --(dump stage, rejection, or expected crash)--> compiler subprocess --(IR text or diagnostic)--> matcher
-matcher --(CHECK lines from the fixture)--> pass or fail
+fixture.mlir --(each RUN line: stage, flags, expected exit, check prefixes)--> harness
+harness --(plain JIT stage)--> in-process runner --(printed values)--> matcher
+harness --(any other line)--> compiler subprocess --(exit status; IR text or diagnostic)--> matcher
+matcher --(the line's prefixes' directives from the fixture)--> pass or fail
 ```
 
-The byte-fusion harness is a near copy of the eco one that lacks several of its features. It does not check which nursery the heap uses, does not send crashing fixtures to a subprocess, and does not handle the reachability option or the directive that unsets an environment variable. A byte-fusion fixture that depends on one of them does not get it.
+The byte-fusion harness runs each fixture through the eco harness's fixture runner, so both sets follow the same RUN-line, exit-status and matching rules, the same nursery check and the same subprocess routing; only the directory and the test names differ.
 
 ## What a fixture looks like
 
-A fixture is one `.mlir` file. Its first `// RUN:` comment line names the stage, its `// CHECK` comment lines are the assertions, and everything else is the MLIR input. This one pins that a two-field tuple used only as a value lowers to an LLVM struct and allocates nothing on the heap.
+A fixture is one `.mlir` file. Its `// RUN:` comment lines say how to compile it, its `// CHECK` comment lines (or lines under the check prefixes a RUN line names) are the assertions, and everything else is the MLIR input. This one pins that a two-field tuple used only as a value lowers to an LLVM struct and allocates nothing on the heap.
 
 ```mlir
 // RUN: %ecoc %s -emit=mlir-llvm 2>&1 | %FileCheck %s
@@ -53,7 +53,7 @@ module {
 
 Source: `test/codegen/value_tuple2.mlir`, trimmed.
 
-The property under test, that nothing is allocated, is carried only by the two `CHECK-NOT` lines, each checked against the whole output. The positive lines show the shape the lowering produces instead. The `%ecoc` and `%FileCheck` spelling keeps the file readable as an ordinary LLVM test, but the harness does not run FileCheck: from this line it takes only the stage named by `-emit=`.
+The property under test, that nothing is allocated, is carried only by the two `CHECK-NOT` lines, each checked against the whole output. The positive lines show the shape the lowering produces instead. The `%ecoc` and `%FileCheck` spelling keeps the file readable as an ordinary LLVM test, and the harness interprets the line as lit would, but it matches the directives itself rather than running FileCheck.
 
 ## Choosing the stage
 
@@ -71,27 +71,28 @@ JIT fixtures run in the test process through the back end's in-process runner, w
 
 ## What counts as an assertion
 
-The harness reads a fixture's directives itself, and its rules are narrower than FileCheck's. A fixture checks only what its recognized `CHECK` lines name, so a fixture written with full FileCheck in mind can look thorough and assert less than it appears to.
+The harness reads a fixture's RUN lines and directives itself (`test/codegen/CodegenIsolatedTest.hpp`, `test/CheckPatterns.hpp`). It follows lit and FileCheck closely enough that a fixture means what an LLVM developer would read into it; a RUN line or directive it cannot honour is a hard error rather than a silent no-op.
 
-The harness takes three facts from the RUN lines:
+Every RUN line has the form `[not [--crash]] [env NAME=VALUE...] %ecoc %s [-emit=STAGE] [flags...] 2>&1 | %FileCheck %s [--check-prefix=P | --check-prefixes=P,Q]`, and each one runs:
 
-1. the stage, from the first RUN line that names one, so any later RUN line never runs;
-2. whether the fixture expects the compile or run to fail, marked by `not %ecoc` anywhere in the file, which sends a JIT fixture to a subprocess and lets it fail;
-3. whether the closed-world reachability option is present, which it passes on to the compiler.
+1. the flags after `%s` go to the compiler verbatim, and an `env` prefix sets environment variables for that run;
+2. the exit status is checked as lit does: without `not` the compiler must exit 0; `not` requires a non-zero exit and fails on a crash; `not --crash` requires a crash, such as the abort of LLVM's `report_fatal_error` that the back end's internal self-checks use;
+3. the output, stdout and stderr together, must satisfy the directives of the line's check prefixes (`CHECK` when none is named). A prefix with no directive in the file is an error, as in FileCheck.
 
-Everything else on a RUN line, such as an environment prefix or a FileCheck option like a custom check prefix, has no effect. Fourteen eco fixtures, `list_map_template_expand.mlir` among them, assert only under a custom prefix, so the harness finds no assertion in them and they pass whatever the compiler emits.
+A JIT line with no `not`, `env` or flags, in a fixture without a crash operation, runs in the test process; every other line runs the compiler as a subprocess. A fixture with no RUN line at all (the upstream probes below) must still parse and lower with the compiler's default stage and exit 0.
 
-The assertions are the comment lines that begin with the plain `// CHECK` prefix. A line under any other prefix is an ordinary comment to the harness. Each recognized form is matched against the whole output:
+The directives under a prefix `P` are `// P:` and its variants, matched in the order written, as FileCheck does:
 
-- `CHECK` requires the pattern somewhere in the output;
-- `CHECK-NOT` requires it nowhere in the output;
-- `CHECK-DAG` and `CHECK-LABEL` behave exactly as `CHECK`;
-- `CHECK-SAME` must match later on the same output line as the previous positive match;
-- `CHECK-NEXT` must match on the line right after the previous positive match.
+- `P` matches at or after the end of the previous match;
+- `P-NOT` requires the pattern nowhere in the output. This is stricter than FileCheck, which looks only between the neighbouring matches, and some fixtures rely on it;
+- consecutive `P-DAG` lines match in any order, without overlapping, after the previous match; the next line continues after the last of them;
+- `P-LABEL` lines are matched first, in order, and split the output into blocks: the lines after a label must match before the next label's match;
+- `P-SAME` must match later on the same output line as the previous match;
+- `P-NEXT` must match on the line right after the previous match.
 
-Plain `CHECK` lines are not ordered with respect to each other. To pin an order, chain `CHECK-NEXT` or `CHECK-SAME` from a positive match. A pattern is a literal substring, except for spans in double braces, which are regular expressions. Any other `CHECK-` variant is a hard error. If the harness skipped variants it did not know, a misspelled directive would leave a fixture green while it asserted nothing, and a check that cannot fail is worse than no check.
+A pattern is a literal substring, except for spans in double braces, which are regular expressions; a match never spans lines, and `^` and `$` anchor at line boundaries. Any other `-` variant of a prefix is a hard error. If the harness skipped variants it did not know, a misspelled directive would leave a fixture green while it asserted nothing, and a check that cannot fail is worse than no check. The whole-program harness shares the parser but keeps the older order-insensitive matching, in which every positive line only has to appear somewhere.
 
-When the compiler runs as a subprocess, the harness never looks at its exit status, for any fixture: the matched output is the whole verdict. A rejection fixture therefore needs a `CHECK` line on the diagnostic, since that line is the only thing that proves the input was rejected. For the same reason, a fixture whose only assertions are `CHECK-NOT` lines passes even when the compiler fails, so an absence check needs at least one positive line beside it, as the fixture above has.
+Until 2026-10-24 the harness read only the first RUN line, ignored custom prefixes and the exit status, and matched `CHECK` lines in any order (review-bug-list SD-5, SD-21). `test/codegen/CodegenHarnessSelfTest.hpp` now pins each of those rules with a fixture the harness must reject.
 
 Two more directives change how a fixture runs. A line `// UNSETENV: NAME` runs the compiler without that environment variable, for a fixture that must not see a switch a test run sets for every compile. A file containing `XFAIL:` anywhere is skipped before anything runs. The harness has no mode in which a fixture runs and is expected to fail, so marking a fixture `XFAIL:` removes its check as surely as deleting the file would.
 
@@ -135,9 +136,9 @@ A change fits when it adds one fixture per property, at the stage that makes the
 ## Examples of changes that would break the theory
 A change breaks the theory when it makes a fixture quieter without the code becoming more correct, or when it lets the two harnesses differ by accident.
 
-- Writing checks under a custom check prefix, or in the commands of a second RUN line. The harness reads neither, so those checks never run. Use plain `CHECK` lines and one RUN line, or teach the harness the feature first.
+- Writing a RUN line or directive the harness does not support and working around the resulting error instead of teaching the harness the feature. Before 2026-10-24 unsupported RUN-line features were ignored, and fourteen fixtures' custom-prefix checks never ran.
 - Deleting a fixture, or marking it `XFAIL:`, to make a pass change green. Both remove the check. Decide whether the property is obsolete, then delete the fixture and update its rule in the catalog, or still required, then fix the pass.
-- Copying a harness fix into only one of the two harnesses. They are near copies, and a fix such as the nursery check or crash routing that lands in one leaves the other set unprotected. Land it in both, or extract the common part.
+- Giving the byte-fusion set its own fixture runner again. It once was a near copy that lacked the nursery check and crash routing; both sets now share `runFixture`.
 - Pinning a front-end bug with a fixture. Fixtures start from MLIR and cannot see typing or specialization mistakes; those belong in the compiler or whole-program tests.
 - Adding a separate shell or Python driver. It would lose the runtime link, the shared parser and the spawned children; extend the C++ harness instead.
 
@@ -145,9 +146,10 @@ A change breaks the theory when it makes a fixture quieter without the code beco
 
 Parent: [verification.md](verification.md).
 
-- `test/codegen/CodegenIsolatedTest.hpp`: the eco harness (`runCodegenTest`, `parseEmitMode`, `isExpectedFail`, `isExpectedCrash`, `UNSETENV`, `--exe-reachability` forwarding, `eco_test::requireRegionNursery`).
-- `test/bf-codegen/BFCodegenTest.hpp`: the byte-fusion harness.
-- `test/CheckPatterns.hpp`: the shared `CHECK` parser and matcher (`extractCheckPatterns`).
+- `test/codegen/CodegenIsolatedTest.hpp`: the eco harness and the shared fixture runner (`runFixture`, `parseRunLines`, `runsInProcess`, `runSubprocessTest`, `isExpectedFail`, `UNSETENV`, `eco_test::requireRegionNursery`).
+- `test/codegen/CodegenHarnessSelfTest.hpp`: fixtures the harness must reject (exit status, prefixes, RUN lines, order).
+- `test/bf-codegen/BFCodegenTest.hpp`: the byte-fusion suite, on the same runner.
+- `test/CheckPatterns.hpp`: the shared `CHECK` parser and matcher (`extractCheckPatterns`, `extractCheckPatternsForPrefixes`, `verifyPatterns`, `CheckOrder`).
 - `test/IsolatedTestRunner.hpp`, `test/SpawnedChildren.hpp`, `test/main.cpp`: child dispatch (`codegen <path>`, `bf-codegen <path>`) and suite registration.
 - `test/RegionNurseryGuard.hpp`: the production-nursery check.
 - `test/codegen/gen_wide_fixtures.py`, `test/codegen/gen_wide_limit_fixtures.py`: the wide-object generators.

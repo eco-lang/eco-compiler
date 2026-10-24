@@ -62,7 +62,10 @@ module {
 // EXP: call ptr @eco_bump_state()
 // EXP: load ptr addrspace(1)
 // EXP: icmp ugt ptr addrspace(1)
-// EXP: call ptr addrspace(1) @eco_alloc_inline_slow(i64 24)
+// The first three allocations share one capacity-hoisted ensure
+// (eco_ensure_nursery_slow); the 32-byte tuple3 gets its own diamond, whose
+// slow call RS4GC has wrapped in a statepoint.
+// EXP: @llvm.experimental.gc.statepoint.p0({{.*}}@eco_alloc_inline_slow, i32 1, i32 0, i64 32,
 // EXP: phi ptr addrspace(1)
 // No marker survives the expansion; no ptrtoint appears in the diamond
 // (the bump slots are loaded/stored AS ptr addrspace(1) — REP_LLVM_001).

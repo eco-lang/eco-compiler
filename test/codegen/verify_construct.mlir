@@ -1,4 +1,4 @@
-// RUN: %ecoc %s -emit=mlir 2>&1 | %FileCheck %s
+// RUN: not %ecoc %s -emit=mlir 2>&1 | %FileCheck %s
 //
 // Test that eco.construct verification catches mismatched field counts.
 // This is a NEGATIVE test - we expect an error.

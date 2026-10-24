@@ -2244,7 +2244,7 @@ inline HPointer allocTaskUnboxed(u16 ctor, Unboxable value, u8 valueKind,
     return Allocator::instance().wrap(t);
 }
 
-inline HPointer allocProcess(u16 id, HPointer root, HPointer stack, HPointer mailbox) {
+inline HPointer allocProcess(u64 id, HPointer root, HPointer stack, HPointer mailbox) {
     size_t total_size = (sizeof(Process) + 7) & ~7;
     uint64_t roots[3];
     std::memcpy(&roots[0], &root, 8);
@@ -2253,7 +2253,6 @@ inline HPointer allocProcess(u16 id, HPointer root, HPointer stack, HPointer mai
     Process* p = static_cast<Process*>(
         eco_alloc_with_roots(Tag_Process, total_size, roots, 3, 0x7));
     p->id = id;
-    p->padding = 0;
     std::memcpy(&p->root,    &roots[0], 8);
     std::memcpy(&p->stack,   &roots[1], 8);
     std::memcpy(&p->mailbox, &roots[2], 8);
@@ -2296,6 +2295,17 @@ inline bool isString(void* obj) {
     return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope ||
            t == Tag_LargeStringHeader ||
            t == Tag_StringUtf8View || t == Tag_StringUtf8Leaf;
+}
+
+/**
+ * Returns true iff `obj` is a heap String of logical length 0 (header.size is
+ * the UTF-16 length on every String form). HEAP_071: no producer allocates
+ * one -- "" is the Empty constant -- but every equality/ordering path still
+ * treats one as equal to the Empty constant (SD-26), checking it only on the
+ * branch where exactly one side is a constant.
+ */
+inline bool isZeroLengthString(void* obj) {
+    return obj && isString(obj) && static_cast<Header*>(obj)->size == 0;
 }
 
 /**

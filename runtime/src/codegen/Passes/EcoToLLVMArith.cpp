@@ -65,15 +65,21 @@ struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
         Value lhs = adaptor.getLhs();
         Value rhs = adaptor.getRhs();
 
-        // Guard against division by zero: return 0 if rhs == 0
-        auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
-        auto isZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                      rhs, zero);
-        auto safeRhs = rewriter.create<arith::SelectOp>(loc, isZero,
-            rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64), rhs);
+        // CGEN_084: x // 0 = 0 and x // -1 = 0 - x, wrapping (MIN_INT // -1 =
+        // MIN_INT). `sdiv` by 0 and MIN_INT by -1 are LLVM UB (SIGFPE on
+        // x86), so neither divisor reaches it: rhs in {-1, 0} (one unsigned
+        // compare: rhs + 1 <=u 1) divides by 1 and takes rhs * lhs instead,
+        // which is 0 or the wrapping negation.
+        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
+        auto rhsPlus1 = rewriter.create<arith::AddIOp>(loc, rhs, one);
+        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                                         rhsPlus1, one);
+        auto safeRhs = rewriter.create<arith::SelectOp>(loc, isSpecial, one, rhs);
 
         auto divResult = rewriter.create<arith::DivSIOp>(loc, lhs, safeRhs);
-        auto result = rewriter.create<arith::SelectOp>(loc, isZero, zero, divResult);
+        auto specialResult = rewriter.create<arith::MulIOp>(loc, rhs, lhs);
+        auto result = rewriter.create<arith::SelectOp>(loc, isSpecial, specialResult,
+                                                       divResult);
 
         rewriter.replaceOp(op, result);
         return success();
@@ -101,11 +107,15 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
 
         auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
 
-        // Guard against div by zero
-        auto isZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                      modulus, zero);
-        auto safeModulus = rewriter.create<arith::SelectOp>(loc, isZero,
-            rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64), modulus);
+        // CGEN_084: modBy 0 x = 0 and modBy -1 x = 0. `srem` by 0 and MIN_INT
+        // by -1 are LLVM UB (SIGFPE on x86), so a modulus in {-1, 0} (one
+        // unsigned compare: m + 1 <=u 1) is replaced by 1, whose floored
+        // remainder is 0 for every x: no final select is needed.
+        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
+        auto modPlus1 = rewriter.create<arith::AddIOp>(loc, modulus, one);
+        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                                         modPlus1, one);
+        auto safeModulus = rewriter.create<arith::SelectOp>(loc, isSpecial, one, modulus);
 
         // Compute truncated remainder
         auto truncRem = rewriter.create<arith::RemSIOp>(loc, x, safeModulus);
@@ -120,10 +130,7 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
 
         // Adjust by adding modulus if needed
         auto adjusted = rewriter.create<arith::AddIOp>(loc, truncRem, safeModulus);
-        auto flooredRem = rewriter.create<arith::SelectOp>(loc, needsAdjust, adjusted, truncRem);
-
-        // Return 0 if modulus was 0
-        auto result = rewriter.create<arith::SelectOp>(loc, isZero, zero, flooredRem);
+        auto result = rewriter.create<arith::SelectOp>(loc, needsAdjust, adjusted, truncRem);
 
         rewriter.replaceOp(op, result);
         return success();
@@ -141,15 +148,17 @@ struct IntRemainderByOpLowering : public OpConversionPattern<IntRemainderByOp> {
         Value divisor = adaptor.getDivisor();
         Value x = adaptor.getX();
 
-        // Guard against division by zero
-        auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
-        auto isZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                                      divisor, zero);
-        auto safeDivisor = rewriter.create<arith::SelectOp>(loc, isZero,
-            rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64), divisor);
+        // CGEN_084: remainderBy 0 x = 0 and remainderBy -1 x = 0. `srem` by 0
+        // and MIN_INT by -1 are LLVM UB (SIGFPE on x86), so a divisor in
+        // {-1, 0} (one unsigned compare: d + 1 <=u 1) is replaced by 1, whose
+        // remainder is 0 for every x.
+        auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
+        auto divPlus1 = rewriter.create<arith::AddIOp>(loc, divisor, one);
+        auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
+                                                         divPlus1, one);
+        auto safeDivisor = rewriter.create<arith::SelectOp>(loc, isSpecial, one, divisor);
 
-        auto remResult = rewriter.create<arith::RemSIOp>(loc, x, safeDivisor);
-        auto result = rewriter.create<arith::SelectOp>(loc, isZero, zero, remResult);
+        auto result = rewriter.create<arith::RemSIOp>(loc, x, safeDivisor);
 
         rewriter.replaceOp(op, result);
         return success();
@@ -783,13 +792,23 @@ struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
     }
 };
 
+// CGEN_085: a shift count is taken modulo 64 (count & 63), as JavaScript takes
+// it modulo 32 for its 32-bit Bitwise; the kernel C++ Bitwise path does the
+// same. An LLVM shift by >= 64 (or a negative count) is poison.
+static Value shiftAmountMod64(ConversionPatternRewriter &rewriter, Location loc,
+                              Value amount) {
+    auto mask = rewriter.create<arith::ConstantIntOp>(loc, 63, /*width=*/64);
+    return rewriter.create<arith::AndIOp>(loc, amount, mask);
+}
+
 struct IntShiftLeftOpLowering : public OpConversionPattern<IntShiftLeftOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(IntShiftLeftOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<arith::ShLIOp>(op, adaptor.getValue(), adaptor.getAmount());
+        rewriter.replaceOpWithNewOp<arith::ShLIOp>(op, adaptor.getValue(),
+            shiftAmountMod64(rewriter, op.getLoc(), adaptor.getAmount()));
         return success();
     }
 };
@@ -801,7 +820,8 @@ struct IntShiftRightOpLowering : public OpConversionPattern<IntShiftRightOp> {
     matchAndRewrite(IntShiftRightOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         // Arithmetic shift right (preserves sign)
-        rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, adaptor.getValue(), adaptor.getAmount());
+        rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, adaptor.getValue(),
+            shiftAmountMod64(rewriter, op.getLoc(), adaptor.getAmount()));
         return success();
     }
 };
@@ -813,7 +833,8 @@ struct IntShiftRightZfOpLowering : public OpConversionPattern<IntShiftRightZfOp>
     matchAndRewrite(IntShiftRightZfOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         // Logical shift right (zero fill)
-        rewriter.replaceOpWithNewOp<arith::ShRUIOp>(op, adaptor.getValue(), adaptor.getAmount());
+        rewriter.replaceOpWithNewOp<arith::ShRUIOp>(op, adaptor.getValue(),
+            shiftAmountMod64(rewriter, op.getLoc(), adaptor.getAmount()));
         return success();
     }
 };

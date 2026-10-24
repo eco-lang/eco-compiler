@@ -183,8 +183,7 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         // The self-process id is stable across re-arms (Process is immutable;
         // each step allocates a new value with the same id). sendToSelf and the
         // dedicated self-process step both resolve the live version by this id.
-        u32 selfProcId =
-            static_cast<u32>(static_cast<Process*>(resolveHP(selfProc))->id);
+        u64 selfProcId = static_cast<Process*>(resolveHP(selfProc))->id;
 
         // Create router: Custom with ctor=CTOR_Router.
         // field[0] = sendToApp closure (boxed, kind 00)
@@ -245,12 +244,13 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
             HPointer initProc = sched.rawSpawn(initTask);
             // Capture the id BEFORE drain — Process is logically immutable so
             // `initProc` becomes stale as soon as stepProcess produces new
-            // values. The id is stable; use it to look up the latest version
-            // after drain.
-            u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(initProc))->id);
+            // values. The id is stable; the scheduler hands the finished
+            // process over by it (a finished process leaves the registry).
+            u64 procId = static_cast<Process*>(resolveHP(initProc))->id;
+            sched.keepResultOnFinish(procId);
             sched.drain();
 
-            HPointer latestProc = sched.latestProcessById(procId);
+            HPointer latestProc = sched.takeFinishedProcess(procId);
             void* procPtr = resolveHP(latestProc);
             if (procPtr) {
                 Process* proc = static_cast<Process*>(procPtr);
@@ -388,12 +388,13 @@ void PlatformRuntime::dispatchEffects() {
         HPointer effectProc = sched.rawSpawn(newStateTask);
         // Capture the id BEFORE drain — Process is logically immutable so
         // effectProc becomes stale as soon as stepProcess produces new
-        // values. The id is stable; use it to look up the latest version
-        // after drain.
-        u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
+        // values. The id is stable; the scheduler hands the finished
+        // process over by it (a finished process leaves the registry).
+        u64 procId = static_cast<Process*>(resolveHP(effectProc))->id;
+        sched.keepResultOnFinish(procId);
         sched.drain();
 
-        HPointer latestProc = sched.latestProcessById(procId);
+        HPointer latestProc = sched.takeFinishedProcess(procId);
         void* procPtr = resolveHP(latestProc);
         if (procPtr) {
             Process* proc = static_cast<Process*>(procPtr);
@@ -568,7 +569,7 @@ HPointer PlatformRuntime::sendToSelf(HPointer router, HPointer msg) {
     if (!routerPtr) return Scheduler::instance().taskSucceed(unit());
 
     Custom* routerObj = static_cast<Custom*>(routerPtr);
-    u32 selfProcId = static_cast<u32>(routerObj->values[1].i);
+    u64 selfProcId = static_cast<u64>(routerObj->values[1].i);
 
     auto& sched = Scheduler::instance();
     HPointer selfProcess = sched.latestProcessById(selfProcId);
@@ -609,11 +610,11 @@ void PlatformRuntime::handleSelfMsg(const std::string& home, HPointer msg) {
     // Run the returned Task to get the new state (mirror dispatchEffects).
     auto& sched = Scheduler::instance();
     HPointer effectProc = sched.rawSpawn(newStateTask);
-    u32 procId =
-        static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
+    u64 procId = static_cast<Process*>(resolveHP(effectProc))->id;
+    sched.keepResultOnFinish(procId);
     sched.drain();
 
-    HPointer latestProc = sched.latestProcessById(procId);
+    HPointer latestProc = sched.takeFinishedProcess(procId);
     void* procPtr = resolveHP(latestProc);
     if (procPtr) {
         Process* proc = static_cast<Process*>(procPtr);

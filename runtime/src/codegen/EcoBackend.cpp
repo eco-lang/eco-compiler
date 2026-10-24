@@ -2251,7 +2251,9 @@ static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
 //         br %same, cont, test
 //   test: %aw = ptrtoint %a ; %bw = ptrtoint %b        (REP_LLVM_001(d): the i64s
 //         %any = icmp ne (and (or %aw,%bw), 4), 0       are consumed by or/and/icmp
-//         br %any, cont, slow                           in this SAME block)
+//         %evh = Empty (0x6) on one side, heap on the   in this SAME block)
+//                other (SD-26: may be a zero-length String)
+//         br (%any & !%evh), cont, slow
 //   slow: %r  = call @Elm_Kernel_Utils_equal(%a, %b)
 //         %rb = icmp eq %r, inttoptr(0x5)
 //         br cont
@@ -2272,6 +2274,7 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
     PointerType *as1 = PointerType::get(ctx, 1);
     const uint64_t constBit = 1ULL << PTR_IND_BIT;                   // 0x4
     const uint64_t trueWord = constBit | (uint64_t)Elm::Const_True;  // 0x5
+    const uint64_t emptyWord = constBit | (uint64_t)Elm::Const_Empty; // 0x6
 
     Function *marker = m.getFunction("__eco_value_eq");
     // Arm 3 needs the decl; create it only when there is a marker to expand.
@@ -2320,7 +2323,20 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
         Value *any = tb.CreateICmpNE(
             tb.CreateAnd(tb.CreateOr(aw, bw), ConstantInt::get(i64Ty, constBit)),
             ConstantInt::get(i64Ty, 0), "eq.anyconst");
-        tb.CreateCondBr(any, contBB, slowBB);
+        // SD-26 (HEAP_071): the Empty constant equals a zero-length heap
+        // String, so Empty vs a heap pointer is not decided by the words: it
+        // takes the slow arm (Utils_equal checks the length). Every other
+        // pair with a constant is unequal.
+        Value *zero = ConstantInt::get(i64Ty, 0);
+        Value *cb = ConstantInt::get(i64Ty, constBit);
+        Value *ew = ConstantInt::get(i64Ty, emptyWord);
+        Value *aHeap = tb.CreateICmpEQ(tb.CreateAnd(aw, cb), zero);
+        Value *bHeap = tb.CreateICmpEQ(tb.CreateAnd(bw, cb), zero);
+        Value *emptyVsHeap = tb.CreateOr(
+            tb.CreateAnd(tb.CreateICmpEQ(aw, ew), bHeap),
+            tb.CreateAnd(tb.CreateICmpEQ(bw, ew), aHeap), "eq.emptyvsheap");
+        Value *decided = tb.CreateAnd(any, tb.CreateNot(emptyVsHeap), "eq.decided");
+        tb.CreateCondBr(decided, contBB, slowBB);
 
         IRBuilder<> sb(slowBB);
         CallInst *r = sb.CreateCall(eqCallee, {a, b}, "eq.r");
@@ -4234,9 +4250,11 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
 
     // GC-free function propagation (plans/gc-free-function-propagation.md):
     // must run at THIS choke point — post-marker-expansion + post-$cap-
-    // prepass (allocation is visible as non-gc-leaf calls), pre-partition
-    // (attrs then ride CloneModule / lazy deleteBody to every RS4GC
-    // flavour: serial, deferred, workers, single-partition inline).
+    // prepass (allocation is visible as non-gc-leaf calls). Whole-module when
+    // unsplit (attrs then ride CloneModule / lazy deleteBody to every RS4GC
+    // flavour: serial, deferred, workers, single-partition inline); under the
+    // MLIR split it runs per partition, where a cross-partition callee is a
+    // declaration and so poison (sound, fewer stamps).
     if (gcFreeLeafMode() != GcFreeMode::Off) {
         MaybeScope s(job.stats, "  gc-free leaf propagation (serial)");
         if (gcPlan) {

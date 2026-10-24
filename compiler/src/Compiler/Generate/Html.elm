@@ -24,8 +24,15 @@ import Compiler.Data.Name exposing (Name)
 {-| The number of lines by which source-map line numbers are shifted when the
 JavaScript is placed in the page `sandwich` builds.
 
-It is 2, but the page puts 14 lines before the first line of JavaScript, so
-this value does not match the page.
+It is 2. The page puts 14 lines before the first line of JavaScript, but the
+source map travels inside the inline `<script>` (the `//# sourceMappingURL=`
+comment at the end of the JavaScript), and an inline script's source map is
+taken to count lines from the script's own text, which starts right after
+`<script>`. In that text two lines come before the JavaScript: the empty rest
+of the `<script>` line and `try {`. `HtmlLeadingLinesTest` keeps the two in
+step. That browsers count from the script's text this way was reasoned from
+how inline scripts are compiled, not checked in a browser (none was available
+when this was written).
 
 -}
 leadingLines : Int

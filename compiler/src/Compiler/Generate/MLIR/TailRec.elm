@@ -1222,7 +1222,7 @@ compileCaseDeciderStep ctx loopSpec decider jumpLookup =
 
 Inline the branch expression and treat it as the step body.
 This lets compileStep see any MonoTailCall and compile it into a continue
-state, instead of going through Expr.generateTailCall/eco.jump.
+state, instead of reaching Expr.generateExpr, which crashes on one.
 
 -}
 compileCaseLeafStep :
@@ -1799,7 +1799,7 @@ This mirrors Expr.generateDestruct but returns a StepResult instead of ExprResul
   - Recursively compile the body as a step.
 
 This ensures that any MonoTailCall inside the body is still seen by compileStep
-and treated as a "continue" step, instead of going through Expr.generateTailCall.
+and treated as a "continue" step, instead of reaching Expr.generateExpr, which crashes on one.
 
 -}
 compileDestructStep :

@@ -26,9 +26,10 @@ the current op. It reports each jump that:
 
 The code generator lowers tail recursion to `scf.while` loops
 (`Compiler.Generate.MLIR.TailRec`) and emits no `eco.joinpoint`, so on generated
-MLIR every `eco.jump` is reported: the only code that emits one,
-`Compiler.Generate.MLIR.Expr.generateTailCall`, is a fallback whose jump to
-joinpoint 0 has no joinpoint to land on.
+MLIR every `eco.jump` is reported. No code generator code emits one:
+`Compiler.Generate.MLIR.Expr.generateExpr` crashes on a `MonoTailCall` that
+`TailRec` did not lower (SD-12), rather than jumping to a joinpoint that does
+not exist.
 
 Among what is not checked: jumps and joinpoints outside a top-level
 `func.func`, and whether a joinpoint id is unique.

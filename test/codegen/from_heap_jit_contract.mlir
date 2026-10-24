@@ -9,7 +9,7 @@ module {
   func.func @main() -> i64 {
     %a = arith.constant 1234 : i64
     %b = arith.constant 5678 : i64
-    %hp = eco.construct.tuple2 %a, %b : i64, i64 -> !eco.value
+    %hp = eco.construct.tuple2 %a, %b {unboxed_bitmap = 5} : i64, i64 -> !eco.value
     %t = eco.from_heap %hp : (!eco.value) -> !eco.tuple2<i64, i64>
     %x = eco.project.tuple2 %t[0] : !eco.tuple2<i64, i64> -> i64
     %y = eco.project.tuple2 %t[1] : !eco.tuple2<i64, i64> -> i64

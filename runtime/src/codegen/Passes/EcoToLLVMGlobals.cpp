@@ -355,6 +355,12 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                         putU32(8, intAt(typeArr, 4));
                     }
                     break;
+                case 6: // Polymorphic: constraint (u8) @0 (EcoConstraintKind:
+                        // 0 = Number, 1 = EcoValue; TypeTable.elm
+                        // addPolymorphicType). SD-25: without this arm every
+                        // entry read back as Number.
+                    data[0] = char(intAt(typeArr, 2) & 0xFF);
+                    break;
                 }
 
                 appendU32(bytes, typeId);       // type_id @0..4

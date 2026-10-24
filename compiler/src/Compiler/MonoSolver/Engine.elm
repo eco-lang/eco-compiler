@@ -200,9 +200,9 @@ type alias LssStats =
     , completionJoinNoop : Int -- Phase 4a: the subset of those that added nothing (changed flag False — no rebuild)
     , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
     , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
-    , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record to stay clear of the 32-slot record GC-scan cap
-    , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record per the same 32-slot rationale
-    , layoutQual : LayoutQualStats -- layout-qualified-members census (plans/lss-layout-qualified-members.md §2.5); NESTED per the same 32-slot rationale (LssStats sits at 31 slots with this field)
+    , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record (grouped when the native runtime capped records at 32 fields; records now take up to 2047, so the grouping is structural only)
+    , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record, grouped like `grounding`
+    , layoutQual : LayoutQualStats -- layout-qualified-members census (plans/lss-layout-qualified-members.md §2.5); NESTED like `grounding`
     }
 
 
@@ -274,7 +274,7 @@ type alias SigFlowStats =
 
     -- Multi-set census (M3): ArrowId -> the UNION of every member set that
     -- arrow's slot ever read back with |set| >= 2. REPORT-GATED. Lives here
-    -- rather than on `LssStats` for the 32-slot-cap reason below.
+    -- rather than on `LssStats`, as the counters below do.
     --
     -- Keyed by ARROW, so it answers "how many distinct arrow positions in the
     -- program carry a multi-member set" — the question `sizeHist` cannot,
@@ -293,9 +293,11 @@ type alias SigFlowStats =
     , appliedArrows : CoreDict.Dict Int Int
 
     -- LSS_026 call-argument set transport (plans/lss-gap2-callarg-transport.md
-    -- §3.1 W0.4). These live HERE, not on `LssStats`, because `LssStats` sits
-    -- at the runtime's 32-slot record GC-scan cap — the same rationale that
-    -- put `grounding`/`sigStats`/`layoutQual` in sub-records.
+    -- §3.1 W0.4). These live HERE, not on `LssStats`: they were placed when
+    -- the native runtime capped records at 32 fields and `LssStats` was at
+    -- that cap, the reason `grounding`/`sigStats`/`layoutQual` are
+    -- sub-records. Records now take up to 2047 fields (wide objects), so the
+    -- placement is no longer forced.
     --
     -- The first four are BEHAVIOR counters for the D1/D2 arms (bumped
     -- unconditionally — plain ints, artifact-neutral); `topMixedFlex*` are
@@ -462,10 +464,10 @@ type MemberSource
 
 
 {-| Interned non-lambda member ids (§3.3 keys) + the E9/E9.2 standalone
-reverse map. One S field for both: the engine self-hosts and `S` must stay
-within the native runtime's 32-slot record GC-scan cap (HEAP invariant) —
-adding a 33rd top-level field to `S` fails the backend verifier on the
-self-compile.
+reverse map. One S field for both: the engine self-hosts, and when this was
+written the native runtime capped records at 32 fields and `S` was at that cap.
+Records now take up to 2047 fields (wide objects), so the grouping is
+structural only.
 -}
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
@@ -474,7 +476,7 @@ type alias LssMemberTable =
     , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
     , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
     , specWidenedKeys : CoreDict.Dict Int String -- Layout-qualified members: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints; a missing entry falls back to SpecId qualification (censused, expected 0).
-    , rootLamOf : CoreDict.Dict Int TOpt.Global -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S — S sits at the runtime's 32-slot record GC-scan cap (the grounding/sigStats/layoutQual rationale).
+    , rootLamOf : CoreDict.Dict Int TOpt.Global -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S (placed when S sat at the runtime's former 32-field record cap, now 2047).
     }
 
 
@@ -491,9 +493,10 @@ ground/closed classification is item-independent):
     carries and confirms with `eqKeySpec` — NO string is built
     (plans/speckey-optimization.md §10.2).
 
-These are ONE `S` field for the same reason `LssMemberTable` is: the engine
-self-hosts and `S` must stay within the native runtime's 32-slot record GC-scan
-cap. Grouping them made room for `S.intern` (K6).
+These are ONE `S` field for the same reason `LssMemberTable` is: when they were
+grouped the native runtime capped records at 32 fields and `S` was at that cap;
+grouping them made room for `S.intern` (K6). Records now take up to 2047
+fields (wide objects).
 
 -}
 type alias MonoMemo =
@@ -1423,10 +1426,10 @@ type alias S =
     -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
     , lssSignatures : HashMap.HashMap TOpt.Global LssSignature -- keyed by the Global itself (step 12): probing this was ~10^6 string builds and 14-16 long-prefix compares per run
     , lssInProgress : HashMap.HashMap TOpt.Global () -- in-flight inference units (re-entry = EngineBug)
-    , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field: S self-hosts and must stay within the runtime's 32-slot record scan cap)
+    , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field, grouped when the runtime capped records at 32 fields)
     , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
     , lssStats : LssStats
-    , monoMemo : MonoMemo -- the three classification memos (ONE field: see `MonoMemo` — S is at the runtime's 32-slot record scan cap)
+    , monoMemo : MonoMemo -- the three classification memos (ONE field: see `MonoMemo`)
     , nodeResolution : CoreDict.Dict String NodeResolution -- D13: per-GLOBAL node lookup + annotation-id set, keyed by TOpt.toComparableGlobal. Depends only on the immutable toptNodes, so it survives resetItem; a global with N specs resolves once instead of N times.
 
     -- K6 (plans/mono-comparable-key-optimization.md §15): construction-time
@@ -1452,11 +1455,10 @@ type alias S =
     , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
     , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
 
-    -- Per-item auxiliary state, grouped into ONE field: compiled Record heap
-    -- objects have a 32-slot GC scan limit and S sits exactly at it — adding
-    -- a top-level field to S breaks the native self-compile at MLIR parse
-    -- ("field_count exceeds Record's 32-slot GC scan limit"). Group new
-    -- per-item state here.
+    -- Per-item auxiliary state, grouped into ONE field. It was grouped when
+    -- compiled Record heap objects had a 32-slot GC scan limit and S sat
+    -- exactly at it; records now take up to 2047 fields (wide objects), so
+    -- the limit is gone, but per-item state still belongs here.
     --
     --   lssRootAnn: lss on, function-root defs only — the demandUnify-seeded
     --   annotation var, consumed ONCE by the def-root classifyLambdaHead so
@@ -1621,7 +1623,7 @@ type alias ItemAux =
     --
     -- REPORT-GATED and store-scoped exactly like `qLog`.
     , qSigRoot : Maybe Vars.Variable
-    , pendingFailure : Maybe Failure -- Step 10c: a MONO_030 watchdog trip recorded at enqueue time and consumed by `Monomorphize.drain` once per item; first trip wins. It lives on ItemAux and NOT on `S`, which is at 31 of the runtime's 32-slot record cap (R3). `clearedAux`/`restoredAux` deliberately let it flow through a scratch store: it holds no store Points, and a trip inside `withScratchStore` must still reach the driver.
+    , pendingFailure : Maybe Failure -- Step 10c: a MONO_030 watchdog trip recorded at enqueue time and consumed by `Monomorphize.drain` once per item; first trip wins. It lives on ItemAux and NOT on `S` (placed when `S` was near the runtime's former 32-field record cap, now 2047; R3). `clearedAux`/`restoredAux` deliberately let it flow through a scratch store: it holds no store Points, and a trip inside `withScratchStore` must still reach the driver.
     }
 
 

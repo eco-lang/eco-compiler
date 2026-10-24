@@ -4,8 +4,8 @@
 // the roots present (library-shaped input) the pass changes nothing and
 // records no stamp, so the backend behaves exactly as before.
 //
-// CHECK: llvm.func @lib(
 // CHECK: llvm.func @helper(
+// CHECK: llvm.func @lib(
 // CHECK-NOT: eco-reach
 
 module {

@@ -38,13 +38,13 @@ module {
   // `[caphoist] coverable=0 ... excl_linkage=1`, and the CHECK below still
   // matches. Keeping the worker public is therefore load-bearing twice over.
   func.func @sret_pair_worker(%a: i64, %p: !eco.value) -> (!eco.value, i64) {
-    %t = eco.construct.tuple2 %a, %p : i64, !eco.value -> !eco.value
+    %t = eco.construct.tuple2 %a, %p {unboxed_bitmap = 1} : i64, !eco.value -> !eco.value
     eco.return %t, %a : !eco.value, i64
   }
 
   func.func @sret_pair_caller(%n: i64, %v: !eco.value) -> !eco.value {
     %r0, %r1 = "eco.call"(%n, %v) {callee = @sret_pair_worker} : (i64, !eco.value) -> (!eco.value, i64)
-    %c = eco.construct.tuple2 %r1, %r0 : i64, !eco.value -> !eco.value
+    %c = eco.construct.tuple2 %r1, %r0 {unboxed_bitmap = 1} : i64, !eco.value -> !eco.value
     return %c : !eco.value
   }
 }

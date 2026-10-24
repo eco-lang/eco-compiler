@@ -1,4 +1,4 @@
-// RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s --check-prefix=INL
+// RUN: %ecoc %s -emit=llvm -opt 2>&1 | %FileCheck %s --check-prefix=INL
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s --check-prefix=JIT
 //
 // E1.2 + E1.3 (plans/lss-dispatch-value-extraction.md §5).
@@ -12,14 +12,16 @@
 //   2. force-inlines small `$cap` bodies (alwaysinline + AlwaysInlinerPass).
 //
 // INL pin: in the post-prepass/post-RS4GC IR dump, @consume contains NO
-// reference to @lam$cap — the fold made the site direct and the inliner ate
+// call to @lam$cap — the fold made the site direct and the inliner ate
 // it. (@main still references @lam$cap via the papCreate evaluator field —
-// that address-taken use is what keeps the body alive.)
+// that address-taken use is what keeps the body alive.) The leg needs `-opt`:
+// the prepass is skipped at -O0. LLVM IR quotes the name (`@"lam$cap"`), and
+// CHECK-NOT is whole-output in this harness, so the pin is "no call anywhere".
 //
-// JIT: behavior unchanged (same fixture math as fast_dispatch_pap_prefix).
+// JIT leg: behavior unchanged (same fixture math as fast_dispatch_pap_prefix).
 
 // INL-LABEL: define {{.*}}@consume
-// INL-NOT: @lam$cap
+// INL-NOT: call {{.*}}@"lam$cap"(
 // INL-LABEL: define {{.*}}@main
 
 // JIT: [eco.dbg] 753

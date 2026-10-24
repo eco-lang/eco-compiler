@@ -1,8 +1,7 @@
-// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
-// XFAIL: *
+// RUN: not %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// Test eco.crash with a constructed message value.
-// This test is expected to crash, so marked XFAIL.
+// Test eco.crash with a constructed message value: ecoc prints the message
+// and exits with status 1 (`not`).
 
 module {
   func.func @main() {
@@ -15,6 +14,7 @@ module {
     // CHECK: 42
 
     // Now crash - this terminates execution
+    // CHECK: Elm runtime error: Intentional crash for testing
     eco.crash %msg : !eco.value
   }
 }

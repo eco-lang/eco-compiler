@@ -611,6 +611,9 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   );
   let results = (outs Eco_Value:$result);
 
+  // SD-4: head_kind must equal the head's type kind (CGEN_026).
+  let hasVerifier = 1;
+
   let assemblyFormat = "$head `,` $tail attr-dict `:` type($head) `,` type($tail) `->` type($result)";
 }
 
@@ -772,6 +775,9 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   );
   let results = (outs Eco_Value:$result);
 
+  // SD-4: unboxed_bitmap must equal the operand type kinds (CGEN_026).
+  let hasVerifier = 1;
+
   let assemblyFormat = "$a `,` $b attr-dict `:` type($a) `,` type($b) `->` type($result)";
 }
 
@@ -798,6 +804,9 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
+
+  // SD-4: unboxed_bitmap must equal the operand type kinds (CGEN_026).
+  let hasVerifier = 1;
 
   let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
 }
@@ -1845,6 +1854,7 @@ def Eco_IntDivOp : Eco_Op<"int.div", [Pure]> {
       7 // 3 = 2
       7 // 0 = 0 (Elm semantics)
       -7 // 3 = -2 (truncated toward zero)
+      MIN_INT // -1 = MIN_INT (wrapping; CGEN_084)
 
     ```mlir
     %quot = eco.int.div %a, %b : i64
@@ -1866,6 +1876,7 @@ def Eco_IntModByOp : Eco_Op<"int.modby", [Pure]> {
       modBy 4 (-7) = 1  (not -3, floored)
       modBy (-4) 7 = -1 (not 3, floored)
       modBy 0 7 = 0     (Elm semantics)
+      modBy -1 MIN_INT = 0 (CGEN_084)
 
     ```mlir
     %rem = eco.int.modby %modulus, %x : i64
@@ -1886,6 +1897,7 @@ def Eco_IntRemainderByOp : Eco_Op<"int.remainderby", [Pure]> {
       remainderBy 4 7 = 3
       remainderBy 4 (-7) = -3 (not 1, truncated)
       remainderBy 0 7 = 0     (Elm semantics)
+      remainderBy -1 MIN_INT = 0 (CGEN_084)
 
     ```mlir
     %rem = eco.int.remainderby %divisor, %x : i64
@@ -2599,7 +2611,8 @@ def Eco_IntShiftLeftOp : Eco_Op<"int.shl", [Pure]> {
   let summary = "Shift left by n bits";
   let description = [{
     Shift left by n bits. Matches Elm's Bitwise.shiftLeftBy.
-    Note: Elm argument order is (amount, value).
+    Note: Elm argument order is (amount, value). The amount is taken
+    modulo 64 (amount & 63), as in the kernel (CGEN_085).
 
     ```mlir
     %shl = eco.int.shl %amount, %value : i64
@@ -2614,7 +2627,8 @@ def Eco_IntShiftRightOp : Eco_Op<"int.shr", [Pure]> {
   let summary = "Arithmetic shift right by n bits";
   let description = [{
     Arithmetic shift right by n bits (preserves sign).
-    Matches Elm's Bitwise.shiftRightBy.
+    Matches Elm's Bitwise.shiftRightBy. The amount is taken modulo 64
+    (CGEN_085).
 
     ```mlir
     %shr = eco.int.shr %amount, %value : i64
@@ -2629,7 +2643,8 @@ def Eco_IntShiftRightZfOp : Eco_Op<"int.shru", [Pure]> {
   let summary = "Logical shift right by n bits (zero-fill)";
   let description = [{
     Logical shift right by n bits (fills with zeros).
-    Matches Elm's Bitwise.shiftRightZfBy.
+    Matches Elm's Bitwise.shiftRightZfBy. The amount is taken modulo 64
+    (CGEN_085).
 
     ```mlir
     %shru = eco.int.shru %amount, %value : i64

@@ -130,8 +130,16 @@ generate mode parentModule expression =
         Opt.VarDebug region name home unhandledValueName ->
             generateDebug name home region unhandledValueName |> JsExpr
 
-        Opt.VarKernel (A.Region startPos _) _ home name ->
-            JS.ExprTrackedRef parentModule startPos (JsName.fromKernel home name) (JsName.fromKernel home name) |> JsExpr
+        Opt.VarKernel (A.Region startPos _) kernelPrefix home name ->
+            let
+                jsName =
+                    if kernelPrefix == "Eco" then
+                        JsName.fromEcoKernel home name
+
+                    else
+                        JsName.fromKernel home name
+            in
+            JS.ExprTrackedRef parentModule startPos jsName jsName |> JsExpr
 
         Opt.List region entries ->
             case entries of

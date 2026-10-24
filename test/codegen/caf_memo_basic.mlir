@@ -35,18 +35,20 @@ module {
 // GUARD: llvm.mlir.global internal @__eco_caf$make_val(0 : i64)
 // The thunk entry loads the slot, tests non-zero, and branches hit/body;
 // the hit path returns the barrier-converted cached word, and the body's
-// return publishes through the store barrier first:
+// return publishes through the store barrier and eco_caf_promote first
+// (which roots the slot itself when the value stays heap-resident):
 // GUARD: llvm.func @make_val
 // GUARD: llvm.mlir.addressof @__eco_caf$make_val
 // GUARD: llvm.load
 // GUARD: llvm.icmp "ne"
 // GUARD: llvm.cond_br
 // GUARD: llvm.call @__eco_hptr_to_slot
+// GUARD: llvm.call @eco_caf_promote
 // GUARD: llvm.store
 // GUARD: llvm.call @__eco_slot_to_hptr
-// The init function roots the slot:
-// GUARD: llvm.func @__eco_init_globals
-// GUARD: llvm.call @eco_gc_add_root
+// CAF slots are never pre-registered as roots (EcoToLLVMGlobals.cpp,
+// createGlobalRootInitFunction):
+// GUARD-NOT: @eco_gc_add_root
 
 // ---- Runtime behavior ------------------------------------------------------
 // Body marker printed ONCE, then both calls observe the same cached value:

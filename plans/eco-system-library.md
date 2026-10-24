@@ -78,7 +78,7 @@ file. Reviewer corrections have been applied.
 | F5 | Value helpers live in `runtime/src/allocator/HeapHelpers.hpp`: `allocStringFromUTF8`, `allocByteBuffer[Blank]`, `listFromPointers`, `tuple2/3(…, mask)`, `custom`, `just`, `ok/err`, and the constants `unit()`/`elmTrue()`/`elmFalse()`/`emptyBytes()`. Tuple and custom masks use 2 bits per slot (0 boxed, 1 Int, 2 Float, 3 Char); the `tuple2` doxygen at :1380 is stale. | HH:197-233, 527, 645-1361, 1384-1559, 1606-1715 |
 | F6 | Any allocation may move objects (HEAP_011).<br>- Short-lived roots: `StackRootGuard`/`pushStackRootRange`/`RootedSlots`, O(1) root-stack per call.<br>- Long-lived roots: a registry of encoded words scanned by `RootSet::addExternalRootScanner`.<br>See §3.3. | HH:125-170; `RootedSlots.hpp`; `RootSet.hpp:306-312` |
 | F7 | The kernel ABI comes from the Elm type: Int→`int64_t`, Float→`double`, Char→`uint16_t`, everything else (Bool included) → `uint64_t` encoded HPointer. Polymorphic positions are boxed. The symbol is `Eco_Kernel_<Home>_<name>`. | REP_ABI_001, KERN_006; `Generate/MLIR/KernelAbi.elm:65-190` |
-| F8 | Kernel **homes** are keyed without their `Elm`/`Eco` prefix in kernel typing, `KernelFacts`, `KernelSetFacts`, the JS globals `_Home_name` and the JS graph key. If two packages share a home, they silently share facts or drop a node. | `Type/KernelTypes.elm:20-23`; `GlobalOpt/KernelFacts.elm:418,486`; `MonoSolver/KernelSetFacts.elm:1766-1794`; `Generate/JavaScript.elm:592`; `Builder/GraphAssembly.elm:41-46` |
+| F8 | Kernel **homes** are keyed without their `Elm`/`Eco` prefix in kernel typing, `KernelFacts`, `KernelSetFacts`, the JS globals `_Home_name` and the JS graph key. If two packages share a home, they silently share facts or drop a node. (Since SD-16 the JS graph key and JS names of an `Eco` kernel keep the prefix; the fact tables still do not.) | `Type/KernelTypes.elm:20-23`; `GlobalOpt/KernelFacts.elm:418,486`; `MonoSolver/KernelSetFacts.elm:1766-1794`; `Generate/JavaScript.elm:592`; `Builder/GraphAssembly.elm:41-46` |
 | F9 | `KernelFacts` is the only source of kernel facts, and a missing row means the conservative answer. New kernels need **no** row; rows are an optional later optimisation with evidence anchors. | KERNEL_FACTS_001 (inv:661); `KernelFacts.elm:26-31` |
 | F10 | **Elm-written effect managers do not run natively.**<br>- MLIR emits only the leaves (`Elm_Kernel_Platform_leaf(home, v)`).<br>- The runtime managers are C++: Task, Time, Http (`EffectManagerRegistry.cpp:13-22`).<br>- A leaf whose home has no manager is **silently dropped** (`PlatformRuntime.cpp:435-437`).<br>- The key is the full module name. | `Generate/MLIR/Functions.elm:2090-2156`; `MonoSolver/Monomorphize.elm:4513-4516` |
 | F11 | C++ managers decode the Elm `MySub`/`MyCmd` constructors themselves. External events reach Elm through `registerAsyncSource` drains that call `sendToApp`/`sendToSelf` and then `Scheduler::drain()` **once per message**. | `TimeEffectManager.cpp:96-399`; `HttpExports.cpp:369-382` |
@@ -102,8 +102,12 @@ file. Reviewer corrections have been applied.
 
 ### 3.1 Module map
 
-Kernel homes are unique across elm/core, elm/*, eco/kernel and the compiler's fact tables (F8). Phase 1
-step 1 checks this mechanically.
+The eco/system kernel homes below are unique across elm/core, elm/*, eco/kernel and the compiler's fact
+tables (F8). Kernel homes in general are not: eco/kernel's `File`, `Http` and `Process` are also homes
+of elm/file, elm/http and elm/core. The JS backend keeps those pairs apart since SD-16 (an `Eco` kernel is
+keyed `elm/kernel:Eco.Kernel.<Home>.$` and its values are named `_Eco_<Home>_<name>`); the fact tables
+still key them by home alone. `test/scripts/check-kernel-homes.sh` (Phase 1 step 1) checks both: no
+eco/system home is shared, and eco/kernel shares no Elm home beyond those three.
 
 | Elm module | Exposed? | Effect module (manager key) | Kernel home | C++ library |
 |---|---|---|---|---|

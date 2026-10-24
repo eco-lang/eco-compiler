@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -153,7 +154,9 @@ public:
     static HPointer callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
                                  HPointer arg3, HPointer arg4);
 
-    u32 nextProcessId() { return nextProcId_.fetch_add(1); }
+    // Process ids are full 64-bit words and never reused (SD-1), so an id
+    // names at most one process for the life of the program.
+    u64 nextProcessId() { return nextProcId_.fetch_add(1); }
 
     // Register a resume-closure HPointer as a GC root while an async
     // operation (e.g. sleep timer, HTTP callback) is pending. Returns an
@@ -184,9 +187,21 @@ public:
     // a still-valid original HPointer or the logical id. Since Process is
     // immutable, external holders of an HPointer become stale as soon as
     // the scheduler steps the process; this registry is how they find the
-    // current version. Returns listNil() if the process is not live.
+    // current version. Returns listNil() if the process is not live: a
+    // process leaves the registry when it finishes (its root Task is Succeed
+    // or Fail with no handler left on its stack), so a finished process is
+    // not rooted by the scheduler and its id resolves to nothing.
     HPointer latestProcessByHPtr(HPointer originalHP);
-    HPointer latestProcessById(u32 id);
+    HPointer latestProcessById(u64 id);
+
+    // Hand-over of a finished process's final value (PlatformRuntime reads
+    // an effect-manager state process's result after drain). After
+    // keepResultOnFinish(id), the process's last Process value moves, when it
+    // finishes, from the registry to a rooted slot that takeFinishedProcess(id)
+    // empties. takeFinishedProcess returns listNil() if the process has not
+    // finished; either way it ends the hand-over, so nothing stays rooted.
+    void keepResultOnFinish(u64 id);
+    HPointer takeFinishedProcess(u64 id);
 
     // Registry updater — scheduler internals call this every time they
     // produce a new Process value. Exposed publicly (instead of `private`)
@@ -200,12 +215,16 @@ public:
     // Task_Receive loop so the process blocks for the next message (Q-H).
     // Keyed by the stable logical process id (the Process *value* changes on
     // every step since Process is immutable, but the id is stable).
-    void registerSelfProcess(u32 procId, std::function<void(HPointer msg)> handler);
+    void registerSelfProcess(u64 procId, std::function<void(HPointer msg)> handler);
 
 private:
     Scheduler();
 
     void stepProcess(uint64_t procEncoded);
+
+    // Called by stepProcess when `proc` has finished: drops its registry entry
+    // and self-message handler, or moves it to finishedProc_ (keepResultOnFinish).
+    void processFinished(HPointer proc);
 
     // Drain TimerService's ready-token queue: for each token, resolve the
     // corresponding resume closure from pendingResumes_, allocate
@@ -245,7 +264,11 @@ private:
     // immutable Process value. Updated by every scheduler helper that produces
     // a new Process; scanned by the external GC root scanner (values are
     // evacuated like any other HPointer).
-    std::unordered_map<u32, uint64_t> latestProc_;
+    std::unordered_map<u64, uint64_t> latestProc_;
+    // keepResultOnFinish: ids whose final Process value is handed over, and
+    // the finished values awaiting takeFinishedProcess (scanned as roots).
+    std::unordered_set<u64> keepResult_;
+    std::unordered_map<u64, uint64_t> finishedProc_;
     // Pending-resume registry: tokens → encoded HPointers of resume
     // closures held alive while the owning async op is in flight. The
     // external root scanner walks this map so closures survive GC until
@@ -257,7 +280,7 @@ private:
     // The handler captures no HPointers (it reads manager state from
     // PlatformRuntime by home), so this map needs no GC scanning. Populated
     // once per manager during setupEffects.
-    std::unordered_map<u32, std::function<void(HPointer)>> selfMsgHandlers_;
+    std::unordered_map<u64, std::function<void(HPointer)>> selfMsgHandlers_;
     // External async completion sources (HTTP, etc). Drained on the main
     // thread in processReadyAsync; their `ready` predicates feed the wait
     // condition. Registered on the main thread, possibly lazily from inside a
@@ -296,7 +319,7 @@ private:
     void* activityUser_ = nullptr;
     bool lastActivityBusy_ = true;  // assume busy until the loop first idles
     void fireActivity(bool busy);
-    std::atomic<u32> nextProcId_{0};
+    std::atomic<u64> nextProcId_{0};
     std::atomic<bool> stopRequested_{false};
     std::atomic<bool> embedMode_{false};
     // Quiescence hook listeners (see addQuiescenceListener), guarded by mutex_.

@@ -3,7 +3,7 @@ module Compiler.AST.Optimized exposing
     , Def(..), Destructor(..), Path(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), Node(..), Main(..), EffectsType(..)
-    , empty, typedPathStub, toKernelGlobal
+    , empty, typedPathStub, toKernelGlobal, ecoKernelHome
     , globalGraphEncoder, globalGraphDecoder
     , localGraphEncoder, localGraphDecoder
     )
@@ -41,7 +41,7 @@ Decision trees compile pattern matches into efficient branching:
 The compiler builds a graph of definitions for dead code elimination:
 
 @docs GlobalGraph, LocalGraph, Node, Main, EffectsType
-@docs empty, typedPathStub, toKernelGlobal
+@docs empty, typedPathStub, toKernelGlobal, ecoKernelHome
 
 
 # Binary Serialization
@@ -270,11 +270,41 @@ typedPathStub hasMain =
         emptyLocalGraph
 
 
-{-| Convert a kernel short name to a global reference.
+{-| Returns the global under which the graph holds the kernel module with
+kernel prefix `kernelPrefix` (`Elm` or `Eco`) and home `home`, as
+`Name.getKernel` splits a kernel module name.
+
+An `Elm` kernel is keyed by its home alone, `elm/kernel:File.$` for
+`Elm.Kernel.File`, as in stock Elm. An `Eco` kernel is keyed by its whole module
+name, `elm/kernel:Eco.Kernel.File.$`, so that `Elm.Kernel.File` (elm/file) and
+`Eco.Kernel.File` (eco/kernel) are two nodes rather than one replacing the other
+when package graphs are merged (SD-16).
+
 -}
-toKernelGlobal : Name.Name -> Global
-toKernelGlobal shortName =
-    Global (ModuleName.Canonical Pkg.kernel shortName) Name.dollar
+toKernelGlobal : Name.Name -> Name.Name -> Global
+toKernelGlobal kernelPrefix home =
+    if kernelPrefix == "Eco" then
+        Global (ModuleName.Canonical Pkg.kernel (ecoKernelModulePrefix ++ home)) Name.dollar
+
+    else
+        Global (ModuleName.Canonical Pkg.kernel home) Name.dollar
+
+
+{-| Returns the home of the `Eco` kernel module that `global` is the graph key
+of, as `toKernelGlobal "Eco"` makes it, or `Nothing` for any other global.
+-}
+ecoKernelHome : Global -> Maybe Name.Name
+ecoKernelHome (Global (ModuleName.Canonical pkg moduleName) name) =
+    if pkg == Pkg.kernel && name == Name.dollar && String.startsWith ecoKernelModulePrefix moduleName then
+        Just (String.dropLeft (String.length ecoKernelModulePrefix) moduleName)
+
+    else
+        Nothing
+
+
+ecoKernelModulePrefix : String
+ecoKernelModulePrefix =
+    "Eco.Kernel."
 
 
 

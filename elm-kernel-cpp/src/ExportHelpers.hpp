@@ -35,15 +35,15 @@ inline HPointer decode(uint64_t val) {
 // Decode uint64_t to raw pointer (for accessing heap objects).
 // Handles two cases:
 // 1. HPointer (encoded heap offset): Uses Allocator::resolve() to convert.
-// 2. Raw pointer (e.g., global string literals): Used directly.
+// 2. Raw non-heap pointer (e.g. an interned PermanentSpace literal): Used directly.
 //
 // Detection strategy:
 // - If constant field is set, it's an embedded constant - return nullptr.
 // - Try interpreting as a raw pointer first. If it's in heap bounds, it could
 //   be a raw pointer or an HPointer that happens to decode to an in-heap address.
 // - If the raw value as a pointer is NOT in heap, use HPointer decoding.
-// - This works because global string literals are in the data segment,
-//   which is at a completely different address range than the mmap'd heap.
+// - This works because interned literals live in the PermanentSpace, which is
+//   reserved outside the heap's address range.
 inline void* toPtr(uint64_t val) {
     HPointer h = decode(val);
 
@@ -60,8 +60,8 @@ inline void* toPtr(uint64_t val) {
 
     // A heap HPointer's word IS its absolute in-heap address (plan D6), so if the
     // word lands inside the reserved heap range it is a heap reference — resolve()
-    // handles forwarding. Otherwise it is a raw non-heap pointer (e.g. a global
-    // string literal in the data segment) and is used directly.
+    // handles forwarding. Otherwise it is a raw non-heap pointer (e.g. an
+    // interned string literal in the PermanentSpace) and is used directly.
     if (Allocator::instance().isInHeap(raw)) {
         return Allocator::resolveFast(h);
     }

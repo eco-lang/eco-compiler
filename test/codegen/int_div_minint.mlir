@@ -1,7 +1,8 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test integer division edge cases with INT64_MIN.
-// INT64_MIN / -1 causes overflow (result would be INT64_MAX + 1).
+// INT64_MIN / -1 overflows (INT64_MAX + 1); Elm Int wraps, so the result is
+// INT64_MIN and both remainders by -1 are 0 (CGEN_084).
 
 module {
   func.func @main() -> i64 {
@@ -13,33 +14,32 @@ module {
     // INT64_MIN / 1 = INT64_MIN (no overflow)
     %div1 = eco.int.div %min_int, %pos1 : i64
     eco.dbg %div1 : i64
-    // CHECK: -9223372036854775808
+    // CHECK: [eco.dbg] -9223372036854775808{{$}}
 
     // INT64_MIN / -2 = INT64_MIN / 2 with sign = 4611686018427387904
     %div2 = eco.int.div %min_int, %neg2 : i64
     eco.dbg %div2 : i64
-    // CHECK: 4611686018427387904
+    // CHECK-NEXT: [eco.dbg] 4611686018427387904{{$}}
 
-    // INT64_MIN / -1 = would be INT64_MAX + 1 (overflow)
-    // Behavior is implementation-defined; might wrap or crash
+    // INT64_MIN / -1 = INT64_MAX + 1, which wraps to INT64_MIN
     %div_overflow = eco.int.div %min_int, %neg1 : i64
     eco.dbg %div_overflow : i64
-    // Undefined overflow behavior - output varies
+    // CHECK-NEXT: [eco.dbg] -9223372036854775808{{$}}
 
     // INT64_MIN % -1 = 0 (no remainder regardless of overflow)
     %rem = eco.int.remainderby %neg1, %min_int : i64
     eco.dbg %rem : i64
-    // Edge case with overflow - output varies
+    // CHECK-NEXT: [eco.dbg] 0{{$}}
 
     // INT64_MIN % -2 = 0
     %rem2 = eco.int.remainderby %neg2, %min_int : i64
     eco.dbg %rem2 : i64
-    // CHECK: 0
+    // CHECK-NEXT: [eco.dbg] 0{{$}}
 
-    // modBy with INT64_MIN
+    // modBy -1 INT64_MIN = 0
     %mod = eco.int.modby %neg1, %min_int : i64
     eco.dbg %mod : i64
-    // Edge case with overflow - output varies
+    // CHECK-NEXT: [eco.dbg] 0{{$}}
 
     %zero = arith.constant 0 : i64
     return %zero : i64
