@@ -47,6 +47,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && corepack enable pnpm \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub CLI (gh) for PR, issue and CI-run work, from GitHub's own apt
+# repository so it tracks current releases (bookworm's gh is 2.23.0, from
+# 2023). apt verifies the packages against GitHub's archive keyring.
+# Authenticate inside the container with `gh auth login` or GH_TOKEN.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+        https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/* \
+    && gh --version
+
 # Installed LLVM/MLIR
 COPY --from=llvm /opt/llvm-mlir /opt/llvm-mlir
 
