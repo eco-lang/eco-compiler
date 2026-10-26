@@ -1,4 +1,4 @@
-// SD-17 / SD-26 kernel ABI tests (review-bug-list.md).
+// SD-17 / SD-26 kernel ABI tests (plans/review-bug-list-fixes.md).
 //
 // SD-17: `Utils::append` (elm-kernel-cpp/src/core/Utils.cpp) falls back to
 // "return the first argument" for a pair it does not recognise. These tests

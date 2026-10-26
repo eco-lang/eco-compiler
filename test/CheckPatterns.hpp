@@ -38,8 +38,8 @@
 // deleted unboxed-agg passes "passed" while asserting nothing (borrow
 // design doc §2.4; tier-1 plan U-T1.3.0). Unrecognised CHECK-* variants
 // are now a hard parse error so that failure mode cannot recur. Until
-// 2026-10-24 matching was order-insensitive everywhere (review-bug-list
-// test gap "CHECK-DAG"), which hid arithmetic_int_minmax.mlir's MIN_INT bug.
+// 2026-10-24 matching was order-insensitive everywhere (plans/review-bug-list-fixes.md,
+// CHECK order), which hid arithmetic_int_minmax.mlir's MIN_INT bug.
 //
 // FileCheck-style {{regex}} markers inside any pattern are honoured:
 // everything outside {{...}} matches literally, the body inside is

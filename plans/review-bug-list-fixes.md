@@ -10,7 +10,7 @@ end.
 
 ## Context
 
-`review-bug-list.md` lists 27 suspected defects (SD-1 to SD-27) found while writing the program
+`review-bug-list.md` (deleted 2026-10-26, once every item was closed) listed 27 suspected defects (SD-1 to SD-27) found while writing the program
 theory. On 2026-10-24 each one was re-traced in the code and given a verdict. Every real or latent
 defect now has a test that fails against the current code and passes once the defect is fixed. One
 more defect turned up during the triage (MIN_INT divided by -1) and is included here.
@@ -257,7 +257,8 @@ bootstrap.
   (`CURLOPT_TIMEOUT_MS`, `HttpService.cpp:230`) starts only when a request starts running. Decide
   whether queue time should count toward `Http` timeouts. That differs from browser elm/http, where
   requests run concurrently.
-- Update `review-bug-list.md` with the verdicts and point it at this plan.
+- Update `review-bug-list.md` with the verdicts and point it at this plan (done; the file was
+  later deleted).
 
 ## Gates
 

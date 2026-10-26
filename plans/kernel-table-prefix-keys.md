@@ -64,7 +64,7 @@ both `KernelAbi` modules and `BytesFusion/Reify`. None of them names `File`, `Ht
    - Update the comment in `check-kernel-homes.sh`.
 5. **Records.**
    - Amend KERNEL_FACTS_001, whose keys are now prefix-qualified.
-   - Mark SD-16 fixed in `review-bug-list.md`.
+   - Mark SD-16 fixed in `review-bug-list.md` (done; the file was deleted on 2026-10-26).
 6. **Gates.**
    - elm-tests.
    - The **byte-identity corpus**: the new native compiler must emit byte-identical MLIR to the

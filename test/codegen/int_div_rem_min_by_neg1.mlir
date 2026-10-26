@@ -1,7 +1,7 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // MIN_INT divided by -1 (found while triaging SD-21 / the CHECK-order test gap
-// of review-bug-list.md). IntDivOpLowering (and the remainderBy / modBy
+// in plans/review-bug-list-fixes.md). IntDivOpLowering (and the remainderBy / modBy
 // lowerings) guard only rhs == 0, so `sdiv`/`srem` MIN_INT, -1 is LLVM
 // immediate UB: the folded result is poison and eco.dbg prints whatever is in
 // the register (a different garbage value on every run). With runtime operands,
