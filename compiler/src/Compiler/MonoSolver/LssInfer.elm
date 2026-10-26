@@ -1640,11 +1640,11 @@ walkCall letEnv func args meta s0 =
         TOpt.VarCycle _ home name funcMeta ->
             applyCalleeAt (TOpt.Global home name) funcMeta.tipe args meta s0
 
-        TOpt.VarKernel _ _ home name funcMeta ->
+        TOpt.VarKernel _ kernelPrefix home name funcMeta ->
             -- LSS_021/LSS_022: consult the audited set-flow table — licensed
             -- kernels behave like a plain callee, positional rows refine per
             -- param, no row / arity mismatch keeps LSS_004 full poison.
-            kernelCallBoundary home name funcMeta args meta s0
+            kernelCallBoundary kernelPrefix home name funcMeta args meta s0
 
         TOpt.VarDebug _ _ _ _ _ ->
             poisonCallBoundary args meta s0
@@ -2008,9 +2008,9 @@ already unifies the real item-memo arg Points before the (now skipped)
 poison.
 
 -}
-kernelCallBoundary : Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
-kernelCallBoundary home name funcMeta args meta s0 =
-    case KernelSetFacts.factFor home name of
+kernelCallBoundary : Name -> Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
+kernelCallBoundary prefix home name funcMeta args meta s0 =
+    case KernelSetFacts.factFor prefix home name of
         Nothing ->
             poisonCallBoundary args meta s0
 

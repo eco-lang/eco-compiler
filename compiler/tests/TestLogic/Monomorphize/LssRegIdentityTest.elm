@@ -186,7 +186,7 @@ suite =
                                 Expect.fail "no spec registered for `cons` — fixture broken"
 
                             heads ->
-                                if List.all (\a -> Mono.isTopAnno a || isSingletonOf ((==) (Mono.OriginKernel "List" "cons")) g a) heads then
+                                if List.all (\a -> Mono.isTopAnno a || isSingletonOf ((==) (Mono.OriginKernel "Elm" "List" "cons")) g a) heads then
                                     Expect.pass
 
                                 else

@@ -16,11 +16,12 @@ merge, price or call a kernel directly, and each needs to know something about
 what that body does. This module is the one table of those facts, each read by
 hand from the C++ source, so that every optimisation gets the same answer.
 
-**The key.** A row is keyed by a _Mono key_: the `( home, name )` pair of a
-kernel reference after monomorphization, such as `( "Utils", "equal" )`. It
-carries neither the `Elm`/`Eco` prefix of the kernel module, so `Elm.Kernel.X.f`
-and `Eco.Kernel.X.f` share a row, nor the `_Int`, `_Float` or `_Char` suffix
-that names a typed variant of the emitted C symbol. `lookup` takes a Mono key.
+**The key.** A row is keyed by a _Mono key_: the `( prefix, home, name )` of a
+kernel reference after monomorphization, such as `( "Elm", "Utils", "equal" )`.
+The prefix, `Elm` or `Eco`, is part of the key, because the two kernels share
+some homes (`File`, `Http`, `Process`) and a row records one kernel's C++. The
+key does not carry the `_Int`, `_Float` or `_Char` suffix that names a typed
+variant of the emitted C symbol. `lookup` takes a Mono key.
 `splitSymbol` turns an emitted symbol into one, and `lookupSymbol` looks a
 symbol's row up through it.
 
@@ -388,21 +389,21 @@ costClass f =
 
 {-| Returns `gcLeafEligible` of the key's row, or `False` for an unlisted key.
 -}
-gcLeafEligibleFor : ( Name, Name ) -> Bool
+gcLeafEligibleFor : ( Name, Name, Name ) -> Bool
 gcLeafEligibleFor key =
     lookup key |> Maybe.map gcLeafEligible |> Maybe.withDefault False
 
 
 {-| Returns `droppable` of the key's row, or `False` for an unlisted key.
 -}
-droppableFor : ( Name, Name ) -> Bool
+droppableFor : ( Name, Name, Name ) -> Bool
 droppableFor key =
     lookup key |> Maybe.map droppable |> Maybe.withDefault False
 
 
 {-| Returns `hoistable` of the key's row, or `False` for an unlisted key.
 -}
-hoistableFor : ( Name, Name ) -> Bool
+hoistableFor : ( Name, Name, Name ) -> Bool
 hoistableFor key =
     lookup key |> Maybe.map hoistable |> Maybe.withDefault False
 
@@ -411,11 +412,10 @@ hoistableFor key =
 -- LOOKUP
 
 
-{-| Looks up the row for a Mono key, `( home, name )` with no `Elm`/`Eco`
-prefix and no ABI suffix. `Nothing` means the kernel is unlisted and licenses
-nothing.
+{-| Looks up the row for a Mono key, `( prefix, home, name )` with no ABI
+suffix. `Nothing` means the kernel is unlisted and licenses nothing.
 -}
-lookup : ( Name, Name ) -> Maybe KernelFacts
+lookup : ( Name, Name, Name ) -> Maybe KernelFacts
 lookup key =
     Dict.get key table
 
@@ -434,23 +434,23 @@ lookupSymbol sym =
 
 
 {-| Turns an emitted kernel symbol into a Mono key:
-`Elm_Kernel_Utils_compare_Float` gives `Just ( "Utils", "compare" )`.
+`Elm_Kernel_Utils_compare_Float` gives `Just ( "Elm", "Utils", "compare" )`.
 
-It strips the `Elm_Kernel_` or `Eco_Kernel_` prefix, takes the text up to the
-next `_` as the home and the rest as the name, and removes any `_Int`,
+It takes the prefix from the leading `Elm_Kernel_` or `Eco_Kernel_`, the text
+up to the next `_` as the home and the rest as the name, and removes any `_Int`,
 `_Float` or `_Char` ending from the name. A symbol without either prefix
 (`eco_gc_alloc_region_fast`, `Eco_Runtime_getOrderLT`), or with no `_` after
 it, gives `Nothing`. A home containing `_` would be split in the wrong place.
 
 -}
-splitSymbol : String -> Maybe ( Name, Name )
+splitSymbol : String -> Maybe ( Name, Name, Name )
 splitSymbol sym =
     let
-        afterPrefix : Maybe String
+        afterPrefix : Maybe ( Name, String )
         afterPrefix =
             -- Both prefixes are 11 characters long.
             if String.startsWith "Elm_Kernel_" sym || String.startsWith "Eco_Kernel_" sym then
-                Just (String.dropLeft 11 sym)
+                Just ( String.left 3 sym, String.dropLeft 11 sym )
 
             else
                 Nothing
@@ -470,10 +470,10 @@ splitSymbol sym =
     in
     afterPrefix
         |> Maybe.andThen
-            (\rest ->
+            (\( prefix, rest ) ->
                 case String.indexes "_" rest of
                     i :: _ ->
-                        Just ( String.left i rest, dropAbiSuffix (String.dropLeft (i + 1) rest) )
+                        Just ( prefix, String.left i rest, dropAbiSuffix (String.dropLeft (i + 1) rest) )
 
                     [] ->
                         Nothing
@@ -483,7 +483,7 @@ splitSymbol sym =
 {-| The rows indexed by Mono key, for `lookup`. If two rows had the same key the
 later would win here; `validationErrors` reports that.
 -}
-table : Dict ( Name, Name ) KernelFacts
+table : Dict ( Name, Name, Name ) KernelFacts
 table =
     Dict.fromList rows
 
@@ -495,7 +495,7 @@ table =
 {-| Returns the devirtualization registration for a Mono key. An unlisted kernel
 is not registered: it gives `DevirtNo`.
 -}
-devirtOf : ( Name, Name ) -> DevirtPolicy
+devirtOf : ( Name, Name, Name ) -> DevirtPolicy
 devirtOf key =
     lookup key
         |> Maybe.map .devirt
@@ -511,10 +511,10 @@ devirtualization registration or an effect as well; and rows that exist to
 record a divergence note.
 
 -}
-rows : List ( ( Name, Name ), KernelFacts )
+rows : List ( ( Name, Name, Name ), KernelFacts )
 rows =
     -- Audited pure rows that allocate nothing on the Eco heap.
-    [ ( ( "Utils", "equal" )
+    [ ( ( "Elm", "Utils", "equal" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -528,7 +528,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:107-109 (equalRespectingConstants :94-105); elm-kernel-cpp/src/core/Utils.cpp:470-472 (eqHelp :521-734, dictEq :747-797); runtime/src/allocator/StringOps.hpp:1486-1533; runtime/src/allocator/HeapHelpers.hpp:822"
         }
       )
-    , ( ( "Utils", "notEqual" )
+    , ( ( "Elm", "Utils", "notEqual" )
         -- The export is the negation of `equal`'s, so the audited fields of
         -- this row must match the `equal` row's.
       , { auditedPure
@@ -539,7 +539,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:111-113 (= !equalRespectingConstants :94-105; NOT Utils::notEqual at elm-kernel-cpp/src/core/Utils.cpp:799-801, which has no callers)"
         }
       )
-    , ( ( "Utils", "compare" )
+    , ( ( "Elm", "Utils", "compare" )
         -- GcNone because each Order result is an embedded constant, so a call
         -- returns one without allocating.
       , { auditedPure
@@ -549,7 +549,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:13-16; elm-kernel-cpp/src/core/Utils.cpp:451-457 (cmp :302-445, NDEBUG-UB note :214-217); Order singletons initOrderSingletons :33-45 (roots :41-43) called only from elm-kernel-cpp/src/core/UtilsExports.cpp:186-188; runtime/src/allocator/StringOps.hpp:1544-1608"
         }
       )
-    , ( ( "Utils", "lt" )
+    , ( ( "Elm", "Utils", "lt" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -557,7 +557,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:115-117; elm-kernel-cpp/src/core/Utils.cpp:803-805 (cmp :302)"
         }
       )
-    , ( ( "Utils", "le" )
+    , ( ( "Elm", "Utils", "le" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -565,7 +565,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:119-121; elm-kernel-cpp/src/core/Utils.cpp:807-809"
         }
       )
-    , ( ( "Utils", "gt" )
+    , ( ( "Elm", "Utils", "gt" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -573,7 +573,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:123-125; elm-kernel-cpp/src/core/Utils.cpp:811-813"
         }
       )
-    , ( ( "Utils", "ge" )
+    , ( ( "Elm", "Utils", "ge" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
@@ -581,7 +581,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/UtilsExports.cpp:127-129; elm-kernel-cpp/src/core/Utils.cpp:815-817"
         }
       )
-    , ( ( "String", "length" )
+    , ( ( "Elm", "String", "length" )
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
@@ -593,28 +593,28 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:18-27; runtime/src/allocator/StringOps.hpp:239-243"
         }
       )
-    , ( ( "String", "startsWith" )
+    , ( ( "Elm", "String", "startsWith" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:106-108; runtime/src/allocator/StringOps.hpp:688-714 (memcmp tiers)"
         }
       )
-    , ( ( "String", "endsWith" )
+    , ( ( "Elm", "String", "endsWith" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:110-112; runtime/src/allocator/StringOps.hpp:719-748"
         }
       )
-    , ( ( "String", "contains" )
+    , ( ( "Elm", "String", "contains" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed ]
             , gcAlloc = GcNone
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:114-116; runtime/src/allocator/StringOps.hpp:645-683 (charAt :410-463 alloc-free)"
         }
       )
-    , ( ( "Bytes", "getStringWidth" )
+    , ( ( "Elm", "Bytes", "getStringWidth" )
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
@@ -622,14 +622,14 @@ rows =
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:309-366 (u16string snapshot :330-338)"
         }
       )
-    , ( ( "Bytes", "width" )
+    , ( ( "Elm", "Bytes", "width" )
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:299-301 (raw scalar via elm_bytebuffer_len)"
         }
       )
-    , ( ( "Bytes", "decodeFailure" )
+    , ( ( "Elm", "Bytes", "decodeFailure" )
       , { auditedPure
             | gcAlloc = GcNone
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:469-471; runtime/src/allocator/HeapHelpers.hpp:196 (alloc::nothing() = embedded constant)"
@@ -637,7 +637,7 @@ rows =
       )
 
     -- Audited pure rows that allocate, except `Basics.not` and `Basics.round`.
-    , ( ( "Basics", "not" )
+    , ( ( "Elm", "Basics", "not" )
         -- Returns one of the embedded True and False constants, so nothing is
         -- allocated.
       , { auditedPure
@@ -652,7 +652,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_not; elm-kernel-cpp/src/core/Basics.cpp:165-167 (return !a); ExportHelpers.hpp:80-82 (elmTrue/elmFalse are EMBEDDED HPointer constants, so nothing is allocated)"
         }
       )
-    , ( ( "Basics", "add" )
+    , ( ( "Elm", "Basics", "add" )
         -- `lookupSymbol` maps the boxed export and its `_Int` and `_Float`
         -- variants all to this row, so its facts are the boxed export's, which
         -- allocates one box for the result.
@@ -666,7 +666,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_add (boxed root: tag test then boxInt(add_Int ..) / boxFloat(add_Float ..) -- ONE box allocated, no C++ heap, no callback); KernelExports.h declares add_Int/add_Float/add"
         }
       )
-    , ( ( "Basics", "round" )
+    , ( ( "Elm", "Basics", "round" )
       , { auditedPure
             | params = [ PBorrowed ]
             , gcAlloc = GcNone
@@ -678,7 +678,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/BasicsExports.cpp:Elm_Kernel_Basics_round (return Basics::round(x)); KernelExports.h: int64_t Elm_Kernel_Basics_round(double) is the ONLY export -- no Elm heap value is touched"
         }
       )
-    , ( ( "String", "fromList" )
+    , ( ( "Elm", "String", "fromList" )
         -- Counts the list, allocates one string of that length and fills it,
         -- hence GcUnbounded. cppAlloc is set True because only the all-ASCII
         -- path was read in full.
@@ -690,7 +690,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:Elm_Kernel_String_fromList; elm-kernel-cpp/src/core/String.cpp:63-81+ (ListCursor count pass, then one exact-size allocation and an allocation-free write walk); sole export (HPtr) -> HPtr"
         }
       )
-    , ( ( "Json", "wrap" )
+    , ( ( "Elm", "Json", "wrap" )
         -- POwned with resultAliases = [ 0 ]: some branches store the argument
         -- in the new value, and the last returns the argument itself.
       , { auditedPure
@@ -705,7 +705,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/json/JsonExports.cpp:Elm_Kernel_Json_wrap (ENC_BOOL/ENC_STRING/ENC_FLOAT branches each allocate ONE Tag_Custom; string branch stores the arg at values[0].p; final branch returns the arg unchanged). Grep over the whole body: zero eco_apply, zero statics, zero globals"
         }
       )
-    , ( ( "List", "cons" )
+    , ( ( "Elm", "List", "cons" )
       , { auditedPure
             | gcAlloc = GcFixed 1
 
@@ -716,7 +716,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:276-283; runtime/src/allocator/HeapHelpers.hpp:630"
         }
       )
-    , ( ( "Utils", "append" )
+    , ( ( "Elm", "Utils", "append" )
         -- Both arguments owned. Appending strings may keep both operands inside
         -- a rope, and appending lists shares the second list as the result's
         -- tail. Whether a rope is built depends on the lengths at run time,
@@ -734,19 +734,19 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/Utils.cpp:823-847; runtime/src/allocator/StringOps.hpp:477-537; runtime/src/allocator/ListOps.cpp:262"
         }
       )
-    , ( ( "List", "reverse" )
+    , ( ( "Elm", "List", "reverse" )
       , { auditedPure
             | gcAlloc = GcUnbounded
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:651-654; runtime/src/allocator/ListOps.cpp:530"
         }
       )
-    , ( ( "Bytes", "read_u32" )
+    , ( ( "Elm", "Bytes", "read_u32" )
       , { auditedPure
             | gcAlloc = GcFixed 1 -- Tuple2
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:539-547"
         }
       )
-    , ( ( "String", "slice" )
+    , ( ( "Elm", "String", "slice" )
       , { auditedPure
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 2 ]
@@ -754,19 +754,19 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:56-59; runtime/src/allocator/StringOps.cpp:307-473 (interior views :337/:415, whole-string identity :321)"
         }
       )
-    , ( ( "String", "cons" )
+    , ( ( "Elm", "String", "cons" )
       , { auditedPure
             | gcAlloc = GcUnbounded
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:40-44; runtime/src/allocator/StringOps.hpp:1241-1270"
         }
       )
-    , ( ( "JsArray", "empty" )
+    , ( ( "Elm", "JsArray", "empty" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:192-195"
         }
       )
-    , ( ( "JsArray", "initializeFromList" )
+    , ( ( "Elm", "JsArray", "initializeFromList" )
       , { auditedPure
             | gcAlloc = GcUnbounded
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:457-461 (base export; the ABI variant _Int is :982, same Mono key)"
@@ -775,7 +775,7 @@ rows =
 
     -- Audited pure rows for kernels that build a task. Building the task does
     -- nothing observable; its work happens when the scheduler runs it.
-    , ( ( "Scheduler", "succeed" )
+    , ( ( "Elm", "Scheduler", "succeed" )
       , { auditedPure
             | gcAlloc = GcFixed 1
 
@@ -786,7 +786,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:16-21; runtime/src/platform/Scheduler.cpp:123-126"
         }
       )
-    , ( ( "Scheduler", "fail" )
+    , ( ( "Elm", "Scheduler", "fail" )
       , { auditedPure
             | gcAlloc = GcFixed 1
 
@@ -795,26 +795,26 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:23-28; runtime/src/platform/Scheduler.cpp:139-142"
         }
       )
-    , ( ( "Scheduler", "andThen" )
+    , ( ( "Elm", "Scheduler", "andThen" )
         -- HofNo: it stores the callback in the task and never applies it.
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:30-37; runtime/src/platform/Scheduler.cpp:149-152"
         }
       )
-    , ( ( "Scheduler", "onError" )
+    , ( ( "Elm", "Scheduler", "onError" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/core/SchedulerExports.cpp:39-46; runtime/src/platform/Scheduler.cpp:154-157"
         }
       )
-    , ( ( "MVar", "put" )
+    , ( ( "Eco", "MVar", "put" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp:38-46; eco-kernel-cpp/src/eco-kernel/MVar.cpp:290"
         }
       )
-    , ( ( "MVar", "read" )
+    , ( ( "Eco", "MVar", "read" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp:30-32; eco-kernel-cpp/src/eco-kernel/MVar.cpp:264"
@@ -826,7 +826,7 @@ rows =
     -- stay unaudited and totality is never Total.
     -- Each row states HofYes; left as HofUnknown, costClass would answer
     -- CUnknown instead of CHof.
-    , ( ( "JsArray", "foldl" )
+    , ( ( "Elm", "JsArray", "foldl" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
@@ -836,7 +836,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:651-653; foldImpl :576 (final accumulator returned by identity when it stayed boxed, :636-640)"
         }
       )
-    , ( ( "JsArray", "foldr" )
+    , ( ( "Elm", "JsArray", "foldr" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
@@ -846,7 +846,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:655-657; foldImpl :576"
         }
       )
-    , ( ( "JsArray", "map" )
+    , ( ( "Elm", "JsArray", "map" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
@@ -856,14 +856,14 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:463"
         }
       )
-    , ( ( "JsArray", "initialize" )
+    , ( ( "Elm", "JsArray", "initialize" )
       , { unaudited
           -- Applies the generating function to each index.
             | callsBack = HofYes
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:422 (base export; the ABI variant _Int is :948, same Mono key)"
         }
       )
-    , ( ( "List", "map2" )
+    , ( ( "Elm", "List", "map2" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed, PBorrowed ]
             , resultAliases = [ 1, 2 ]
@@ -873,7 +873,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:592-600; kernelListMapN :432"
         }
       )
-    , ( ( "List", "sortBy" )
+    , ( ( "Elm", "List", "sortBy" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
@@ -885,7 +885,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:759 (Elm_Kernel_List_sortBy; comparator :805-825); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
-    , ( ( "List", "sortWith" )
+    , ( ( "Elm", "List", "sortWith" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 1 ]
@@ -897,7 +897,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/ListExports.cpp:832 (Elm_Kernel_List_sortWith; comparator :862-878); elm-kernel-cpp/src/core/Utils.cpp:305-306 -- anchors refreshed 2026-08-20 (LSS_021 audit)"
         }
       )
-    , ( ( "String", "all" )
+    , ( ( "Elm", "String", "all" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
 
@@ -910,13 +910,13 @@ rows =
     -- Unaudited rows that carry the borrow axis. Their C++ bodies have not been
     -- read for effects, so none of them licenses deleting, merging or gc-leaf
     -- marking a call.
-    , ( ( "JsArray", "length" )
+    , ( ( "Elm", "JsArray", "length" )
       , { unaudited
             | params = [ PBorrowed ]
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:204-208"
         }
       )
-    , ( ( "JsArray", "unsafeGet" )
+    , ( ( "Elm", "JsArray", "unsafeGet" )
         -- The C signature is `unsafeGet index array`, so the array is argument
         -- 1. The result is one of its elements only when elements are boxed.
       , { unaudited
@@ -925,19 +925,19 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/JsArrayExports.cpp:210-223"
         }
       )
-    , ( ( "Debug", "toString" )
+    , ( ( "Elm", "Debug", "toString" )
       , { unaudited
             | params = [ PBorrowed ]
             , evidence = "elm-kernel-cpp/src/core/DebugExports.cpp:56"
         }
       )
-    , ( ( "Bytes", "encode" )
+    , ( ( "Elm", "Bytes", "encode" )
       , { unaudited
             | params = [ PBorrowed ]
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:395 (writeEncoder :144)"
         }
       )
-    , ( ( "Bytes", "decode" )
+    , ( ( "Elm", "Bytes", "decode" )
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
             , resultAliases = [ 0, 1 ]
@@ -947,21 +947,21 @@ rows =
             , evidence = "elm-kernel-cpp/src/bytes/BytesExports.cpp:418"
         }
       )
-    , ( ( "String", "uncons" )
+    , ( ( "Elm", "String", "uncons" )
       , { unaudited
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:46-49; runtime/src/allocator/StringOps.cpp:1009"
         }
       )
-    , ( ( "String", "words" )
+    , ( ( "Elm", "String", "words" )
       , { unaudited
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:71; elm-kernel-cpp/src/core/String.cpp:286"
         }
       )
-    , ( ( "String", "trim" )
+    , ( ( "Elm", "String", "trim" )
       , { unaudited
             | params = [ PBorrowed ]
             , resultAliases = [ 0 ]
@@ -972,7 +972,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:91; runtime/src/allocator/StringOps.hpp:878"
         }
       )
-    , ( ( "String", "toLower" )
+    , ( ( "Elm", "String", "toLower" )
       , { unaudited
             | params = [ PBorrowed ]
 
@@ -981,13 +981,13 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:86; runtime/src/allocator/StringOps.hpp:801"
         }
       )
-    , ( ( "String", "toUpper" )
+    , ( ( "Elm", "String", "toUpper" )
       , { unaudited
             | params = [ PBorrowed ]
             , evidence = "elm-kernel-cpp/src/core/StringExports.cpp:81; runtime/src/allocator/StringOps.hpp:762"
         }
       )
-    , ( ( "Debug", "log" )
+    , ( ( "Elm", "Debug", "log" )
         -- It prints, so the effect is stated, though the base has it already.
       , { unaudited
             | params = [ PBorrowed, PBorrowed ]
@@ -996,7 +996,7 @@ rows =
             , evidence = "elm-kernel-cpp/src/core/DebugExports.cpp:26"
         }
       )
-    , ( ( "Crash", "crash" )
+    , ( ( "Eco", "Crash", "crash" )
         -- gcAlloc stays GcUnbounded: the body converts the message to a
         -- string, and that code has not been read. A call that never returns
         -- gains nothing from being a gc-leaf.
@@ -1012,26 +1012,26 @@ rows =
     -- Unaudited rows that exist to record a divergence note: how the C++
     -- kernel differs from the compiler's inline version of the same
     -- operation. They leave params empty, so they carry no borrow modes.
-    , ( ( "Basics", "modBy" )
+    , ( ( "Elm", "Basics", "modBy" )
       , { unaudited
             | totality = Throws
             , divergence = Just "C++ THROWS std::runtime_error on modulus 0 (elm-kernel-cpp/src/core/Basics.cpp:92-103, throw at :96); the intrinsic returns 0 (runtime/src/codegen/Passes/EcoToLLVMArith.cpp:83-131). A PAP-captured modBy 0 terminates through statepointed frames; an inlined one returns 0."
             , evidence = "elm-kernel-cpp/src/core/Basics.cpp:92-103; runtime/src/codegen/Passes/EcoToLLVMArith.cpp:83-131"
         }
       )
-    , ( ( "Basics", "idiv" )
+    , ( ( "Elm", "Basics", "idiv" )
       , { unaudited
             | divergence = Just "C++ is bare a / b: UB / SIGFPE on 0 (elm-kernel-cpp/src/core/Basics.cpp:88-90); the intrinsic is guarded and returns 0 (runtime/src/codegen/Passes/EcoToLLVMArith.cpp:57-81)."
             , evidence = "elm-kernel-cpp/src/core/Basics.cpp:88-90; runtime/src/codegen/Passes/EcoToLLVMArith.cpp:57-81"
         }
       )
-    , ( ( "Basics", "remainderBy" )
+    , ( ( "Elm", "Basics", "remainderBy" )
       , { unaudited
             | divergence = Just "C++ UB on divisor 0 (elm-kernel-cpp/src/core/Basics.cpp:105-107); the intrinsic is guarded and returns 0 (runtime/src/codegen/Passes/EcoToLLVMArith.cpp:133-157)."
             , evidence = "elm-kernel-cpp/src/core/Basics.cpp:105-107; runtime/src/codegen/Passes/EcoToLLVMArith.cpp:133-157"
         }
       )
-    , ( ( "Basics", "tan" )
+    , ( ( "Elm", "Basics", "tan" )
       , { unaudited
             | divergence = Just "C++ is std::tan (elm-kernel-cpp/src/core/Basics.cpp:40-42); the intrinsic composes sin(x)/cos(x) (runtime/src/codegen/Passes/EcoToLLVMArith.cpp:324-337) - differs in the last ulp and at poles."
             , evidence = "elm-kernel-cpp/src/core/Basics.cpp:40-42; runtime/src/codegen/Passes/EcoToLLVMArith.cpp:324-337"
@@ -1042,114 +1042,114 @@ rows =
     -- Audited pure: no call-time effect, no call back into Elm, total. `params` stays
     -- empty, so the borrow analysis treats every argument as before (no borrow claim).
     -- `lazy*` have no row: they apply their closure (D5).
-    , ( ( "VirtualDom", "text" )
+    , ( ( "Elm", "VirtualDom", "text" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_text (make: ONE alloc::custom NODE_TEXT over the argument; no statics, no eco_apply)"
         }
       )
-    , ( ( "VirtualDom", "node" )
+    , ( ( "Elm", "VirtualDom", "node" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_node (make: ONE alloc::custom NODE_ELEMENT over Nothing and the three arguments)"
         }
       )
-    , ( ( "VirtualDom", "nodeNS" )
+    , ( ( "Elm", "VirtualDom", "nodeNS" )
       , { auditedPure
             | gcAlloc = GcFixed 2
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_nodeNS (makeNS: alloc::just for the namespace, then ONE alloc::custom NODE_ELEMENT; tag/facts/kids guarded across the first (R2))"
         }
       )
-    , ( ( "VirtualDom", "keyedNode" )
+    , ( ( "Elm", "VirtualDom", "keyedNode" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_keyedNode (make: ONE alloc::custom NODE_KEYED_ELEMENT over Nothing and the three arguments)"
         }
       )
-    , ( ( "VirtualDom", "keyedNodeNS" )
+    , ( ( "Elm", "VirtualDom", "keyedNodeNS" )
       , { auditedPure
             | gcAlloc = GcFixed 2
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_keyedNodeNS (makeNS: alloc::just, then ONE alloc::custom NODE_KEYED_ELEMENT)"
         }
       )
-    , ( ( "VirtualDom", "map" )
+    , ( ( "Elm", "VirtualDom", "map" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_map (make: ONE alloc::custom NODE_MAPPED storing the tagger closure; the closure is never applied)"
         }
       )
-    , ( ( "VirtualDom", "attribute" )
+    , ( ( "Elm", "VirtualDom", "attribute" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_attribute (make: ONE alloc::custom FACT_ATTRIBUTE over the two arguments)"
         }
       )
-    , ( ( "VirtualDom", "attributeNS" )
+    , ( ( "Elm", "VirtualDom", "attributeNS" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_attributeNS (make: ONE alloc::custom FACT_ATTRIBUTE_NS over the three arguments)"
         }
       )
-    , ( ( "VirtualDom", "property" )
+    , ( ( "Elm", "VirtualDom", "property" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_property (make: ONE alloc::custom FACT_PROPERTY over the two arguments)"
         }
       )
-    , ( ( "VirtualDom", "style" )
+    , ( ( "Elm", "VirtualDom", "style" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_style (make: ONE alloc::custom FACT_STYLE over the two arguments)"
         }
       )
-    , ( ( "VirtualDom", "on" )
+    , ( ( "Elm", "VirtualDom", "on" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_on (make: ONE alloc::custom FACT_EVENT over the name, the handler and Nil; the handler is never applied)"
         }
       )
-    , ( ( "VirtualDom", "mapAttribute" )
+    , ( ( "Elm", "VirtualDom", "mapAttribute" )
       , { auditedPure
             | gcAlloc = GcFixed 2
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_mapAttribute (a non-event fact is returned unchanged; an event gets alloc::cons of the tagger onto its tagger list, then ONE alloc::custom FACT_EVENT; the tagger is never applied)"
         }
       )
-    , ( ( "VirtualDom", "noScript" )
+    , ( ( "Elm", "VirtualDom", "noScript" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noScript (returns the argument, or one allocStringFromUTF8(\"p\") when Xss::isScriptTag holds)"
         }
       )
-    , ( ( "VirtualDom", "noOnOrFormAction" )
+    , ( ( "Elm", "VirtualDom", "noOnOrFormAction" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noOnOrFormAction (returns the argument, or one allocString(\"data-\" ++ key) when Xss::isOnOrFormAction holds)"
         }
       )
-    , ( ( "VirtualDom", "noInnerHtmlOrFormAction" )
+    , ( ( "Elm", "VirtualDom", "noInnerHtmlOrFormAction" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction (returns the argument, or one allocString(\"data-\" ++ key) when Xss::isInnerHtmlOrFormAction holds)"
         }
       )
-    , ( ( "VirtualDom", "noJavaScriptUri" )
+    , ( ( "Elm", "VirtualDom", "noJavaScriptUri" )
       , { auditedPure
             | gcAlloc = GcNone
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noJavaScriptUri (returns the argument or the embedded empty-string constant; XssFilters.cpp is pure)"
         }
       )
-    , ( ( "VirtualDom", "noJavaScriptOrHtmlUri" )
+    , ( ( "Elm", "VirtualDom", "noJavaScriptOrHtmlUri" )
       , { auditedPure
             | gcAlloc = GcNone
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
             , evidence = "elm-kernel-cpp/src/virtual-dom/VirtualDomExports.cpp:Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri (returns the argument or the embedded empty-string constant; XssFilters.cpp is pure)"
         }
       )
-    , ( ( "VirtualDom", "noJavaScriptOrHtmlJson" )
+    , ( ( "Elm", "VirtualDom", "noJavaScriptOrHtmlJson" )
       , { auditedPure
             | gcAlloc = GcFixed 1
             , cppAlloc = True -- copies the string into a std::u16string first (R3)
@@ -1203,11 +1203,11 @@ audited rather than that the kernel takes no arguments, they are compared only
 when `params` is not empty; that is why `DevirtAt` carries its own arity.
 
 -}
-devirtErrors : ( Name, Name ) -> KernelFacts -> List String
-devirtErrors ( home, name ) facts =
+devirtErrors : ( Name, Name, Name ) -> KernelFacts -> List String
+devirtErrors ( prefix, home, name ) facts =
     let
         key =
-            home ++ "." ++ name
+            prefix ++ ".Kernel." ++ home ++ "." ++ name
     in
     case facts.devirt of
         DevirtNo ->
@@ -1274,11 +1274,11 @@ must look like a Mono key: home and name non-empty, a home not starting with
 `Elm_Kernel_` or `Eco_Kernel_`, and a name not ending in `_Int`, `_Float` or
 `_Char`.
 -}
-rowErrors : ( ( Name, Name ), KernelFacts ) -> List String
-rowErrors ( ( home, name ), f ) =
+rowErrors : ( ( Name, Name, Name ), KernelFacts ) -> List String
+rowErrors ( ( prefix, home, name ), f ) =
     let
         tag msg =
-            home ++ "." ++ name ++ ": " ++ msg
+            prefix ++ ".Kernel." ++ home ++ "." ++ name ++ ": " ++ msg
 
         check cond msg =
             if cond then

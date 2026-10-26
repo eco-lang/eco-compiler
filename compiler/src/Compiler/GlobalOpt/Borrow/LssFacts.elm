@@ -311,8 +311,8 @@ resolveMember facts calleeType m =
         -- standalone member (global/ctor/kernel/accessor) via lssMemberOrigins.
         Just (MemberStandalone origin) ->
             case origin of
-                Mono.OriginKernel home name ->
-                    case KernelSigs.lookup ( home, name ) of
+                Mono.OriginKernel prefix home name ->
+                    case KernelSigs.lookup ( prefix, home, name ) of
                         Just ksig ->
                             Routed (kernelToSig ksig calleeType)
 

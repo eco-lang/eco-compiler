@@ -84,12 +84,13 @@ safeSpecCount oracle =
 -- KERNEL CALLS
 
 
-{-| Returns whether the kernel `name` in module `home` may be merged, which is
-its `KernelFacts` row's `hoistable` fact, and `False` for an unlisted kernel.
+{-| Returns whether the kernel `name` in module `prefix.Kernel.home` may be
+merged, which is its `KernelFacts` row's `hoistable` fact, and `False` for an
+unlisted kernel.
 -}
-kernelCseSafe : Name -> Name -> Bool
-kernelCseSafe home name =
-    KernelFacts.hoistableFor ( home, name )
+kernelCseSafe : Name -> Name -> Name -> Bool
+kernelCseSafe prefix home name =
+    KernelFacts.hoistableFor ( prefix, home, name )
 
 
 
@@ -272,8 +273,8 @@ isSafeExpr oracle root =
 
             else
                 case expr of
-                    MonoVarKernel _ _ home name _ ->
-                        kernelCseSafe home name
+                    MonoVarKernel _ prefix home name _ ->
+                        kernelCseSafe prefix home name
 
                     MonoVarGlobal _ sid _ ->
                         BitSet.member sid oracle.mergeableSpecs

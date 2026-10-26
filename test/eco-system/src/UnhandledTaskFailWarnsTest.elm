@@ -12,6 +12,7 @@ the program exits 0.
 -- CHECK: still running
 -- CHECK-NOT: Eco crash
 -- EXIT: 0
+-- SKIP-JS: the warning line is native-only; stock elm/core's JavaScript scheduler ends the failed process silently (SCHED_002)
 
 import Process
 import Stream

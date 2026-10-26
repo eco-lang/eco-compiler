@@ -581,12 +581,12 @@ translateDispatch expr s0 =
             translateVarRef expr region (TOpt.Global canonical name) meta.tipe s0
 
         TOpt.VarKernel region kernelPrefix home name meta ->
-            case deriveKernelAbiTypeRef ( home, name ) meta.tipe s0 of
+            case deriveKernelAbiTypeRef ( kernelPrefix, home, name ) meta.tipe s0 of
                 ( funcMonoType, s1 ) ->
                     ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, s1 )
 
         TOpt.VarDebug region name _ _ meta ->
-            case deriveKernelAbiTypeRef ( "Debug", name ) meta.tipe s0 of
+            case deriveKernelAbiTypeRef ( "Elm", "Debug", name ) meta.tipe s0 of
                 ( funcMonoType, s1 ) ->
                     ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, s1 )
 
@@ -1691,10 +1691,10 @@ translateCall region func args callCanType =
                         translateGlobalCall region funcRegion global funcCanType args callCanType s1
 
         TOpt.VarKernel funcRegion kernelPrefix home name funcMeta ->
-            translateKernelCall region funcRegion kernelPrefix home name ( home, name ) funcMeta.tipe args callCanType
+            translateKernelCall region funcRegion kernelPrefix home name ( kernelPrefix, home, name ) funcMeta.tipe args callCanType
 
         TOpt.VarDebug funcRegion name _ _ funcMeta ->
-            translateKernelCall region funcRegion "Elm" "Debug" name ( "Debug", name ) funcMeta.tipe args callCanType
+            translateKernelCall region funcRegion "Elm" "Debug" name ( "Elm", "Debug", name ) funcMeta.tipe args callCanType
 
         TOpt.VarLocal name funcMeta ->
             localCalleeCall region func name funcMeta args callCanType
@@ -1899,15 +1899,15 @@ translateIndirectCallBody region func args callCanType s0 =
                             -- entry's true shape or the devirt is
                             -- DECLINED and the site falls back to the
                             -- always-correct indirect call.
-                            case deriveKernelAbiTypeCall ( home, name ) (TOpt.typeOf func) args s3 of
+                            case deriveKernelAbiTypeCall ( kernelPrefix, home, name ) (TOpt.typeOf func) args s3 of
                                 ( funcMonoType, s4 ) ->
                                     case callResultType (List.length args) funcMonoType callCanType s4 of
                                         ( resultMonoType, s5 ) ->
-                                            if not (kernelDevirtShapeOk home name funcMonoType) then
+                                            if not (kernelDevirtShapeOk kernelPrefix home name funcMonoType) then
                                                 -- census (E10.0): shape-guard decline.
                                                 indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineShape () s5)
 
-                                            else if not (kernelDevirtEmissionOk home name monoArgs resultMonoType) then
+                                            else if not (kernelDevirtEmissionOk kernelPrefix home name monoArgs resultMonoType) then
                                                 -- census (E10.0): emission-guard decline, split
                                                 -- CNumber (unsettled site — the declinedUnsettled
                                                 -- proxy) vs other (scalar tail/result, arg shape).
@@ -1944,9 +1944,9 @@ that devirt makes load-bearing — rather than in an if-else chain here; see
 `KernelFacts.DevirtPolicy` and plans/kernel-devirt-arity-table.md.
 
 -}
-kernelDevirtArity : Name -> Name -> Maybe Int
-kernelDevirtArity home name =
-    case KernelFacts.devirtOf ( home, name ) of
+kernelDevirtArity : Name -> Name -> Name -> Maybe Int
+kernelDevirtArity prefix home name =
+    case KernelFacts.devirtOf ( prefix, home, name ) of
         KernelFacts.DevirtAt arity _ ->
             Just arity
 
@@ -1966,9 +1966,9 @@ treat the tail list pointer as a raw i64 (caught as a CGEN\_038 kernel-decl
 mismatch pre-guard). Decline on scalar tail/result ⇒ the site stays an
 indirect call, which is layout-agnostic and always correct.
 -}
-kernelDevirtShapeOk : Name -> Name -> Mono.MonoType -> Bool
-kernelDevirtShapeOk home name funcMonoType =
-    case KernelFacts.devirtOf ( home, name ) of
+kernelDevirtShapeOk : Name -> Name -> Name -> Mono.MonoType -> Bool
+kernelDevirtShapeOk prefix home name funcMonoType =
+    case KernelFacts.devirtOf ( prefix, home, name ) of
         KernelFacts.DevirtNo ->
             False
 
@@ -2047,9 +2047,9 @@ register `Elm_Kernel_List_cons_Int : (i64, i64) -> i64` and collide with
 the true declaration (CGEN\_038). For cons: the TAIL arg's and the
 RESULT's mono types must not be unboxed scalars.
 -}
-kernelDevirtEmissionOk : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
-kernelDevirtEmissionOk home name monoArgs resultMonoType =
-    case KernelFacts.devirtOf ( home, name ) of
+kernelDevirtEmissionOk : Name -> Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
+kernelDevirtEmissionOk prefix home name monoArgs resultMonoType =
+    case KernelFacts.devirtOf ( prefix, home, name ) of
         KernelFacts.DevirtNo ->
             False
 
@@ -2190,7 +2190,7 @@ devirtDirectTarget func args monoFunc s0 =
                                 -- normally identity-folded to k|, but any
                                 -- unfolded mint path lands here — route it to
                                 -- the same whitelist decision.
-                                case kernelDevirtArity home name of
+                                case kernelDevirtArity kernelPrefix home name of
                                     Just arity ->
                                         if arity == List.length args then
                                             ( Just (DevirtKernel kernelPrefix home name), s1 )
@@ -2249,7 +2249,7 @@ devirtKernelTarget m argCount s0 =
             ( Nothing, s1 )
 
         ( Just ( kernelPrefix, home, name ), s1 ) ->
-            case kernelDevirtArity home name of
+            case kernelDevirtArity kernelPrefix home name of
                 Just arity ->
                     if arity == argCount then
                         ( Just (DevirtKernel kernelPrefix home name), s1 )
@@ -2287,9 +2287,9 @@ recordKernelMiss home name s =
 {-| Census helper for the above. Separated so nothing but a flag test runs on
 the default path.
 -}
-recordRefusedLicense : ( String, String ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
-recordRefusedLicense ( kHome, kName ) canFuncType s =
-    case KernelSetFacts.factFor kHome kName of
+recordRefusedLicense : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
+recordRefusedLicense ( kPrefix, kHome, kName ) canFuncType s =
+    case KernelSetFacts.factFor kPrefix kHome kName of
         Just (KernelSetFacts.TypeFaithful license) ->
             if KernelSetFacts.licenseApplies (Engine.isScalarVar s) license canFuncType then
                 s
@@ -2303,7 +2303,7 @@ recordRefusedLicense ( kHome, kName ) canFuncType s =
                     | lssStats =
                         { stats
                             | kernelUnsolvedHist =
-                                Dict.update (kHome ++ "." ++ kName)
+                                Dict.update (kPrefix ++ "." ++ kHome ++ "." ++ kName)
                                     (\v -> Just (Maybe.withDefault 0 v + 1))
                                     stats.kernelUnsolvedHist
                         }
@@ -3206,7 +3206,7 @@ argShapeName arg =
             "blind"
 
 
-translateKernelCall : A.Region -> A.Region -> Name -> Name -> Name -> ( String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
+translateKernelCall : A.Region -> A.Region -> Name -> Name -> Name -> ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateKernelCall region funcRegion kernelPrefix home name kernelId funcCanType args callCanType s0 =
     -- D5: no `argCanTypes` list — it was built only for its length.
     -- Derive the kernel ABI FIRST: this unifies the kernel's param slots with the
@@ -3267,7 +3267,7 @@ peelResult n monoType =
 {-| Kernel ABI for a CALL: instantiate the kernel type fresh, unify its param
 slots with the concrete argument types, zonk, then apply the ABI-mode policy.
 -}
-deriveKernelAbiTypeCall : ( String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoType
+deriveKernelAbiTypeCall : ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoType
 deriveKernelAbiTypeCall kernelId canFuncType args =
     deriveKernelAbiTypeWith kernelId canFuncType <|
         \s0 ->
@@ -4323,13 +4323,20 @@ through the ITEM memo so the item's demand concretization (unified against the
 enclosing definition's annotation) is visible — a fresh instantiation would
 isolate the vars and lose it.
 -}
-deriveKernelAbiTypeRef : ( String, String ) -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
+deriveKernelAbiTypeRef : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 deriveKernelAbiTypeRef kernelId canFuncType =
     deriveKernelAbiTypeWith kernelId canFuncType (Store.loadTypeS canFuncType)
 
 
-deriveKernelAbiTypeWith : ( String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
+deriveKernelAbiTypeWith : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
 deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
+    let
+        -- KernelAbi's elm/core dispatch tables key by ( home, name ).
+        abiKey =
+            case kernelId of
+                ( _, home, name ) ->
+                    ( home, name )
+    in
     case funcVarStep s0 of
         ( funcVar0, sA ) ->
             case poisonKernelArrowsThen kernelId canFuncType funcVar0 sA of
@@ -4338,18 +4345,18 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                         ( monoAfterSubst, sC ) ->
                             case currentMVarEnv sC of
                                 ( mvarEnv, sD ) ->
-                                    case KernelAbi.deriveKernelAbiMode kernelId canFuncType of
+                                    case KernelAbi.deriveKernelAbiMode abiKey canFuncType of
                                         KernelAbi.UseSubstitution ->
                                             ( monoAfterSubst, sD )
 
                                         KernelAbi.PreserveVars ->
                                             if
-                                                EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels
+                                                EverySet.member KernelAbi.comparePair abiKey KernelAbi.suffixSelectingKernels
                                                     && not (Mono.containsAnyMVar monoAfterSubst)
                                             then
                                                 ( monoAfterSubst, sD )
 
-                                            else if EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels then
+                                            else if EverySet.member KernelAbi.comparePair abiKey KernelAbi.suffixSelectingKernels then
                                                 -- Suffix-selecting kernel with residual vars in the
                                                 -- store truth: use the STORE-TRUTH zonk (not a canType
                                                 -- re-derivation), remapping its CEcoValue residuals to
@@ -4440,8 +4447,8 @@ ordering assumption). It still runs before the zonk that reads the slots.
 No-op when lss is off.
 
 -}
-poisonKernelArrowsThen : ( String, String ) -> Can.Type TypeIds.MVarId -> Vars.Variable -> Step Vars.Variable
-poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
+poisonKernelArrowsThen : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Vars.Variable -> Step Vars.Variable
+poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
     let
         -- CENSUS (report-gated, so the default path carries only the flag
         -- test): which LICENSED kernels had their occurrence verification
@@ -4452,13 +4459,13 @@ poisonKernelArrowsThen ( kHome, kName ) canFuncType funcVar s0 =
         -- means annotating blind, and annotations are fail-stop.
         s =
             if s0.env.lss.report then
-                recordRefusedLicense ( kHome, kName ) canFuncType s0
+                recordRefusedLicense ( kPrefix, kHome, kName ) canFuncType s0
 
             else
                 s0
     in
     if s.env.lss.enabled then
-        case KernelSetFacts.factFor kHome kName of
+        case KernelSetFacts.factFor kPrefix kHome kName of
             Nothing ->
                 case Store.poisonArrowSets funcVar s of
                     s1 ->

@@ -56,8 +56,8 @@ expectKernelTypesValid srcModule =
                                 case exprNode.node of
                                     Can.Call (A.At _ funcInfo) _ ->
                                         case funcInfo.node of
-                                            Can.VarKernel _ home name ->
-                                                Just ( funcInfo.id, home, name )
+                                            Can.VarKernel prefix home name ->
+                                                Just ( funcInfo.id, ( prefix, home, name ) )
 
                                             _ ->
                                                 Nothing
@@ -83,13 +83,13 @@ expectKernelTypesValid srcModule =
 function is the kernel reference with node id `funcId` to `home.name`, or
 `Nothing`.
 -}
-checkKernelCall : KernelTypes.KernelTypeEnv -> Array.Array (Maybe (Can.Type Name)) -> ( Int, Name, Name ) -> Maybe String
-checkKernelCall kernelEnv nodeTypesPost ( funcId, home, name ) =
+checkKernelCall : KernelTypes.KernelTypeEnv -> Array.Array (Maybe (Can.Type Name)) -> ( Int, ( Name, Name, Name ) ) -> Maybe String
+checkKernelCall kernelEnv nodeTypesPost ( funcId, ( prefix, home, name ) ) =
     let
         label =
-            home ++ "." ++ name ++ " (node " ++ String.fromInt funcId ++ "): "
+            prefix ++ ".Kernel." ++ home ++ "." ++ name ++ " (node " ++ String.fromInt funcId ++ "): "
     in
-    case KernelTypes.lookup home name kernelEnv of
+    case KernelTypes.lookup prefix home name kernelEnv of
         Nothing ->
             Just (label ++ "no entry in the kernel type environment")
 

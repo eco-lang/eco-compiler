@@ -902,8 +902,8 @@ constrainCall env path f args t callInfo g =
                 -- under/over-application (PAP): boundary-poisoned.
                 ( resultRty, poisoned (poisonArgs argRtys RClosureBoundary bumpClosure gNV) )
 
-        Mono.MonoVarKernel _ _ home name _ ->
-            case KernelSigs.lookup ( home, name ) of
+        Mono.MonoVarKernel _ prefix home name _ ->
+            case KernelSigs.lookup ( prefix, home, name ) of
                 Just ksig ->
                     ( resultRty
                     , applyKernelSig ksig path argRtys resultRty { gNV | kernelSigHits = gNV.kernelSigHits + 1 }

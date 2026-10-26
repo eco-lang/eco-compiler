@@ -2938,7 +2938,7 @@ clearLssTables { keepOrigins } (MonoGraph record) =
 
 `OriginGlobal` is a top-level definition used as a function value, and
 `OriginCtor` a constructor used as one. `OriginKernel` is a kernel function, by
-its home and name. `OriginAccessor` is the accessor function for the named
+its prefix (`Elm` or `Eco`), home and name. `OriginAccessor` is the accessor function for the named
 record field.
 
 `OriginPap` is a partial application of a global, with the number of arguments
@@ -2950,7 +2950,7 @@ specialization, which would lose those arguments.
 -}
 type MemberOrigin
     = OriginGlobal Global
-    | OriginKernel Name Name
+    | OriginKernel Name Name Name
     | OriginCtor Global
     | OriginAccessor Name
     | OriginPap Global Int

@@ -31,6 +31,7 @@ The decision is now pinned by an invariant and a test:
 - SCHED_002 states the behaviour, and SCHED_001's wording is unchanged.
 - `test/eco-system/src/UnhandledTaskFailWarnsTest.elm` checks it. A spawned process fails, the
   warning appears, the main process logs afterwards, and the program exits 0 with no crash line.
+  It is `SKIP-JS`, because the JavaScript scheduler prints no warning.
 
 ## History
 

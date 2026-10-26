@@ -1355,8 +1355,8 @@ direction — it declines sites, never admits extra ones.
 cheapCallee : Gate -> TOpt.Expr TypeIds.MVarId -> Int -> Bool
 cheapCallee ctx func argCount =
     case func of
-        TOpt.VarKernel _ _ home name _ ->
-            case KernelFacts.lookup ( home, name ) of
+        TOpt.VarKernel _ prefix home name _ ->
+            case KernelFacts.lookup ( prefix, home, name ) of
                 Just facts ->
                     KernelFacts.costClass facts == KernelFacts.CGcLeaf
 

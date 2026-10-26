@@ -1303,12 +1303,12 @@ computeCost cfg expr =
         MonoClosure _ body _ ->
             5 + computeCost cfg body
 
-        MonoCall _ ((MonoVarKernel _ _ home name _) as func) args resultTy _ ->
+        MonoCall _ ((MonoVarKernel _ prefix home name _) as func) args resultTy _ ->
             -- kernel-opt-11 (b). Flag-off this is byte-identical arithmetic to
             -- the general arm below: `kernelCallCost` is not consulted and the
             -- MonoVarKernel arm still scores 1, so the call still costs 6+args.
             if cfg.kernelCostClasses then
-                kernelCallCost cfg home name args resultTy
+                kernelCallCost cfg prefix home name args resultTy
                     + sumBy (computeCost cfg) args
 
             else
@@ -1389,8 +1389,8 @@ the conservative answer. Otherwise the audited cost class decides, so a
 rope-allocating `Utils_append` no longer scores the same as an `eco.int.add`.
 
 -}
-kernelCallCost : Config.InlineConfig -> Name -> Name -> List MonoExpr -> Mono.MonoType -> Int
-kernelCallCost cfg home name args resultTy =
+kernelCallCost : Config.InlineConfig -> Name -> Name -> Name -> List MonoExpr -> Mono.MonoType -> Int
+kernelCallCost cfg prefix home name args resultTy =
     case KernelIntrinsics.kernelIntrinsic home name (List.map Mono.typeOf args) resultTy of
         Just _ ->
             cfg.kernelCostInline
@@ -1406,7 +1406,7 @@ kernelCallCost cfg home name args resultTy =
                 unknownCost =
                     6
             in
-            case KernelFacts.lookup ( home, name ) of
+            case KernelFacts.lookup ( prefix, home, name ) of
                 Nothing ->
                     unknownCost
 
@@ -5243,11 +5243,11 @@ censusDeadDefs ctx spine finalBody =
                                     , deadBareKernelVar = m.deadBareKernelVar + 1
                                 }
 
-                            MonoCall _ (MonoVarKernel _ _ home name _) _ _ _ ->
+                            MonoCall _ (MonoVarKernel _ prefix home name _) _ _ _ ->
                                 { m
                                     | deadLets = m.deadLets + 1
                                     , deadDroppableKernelLets =
-                                        if KernelFacts.droppableFor ( home, name ) then
+                                        if KernelFacts.droppableFor ( prefix, home, name ) then
                                             m.deadDroppableKernelLets + 1
 
                                         else
@@ -5686,7 +5686,7 @@ isPureExprGen kDrop expr =
 
         MonoCall _ callee args _ _ ->
             case ( kDrop, callee ) of
-                ( True, MonoVarKernel _ _ home name kernelType ) ->
+                ( True, MonoVarKernel _ prefix home name kernelType ) ->
                     -- Whitelist discipline: unlisted kernel => today's answer.
                     --
                     -- No separate HOF guard: KernelFacts validation V2 makes
@@ -5699,7 +5699,7 @@ isPureExprGen kDrop expr =
                     -- the kernel's result is applied further, which the row says
                     -- nothing about. Under-application only mints a PAP, which
                     -- the droppable bit already licenses.
-                    (case KernelFacts.lookup ( home, name ) of
+                    (case KernelFacts.lookup ( prefix, home, name ) of
                         Just facts ->
                             KernelFacts.droppable facts
 

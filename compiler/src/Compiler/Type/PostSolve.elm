@@ -180,8 +180,8 @@ checkDefForAlias annotations def env =
                             A.toValue body
                     in
                     case node of
-                        Can.VarKernel _ home kernelName ->
-                            KernelTypes.insertFirstUsage home kernelName resultType env
+                        Can.VarKernel kernelPrefix home kernelName ->
+                            KernelTypes.insertFirstUsage kernelPrefix home kernelName resultType env
 
                         _ ->
                             env
@@ -202,10 +202,10 @@ checkKernelAliasBody :
     -> KernelTypes.KernelTypeEnv
 checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
     case exprInfo.node of
-        Can.VarKernel _ home kernelName ->
+        Can.VarKernel kernelPrefix home kernelName ->
             case Dict.get defName annotations of
                 Just (Can.Forall _ tipe) ->
-                    KernelTypes.insertFirstUsage home kernelName tipe env
+                    KernelTypes.insertFirstUsage kernelPrefix home kernelName tipe env
 
                 Nothing ->
                     env
@@ -438,8 +438,8 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
         Can.Update record fields ->
             postSolveUpdate annotations record fields nodeTypes0 kernel0
 
-        Can.VarKernel _ home name ->
-            case KernelTypes.lookup home name kernel0 of
+        Can.VarKernel kernelPrefix home name ->
+            case KernelTypes.lookup kernelPrefix home name kernel0 of
                 Just kernelType ->
                     let
                         nodeTypes1 =
@@ -609,7 +609,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
     case func of
         A.At _ funcInfo ->
             case funcInfo.node of
-                Can.VarKernel _ home name ->
+                Can.VarKernel kernelPrefix home name ->
                     let
                         ( nodeTypes1, kernel1 ) =
                             List.foldl
@@ -635,12 +635,12 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                             KernelTypes.buildFunctionType argTypes callResultType
 
                         kernel2 =
-                            KernelTypes.insertFirstUsage home name candidateType kernel1
+                            KernelTypes.insertFirstUsage kernelPrefix home name candidateType kernel1
 
                         -- An earlier entry, if there was one, wins over this call's
                         -- candidate.
                         kernelNodeType =
-                            case KernelTypes.lookup home name kernel2 of
+                            case KernelTypes.lookup kernelPrefix home name kernel2 of
                                 Just t ->
                                     t
 
@@ -787,14 +787,14 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
     case operand of
         A.At _ exprInfo ->
             case exprInfo.node of
-                Can.VarKernel _ home name ->
-                    if KernelTypes.hasEntry home name kernel then
+                Can.VarKernel kernelPrefix home name ->
+                    if KernelTypes.hasEntry kernelPrefix home name kernel then
                         ( nodeTypes, kernel )
 
                     else
                         let
                             ke2 =
-                                KernelTypes.insertFirstUsage home name expectedType kernel
+                                KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel
 
                             nt2 =
                                 arraySetJust exprInfo.id expectedType nodeTypes
@@ -860,14 +860,14 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
     case branchExpr of
         A.At _ exprInfo ->
             case exprInfo.node of
-                Can.VarKernel _ home name ->
-                    if KernelTypes.hasEntry home name kernel then
+                Can.VarKernel kernelPrefix home name ->
+                    if KernelTypes.hasEntry kernelPrefix home name kernel then
                         ( nodeTypes, kernel )
 
                     else
                         let
                             ke2 =
-                                KernelTypes.insertFirstUsage home name expectedType kernel
+                                KernelTypes.insertFirstUsage kernelPrefix home name expectedType kernel
 
                             nt2 =
                                 arraySetJust exprInfo.id expectedType nodeTypes
@@ -953,14 +953,14 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
             case arg of
                 A.At _ argInfo ->
                     case argInfo.node of
-                        Can.VarKernel _ argHome argName ->
-                            if KernelTypes.hasEntry argHome argName ke then
+                        Can.VarKernel argPrefix argHome argName ->
+                            if KernelTypes.hasEntry argPrefix argHome argName ke then
                                 ( nt, ke )
 
                             else
                                 let
                                     ke2 =
-                                        KernelTypes.insertFirstUsage argHome argName expectedType ke
+                                        KernelTypes.insertFirstUsage argPrefix argHome argName expectedType ke
 
                                     nt2 =
                                         arraySetJust argInfo.id expectedType nt
@@ -1288,8 +1288,8 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
             case arg of
                 A.At _ argInfo ->
                     case argInfo.node of
-                        Can.VarKernel _ home name ->
-                            if KernelTypes.hasEntry home name ke then
+                        Can.VarKernel kernelPrefix home name ->
+                            if KernelTypes.hasEntry kernelPrefix home name ke then
                                 postSolveExpr annotations arg nt ke
 
                             else
@@ -1300,7 +1300,7 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                                                 applySubst subst expectedType
 
                                             ke2 =
-                                                KernelTypes.insertFirstUsage home name kernelType ke
+                                                KernelTypes.insertFirstUsage kernelPrefix home name kernelType ke
 
                                             nt2 =
                                                 arraySetJust argInfo.id kernelType nt

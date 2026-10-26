@@ -1,12 +1,8 @@
 # Eco: open items from the program-theory bug review
 
-These items were found between 2026-10-21 and 2026-10-23, while the program theory was being written. That theory is now in `THEORY.md` and `design_docs/theory/`. On 2026-10-24 every item was re-checked against the code. Each `SD-n` item was then fixed, closed, or found not to be a bug, except the native side of SD-16. The verdicts, fixes and tests are in `plans/review-bug-list-fixes.md`. This file keeps only what is still open.
+These items were found between 2026-10-21 and 2026-10-23, while the program theory was being written. That theory is now in `THEORY.md` and `design_docs/theory/`. On 2026-10-24 every item was re-checked against the code. Each `SD-n` item was then fixed, closed, or found not to be a bug. The verdicts, fixes and tests are in `plans/review-bug-list-fixes.md`. The native side of SD-16 followed on 2026-10-26, in `plans/kernel-table-prefix-keys.md`. This file keeps only what is still open.
 
-## Open bug
-
-| SD | Area | Description | Status |
-|---|---|---|---|
-| 16 | Kernels | Kernel homes are keyed without their `Elm`/`Eco` package prefix, so `Elm.Kernel.File` and `Eco.Kernel.File` share the home `File`. | **JavaScript: fixed.** Eco kernels are keyed by `Eco.Kernel.<Home>` and named `_Eco_<Home>_<name>` (`KernelHomeCollisionTest.elm`). **Native: open.** `KernelTypes`, `KernelFacts` and `KernelSetFacts` still key rows by home and name. Only `File.size` is in both kernels, with different types: `File -> Int` in elm/file and `Handle -> Task IOError Int` in Eco. `KernelTypes` keeps the first type recorded, so a native program that uses both would probably give one of the calls the wrong type. Not reproduced, and no test yet. |
+No `SD-n` bug is open.
 
 ## Test gaps in the fixes
 

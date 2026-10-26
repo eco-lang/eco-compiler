@@ -4,8 +4,9 @@
 918/0 + 14,436/0; `full` rc 0 (test/test 2,492/2,492, JS E2E 208/0, 4 skip); stress 114/0; bootstrap
 4b and 8c fixed points and 9b OK; kernel license manifest, ctor-tag and kernel-home checks clean.
 Closed by the maintainer: SD-11 (behaviour unchanged) and SD-15 (browser check not needed).
-`global_uninitialized_read.mlir` deleted. Still open: SD-16 on the native side (kernel tables keyed by
-home and name only). Progress notes per phase are at the end.
+`global_uninitialized_read.mlir` deleted. SD-16's native side (kernel tables keyed by home and name only)
+was fixed on 2026-10-26 by plans/kernel-table-prefix-keys.md. Progress notes per phase are at the
+end.
 
 ## Context
 
@@ -299,8 +300,8 @@ JIT E2E and stress are at least at the 2026-10-23 counts plus the new tests.
     rewritten: no heap config needed, 14 real minor GCs.
 - **Phase 3 (done).** SD-16 is fixed for JavaScript output. Eco kernels are keyed by
   `Eco.Kernel.<Home>` and named `_Eco_<Home>_<name>`, and output for elm/*-only programs is
-  byte-identical. Still open: on the native side, kernel typing, `KernelFacts` and `KernelSetFacts`
-  key by home alone; File, Http and Process share those rows. SD-12 became an explicit crash, and its
+  byte-identical. The native side, where kernel typing, `KernelFacts` and `KernelSetFacts` keyed by
+  home alone, was fixed on 2026-10-26 by plans/kernel-table-prefix-keys.md. SD-12 became an explicit crash, and its
   test was restructured because Elm tests cannot catch a crash.
 - **Phase 6 (done, except the SD-11 decision).** CGEN_072 and TOPT_004 rows corrected; comments fixed
   for SD-14, SD-15 (no headless browser here, so the comment states the reasoning is unverified),

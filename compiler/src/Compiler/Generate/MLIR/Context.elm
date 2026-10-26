@@ -718,7 +718,7 @@ registerKernelInstance key ctx =
             , abiArgTypes = abi.abiArgTypes
             , abiResultType = abi.abiResultType
             , gcLeaf =
-                KernelFacts.lookup ( key.home, key.name )
+                KernelFacts.lookup ( key.prefix, key.home, key.name )
                     |> Maybe.map KernelFacts.gcLeafEligible
                     |> Maybe.withDefault False
             }

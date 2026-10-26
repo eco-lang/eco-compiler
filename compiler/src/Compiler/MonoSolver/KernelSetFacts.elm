@@ -21,7 +21,7 @@ A _function-capable_ position is one that could hold a function value: an
 arrow, an extensible record, or a type variable, except one constrained to
 `number` or `comparable`, whose values never contain a function.
 
-`factFor` looks a kernel up by its home module and name, and the answer is one
+`factFor` looks a kernel up by its prefix, home module and name, and the answer is one
 of three:
 
   - A `TypeFaithful` row carries a _license_: an audited claim that function
@@ -479,9 +479,11 @@ type KernelSetFact
     | Positional KernelPlan
 
 
-{-| Returns the fact for the kernel `name` in module `home`, or `Nothing` when
-it has no row and every function-typed position of a call to it is to be
-poisoned. The `Elm` or `Eco` kernel prefix is not part of the key.
+{-| Returns the fact for the kernel `name` in module `prefix.Kernel.home`, or
+`Nothing` when it has no row and every function-typed position of a call to it
+is to be poisoned. The prefix, `Elm` or `Eco`, is part of the key, because
+the two kernels share some homes (`File`, `Http`, `Process`) and a row audits
+one kernel's C++.
 
 A `TypeFaithful` fact needs no alignment with the call, because partial and
 over-application are handled by unification, but `licenseApplies` must accept
@@ -489,9 +491,9 @@ the occurrence. A `Positional` fact applies only to a call whose parameters
 can be aligned with the row's `params`, and any other call is fully poisoned.
 
 -}
-factFor : Name -> Name -> Maybe KernelSetFact
-factFor home name =
-    Dict.get ( home, name ) facts
+factFor : Name -> Name -> Name -> Maybe KernelSetFact
+factFor prefix home name =
+    Dict.get ( prefix, home, name ) facts
 
 
 {-| The C++ files that any license depends on, sorted and without duplicates.
@@ -531,874 +533,881 @@ dedupeSorted xs =
             xs
 
 
-{-| Every row of the table, ordered by home module and then by name.
+{-| Every row of the table, ordered by prefix, home module and name.
 -}
-rows : List ( ( Name, Name ), KernelSetFact )
+rows : List ( ( Name, Name, Name ), KernelSetFact )
 rows =
     Dict.toList facts
 
 
-{-| The table, keyed by home module and name. Each row's evidence is its audit
+{-| The table, keyed by kernel prefix, home module and name. Each row's evidence is its audit
 record, with the C++ line numbers and dates the audit used.
 -}
-facts : Dict.Dict ( Name, Name ) KernelSetFact
+facts : Dict.Dict ( Name, Name, Name ) KernelSetFact
 facts =
     Dict.fromList
-        [ ( ( "Basics", "acos" )
+        [ ( ( "Elm", "Basics", "acos" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_acos:13-15 | helpers: Basics.cpp:acos:16-18 | type: elm/core/1.0.5/src/Basics.elm:718 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "add" )
+        , ( ( "Elm", "Basics", "add" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_add:95-100 (ABI instances :123-129) | helpers: BasicsExports.cpp anon-ns:70-91 | type: elm/core/1.0.5/src/Basics.elm:168 (number -> number -> number) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Basics", "and" )
+        , ( ( "Elm", "Basics", "and" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_and:220-222 | helpers: Basics.cpp:and_:153-155, ExportHelpers.hpp:80-89 | type: elm/core/1.0.5/src/Basics.elm:468 (Bool -> Bool -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "asin" )
+        , ( ( "Elm", "Basics", "asin" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_asin:17-19 | helpers: Basics.cpp:asin:20-22 | type: elm/core/1.0.5/src/Basics.elm:728 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "atan" )
+        , ( ( "Elm", "Basics", "atan" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_atan:21-23 | helpers: Basics.cpp:atan:24-26 | type: elm/core/1.0.5/src/Basics.elm:751 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "atan2" )
+        , ( ( "Elm", "Basics", "atan2" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_atan2:25-27 | helpers: Basics.cpp:atan2:28-30 | type: elm/core/1.0.5/src/Basics.elm:766 (Float -> Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "ceiling" )
+        , ( ( "Elm", "Basics", "ceiling" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_ceiling:192-194 | helpers: Basics.cpp:ceiling:113-115 | type: elm/core/1.0.5/src/Basics.elm:300 (Float -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "cos" )
+        , ( ( "Elm", "Basics", "cos" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_cos:29-31 | helpers: Basics.cpp:cos:32-34 | type: elm/core/1.0.5/src/Basics.elm:683 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "e" )
+        , ( ( "Elm", "Basics", "e" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_e:168-170 | helpers: Basics.cpp:e:60-62 | type: elm/core/1.0.5/src/Basics.elm:628 (Float, CAF arity 0) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "fdiv" )
+        , ( ( "Elm", "Basics", "fdiv" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_fdiv:176-178 | helpers: Basics.cpp:fdiv:84-86 | type: elm/core/1.0.5/src/Basics.elm:203 (Float -> Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "floor" )
+        , ( ( "Elm", "Basics", "floor" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_floor:196-198 | helpers: Basics.cpp:floor:117-119 | type: elm/core/1.0.5/src/Basics.elm:284 (Float -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "idiv" )
+        , ( ( "Elm", "Basics", "idiv" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_idiv:180-182 | helpers: Basics.cpp:idiv:88-90 | type: elm/core/1.0.5/src/Basics.elm:225 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "isInfinite" )
+        , ( ( "Elm", "Basics", "isInfinite" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_isInfinite:212-214 | helpers: Basics.cpp:isInfinite:141-143, ExportHelpers.hpp:80-82 | type: elm/core/1.0.5/src/Basics.elm:826 (Float -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "isNaN" )
+        , ( ( "Elm", "Basics", "isNaN" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_isNaN:216-218 | helpers: Basics.cpp:isNaN:145-147, ExportHelpers.hpp:encodeBoxedBool:80-82 | type: elm/core/1.0.5/src/Basics.elm:811 (Float -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "log" )
+        , ( ( "Elm", "Basics", "log" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_log:45-47 | helpers: Basics.cpp:log | type: elm/core/1.0.5/src/Basics.elm (Float -> Float; INFERRED-FROM-USAGE via logBase, R5 vacuous class) | B1: vacuous (no function-capable position) | B2: no store at all | B3: no allocClosure/Tag_Closure | audited: 2026-08-25 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "modBy" )
+        , ( ( "Elm", "Basics", "modBy" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_modBy:184-186 | helpers: Basics.cpp:modBy:92-103 | type: elm/core/1.0.5/src/Basics.elm:539 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write; throw at :96 uses a literal | B3: no allocClosure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "mul" )
+        , ( ( "Elm", "Basics", "mul" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_mul:109-114 (ABI instances :139-145) | helpers: BasicsExports.cpp anon-ns:70-91 | type: elm/core/1.0.5/src/Basics.elm:186 (number -> number -> number) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Basics", "not" )
+        , ( ( "Elm", "Basics", "not" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_not:232-234 | helpers: Basics.cpp:not_:165-167, ExportHelpers.hpp:80-89 | type: elm/core/1.0.5/src/Basics.elm:452 (Bool -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "or" )
+        , ( ( "Elm", "Basics", "or" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_or:224-226 | helpers: Basics.cpp:or_:157-159, ExportHelpers.hpp:80-89 | type: elm/core/1.0.5/src/Basics.elm:484 (Bool -> Bool -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "pi" )
+        , ( ( "Elm", "Basics", "pi" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_pi:172-174 | helpers: Basics.cpp:pi:64-66 | type: elm/core/1.0.5/src/Basics.elm:670 (Float, CAF arity 0) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "pow" )
+        , ( ( "Elm", "Basics", "pow" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_pow:116-121 (ABI instances :149-166) | helpers: BasicsExports.cpp anon-ns:70-91 | type: elm/core/1.0.5/src/Basics.elm:235 (number -> number -> number) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Basics", "remainderBy" )
+        , ( ( "Elm", "Basics", "remainderBy" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_remainderBy:188-190 | helpers: Basics.cpp:remainderBy:105-107 | type: elm/core/1.0.5/src/Basics.elm:555 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "round" )
+        , ( ( "Elm", "Basics", "round" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_round:200-202 | helpers: Basics.cpp:round:121-123 | type: elm/core/1.0.5/src/Basics.elm:268 (Float -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "sin" )
+        , ( ( "Elm", "Basics", "sin" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_sin:33-35 | helpers: Basics.cpp:sin:36-38 | type: elm/core/1.0.5/src/Basics.elm:696 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "sqrt" )
+        , ( ( "Elm", "Basics", "sqrt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_sqrt:41-43 | helpers: Basics.cpp:sqrt:44-46 | type: elm/core/1.0.5/src/Basics.elm:609 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "sub" )
+        , ( ( "Elm", "Basics", "sub" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_sub:102-107 (ABI instances :131-137) | helpers: BasicsExports.cpp anon-ns:70-91 | type: elm/core/1.0.5/src/Basics.elm:177 (number -> number -> number) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Basics", "tan" )
+        , ( ( "Elm", "Basics", "tan" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_tan:37-39 | helpers: Basics.cpp:tan:40-42 | type: elm/core/1.0.5/src/Basics.elm:708 (Float -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "toFloat" )
+        , ( ( "Elm", "Basics", "toFloat" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_toFloat:208-210 | helpers: Basics.cpp:toFloat:133-135 | type: elm/core/1.0.5/src/Basics.elm:252 (Int -> Float) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "truncate" )
+        , ( ( "Elm", "Basics", "truncate" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_truncate:204-206 | helpers: Basics.cpp:truncate:125-127 | type: elm/core/1.0.5/src/Basics.elm:316 (Float -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Basics", "xor" )
+        , ( ( "Elm", "Basics", "xor" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BasicsExports.cpp", "elm-kernel-cpp/src/core/Basics.cpp", "elm-kernel-cpp/src/ExportHelpers.hpp" ]
                 , evidence = "class: vacuous | entry: BasicsExports.cpp:Elm_Kernel_Basics_xor:228-230 | helpers: Basics.cpp:xor_:161-163, ExportHelpers.hpp:80-89 | type: elm/core/1.0.5/src/Basics.elm:496 (Bool -> Bool -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Basics.cpp idiv/modBy/remainderBy gain divisor -1 (and idiv divisor 0) guards for CGEN_084, in place with no line moves; pure Int code; ExportHelpers.hpp comment-only edit to toPtr (literals live in PermanentSpace); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "and" )
+        , ( ( "Elm", "Bitwise", "and" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_and:10-12 | helpers: Bitwise.cpp:and_:5-16 | type: elm/core/1.0.5/src/Bitwise.elm:23 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "complement" )
+        , ( ( "Elm", "Bitwise", "complement" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_complement:22-24 | helpers: Bitwise.cpp:complement:44-55 | type: elm/core/1.0.5/src/Bitwise.elm:44 (Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "or" )
+        , ( ( "Elm", "Bitwise", "or" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_or:14-16 | helpers: Bitwise.cpp:or_:18-29 | type: elm/core/1.0.5/src/Bitwise.elm:30 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "shiftLeftBy" )
+        , ( ( "Elm", "Bitwise", "shiftLeftBy" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_shiftLeftBy:26-28 | helpers: Bitwise.cpp:shiftLeftBy:57-69 | type: elm/core/1.0.5/src/Bitwise.elm:55 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "shiftRightBy" )
+        , ( ( "Elm", "Bitwise", "shiftRightBy" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_shiftRightBy:30-32 | helpers: Bitwise.cpp:shiftRightBy:71-83 | type: elm/core/1.0.5/src/Bitwise.elm:73 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "shiftRightZfBy" )
+        , ( ( "Elm", "Bitwise", "shiftRightZfBy" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_shiftRightZfBy:34-36 | helpers: Bitwise.cpp:shiftRightZfBy:85-98 | type: elm/core/1.0.5/src/Bitwise.elm:90 (Int -> Int -> Int; uint64_t ret) | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no allocClosure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bitwise", "xor" )
+        , ( ( "Elm", "Bitwise", "xor" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/BitwiseExports.cpp", "elm-kernel-cpp/src/core/Bitwise.cpp" ]
                 , evidence = "class: vacuous | entry: BitwiseExports.cpp:Elm_Kernel_Bitwise_xor:18-20 | helpers: Bitwise.cpp:xor_:31-42 | type: elm/core/1.0.5/src/Bitwise.elm:37 (Int -> Int -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Bitwise.cpp shifts mask the count to 6 bits for CGEN_085, in place with no line moves; pure Int code; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Bytes", "decode" )
+        , ( ( "Elm", "Bytes", "decode" )
           , Positional
                 { params = [ PSFApplies, PSFOpaque ]
                 , result = PSFOpaque
                 , evidence = "class: full | entry: BytesExports.cpp:Elm_Kernel_Bytes_decode:414-482 | B1: apply-only via eco_apply_closure_typed :443, decoder never stored or copied | result opaque: A2 — a decode failure leaves the callback as a C++ exception (BytesDecodeFailure) caught here and turned into Nothing, an out-of-band exit the callback's (Int, a) type does not describe; the defensive embedded-constant check after the apply is kept | audited: 2026-10-08 (plans/bytes-decode-failure-unwind.md; was 2026-08-20: Nothing sentinel)"
                 }
           )
-        , ( ( "Bytes", "decodeFailure" )
+        , ( ( "Elm", "Bytes", "decodeFailure" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_decodeFailure:485-487 | type: elm/bytes/1.0.8/src/Bytes/Decode.elm (the failure marker behind `fail : Decoder a`) | B1: vacuous - NO arguments, returns a constant marker; `a` is phantom AND nothing can ever be written to it from here | B2: no store | B3: no allocClosure | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "encode" )
+        , ( ( "Elm", "Bytes", "encode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_encode:391-412 | helpers: encoderSize:120-138, writeEncoder:140-274 | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:96 (Encoder -> Bytes) | B1: vacuous (no function-capable position) | B2: result alloc only :401-403 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "getHostEndianness" )
+        , ( ( "Elm", "Bytes", "getHostEndianness" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getHostEndianness:299-303 | type: elm/bytes/1.0.8/src/Bytes.elm (Endianness) | B1: vacuous - NO arguments; returns fromBits(isLE ? 0 : 1), a concrete enum | B2: no store | B3: no allocClosure | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "getStringWidth" )
+        , ( ( "Elm", "Bytes", "getStringWidth" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_getStringWidth:305-362 | helpers: none | type: elm/bytes/1.0.8/src/Bytes/Encode.elm:250 (String -> Int) | B1: vacuous (no function-capable position) | B2: C++-stack u16string :333, no Elm retention | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_bytes" )
+        , ( ( "Elm", "Bytes", "read_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_bytes:591-602 | helpers: makeTuple2_ip:67-78 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:146 (Int -> Bytes -> Int -> (Int, Bytes)) | B1: vacuous (no function-capable position) | B2: slice + Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_f32" )
+        , ( ( "Elm", "Bytes", "read_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f32:567-577 | helpers: makeTuple2_if:57-65 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:128 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_f64" )
+        , ( ( "Elm", "Bytes", "read_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_f64:579-589 | helpers: makeTuple2_if:57-65 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:135 (Bool -> Bytes -> Int -> (Int, Float)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_i16" )
+        , ( ( "Elm", "Bytes", "read_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i16:525-534 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:85 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_i32" )
+        , ( ( "Elm", "Bytes", "read_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i32:536-545 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:92 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_i8" )
+        , ( ( "Elm", "Bytes", "read_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_i8:510-515 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:78 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only :46-47 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_string" )
+        , ( ( "Elm", "Bytes", "read_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_string:604-724 | helpers: makeTuple2_ip:67-78 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:175 (Int -> Bytes -> Int -> (Int, String)) | B1: vacuous (no function-capable position) | B2: body + Tuple2 result rooted :664-666 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_u16" )
+        , ( ( "Elm", "Bytes", "read_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u16:547-555 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:110 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_u32" )
+        , ( ( "Elm", "Bytes", "read_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u32:557-565 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:117 (Bool -> Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "read_u8" )
+        , ( ( "Elm", "Bytes", "read_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_read_u8:517-521 | helpers: makeTuple2_ii:47-55 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Decode.elm:103 (Bytes -> Int -> (Int, Int)) | B1: vacuous (no function-capable position) | B2: Tuple2 result only | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "width" )
+        , ( ( "Elm", "Bytes", "width" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_width:295-297 | helpers: ElmBytesRuntime.cpp:elm_bytebuffer_len:78-85 | type: elm/bytes/1.0.8/src/Bytes.elm:77 (Bytes -> Int) | B1: vacuous (no function-capable position) | B2: read-only length probe, no statics | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_bytes" )
+        , ( ( "Elm", "Bytes", "write_bytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_bytes:882-884 | helpers: makeEncoderBytes:832-848 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:298 (C++ Bytes -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg into result :846, rooted :838-842 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_f32" )
+        , ( ( "Elm", "Bytes", "write_f32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f32:874-876 | helpers: makeEncoder2_pf:768-785 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:294 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :761-765 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_f64" )
+        , ( ( "Elm", "Bytes", "write_f64" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_f64:878-880 | helpers: makeEncoder2_pf:768-785 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:295 (C++ Endianness -> Float -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :761-765 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_i16" )
+        , ( ( "Elm", "Bytes", "write_i16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i16:854-856 | helpers: makeEncoder2_pi:749-766 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:289 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :742-746 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_i32" )
+        , ( ( "Elm", "Bytes", "write_i32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i32:858-860 | helpers: makeEncoder2_pi:749-766 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:290 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :742-746 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_i8" )
+        , ( ( "Elm", "Bytes", "write_i8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_i8:850-852 | helpers: makeEncoder1:730-740 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:288 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :720-721 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_string" )
+        , ( ( "Elm", "Bytes", "write_string" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_string:886-888 | helpers: makeEncoderUtf8:807-827 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:297 (C++ String -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: arg+width into result :811-812, rooted :802-807 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_u16" )
+        , ( ( "Elm", "Bytes", "write_u16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u16:866-868 | helpers: makeEncoder2_pi:749-766 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:292 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :742-746 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_u32" )
+        , ( ( "Elm", "Bytes", "write_u32" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u32:870-872 | helpers: makeEncoder2_pi:749-766 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:293 (C++ Endianness -> Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :742-746 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Bytes", "write_u8" )
+        , ( ( "Elm", "Bytes", "write_u8" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/bytes/BytesExports.cpp" ]
                 , evidence = "class: vacuous | entry: BytesExports.cpp:Elm_Kernel_Bytes_write_u8:862-864 | helpers: makeEncoder1:730-740 | type: INFERRED elm/bytes/1.0.8/src/Bytes/Encode.elm:291 (C++ Int -> Encoder; Elm ref discrepant, all concrete) | B1: vacuous (no function-capable position) | B2: result node only :720-721 | B3: no closure alloc | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-08 (re-audit, plans/bytes-decode-failure-unwind.md: the read_* functions and decodeFailure no longer return the Nothing constant on failure but throw Elm::BytesDecodeFailure, caught only in Elm_Kernel_Bytes_decode; read_string validates with Utf8::scan before transcoding and never reads outside its range; Elm_Kernel_Bytes_decode wraps its single decoder application in try/catch and restores the root and scratch stacks; no application, retention, fabrication or type change; BytesExports.cpp line citations re-derived)"
                 }
           )
-        , ( ( "Char", "fromCode" )
+        , ( ( "Elm", "Char", "fromCode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_fromCode:11-15 | helpers: none (inline std::max/min clamp) | type: elm/core/1.0.5/src/Char.elm:255 (Int -> Char) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Char", "toCode" )
+        , ( ( "Elm", "Char", "toCode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_toCode:28-30 | helpers: none | type: elm/core/1.0.5/src/Char.elm:235 (Char -> Int; u64 c_raw & 0xFFFF = statepoint ABI :17-27) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Char", "toLocaleLower" )
+        , ( ( "Elm", "Char", "toLocaleLower" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp", "elm-kernel-cpp/src/core/Char.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_toLocaleLower:42-45 | helpers: Char.cpp:toLocaleLower:105-122 (-> toLower) | type: elm/core/1.0.5/src/Char.elm:220 (Char -> Char) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Char", "toLocaleUpper" )
+        , ( ( "Elm", "Char", "toLocaleUpper" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp", "elm-kernel-cpp/src/core/Char.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_toLocaleUpper:47-50 | helpers: Char.cpp:toLocaleUpper:124-141 (-> toUpper) | type: elm/core/1.0.5/src/Char.elm:214 (Char -> Char) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Char", "toLower" )
+        , ( ( "Elm", "Char", "toLower" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp", "elm-kernel-cpp/src/core/Char.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_toLower:32-35 | helpers: Char.cpp:toLower:61-81 (pure, calls nothing) | type: elm/core/1.0.5/src/Char.elm:208 (Char -> Char) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Char", "toUpper" )
+        , ( ( "Elm", "Char", "toUpper" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/CharExports.cpp", "elm-kernel-cpp/src/core/Char.cpp" ]
                 , evidence = "class: vacuous | entry: CharExports.cpp:Elm_Kernel_Char_toUpper:37-40 | helpers: Char.cpp:toUpper:83-103 (pure, calls nothing) | type: elm/core/1.0.5/src/Char.elm:202 (Char -> Char) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-08-20"
                 }
           )
-        , ( ( "Console", "log" )
+        , ( ( "Eco", "Console", "log" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: cheap | entry: ConsoleExports.cpp:Eco_Kernel_Console_log:21-23 | helpers: Console.cpp:log:144-163 | type: Eco/Console.elm:81 (String -> a -> a, alias-seeded) | B1: B1(b)+B1(c) -- Console.cpp:162 `return value;` is the arg's ONLY use | B2: no static/global/task write in Console.cpp | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Console", "readAll" )
+        , ( ( "Eco", "Console", "readAll" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readAll:17-19 | helpers: Console.cpp:readAll:140-142 | type: Eco/Console.elm:71 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :141) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "Console", "readLine" )
+        , ( ( "Eco", "Console", "readLine" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readLine:13-15 | helpers: Console.cpp:readLine:136-138 | type: Eco/Console.elm:63 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :137) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "Console", "write" )
+        , ( ( "Eco", "Console", "write" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
                 , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_write:9-11 | helpers: Console.cpp:write:126-134 | type: Eco/Console.elm:55 | B1: vacuous (no function-capable position) | B2: String captured :129-133, set-flow inert | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "Crash", "crash" )
+        , ( ( "Eco", "Crash", "crash" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "eco-kernel-cpp/src/eco-kernel/CrashExports.cpp", "eco-kernel-cpp/src/eco-kernel/Crash.cpp" ]
                 , evidence = "class: cheap | entry: CrashExports.cpp:Eco_Kernel_Crash_crash:9-11 | helpers: Crash.cpp:crash:20-33 | type: Eco/Crash.elm:16 (String -> a, alias-seeded) | B1: no function value enters (param is String); result `a` never inhabited -- ::exit(1) :30 | B2: no storage | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
                 }
           )
-        , ( ( "Env", "lookup" )
+        , ( ( "Eco", "Env", "lookup" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/EnvExports.cpp", "eco-kernel-cpp/src/eco-kernel/Env.cpp" ]
                 , evidence = "class: vacuous | entry: EnvExports.cpp:Eco_Kernel_Env_lookup:9-11 | helpers: Env.cpp:lookup:52-55 | type: Eco/Env.elm:20 (String -> Task Never (Maybe String), alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :54, inert; s_argv:19-20 is char** | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "Env", "rawArgs" )
+        , ( ( "Eco", "Env", "rawArgs" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/EnvExports.cpp", "eco-kernel-cpp/src/eco-kernel/Env.cpp" ]
                 , evidence = "class: vacuous | entry: EnvExports.cpp:Eco_Kernel_Env_rawArgs:13-15 | helpers: Env.cpp:rawArgs:57-60 | type: Eco/Env.elm:27 (Task Never (List String), alias-seeded) | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :59) | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "File", "appDataDir" )
+        , ( ( "Eco", "File", "appDataDir" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_appDataDir:81-83 | helpers: File.cpp:appDataDir:823-826 | type: Eco/File.elm:271 (String -> Task Never String, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :825 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "canonicalize" )
+        , ( ( "Eco", "File", "canonicalize" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_canonicalize:77-79 | helpers: File.cpp:canonicalize:818-821 | type: Eco/File.elm:263 (String -> Task IOError String) | B1: vacuous (no function-capable position) | B2: String captured :820 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "close" )
+        , ( ( "Eco", "File", "close" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_close:33-35 | helpers: File.cpp:close:747-753 | type: Eco/File.elm:149 (Handle -> Task IOError (); inferred Int -> ...) | B1: vacuous (no function-capable position) | B2: only an unboxed Int captured :752 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "createDir" )
+        , ( ( "Eco", "File", "createDir" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_createDir:85-87 | helpers: File.cpp:createDir:828-835 | type: Eco/File.elm:279 (Bool -> String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :834, Bool decoded :673 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "dirExists" )
+        , ( ( "Eco", "File", "dirExists" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_dirExists:53-55 | helpers: File.cpp:dirExists:788-791 | type: Eco/File.elm:204 (String -> Task Never Bool, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :790 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "fileExists" )
+        , ( ( "Eco", "File", "fileExists" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_fileExists:49-51 | helpers: File.cpp:fileExists:783-786 | type: Eco/File.elm:197 (String -> Task Never Bool, alias-seeded) | B1: vacuous (no function-capable position) | B2: String captured :785 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "findExecutable" )
+        , ( ( "Eco", "File", "findExecutable" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_findExecutable:57-59 | helpers: File.cpp:findExecutable:793-796 | type: Eco/File.elm:211 | B1: vacuous (no function-capable position) | B2: String captured :795; :203/:209 are static FUNCTIONS | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "getCwd" )
+        , ( ( "Eco", "File", "getCwd" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_getCwd:69-71 | helpers: File.cpp:getCwd:808-811 | type: Eco/File.elm:248 (Task Never String, alias-seeded) | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :810) | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "hWriteString" )
+        , ( ( "Eco", "File", "hWriteString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_hWriteString:97-99 | helpers: File.cpp:hWriteString:755-763 | type: Eco/File.elm:157 | B1: vacuous (no function-capable position) | B2: String + unboxed fd in a tuple2 :762 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "list" )
+        , ( ( "Eco", "File", "list" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_list:61-63 | helpers: File.cpp:list:798-801 | type: Eco/File.elm:218 (String -> Task IOError (List String); element concrete) | B1: vacuous (no function-capable position) | B2: String captured :800; list built fresh | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "lock" )
+        , ( ( "Eco", "File", "lock" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_lock:41-43 | helpers: File.cpp:lock:773-776 | type: Eco/File.elm:177 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :775, never read | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "mime" )
+        , ( ( "Elm", "File", "mime" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/file/FileExports.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Elm_Kernel_File_mime:31-35 | type: elm/file/1.0.5/src/File.elm:152 (File -> String; type File = File :41 -- no arrow, no tvar) | B1: vacuous (no function-capable position) | B2: vacuous, the body performs no writes (stub: :33 asserts) | B3: no closure allocation | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "modificationTime" )
+        , ( ( "Eco", "File", "modificationTime" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_modificationTime:65-67 | helpers: File.cpp:modificationTime:803-806 | type: Eco/File.elm:226 (String -> Task IOError Time.Posix; inferred ok Int) | B1: vacuous (no function-capable position) | B2: String captured :805 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "name" )
+        , ( ( "Elm", "File", "name" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/file/FileExports.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Elm_Kernel_File_name:25-29 | type: elm/file/1.0.5/src/File.elm:142 (File -> String; type File = File :41 -- no arrow, no tvar) | B1: vacuous (no function-capable position) | B2: vacuous, the body performs no writes (stub: :27 asserts) | B3: no closure allocation | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "open" )
+        , ( ( "Eco", "File", "open" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_open:29-31 | helpers: File.cpp:open:734-745 | type: Eco/File.elm:118 | B1: vacuous (no function-capable position) | B2: tuple2 :744; fd returned as an Int :638 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "readBytes" )
+        , ( ( "Eco", "File", "readBytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_readBytes:17-19 | helpers: File.cpp:readBytes:711-714 | type: Eco/File.elm:88 (String -> Task IOError Bytes) | B1: vacuous (no function-capable position) | B2: String captured :713 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "readString" )
+        , ( ( "Eco", "File", "readString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_readString:9-11 | helpers: File.cpp:readString:697-700 | type: Eco/File.elm:72 (String -> Task IOError String) | B1: vacuous (no function-capable position) | B2: String captured :699; no object statics in File.cpp | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "removeDir" )
+        , ( ( "Eco", "File", "removeDir" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_removeDir:93-95 | helpers: File.cpp:removeDir:842-845 | type: Eco/File.elm:295 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :844 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "removeFile" )
+        , ( ( "Eco", "File", "removeFile" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_removeFile:89-91 | helpers: File.cpp:removeFile:837-840 | type: Eco/File.elm:287 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :839 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "setCwd" )
+        , ( ( "Eco", "File", "setCwd" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_setCwd:73-75 | helpers: File.cpp:setCwd:813-816 | type: Eco/File.elm:255 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :815; CWD change is an OS effect | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "size" )
+        , ( ( "Elm", "File", "size" )
           , TypeFaithful
                 { scope = Inert
-                , files = [ "eco-kernel-cpp/src/eco-kernel/File.cpp", "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "elm-kernel-cpp/src/file/FileExports.cpp" ]
-                , evidence = "class: vacuous | entry: eco FileExports.cpp:37-39 + elm FileExports.cpp:37-41 (both _File_size) | type: SHARED KEY -- Eco/File.elm:165 (Handle -> Task IOError Int) AND elm/file/1.0.5/src/File.elm:163 (File -> Int); both arrow-free and variable-free | B1: vacuous (no function-capable position) | B2: eco captures an Int File.cpp:770; elm no writes | B3: eco binding closure only | audited: 2026-10-03"
+                , files = [ "elm-kernel-cpp/src/file/FileExports.cpp" ]
+                , evidence = "class: vacuous | entry: elm FileExports.cpp:37-41 (_File_size) | type: elm/file/1.0.5/src/File.elm:163 (File -> Int); arrow-free and variable-free | B1: vacuous (no function-capable position) | B2: no writes | B3: no closure | audited: 2026-10-03 | split 2026-10-26: plans/kernel-table-prefix-keys.md - the one row shared by both kernels' File.size became one row per prefix; this row keeps the elm/file half of the 2026-10-03 evidence unchanged"
                 }
           )
-        , ( ( "File", "touch" )
+        , ( ( "Eco", "File", "size" )
+          , TypeFaithful
+                { scope = Inert
+                , files = [ "eco-kernel-cpp/src/eco-kernel/File.cpp", "eco-kernel-cpp/src/eco-kernel/FileExports.cpp" ]
+                , evidence = "class: vacuous | entry: eco FileExports.cpp:37-39 (_File_size) | type: Eco/File.elm:165 (Handle -> Task IOError Int); arrow-free and variable-free | B1: vacuous (no function-capable position) | B2: captures an Int File.cpp:770 | B3: binding closure only | audited: 2026-10-03 | split 2026-10-26: plans/kernel-table-prefix-keys.md - the one row shared by both kernels' File.size became one row per prefix; this row keeps the eco/kernel half of the 2026-10-03 evidence unchanged"
+                }
+          )
+        , ( ( "Eco", "File", "touch" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_touch:101-103 | helpers: File.cpp:touch:847-850 | type: Eco/File.elm:236 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :849 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "unlock" )
+        , ( ( "Eco", "File", "unlock" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_unlock:45-47 | helpers: File.cpp:unlock:778-781 | type: Eco/File.elm:185 (String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: String captured :780, never read | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "writeBytes" )
+        , ( ( "Eco", "File", "writeBytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeBytes:21-23 | helpers: File.cpp:writeBytes:716-723 | type: Eco/File.elm:96 (String -> Bytes -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :722 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "writeBytesAtomic" )
+        , ( ( "Eco", "File", "writeBytesAtomic" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeBytesAtomic:25-27 | helpers: File.cpp:writeBytesAtomic:725-732, File.cpp:writeBytesAtomicBody:547-608 | type: Eco/File.elm:106 (String -> Bytes -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :729; gAtomicWriteSeq :542 is a plain integer, not a heap value | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "File", "writeString" )
+        , ( ( "Eco", "File", "writeString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/FileExports.cpp", "eco-kernel-cpp/src/eco-kernel/File.cpp" ]
                 , evidence = "class: vacuous | entry: FileExports.cpp:Eco_Kernel_File_writeString:13-15 | helpers: File.cpp:writeString:702-709 | type: Eco/File.elm:80 (String -> String -> Task IOError ()) | B1: vacuous (no function-capable position) | B2: both Strings in a tuple2 :708 | B3: binding closure only | audited: 2026-10-03"
                 }
           )
-        , ( ( "Http", "emptyBody" )
+        , ( ( "Elm", "Http", "emptyBody" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/http/HttpExports.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Elm_Kernel_Http_emptyBody:781-784 | type: elm/http/2.0.0/src/Http.elm:224 | B1: vacuous (no function-capable position) | B2: :782-783 is one custom(BODY_EMPTY) alloc + return; no static/global/task | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 3 - HttpExports.cpp gains request withdrawal (abort control map keyed by token, a kill-handle closure from the request binding capturing only the unboxed Int token, spawn tickets, Http.cancel claim-or-abort); all of it is in the toTask binding / cancel path and holds no heap value beyond the existing tracker registry; this entry point is unchanged byte for byte; cited lines updated; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "Http", "fetch" )
+        , ( ( "Eco", "Http", "fetch" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/HttpExports.cpp", "eco-kernel-cpp/src/eco-kernel/Http.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Eco_Kernel_Http_fetch:9-11 | type: Eco/Http.elm:22-26 | B1: vacuous (no function-capable position) | B2: three Strings in a tuple3 :416-417; parkBundle parks the runtime's OWN resume | B3: async binding closure only | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - Http.cpp rooting only (getArchive file tuples rooted by one all-ones record instead of one per element); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "Http", "getArchive" )
+        , ( ( "Eco", "Http", "getArchive" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/HttpExports.cpp", "eco-kernel-cpp/src/eco-kernel/Http.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Eco_Kernel_Http_getArchive:13-15 | helpers: Http.cpp:getArchive:422-425, parkBundle:340-350 | type: Eco/Http.elm:35-37 | B1: vacuous (no function-capable position) | B2: url captured as the async payload :424 | B3: async binding closure only | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - Http.cpp rooting only (getArchive file tuples rooted by one all-ones record instead of one per element); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "Http", "pair" )
+        , ( ( "Elm", "Http", "pair" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/http/HttpExports.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Elm_Kernel_Http_pair:787-795 | type: elm/http/2.0.0/src/Http.elm:249,271,286,351,368 -- ALL FIVE visible types (string/bytes/fileBody, string/filePart) confirmed arrow-free AND variable-free | B1: vacuous (no function-capable position) | B2: :789-794 writes only into the returned custom(BODY_PAIR) | B3: none | audited: 2026-08-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 3 - HttpExports.cpp gains request withdrawal (abort control map keyed by token, a kill-handle closure from the request binding capturing only the unboxed Int token, spawn tickets, Http.cancel claim-or-abort); all of it is in the toTask binding / cancel path and holds no heap value beyond the existing tracker registry; this entry point is unchanged byte for byte; cited lines updated; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "Http", "toFormData" )
+        , ( ( "Elm", "Http", "toFormData" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/http/HttpExports.cpp" ]
                 , evidence = "class: vacuous | entry: HttpExports.cpp:Elm_Kernel_Http_toFormData:931-937 | type: elm/http/2.0.0/src/Http.elm (List Part -> Body) | B1: vacuous - Part and Body are both CONCRETE, no type variable and no arrow anywhere | B2: no store outside result | B3: no allocClosure | audited: 2026-08-25 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 3 - HttpExports.cpp gains request withdrawal (abort control map keyed by token, a kill-handle closure from the request binding capturing only the unboxed Int token, spawn tickets, Http.cancel claim-or-abort); all of it is in the toTask binding / cancel path and holds no heap value beyond the existing tracker registry; this entry point is unchanged byte for byte; cited lines updated; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "JsArray", "appendN" )
+        , ( ( "Elm", "JsArray", "appendN" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_appendN:358-416 | helpers: elm_array_append_n:1036-1087 | type: elm/core/1.0.5/src/Elm/JsArray.elm:179 | B1: :382-387 copy element words verbatim, B1(b) along shared a | B2: writes confined to fresh resultArr | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "empty" )
+        , ( ( "Elm", "JsArray", "empty" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_empty:192-195 | type: elm/core/1.0.5/src/Elm/JsArray.elm:53 (JsArray a) | B1: no argument (zero-arg CAF) | B2: one allocation, no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "foldl" )
+        , ( ( "Elm", "JsArray", "foldl" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldl:651-653 | helpers: foldImpl:576-649 | type: elm/core/1.0.5/src/Elm/JsArray.elm:129 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638-639 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "foldr" )
+        , ( ( "Elm", "JsArray", "foldr" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_foldr:655-657 | helpers: foldImpl:576-649 (dir :603) | type: elm/core/1.0.5/src/Elm/JsArray.elm:136 | B1: apply-only via eco_apply_closure_eval :184; acc by identity :638 | B2: roots + stack locals only :598-623 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "indexedMap" )
+        , ( ( "Elm", "JsArray", "indexedMap" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_indexedMap:519-560 | helpers: callBinaryIndexMapClosureTyped:152 | type: elm/core/1.0.5/src/Elm/JsArray.elm:153 | B1: apply-only via eco_apply_closure_eval :161; elems are args only | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "initialize" )
+        , ( ( "Elm", "JsArray", "initialize" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initialize:422-455 | helpers: callUnaryInitClosureTyped:80, pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:80 | B1: apply-only via eco_apply_closure_eval :89 | B2: only the result builder mutated | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "initializeFromList" )
+        , ( ( "Elm", "JsArray", "initializeFromList" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp", "elm-kernel-cpp/src/core/JsArray.cpp", "elm-kernel-cpp/src/core/JsArray.hpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_initializeFromList:457-461 | helpers: JsArray.cpp:initializeFromList:14 | type: elm/core/1.0.5/src/Elm/JsArray.elm:95 | B1: no closure param; heads by identity :40, suffix view :54-72 | B2: writes only fresh arr | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "length" )
+        , ( ( "Elm", "JsArray", "length" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_length:204-208 | type: elm/core/1.0.5/src/Elm/JsArray.elm:67 (JsArray a -> Int) | B1: elements never read, only ElmArray::length :207 | B2: no writes of any kind | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "map" )
+        , ( ( "Elm", "JsArray", "map" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: full | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_map:463-517 | helpers: pushTypedResult:126 | type: elm/core/1.0.5/src/Elm/JsArray.elm:143 | B1: apply-only via eco_apply_closure_eval :509; elems are args only :494-497 | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "push" )
+        , ( ( "Elm", "JsArray", "push" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_push:268-318 | helpers: copyAndExtendForPush:711 | type: elm/core/1.0.5/src/Elm/JsArray.elm:122 | B1: :297-299 copy words verbatim, :306 stores value unchanged | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "singleton" )
+        , ( ( "Elm", "JsArray", "singleton" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_singleton:197-202 | helpers: elm_array_singleton_box:694 | type: elm/core/1.0.5/src/Elm/JsArray.elm:60 (a -> JsArray a) | B1: :199-200 move the arg word unchanged into elements[0] | B2: no store outside result | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "slice" )
+        , ( ( "Elm", "JsArray", "slice" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_slice:320-356 | helpers: elm_array_slice:800-833 | type: elm/core/1.0.5/src/Elm/JsArray.elm:169 | B1: :342-344 copy a contiguous run of element words verbatim, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "unsafeGet" )
+        , ( ( "Elm", "JsArray", "unsafeGet" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeGet:210-223 | type: elm/core/1.0.5/src/Elm/JsArray.elm:105 (Int -> JsArray a -> a) | B1: :215 reads the slot, :221 returns the stored word unchanged, B1(b) | B2: read-only apart from primitive boxing | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "JsArray", "unsafeSet" )
+        , ( ( "Elm", "JsArray", "unsafeSet" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
                 , evidence = "class: cheap | entry: JsArrayExports.cpp:Elm_Kernel_JsArray_unsafeSet:225-266 | helpers: copyForUnsafeSet:888 | type: elm/core/1.0.5/src/Elm/JsArray.elm:115 | B1: :244-246 copy words verbatim, :253 stores value unchanged, B1(b) | B2: writes confined to fresh dst | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Json", "addField" )
+        , ( ( "Elm", "Json", "addField" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_addField:1876-1924 | helpers: none | type: INFERRED elm/json/1.1.4/src/Json/Encode.elm:202 (String -> Value -> Value -> Value); Value nullary | B1: vacuous (no function-capable position) | B2: result-only writes :1896-1921 | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "addEntry" )
+        , ( ( "Elm", "Json", "addEntry" )
           , TypeFaithful
                 { scope =
                     -- The same type as the kernel's annotation in
@@ -1413,791 +1422,791 @@ facts =
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_addEntry:1835-1867 | type: DECLARED (a -> Value) -> a -> Value -> Value, pinned equal to the intrinsic annotation by KernelLicenseTest; no aliasing def, used partially applied at Json/Encode.elm:162/170/178 | B1: apply-only, eco_apply_closure :1846 is func's ONLY use; entry passed as its arg :1845 | B2: no static/global/task write; arrayHP/encodedHP are StackRootGuard locals :1843-1857 | B3: cons :1856 allocates a LIST CELL over the callback's RETURN, never a closure; no allocClosure/Tag_Closure in file | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeArray" )
+        , ( ( "Elm", "Json", "decodeArray" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeArray:1422-1424 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (Array a)) | B1: arguments stored VERBATIM into the DEC_ARRAY decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "andThen" )
+        , ( ( "Elm", "Json", "andThen" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_andThen:1454-1456 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> Decoder b) -> Decoder a -> Decoder b) | B1: arguments stored VERBATIM into the DEC_ANDTHEN decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeBool" )
+        , ( ( "Elm", "Json", "decodeBool" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeBool:1402-1404 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:86 (Decoder Bool) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeField" )
+        , ( ( "Elm", "Json", "decodeField" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeField:1426-1428 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (String -> Decoder a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_FIELD decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeFloat" )
+        , ( ( "Elm", "Json", "decodeFloat" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeFloat:1410-1412 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:112 (Decoder Float) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeIndex" )
+        , ( ( "Elm", "Json", "decodeIndex" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeIndex:1430-1432 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Int -> Decoder a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_INDEX decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeInt" )
+        , ( ( "Elm", "Json", "decodeInt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeInt:1406-1408 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:99 (Decoder Int) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeList" )
+        , ( ( "Elm", "Json", "decodeList" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeList:1418-1420 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (List a)) | B1: arguments stored VERBATIM into the DEC_LIST decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeKeyValuePairs" )
+        , ( ( "Elm", "Json", "decodeKeyValuePairs" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeKeyValuePairs:1434-1436 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Decoder (List (String, a))) | B1: arguments stored VERBATIM into the DEC_KEYVALUEPAIRS decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeNull" )
+        , ( ( "Elm", "Json", "decodeNull" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_decodeNull:1414-1416 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_NULL decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeString" )
+        , ( ( "Elm", "Json", "decodeString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeString:1398-1400 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:73 (Decoder String) | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "decodeValue" )
+        , ( ( "Elm", "Json", "decodeValue" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_decodeValue:1438-1440 | helpers: makeDecoder0:466-468 | type: elm/json/1.1.4/src/Json/Decode.elm:685 (Decoder Value); Value nullary | B1: vacuous (no function-capable position) | B2: embedded constant, stores nothing | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "emptyArray" )
+        , ( ( "Elm", "Json", "emptyArray" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_emptyArray:1811-1821 | helpers: none | type: INFERRED elm/json/1.1.4/src/Json/Encode.elm:162 (() -> Value); A3: Elm applies (), C++ 0 params; inert, arity-agnostic unify | B1: vacuous (no function-capable position) | B2: fresh ENC_ARRAY, listNil :1819 | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "emptyObject" )
+        , ( ( "Elm", "Json", "emptyObject" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_emptyObject:1823-1833 | helpers: none | type: INFERRED elm/json/1.1.4/src/Json/Encode.elm:203 (() -> Value); A3: Elm applies (), C++ 0 params; inert, arity-agnostic unify | B1: vacuous (no function-capable position) | B2: fresh ENC_OBJECT, listNil :1831 | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "encode" )
+        , ( ( "Elm", "Json", "encode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_encode:1651-1662 | helpers: elmToJson:1290-1386 | type: elm/json/1.1.4/src/Json/Encode.elm:61 (Int -> Value -> String) | B1: vacuous (no function-capable position) | B2: fresh String result only :1660 | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "encodeNull" )
+        , ( ( "Elm", "Json", "encodeNull" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: vacuous | entry: JsonExports.cpp:Elm_Kernel_Json_encodeNull:1804-1809 | helpers: none | type: elm/json/1.1.4/src/Json/Encode.elm:141 (Value), nullary, no param | B1: vacuous (no function-capable position) | B2: embedded constant, no alloc | B3: no closure alloc | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "runOnString" )
+        , ( ( "Elm", "Json", "runOnString" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_runOnString:1624-1645 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> String -> Result Error a) | B1: as Json.run, parsing the string first; same argument-threaded, same-call decode | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "run" )
+        , ( ( "Elm", "Json", "run" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_run:1589-1622 | type: elm/json/1.1.4/src/Json/Decode.elm (Decoder a -> Value -> Result Error a) | B1: THE consumer that closes the chain - it drives the decode over a decoder passed AS AN ARGUMENT, in THIS call, and the `a` in Decoder a is the `a` in Result Error a. Every callback a combinator stored is applied here, under an argument-threaded type edge | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "oneOf" )
+        , ( ( "Elm", "Json", "oneOf" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_oneOf:1458-1460 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (List (Decoder a) -> Decoder a) | B1: arguments stored VERBATIM into the DEC_ONEOF decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "fail" )
+        , ( ( "Elm", "Json", "fail" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_fail:1450-1452 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (String -> Decoder a) | B1: arguments stored VERBATIM into the DEC_FAIL decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "succeed" )
+        , ( ( "Elm", "Json", "succeed" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_succeed:1446-1448 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm (a -> Decoder a) | B1: arguments stored VERBATIM into the DEC_SUCCEED decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map8" )
+        , ( ( "Elm", "Json", "map8" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map8:1529-1532 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> g -> h -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder g -> Decoder h -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP8 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map7" )
+        , ( ( "Elm", "Json", "map7" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map7:1524-1527 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> g -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder g -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP7 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map6" )
+        , ( ( "Elm", "Json", "map6" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map6:1519-1522 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> f -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder f -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP6 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map5" )
+        , ( ( "Elm", "Json", "map5" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map5:1514-1517 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> e -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder e -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP5 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map4" )
+        , ( ( "Elm", "Json", "map4" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map4:1509-1512 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> d -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder d -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP4 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map3" )
+        , ( ( "Elm", "Json", "map3" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map3:1504-1507 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> c -> value) -> Decoder a -> Decoder b -> Decoder c -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP3 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map2" )
+        , ( ( "Elm", "Json", "map2" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map2:1499-1502 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> b -> value) -> Decoder a -> Decoder b -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP2 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Json", "map1" )
+        , ( ( "Elm", "Json", "map1" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
                 , evidence = "class: full | entry: JsonExports.cpp:Elm_Kernel_Json_map1:1466-1468 | helpers: JsonExports.cpp:makeDecoder1:479-493, makeDecoder2:507-525 | type: elm/json/1.1.4/src/Json/Decode.elm ((a -> value) -> Decoder a -> Decoder value) | B1: arguments stored VERBATIM into the DEC_MAP1 decoder Custom; the decoder is then consumed by Json.run/runOnString, which take it AS AN ARGUMENT and drive the decode SYNCHRONOUSLY in that same call (JsonExports.cpp:1589-1645) - so every hop is threaded through shared type variables and there is no cross-call edge. Structurally identical to Scheduler.andThen and to JsArray.singleton | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure - makeDecoder* is a record constructor, not a closure mint | audited: 2026-08-29 | re-audit 2026-08-29: rewrapEscapingResult escape rewrap added at Json_run/runOnString (MONO_013 Ok-payload re-store only; no apply, no retention, no closure mint; B1/B2/B3 unchanged); Json_run additionally bridges ENC_*→CTOR_JSON_* values via the existing elmToJson/jsonToHeap converters (read-then-rebuild, no apply/retention/closure) | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - JsonExports.cpp rooting only (rootInChunks -> rootBuffer: one all-ones shadow-root record per decode buffer instead of one per 64 slots); no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "List", "cons" )
+        , ( ( "Elm", "List", "cons" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/List.cpp" ]
                 , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_cons:276-283 (ABI :288-304) | helpers: List.cpp:cons:18-20 | type: elm/core/1.0.5/src/List.elm:106 | B1: head word stored verbatim in the fresh cell, B1(b) MOVE along a | B2: no static/global/cache/task write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - List.cpp dead-code deletion only (toArray and map2-map5 had no caller; cons untouched); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "List", "fromArray" )
+        , ( ( "Elm", "List", "fromArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_fromArray:306-354 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001) which is what SOLVES the occurrence -- the earlier Array/JsArray shapes matched nothing because the non-List side was an unsolved var | B1: B1(b)/B1(c) only -- Nil and already-Cons inputs return the ARGUMENT by identity :310-330, and the conversion copies element words verbatim | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure; allocation is list cells | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "map2" )
+        , ( ( "Elm", "List", "map2" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map2:592-600 | helpers: kernelListMapN:432-590, appendClosureResult:233 | type: elm/core/1.0.5/src/List.elm:437 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "map3" )
+        , ( ( "Elm", "List", "map3" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map3:602-611 | helpers: kernelListMapN:432-590 (n=3 at :609) | type: elm/core/1.0.5/src/List.elm:443 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "map4" )
+        , ( ( "Elm", "List", "map4" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map4:613-623 | helpers: kernelListMapN:432-590 (n=4 at :621) | type: elm/core/1.0.5/src/List.elm:449 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "map5" )
+        , ( ( "Elm", "List", "map5" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_map5:625-637 | helpers: kernelListMapN:432-590 (n=5 at :635) | type: elm/core/1.0.5/src/List.elm:455 | B1: apply-only via eco_apply_closure_eval :567-569 | B2: call-local vectors, roots unwound :581 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "toArray" )
+        , ( ( "Elm", "List", "toArray" )
           , TypeFaithful
                 { scope = TransportsAs (TsFun (tsList (TsVar "a")) (tsList (TsVar "a")))
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: cheap | entry: ListExports.cpp:Elm_Kernel_List_toArray:356-392 | type: DECLARED List a -> List a, pinned equal to the intrinsic annotation (TYPE_KERNEL_001); the consumer StringOps::join takes a cons list (StringOps.cpp:659) | B1: B1(b)/B1(c) only -- Nil and Cons inputs return the ARGUMENT by identity :362-375; the fallback copies element words via listToVectorU64 | B2: no static/global/cache write | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "List", "sortBy" )
+        , ( ( "Elm", "List", "sortBy" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortBy:759-830 | helpers: listFromPermutation:741, Utils.cpp:compare:446 | type: elm/core/1.0.5/src/List.elm:484 | B1: apply-only via eco_apply_closure :787; result = permutation :828 | B2: no retention; cmp read-only | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "List", "sortWith" )
+        , ( ( "Elm", "List", "sortWith" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
                 , evidence = "class: full | entry: ListExports.cpp:Elm_Kernel_List_sortWith:832-887 | helpers: listFromPermutation:741 | type: elm/core/1.0.5/src/List.elm:502 | B1: apply-only via eco_apply_closure :873; result = permutation :885 | B2: call-local buffers, roots balanced :868-883 | B3: no allocClosure/Tag_Closure | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "MVar", "drop" )
+        , ( ( "Eco", "MVar", "drop" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp", "eco-kernel-cpp/src/eco-kernel/MVar.cpp" ]
                 , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_drop:63-65 | helpers: MVar.cpp:drop | type: Eco/MVar.elm (MVar a -> Task Never ()) | B1: takes ONLY the unboxed id (uint64_t); `a` does not appear in the result, so no function value can leave | B2: clears the slot; nothing function-valued is read back to Elm | B3: no allocClosure | audited: 2026-08-25 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "MVar", "new" )
+        , ( ( "Eco", "MVar", "new" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "eco-kernel-cpp/src/eco-kernel/MVarExports.cpp", "eco-kernel-cpp/src/eco-kernel/MVar.cpp" ]
                 , evidence = "class: cheap | entry: MVarExports.cpp:Eco_Kernel_MVar_new:25-28 | helpers: MVar.cpp:newEmpty | type: Eco/MVar.elm:42 (Task Never (MVar a)) | B1: makeBinding<mvarNewBody>(unit()) - unit capture; returns a fresh HANDLE. `a` is phantom and NOTHING is ever written to it by this call. Contrast MVar.put/read/take, which stay REJECTED | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-08-25 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "NativeDriver", "lowerAndLink" )
+        , ( ( "Eco", "NativeDriver", "lowerAndLink" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp" ]
                 , evidence = "class: vacuous | entry: NativeDriverExports.cpp:Eco_Kernel_NativeDriver_lowerAndLink:9-13 | helpers: NativeDriver.cpp:lowerAndLink:88-98 | type: Eco/NativeDriver.elm:46 | B1: vacuous (no function-capable position) | B2: three Strings in a tuple3 :94-97; no statics in the file | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "NativeDriver", "lowerAndLinkBytes" )
+        , ( ( "Eco", "NativeDriver", "lowerAndLinkBytes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/NativeDriverExports.cpp", "eco-kernel-cpp/src/eco-kernel/NativeDriver.cpp" ]
                 , evidence = "class: vacuous | entry: NativeDriverExports.cpp:Eco_Kernel_NativeDriver_lowerAndLinkBytes:15-18 | helpers: NativeDriver.cpp:lowerAndLinkBytes:100-108 | type: Eco/NativeDriver.elm:58 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :104-105; no statics | B3: binding closure only | audited: 2026-08-20"
                 }
           )
-        , ( ( "Parser", "chompBase10" )
+        , ( ( "Elm", "Parser", "chompBase10" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_chompBase10:284-295 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:755 | B1: vacuous (no function-capable position) | B2: no cross-call storage; returns a raw int64_t | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "consumeBase" )
+        , ( ( "Elm", "Parser", "consumeBase" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase:299-312 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:659 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "consumeBase16" )
+        , ( ( "Elm", "Parser", "consumeBase16" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_consumeBase16:316-336 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:664 | B1: vacuous (no function-capable position) | B2: no cross-call storage in ParserExports.cpp | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "findSubString" )
+        , ( ( "Elm", "Parser", "findSubString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_findSubString:240-281 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1131 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :246 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "isAsciiCode" )
+        , ( ( "Elm", "Parser", "isAsciiCode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isAsciiCode:129-134 | helpers: resolveString:81-86 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1118 | B1: vacuous (no function-capable position) | B2: no cross-call storage; result is a boxed Bool :133 | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "isSubChar" )
+        , ( ( "Elm", "Parser", "isSubChar" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: full | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubChar:142-189 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1110 ((Char -> Bool) -> Int -> String -> Int) | B1: apply-only via eco_apply_closure_typed :179 (sole eco_apply site); decode :147, root :148 | B2: only static is the const layout array :175 | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Parser", "isSubString" )
+        , ( ( "Elm", "Parser", "isSubString" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/parser/ParserExports.cpp" ]
                 , evidence = "class: vacuous | entry: ParserExports.cpp:Elm_Kernel_Parser_isSubString:195-233 | type: elm/parser/1.1.0/src/Parser/Advanced.elm:1090 | B1: vacuous (no function-capable position) | B2: no cross-call storage; StackRootGuard :203 is call-scoped | B3: grep clean (no allocClosure) | audited: 2026-10-09 (re-audit, plans/large-object-space.md Phase 2: large String payloads are read through alloc::flatStringView (raw body accessor, length from the outer header) instead of alloc::resolveStringBody at BytesExports.cpp:231 (writeEncoder string) and :328 (getStringWidth) and ParserExports.cpp:77 (parserView); a runtime-API read of String units, no function-capable position involved; no application, retention, fabrication or type change; line citations unchanged); previously 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Platform", "batch" )
+        , ( ( "Elm", "Platform", "batch" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/PlatformExports.cpp" ]
                 , evidence = "class: cheap | entry: PlatformExports.cpp:Elm_Kernel_Platform_batch:21-29 | type: elm/core/1.0.5/src/Platform/Sub.elm (List (Sub msg) -> Sub msg) | B1: a STRUCTURAL container - it collects the Subs it is handed and adds, applies and reroutes nothing; `msg` passes through untouched. List.cons-shaped, and List.cons is licensed. Contrast Platform.map, which STORES A TAGGER the effect manager applies at a later unconnected call, and stays REJECTED | B2: the only store is into the value THIS call returns - no static, no mailbox, no other call's object | B3: no allocClosure | audited: 2026-08-25"
                 }
           )
-        , ( ( "Process", "exit" )
+        , ( ( "Eco", "Process", "exit" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_exit:9-11 | helpers: Process.cpp:exit:187-194 | type: Eco/Process.elm:49 | B1: vacuous (no function-capable position) | B2: nothing captured, nothing stored; ::exit() at :191 | B3: no closure fabricated at all | re-audit 2026-10-09: Process.cpp spawns through platform::spawnChild (posix_spawnp / CreateProcessW, plans/spawn-not-fork.md Phase 2) instead of fork+execvp; startChild reads only the copied-out std::strings, no heap value reaches the child or a store; B1-B3 unchanged | audited: 2026-10-09 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - spawnProcessBody (Process.cpp) now returns its result as a Tuple2 (Maybe Int boxed, Int pid unboxed), the shape Eco.Process.spawnProcess destructures, instead of a Record {pid, maybe} whose unboxed word the tuple projection read as stdinHandle (found by SD-26); the result holds only an Int and a Maybe Int as before; no other line in the cited ranges moved except s_streamHandles (:110 -> :108); no application, retention, fabrication or type change (the Elm type is now honoured); B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Process", "sleep" )
+        , ( ( "Elm", "Process", "sleep" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/ProcessExports.cpp" ]
                 , evidence = "class: cheap | entry: ProcessExports.cpp:Elm_Kernel_Process_sleep:57-66 | type: elm/core/1.0.5/src/Process.elm:93 (Float -> Task x ()) | B1: boxes the Float (allocFloat) and captures THAT; the binding payload is a boxed primitive, never a closure. Result is Task x () - nothing function-capable leaves | B2: no store outside the returned Task | B3: binding closure only, payload a boxed Float | audited: 2026-08-25 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 3 - the sleep binding body now returns a kill-handle closure (sleepKillEval, capturing only the unboxed Int resume token; it calls withdrawParkedTimer) instead of Unit; the scheduler's kill path applies it to (), it never reaches Elm code as a value and the result type Task x () still exposes no function-capable position; the entry point is unchanged; cited lines updated; B1-B3 unchanged | audited: 2026-10-20"
                 }
           )
-        , ( ( "Process", "spawn" )
+        , ( ( "Eco", "Process", "spawn" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawn:13-15 | helpers: Process.cpp:spawn:196-203 | type: Eco/Process.elm:56 | B1: vacuous (no function-capable position) | B2: both args in a tuple2 :200-202, Strings only | B3: binding closure only | re-audit 2026-10-09: Process.cpp spawns through platform::spawnChild (posix_spawnp / CreateProcessW, plans/spawn-not-fork.md Phase 2) instead of fork+execvp; startChild reads only the copied-out std::strings, no heap value reaches the child or a store; B1-B3 unchanged | audited: 2026-10-09 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - spawnProcessBody (Process.cpp) now returns its result as a Tuple2 (Maybe Int boxed, Int pid unboxed), the shape Eco.Process.spawnProcess destructures, instead of a Record {pid, maybe} whose unboxed word the tuple projection read as stdinHandle (found by SD-26); the result holds only an Int and a Maybe Int as before; no other line in the cited ranges moved except s_streamHandles (:110 -> :108); no application, retention, fabrication or type change (the Elm type is now honoured); B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Process", "spawnProcess" )
+        , ( ( "Eco", "Process", "spawnProcess" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_spawnProcess:17-19 | type: Eco/Process.elm:67-74 | B1: vacuous (no function-capable position) | B2: 5-field record payload :213-219; s_streamHandles:108 maps int64->fd, no Elm value | B3: binding closure only | re-audit 2026-10-09: Process.cpp spawns through platform::spawnChild (posix_spawnp / CreateProcessW, plans/spawn-not-fork.md Phase 2) instead of fork+execvp; startChild reads only the copied-out std::strings, no heap value reaches the child or a store; B1-B3 unchanged | audited: 2026-10-09 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - spawnProcessBody (Process.cpp) now returns its result as a Tuple2 (Maybe Int boxed, Int pid unboxed), the shape Eco.Process.spawnProcess destructures, instead of a Record {pid, maybe} whose unboxed word the tuple projection read as stdinHandle (found by SD-26); the result holds only an Int and a Maybe Int as before; no other line in the cited ranges moved except s_streamHandles (:110 -> :108); no application, retention, fabrication or type change (the Elm type is now honoured); B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Process", "wait" )
+        , ( ( "Eco", "Process", "wait" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ProcessExports.cpp", "eco-kernel-cpp/src/eco-kernel/Process.cpp" ]
                 , evidence = "class: vacuous | entry: ProcessExports.cpp:Eco_Kernel_Process_wait:21-23 | type: Eco/Process.elm:93 | B1: vacuous (no function-capable position) | B2: only an unboxed Int pid captured :227-230; the resume :177 is the runtime's OWN closure | B3: async binding closure only | re-audit 2026-10-09: Process.cpp spawns through platform::spawnChild (posix_spawnp / CreateProcessW, plans/spawn-not-fork.md Phase 2) instead of fork+execvp; startChild reads only the copied-out std::strings, no heap value reaches the child or a store; B1-B3 unchanged | audited: 2026-10-09 | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - spawnProcessBody (Process.cpp) now returns its result as a Tuple2 (Maybe Int boxed, Int pid unboxed), the shape Eco.Process.spawnProcess destructures, instead of a Record {pid, maybe} whose unboxed word the tuple projection read as stdinHandle (found by SD-26); the result holds only an Int and a Maybe Int as before; no other line in the cited ranges moved except s_streamHandles (:110 -> :108); no application, retention, fabrication or type change (the Elm type is now honoured); B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Regex", "contains" )
+        , ( ( "Elm", "Regex", "contains" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_contains:223-240 | helpers: getCompiledRegex:65-78 | type: elm/regex/1.0.0/src/Regex.elm:117 | B1: vacuous (no function-capable position) | B2: the static regex table is only READ :75 | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "findAtMost" )
+        , ( ( "Elm", "Regex", "findAtMost" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_findAtMost:242-308 | type: elm/regex/1.0.0/src/Regex.elm:252 | B1: vacuous (no function-capable position) | B2: deque :262 is C-stack local, roots restored :298/:306, table read-only | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "fromStringWith" )
+        , ( ( "Elm", "Regex", "fromStringWith" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_fromStringWith:176-221 | type: elm/regex/1.0.0/src/Regex.elm:82 | B1: vacuous (no function-capable position) | B2: table write :205 stores a srell::regex*, not an Elm value; result Custom is unboxed ints :212 | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "infinity" )
+        , ( ( "Elm", "Regex", "infinity" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_infinity:171-174 | type: elm/regex/1.0.0 (Float constant; INFERRED-FROM-USAGE, used inline in replaceAtMost, R5 vacuous class) | B1: vacuous - no arguments, returns numeric_limits<double>::infinity() | B2: no store | B3: no allocClosure | audited: 2026-08-25 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "never" )
+        , ( ( "Elm", "Regex", "never" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_never:152-169 | helpers: registerRegex:42-46 | type: elm/regex/1.0.0/src/Regex.elm:96 | B1: vacuous (no function-capable position) | B2: table write stores a srell::regex*; result Custom is all unboxed ints :164 | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "replaceAtMost" )
+        , ( ( "Elm", "Regex", "replaceAtMost" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: full | entry: RegexExports.cpp:Elm_Kernel_Regex_replaceAtMost:310-398 | type: elm/regex/1.0.0/src/Regex.elm:264 (Int -> Regex -> (Match -> String) -> String -> String) | B1: apply-only via eco_apply_closure :378 (sole eco_apply site); decode :335, root :336 | B2: nothing outlives the call; table read-only :317 | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Regex", "splitAtMost" )
+        , ( ( "Elm", "Regex", "splitAtMost" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/regex/RegexExports.cpp" ]
                 , evidence = "class: vacuous | entry: RegexExports.cpp:Elm_Kernel_Regex_splitAtMost:400-464 | type: elm/regex/1.0.0/src/Regex.elm:240 | B1: vacuous (no function-capable position) | B2: deque :422 is call-local, roots restored :454/:462, table read-only | B3: grep clean (no allocClosure) | audited: 2026-08-20 | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - RegexExports.cpp rooting only (findAtMost/splitAtMost collect into one RootedSlots record, then listFromPointers; per-element pushes and the deque removed); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Runtime", "dirname" )
+        , ( ( "Eco", "Runtime", "dirname" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_dirname:9-11 | helpers: Runtime.cpp:dirname:64-67 | type: Eco/Runtime.elm:21 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :66); s_savedState untouched | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
-        , ( ( "Runtime", "loadState" )
+        , ( ( "Eco", "Runtime", "loadState" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_loadState:21-23 | helpers: Runtime.cpp:loadState | type: Eco/Runtime.elm (Task Never Encode.Value) | B1: vacuous - FULLY CONCRETE; the cross-call read is sound for the same reason as saveState | B2: reads runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
-        , ( ( "Runtime", "random" )
+        , ( ( "Eco", "Runtime", "random" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_random:13-15 | helpers: Runtime.cpp:random:69-72 | type: Eco/Runtime.elm:28 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :71); statics :41-42 are C++ PRNG state | B3: binding closure only | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
-        , ( ( "Runtime", "saveState" )
+        , ( ( "Eco", "Runtime", "saveState" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/RuntimeExports.cpp", "eco-kernel-cpp/src/eco-kernel/Runtime.cpp" ]
                 , evidence = "class: vacuous | entry: RuntimeExports.cpp:Eco_Kernel_Runtime_saveState:17-19 | helpers: Runtime.cpp:saveState | type: Eco/Runtime.elm (Encode.Value -> Task Never ()) | B1: vacuous - FULLY CONCRETE both ways, so the loaded scheme has zero set slots (R3). It IS cross-call (loadState returns what a different saveState stored) and that is IRRELEVANT: cross-call only disqualifies when the retained position is FUNCTION-CAPABLE | B2: stores into runtime state, see B1 | B3: no allocClosure | audited: 2026-10-04 (re-audit: the only change to RuntimeExports.cpp since the previous hash is one deleted line in Eco_Kernel_register_all_gc_roots, the CellStore root-registration call, removed with that kernel by plans/remove-cellstore.md; no licensed body, type or capture behaviour is touched)"
                 }
           )
-        , ( ( "Scheduler", "andThen" )
+        , ( ( "Elm", "Scheduler", "andThen" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_andThen:30-37 | helpers: Scheduler.cpp:taskAndThen:176-179 | type: elm/core/1.0.5/src/Task.elm:207 ((a -> Task x b) -> Task x a -> Task x b) | B1: BOTH words stored VERBATIM (:33-35 decode, taskAndThen :178 allocTask(Task_AndThen, nil, callback, nil, task)); the scheduler later applies THAT callback to THAT task's value - the callback is never substituted, wrapped or re-created, so param1's `a` = param2's `a` and param1's result `Task x b` = the result, exactly as the type's variable-sharing graph states | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2197-2219, write :2214-2217) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Scheduler", "fail" )
+        , ( ( "Elm", "Scheduler", "fail" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_fail:23-28 | helpers: Scheduler.cpp:taskFail:166-169 | type: elm/core/1.0.5/src/Task.elm:92 (x -> Task x a) | B1: the arg word is stored unchanged (:26, taskFail :168 allocTask(Task_Fail, error, nil, nil, nil)) and handed back at the SAME `x` the type names | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2197-2219, write :2214-2217) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Scheduler", "kill" )
+        , ( ( "Elm", "Scheduler", "kill" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_kill:55-60 | helpers: Scheduler.cpp:killTask | type: elm/core/1.0.5/src/Process.elm:103 (Id -> Task x ()) | B1: captures only a process Id; Id and () are concrete, so nothing function-capable enters or leaves | B2: no store outside the returned Task | B3: binding closure only, payload an Id | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Scheduler", "onError" )
+        , ( ( "Elm", "Scheduler", "onError" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_onError:39-46 | helpers: Scheduler.cpp:taskOnError:181-184 | type: elm/core/1.0.5/src/Task.elm:227 ((x -> Task y a) -> Task x a -> Task y a) | B1: both words stored VERBATIM (:42-44, taskOnError :183); the handler is applied to the inner task's error and never substituted, and on the SUCCESS path the inner `a` passes straight through to the result's `a` - both edges are the type's shared variables | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2197-2219, write :2214-2217) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Scheduler", "spawn" )
+        , ( ( "Elm", "Scheduler", "spawn" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: full | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_spawn:48-53 | helpers: Scheduler.cpp:spawnTask:499-501 | type: elm/core/1.0.5/src/Process.elm:82 (Task x a -> Task y Id) | B1: the captured task MAY contain closures, but `a` is ABSENT FROM THE RESULT (Task y Id) - the type creates an EMPTY flow obligation, so there is nothing a licence can get wrong. The scheduler consumes the task; nothing function-valued is handed back to Elm at a typed position | B2: no store outside the returned Task | B3: makeBinding mints a closure, but it lands in Task.callback where no type variable names it | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Scheduler", "succeed" )
+        , ( ( "Elm", "Scheduler", "succeed" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/SchedulerExports.cpp", "runtime/src/platform/Scheduler.cpp" ]
                 , evidence = "class: cheap | entry: SchedulerExports.cpp:Elm_Kernel_Scheduler_succeed:16-21 | helpers: Scheduler.cpp:taskSucceed:150-153 | type: elm/core/1.0.5/src/Task.elm:78 (a -> Task x a) | B1: the arg word is stored unchanged (:18, taskSucceed :152 allocTask(Task_Succeed, value, nil, nil, nil)) and handed back at the SAME `a` the type names - structurally JsArray.singleton with an opaque carrier | B2: the ONLY store is into the Task this call RETURNS (alloc::allocTask, HeapHelpers.hpp:2197-2219, write :2214-2217) - no static, no mailbox, no other call's object; the scheduler reads it back out of THAT SAME Task | B3: no allocClosure/Tag_Closure - allocTask is a record constructor, not a closure mint | audited: 2026-10-08 (re-audit, plans/eco-system-library.md section 10 SignalInterruptTest fix: the only Scheduler.cpp change makes runEventLoop run any ready async source (ready() under mutex_, as in its wait predicate) before treating the loop as quiescent; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/eco-system-sockets.md S3: the only Scheduler.cpp change adds Scheduler::addStopHook and runs the stop hooks when runEventLoop exits on a stop request; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change. Previous: re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-20: plans/program-liveness-rule.md phase 1 - the only C++ change in the pinned files replaces raw incrementPendingAsync/decrementPendingAsync with the hold API (parkResume/acquireHold/releaseHold, Liveness.hpp) and adds the hold census (tokens + const char* sites, no heap value); cited lines updated; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 2 (L-REARM) - the only Scheduler.cpp change makes the quiescence listeners return whether they delivered (the loop continues iff one did), deletes quiescenceArmed_ and its re-arm stores in the acquire paths, and adds removeQuiescenceListener; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | re-audit 2026-10-20: plans/program-liveness-rule.md phase 6 - the only Scheduler.cpp change makes incrementPendingAsync/decrementPendingAsync private helpers of the hold API (noteAcquire/releaseHold), deletes the transitional raw-hold tolerance (rawHolds_) and setLivenessBaseline/livenessBaseline_; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-20 | re-audit 2026-10-23: docs cleanup - the only Scheduler.cpp change rewords two comment lines in runEventLoop (the stale embedder lifetime baseline wording now names the pendingAsync_ - hostHolds_ check); no code change and no line moves; the cited helpers and their lines are unchanged; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-23 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - Scheduler.cpp SD-1 fix: 64-bit process ids, processFinished drops finished processes from latestProc_/selfMsgHandlers_, kill of a finished process is a no-op, keepResultOnFinish/takeFinishedProcess; the cited helpers' bodies are unchanged and their lines moved by +24 (citations updated); no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "String", "all" )
+        , ( ( "Elm", "String", "all" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_all:317-334 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:615 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :329 | B2: no retention | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "any" )
+        , ( ( "Elm", "String", "any" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_any:299-315 | helpers: callCharToBoolClosure:217, snapshotChars:237 | type: elm/core/1.0.5/src/String.elm:604 ((Char -> Bool) -> String -> Bool) | B1: apply-only via eco_apply_closure_typed :310 | B2: no retention | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "append" )
+        , ( ( "Elm", "String", "append" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_append:41-44 | helpers: String.cpp:append:26-28 | type: elm/core/1.0.5/src/String.elm:169 (String -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "cons" )
+        , ( ( "Elm", "String", "cons" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_cons:52-56 | helpers: String.cpp:cons:38-40 | type: elm/core/1.0.5/src/String.elm:542 (Char -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "contains" )
+        , ( ( "Elm", "String", "contains" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_contains:126-128 | helpers: String.cpp:contains:431-433 | type: elm/core/1.0.5/src/String.elm:299 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "endsWith" )
+        , ( ( "Elm", "String", "endsWith" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_endsWith:122-124 | helpers: String.cpp:endsWith:427-429 | type: elm/core/1.0.5/src/String.elm:319 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "filter" )
+        , ( ( "Elm", "String", "filter" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_filter:281-297 | helpers: callCharToBoolClosure:217, materializeString:250 | type: elm/core/1.0.5/src/String.elm:575 ((Char -> Bool) -> String -> String) | B1: apply-only via eco_apply_closure_typed :294 | B2: C-stack only | B3: string alloc only | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "foldl" )
+        , ( ( "Elm", "String", "foldl" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldl:336-350 | type: elm/core/1.0.5/src/String.elm:584 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :346 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :338/:349, shared b | B2: accHP :347 | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "foldr" )
+        , ( ( "Elm", "String", "foldr" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_foldr:352-366 | type: elm/core/1.0.5/src/String.elm:593 ((Char -> b -> b) -> b -> String -> b) | B1: apply-only :362 via callFoldClosure:226 -> eco_apply_closure_typed; acc PK_Boxed :199 -> result :354/:365, shared b | B2: accHP :363 | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "fromList" )
+        , ( ( "Elm", "String", "fromList" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromList:63-66 | helpers: String.cpp:fromList:63-107 | type: elm/core/1.0.5/src/String.elm:520 (List Char -> String; elem type concrete) | B1: vacuous (no function-capable position) | B2: StackRootGuard :84/:99 RAII | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "fromNumber" )
+        , ( ( "Elm", "String", "fromNumber" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_fromNumber:145-151 | helpers: String.cpp:fromNumber:451 | type: 2 aliasing defs, both arrow/var-free: String.elm:458 fromInt Int->String; :494 fromFloat Float->String | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "indexes" )
+        , ( ( "Elm", "String", "indexes" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_indexes:130-133 | helpers: String.cpp:indexes:435 | type: elm/core/1.0.5/src/String.elm:330 (String -> String -> List Int); alias indices :336 | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "join" )
+        , ( ( "Elm", "String", "join" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_join:46-49 | helpers: String.cpp:join:30 | type: inferred-from-usage; use-site String.elm:202 (String -> Array String -> String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "length" )
+        , ( ( "Elm", "String", "length" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_length:18-27 | helpers: String.cpp:length:18-20 | type: elm/core/1.0.5/src/String.elm:112 (String -> Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "lines" )
+        , ( ( "Elm", "String", "lines" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_lines:78-81 | helpers: String.cpp:lines:179-284 (2 arms) | type: elm/core/1.0.5/src/String.elm:218 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :211/:272 restored :222/:282 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "map" )
+        , ( ( "Elm", "String", "map" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp" ]
                 , evidence = "class: full | entry: StringExports.cpp:Elm_Kernel_String_map:263-279 | helpers: callCharToCharClosure:206, materializeString:250 | type: elm/core/1.0.5/src/String.elm:566 ((Char -> Char) -> String -> String) | B1: apply-only via eco_apply_closure_eval :276 | B2: C-stack only | B3: string alloc only | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "String", "reverse" )
+        , ( ( "Elm", "String", "reverse" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_reverse:88-91 | helpers: String.cpp:reverse:395-397 | type: elm/core/1.0.5/src/String.elm:121 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "slice" )
+        , ( ( "Elm", "String", "slice" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_slice:68-71 | helpers: String.cpp:slice:167-169 | type: elm/core/1.0.5/src/String.elm:235 (Int -> Int -> String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "split" )
+        , ( ( "Elm", "String", "split" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_split:73-76 | helpers: String.cpp:split:175 | type: inferred-from-usage; use-site String.elm:191 (String -> String -> Array String); arrow/var-free | B1: vacuous (no function-capable position) | B2: no static/global write | B3: no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "startsWith" )
+        , ( ( "Elm", "String", "startsWith" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_startsWith:118-120 | helpers: String.cpp:startsWith:423-425 | type: elm/core/1.0.5/src/String.elm:309 (String -> String -> Bool) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: embedded Bool consts, no alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "toFloat" )
+        , ( ( "Elm", "String", "toFloat" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toFloat:140-143 | helpers: String.cpp:toFloat:447-449 | type: elm/core/1.0.5/src/String.elm:480 (String -> Maybe Float) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "toInt" )
+        , ( ( "Elm", "String", "toInt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toInt:135-138 | helpers: String.cpp:toInt:443-445 | type: elm/core/1.0.5/src/String.elm:445 (String -> Maybe Int) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "toLower" )
+        , ( ( "Elm", "String", "toLower" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toLower:98-101 | helpers: String.cpp:toLower:403-405 | type: elm/core/1.0.5/src/String.elm:359 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "toUpper" )
+        , ( ( "Elm", "String", "toUpper" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_toUpper:93-96 | helpers: String.cpp:toUpper:399-401 | type: elm/core/1.0.5/src/String.elm:350 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "trim" )
+        , ( ( "Elm", "String", "trim" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trim:103-106 | helpers: String.cpp:trim:407-409 | type: elm/core/1.0.5/src/String.elm:405 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "trimLeft" )
+        , ( ( "Elm", "String", "trimLeft" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimLeft:108-111 | helpers: String.cpp:trimLeft:411-413 | type: elm/core/1.0.5/src/String.elm:414 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "trimRight" )
+        , ( ( "Elm", "String", "trimRight" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_trimRight:113-116 | helpers: String.cpp:trimRight:415-417 | type: elm/core/1.0.5/src/String.elm:423 (String -> String) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "uncons" )
+        , ( ( "Elm", "String", "uncons" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_uncons:58-61 | helpers: String.cpp:uncons:42-44 | type: elm/core/1.0.5/src/String.elm:553 (String -> Maybe (Char, String); slots concrete) | B1: vacuous (no function-capable position) | B2: no static/global/task write | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "String", "words" )
+        , ( ( "Elm", "String", "words" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/StringExports.cpp", "elm-kernel-cpp/src/core/String.cpp" ]
                 , evidence = "class: vacuous | entry: StringExports.cpp:Elm_Kernel_String_words:83-86 | helpers: String.cpp:words:286-389 (two arms) | type: elm/core/1.0.5/src/String.elm:209 (String -> List String) | B1: vacuous (no function-capable position) | B2: root ranges :321/:372 restored :334/:387 | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-06: plans/kernel-root-stack-bounded-rooting.md - String.cpp rooting only (split/lines/words parts rooted by one all-ones record instead of per-64 chunks); no apply, no retention, no closure mint; B1/B2/B3 unchanged"
                 }
           )
-        , ( ( "Time", "getZoneName" )
+        , ( ( "Elm", "Time", "getZoneName" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
                 , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_getZoneName:286-293 | type: elm/time/1.0.0/src/Time.elm (Task x ZoneName) | B1: same binding shape as Time.here - unit capture, concrete result | B2: no store outside the returned Task | B3: binding closure only, payload unit | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Time", "here" )
+        , ( ( "Elm", "Time", "here" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/time/TimeExports.cpp" ]
                 , evidence = "class: cheap | entry: TimeExports.cpp:Elm_Kernel_Time_here:279-284 | type: elm/time/1.0.0/src/Time.elm (Task x Zone) | B1: makeBinding<timeHereBody>(unit()) - the ONLY capture is unit; Zone is concrete, so no function value can enter or leave | B2: no store outside the returned Task | B3: mints a binding closure, but it lands in Task.callback where NO type variable names it and its payload is unit | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change)"
                 }
           )
-        , ( ( "Url", "percentDecode" )
+        , ( ( "Elm", "Url", "percentDecode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/url/UrlExports.cpp" ]
                 , evidence = "class: vacuous | entry: UrlExports.cpp:Elm_Kernel_Url_percentDecode:65-101 | helpers: elmStringToStd:18-20, hexToInt:33-38 | type: elm/url/1.0.0/src/Url.elm:288 | B1: vacuous (no function-capable position) | B2: grep `static` over UrlExports.cpp: zero hits | B3: grep clean (no allocClosure) | audited: 2026-08-20"
                 }
           )
-        , ( ( "Url", "percentEncode" )
+        , ( ( "Elm", "Url", "percentEncode" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/url/UrlExports.cpp" ]
                 , evidence = "class: vacuous | entry: UrlExports.cpp:Elm_Kernel_Url_percentEncode:44-63 | helpers: elmStringToStd:18-20, shouldEncode:23-30 | type: elm/url/1.0.0/src/Url.elm:255 | B1: vacuous (no function-capable position) | B2: grep `static` over UrlExports.cpp: zero hits | B3: grep clean (no allocClosure) | audited: 2026-08-20"
                 }
           )
-        , ( ( "Utils", "append" )
+        , ( ( "Elm", "Utils", "append" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_append:172-182 | helpers: Utils.cpp:append:819-843 | type: elm/core/1.0.5/src/Basics.elm:510 | B1: B1(b)/(c); slots copied verbatim, b aliased as tail, no apply | B2: result is sole write target; roots balanced | B3: no closure alloc; slots unwrapped | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "compare" )
+        , ( ( "Elm", "Utils", "compare" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_compare:14-17 | helpers: Utils.cpp:compare:446-452, :cmp:296-440 | type: elm/core/1.0.5/src/Basics.elm:418 (comparable -> comparable -> Order) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "equal" )
+        , ( ( "Elm", "Utils", "equal" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: cheap | entry: UtilsExports.cpp:Elm_Kernel_Utils_equal:119-121 | helpers: Utils.cpp:eqHelp:516-730 | type: elm/core/1.0.5/src/Basics.elm:348 (a -> a -> Bool) | B1: reads only :567-706; Tag_Closure arm :723-725 | B2: no static mutable storage; dictEq scratch frame-local | B3: no allocClosure/papCreate | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "ge" )
+        , ( ( "Elm", "Utils", "ge" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_ge:139-141 | helpers: Utils.cpp:ge:811-813, :cmp:296-440 | type: elm/core/1.0.5/src/Basics.elm:385 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "gt" )
+        , ( ( "Elm", "Utils", "gt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_gt:135-137 | helpers: Utils.cpp:gt:807-809, :cmp:296-440 | type: elm/core/1.0.5/src/Basics.elm:373 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "le" )
+        , ( ( "Elm", "Utils", "le" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_le:131-133 | helpers: Utils.cpp:le:803-805, :cmp:296-440 | type: elm/core/1.0.5/src/Basics.elm:379 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "lt" )
+        , ( ( "Elm", "Utils", "lt" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]
                 , evidence = "class: vacuous | entry: UtilsExports.cpp:Elm_Kernel_Utils_lt:127-129 | helpers: Utils.cpp:lt:799-801, :cmp:296-440 | type: elm/core/1.0.5/src/Basics.elm:367 (comparable -> comparable -> Bool) | B1: vacuous (no function-capable position) | B2: no static mutable storage | B3: no closure alloc | audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-1.md 1c: the only C++ changes are kind READS -- Custom/Record equality reads slot kinds through customSlotKind/recordSlotKind and closureNewArgKind reads slots >= 25 as boxed, both identical to before below the header cap and UB-free past it; no application, retention, fabrication or type change) | re-audit 2026-10-24: plans/review-bug-list-fixes.md - UtilsExports.cpp comment-only edit (literals live in PermanentSpace, not rodata); no code change and no line moves; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24 | re-audit 2026-10-24: plans/review-bug-list-fixes.md - SD-26: the Empty constant (\"\") now equals a zero-length heap String on every comparison path (Utils.cpp resolveAndCompare and the cmp/eqHelp null arms, UtilsExports.cpp equalRespectingConstants and eco_string_cmp3): a read-only Tag/header.size check on the branch where exactly one side is a constant; cited line ranges moved and are updated; no application, retention, fabrication or type change; B1-B3 unchanged | audited: 2026-10-24"
                 }
           )
-        , ( ( "Utils", "notEqual" )
+        , ( ( "Elm", "Utils", "notEqual" )
           , TypeFaithful
                 { scope = Transports
                 , files = [ "elm-kernel-cpp/src/core/UtilsExports.cpp", "elm-kernel-cpp/src/core/Utils.cpp" ]

@@ -78,27 +78,33 @@ trap 'rm -rf "$TMP"' EXIT
 # The table's shape is fixed by elm-format, so a small state machine is
 # enough and avoids a Python dependency in the build graph:
 #
-#     , ( ( "JsArray", "map" )
+#     , ( ( "Elm", "JsArray", "map" )
 #       , TypeFaithful
 #             { files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
 #             , evidence = "..."
 #             }
 #       )
 #
-# A `( ( "Home", "name" )` line opens a row (resetting the licensed flag, so
-# a `Positional` row contributes nothing); `files = [ ... ]` is collected
-# across lines until its closing bracket.
+# A `( ( "Prefix", "Home", "name" )` line opens a row (resetting the licensed
+# flag, so a `Positional` row contributes nothing); `files = [ ... ]` is
+# collected across lines until its closing bracket. A license pin is labelled
+# `<Prefix>.<Home>.<name>` (`Elm.File.size`, `Eco.File.size`): the prefix is part
+# of the table's key since SD-16 (plans/kernel-table-prefix-keys.md).
 awk '
     {
-        if ($0 ~ /\( \( "[^"]+", "[^"]+" \)/) {
+        if ($0 ~ /\( \( "[^"]+", "[^"]+", "[^"]+" \)/) {
             s = $0
             sub(/^[^(]*\( \( "/, "", s)
-            h = s
-            sub(/".*/, "", h)
+            p = s
+            sub(/".*/, "", p)
             t = s
             sub(/^[^"]*", "/, "", t)
-            sub(/".*/, "", t)
-            kernel = h "." t
+            h = t
+            sub(/".*/, "", h)
+            n = t
+            sub(/^[^"]*", "/, "", n)
+            sub(/".*/, "", n)
+            kernel = p "." h "." n
             licensed = 0
             collecting = 0
         }

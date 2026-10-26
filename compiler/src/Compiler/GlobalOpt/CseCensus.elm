@@ -607,8 +607,8 @@ collect oracle minCost expr path ( occs, acc ) =
                                 bump (CsePurity.isSafeCall oracle bound) 1 acc1.deadPureLets
                             , deadDroppableKernelLets =
                                 case bound of
-                                    MonoCall _ (MonoVarKernel _ _ home name _) _ _ _ ->
-                                        bump (KernelFacts.droppableFor ( home, name )) 1 acc1.deadDroppableKernelLets
+                                    MonoCall _ (MonoVarKernel _ prefix home name _) _ _ _ ->
+                                        bump (KernelFacts.droppableFor ( prefix, home, name )) 1 acc1.deadDroppableKernelLets
 
                                     _ ->
                                         acc1.deadDroppableKernelLets

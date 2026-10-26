@@ -1344,7 +1344,7 @@ duplicate `LssFacts.matchGlobal`'s machinery. Recorded limitation — a
 standaloneVerdict : Mono.MemberOrigin -> Verdict
 standaloneVerdict origin =
     case origin of
-        Mono.OriginKernel home _ ->
+        Mono.OriginKernel _ home _ ->
             if home == "Debug" then
                 PoisonDebug
 
