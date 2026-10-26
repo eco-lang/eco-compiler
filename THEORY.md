@@ -145,7 +145,7 @@ Invariants (`design_docs/invariants.csv`):
 - HEAP_005, HEAP_031: generated code stores only into fresh objects.
 - HEAP_BUILDER_001: objects under construction in the runtime and kernels.
 - HEAP_007: one mutator per process. GC_DET_001: the collector's determinism.
-- HEAP_018: states that Elm values are acyclic; out of date, since closures can form cycles.
+- HEAP_018: Elm value data is acyclic; closures of recursive local functions are the exception and can form cycles.
 - XPHASE_010: code generation trusts the compiler's call information.
 - KERN_006: the compiler alone decides kernel calling conventions.
 - MONO_029: unconstrained type variables are boxed.

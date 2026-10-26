@@ -8,8 +8,8 @@
 > `compiler/src/Compiler/GlobalOpt/KernelFacts.elm`.
 
 **State of the kernel boundary as of 2026-08-13**, after the kernel-opt series
-(items 01–14; full ledger `benchmarks/kernel-opt.md` Runs D–S + DONE,
-dispositions `kernel-opt-status.md`). This document describes what crosses the
+(items 01–14; full ledger `benchmarks/kernel-opt.md` Runs D–S + DONE;
+each item's disposition is in its plan's outcome section). This document describes what crosses the
 boundary **today**, the machinery that manages it, the standing selection
 principle for reducing it further, and the remaining opportunities ranked by
 measured heat. The pre-series analysis this document replaced (the 2026-08-09
@@ -494,7 +494,6 @@ both dwarf everything above.
 
 - `benchmarks/kernel-opt.md` — per-run measurements (Runs A–S + DONE), the
   recording protocol, and the noise-band rules.
-- `kernel-opt-status.md` — per-item dispositions and gate results.
 - `plans/kernel-opt-01..15-*.md` — per-item plans with outcome sections
   (including the full rejected List-HOF patch and the CSE soundness design).
 - `design_docs/invariants.csv` — KERNEL_FACTS_001, KERNEL_TASK_IO_001,

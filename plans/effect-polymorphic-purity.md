@@ -128,8 +128,8 @@ nor a call edge. Three defects follow, all confirmed on the self-compile
   but may not add a stored record field"; the amendment is what licenses
   `hofParams`); a new OPT row for the oracle's soundness contract and the
   CGEN_078(a) licence-authority note (both in the Phase-3 rewire commit).
-- `kernel-opt-status.md` — dated section at Phase-4 close (house state
-  file).
+- This plan — dated outcome section at Phase-4 close (`kernel-opt-status.md`,
+  the old house state file, was deleted on 2026-10-26).
 - `benchmarks/kernel-opt.md` — Phase-0 baselines and Phase-4 census tables
   recorded there per the house protocol.
 - Tests: KernelFacts validation suites (extend the kernel-opt-07 golden),
@@ -724,7 +724,7 @@ post-rewire semantics and are red against any partial state).
    sub-item before any default-ON.
 5. Default decision for `condPurity` per the criteria above; KEEP-ON is
    expected since default config is artifact-inert. Record the outcome
-   here either way; add the dated section to `kernel-opt-status.md` and the
+   here either way, in a dated section, and add the
    run entry to `benchmarks/kernel-opt.md`.
 
 ## Traps & risks

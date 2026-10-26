@@ -48,7 +48,7 @@ stepProcess(proc):              -- proc held in a rooted encoded word
   loop on task = proc.root:
     Succeed | Fail:
       pop frames to the nearest one tagged with the same ctor
-      none -> stop (finished; an unhandled Fail is logged)
+      none -> stop (finished; an unhandled Fail is logged and dropped, SCHED_002)
       else -> newTask = frame.callback(task.value)
               (primitive value: eco_apply_closure_eval, no boxing)
               proc = procWithRoot(proc, newTask)
@@ -224,6 +224,7 @@ Invariants (`design_docs/invariants.csv`):
 
 - HEAP_005, HEAP_007, HEAP_031, HEAP_035: fresh-object stores, one mutator, no raw scalars in the root set.
 - KERNEL_TASK_IO_001, KERNEL_TASK_IO_002: deferred kernel IO and rooting in bindings.
+- SCHED_001: a process id names one process for the life of the program. SCHED_002: an unhandled `Task.fail` ends only its process, with a warning on stderr.
 - LIVE_001 to LIVE_006: holds; LIVE_004 is synchronous dispatch, LIVE_005 quiescence listeners, LIVE_006 the private count.
 - PORT_001 to PORT_007: ports as managers, the eco thread, JSON flags.
 - SYS_002 to SYS_004, SYS_007: system-library managers, services and spawning.

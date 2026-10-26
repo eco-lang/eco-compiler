@@ -159,7 +159,7 @@ Invariants (`design_docs/invariants.csv`):
 - BFOPS_012, BFOPS_029: no load without a passing check. BFOPS_016, BFOPS_017: failure is a branch to `Nothing`.
 - BFOPS_030, BFOPS_032: layout stays in the runtime helpers.
 - BFOPS_039: no raw cursor pointer is live across a point that may collect; cursors are rebuilt from their buffer, and a buffer written after such a point is a builder. Pinned by `test/bf-codegen/bf_cursor_survives_minor_gc.mlir` and `BytesFusedEncodeCursorSurvivesGCTest`.
-- False for an encoder with an opaque leaf: BFUSE_001 (all or nothing), BFOPS_036 (no intermediate allocations, also false for decoders), BFOPS_037 (no interpreter calls). BFOPS_021 cites `BFTypes.td`, which does not exist; the cursor type is in `BFOps.td`.
+- False for an encoder with an opaque leaf: BFUSE_001 (all or nothing), BFOPS_037 (no interpreter calls). BFOPS_021 cites `BFTypes.td`, which does not exist; the cursor type is in `BFOps.td`.
 
 Design documents:
 

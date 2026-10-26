@@ -1,15 +1,15 @@
 # Plan: Bring the Invariant Catalog Back in Line with the Code
 
-**Status: DONE 2026-10-23.** Phases 1-3 implemented; the three pinned rows remain (see
-`stale-invariants.md`). Gates: elm-tests 918/0 + 14,409/0, JIT E2E 2,455/0, JS E2E 208/0 (4 skip),
+**Status: DONE 2026-10-23.** Phases 1-3 implemented. The pinned rows were settled on 2026-10-26
+(see "Pinned"); only an optional HEAP_018 follow-up is left. Gates: elm-tests 918/0 + 14,409/0, JIT E2E 2,455/0, JS E2E 208/0 (4 skip),
 stress 114/0, bootstrap 4b + 8c fixed points and 9b OK, TLA canary and kernel-license checks clean.
 No new test revealed a compiler or runtime bug. Not done: collapsing the one-constructor
 `KernelBackendAbiPolicy` (KERN_006), judged too wide for this plan.
 
 ## Context
 
-`stale-invariants.md` lists rows of `design_docs/invariants.csv` that disagree with the code, and
-`stale-invariants-review.md` explains each one: why it is stale, which tests exist, and whether code
+`stale-invariants.md` (deleted 2026-10-26) listed rows of `design_docs/invariants.csv` that disagreed
+with the code, and `stale-invariants-review.md` (since deleted) explained each one: why it is stale, which tests exist, and whether code
 enforces it. On 2026-10-23 we walked the list together and chose one action per item. This plan
 records those decisions and orders the work.
 
@@ -54,7 +54,7 @@ the same change: correct its oracle and its `tests:` line, and add entries that 
 | KERN_006 | Drop `AllBoxed` and fix the source column. Clean the stale doc comments in `KernelAbi.elm` and `Context.elm`. Consider collapsing the one-constructor `KernelBackendAbiPolicy` type. |
 | KERNEL_TASK_IO_001 | Add `system-kernel-cpp/`, and cite SYS_001. |
 | HEAP_005, HEAP_007 | Status becomes `enforced`; cite the validate checks, the P1 census, the TLA model and ConcurrencyRegisterTest. Audit the statuses of the other HEAP_* rows the same way. |
-| Source columns | Repoint every row in `stale-invariants.md` section 4: the mono rows to `Compiler.Monomorphize.*` plus `Compiler.MonoSolver.*`; the codegen rows to their specific `Generate/MLIR` module; CGEN_041 to 044 to their own checkers; CGEN_064 and 067 to `SretFuncOpLowering` and the multi-operand `eco.return` lowering; TYPE, TOPT, POST, BFOPS_021, VDOM and the THEORY.md rows to their current modules or theory docs. |
+| Source columns | Repoint every row in section 4 of `stale-invariants.md` (since deleted): the mono rows to `Compiler.Monomorphize.*` plus `Compiler.MonoSolver.*`; the codegen rows to their specific `Generate/MLIR` module; CGEN_041 to 044 to their own checkers; CGEN_064 and 067 to `SretFuncOpLowering` and the multi-operand `eco.return` lowering; TYPE, TOPT, POST, BFOPS_021, VDOM and the THEORY.md rows to their current modules or theory docs. |
 | Text fixes found with section 4 | CGEN_007 `boxToMatchSignature` becomes `...Typed`; TYPE_001 now has a single pathway; VDOM_005 names `Html.Dom` and `toString`/`htmlToString`. Reconcile HEAP_006 with the tenure forwarding table, and HEAP_008's test-logic entry (no 40-bit offsets). |
 | CGEN_066 | Retire (a record of a deleted pass). |
 
@@ -89,11 +89,13 @@ Each item is its own commit, with the row amended in the same commit.
 
 ## Pinned
 
-| Row | Come back when |
+These three rows were left for later on 2026-10-23. They were settled on 2026-10-26.
+
+| Row | Outcome |
 |---|---|
-| HEAP_018 | The cycle exception is already in the row. Revisit to state what stops GC traversal from looping (forwarding words and mark bits), and whether to add a closure-cycle GC test. |
-| CGEN_030, CGEN_031 | Bug SD-12 is decided: delete the `eco.jump` fallback, or make joinpoints real. Then retire or restate both rows and their vacuous tests. |
-| BFOPS_036 | Bug SD-22 (fused decoders allocate while the cursor is live) is fixed, e.g. with `elm_bytebuffer_with_data`. Then state what fused code may allocate. |
+| HEAP_018 | **Kept.** The row already has the closure-cycle exception. Optional follow-up, with no trigger: state what stops GC traversal from looping (forwarding words and mark bits), and consider a closure-cycle GC test. |
+| CGEN_030, CGEN_031 | **Kept.** SD-12 was settled by deleting the `eco.jump` fallback (`plans/review-bug-list-fixes.md`). Both rows are accurate rules of the dialect, checked by the verifier and `JoinpointNormalization.cpp`. Code generation never emits `eco.joinpoint`, so `JumpTargetTest` and `JoinpointUniqueIdTest` pass trivially on generated code. A tail call outside a loop now stops the compiler with a message citing CGEN_030 (`UnscopedTailJumpTest`). |
+| BFOPS_036 | **Removed.** It said fused code allocates nothing but the result, which was false for decoders and for encoders with allocating arguments. SD-22 is fixed, and BFOPS_039 now says what fused code may allocate and how cursors survive it. |
 
 ## Already done (2026-10-23)
 
@@ -111,5 +113,5 @@ CGEN_061 and CGEN_062 (code citations corrected), CGEN_CLOSURE_007 and 008 (reti
 - For Phases 1 and 2: `cmake --build build` and `--target elm-tests`.
 - For each Phase 3 item: also `--target full`, plus `--target stress` for items 2 and 4. Run
   `--target bootstrap` once, at the end.
-- When all of this is done, delete `stale-invariants.md` and `stale-invariants-review.md`, or reduce
-  them to the pinned items.
+- When all of this is done, delete `stale-invariants.md` and `stale-invariants-review.md`. Done:
+  both are gone (the first on 2026-10-26).
