@@ -291,7 +291,7 @@ Against that, the honest positive: `partialHof` measured **−83,885,575 generic
 dispatches (−9.14 %)**, and the single largest component was **−43.5 M (−40 %)
 off `eco_apply_closure_eval`'s over-application re-entry**, NOT stamping. The
 biggest available win in this neighbourhood is therefore the codegen fix for
-over-application (`/work/direct-call-decline-census.md` §4 target #1), which
+over-application (`plans/over-application-re-entry.md`), which
 needs no set-flow work at all.
 
 **Recommendation: do not build §5 until P0 shows a real `reshaped` population

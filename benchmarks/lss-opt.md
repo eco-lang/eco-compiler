@@ -1259,7 +1259,7 @@ New flag `inline.partialHof` (`ECO_INLINE_PARTIAL_HOF=1`, hash token `phof=`, DE
 exact-call-sites-only refusal for candidates admitted via `hofThreshold`. It is the general form of a
 codebase-specific whitelist experiment: `IO.andThen` is 2-of-3 arguments at all 367 of its sites, so
 exact-only means never, and the monad's bind was the single largest generic-dispatch source
-(`/work/direct-call-decline-census.md`). Both arms emit BYTE-IDENTICAL output, and minors/majors are
+(the direct-call decline census, appendix of `plans/over-application-re-entry.md`). Both arms emit BYTE-IDENTICAL output, and minors/majors are
 identical to the digit — the counters say allocation pressure did not move. Wall +2.1 % is FLAT by
 this file's 3 % bar and its sign is against the flag; no regression detected, and no win either. The
 −83.9 M dispatches are real and were reproduced independently by the whitelist route (−80.4 M), but

@@ -27,7 +27,7 @@ one operates on a monomorphic copy. If `map` has 40 specializations and is
 inlined at 3 sites in each, that is 120 inlines of the same source definition;
 pre-mono it is 3.
 
-**It removes the only set-destroying pass.** `/work/direct-call-decline-census.md`
+**It removes the only set-destroying pass.** The direct-call decline census (`plans/over-application-re-entry.md`, appendix)
 and `plans/lss-inline-member-propagation.md` establish that of every pass
 between LSS derivation and codegen, `MonoInlineSimplify` is the ONLY one that
 loses LSS identity — 863 members destroyed per self-compile, 100 % of its

@@ -1701,7 +1701,7 @@ only at exact (saturated) ones.
 This is the single gate keeping the IO monad's bind out of the inliner:
 `andThen f ma` supplies 2 of 3 arguments at all 367 of its sites, so it is
 never an exact call. Forcing it in via the whitelist measured **-8.77 %**
-generic dispatch (/work/direct-call-decline-census.md), and this is the
+generic dispatch (plans/over-application-re-entry.md, appendix), and this is the
 general, non-codebase-specific form of that.
 
 The refusal it lifts exists because a partial rebuild's re-staged closure once

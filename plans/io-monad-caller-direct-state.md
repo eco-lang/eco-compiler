@@ -18,7 +18,7 @@ Not to be confused with `plans/io-monad-refactoring.md` — that is the builder'
 
 ## 1. The measured position
 
-From `/work/direct-call-decline-census.md` (fully-optimized self-compile,
+From the 2026-09-08 direct-call decline census (appendix of `plans/over-application-re-entry.md`; fully-optimized self-compile,
 `eco-i35`, verified bootstrap fixed point; 933,032,776 generic dispatches):
 
 | group | events | share |
@@ -194,7 +194,7 @@ otherwise.
 **This plan is NOT my recommended next move, and it should not be built before
 the alternative is priced.**
 
-Against it: `/work/direct-call-decline-census.md` §4 ranks **over-application
+Against it: the direct-call decline census (`plans/over-application-re-entry.md`, appendix) ranks **over-application
 re-entry at 92.0 M (9.9 %)** — 91,978,380 dispatches inside a single runtime
 function (`RuntimeExports.cpp:2240`, where an over-applied call saturates then
 re-enters with the remaining arguments). The static signal already exists
