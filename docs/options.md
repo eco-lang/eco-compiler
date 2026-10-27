@@ -223,9 +223,7 @@ Parsing classes (inputs are trimmed and lower-cased unless stated otherwise):
 | `GUIDA_REGISTRY` | URL; `https://package.elm-lang.org` | Package registry base URL (inherited from Guida) | compiler/src/Builder/Deps/Website.elm:25 |
 | `GUIDA_JS_PATH` | path; `../../build/compiler/build-xhr/bin/guida.js` | `bin/index.js` (the npm `guida` bin) loads the compiled compiler JS from here | compiler/bin/index.js:34 |
 | `APPDATA` | Windows only | Base for `File.appDataDir` in the XHR IO handler | compiler/bin/eco-io-handler.js:363 |
-| (any name) | none | Generic `Env.lookup` passthrough: `process.env[name]` in the Node runners | compiler/bin/eco-io-handler.js:471; compiler/bin/eco-boot-runner.js:360 |
-
-`compiler/bin/eco-boot-runner.js:486` loads `../build-kernel/bin/eco-boot.js` from a hard-coded path; no environment variable changes it.
+| (any name) | none | Generic `Env.lookup` passthrough: `process.env[name]` in the Node XHR handler | compiler/bin/eco-io-handler.js:471 |
 
 **Mentioned in front-end comments but NOT read by the front-end:** `ECO_KERNEL_GCLEAF` and `ECO_STRING_LEN_INLINE` (backend knobs), `ECO_DISPATCH_STATS` (runtime), `ECO_VERSION_OVERRIDE` (a CMake `-D` define that feeds the generated `Version_Build.elm`), and `ECO_MONO_DIFF` (a stderr message prefix, not a variable). None of the 70 variables that are read is dead: each one flows into an EcoConfig field or a Task that is used.
 

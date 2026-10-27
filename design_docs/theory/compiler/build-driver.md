@@ -120,7 +120,7 @@ Code:
 - `compiler/src/Builder/Stuff.elm`: `eco-stuff/<version>` paths, the `*WithBuildDir` helpers, `withRootLockBuildDir`, `writeBytesAtomic`, `bundledPackages`. Per-module files `.eci` (interface), `.eco` (untyped), `.ecot` (typed); package files `artifacts.dat` and `typed-artifacts.dat` under `~/.eco/<version>/packages/`.
 - `compiler/src/Builder/Eco/Config.elm`: reads `eco-config.json` and the developer environment overrides. `compiler/src/Builder/GcPoints.elm`: `preLink` and `Eco.GC.majorGC`.
 - `compiler/src/Builder/Reporting/Exit.elm`: error reports.
-- `compiler/src-xhr/Eco/XHR.elm` and the other `compiler/src-xhr/Eco/*` modules: the plain-Elm twins. `compiler/bin/eco-io-handler.js`, `compiler/bin/index.js`, `compiler/bin/eco-boot-runner.js`: the Node handler and loaders. The kernel twins are in `eco-kernel-cpp/`.
+- `compiler/src-xhr/Eco/XHR.elm` and the other `compiler/src-xhr/Eco/*` modules: the plain-Elm twins. `compiler/bin/eco-io-handler.js` and `compiler/bin/index.js`: the Node handler and loader. The kernel twins are in `eco-kernel-cpp/`.
 - `compiler/src-version/`: the version baseline. `compiler/CMakeLists.txt`: the self-compilation stages and the `build-xhr` and `build-kernel` roots.
 - Options: `--builddir`, `--no-cache`, `--config`, `--local-package`, `--kernel-package`.
 

@@ -23,14 +23,6 @@ files were seen only by the stage 02 map readers.
     every CMake configure rewrites a tracked file (dirtying the tree with a -dev- string and
     the template's docstrings).
 
-=== bin/eco-boot-runner.js
-
-- line 78  [reported 1x by: review]
-    The boot runner's eco-io route always JSON.parses the request body and calls only
-    handleEcoIO. Unlike bin/index.js:11-15, it never checks the X-Eco-Op header or calls
-    handleEcoIOBinary. Under this runner, Eco.MVar.put (a raw-bytes body sent through
-    Eco.XHR.sendBytesTask) fails to parse and gets a 500, and orCrash then crashes the
-    program.
 
 === bin/eco-io-handler.js
 
