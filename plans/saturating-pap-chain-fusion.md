@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "P0 steps 2-5 (pricing the staircase, measuring artefact size, generality census, pre-registered LSS delta) and the reframed transform itself: the applicative mapN synthesis through the Decoder/Ok boxes (layer L2 or L3). None of it was built."
+---
+
 # Saturating PAP-chain fusion — collapsing the applicative `apply` staircase
 
 **Status:** **OUTLINE + P0 STEP 1 RUN (2026-09-15).** §8 has the result and it is decisive:

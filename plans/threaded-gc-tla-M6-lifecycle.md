@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M6: thread lifecycle, fork and exit
 
 **Status:** IMPLEMENTED (2026-09-28) in `test/tla/M6-lifecycle/`: steps 1–5 of §9 are done, the

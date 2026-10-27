@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Key the Kernel Tables by Prefix, Home and Name (SD-16, native side)
 
 **Status: DONE 2026-10-26.** Gates: elm-tests 918/0 and 14,439/0; bootstrap 4b, 8c and 9b OK;

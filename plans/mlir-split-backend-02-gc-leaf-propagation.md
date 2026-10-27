@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 02: gc-free leaf propagation on the MLIR side
 
 **Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (J1–J8;

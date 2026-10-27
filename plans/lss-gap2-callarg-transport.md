@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GAP-2 completion: call-argument set transport (the missing hop of α-in-signature)
 
 **Status: CLOSED (v5, 2026-08-24). D0 SHIPPED unconditional; D1/D2 BUILT,

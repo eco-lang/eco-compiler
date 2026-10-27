@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: eco.value → ptr addrspace(1) in LLVM IR
 
 ## Context

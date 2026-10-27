@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Nullary-Constructor Embedding in HPointer (`null_cons_idx`)
 
 **Status: IMPLEMENTED AND GATED (2026-08-19).** All phases P0–P6 landed.

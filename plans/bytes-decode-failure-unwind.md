@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bytes.Decode failure: unwind to `decode` instead of returning a marker
 
 Status: implemented 2026-10-08.

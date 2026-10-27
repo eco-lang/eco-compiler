@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/remove-default-off-lss-flags.md (arrowSolverRoots default-on, commit 3a Make arrowSolverRoots the default)"
+---
+
 # LSS: solver-root signature identity, with per-use instantiation
 
 **FLAG REMOVED 2026-09-17 — `lss.sigRootIdentity` and its `arrowRootOf` side table are deleted. `arrowSolverRoots` subsumed it (call-stats Run 27: emission byte-identical with it off), and deleting it also deletes the papMembers-pairing trap this plan documents. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**

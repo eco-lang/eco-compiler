@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Remove actualKernelAbi and Make Kernel ABIs Fully Type-Driven
 
 ## Status: COMPLETED

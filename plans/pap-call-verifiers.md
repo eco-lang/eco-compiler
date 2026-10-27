@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # PAP and Call Operation MLIR Verifiers
 
 ## Summary

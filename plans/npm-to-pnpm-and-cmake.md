@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Migrate npm Build to pnpm + Move Elm Toolchain into CMake
 
 ## Goal

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/remove-merased.md"
+---
+
 # Compiler Runtime Performance: 7 Recommendations Implementation Plan
 
 ## Overview

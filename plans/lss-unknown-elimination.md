@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eliminating "unknown = ⊤" from the LSS analysis
 
 **Status: PHASES 1a, 1b AND 2a IMPLEMENTED AND MEASURED (2026-08-24) — see

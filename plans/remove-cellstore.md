@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Remove `Eco.CellStore`: an immutable point store, threaded explicitly
 
 **Status:** DONE (2026-10-04): implemented, all gates green; measured +3.16 s (64.48 -> 67.64 s), accepted (fe-opt-loop entry `noCS`). **Byte-identical output:** yes. **Size:** small. Two phases, one

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Mono comparable-key optimization (compiler-source refactor)
 
 **Status: K1 + K2 + K4 + K6 SHIPPED (both engines), K7 SHIPPED (subst only —

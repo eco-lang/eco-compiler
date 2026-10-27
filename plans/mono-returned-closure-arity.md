@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/finish-callsite-staging-to-globalopt.md"
+---
+
 # Plan: Move Returned Closure Arity Analysis to MonoGlobalOptimize
 
 ## Overview

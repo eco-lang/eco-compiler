@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Pre-mono LSS transforms — 03: lambda-lift CLOSED lambda arguments
 
 **Status:** **CLOSED UNBUILT** (2026-09-12) — §5's census ran and the premise did not survive it.

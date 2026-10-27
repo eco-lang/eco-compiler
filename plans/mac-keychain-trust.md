@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Plan: macOS Keychain certificate trust (SecTrust) for TLS
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Age-bit sentinel for immediate split-header body reclaim
 
 ## Goal

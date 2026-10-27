@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Item 2 — `inline.preserveSets`: a post-mono inliner with no set-clearing site
 
 **Status:** SHIPPED DEFAULT-ON 2026-09-12. Results in §10.

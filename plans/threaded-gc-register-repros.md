@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/threaded-gc-register-repros-impl.md"
+---
+
 # Threaded GC: code-level reproductions for the open register entries
 
 **Status:** design, 2026-09-30. Nothing here is built yet. **Superseded in detail by

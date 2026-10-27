@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "Direct recursion with IO.loop spines (commit 2506b34e16 'Rewrite constraint generation as direct recursion with spine loops'); no separate plan file"
+---
+
 # State Monad Stack Safety Refactoring Plan
 
 Based on design document: `/work/design_docs/state-monad-refactor.md`

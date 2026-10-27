@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typed Optimization Completion Plan
 
 This plan addresses all gaps identified between `design_docs/typed-optimized-trans.md` and the current implementation in `Compiler/Optimize/Typed/`.

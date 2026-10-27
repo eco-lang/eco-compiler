@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: What an Unhandled `Task.fail` Does
 
 **Status: DONE 2026-10-26. Settled as "warn and carry on". The crash was built, then reversed the

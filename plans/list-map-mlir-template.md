@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # List.map forward MLIR template
 
 **Status: OUTLINE v1 — 2026-08-13** (research-grounded; adversarially

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Symmetric Constraint-Join Experiment: Quiescence-Before-Defaulting, Second Attempt
 
 ## Status: IMPLEMENTED & GREEN (2026-07-05) — 12,868 unit + 1,547 E2E, 0 failures

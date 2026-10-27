@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Root MVar store, saved runtime state; harden `Export::toPtr`
 
 ## Context

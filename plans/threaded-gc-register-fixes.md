@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC: fixing the concurrency register
 
 **Status:** Phases 0-3 built (2026-09-30; §11, §12, §13), Phases 4 and 5 built (2026-10-01; §14, §15): every guarded register entry is Fixed or Won't-fix and `ECO_TEST_XFAIL=strict ... register-guards` is green. Owed at the close-out: the §8 performance comparison and G8. Decisions recorded in §0: CR-012 option F; the wider CR-038 variant row runs first; correctness before performance.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fold-proof boxed-slot crossings (E1.3 v3): unlock `$cap` inlining for real
 
 **Status: IMPLEMENTED + GATED (2026-07-21). V3.0-V3.3 SHIPPED; §9 records the

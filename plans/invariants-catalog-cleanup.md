@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Bring the Invariant Catalog Back in Line with the Code
 
 **Status: DONE 2026-10-23.** Phases 1-3 implemented. The pinned rows were settled on 2026-10-26

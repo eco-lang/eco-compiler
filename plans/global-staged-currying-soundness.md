@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/staging-honesty-and-production-test-pipeline.md (P3) plus MonoGlobalOptimize.isDynamicCallee"
+---
+
 # Plan: Global Staged Currying Soundness
 
 ## Overview

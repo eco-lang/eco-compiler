@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: End-to-end IO error handling (kernels → scheduler → compiler)
 
 Status: IMPLEMENTED (2026-05-29). See "Implementation outcome" at the bottom.

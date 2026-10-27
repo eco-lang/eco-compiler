@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR-level split backend: master plan
 
 **Status:** outline, 2026-10-02. Nothing is built.

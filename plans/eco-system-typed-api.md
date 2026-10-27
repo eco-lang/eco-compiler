@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # eco/system: custom types for stringly-typed API values
 
 The eco/system API has values that are strings but take a fixed or well-known set of values: the

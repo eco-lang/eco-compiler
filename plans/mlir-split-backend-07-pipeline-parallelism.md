@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 07: parallelize the serial MLIR pipeline
 
 **Master plan:** `plans/mlir-split-backend.md` (§1 "pull serial work out of the MLIR lowering").

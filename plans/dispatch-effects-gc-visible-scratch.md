@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Make dispatchEffects GC-safe via runtime-owned scratch state
 
 ## Problem

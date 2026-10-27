@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Wrapper FCA Fix — Plan
 
 > **Implementation status (2026-05-20).** Chunk 2.1 (runtime ABI

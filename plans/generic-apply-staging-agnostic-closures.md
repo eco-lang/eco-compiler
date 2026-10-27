@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Generic Apply & Staging-Agnostic Closure Model
 
 **Status: IMPLEMENTED** (2026-03-18)

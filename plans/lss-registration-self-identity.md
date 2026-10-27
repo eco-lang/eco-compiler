@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Registration self-identity — de-poisoning the classify-⊤ that dominates uncovered positions
 
 **Status:** proposed 2026-08-27; adversarial review same day (findings AR-1..AR-10

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "LLVM upstream RewriteStatepointsForGC (EcoGCStrategy.cpp), commit 4526d01b3d"
+---
+
 # Plan: Alloca/mem2reg-based Statepoint GC Root Rewriting
 
 **Status:** READY FOR IMPLEMENTATION  

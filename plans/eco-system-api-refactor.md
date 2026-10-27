@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `eco/system` API refactor for 0.2.0
 
 Status: **implemented** (2026-10-19, §10, §11; all gates green). The API as stubs (every function `Debug.todo`) is in the `ecosyskernel` review repository (github.com/rupertlssmith/ecosyskernel), built with stock elm 0.19.1. Decided: D1–D20; no open questions. Review round (2026-10-19) folded in: A1, B1–B9, C1–C6. Naming review: §6. This collects review feedback

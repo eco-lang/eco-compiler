@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Backend Serial-Floor Pipelining & MLIR Parallelization
 
 ## Implementation status (2026-07-07)

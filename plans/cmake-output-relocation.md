@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Relocate Compiler & Test Outputs Under `${CMAKE_BINARY_DIR}`
 
 ## Goal

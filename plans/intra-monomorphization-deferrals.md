@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Intra-Monomorphization Refinements: Destructured Value-Multi + Kernel ABI Result Types
 
 ## Status: PLAN (not yet implemented)

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: CGEN_056 – Saturated papExtend Result Type Test
 
 ## Invariant

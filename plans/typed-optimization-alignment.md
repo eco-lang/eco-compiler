@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typed Optimization Alignment Plan
 
 This plan aligns `Compiler.Optimize.Typed` with `Compiler.Optimize.Erased` to ensure algorithm parity and consistent naming conventions.

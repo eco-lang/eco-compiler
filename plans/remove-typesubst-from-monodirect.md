@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/monosolver-drop-in-monomorphizer.md"
+---
+
 # Phase 8: Eliminate TypeSubst Fallbacks from MonoDirect
 
 ## Goal

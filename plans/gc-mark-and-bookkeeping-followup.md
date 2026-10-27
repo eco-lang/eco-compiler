@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: GC mark-path and old-gen bookkeeping follow-up (working-list items 38–54)
 
 > **STATUS: COMPLETE — 2026-09-23. All eleven items dispositioned.** Run through

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Standardize Stress Tests on a Flag-Driven `Platform.worker` Entry Point
 
 ## Problem

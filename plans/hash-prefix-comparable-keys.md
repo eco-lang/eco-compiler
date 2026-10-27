@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "String comparable keys (b72cf9f454, no plan), then rendered keys deleted entirely by hash-keyed SpecKey maps (plans/speckey-optimization.md, 8616db1783)"
+---
+
 # Plan: Hash-Prefix Comparable Keys for Monomorphization
 
 ## Problem

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: E2E Test Suites for Elm Package Kernel Implementations
 
 ## Problem

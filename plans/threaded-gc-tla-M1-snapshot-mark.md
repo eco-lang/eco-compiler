@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M1: the snapshot marking cycle
 
 **Status:** IMPLEMENTED (2026-09-28/29) in `test/tla/M1-snapshot-mark/`: all of §9 is done — the

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Stage C — distribution bundle (`eco` + `eco-runtime/` + `ld.lld`)
 
 Companion to [`static-link-eco-binary.md`](static-link-eco-binary.md). That

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/option-x-staging-agnostic-monomorphize.md (7f5d4dfdfe moved all staging to GlobalOpt)"
+---
+
 # specializeLambda Two-Mode Implementation Plan
 
 ## Overview

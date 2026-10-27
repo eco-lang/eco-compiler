@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Converting the `bodyMismatch` declines: one member id, several bodies
 
 **Status: CLOSED UNBUILT 2026-09-06. The P0 census ran and killed it — §8.**

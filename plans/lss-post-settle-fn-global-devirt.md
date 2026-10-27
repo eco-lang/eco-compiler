@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Post-settle fn-global devirt (E9.5 — the commit-after-settle completion of E9.1) — census first
 
 **Status: SHIPPED DEFAULT-ON (2026-08-22; §4.R has the execution record —

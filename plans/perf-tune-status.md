@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Loop items never landed: asymptotic batch #2 dropDeadDefs, #11 freshenLetChain, #15 computeClosureCaptures fusion; data-structure/CPU items #7, #8, #9, #12, #13, #14, #16, #19, #20 (#1, #3, #5, #18 were measured NO-WIN and reverted). The CAF-memoization lever it names was done separately (plans/caf-memoization-implementation.md)."
+---
+
 # Performance-Tuning Loop — Status
 
 Driver: `guides/perf-tune-loop.md` · Worklist: `perf-investigation-report.md` (§5 order)

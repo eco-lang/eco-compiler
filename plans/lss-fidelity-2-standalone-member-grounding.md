@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS Fidelity 2 — Standalone Element Identity (GAP-1): Ground `g|`/`c|` Members by Demanded Type at Zonk
 
 **Status: COMPLETE — DEFAULT-ON (2026-08-19).** G1→G3 all landed in one pass;

@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Effect-polymorphic purity — a conditional Debug-freedom oracle
 
 **Status: PLAN v2 — 2026-08-14** (v1 draft adversarially verified by a

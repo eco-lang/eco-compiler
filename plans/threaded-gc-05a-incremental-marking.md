@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 05a — Incremental marking on the mutator thread (the snapshot protocol)
 
 **Status:** DONE (2026-09-26), **default-on with T = 32**. Written against the `keep-TG4b` tree

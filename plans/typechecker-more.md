@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typechecker Simplification — "More" (Step 8, items 3 & 4)
 
 Two small, low-risk cleanups deferred out of `plans/typechecker-simplification.md` (its

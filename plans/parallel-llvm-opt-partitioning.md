@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Parallel LLVM Opt — Tiered Partitioned Backend
 
 Implementation plan for `design_docs/backend-parallel-optimization.md`.

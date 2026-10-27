@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "W3 / option (b): disjoint-payload unboxing of multi-ctor single-field unions (a new CtorOpts case, tag-disjointness analysis, tag-dispatch lowering) was never built, and the plan's precondition for it (re-measure after W2) was never run. The W1 static census half is moot now that W2 has shipped."
+---
+
 # Sum-type wrapper unboxing — closing the `CtorOpts` gap
 
 **Status: D-W PASSED 2026-08-05 on both clauses, but W1's dynamic half

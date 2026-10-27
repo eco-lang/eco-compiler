@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Custom Type Constructor Field Type Registration
 
 ## Problem Statement

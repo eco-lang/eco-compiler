@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # String: Flat Leaves + Ropes + Slices + Opportunistic Flattening
 
 ## Goal

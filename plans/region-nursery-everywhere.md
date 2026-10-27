@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: run every heap on the region nursery; legacy only where a test asks for it
 
 Status: **implemented** (2026-10-09; §5 log). v1 was written the same day. Follows threaded-gc-07 (`plans/threaded-gc-07-concurrent-tenuring.md`):

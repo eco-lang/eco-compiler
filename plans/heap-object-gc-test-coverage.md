@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Full GC Test Coverage for All Heap Object Types
 
 ## Problem

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Unboxed Primitive Return Values — Direct Kernels and Closures
 
 ## Goal

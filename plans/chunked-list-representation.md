@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Chunked List Representation (Alm-style unrolled lists)
 
 *(Plan created Aug 2, 2026. Prior art: Alm's `_List_*` kernel —

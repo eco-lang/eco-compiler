@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Staging honesty, production test pipeline, and a generic-call census
 
 Status: **P0–P3 DONE, P4 reported** (2026-10-06); gates in §4. Background: `/work/gopt003-issue.md` (its §2.1 "majority vote"

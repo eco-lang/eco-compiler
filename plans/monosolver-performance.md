@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MonoSolver performance analysis — where the 1.54× goes, and how to get it back
 
 Date: 2026-07-09. Author: investigation following the solver-bootstrap GC-bitmap fix.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Remove the seven default-OFF LSS flags and the code they gate
 
 **Status: PLANNED 2026-09-17.** Scope: delete seven `LssConfig` knobs that ship

@@ -1,7 +1,7 @@
 ---
 title: GC Parameter Sweep Experiment
-status: ready
-date: 2026-05-02
+status: done
+updated: 2026-10-27
 ---
 
 # GC Parameter Sweep Experiment

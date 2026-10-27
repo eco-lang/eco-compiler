@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 06: partition-boundary follow-ups to EcoSplit
 
 **Master plan:** `plans/mlir-split-backend.md` (§4.1 ownership, §4.3 linkage).

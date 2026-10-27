@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Post-Fixpoint Pass Fusion (allocation reduction, phase-boundary-safe)
 
 ## Status: SHIPPED F1 + F2 (2026-07-06) — byte-identical (12868 unit + 1547 E2E, MLIR corpus

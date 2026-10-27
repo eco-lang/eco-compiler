@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Trace the origin of the unbound TVar in the tuple-slot boxing bug
 
 **Scope: diagnostics only.** No fixes (no Fix A at `Specialize.elm:3229`, no

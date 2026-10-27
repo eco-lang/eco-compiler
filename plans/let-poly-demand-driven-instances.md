@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Demand-Driven Local Multi-Specialization Instances
 
 ## Problem

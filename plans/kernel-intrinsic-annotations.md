@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel intrinsic annotations — give kernels real types and make the typechecker enforce them
 
 **Status: PLAN (2026-08-20; investigation COMPLETE, implementation NOT started).**

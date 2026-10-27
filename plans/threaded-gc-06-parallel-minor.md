@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 06 — Parallel stop-the-world minor GC
 
 **Status:** DONE (2026-09-27), **DEFAULT-ON: `gc_minor_threads` = 0 (auto), cap 8**. The

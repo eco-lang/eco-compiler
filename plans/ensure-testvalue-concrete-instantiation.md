@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Ensure All SourceIR Test Cases Have Concrete testValue
 
 ## Problem

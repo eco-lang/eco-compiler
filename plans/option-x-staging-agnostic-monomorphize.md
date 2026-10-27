@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/staging-honesty-and-production-test-pipeline.md"
+---
+
 # Option X: Staging-Agnostic Monomorphize for Closures and Tail Functions
 
 ## Overview

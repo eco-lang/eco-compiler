@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Update eco.case Verifier for Primitive Scrutinee Types
 
 ## Overview

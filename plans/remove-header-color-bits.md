@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Rename Header `color` Bits to `padding` and Remove All Uses
 
 ## Motivation

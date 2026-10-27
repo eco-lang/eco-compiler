@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Reduce `_Utils_update` Overhead via MonoState Split
 
 ## Problem

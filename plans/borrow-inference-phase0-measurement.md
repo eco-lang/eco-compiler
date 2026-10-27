@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Borrow Inference — Phase 0: Up-front Measurement & Groundwork
 
 > **Superseded for sequencing (2026-07-31):** the active optimization

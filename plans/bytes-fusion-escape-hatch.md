@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bytes-fusion escape hatch: `EOpaque` + `bf.write.encoder`
 
 A small extension to the BF dialect that lifts the bytes-fusion entry from

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M7: PageWork (deferred decommit, commit-ahead) and the lock order
 
 **Status:** IMPLEMENTED (2026-09-28) in `test/tla/M7-pagework/`: steps 1–4 of §9 are done, with

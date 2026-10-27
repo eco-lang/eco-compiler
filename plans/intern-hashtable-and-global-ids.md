@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Intern hash table and integer global ids
 
 Date: 2026-09-30. Status: **planned, nothing implemented.** Line numbers are from the tree of this

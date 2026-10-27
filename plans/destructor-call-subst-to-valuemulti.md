@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Thread Destructor Call-Site Substitutions Back Into Value-Multi Instances
 
 ## 1. Problem & Goal

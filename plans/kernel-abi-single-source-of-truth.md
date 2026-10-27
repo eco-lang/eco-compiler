@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel ABI Single Source of Truth Refactor
 
 ## Goal

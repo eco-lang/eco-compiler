@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — concurrency register
 
 **What this is:** the rolling record of concurrency defects in Eco's GC and its runtime interface.

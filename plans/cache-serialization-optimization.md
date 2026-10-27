@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Cache serialization optimization (`.ecot` / `.eci` / string tables)
 
 **Status:** PLANNED 2026-10-03, implementation-ready.

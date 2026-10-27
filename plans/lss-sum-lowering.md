@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Sum lowering: tagged-union closure representation over LSS sets — OUTLINE
 
 **Status: OUTLINE (2026-08-23, user-commissioned). This is a decision record

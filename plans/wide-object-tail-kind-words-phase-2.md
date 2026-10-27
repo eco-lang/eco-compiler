@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wide objects, Phase 2: closures end to end
 
 **Parent:** [`wide-object-tail-kind-words.md`](wide-object-tail-kind-words.md). The overview's §S

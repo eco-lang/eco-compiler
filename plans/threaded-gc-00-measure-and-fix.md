@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 00 — Measure and fix
 
 **Status:** DONE (2026-09-24), all gates green, kept as snapshot `keep-T00`; see §6a for as-built deviations and `benchmarks/threaded-gc-00-baseline.md` for results. Written against the W13c/`keep-W13d` tree.

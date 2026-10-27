@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Fix MonoDirect Erasure Intention: Defer CEcoValue→MErased to Graph Assembly
 
 ## Problem Statement

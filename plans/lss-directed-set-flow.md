@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS Directed Set Flow — deferred inclusion between set positions (the fired FromArrow re-open)
 
 **Status: IMPLEMENTED (2026-08-20/21, Phases A-E; `lss.sigFlow` stays DEFAULT-OFF per the Phase-E decision — see the execution record). Originally: PLAN (2026-08-20; lowered from the same-day outline to implementation-ready

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 07 — Survivor regions (7b) and concurrent tenuring (7c)
 
 **Status:** DONE (2026-09-28): 7b and 7c built and gated. The phase closed with the default left

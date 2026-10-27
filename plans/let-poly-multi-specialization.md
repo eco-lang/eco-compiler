@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/let-poly-demand-driven-instances.md"
+---
+
 # Plan: Comparable Type Keys for Local Multi-Specialization Lookup
 
 ## Problem

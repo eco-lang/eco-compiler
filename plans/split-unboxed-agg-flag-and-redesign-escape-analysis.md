@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "Unboxed-agg pass pipeline deleted outright (no replacement plan)"
+---
+
 # Split `-enable-unboxed-agg` and redesign EscapeAnalysis around cross-spec
 
 Two related changes, sequenced so the first lands risk-free and unblocks the second:

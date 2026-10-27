@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Stage 2 vs Stage 7 MLIR equivalence test runner
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Capacity-check hoisting: interprocedural allocation folding via the capacity model
 
 **Status: IMPLEMENTED, LANDED AND DEFAULT-ON 2026-08-09. `ECO_ALLOC_HOIST`,

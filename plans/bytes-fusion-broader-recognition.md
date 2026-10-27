@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bytes fusion: broader recognition without Eco-specific patterns
 
 Two changes to extend the existing `Compiler.Generate.MLIR.BytesFusion` reifier

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Reproducer for the tuple-slot boxing bug
 
 **Companion to** `plans/wrong-unboxed-bitmap-upstream.md` and

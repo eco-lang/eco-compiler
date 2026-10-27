@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Migrate to LLVM RewriteStatepointsForGC (RS4GC)
 
 ## Status: READY FOR IMPLEMENTATION

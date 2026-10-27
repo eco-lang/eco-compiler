@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MonoSolver: A Parallel Solver-Engine Monomorphizer (Architecture C, Drop-In)
 
 ## Status: **RUNTIME PARITY ACHIEVED** (2026-07-09, rev 11). 1566/1567 — every Elm test passes through MonoSolver.

@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Carrying LSS member identity through inliner reshapes
 
 When `MonoInlineSimplify` rebuilds a closure — a partial inline, a beta of a

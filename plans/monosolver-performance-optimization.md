@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Remaining milestones M6 full de-monadify, M7 env-move-out, D6, D11-D15, and dead Step struct/recordFieldPoints/residual* cleanup in Store.elm"
+---
+
 # MonoSolver Performance Optimization — Implementation Plan
 
 ## SESSION 3 — user-directed: (A1) kill `Step`, (A2) `Dict Int`→`Array`, (A3) desugar point-free (2026-07-10)

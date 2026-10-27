@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Per-Instance Kernel ABI with Primitive-Preserving Generic Apply
 
 Move from a single MLIR symbol per logical kernel (with policy-driven all-boxed

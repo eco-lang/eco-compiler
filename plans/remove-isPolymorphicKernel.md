@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Remove isPolymorphicKernel and Move Polymorphism to Monomorphizer
 
 ## Status: COMPLETED

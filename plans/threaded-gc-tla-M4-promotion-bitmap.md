@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M4: old-gen allocation and mark-bitmap bytes
 
 **Status:** IMPLEMENTED (2026-09-29) in `test/tla/M4-promotion-bitmap/`: steps 1–6 of §9 are done;

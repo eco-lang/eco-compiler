@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "3c F4 JS Builder still accumulates revBuilders by String ++ (Compiler/Generate/JavaScript/Builder.elm); 4b F27 specIdToFuncName is still recomputed and not cached in Context; Phase 5 not done: 5a collectVarTypes still a separate walk (Monomorphize/Closure.elm), 5b MonoInlineSimplify fixpoint still uses exprEqual structural comparison, 5c batched substitutions, 5d integer Union-Find keys, 5e integer MonoType dict keys (toComparableMonoType still used). Phase 6 (F3, F5-F8, F12, F18, F20-F23) is deferred by the plan itself."
+---
+
 # Compiler Memory Efficiency Improvements
 
 ## Overview

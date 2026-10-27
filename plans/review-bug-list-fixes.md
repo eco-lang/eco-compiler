@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix the Defects Confirmed in `review-bug-list.md`
 
 **Status: DONE 2026-10-24.** All phases implemented; every phase-0 test passes. Gates: elm-tests

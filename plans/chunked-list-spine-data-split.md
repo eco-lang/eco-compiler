@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Chunked lists — building the spine and the data separately
 
 **Status:** PLANNED, deferred (2026-09-26). It is not scheduled. Written against the `keep-TG4`

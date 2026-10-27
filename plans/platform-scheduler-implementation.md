@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Platform + Scheduler Implementation Plan
 
 ## Status: PLAN — Decisions resolved, ready for implementation

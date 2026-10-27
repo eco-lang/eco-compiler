@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/monosolver-drop-in-monomorphizer.md"
+---
+
 # MonoDirect Solver-Driven Type Resolution Fixes
 
 ## Problem Summary

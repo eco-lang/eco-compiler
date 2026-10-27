@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bug analysis: `specializePath: Expected MRecord ... got MTuple` (3-tuple outgoing ports)
 
 **Status:** root-caused, fixed, regression test added.

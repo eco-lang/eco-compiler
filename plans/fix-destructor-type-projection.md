@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Destructor Type Projection for Closure Arguments
 
 ## Problem Summary

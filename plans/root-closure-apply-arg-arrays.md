@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Root Closure-Apply Arg Arrays via Stack Root Ranges
 
 ## Goal

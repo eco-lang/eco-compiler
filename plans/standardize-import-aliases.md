@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Plan: Standardize Import Aliases with elm-review-imports
 
 ## Goal

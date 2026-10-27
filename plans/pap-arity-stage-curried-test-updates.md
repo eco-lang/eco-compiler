@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: PAP Arity and Stage-Curried Type Test Updates
 
 ## Summary of Issues Found

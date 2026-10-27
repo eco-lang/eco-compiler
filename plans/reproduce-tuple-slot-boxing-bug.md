@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Reproduce the tuple-slot boxing bug in an E2E test
 
 **Scope:** create a small E2E test under `/work/test/elm/src/` that

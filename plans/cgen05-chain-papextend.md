@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: Chain papExtend Per Stage (CGEN_052 Fix)
 
 ## Problem Summary

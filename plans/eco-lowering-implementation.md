@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eco Lowering Implementation Plan
 
 This plan describes the implementation of the Eco dialect lowering pipeline, transforming `.mlir` files containing Eco dialect operations into executable code via LLVM. The design follows `design_docs/eco-lowering.md` and uses `toy-example/src/toyc.cpp` as a reference for MLIR pipeline construction.

@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase 8 massive-workload items (selected by data) not started"
+---
+
 # Threaded GC — master plan (outline)
 
 **Status:** OUTLINE (2026-09-24). Phases 0–5c are DONE (see §4); phase 6 is DONE and default-on (its retention gate was overridden, §4); later phases have no work plan yet.

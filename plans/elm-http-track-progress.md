@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Implement `Http.track` progress (elm/http)
 
 The last unimplemented piece of the stock `elm/http` kernel. Unlike the rest of

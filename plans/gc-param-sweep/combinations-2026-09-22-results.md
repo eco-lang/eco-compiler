@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GC parameter combination run — 2026-09-22
 
 Harness: `heap-profile.py sweep --variants-file plans/gc-param-sweep/combinations-2026-09-22.json`

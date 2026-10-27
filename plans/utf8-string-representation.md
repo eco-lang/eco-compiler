@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # UTF-8 (ASCII) String Representation, Zero-Copy Bytes Views, and Literal Interning
 
 *(Plan created Jul 8, 2026. Design rationale: `design_docs/utf8-string-encoding-investigation.md`.

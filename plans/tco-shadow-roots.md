@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # TCO-Safe Shadow Root Frames for `func.func` Arguments
 
 ## Problem

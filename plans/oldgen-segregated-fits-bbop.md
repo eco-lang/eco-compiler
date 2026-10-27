@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Old-Gen Segregated-Fits + Big Bag of Pages
 
 ## Goal

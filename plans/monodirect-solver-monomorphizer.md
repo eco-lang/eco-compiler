@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/monosolver-drop-in-monomorphizer.md"
+---
+
 # MonoDirect: Solver-Variable-Aware Monomorphizer — Implementation Plan
 
 ## Status: Planning (Phases 1–4 done, Phase 5 stubs need real implementation)

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # UTF-16 Seed Elimination: fromChar/fromList/cons + StringTable Fixes (W7, phase 1)
 
 > **STATUS: IMPLEMENTED + MEASURED (Jul 8, 2026).** R1+C1+C2 landed but alone

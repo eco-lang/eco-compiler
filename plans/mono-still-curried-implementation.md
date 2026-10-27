@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Mono-Still-Curried Implementation Plan
 
 ## Overview

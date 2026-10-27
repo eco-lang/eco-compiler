@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MonoTraverse: squeeze the traversal family to the floor
 
 **Status: COMPLETE 2026-09-05 — all items done or measured out; output

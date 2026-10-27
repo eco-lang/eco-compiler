@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "2.2b+2.2c: remove MVar's embedded Constraint field and refreshConstraints (MVar MVarId Constraint is still in Monomorphized.elm:173, and TypeSubst.refreshConstraints still exists). Optional and deferred: 1.1c fold dedup and 3.2b/3.4/3.6. 1.1b was analysed as unsafe and deliberately left."
+---
+
 # Monomorphizer Consolidation (post-quiescence / post-J5)
 
 ## Status: IMPLEMENTED (2026-07-06) except the coupled 2.2b+2.2c and the optional 3.2b/3.4/3.6.

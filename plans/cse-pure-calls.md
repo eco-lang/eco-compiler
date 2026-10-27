@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # CSE over pure calls — common subexpression elimination at the Mono level
 
 **Status: NEW 2026-08-05, UNSIZED. Census (C1) before anything else.**

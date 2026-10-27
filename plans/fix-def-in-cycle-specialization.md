@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/type-post-solver.md (root tvars in PostSolve; alias maps dropped in 14a58f8c3f)"
+---
+
 # Fix Def-in-Cycle Specialization (Body TVar Aliasing)
 
 ## Problem

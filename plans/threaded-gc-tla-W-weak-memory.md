@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC: weak-memory companions W1–W5
 
 **Progress (2026-09-28, implementation):** §12 steps 1–6 DONE, and step 7 except the canary

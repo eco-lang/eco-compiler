@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Promotion-time list chunking — build chunks where the survivors are
 
 **Status: BUILT, TESTED, MEASURED, CLOSED NO-GO, AND FULLY REVERTED

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: MONO_013 CtorShape ↔ CtorLayout Consistency Test
 
 ## Overview

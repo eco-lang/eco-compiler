@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/strengthen-postsolve-invariant-tests.md"
+---
+
 # Plan: Extend POST_001 to Cover Lambda and Accessor Expressions
 
 ## Overview

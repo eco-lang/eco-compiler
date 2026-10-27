@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `Time.every` via Scheduler + TimerService (no cross-thread HPointers)
 
 ## Status: PLAN — questions resolved, ready for implementation

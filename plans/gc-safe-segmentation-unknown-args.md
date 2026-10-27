@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/per-instance-kernel-abi.md (single typed-args buffer, no boxed array)"
+---
+
 # GC-Safe Segmentation-Unknown Args Arrays
 
 ## Problem

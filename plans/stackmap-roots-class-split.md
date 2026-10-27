@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Split Stackmap Roots From RootSet Into A Dedicated `StackMapRoots` Class
 
 ## Motivation

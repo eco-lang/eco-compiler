@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/typechecker-design-b.md"
+---
+
 # Typechecker Design C — Explicit worklist rewrite
 
 **Speculative rewrite (Step 8, item 2 from `plans/typechecker-simplification.md`).** Replace the

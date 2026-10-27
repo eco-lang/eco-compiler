@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/number-quiescence-symmetric-join-experiment.md"
+---
+
 # Quiescence Before Defaulting: Resolve `number` at Scope-Close, Substitute Once
 
 ## Status: SUPERSEDED — the design goal is now MET via attempt #2 (IMPLEMENTED & GREEN, 2026-07-05)

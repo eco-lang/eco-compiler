@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel-Opt 04: eco.string.length inline + eco.string.code_unit_at
 
 **Status: IMPLEMENTATION-READY v2.1 — 2026-08-10.** (v2 deepened from OUTLINE v1; v2.1 =

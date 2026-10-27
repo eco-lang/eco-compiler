@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # E4a use-site overlay: one deferred walk per outermost let-function
 
 **Status:** SHIPPED 2026-09-04 (unflagged — a pure refactor of an existing

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Tidy up, complete & E2E-test the `elm/http` kernel (libcurl + OpenSSL)
 
 > Revised twice after code investigation + user decisions. Verified facts cite

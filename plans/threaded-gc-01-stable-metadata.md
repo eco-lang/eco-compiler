@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 01 — Stable old-gen metadata
 
 **Status:** DONE (2026-09-24). Kept as snapshot `keep-TG1` (patch `snapshots/lss-loop/step-TG1.patch`;

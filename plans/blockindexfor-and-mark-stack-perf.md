@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # O(1) blockIndexFor + cached mark-stack indices + MarkContext
 
 ## Goal

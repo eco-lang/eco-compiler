@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 ## 0. High‑level goal recap
 
 Current behavior:

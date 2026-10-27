@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fast-stamping partial applications of globals (`p|` members)
 
 **Status: P0 CENSUS RUN 2026-09-07 — §9. The MECHANISM question came back a

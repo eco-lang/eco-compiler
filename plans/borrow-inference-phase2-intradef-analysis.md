@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Borrow Inference — Phase 2: Intra-def Analysis + Census (B2)
 
 > **Superseded for sequencing (2026-07-31):** the active optimization

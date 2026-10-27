@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Call-Kind Survivor Census — `ECO_CALL_CENSUS`
 
 **Status: COMPLETE 2026-08-28 — all §3.5 gates green; first survivor census recorded in §4.**

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS Fidelity 1 — Watchdogs, Budget Demotion, and ⊤-Accounting
 
 **Status: COMPLETE (2026-08-18).** All phases (A watchdogs both engines, B1/B2/B3

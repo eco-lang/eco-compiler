@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Inline the nursery bump-state TLS read — `ECO_INLINE_BUMP_STATE`
 
 **Status: COMPLETE 2026-08-28 — correct and structurally better, but WALL IS FLAT

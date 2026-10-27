@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Finish Moving Call-Site Staging Logic from MLIR Codegen to GlobalOpt
 
 ## Overview

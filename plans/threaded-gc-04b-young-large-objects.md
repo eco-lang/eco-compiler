@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 04b — Young large objects (restore HEAP_005 without exceptions)
 
 **Status:** PLANNED (2026-09-26). Written against the `keep-TG4` tree (`bin/eco-opt-prev` =

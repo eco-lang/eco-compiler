@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/mvar-id-global-assignment.md"
+---
+
 # Plan: Phantom-Typed IDs, MVar Integer IDs, and Constraint Side-Tables
 
 ## Status: DRAFT — awaiting approval

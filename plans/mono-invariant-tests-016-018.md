@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Graph-Wide MONO_016 and New MONO_018 Invariant Tests
 
 ## Overview

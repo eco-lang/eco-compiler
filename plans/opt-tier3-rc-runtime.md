@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Eco optimization roadmap — Tier 3: the RC runtime track (v2)
 
 **Status: GATED / DEFERRED — do not start. Reactivation trigger below.**

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Global Type Graph Implementation Plan
 
 This plan implements the design in `design_docs/global-type-graph.md` to add a global type graph for debug printing of Elm values with full type information.

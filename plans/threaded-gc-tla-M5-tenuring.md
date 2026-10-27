@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M5: the region nursery and concurrent tenuring (7b/7c)
 
 **Status:** IMPLEMENTED (2026-09-29) in `test/tla/M5-tenuring/`: steps 1–7 of §10 are done

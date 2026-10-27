@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LPartial — the asymmetry-tolerant join (provenance Part C, built at last)
 
 **Status: PLANNED + AR'd + LOWERED (2026-09-01). Commissioned by the user

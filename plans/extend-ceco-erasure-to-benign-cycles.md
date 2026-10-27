@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/remove-merased.md"
+---
+
 # Plan: Extend CEco→MErased Erasure to Benign Polymorphic Cycles
 
 ## Goal

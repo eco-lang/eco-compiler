@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel devirt: move the arity pin into KernelFacts and grow the table
 
 **Status: IMPLEMENTED (2026-08-20), waves 0-3; see the execution record at the end.** Completes LSS_016's whitelist, which

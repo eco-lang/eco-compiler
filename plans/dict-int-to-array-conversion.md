@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Convert Dict Int to Array for Contiguous-Key Dictionaries
 
 ## Motivation

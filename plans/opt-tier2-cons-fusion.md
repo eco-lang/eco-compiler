@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/live-heap-composition-census.md, plans/cse-pure-calls.md and two other successor plans listed in its section 2"
+---
+
 # Eco optimization roadmap — Tier 2: residual list-traversal deletion (CLOSED)
 
 **Status: CLOSED 2026-08-05. This tier is a record, not a backlog.** Every

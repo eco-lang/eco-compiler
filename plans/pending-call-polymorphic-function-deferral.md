@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/pending-call-nested-closure-specialization.md"
+---
+
 # Plan: Defer PendingCall Only for Polymorphic Function Results (Section 3.1 Option A + 3.2)
 
 ## Goal

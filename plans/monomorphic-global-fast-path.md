@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Monomorphic Global Fast Path in Classic Monomorphizer
 
 ## Goal

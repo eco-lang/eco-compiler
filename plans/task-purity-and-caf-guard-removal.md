@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Task Purity: Defer the Last Eager Tasks, Stop Mutating Task Nodes, Drop the CAF Effect Guard
 
 ## Status: IMPLEMENTING (2026-07-23)

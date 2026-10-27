@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Old-gen capacity shrink + large/pinned page reuse
 
 ## Problem

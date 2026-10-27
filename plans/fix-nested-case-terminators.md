@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/eco-case-yield.md"
+---
+
 # Plan: Fix Nested Case Terminators
 
 ## Problem Summary

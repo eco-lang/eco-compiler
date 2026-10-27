@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "F5 (E16) kernel licences for function-carrying Dict/Array/Set containers, listed last and never built; the unnamed fourth root (Borrow/LssFacts context records through Maybe/Dict payloads and fold accumulators; next diagnostic = v3 cells for those callees); the tail-def `t|` member kind for the 61 TailDef RHS uses."
+---
+
 # LSS — container-payload identity across item boundaries
 
 **FLAG REMOVED 2026-09-17 — F3-a's `lss.flow.rowDefer`, the `LRow` annotation constructor and `settleRowRefs` are deleted, on §12.10.2's own A/B: `var` and `coveredBp` identical in both arms and not one devirtualization decision moved. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**

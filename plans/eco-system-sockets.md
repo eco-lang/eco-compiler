@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: sockets for `eco/system` — TCP, UDP, Unix and TLS
 
 Status: **implemented** (S0–S7, 2026-10-08; §10 has results and deviations). Plan v3 (2026-10-07). History: v1 sketch → v2 (SD10–SD12: `connectToHost`,

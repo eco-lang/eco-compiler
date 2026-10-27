@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Pre-mono LSS transforms — outline plan
 
 **Status:** OUTLINE (2026-09-10), lowered the same day into six implementation-ready child plans:

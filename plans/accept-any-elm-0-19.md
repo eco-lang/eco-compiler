@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Accept any Elm 0.19.x in elm.json
 
 **Status: done (Oct 21).** Front-end tests pass (`elm-tests` 14,138 / 0, eco/system 898 / 0). By

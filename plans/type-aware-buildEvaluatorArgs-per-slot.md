@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Type-Aware `buildEvaluatorArgs` Per Slot
 
 ## Status: READY FOR IMPLEMENTATION

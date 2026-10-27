@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Kernel-Opt 14: Elm-source migration: List.reverse, mapN, sortBy (then JsArray/String HOFs)
 
 **Status: IMPLEMENTATION-READY v3 — 2026-08-10.** (v2 deepened from OUTLINE v1; v3 = adversarial

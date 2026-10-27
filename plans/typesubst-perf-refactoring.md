@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase C first-class MonoVarUF structure (C1), E1 architectural separation and D1 work-list rewrites not evidenced; hash-consing (F1) done separately via Compiler.AST.Intern."
+---
+
 # TypeSubst & Specialize Performance Refactoring
 
 ## Goal

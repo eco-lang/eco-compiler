@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Recursive Let Placeholder Binding in MLIR Generation
 
 ## Problem

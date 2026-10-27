@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan 2 — Fix nested cases causing invalid SCF regions ("expects 0 or 1 blocks")
 
 ## Problem

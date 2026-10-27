@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # CAF Hoisting: Memoize Closed Expressions Inside Function Bodies
 
 ## Status: IMPLEMENTED + GATED, SHIPS DEFAULT-OFF (2026-07-24).

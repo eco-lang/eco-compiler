@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LLVM Statepoints + Stack Maps for GC Root Tracing
 
 ## Status: PLANNING

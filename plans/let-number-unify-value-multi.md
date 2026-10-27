@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Unify `let`-number specialization into the general value-multi machinery
 
 **Status:** PROPOSED (design grounded in a three-track code investigation; no spike required — the reused

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/global-type-graph-implementation.md"
+---
+
 # Print Constructor Names Implementation Plan
 
 This plan implements the feature to print actual Elm constructor names (e.g., "Red", "Just", "Nothing") instead of generic names like "Ctor0", "Ctor1" in debug output.

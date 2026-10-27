@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M2: the marker loop, tickets and termination
 
 **Status (2026-09-29): IMPLEMENTED**, steps 1–9 except the canary lines (`test/tla/manifest.txt`,

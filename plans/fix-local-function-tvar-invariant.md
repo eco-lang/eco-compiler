@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Local Function tvar Invariant (TOPT_FN_TVAR_001)
 
 ## Problem

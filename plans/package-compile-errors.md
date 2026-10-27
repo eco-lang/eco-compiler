@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Show Full Compilation Errors for Package Dependencies
 
 ## Problem Statement

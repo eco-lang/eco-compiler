@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/opt-tier1-aggregate-promotion.md, plans/opt-tier3-rc-runtime.md, plans/opt-tier4-parked.md (the opt-tier series)"
+---
+
 # Borrow Inference — Phase 6: v2 Backlog (B6)
 
 > **Superseded for sequencing (2026-07-31):** the active optimization

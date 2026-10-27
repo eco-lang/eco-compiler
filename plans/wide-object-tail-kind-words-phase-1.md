@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wide objects, Phase 1: correctness fixes under today's layout
 
 **Parent:** `plans/wide-object-tail-kind-words.md`. Its §S (shared definitions, commands, test

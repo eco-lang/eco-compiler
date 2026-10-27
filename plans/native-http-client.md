@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Plan: Native HTTP client (llhttp + nghttp2 + nghttp3/ngtcp2 on the IoReactor)
 
 ## Goal

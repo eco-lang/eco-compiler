@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: runtime performance of programs built by the static musl bundle
 
 ## Goal

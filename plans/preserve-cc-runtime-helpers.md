@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # preserve_most/preserve_all calling conventions on GC runtime helpers
 
 **Run L addendum (2026-08-08, benchmarks/tier2-opt.md): the return-safe

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 04: constant thunks in the Elm front-end (replaces the IPSCCP prologue)
 
 **Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (phases 1 +

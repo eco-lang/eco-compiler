@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Streaming MLIR Output for CLI Stage-5
 
 ## Goal

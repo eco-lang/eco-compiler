@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/migrate-to-rewritestatepointsforgc.md"
+---
+
 # Plan: Statepoint-Based Safepoint GC (Replace Stack Map Frame Walking)
 
 ## Status: READY FOR IMPLEMENTATION

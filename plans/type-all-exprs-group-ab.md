@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: Group A / Group B Expression Type Tracking
 
 ## Overview

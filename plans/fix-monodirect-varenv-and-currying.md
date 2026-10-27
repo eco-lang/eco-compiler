@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Fix MonoDirect VarEnv Crashes (Cat 2) and Currying Mismatches (Cat 3)
 
 ## Status: PLAN

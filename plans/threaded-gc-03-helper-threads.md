@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 03 — Helper-thread infrastructure
 
 **Status:** DONE (2026-09-25).

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Record Update: Use Source Record Layout + Widen Result MonoType
 
 ## 1. Problem Restatement

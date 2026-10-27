@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MVarEnv Threading (Total Join-R) and the Architecture-C Horizon
 
 ## Status: J5 (Option A) IMPLEMENTED & GREEN & BOOTSTRAPS (2026-07-06). Architecture C = horizon, still out of scope.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: PostSolve Phase for Expression Types and Kernel Types
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Native Ports + Host Embedding (C and Node.js) Implementation Plan
 
 ## Status: IMPLEMENTED (2026-06-11) — all phases landed (0–5)

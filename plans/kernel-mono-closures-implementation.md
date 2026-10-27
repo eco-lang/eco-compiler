@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: Kernel Mono Closures Fix
 
 Based on design document: `/work/design_docs/kernel-mono-closures.md`

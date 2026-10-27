@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Convert elm-coverage to use elm-test-rs
 
 ## Background

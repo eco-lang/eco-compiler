@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # LSS stage-anchor writers — construction-anchored stage naming for `l|` heads
 
 **FLAG REMOVED 2026-09-17 — the `lss.stageAnchor.rowFill` / `.demandFill` flags are deleted. ORDER 2 and ORDER 3 were never executed, so the flags had no consumer in the compiler at all — only config fields. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**

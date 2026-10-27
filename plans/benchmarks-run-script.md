@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: one-command elm vs eco benchmark runs in examples/benchmarks
 
 ## Goal
