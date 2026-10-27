@@ -5,12 +5,12 @@ effect module System where { command = MyCmd, subscription = MySub } exposing
     , onEmptyEventLoop, rearmEmptyEventLoop, onSignalInterrupt, onSignalTerminate
     )
 
-{-| An Eco system program is an ordinary Elm `Platform.Program` that runs as a command-line tool
+{-| An eco system program is an ordinary Elm `Platform.Program` that runs as a command-line tool
 or a server, and this module is what makes it one: the [`Environment`](#Environment) it starts
 with, and the controls that act on the whole running program, such as its exit code and the
 signals sent to it.
 
-The flags of such a program are an `Environment`. Eco recognises a `main` whose flags type is
+The flags of such a program are an `Environment`. eco recognises a `main` whose flags type is
 `System.Environment` and builds the environment itself when the program starts, so any flags
 JSON a host supplies is ignored. The environment tells you which platform the program is
 running on, which arguments it was started with and when it started, and gives you its standard
@@ -56,7 +56,7 @@ ends, a `Time.every` subscription while it exists, and an `elm/http` request whi
 flight. `Http.track` adds nothing of its own: a tracker with no request in flight does not keep
 the program running.
 
-Eco compiles a program either to native code or to JavaScript run by Node. Where the two
+eco compiles a program either to native code or to JavaScript run by Node. Where the two
 behave differently, the docstrings say so. A native program can also be embedded in a host
 application, which then owns the process. An embedded program does not end when it runs out of
 work: it runs until the host stops it or it calls [`exitWithCode`](#exitWithCode). Embedding
@@ -268,7 +268,7 @@ environmentVariables =
 
 {-| The flags decoder of every program whose flags are an [`Environment`](#Environment).
 
-It looks unused, but the Eco compiler refers to it by name and uses it in place of the JSON
+It looks unused, but the eco compiler refers to it by name and uses it in place of the JSON
 decoder it would make for ordinary flags. It ignores the flags JSON and builds the environment
 through the kernel. The JSON value is passed to the kernel only so that the call depends on the
 decoder's argument and can never be hoisted out of it.

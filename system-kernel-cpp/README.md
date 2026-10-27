@@ -1,19 +1,19 @@
 # eco/system
 
-POSIX-style system programming for Eco programs: files, processes,
+POSIX-style system programming for eco programs: files, processes,
 streams, the terminal, HTTP servers, sockets and WebSockets, from Elm.
 
-`eco/system` is the public system API for programs compiled with the Eco compiler. (Eco's own
+`eco/system` is the public system API for programs compiled with the eco compiler. (eco's own
 `eco/kernel` package is the compiler's internal IO layer and is not meant for applications.) For
 an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/latest/);
 `Http.Stream` adds streaming request and response bodies on top of it.
 
-> **Status:** every module is implemented for Eco's native backend and tested on Linux and macOS
+> **Status:** every module is implemented for eco's native backend and tested on Linux and macOS
 > (CI builds the package and runs its E2E suite on both). Windows is not supported yet: CI builds
 > the package there, but its tests do not run on Windows, and most IO functions report `ENOTSUP`
 > or stop with a "not supported on Windows yet" message. On the JS target (Node), every module works and passes the
 > same tests as the native backend, with small documented differences (for example, error
-> descriptions use Node's wording). See `plans/eco-system-library.md` in the Eco repository for the design and the
+> descriptions use Node's wording). See `plans/eco-system-library.md` in the eco repository for the design and the
 > remaining follow-ups.
 
 ## Modules
@@ -41,7 +41,7 @@ an HTTP client, use [elm/http](https://package.elm-lang.org/packages/elm/http/la
   on accepted `Socket` connections and on `Http.Server` (`Http.Server.upgradeRequest` over HTTP/1.1,
   plain or TLS, and over HTTP/2: RFC 8441), with whole or streamed messages, a ping/pong heartbeat,
   and permessage-deflate compression (RFC 7692; on by default, without context takeover). Checked
-  locally against the Autobahn|Testsuite (`test/conformance/` in the Eco repository).
+  locally against the Autobahn|Testsuite (`test/conformance/` in the eco repository).
 
 ## Example
 
@@ -57,6 +57,13 @@ main =
     System.simpleProgram
         (\env -> Stream.logLine "Hello, world!" env.stdout)
 ```
+
+## Acknowledgements
+
+This package began as a copy of Gren's standard libraries, gren-lang/core and gren-lang/node,
+used with the permission of their author, **Robin Heggelund Hanses**. Its `Stream` model of
+reading, writing and piping data is one of Robin's notable innovations in Gren, and `eco/system`
+is built around it. Many thanks to Robin.
 
 ## License
 

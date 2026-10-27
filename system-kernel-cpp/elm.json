@@ -1,7 +1,7 @@
 {
     "type": "package",
     "name": "eco/system",
-    "summary": "POSIX-style system programming for Eco programs",
+    "summary": "POSIX-style system programming for eco programs",
     "license": "BSD-3-Clause",
     "version": "1.0.0",
     "exposed-modules": [
