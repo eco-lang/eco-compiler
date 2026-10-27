@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/hpointer-representation-redesign.md"
+---
+
 # Heap-Base Sentinel Fix (BBoP page-0 reservation)
 
 ## Goal

@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "P1-2 (Can.Type on every TOpt.Expr), P1-3 (Source comment wrappers C1/C2 still present), P2-1 (GlobalOpt pass fusion), P2-2 (PCtor still embeds union : Union in Canonical.elm), P2-3 (MLIR Context growth), P3-1..P3-6 (applySubst memo, quadratic capture analysis, registry scan, registry fwd/rev dedup, MonoPath types, CaptureABI duplication) all undone."
+---
+
 # Plan: Compiler Memory Reduction
 
 Systematic reduction of the Elm compiler's memory footprint by fixing algorithmic inefficiencies,

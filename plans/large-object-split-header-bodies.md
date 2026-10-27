@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Large Strings / Byte Buffers via Split Header + Body
 
 ## Motivation

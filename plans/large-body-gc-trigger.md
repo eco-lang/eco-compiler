@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: GC triggers for large-body allocation
 
 Status: **implemented 2026-10-08 (D1-D6, gates in §10); Phase 0.2 native RSS bound and Phase 3.1 blocked by bag-page fragmentation, see §10.** v2 was implementation-ready (2026-10-08). v1 was the draft; §11 is the review that

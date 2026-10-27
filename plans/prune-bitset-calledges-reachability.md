@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Single-Pass Mark & Filter Pruning with BitSet over callEdges
 
 ## Status: BLOCKED — upstream bug in `callEdges` (see analysis below)

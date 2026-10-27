@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "T1.3.4 closure promotion deferred (recorded, not scheduled); T1.3.9 param-column aliasing census NO-GO; U-T1.4 oracle-driven reification recorded but not scheduled; other units shipped."
+---
+
 # Eco optimization roadmap — Tier 1: escape sizing + aggregate/scalar promotion
 
 **Status: ACTIVE — the do-now tier.**

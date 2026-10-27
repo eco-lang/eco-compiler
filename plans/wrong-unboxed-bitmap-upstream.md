@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wrong-unboxed-bitmap: upstream trace report
 
 Companion to `plans/wrong-unboxed-bitmap.md`. Same bug, traced **upstream**

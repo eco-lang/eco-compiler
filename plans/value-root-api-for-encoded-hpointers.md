@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Value Root API for Encoded HPointers (Option B)
 
 ## Problem

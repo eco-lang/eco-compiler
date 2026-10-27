@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "MONO_021 amended in design_docs/invariants.csv (MErased dropped; CEcoValue residuals allowed); no replacement plan file"
+---
+
 # Plan: MErased Type + Dead-Spec Metadata + Effect-Aware Pruning
 
 ## Goal

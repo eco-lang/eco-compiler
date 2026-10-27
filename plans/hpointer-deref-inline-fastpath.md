@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # HPointer Deref Optimization — Inline Fast Paths
 
 ## Status: IMPLEMENTED (2026-07-08) — inline deref permanent (flag removed), full gate green

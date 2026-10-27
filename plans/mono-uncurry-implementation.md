@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/mono-still-curried-implementation.md"
+---
+
 # Mono-Uncurry Implementation Plan (Option A)
 
 ## Overview

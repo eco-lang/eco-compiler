@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # JsArray AllBoxed ABI + eco.array.* Intrinsics
 
 ## Problem

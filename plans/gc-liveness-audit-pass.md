@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/migrate-to-rewritestatepointsforgc.md"
+---
+
 # GC Liveness Audit Pass
 
 ## Goal

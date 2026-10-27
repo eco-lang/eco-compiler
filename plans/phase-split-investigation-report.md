@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Investigation Report: Monomorphize vs GlobalOpt Phase Split
 
 ## Executive Summary

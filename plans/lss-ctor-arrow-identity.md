@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/lss-var-chain-roots.md"
+---
+
 # Ctor payload-arrow transport — v2, rebuilt from the provenance census
 
 **Status: CLOSED 2026-08-31 — superseded by `plans/lss-var-chain-roots.md`.**

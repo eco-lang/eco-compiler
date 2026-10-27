@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: All three platforms green with hard test gates
 
 ## Goal

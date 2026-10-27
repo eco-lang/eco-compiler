@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Stackmap + Unwinder-based GC Stack Root Scanning
 
 ## Status: Not Started

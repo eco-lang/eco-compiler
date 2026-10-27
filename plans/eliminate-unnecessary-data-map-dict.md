@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eliminate Unnecessary Data.Map.Dict Usages
 
 ## Problem

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: spawn child processes instead of forking them (runtime and test harnesses)
 
 Status: **implemented on Linux** (2026-10-09; §5 log). Windows code is written but not compiled or run (no Windows toolchain on this machine). Follows `plans/region-nursery-everywhere.md`, whose main

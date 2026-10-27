@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS §4 the paper's way: inclusion constraints `Q`, quantified set variables `ᾱ`
 
 **FLAG REMOVED 2026-09-17 — `lss.qSolve` and §5.2's `instantiateScheme`/`schemeTie`/`schemeFacts`/`schemeResidual` are deleted, on this plan's own finding: byte-identical across all eight probes, and §5.3 — the only thing §5.2 was a precondition for — was declined as a provably-neutral refactor. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix O(maxTag) allocation in `computeFallbackTag` for int/char cases
 
 ## Summary

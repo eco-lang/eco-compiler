@@ -130,7 +130,7 @@ Documents:
 
 Invariants (`design_docs/invariants.csv`):
 
-- HEAP_005, HEAP_031: stores only into fresh objects. HEAP_SNAPSHOT_001: published values are immutable. HEAP_018: states that values are acyclic; out of date for closures.
+- HEAP_005, HEAP_031: stores only into fresh objects. HEAP_SNAPSHOT_001: published values are immutable. HEAP_018: value data is acyclic; closures of recursive local functions can form cycles.
 - HEAP_BUILDER_001 to HEAP_BUILDER_003: objects under construction in the runtime and kernels.
 - HEAP_004: adding object kinds. HEAP_007: one mutator per process.
 - HEAP_008, HEAP_028, REP_CONSTANT_001, HEAP_029: pointer words and embedded constants. FORBID_HEAP_001: telling constants apart.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix TOPT_004 to Catch MONO_018-Class Bugs
 
 ## Problem Statement

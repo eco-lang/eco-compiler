@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # LSS `promote`: quantified set variables that survive instantiation
 
 **Status: PHASE 0 RUN 2026-08-26 — NO-GO (verdict restated same day after an

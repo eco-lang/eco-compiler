@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 05c — Concurrent marking on background threads, and heap-relative trigger pacing
 
 **Status:** DONE (2026-09-27). **Part A default-on:** `conc_mark = 2`, auto background markers

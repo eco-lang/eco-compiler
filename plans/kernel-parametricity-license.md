@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel Parametricity License — audit-granted "trust the type" rows for KernelSetFacts
 
 **Status: PLAN (2026-08-20; lowered from the same-day outline to implementation-ready

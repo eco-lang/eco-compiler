@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Provenance-aware joins + demand-driven reference signatures
 
 **Status: PLANNED 2026-08-29 — the follow-up pairing from the lever-4 close

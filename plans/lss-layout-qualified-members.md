@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Instance dedup via layout-qualified member identity (the LSS key-split de-stamp fix)
 
 **Status: COMPLETE (2026-08-21, one day). Landed DEFAULT-OFF; all §6

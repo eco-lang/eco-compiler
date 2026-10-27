@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `eco/kernel` as a Real Kernel Package via `--local-package`
 
 ## Summary

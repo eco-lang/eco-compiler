@@ -35,6 +35,21 @@ assistant attribution trailers: no `Co-Authored-By:` naming an AI, no `Claude-Se
 no "Generated with ..." line. The few past commits that carry such trailers are mistakes, not
 precedent.
 
+## Plans
+
+Every file under `plans/` opens with a YAML front-matter header:
+
+```yaml
+---
+status: done            # done | partial | not-started | superseded | abandoned
+updated: 2026-10-27     # when the status was last checked against the code
+remaining: "..."        # required iff partial
+superseded_by: "..."    # required iff superseded (a plans/*.md path, or a short description)
+---
+```
+
+Add it to a new plan, and update `status` and `updated` when the plan's work lands or is dropped.
+
 ## Start up
 
 When Clause Code first starts running:

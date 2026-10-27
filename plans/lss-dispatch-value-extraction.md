@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS Dispatch Value Extraction
 
 **Status:** v2 (2026-07-16) — implementation-ready refinement of the v1 outline.

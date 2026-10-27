@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Enforce CGEN_056 & Remove `EcoRunner::fixCallResultTypes()`
 
 ## Goal

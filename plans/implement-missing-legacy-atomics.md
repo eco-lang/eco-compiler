@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase 8: move the IO ops into System.IO under the guida-io-ops.csv names. Only the types (ad0eeb5b23) and the console ops (547435c33b) moved. dirDoesFileExist, newEmptyMVar, forkIO, binaryDecodeFileOrFail, lock and chan ops are still in Utils/Main.elm under their old names, and getArgs/exitWithResponse are still in API/Main.elm. Also, eco-boot-runner.js still registers the now-dead legacy handlers (newEmptyMVar, putStateT, replGetInputLine, binaryDecodeFileOrFail...)."
+---
+
 # Implement Missing Legacy Atomics as Eco.* XHR Operations
 
 ## Status: PLAN

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Static-link the `eco` binary
 
 ## Goal

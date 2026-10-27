@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "R4: delete the ECO_INLINE_DEREF_EXT rollout flag and the out-of-line resolve emission arms once soaked, and update the HEAP_030/031 wording and census docs. The flag is still read in runtime/src/codegen/Passes/EcoToLLVMInternal.h:935."
+---
+
 # Allocator::resolve inlining and optimization ("P2.5"): the residual resolve classes
 
 **Status: IMPLEMENTED + GATED (2026-07-21). R0-R3 SHIPPED (default-on); R4

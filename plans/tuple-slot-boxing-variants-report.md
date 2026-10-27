@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Tuple-slot boxing bug — container variant report
 
 Companion to `plans/tuple-slot-boxing-reproducer.md`. Catalogs 12 new

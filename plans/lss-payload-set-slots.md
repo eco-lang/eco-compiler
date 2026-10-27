@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # LSS — payload set slots on nominal types (the paper's `PStep[l] x a`)
 
 **Status: SHELVED 2026-09-17 — NEGATIVE RESULT, implementation reverted, this document is what remains. The mechanism WORKS (a constructor payload position carrying a singleton that names the function stored in it, on both constructor shapes, flag-off byte-identical 61/61) and is TOO SLOW: ~55 min against an 8-10 min baseline, against a pre-registered criterion of ~11 min. The cost is the mechanism, not the measurement (checked). AND A CHEAPER IMPLEMENTATION WOULD NOT HAVE CHANGED THE RECOMMENDATION: the target positions are COLD, so the payoff was coverage 99.05 % → ~99.4 % against the completeness gate, paid in minutes of every compile. READ §14 FIRST; §13 has the cost attributions so they are not re-derived.**

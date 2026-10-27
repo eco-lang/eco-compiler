@@ -14,8 +14,9 @@ canonical AST gives such a reference as `Can.VarKernel`, with the kernel prefix
 (`Elm` or `Eco`), the _home_ (the rest of the module name, `List` for
 `Elm.Kernel.List`) and the function name.
 
-The table is keyed by home and function name only. The prefix is not part of
-the key, so `Elm.Kernel.File.size` and `Eco.Kernel.File.size` share one entry.
+The table is keyed by prefix, home and function name. The prefix is part of
+the key, so `Elm.Kernel.File.size` and `Eco.Kernel.File.size`, which have
+different types, have separate entries.
 
 The table holds one type per kernel function, however many types its uses
 would need. Entries added through `insertFirstUsage` follow the rule _first
@@ -48,8 +49,8 @@ import Dict exposing (Dict)
 -- ====== TYPE ======
 
 
-{-| The types recorded for kernel functions, keyed by home and function name,
-with no kernel prefix.
+{-| The types recorded for kernel functions, keyed by kernel prefix, home and
+function name.
 
 This is a name for a `Dict`, not a new type. Any such `Dict` is accepted where
 a `KernelTypeEnv` is expected, so the first-usage-wins rule holds only for
@@ -57,7 +58,7 @@ entries added through `insertFirstUsage`.
 
 -}
 type alias KernelTypeEnv =
-    Dict ( Name, Name ) (Can.Type Name)
+    Dict ( Name, Name, Name ) (Can.Type Name)
 
 
 
@@ -65,20 +66,21 @@ type alias KernelTypeEnv =
 
 
 {-| Returns the type recorded for the kernel function `name` of the kernel
-module `home`, or `Nothing` when none is recorded. `home` is the module name
-without its kernel prefix, such as `List` for `Elm.Kernel.List`.
+module `prefix.Kernel.home`, or `Nothing` when none is recorded. `prefix` is
+`Elm` or `Eco`, and `home` is the rest of the module name, such as `List` for
+`Elm.Kernel.List`.
 -}
-lookup : Name -> Name -> KernelTypeEnv -> Maybe (Can.Type Name)
-lookup home name env =
-    Dict.get ( home, name ) env
+lookup : Name -> Name -> Name -> KernelTypeEnv -> Maybe (Can.Type Name)
+lookup prefix home name env =
+    Dict.get ( prefix, home, name ) env
 
 
 {-| Tells whether a type is recorded for the kernel function `name` of the
-kernel module `home`.
+kernel module `prefix.Kernel.home`.
 -}
-hasEntry : Name -> Name -> KernelTypeEnv -> Bool
-hasEntry home name env =
-    case Dict.get ( home, name ) env of
+hasEntry : Name -> Name -> Name -> KernelTypeEnv -> Bool
+hasEntry prefix home name env =
+    case Dict.get ( prefix, home, name ) env of
         Just _ ->
             True
 
@@ -91,16 +93,16 @@ hasEntry home name env =
 
 
 {-| Records `tipe` as the type of the kernel function `name` of the kernel
-module `home`, unless a type is already recorded for that pair, in which case
-`env` is returned unchanged.
+module `prefix.Kernel.home`, unless a type is already recorded for it, in which
+case `env` is returned unchanged.
 -}
-insertFirstUsage : Name -> Name -> Can.Type Name -> KernelTypeEnv -> KernelTypeEnv
-insertFirstUsage home name tipe env =
-    if hasEntry home name env then
+insertFirstUsage : Name -> Name -> Name -> Can.Type Name -> KernelTypeEnv -> KernelTypeEnv
+insertFirstUsage prefix home name tipe env =
+    if hasEntry prefix home name env then
         env
 
     else
-        Dict.insert ( home, name ) tipe env
+        Dict.insert ( prefix, home, name ) tipe env
 
 
 {-| Builds the curried function type that takes `argTypes`, in order, and

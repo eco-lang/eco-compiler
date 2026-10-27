@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "C2 streaming StringOps visitor for slice/rope strings in writeEncoder ENC_UTF8 and getStringWidth (only the UTF-8 and flat-leaf fast paths landed; slices and ropes still go through toStdU16String). C3 multi-value read helpers, deferred. B1/B2 encoder layout changes, deferred pending Elm-side Bytes.Encode unboxed fields; B1's per-write resolve cost has since disappeared because Endianness is a null-cons constant (endiannessHPointerToBool reads tag bits)."
+---
+
 # elm/bytes C++ kernel performance plan
 
 Fourteen perf items uncovered while auditing `elm-kernel-cpp/src/bytes/*` and

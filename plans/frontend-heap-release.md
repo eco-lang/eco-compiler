@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Front-end heap release: `Eco.GC` tasks, phase-boundary drops, and a release before the back end
 
 **Status:** ready to implement, 2026-10-01. Nothing is built yet.

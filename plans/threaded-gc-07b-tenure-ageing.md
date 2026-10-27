@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 07b — Tenure ageing in the region nursery (lever L1)
 
 **Status:** DONE (2026-09-28). Built, gated and measured; **the default stays k = 1** (§7.4):

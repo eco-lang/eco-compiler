@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Root-member fold — one identity per (function, layout), so stamped spines become singletons
 
 **Status:** proposed 2026-08-28; reviewed against code while lowering (AR notes

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # ptr<1>↔i64 Boundary Refactor + Verifier
 
 Tightens the ptr addrspace(1) ↔ i64 bridge in `EcoToLLVM*` so that:

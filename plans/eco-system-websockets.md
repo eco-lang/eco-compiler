@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: WebSockets, and `Http.Server` on the reactor with TLS and HTTP/2
 
 Status: **implemented** (2026-10-08; WS0–WS10 done, §10). Plan v2.1 (v2.1 applies the user's answers to §7: W8 context

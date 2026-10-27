@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Canonicalize ID Tests Plan
 
 This document outlines the test plan for `compiler/tests/Canonicalize/` which tests that the canonicalizer assigns unique IDs to all expressions and patterns.

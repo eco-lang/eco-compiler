@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bootstrap IO Wiring Plan
 
 ## Status: IMPLEMENTED (Phase 1-4 complete, Phase 5-6 pending)

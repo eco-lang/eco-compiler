@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Empty `Bytes` as the embedded Empty constant (no 8-byte heap objects)
 
 Fixes bug 1 of `/work/2-gc-bugs.md`: under `shadow_granule_log2 = 4`, the gc-pressure stress

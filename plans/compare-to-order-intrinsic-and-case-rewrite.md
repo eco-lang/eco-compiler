@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `compare` → `Order` intrinsic + `case compare … of` rewrite
 
 > **STATUS 2026-08-10 — PARTIALLY SUPERSEDED.**

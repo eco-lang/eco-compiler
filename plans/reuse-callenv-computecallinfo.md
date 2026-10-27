@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Reuse CallEnv + computeCallInfo for Staging Pipeline
 
 ## Problem Statement

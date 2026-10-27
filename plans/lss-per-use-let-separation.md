@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Per-use let-set separation (Phase H / GAP-9 repair half) — census first
 
 **Status: PARKED on measurement (2026-08-21). Phase 0 RAN — both arms, both

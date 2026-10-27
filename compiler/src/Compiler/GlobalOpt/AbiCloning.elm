@@ -2785,7 +2785,7 @@ originTarget origin =
 originKindName : Mono.MemberOrigin -> String
 originKindName origin =
     case origin of
-        Mono.OriginKernel _ _ ->
+        Mono.OriginKernel _ _ _ ->
             "kernel"
 
         Mono.OriginAccessor _ ->

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # pre-mono-lss-transforms 00 — run `AssignMVarIds` before the pre-mono passes; mint on copy
 
 **Status:** IMPLEMENTATION-READY (2026-09-10). Item 0 of `plans/pre-mono-lss-transforms.md`.

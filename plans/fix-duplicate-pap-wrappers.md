@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/typed-closures-eliminate-pap-wrappers.md"
+---
+
 # Fix Duplicate PAP Wrapper Functions
 
 ## Problem Statement

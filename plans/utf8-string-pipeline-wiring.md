@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # UTF-8 String Pipeline Wiring: Zero-Copy Reads, UTF-8 Parsing, Conservative Widening
 
 *(Plan created Jul 8, 2026; rewritten same day to implementation-ready depth —

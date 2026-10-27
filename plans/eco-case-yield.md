@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Evolve `eco.case` to SSA Value-Producing Expression with `eco.yield`
 
 ## Goal

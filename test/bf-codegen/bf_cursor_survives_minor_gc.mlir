@@ -1,6 +1,6 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// SD-22 (review-bug-list.md): a bf.cursor is a pair of RAW pointers into the
+// SD-22 (plans/review-bug-list-fixes.md): a bf.cursor is a pair of RAW pointers into the
 // ByteBuffer body ({ptr, end}, BFOPS_025). A buffer under the 8 KiB large-
 // object threshold is allocated in the nursery (allocByteBufferBlank), and
 // fused code allocates while a cursor is live: every cons cell of a fused

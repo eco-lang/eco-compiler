@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Migrate Remaining Legacy Network Handlers to eco-io
 
 ## Context

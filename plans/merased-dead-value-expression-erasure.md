@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "MONO_021 amended in design_docs/invariants.csv (MErased removed); no replacement plan file"
+---
+
 # MErased Dead-Value Expression Erasure & Remaining Gaps
 
 ## Status: Partially Implemented

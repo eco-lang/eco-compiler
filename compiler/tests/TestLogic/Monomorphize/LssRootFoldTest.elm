@@ -447,13 +447,13 @@ singletonIds =
 
 
 {-| Tells whether an annotation is an `LSet` whose one member the graph's
-`lssMemberOrigins` records as the kernel `home.name`.
+`lssMemberOrigins` records as the elm/core kernel `Elm.Kernel.home.name`.
 -}
 isKernelSingleton : String -> String -> Mono.MonoGraph -> Mono.LambdaSetAnno -> Bool
 isKernelSingleton home name (Mono.MonoGraph g) a =
     case a of
         Mono.LSet [ m ] ->
-            Dict.get m g.lssMemberOrigins == Just (Mono.OriginKernel home name)
+            Dict.get m g.lssMemberOrigins == Just (Mono.OriginKernel "Elm" home name)
 
         _ ->
             False

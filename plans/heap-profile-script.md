@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # `heap-profile.py` — single-run + sweep heap profiler
 
 ## Motivation

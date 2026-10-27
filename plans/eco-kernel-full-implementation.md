@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eco Kernel Full Implementation Plan
 
 Fully implement all eco-kernel-cpp kernel functions — both the JavaScript

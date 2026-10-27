@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Source IR Roundtrip Validation for Tests
 
 ## Problem Statement

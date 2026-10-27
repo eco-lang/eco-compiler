@@ -70,6 +70,8 @@ consumer), and puts each item's Phase-0 census after the siblings that would per
 | 14 | **14** Elm-source List HOFs | Phase 6 needs 04 + 05; parity baseline needs 01; row deletions need 07 | `ECO_LIST_SHUNT_REVERSE`, CMake `ECO_CORE_OVERLAY` | Elm + elm/core overlay + kernel deletions |
 
 Track state in `@kernel-opt-status.md` — one row per item, one sub-row per benchmarked phase.
+The file from the 2026-08 run was deleted on 2026-10-26. That run's results are in
+`benchmarks/kernel-opt.md` and in each plan's outcome section. A new run starts a fresh file.
 
 ---
 

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix Duplicate Kernel Symbol Definitions
 
 ## Status: COMPLETED (superseded by CGEN_011)

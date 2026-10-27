@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Mark-driven live bytes, all-dead block fast path, and lazy-sweep wiring
 
 ## Problem

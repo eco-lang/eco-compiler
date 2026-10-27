@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MONO_024 and MONO_025 Invariant Tests
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel-Opt 06: String lt/le/gt/ge -> eco.string.cmp3 + integer sign test
 
 **Status: IMPLEMENTATION-READY v2.1 — 2026-08-10.** (deepened from OUTLINE v1;

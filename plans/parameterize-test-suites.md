@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Parameterize Test Suites with Expectation Function
 
 ## Goal

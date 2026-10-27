@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Drop zwilias/elm-rosetree: Self-Contained Graph SCC
 
 ## Problem

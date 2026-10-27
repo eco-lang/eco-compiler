@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Embedded-Constant Handling in Comparison and Sort Kernels
 
 ## Goal

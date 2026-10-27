@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 05: EcoSplit — partition in MLIR, translate and lower in parallel
 
 **Master plan:** `plans/mlir-split-backend.md` §2 (target pipeline), §4 (the split), milestone M6.

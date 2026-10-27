@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ model M3: parallel minor forwarding (claim, copy, publish)
 
 **Status:** IMPLEMENTED (2026-09-28) in `test/tla/M3-minor-forwarding/`: steps 1–3 of §10 are

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # `noInstance`: knowing exactly which function is called, and calling it indirectly anyway
 
 **Status: P0 CENSUS DONE. R1 KEPT (rides `lss.stamp.flatPeel`, default-on).

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Parallel Build Directories for Compiler and E2E Tests
 
 ## Overview

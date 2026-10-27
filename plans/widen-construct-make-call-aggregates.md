@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "commit 5ab7866 deleted the unboxed-aggregate pipeline including EcoBoxAggregateOperands that this plan introduced"
+---
+
 # Widen construct.* / make.* / eco.call to Accept Aggregate Operands
 
 ## 0. Goal

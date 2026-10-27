@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Cutting GC root-registration cost: TLS shadow stack + arity monomorphisation
 
 **Status: FULLY IMPLEMENTED (Phases 1-4) AND A MEASURED WIN — 2026-09-21.

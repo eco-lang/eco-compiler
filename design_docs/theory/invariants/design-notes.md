@@ -86,7 +86,6 @@ Several designs are open, and each says what would move it forward:
 - Embedding the linker in the compiler binary is deferred. Linking spawns a separate process, which in the distribution build is a static linker bundled with Eco.
 - Incremental builds are explored as an ownership rule first: a specialization belongs to the module that requests it, so dependencies follow import order. The notes list the flows that break that rule and are explored by experiment, with no plan. No incremental pipeline after type checking exists.
 - Running Elm on several threads is a design space with some decisions taken. Each thread would own its own heap with one mutator, and threads would communicate only by messages. A single heap shared by several mutators is rejected, because it needs cross-thread references to young objects or stop-the-world minor collections, and marking handshakes with every mutator. None of the chosen design is built; its draft rules are not in the catalog, and the runtime has one mutator per process.
-- Error handling at the top level is unfinished: an unhandled task failure is printed and dropped.
 
 ## Changing the record
 
@@ -113,12 +112,12 @@ Parent: [invariants-and-design.md](invariants-and-design.md).
 - `design_docs/`: the investigation reports. `design_docs/theory/` holds this theory and is not part of this record; `llvm-docs`, `mlir-docs`, `gc_handbook`, `perceus_gc`, `mlton` and the PDFs are third-party reference material; `all-*.csv` and the test-case listings are generated catalogs.
 - `plans/`: the status record. `plans/opt-tier4-parked.md` is the register of parked items with revival conditions; `plans/opt-tier1-aggregate-promotion.md`, `plans/opt-tier3-rc-runtime.md` and `plans/threaded-gc-master-plan.md` ("How this plan is used") are live roadmaps.
 - `design_docs/invariants.csv`: where adopted designs become rules (LSS_*, BFOPS_*, BFUSE_*, HEAP_032 for ASCII-only UTF-8, CGEN_061, CGEN_063, REP_AGG_001 for value aggregates).
-- `kernel-opt-status.md`: the status table with the seven dispositions; `guides/kernel-opt-loop.md` and `benchmarks/` for the measurement protocol.
+- `guides/kernel-opt-loop.md`: the seven dispositions; `benchmarks/kernel-opt.md` for the kernel-opt series' results and the measurement protocol.
 - `design_docs/parallel-gc.md`, `design_docs/multi-threaded-eco/README.md`: evidence-tagged investigation reports.
 - `design_docs/globalopt/borrow-inference-design.md` (section 2, the escape analysis postmortem).
 - `design_docs/monomorphization/lambda-set-specialization-design.md`, `capture-union-representation.md`, `multiset-defunctionalization-design.md`, `solver-reuse-evaluation.md`; `design_docs/hm-solver-reuse.md`; `design_docs/auto-borrow-inference/lss-why-the-fidelity-program-failed.md`.
 - `design_docs/caf-memoization-design.md`, `design_docs/utf8-string-encoding-investigation.md`, `design_docs/fused-bytes-compilation.md`, `design_docs/array-optimisation.md`, `design_docs/kernel-boundary-reduction.md`, `design_docs/debug-log-ordering-policy.md`.
 - `design_docs/backend-parallel-optimization.md`, `design_docs/mlir-level-partitioning-whole-program-steps.md`, `design_docs/converge-pipelines.md`, `design_docs/lld-in-eco.md`, `design_docs/distribution.md`.
-- `design_docs/kernel-closure-lookthrough.md`, `direct-call-decline-census.md`, `design_docs/explicit-meta-structures.md`, `design_docs/incremental-builds/README.md`, `error-handling.md`, `tuple-project-fun-error.md` (open, unverified), `let-number-misspec-error.md` (superseded).
+- `design_docs/kernel-closure-lookthrough.md`, `direct-call-decline-census.md`, `design_docs/explicit-meta-structures.md`, `design_docs/incremental-builds/README.md`.
 - `compiler/src/Compiler/Eco/Config.elm`: the defaults that say which adopted compiler designs run. `compiler/src/Compiler/MonoSolver/`, `compiler/src/Compiler/GlobalOpt/`: where they live.
 - `runtime/src/codegen/Passes/` (`EcoGCStrategy.cpp`, `EcoToLLVMValueAgg.cpp`), `runtime/src/codegen/EcoBackend.cpp`, `runtime/src/allocator/`, `runtime/src/platform/Scheduler.cpp`: where adopted back-end and runtime designs live.

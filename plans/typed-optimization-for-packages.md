@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Typed Optimization for Packages (.guidato files)
 
 ## Problem Statement

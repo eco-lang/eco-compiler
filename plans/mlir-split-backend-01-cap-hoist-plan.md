@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 01: capacity-hoisting plan on the MLIR side
 
 **Master plan:** `plans/mlir-split-backend.md`. **Status:** IMPLEMENTED 2026-10-02 (I1–I8; S6

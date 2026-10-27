@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Three of the six planned new test files were never created: EffectManagerTests (effect manager constraint/processing tests), TypeConstraintModuleTests (Type.Constrain.Typed.Module), and TypedOptExprTests (typed expression/definition optimization gaps); no effect-module builder exists in compiler/tests."
+---
+
 # Typed Optimization and PostSolve Coverage Test Plan
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Function-level accumulator templates — scratch-stack capture of TCO list builders
 
 **Status: AT1 RUN 2026-08-06 (`benchmarks/tier2-opt.md` Run K) — AT2 and

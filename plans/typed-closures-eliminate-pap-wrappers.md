@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typed Closures: Eliminate PAP Wrappers
 
 ## Overview

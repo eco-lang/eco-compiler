@@ -1,6 +1,6 @@
 module BytesFusedEncodeCursorSurvivesGCTest exposing (main)
 
-{-| SD-22 (review-bug-list.md): a fused encoder's cursor is a pair of raw
+{-| SD-22 (plans/review-bug-list-fixes.md): a fused encoder's cursor is a pair of raw
 pointers into the buffer it allocated with `bf.alloc`. A buffer under the
 8 KiB large-object threshold lives in the nursery, and the per-item value
 expression of a fused length-prefixed list encoder

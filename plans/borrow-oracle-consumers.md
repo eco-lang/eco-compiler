@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Borrow-Oracle Consumers (OC) — oracle-driven promotion + unique-kernel specialization
 
 Status: IMPLEMENTATION-READY (v1, deep-dive pass; anchors verified 2026-08-06).

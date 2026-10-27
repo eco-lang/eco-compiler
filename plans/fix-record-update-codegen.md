@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix Record Update MLIR Code Generation
 
 ## Problem Statement

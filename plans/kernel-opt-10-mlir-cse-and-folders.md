@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Sound enablement of ECO_MLIR_CSE (Float-free stamps / Allocate-on-result effects, i.e. kernel-opt-15) not done."
+---
+
 # Kernel-Opt 10: MLIR CSE at the M4 slot + project-of-construct folder
 
 **Status: IMPLEMENTATION-READY v3 — 2026-08-10.** (v1 outline → v2 deepening → v3

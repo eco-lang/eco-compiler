@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: one program-liveness rule for Eco
 
 Status: **draft, revision 3** (2026-10-20). Not implemented.

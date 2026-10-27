@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS Fidelity 3 — Signature Set-Flow (GAP-2), Re-Census, and the Completeness Follow-Ons (GAP-4/5/6/7, GAP-9 repair)
 
 **Status: COMPLETE (2026-08-20).** Drafted 2026-08-17; lowered to

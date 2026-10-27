@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: a separate large-object space (LOS) with header-less large bodies
 
 Status: **v2, implemented** (2026-10-09; §10). v2 was implementation-ready the same day. v1 (same day) was the draft; §12 is the

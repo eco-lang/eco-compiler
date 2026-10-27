@@ -92,7 +92,7 @@ The directives under a prefix `P` are `// P:` and its variants, matched in the o
 
 A pattern is a literal substring, except for spans in double braces, which are regular expressions; a match never spans lines, and `^` and `$` anchor at line boundaries. Any other `-` variant of a prefix is a hard error. If the harness skipped variants it did not know, a misspelled directive would leave a fixture green while it asserted nothing, and a check that cannot fail is worse than no check. The whole-program harness shares the parser but keeps the older order-insensitive matching, in which every positive line only has to appear somewhere.
 
-Until 2026-10-24 the harness read only the first RUN line, ignored custom prefixes and the exit status, and matched `CHECK` lines in any order (review-bug-list SD-5, SD-21). `test/codegen/CodegenHarnessSelfTest.hpp` now pins each of those rules with a fixture the harness must reject.
+Until 2026-10-24 the harness read only the first RUN line, ignored custom prefixes and the exit status, and matched `CHECK` lines in any order (SD-5 and SD-21 in `plans/review-bug-list-fixes.md`). `test/codegen/CodegenHarnessSelfTest.hpp` now pins each of those rules with a fixture the harness must reject.
 
 Two more directives change how a fixture runs. A line `// UNSETENV: NAME` runs the compiler without that environment variable, for a fixture that must not see a switch a test run sets for every compile. A file containing `XFAIL:` anywhere is skipped before anything runs. The harness has no mode in which a fixture runs and is expected to fail, so marking a fixture `XFAIL:` removes its check as surely as deleting the file would.
 

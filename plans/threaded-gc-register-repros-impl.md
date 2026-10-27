@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC: register reproductions, implementation plan
 
 **Status:** ready to implement, 2026-09-30. Nothing is built yet.

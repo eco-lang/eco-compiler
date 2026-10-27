@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: TailRec Case Crash & Kernel ABI Mismatch — Tests and Invariant Coverage
 
 ## Background

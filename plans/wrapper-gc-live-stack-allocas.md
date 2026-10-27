@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/migrate-to-rewritestatepointsforgc.md"
+---
+
 # Plan: Stack Allocas for Wrapper GC-Live Values
 
 ## Context

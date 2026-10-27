@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Backend lowering optimization plan
 
 **Goal:** make `eco-boot-native <compiler>.mlir -o <exe>` (the backend lowering of the

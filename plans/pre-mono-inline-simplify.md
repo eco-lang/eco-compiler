@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/pre-mono-lss-transforms-04-alias-forwarding.md"
+---
+
 # An inliner that runs BEFORE monomorphization
 
 `MonoInlineSimplify` runs on fully-specialized code: a small polymorphic `map`

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "commit 5ab7866 removed the whole unboxed-aggregate cross-spec pass pipeline (EcoUnboxedAggCrossSpec etc.)"
+---
+
 # Wide Direct-ABI Statepoint Fix — Plan
 
 ## 0. Goal

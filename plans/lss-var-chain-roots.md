@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase 5 (M-D argument feedback: enrich /aN of {g|X} heads from row param sets, license-gated, 861 positions) was never designed past its outline or built. Everything else is settled: the §9 flow-repair arc closed (M1 refuted, M2 NO-GO), and its successor lss-stage-anchor-writers was abandoned."
+---
+
 # LSS var elimination — chain-root writes
 
 **Status (2026-09-01): Phases 1/2/4v2 SHIPPED DEFAULT-ON (varSucc,

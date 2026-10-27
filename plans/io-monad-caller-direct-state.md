@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Converting the IO monad's CALLERS to direct state-passing
 
 Successor to `plans/io-monad-dispatch-reduction.md` (P1/P2/P3 shipped, −43.1 %

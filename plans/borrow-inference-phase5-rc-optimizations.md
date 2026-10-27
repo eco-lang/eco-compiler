@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Borrow Inference — Phase 5: RC Optimization Track (B4 + B5)
 
 > **Superseded for sequencing (2026-07-31):** the active optimization

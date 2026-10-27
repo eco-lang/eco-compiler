@@ -1,4 +1,4 @@
-// SD-1 (review-bug-list.md): process ids are 16 bits wide (Heap.hpp ID_BITS,
+// SD-1 (plans/review-bug-list-fixes.md): process ids are 16 bits wide (Heap.hpp ID_BITS,
 // the u16 casts in Scheduler::rawSpawn / procWith*), are never recycled
 // (Scheduler::nextProcId_ only counts up), and key the scheduler's tables
 // (latestProc_, selfMsgHandlers_). After 65,536 spawns a new process gets the

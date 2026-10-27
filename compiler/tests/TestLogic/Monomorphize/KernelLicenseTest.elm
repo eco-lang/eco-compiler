@@ -39,7 +39,7 @@ What the tests establish:
     member is one the graph records as standing for the global `inc`.
   - Test 2: the same, for `List.cons inc []`.
   - Test 3: no kernel in `neverLicensable` has a row.
-  - Test 4: `factFor` gives `Nothing` for a home and name that no kernel has.
+  - Test 4: `factFor` gives `Nothing` for a prefix, home and name that no kernel has.
   - Test 5: every `TypeFaithful` row has a non-empty `files`.
   - Test 6: every `TypeFaithful` row's evidence contains each of `class:`,
     `entry:`, `type:`, `B1:`, `B2:`, `B3:` and `audited:`, and every
@@ -77,6 +77,13 @@ What the tests establish:
     with.
   - Test 14: a `TransportsAs` license with the shape `a -> a` accepts `p -> p`
     and refuses `p -> q`.
+  - Test 15: the kernel prefix is part of the key (SD-16,
+    plans/kernel-table-prefix-keys.md). `File.size` has one row for elm/file and
+    one for eco/kernel, each citing only its own kernel's files, and
+    `Elm.Kernel.File.open`, which only eco/kernel has, has no row.
+  - Test 16: no licensed row cites the other kernel's C++: an `Elm` row's files
+    are not in eco-kernel-cpp or system-kernel-cpp, and an `Eco` row's are not
+    in elm-kernel-cpp.
 
 Among what is not tested: the transport of a kernel with no
 license, since the test pipeline builds alias nodes only for `List.cons` and
@@ -175,7 +182,7 @@ suite =
             \() ->
                 let
                     licensed =
-                        List.filter (\( home, name ) -> KernelSetFacts.factFor home name /= Nothing)
+                        List.filter (\( prefix, home, name ) -> KernelSetFacts.factFor prefix home name /= Nothing)
                             neverLicensable
                 in
                 if List.isEmpty licensed then
@@ -184,11 +191,11 @@ suite =
                 else
                     Expect.fail
                         ("these kernels are on the never-license list but carry a row: "
-                            ++ String.join ", " (List.map (\( h, n ) -> h ++ "." ++ n) licensed)
+                            ++ String.join ", " (List.map keyName licensed)
                         )
         , Test.test "4. containment: an unaudited kernel has no row (LSS_004 full poison is the default)" <|
             \() ->
-                Expect.equal Nothing (KernelSetFacts.factFor "NoSuchHome" "noSuchKernel")
+                Expect.equal Nothing (KernelSetFacts.factFor "Elm" "NoSuchHome" "noSuchKernel")
         , Test.test "5. discipline: every TypeFaithful row pins at least one C++ file" <|
             \() ->
                 let
@@ -395,7 +402,7 @@ suite =
                     ()
         , Test.test "11. verification: Json.addEntry's shipped shape accepts its real use and rejects drift" <|
             \() ->
-                case KernelSetFacts.factFor "Json" "addEntry" of
+                case KernelSetFacts.factFor "Elm" "Json" "addEntry" of
                     Just (KernelSetFacts.TypeFaithful license) ->
                         let
                             value =
@@ -454,19 +461,20 @@ suite =
                 let
                     mismatched =
                         List.filterMap
-                            (\( ( home, name ), fact ) ->
+                            (\( ( prefix, home, name ), fact ) ->
                                 case fact of
                                     KernelSetFacts.TypeFaithful license ->
                                         case license.scope of
                                             KernelSetFacts.TransportsAs shape ->
-                                                -- Every prefix's annotation must have a shape, and
-                                                -- that shape must be the declared one. A kernel with
-                                                -- no annotation under either prefix is skipped.
-                                                if List.all (\annotationShape -> annotationShape == Just shape) (intrinsicShapesFor home name) then
+                                                -- The kernel's annotation, under the row's own
+                                                -- prefix, must have a shape, and that shape must be
+                                                -- the declared one. A kernel with no annotation is
+                                                -- skipped.
+                                                if List.all (\annotationShape -> annotationShape == Just shape) (intrinsicShapesFor prefix home name) then
                                                     Nothing
 
                                                 else
-                                                    Just (keyName ( home, name ))
+                                                    Just (keyName ( prefix, home, name ))
 
                                             _ ->
                                                 Nothing
@@ -480,12 +488,12 @@ suite =
                     -- check is not passing because it skipped everything.
                     compared =
                         List.filter
-                            (\( ( home, name ), fact ) ->
+                            (\( ( prefix, home, name ), fact ) ->
                                 case fact of
                                     KernelSetFacts.TypeFaithful { scope } ->
                                         case scope of
                                             KernelSetFacts.TransportsAs _ ->
-                                                not (List.isEmpty (intrinsicShapesFor home name))
+                                                not (List.isEmpty (intrinsicShapesFor prefix home name))
 
                                             _ ->
                                                 False
@@ -509,19 +517,74 @@ suite =
                     , \() -> Expect.equal False (KernelSetFacts.licenseApplies noScalars tunnel (cFun (cVar "p") (cVar "q")))
                     ]
                     ()
+        , Test.test "15. the kernel prefix is part of the key (SD-16): File.size has one row per kernel" <|
+            \() ->
+                -- elm/file and eco/kernel both have a kernel `File.size`, with
+                -- different types and C++. Each prefix gets its own row, citing
+                -- only its own kernel's files, and a name only one kernel has is
+                -- not found under the other prefix.
+                Expect.equal
+                    ( licensedFilesOf "Elm" "File" "size", licensedFilesOf "Eco" "File" "size", KernelSetFacts.factFor "Elm" "File" "open" )
+                    ( Just [ "elm-kernel-cpp/src/file/FileExports.cpp" ]
+                    , Just [ "eco-kernel-cpp/src/eco-kernel/File.cpp", "eco-kernel-cpp/src/eco-kernel/FileExports.cpp" ]
+                    , Nothing
+                    )
+        , Test.test "16. discipline: a licensed row cites only its own kernel's C++" <|
+            \() ->
+                -- An `Elm` row's files are in elm-kernel-cpp; an `Eco` row's are in
+                -- eco-kernel-cpp or system-kernel-cpp. Other files, such as the
+                -- runtime's, may back either.
+                let
+                    foreign prefix file =
+                        if prefix == "Elm" then
+                            String.startsWith "eco-kernel-cpp/" file || String.startsWith "system-kernel-cpp/" file
+
+                        else
+                            String.startsWith "elm-kernel-cpp/" file
+
+                    bad =
+                        List.filterMap
+                            (\( ( prefix, home, name ), fact ) ->
+                                case fact of
+                                    KernelSetFacts.TypeFaithful license ->
+                                        if List.any (foreign prefix) license.files then
+                                            Just (keyName ( prefix, home, name ))
+
+                                        else
+                                            Nothing
+
+                                    KernelSetFacts.Positional _ ->
+                                        Nothing
+                            )
+                            KernelSetFacts.rows
+                in
+                Expect.equal [] bad
         ]
 
 
-{-| Returns, for each of the `Elm` and `Eco` prefixes under which
-`Compiler.Type.KernelIntrinsics` has a row for the kernel `home`.`name`, the
-shape of that row's annotation, or `Nothing` when the annotation has a form
-`shapeOfAnnotation` cannot express. The list is empty when neither prefix has
-a row.
+{-| Returns the `files` of the kernel's `TypeFaithful` row, or `Nothing` when it
+has no such row.
 -}
-intrinsicShapesFor : String -> String -> List (Maybe KernelSetFacts.TypeShape)
-intrinsicShapesFor home name =
-    [ "Elm", "Eco" ]
-        |> List.filterMap (\prefix -> KernelIntrinsics.lookup prefix home name)
+licensedFilesOf : String -> String -> String -> Maybe (List String)
+licensedFilesOf prefix home name =
+    case KernelSetFacts.factFor prefix home name of
+        Just (KernelSetFacts.TypeFaithful license) ->
+            Just license.files
+
+        _ ->
+            Nothing
+
+
+{-| Returns the shape of the annotation that `Compiler.Type.KernelIntrinsics`
+has for the kernel `prefix.Kernel.home.name`, as a list of one, or `Nothing`
+in it when the annotation has a form `shapeOfAnnotation` cannot express. The
+list is empty when the kernel has no annotation.
+-}
+intrinsicShapesFor : String -> String -> String -> List (Maybe KernelSetFacts.TypeShape)
+intrinsicShapesFor prefix home name =
+    KernelIntrinsics.lookup prefix home name
+        |> Maybe.map List.singleton
+        |> Maybe.withDefault []
         |> List.map (\row -> KernelSetFacts.shapeOfAnnotation (annotationType row.annotation))
 
 
@@ -622,49 +685,49 @@ shapeLicense shape =
 3 fails if any of them has one. The comment above each group gives the reason
 that group is refused.
 -}
-neverLicensable : List ( String, String )
+neverLicensable : List ( String, String, String )
 neverLicensable =
     [ -- `Scheduler.binding` builds a runtime closure that lands where no type
       -- variable names it; it has not been audited. `Platform.sendToApp` and
       -- `sendToSelf` push a message into a process mailbox, and a different
       -- call receives it.
-      ( "Scheduler", "binding" )
-    , ( "Platform", "sendToApp" )
-    , ( "Platform", "sendToSelf" )
+      ( "Elm", "Scheduler", "binding" )
+    , ( "Elm", "Platform", "sendToApp" )
+    , ( "Elm", "Platform", "sendToSelf" )
 
     -- Each stores a tagger or callback that is applied at a later, unconnected
     -- call.
-    , ( "Platform", "map" )
-    , ( "Time", "setInterval" )
+    , ( "Elm", "Platform", "map" )
+    , ( "Elm", "Time", "setInterval" )
 
     -- The kernel's implementation takes a function argument that its Elm type,
     -- `Task x Posix`, does not mention.
-    , ( "Time", "now" )
+    , ( "Elm", "Time", "now" )
 
     -- A value one call puts into an MVar is handed back by a different call,
     -- with no type variable joining the two.
-    , ( "MVar", "put" )
-    , ( "MVar", "read" )
-    , ( "MVar", "take" )
+    , ( "Eco", "MVar", "put" )
+    , ( "Eco", "MVar", "read" )
+    , ( "Eco", "MVar", "take" )
 
     -- The boundary with the embedding host. VirtualDom keeps its nodes, and
     -- the taggers `map` is given, in runtime storage.
-    , ( "Browser", "application" )
-    , ( "Browser", "element" )
-    , ( "VirtualDom", "node" )
-    , ( "VirtualDom", "on" )
-    , ( "VirtualDom", "map" )
-    , ( "VirtualDom", "lazy" )
+    , ( "Elm", "Browser", "application" )
+    , ( "Elm", "Browser", "element" )
+    , ( "Elm", "VirtualDom", "node" )
+    , ( "Elm", "VirtualDom", "on" )
+    , ( "Elm", "VirtualDom", "map" )
+    , ( "Elm", "VirtualDom", "lazy" )
 
     -- Retypes an arbitrary value as the opaque `Value`.
-    , ( "Json", "wrap" )
+    , ( "Elm", "Json", "wrap" )
 
     -- `a -> b` with the two variables unshared, so no flow can be stated.
-    , ( "Debugger", "unsafeCoerce" )
+    , ( "Elm", "Debugger", "unsafeCoerce" )
 
     -- The compiler supplies a type descriptor and lowers these specially.
-    , ( "Debug", "toString" )
-    , ( "Debug", "log" )
+    , ( "Elm", "Debug", "toString" )
+    , ( "Elm", "Debug", "log" )
     ]
 
 
@@ -694,9 +757,9 @@ run srcModule =
 
 {-| Renders a row's key as `Home.name`, for failure messages.
 -}
-keyName : ( String, String ) -> String
-keyName ( home, name ) =
-    home ++ "." ++ name
+keyName : ( String, String, String ) -> String
+keyName ( prefix, home, name ) =
+    prefix ++ ".Kernel." ++ home ++ "." ++ name
 
 
 {-| Returns `xs` with each run of equal adjacent elements cut to one, which

@@ -4,13 +4,14 @@
 #   2. an eco/kernel kernel home collides with an Elm kernel home (elm/core, elm/*), other than
 #      the homes listed in SHARED_ELM_ECO below.
 #
-# Kernel homes are keyed WITHOUT their Elm/Eco prefix in kernel typing, KernelFacts and
-# KernelSetFacts, so a home reused by two packages silently shares facts there
-# (plans/eco-system-library.md F8, Phase 1 step 1). The JS backend keys and names an Eco kernel
-# with its prefix (`elm/kernel:Eco.Kernel.File.$`, `_Eco_File_size`) since SD-16, so the
-# eco/kernel homes File, Http and Process, which elm/file, elm/http and elm/core also have, work
-# there; the fact tables still treat each pair as one home. A new shared home must be added to
-# SHARED_ELM_ECO deliberately, after checking the fact tables for its names.
+# Since SD-16 the prefix is part of every kernel key: the JS backend keys and names an Eco kernel
+# with it (`elm/kernel:Eco.Kernel.File.$`, `_Eco_File_size`), and KernelTypes, KernelFacts and
+# KernelSetFacts key rows by (prefix, home, name) (plans/kernel-table-prefix-keys.md). So the
+# eco/kernel homes File, Http and Process, which elm/file, elm/http and elm/core also have, are
+# safe there. What still keys by home alone are the hard-coded elm/core dispatches
+# (Generate/MLIR/Intrinsics, both KernelAbi modules, BytesFusion/Reify), which match kernels by
+# (home, name) and none of which names a shared home today. A new shared home must be added to
+# SHARED_ELM_ECO deliberately, after checking those dispatches for its home.
 # Scans the repository only.
 #
 # Usage: test/scripts/check-kernel-homes.sh [REPO_ROOT]

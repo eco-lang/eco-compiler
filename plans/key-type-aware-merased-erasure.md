@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "MErased dropped entirely; MONO_021 rewritten to permit residual CEcoValue MVars (no erasure pass)"
+---
+
 # Key-Type-Aware MErased Erasure
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GC Tier 1 — constant-factor fixes in the collector
 
 **Status: IMPLEMENTATION-READY v1 — 2026-09-21.** Grounded against the tree;

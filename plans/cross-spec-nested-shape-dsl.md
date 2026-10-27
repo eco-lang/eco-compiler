@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "unboxed-aggregate cross-spec pass pipeline removed (commit 5ab7866906); no replacement plan"
+---
+
 # Cross-Spec Nested-Shape DSL — Phase 2 of widen-construct-make-call-aggregates.md
 
 ## 0. Goal

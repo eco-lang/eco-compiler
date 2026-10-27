@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Phase 3 — the lambda-set VARIABLE
 
 **Status: IMPLEMENTED AND MEASURED, 2026-08-24 — see §8 for the numbers and the

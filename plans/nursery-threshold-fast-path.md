@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Nursery Threshold Fast-Path — eliminate the 72 % `wouldExceedThreshold` cost
 
 ## Motivation

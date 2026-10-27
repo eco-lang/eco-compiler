@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/lss-root-fold-depth-qualified-spine.md"
+---
+
 # LSS: depth-qualified spine identity — stop `{g|G, p|G|d}` co-residency under `arrowSolverRoots`
 
 **Status: PROPOSED (2026-09-17). P0 IS NOT OPTIONAL — §3's mechanism is a

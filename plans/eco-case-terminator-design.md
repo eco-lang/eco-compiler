@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/eco-case-yield.md"
+---
+
 # Plan: Make `eco.case` a Terminator Op
 
 ## Core Design Principle

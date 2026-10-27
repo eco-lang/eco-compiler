@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: eco.case with Eco_AnyValue Scrutinee
 
 This plan implements the design in `design_docs/eco-case-any.md` to allow `eco.case` to operate directly on `i1` (Bool) scrutinees without boxing.

@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase 1.2-1.3 (Compiler.Data.Intern, IdSet/IdDict, AllIdSupplies), Phase 3 LocalVarId, Phase 4 FieldId, Phase 5 GlobalId, Phase 6 TypeNameId/UnionId/CtorId, Phase 7 set/dup tracking; only type variables became ids."
+---
+
 # Phantom-Typed Integer IDs for All Compiler Identifiers
 
 ## Goal

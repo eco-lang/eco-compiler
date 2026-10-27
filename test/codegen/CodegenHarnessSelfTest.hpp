@@ -15,7 +15,7 @@
 //   SD-5   only `// CHECK*` directives and only the first RUN line are read:
 //          a fixture asserting through `--check-prefix=FWD` (`// FWD:`) or
 //          through a second RUN line checks nothing.
-//   Test gap (review-bug-list "CHECK-DAG"): CHECK and CHECK-DAG are both
+//   Test gap (plans/review-bug-list-fixes.md, CHECK order): CHECK and CHECK-DAG are both
 //          order-insensitive, so out-of-order output passes.
 
 #include "CodegenIsolatedTest.hpp"

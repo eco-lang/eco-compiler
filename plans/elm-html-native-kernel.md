@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Native `elm/html`: a heap-resident VirtualDom kernel, the `Http.Dom` side door, and HTML serialization
 
 > **Status: v7, implemented (2026-10-08).** All phases P0–P8 are in the tree; §14 lists what

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eco optimization roadmap — Tier 4: parked / killed items
 
 **Status: REGISTER — items the evidence says not to do, each with the

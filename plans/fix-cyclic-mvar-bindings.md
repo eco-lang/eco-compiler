@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/mvar-id-global-assignment.md (MVarId-based TypeSubst with occurs check in insertBinding)"
+---
+
 # Fix Cyclic MVar Bindings in Type Substitution
 
 ## Problem

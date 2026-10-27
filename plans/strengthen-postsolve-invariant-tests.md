@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Strengthen PostSolve Invariant Tests (POST_007, POST_008, POST_009)
 
 ## Problem

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `eco/system` — the public system library for Eco
 
 Status: **Phases 0–10 implemented** (2026-10-07), including the JS target (D15): all 80

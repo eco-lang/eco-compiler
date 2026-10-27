@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # `Platform.worker` SIGSEGVs when the model type is UNBOXED — FIXED
 
 **Status: FIXED 2026-08-25** (`runtime/src/platform/PlatformRuntime.cpp`,

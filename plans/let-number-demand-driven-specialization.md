@@ -1,8 +1,16 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Demand-driven specialization of `let`-bound `number` values
 
-**Status:** PROPOSED (design grounded in code investigation; one verification spike, Phase 0, gates implementation)
+**Status:** DONE. Built in commit d133eba60b (2026-06-09, `hasUnresolvedNumberVar` and the
+number-shape checks in `Specialize.elm`); the hard cases it left went to
+`plans/let-number-consumer-producer-threading.md`. All 51 `test/elm/src/LetNumber*Test.elm` tests
+pass (checked 2026-10-26).
 **Component:** Compiler — monomorphizer (`Compiler.Monomorphize.Specialize`)
-**Fixes:** `let-number-misspec-error.md` — a `let`-bound, unannotated `number` used at `Float` is
+**Fixes:** the bug once written up in `let-number-misspec-error.md` (deleted 2026-10-26) — a `let`-bound, unannotated `number` used at `Float` is
 mis-specialized to `Int`. Reproduced by the 34 `test/elm/src/LetNumber*Test.elm` regression tests
 (crash, invalid-MLIR, and silent-`0` variants).
 

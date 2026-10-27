@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GC parameter sensitivity sweep — 2026-09-28
 
 Re-run of the Sep 22 sensitivity sweep (`sensitivity-2026-09-22.json` and its

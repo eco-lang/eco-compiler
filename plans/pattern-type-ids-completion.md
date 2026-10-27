@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Complete Pattern Type ID Implementation
 
 ## Overview

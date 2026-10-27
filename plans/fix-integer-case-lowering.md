@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan 1 — Fix integer case lowering (`case_kind="int"`) — unboxed scrutinee incorrectly treated as boxed heap value
 
 ## Problem

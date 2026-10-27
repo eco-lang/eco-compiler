@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/post-solve-non-regression-invariants.md"
+---
+
 # Plan: POST_005 and POST_006 - TVar Scoping Invariants
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GC-free function propagation: shrink the statepoint set, then drop leaf frame pointers
 
 **Status: IMPLEMENTATION-READY (lowered 2026-08-08; supersedes the same-day

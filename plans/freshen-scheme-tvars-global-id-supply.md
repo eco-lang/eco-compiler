@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Freshen Scheme TVars Using Global MVarId Supply
 
 ## Problem

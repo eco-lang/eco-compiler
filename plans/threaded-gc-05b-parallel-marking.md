@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 05b — Parallel marking (written against the snapshot)
 
 **Status:** DONE (2026-09-26), **default-on: `gc_mark_threads` = 0 (auto), cap 16, T = 32**.

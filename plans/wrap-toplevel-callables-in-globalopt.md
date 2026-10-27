@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Move "Ensure Top-Level Callables Are Closures" into MonoGlobalOptimize
 
 ## Goal

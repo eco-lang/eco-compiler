@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Instance-qualified lambda members: (lambda, spec) → (lambda, spec, local-multi instance)
 
 **Status: FIX A BUILT AND MEASURED 2026-09-06 — `arityOver` −96.9 %, dispatch

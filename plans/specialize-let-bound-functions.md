@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/let-poly-demand-driven-instances.md"
+---
+
 # Specialize Let-Bound Functions and Lambdas in Monomorphization
 
 ## Problem

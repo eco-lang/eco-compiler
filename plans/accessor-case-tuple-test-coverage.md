@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Expand Test Coverage for Accessor-via-Case and Projection Bitmap Invariants
 
 ## Motivation

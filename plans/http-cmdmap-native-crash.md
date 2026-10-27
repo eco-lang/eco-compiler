@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bug: `Cmd.map` with a non-identity tagger over an elm/http command crashes (native)
 
 Status: **fixed 2026-10-10.** Regression tests: `test/elm-http/src/HttpCmdMapTest.elm` (`Cmd.map`)

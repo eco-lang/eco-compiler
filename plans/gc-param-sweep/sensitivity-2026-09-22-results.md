@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # GC parameter sensitivity sweep — 2026-09-22
 
 Harness: `heap-profile.py sweep --variants-file plans/gc-param-sweep/sensitivity-2026-09-22.json`

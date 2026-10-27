@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS injection completeness: total member injection over the producer forms
 
 **Status: PLANNED (2026-08-26), lowered to implementation detail the same day.

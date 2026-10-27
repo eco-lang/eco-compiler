@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS compile-time optimization survey — 26 steps, specified and in implementation order
 
 Date: 2026-09-18 (the day after all 31 LSS flags were fixed at their defaults, LSS_041); §9

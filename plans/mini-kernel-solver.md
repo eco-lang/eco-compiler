@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/type-post-solver.md"
+---
+
 # Mini Kernel Solver Implementation Plan
 
 ## Overview

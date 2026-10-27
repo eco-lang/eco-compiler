@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Step 6: a dedicated invariant row in invariants.csv, plus a test-logic check that no MonoAccessorValue survives ResolveAccessorValues. Today the only enforcement is the codegen crash in MLIR/Expr.elm. No accessor-value-specific tests were added for Step 7 either, though the pre-existing SourceIR/AccessorScopingCases covers the named failing shapes."
+---
+
 # MonoAccessorValue: Introduction, Data-Flow Analysis, and Elimination
 
 ## Status: IN PROGRESS — Steps 1-3, 4a, 4b, 5 done; 4c needs context-rooted redesign

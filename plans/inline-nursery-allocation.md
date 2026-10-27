@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Inline nursery allocation ("P3"): bump-pointer fast path in compiled code
 
 **Status: IMPLEMENTED (2026-07-21) — N0–N4 SHIPPED default-on; gates §9.

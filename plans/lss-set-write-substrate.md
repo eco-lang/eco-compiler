@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS set-write substrate: sorted-list sets, Top constant, direct joins, no-op-free annotation joins
 
 **Status: PLANNED (2026-08-17).** Executes the substrate redesign from the 2026-08-17

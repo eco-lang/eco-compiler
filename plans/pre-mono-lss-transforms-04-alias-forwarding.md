@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Pre-mono LSS transforms — 04: alias forwarding
 
 **Status:** **v1 SHIPPED DEFAULT-ON (2026-09-14, bootstrap 8c fixed point byte-identical — §7.3);

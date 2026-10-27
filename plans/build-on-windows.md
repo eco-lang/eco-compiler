@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "W5 follow-ups still open: (1) the codegen MLIR suite is still skipped on _WIN32 in test/main.cpp (HPtr return-ABI 'Pointer above heap end'); (2) the _WIN32 skip of makeOptimizingTransformer in EcoBackend.cpp is retained pending a Windows run; (4)/(5) stress-test, mlir-equivalence and aot-e2e-runner are still NOT WIN32-gated in test/CMakeLists.txt."
+---
+
 # Plan: Build Eco on Windows
 
 ## Goal

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/monosolver-drop-in-monomorphizer.md"
+---
+
 # Solver-Driven Specialization for Let-Bound Functions
 
 ## Problem Statement

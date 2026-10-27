@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/remove-merased.md (MErased erasure dropped 86caad2f91); plans/mvar-id-global-assignment.md (alpha-renaming replaced by global MVarIds, f361817877)"
+---
+
 # Fix Remaining MONO_021/024 CEcoValue Failures
 
 ## Problem Statement

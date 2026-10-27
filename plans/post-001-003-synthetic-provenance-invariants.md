@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Strong POST_001 and POST_003 Invariant Tests with Synthetic Provenance
 
 ## Overview

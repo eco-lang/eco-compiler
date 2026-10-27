@@ -30,22 +30,26 @@ The tests establish:
   - Test 4: of the keys in the table, the ones the shim answers for are exactly
     the keys of `legacyBorrowGolden` together with `wave3BorrowAdditions`.
   - Test 5: `lookupSymbol` maps `Elm_Kernel_Utils_compare` and
-    `Elm_Kernel_Utils_compare_Float` to the `( "Utils", "compare" )` row,
-    `Eco_Kernel_MVar_put_Int` to the `( "MVar", "put" )` row, and
+    `Elm_Kernel_Utils_compare_Float` to the `( "Elm", "Utils", "compare" )` row,
+    `Eco_Kernel_MVar_put_Int` to the `( "Eco", "MVar", "put" )` row, and
     `Elm_Kernel_Bytes_read_u32`, whose name itself contains an underscore, to
-    the `( "Bytes", "read_u32" )` row; it returns `Nothing` for
+    the `( "Elm", "Bytes", "read_u32" )` row; it returns `Nothing` for
     `eco_gc_alloc_region_fast`, which has neither kernel prefix. The expected
     rows are looked up in the table, so the test also checks that each of them
     exists.
-  - Test 6: `gcLeafEligibleFor` is True for `( "String", "length" )` and False
-    for `( "List", "cons" )`, which is listed but allocates, and for
-    `( "Platform", "sendToApp" )`, which is not listed; `droppableFor` is False
-    for `( "Debug", "log" )` (values written out). For every row,
+  - Test 6: `gcLeafEligibleFor` is True for `( "Elm", "String", "length" )` and False
+    for `( "Elm", "List", "cons" )`, which is listed but allocates, and for
+    `( "Elm", "Platform", "sendToApp" )`, which is not listed; `droppableFor` is False
+    for `( "Elm", "Debug", "log" )` (values written out). For every row,
     `gcLeafEligibleFor` and `droppableFor` of its key agree with
     `gcLeafEligible` and `droppable` of its record, and all three key forms
-    (with `hoistableFor`) are False for the unlisted `( "Platform", "sendToApp" )`.
+    (with `hoistableFor`) are False for the unlisted `( "Elm", "Platform", "sendToApp" )`.
   - Test 7: the table has 75 rows and 75 distinct keys (57, plus the 18 audited
     `VirtualDom` rows of plans/elm-html-native-kernel.md P8).
+  - Test 8: the kernel prefix is part of the key (SD-16,
+    plans/kernel-table-prefix-keys.md). A row is found only under its own
+    kernel's prefix, by `lookup` and by `lookupSymbol` alike: `Utils.equal` and
+    `Utils.compare` only as `Elm`, `MVar.put` only as `Eco`.
 
 Among what is not tested: `hoistableFor` on a listed key (`hoistable` is not
 exposed, so it cannot be compared with a record form), `costClass` and
@@ -61,7 +65,7 @@ import Expect
 import Test exposing (Test)
 
 
-{-| The seven checks on the `KernelFacts` table listed in the module docstring.
+{-| The eight checks on the `KernelFacts` table listed in the module docstring.
 -}
 suite : Test
 suite =
@@ -91,7 +95,11 @@ suite =
             \_ ->
                 let
                     expectedRows =
-                        [ KF.lookup ( "Utils", "compare" ), KF.lookup ( "Utils", "compare" ), KF.lookup ( "MVar", "put" ), KF.lookup ( "Bytes", "read_u32" ) ]
+                        [ KF.lookup ( "Elm", "Utils", "compare" )
+                        , KF.lookup ( "Elm", "Utils", "compare" )
+                        , KF.lookup ( "Eco", "MVar", "put" )
+                        , KF.lookup ( "Elm", "Bytes", "read_u32" )
+                        ]
                 in
                 Expect.all
                     [ \_ ->
@@ -115,10 +123,10 @@ suite =
                     [ \_ ->
                         Expect.equal
                             [ True, False, False, False ]
-                            [ KF.gcLeafEligibleFor ( "String", "length" )
-                            , KF.gcLeafEligibleFor ( "List", "cons" )
-                            , KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
-                            , KF.droppableFor ( "Debug", "log" )
+                            [ KF.gcLeafEligibleFor ( "Elm", "String", "length" )
+                            , KF.gcLeafEligibleFor ( "Elm", "List", "cons" )
+                            , KF.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
+                            , KF.droppableFor ( "Elm", "Debug", "log" )
                             ]
                     , \_ ->
                         KF.rows
@@ -131,20 +139,44 @@ suite =
                             |> Expect.equal []
                     , \_ ->
                         Expect.equal ( False, False, False )
-                            ( KF.gcLeafEligibleFor ( "Platform", "sendToApp" )
-                            , KF.droppableFor ( "Platform", "sendToApp" )
-                            , KF.hoistableFor ( "Platform", "sendToApp" )
+                            ( KF.gcLeafEligibleFor ( "Elm", "Platform", "sendToApp" )
+                            , KF.droppableFor ( "Elm", "Platform", "sendToApp" )
+                            , KF.hoistableFor ( "Elm", "Platform", "sendToApp" )
                             )
                     ]
                     ()
         , Test.test "7. the table has the expected size and no duplicate keys" <|
             \_ -> Expect.equal ( 75, 75 ) ( List.length KF.rows, List.length (uniqueKeys KF.rows) )
+        , Test.test "8. the kernel prefix is part of the key (SD-16)" <|
+            \_ ->
+                Expect.all
+                    [ \_ ->
+                        -- A row is found only under its own kernel's prefix.
+                        Expect.equal
+                            [ True, False, True, False ]
+                            [ KF.lookup ( "Elm", "Utils", "equal" ) /= Nothing
+                            , KF.lookup ( "Eco", "Utils", "equal" ) /= Nothing
+                            , KF.lookup ( "Eco", "MVar", "put" ) /= Nothing
+                            , KF.lookup ( "Elm", "MVar", "put" ) /= Nothing
+                            ]
+                    , \_ ->
+                        -- lookupSymbol keeps the prefix of the emitted symbol, so a
+                        -- symbol of the other kernel does not reach the row.
+                        Expect.equal
+                            [ True, False, True, False ]
+                            [ KF.lookupSymbol "Elm_Kernel_Utils_compare_Float" /= Nothing
+                            , KF.lookupSymbol "Eco_Kernel_Utils_compare_Float" /= Nothing
+                            , KF.lookupSymbol "Eco_Kernel_MVar_put_Int" /= Nothing
+                            , KF.lookupSymbol "Elm_Kernel_MVar_put_Int" /= Nothing
+                            ]
+                    ]
+                    ()
         ]
 
 
 {-| Returns the distinct keys of a list of keyed entries, in ascending order.
 -}
-uniqueKeys : List ( ( String, String ), a ) -> List ( String, String )
+uniqueKeys : List ( ( String, String, String ), a ) -> List ( String, String, String )
 uniqueKeys =
     List.map Tuple.first >> List.sort >> dedupeSorted
 
@@ -169,33 +201,33 @@ dedupeSorted xs =
 {-| The 18 kernel keys whose rows are expected to be gc-leaf, written out by
 hand rather than computed from the table.
 
-It includes `( "Basics", "not" )` and `( "Basics", "round" )`. Their rows record
+It includes `( "Elm", "Basics", "not" )` and `( "Elm", "Basics", "round" )`. Their rows record
 that `not` returns one of the embedded `True` and `False` constants and that
 `round`'s only export takes and returns unboxed numbers, so neither allocates.
 The two `VirtualDom` URI filters return their argument or the embedded empty
 string, copying it only into C++ memory, so they do not allocate either.
 
 -}
-stampable : List ( String, String )
+stampable : List ( String, String, String )
 stampable =
-    [ ( "Basics", "not" )
-    , ( "Basics", "round" )
-    , ( "Utils", "equal" )
-    , ( "Utils", "notEqual" )
-    , ( "Utils", "compare" )
-    , ( "Utils", "lt" )
-    , ( "Utils", "le" )
-    , ( "Utils", "gt" )
-    , ( "Utils", "ge" )
-    , ( "String", "length" )
-    , ( "String", "startsWith" )
-    , ( "String", "endsWith" )
-    , ( "String", "contains" )
-    , ( "Bytes", "getStringWidth" )
-    , ( "Bytes", "width" )
-    , ( "Bytes", "decodeFailure" )
-    , ( "VirtualDom", "noJavaScriptUri" )
-    , ( "VirtualDom", "noJavaScriptOrHtmlUri" )
+    [ ( "Elm", "Basics", "not" )
+    , ( "Elm", "Basics", "round" )
+    , ( "Elm", "Utils", "equal" )
+    , ( "Elm", "Utils", "notEqual" )
+    , ( "Elm", "Utils", "compare" )
+    , ( "Elm", "Utils", "lt" )
+    , ( "Elm", "Utils", "le" )
+    , ( "Elm", "Utils", "gt" )
+    , ( "Elm", "Utils", "ge" )
+    , ( "Elm", "String", "length" )
+    , ( "Elm", "String", "startsWith" )
+    , ( "Elm", "String", "endsWith" )
+    , ( "Elm", "String", "contains" )
+    , ( "Elm", "Bytes", "getStringWidth" )
+    , ( "Elm", "Bytes", "width" )
+    , ( "Elm", "Bytes", "decodeFailure" )
+    , ( "Elm", "VirtualDom", "noJavaScriptUri" )
+    , ( "Elm", "VirtualDom", "noJavaScriptOrHtmlUri" )
     ]
 
 
@@ -208,13 +240,13 @@ these kernels are among its answers. Test 4 checks only that the shim answers
 for them; test 3 does not check their signatures.
 
 -}
-wave3BorrowAdditions : List ( String, String )
+wave3BorrowAdditions : List ( String, String, String )
 wave3BorrowAdditions =
-    [ ( "Basics", "not" )
-    , ( "Basics", "add" )
-    , ( "Basics", "round" )
-    , ( "String", "fromList" )
-    , ( "Json", "wrap" )
+    [ ( "Elm", "Basics", "not" )
+    , ( "Elm", "Basics", "add" )
+    , ( "Elm", "Basics", "round" )
+    , ( "Elm", "String", "fromList" )
+    , ( "Elm", "Json", "wrap" )
     ]
 
 
@@ -223,47 +255,47 @@ written out by hand.
 
 In a signature, `resultAliases` lists the 0-based indices of the parameters the
 result may share. Every parameter here is borrowed except the two of
-`( "Utils", "append" )`, which are owned.
+`( "Elm", "Utils", "append" )`, which are owned.
 
 This list must stay an independent copy, built neither from `KernelFacts` nor
 by the shim, so that test 3 compares two separate statements of the same
 signatures.
 
 -}
-legacyBorrowGolden : List ( ( String, String ), KernelSigs.KernelSig )
+legacyBorrowGolden : List ( ( String, String, String ), KernelSigs.KernelSig )
 legacyBorrowGolden =
-    [ ( ( "Utils", "compare" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "equal" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "notEqual" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "lt" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "le" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "gt" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "ge" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "length" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "startsWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "endsWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "contains" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "JsArray", "length" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "JsArray", "unsafeGet" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
-    , ( ( "Debug", "log" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
-    , ( ( "Debug", "toString" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Bytes", "getStringWidth" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Bytes", "width" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Bytes", "encode" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Bytes", "decode" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 0, 1 ] } )
-    , ( ( "Crash", "crash" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "JsArray", "foldl" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
-    , ( ( "JsArray", "foldr" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
-    , ( ( "JsArray", "map" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
-    , ( ( "List", "map2" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
-    , ( ( "List", "sortBy" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
-    , ( ( "List", "sortWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
-    , ( ( "String", "slice" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 2 ] } )
-    , ( ( "String", "uncons" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
-    , ( ( "String", "words" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
-    , ( ( "String", "trim" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
-    , ( ( "String", "toLower" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "toUpper" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "String", "all" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
-    , ( ( "Utils", "append" ), { params = [ KernelSigs.POwned, KernelSigs.POwned ], resultAliases = [ 0, 1 ] } )
+    [ ( ( "Elm", "Utils", "compare" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "equal" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "notEqual" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "lt" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "le" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "gt" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "ge" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "length" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "startsWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "endsWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "contains" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "JsArray", "length" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "JsArray", "unsafeGet" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
+    , ( ( "Elm", "Debug", "log" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
+    , ( ( "Elm", "Debug", "toString" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Bytes", "getStringWidth" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Bytes", "width" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Bytes", "encode" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Bytes", "decode" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 0, 1 ] } )
+    , ( ( "Eco", "Crash", "crash" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "JsArray", "foldl" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
+    , ( ( "Elm", "JsArray", "foldr" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
+    , ( ( "Elm", "JsArray", "map" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
+    , ( ( "Elm", "List", "map2" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1, 2 ] } )
+    , ( ( "Elm", "List", "sortBy" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
+    , ( ( "Elm", "List", "sortWith" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 1 ] } )
+    , ( ( "Elm", "String", "slice" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [ 2 ] } )
+    , ( ( "Elm", "String", "uncons" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
+    , ( ( "Elm", "String", "words" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
+    , ( ( "Elm", "String", "trim" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [ 0 ] } )
+    , ( ( "Elm", "String", "toLower" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "toUpper" ), { params = [ KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "String", "all" ), { params = [ KernelSigs.PBorrowed, KernelSigs.PBorrowed ], resultAliases = [] } )
+    , ( ( "Elm", "Utils", "append" ), { params = [ KernelSigs.POwned, KernelSigs.POwned ], resultAliases = [ 0, 1 ] } )
     ]

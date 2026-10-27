@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # String / Bytes Representation Testing Gap — Plan
 
 **Purpose:** Close the testing gap around the runtime's byte-buffer and String

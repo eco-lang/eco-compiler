@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typechecker Design B — Direct recursion + spine loops
 
 **Speculative rewrite (Step 8, item 1 from `plans/typechecker-simplification.md`).** Replace the

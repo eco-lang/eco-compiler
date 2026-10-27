@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "LLVM RS4GC computes GC roots (CGEN_077(b)); no plan file"
+---
+
 # Plan: EcoGCPrepare as Single Source of Truth for GC Roots via SSA Liveness
 
 ## Problem

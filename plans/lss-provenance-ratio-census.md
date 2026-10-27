@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Provenance-ratio census — measuring the layer Q is blind to
 
 **Status:** proposed 2026-08-27. Small: two `Env` fields, one census line, no

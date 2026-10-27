@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Short-Circuit `&&` / `||` by Lowering to `If` in TypedOptimized
 
 ## Problem Summary

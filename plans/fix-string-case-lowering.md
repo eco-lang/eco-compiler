@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix String Case Lowering (Option B)
 
 ## 0. Problem Statement & Design Constraints

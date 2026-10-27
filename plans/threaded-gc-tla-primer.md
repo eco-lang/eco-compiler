@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ modelling primer
 
 **Status:** REFERENCE (2026-09-28). Read this before any model plan. Updated the same day with the

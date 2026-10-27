@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/opt-tier1-aggregate-promotion.md"
+---
+
 # Escape Analysis for Small Aggregates — Implementation Plan
 
 Source design: `design_docs/escape-analysis.md`.

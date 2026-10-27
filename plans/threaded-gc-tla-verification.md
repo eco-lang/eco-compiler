@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC — TLA+ models of the concurrent heap protocols
 
 **Status:** IMPLEMENTED (2026-09-29). Every model plan (M1–M7), the weak-memory plan (W1–W5 plus

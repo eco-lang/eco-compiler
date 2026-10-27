@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel-Opt 05: Utils_append type-split -> eco.string.append + eco.list.append
 
 **Status: IMPLEMENTATION-READY v3 — 2026-08-10.** (v2 deepened from OUTLINE v1;

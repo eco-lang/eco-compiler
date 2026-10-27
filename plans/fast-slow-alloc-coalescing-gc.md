@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fast/Slow Allocation Paths + Allocation Coalescing + Systematic Safepoints
 
 ## Summary

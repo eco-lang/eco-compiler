@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Eco Kernel API Alignment Plan
 
 Align the `eco-kernel-cpp` kernel implementations (JS + C++) with the

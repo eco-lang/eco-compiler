@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # eco-config.json — tunable compiler parameters
 
 Add a project-level JSON config file (`eco-config.json`, beside `elm.json`)

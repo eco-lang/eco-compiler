@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix: closure capture / variable substitution misses MonoDestruct paths and MonoCase deciders
 
 ## Problem

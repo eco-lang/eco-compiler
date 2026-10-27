@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Compiler Memory Reduction: Scope Tightening
 
 ## Summary

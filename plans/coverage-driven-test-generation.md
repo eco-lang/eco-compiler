@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "The per-module coverage work loop over the 36 files toward >95% of reachable backend code was never recorded as complete. Its tracker elm-cov-file.csv was deleted as a stray file in 94a1e6b48b, and no later commit reports coverage figures for the loop."
+---
+
 # Coverage-Driven Test Generation Plan
 
 ## Goal

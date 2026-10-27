@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Function-parallel EcoToLLVM conversion — feasibility & design (M7 follow-up)
 
 Status: **IMPLEMENTED, VALIDATED & DEFAULT-ON (2026-07-07) — IT SCALES.** Contrary

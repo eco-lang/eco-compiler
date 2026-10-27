@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS: depth-qualify the root-fold spine write — one name per (global, stage)
 
 **Status: IMPLEMENTED 2026-09-17, DEFAULT-OFF behind `lss.rootFoldDepthIds`;

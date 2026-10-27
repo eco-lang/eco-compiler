@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel-Opt 12: eco.call purity channel (attr + MemoryEffectOpInterface)
 
 **Status: IMPLEMENTATION-READY v3 — 2026-08-10.** (v1 outline → v2 deepening → v3

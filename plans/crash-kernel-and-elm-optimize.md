@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Move Utils.Crash to Eco.Crash Kernel + elm-optimize-level-2
 
 ## Goal

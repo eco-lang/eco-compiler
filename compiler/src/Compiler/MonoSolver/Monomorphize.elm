@@ -3309,12 +3309,12 @@ renderLssReport sFinal (Mono.MonoGraph g) =
 
                 Just node ->
                     case LssInfer.kernelAliasOf tsGlobal sFinal of
-                        Just ( _, kHome, kName ) ->
+                        Just ( kPrefix, kHome, kName ) ->
                             if licensedKernelAliasNode node sFinal then
                                 "licAlias"
 
                             else
-                                case KernelSetFacts.factFor kHome kName of
+                                case KernelSetFacts.factFor kPrefix kHome kName of
                                     Just _ ->
                                         "refAlias"
 
@@ -4716,8 +4716,8 @@ function inhabitants beyond its type's variable sharing — so a stored `LSet`
 licensedKernelAliasNode : TOpt.Node TypeIds.MVarId -> S -> Bool
 licensedKernelAliasNode nd s =
     let
-        licensed kHome kName kMeta =
-            case KernelSetFacts.factFor kHome kName of
+        licensed kPrefix kHome kName kMeta =
+            case KernelSetFacts.factFor kPrefix kHome kName of
                 Just (KernelSetFacts.TypeFaithful license) ->
                     KernelSetFacts.licenseApplies (Engine.isScalarVar s) license kMeta.tipe
 
@@ -4725,11 +4725,11 @@ licensedKernelAliasNode nd s =
                     False
     in
     case nd of
-        TOpt.Define (TOpt.VarKernel _ _ kHome kName kMeta) _ _ ->
-            licensed kHome kName kMeta
+        TOpt.Define (TOpt.VarKernel _ kPrefix kHome kName kMeta) _ _ ->
+            licensed kPrefix kHome kName kMeta
 
-        TOpt.TrackedDefine _ (TOpt.VarKernel _ _ kHome kName kMeta) _ _ ->
-            licensed kHome kName kMeta
+        TOpt.TrackedDefine _ (TOpt.VarKernel _ kPrefix kHome kName kMeta) _ _ ->
+            licensed kPrefix kHome kName kMeta
 
         TOpt.Link target ->
             case HashMap.get TOpt.globalHash (==) target s.env.toptNodes of
@@ -4982,8 +4982,8 @@ buildMemberOrigins toptNodes table =
 
                 "k|" ->
                     case Dict.get mid table.sources of
-                        Just (Engine.SourceKernel ( _, home, name )) ->
-                            Dict.insert mid (Mono.OriginKernel home name) acc
+                        Just (Engine.SourceKernel ( prefix, home, name )) ->
+                            Dict.insert mid (Mono.OriginKernel prefix home name) acc
 
                         _ ->
                             acc

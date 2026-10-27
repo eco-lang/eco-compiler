@@ -1273,7 +1273,7 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite kernelExportsTests("KernelExports");
     registerKernelExportsTests(kernelExportsTests);
 
-    // SD-17 / SD-26 (review-bug-list.md): append over every form; Empty vs
+    // SD-17 / SD-26 (plans/review-bug-list-fixes.md): append over every form; Empty vs
     // zero-length heap String through each equality/ordering path.
     Testing::TestSuite utilsAppendEqualityTests("UtilsAppendEquality");
     registerUtilsAppendEqualityTests(utilsAppendEqualityTests);

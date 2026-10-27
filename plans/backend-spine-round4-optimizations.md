@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Backend round 4: serial-spine optimizations
 
 Implementation plan for the candidates in

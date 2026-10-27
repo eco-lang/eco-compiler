@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Remove Monomorphize Dependency on MLIR.Types
 
 ## Problem

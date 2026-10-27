@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # MLIR split backend 00: spikes, measurements and censuses (de-risk first)
 
 **Master plan:** `plans/mlir-split-backend.md`. **Status:** written and completed 2026-10-02. All spikes GO; results in §8.

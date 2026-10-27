@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/globalopt-callinfo-invariants.md"
+---
+
 # Plan: Distinguish Call Paths by Call Model (Option 4)
 
 ## Status: IMPLEMENTATION REQUIRED

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix B: fork-qualified lambda-set members
 
 **Status: IMPLEMENTED + ALL GATES GREEN (2026-07-20, same day).** B0+B1 landed

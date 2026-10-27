@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Release bundle v0.1.0 — `.deb` + `.zip` + `.tar.gz` with kernel sources and examples
 
 Follow-up to [`stage-c-bundle-runtime.md`](stage-c-bundle-runtime.md). Stage C

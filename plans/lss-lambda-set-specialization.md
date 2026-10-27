@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # LSS v1 Implementation Plan — Lambda Set Specialization (id-only members)
 
 ## Status: M1 + M2 + M3 + M3.5 + 3.6 + M4 COMPLETE AND GATED (2026-07-11) — v1 plan done; keyed default-flip decision deferred (needs elm-aws-codegen)

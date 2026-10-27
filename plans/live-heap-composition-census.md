@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "LH2 (primary vs transitive promotion split + age at promotion per tag), LH3 (per-tag live-set tally in OldGenSpace::markOneObject at major GC), LH4 (survivor site attribution, LH4a bridging / LH4b nursery side-map), LH5 (report in borrow-inf-census.md and backlog re-ranking)."
+---
+
 # Live-heap composition census — measuring retention instead of allocation
 
 **Status: LH1 SHIPPED + MEASURED 2026-08-05 (`benchmarks/tier2-opt.md`

@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "Layout computation was moved into MLIR codegen (977beae170: RecordLayout/computeRecordLayout etc. into Compiler.Generate.MLIR.Types) instead of the planned MonoGraphNoLayout + Layout phase; LayoutShapes deleted as unused (e94365d5bc)"
+---
+
 # Monomorphize Module Refactoring Plan
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Plan: Fix MonoDirect specializePath to Compute Concrete Types
 
 ## Problem

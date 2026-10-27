@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix papExtend remaining_arity for MonoLet-wrapped callees
 
 ## 1. Problem Recap

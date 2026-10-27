@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Item 6 (unification-result cache keyed by (Global, MonoType) and an applySubst memo in TypeSubst; only the separate schemeCache exists) and Item 9 (array-based CallEnv: MonoGlobalOptimize.CallEnv still uses Dict Name for varCallModel/varSourceArity). The plan gated both on instrumentation first, and there is no record of that being run or of a decision to drop them."
+---
+
 # Compiler Performance Optimizations Plan
 
 ## Overview

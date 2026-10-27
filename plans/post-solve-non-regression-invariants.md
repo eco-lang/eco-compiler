@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Corrected PostSolve Invariants (POST_005/POST_006) - Non-Regression Approach
 
 ## Overview

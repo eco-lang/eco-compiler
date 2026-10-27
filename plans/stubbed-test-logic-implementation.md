@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: Stubbed Test Logic
 
 This plan describes the implementation of all stubbed test logic functions, with realistic feasibility assessments based on what's actually exposed from the compiler.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # HPointer Representation Redesign
 
 ## Status: IMPLEMENTED — full suite green (1551/1551), compiler bootstraps

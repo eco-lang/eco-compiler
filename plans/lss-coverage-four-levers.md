@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Four coverage levers — `lss.injTotal` + the transport gate
 
 **FLAG REMOVED 2026-09-17 — lever 4's `lss.argPoints` is deleted — §7.5 measured it scale-negative (coverage -0.21 pp) and `lss-ctor-arrow-identity.md` §8.5 re-measured it byte-identical-inert. The mechanism described below is GONE from the compiler (`plans/remove-default-off-lss-flags.md`); this plan stays as the record of what was measured and why it was refused.**

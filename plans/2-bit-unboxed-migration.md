@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # 2-Bit Unboxed Migration Plan
 
 This plan migrates Eco from the current 1-bit-per-slot "boxed vs. unboxed" bitmap scheme to a 2-bit-per-slot **primitive kind** scheme. It combines the design with the file:line impact audit so the document can be executed directly against the tree at `/work`.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Stress-Test CLI Params and Elm Platform.worker Flag Plumbing
 
 ## Motivation

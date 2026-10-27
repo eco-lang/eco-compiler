@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Option X – Derive Call Result Type from Callee Signature
 
 ## Problem

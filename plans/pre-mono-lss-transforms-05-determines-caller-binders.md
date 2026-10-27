@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # Pre-mono LSS transforms — 05: `determines` accepts caller-binder bindings
 
 **Status:** **§2.5 BUILT DEFAULT-OFF and MEASURED-OUT; §2.1+§2.4 CLOSED UNBUILT (2026-09-14).**

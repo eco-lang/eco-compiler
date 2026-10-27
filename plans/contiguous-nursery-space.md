@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Contiguous nursery space: one extent per semi-space, and a right-sized old-gen/nursery address split
 
 **Status: COMPLETE — IMPLEMENTED, GATED AND BENCHMARKED 2026-08-09. All

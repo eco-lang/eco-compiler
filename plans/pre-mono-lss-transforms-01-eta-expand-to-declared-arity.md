@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Pre-mono LSS transforms — 01: η-expand definitions and continuations to declared arity
 
 **Status:** BUILT AND SHIPPED DEFAULT-OFF (2026-09-10). Item 1 of

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: New Invariants for GlobalOpt and Monomorphization
 
 ## Executive Summary

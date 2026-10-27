@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Local package as read-only seed + per-module compiled-form check
 
 ## Context

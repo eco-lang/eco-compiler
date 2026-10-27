@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Post-inline dead-spec prune
 
 **Status:** BUILT AND GATED 2026-09-13, DEFAULT-ON. Results in §8.

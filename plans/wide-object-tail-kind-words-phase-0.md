@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wide heap objects, Phase 0: baselines and pins
 
 **Parent:** [`wide-object-tail-kind-words.md`](wide-object-tail-kind-words.md) (phase map §4, test mechanics §6, shared definitions §S).

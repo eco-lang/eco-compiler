@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Fix the LSS flags at their defaults and remove them
 
 **Status: IMPLEMENTED 2026-09-18** (log from §9). Remove 31 of the 32 LSS flags,

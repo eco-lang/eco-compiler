@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix eco.yield SCF Lowering for Int/Char/String Cases
 
 ## Problem Statement

@@ -1,3 +1,8 @@
+---
+status: not-started
+updated: 2026-10-27
+---
+
 # Kernel-Opt 15: Float-reachability stamps — make allocation dedup NaN-sound
 
 **Status: IMPLEMENTATION 2026-08-13.** Born from item 13's reverted CSE flip

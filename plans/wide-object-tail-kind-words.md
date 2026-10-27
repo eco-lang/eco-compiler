@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wide heap objects: tail kind words for Custom, Record and Closure
 
 **Status:** DONE (2026-10-05). All phases implemented; definition of done met (phase-3 file, "3D final gate result").

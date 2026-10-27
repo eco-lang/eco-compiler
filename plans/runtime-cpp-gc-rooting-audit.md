@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Step 8: the committed detection query (CodeQL or a script) and its fact-table snapshot under design_docs/gc-rooting-facts/ were never built; the directory does not exist. Step 9.2's added GC-stress coverage for the touched areas is also not evidenced."
+---
+
 # Runtime & Kernel C++ GC Rooting Audit
 
 ## Goal

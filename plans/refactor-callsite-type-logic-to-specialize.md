@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Refactor Call-Site Type Logic from TypeSubst to Specialize
 
 ## Goal

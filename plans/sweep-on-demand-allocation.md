@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Sweep-on-Demand Allocation in OldGenSpace
 
 ## Goal

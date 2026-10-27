@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # CAF Memoization — Implementation Plan
 
 Design: `design_docs/caf-memoization-design.md` (2026-07-22). Survey/evidence:

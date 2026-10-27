@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Dumb Timer Threads for `Process.sleep`
 
 ## Status: PLAN — questions resolved, ready for implementation

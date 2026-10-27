@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Runtime Support for Timer/Effect E2E Test
 
 ## Goal

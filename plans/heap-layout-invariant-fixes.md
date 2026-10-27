@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Heap Layout Invariant Fixes (HEAP_013, HEAP_015)
 
 ## Overview

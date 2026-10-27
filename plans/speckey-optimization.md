@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # SpecKey Optimisation — Census, Survey, then Decide
 
 **Status: PHASES 1–2 DONE; PHASE 3 SCOPED TO H2 AND IMPLEMENTATION-READY (§10).**

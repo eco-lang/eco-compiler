@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Implement CallInfo Invariant Tests (GOPT_011 through GOPT_014)
 
 ## Context

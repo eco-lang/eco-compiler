@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix Heap Extraction Type Mismatch
 
 ## Problem Summary

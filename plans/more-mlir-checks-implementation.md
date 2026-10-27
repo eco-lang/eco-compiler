@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Implementation Plan: Additional MLIR Codegen Invariant Tests
 
 This plan implements the MLIR invariant checks described in `design_docs/more-mlir-checks.md`.

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # CAF permanent space (option #4, for-real measurement)
 
 > **FOLLOW-UP SHIPPED (Run AA, 2026-07-26): root-scan elimination.** CAF

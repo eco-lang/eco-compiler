@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Per-Binding MVarId Isolation in AssignMVarIds
 
 ## Problem

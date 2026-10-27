@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Projection Helpers Everywhere — gc-leaf runtime helpers for heap projections
 
 ## Problem

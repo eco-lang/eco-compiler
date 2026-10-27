@@ -1,15 +1,21 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix the Defects Confirmed in `review-bug-list.md`
 
 **Status: DONE 2026-10-24.** All phases implemented; every phase-0 test passes. Gates: elm-tests
 918/0 + 14,436/0; `full` rc 0 (test/test 2,492/2,492, JS E2E 208/0, 4 skip); stress 114/0; bootstrap
 4b and 8c fixed points and 9b OK; kernel license manifest, ctor-tag and kernel-home checks clean.
 Closed by the maintainer: SD-11 (behaviour unchanged) and SD-15 (browser check not needed).
-`global_uninitialized_read.mlir` deleted. Still open: SD-16 on the native side (kernel tables keyed by
-home and name only). Progress notes per phase are at the end.
+`global_uninitialized_read.mlir` deleted. SD-16's native side (kernel tables keyed by home and name only)
+was fixed on 2026-10-26 by plans/kernel-table-prefix-keys.md. Progress notes per phase are at the
+end.
 
 ## Context
 
-`review-bug-list.md` lists 27 suspected defects (SD-1 to SD-27) found while writing the program
+`review-bug-list.md` (deleted 2026-10-26, once every item was closed) listed 27 suspected defects (SD-1 to SD-27) found while writing the program
 theory. On 2026-10-24 each one was re-traced in the code and given a verdict. Every real or latent
 defect now has a test that fails against the current code and passes once the defect is fixed. One
 more defect turned up during the triage (MIN_INT divided by -1) and is included here.
@@ -256,7 +262,8 @@ bootstrap.
   (`CURLOPT_TIMEOUT_MS`, `HttpService.cpp:230`) starts only when a request starts running. Decide
   whether queue time should count toward `Http` timeouts. That differs from browser elm/http, where
   requests run concurrently.
-- Update `review-bug-list.md` with the verdicts and point it at this plan.
+- Update `review-bug-list.md` with the verdicts and point it at this plan (done; the file was
+  later deleted).
 
 ## Gates
 
@@ -299,8 +306,8 @@ JIT E2E and stress are at least at the 2026-10-23 counts plus the new tests.
     rewritten: no heap config needed, 14 real minor GCs.
 - **Phase 3 (done).** SD-16 is fixed for JavaScript output. Eco kernels are keyed by
   `Eco.Kernel.<Home>` and named `_Eco_<Home>_<name>`, and output for elm/*-only programs is
-  byte-identical. Still open: on the native side, kernel typing, `KernelFacts` and `KernelSetFacts`
-  key by home alone; File, Http and Process share those rows. SD-12 became an explicit crash, and its
+  byte-identical. The native side, where kernel typing, `KernelFacts` and `KernelSetFacts` keyed by
+  home alone, was fixed on 2026-10-26 by plans/kernel-table-prefix-keys.md. SD-12 became an explicit crash, and its
   test was restructured because Elm tests cannot catch a crash.
 - **Phase 6 (done, except the SD-11 decision).** CGEN_072 and TOPT_004 rows corrected; comments fixed
   for SD-14, SD-15 (no headless browser here, so the comment states the reasoning is unverified),

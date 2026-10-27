@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Stage D — hybrid link profiles: glibc `.so`/`.node` outputs from the static-musl bundle
 
 Follow-up to [stage-c-bundle-runtime.md](stage-c-bundle-runtime.md) and

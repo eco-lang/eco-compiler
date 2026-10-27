@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # CGEN Invariant Test Modules Plan - Phase 2
 
 This plan describes the implementation of test logic modules for MLIR codegen invariants CGEN_040 through CGEN_044 defined in `design_docs/invariants.csv`.

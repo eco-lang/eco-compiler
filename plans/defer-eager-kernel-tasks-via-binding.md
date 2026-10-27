@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Defer Eager Kernel `Task`s via `taskBinding`
 
 ## Status: LANDED (Phases 0–8; audit tables below are the PRE-conversion

@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "P4-P7 open (Dict/Set fold work, usage-discipline audit); §10.5 says next win is general compiler work, not this monad."
+---
+
 # Cutting the IO monad's dispatch: state-passing where there is no state
 
 **Status: P0 + P1 DONE 2026-09-05 — dispatch −35.1 %, allocation −15.5 %

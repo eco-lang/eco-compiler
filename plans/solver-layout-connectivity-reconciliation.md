@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Solver Layout Connectivity: Residual Reconciliation (principled fix)
 
 **Status: IMPLEMENTED 2026-07-13 (R0+R1+R2+R4 landed; gates in progress —

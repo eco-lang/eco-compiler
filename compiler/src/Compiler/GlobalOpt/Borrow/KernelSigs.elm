@@ -56,11 +56,11 @@ type alias KernelSig =
 
 
 {-| Returns the signature of the kernel with the given Mono key, the
-`( home, name )` pair that `KernelFacts.lookup` takes. It gives `Nothing` when
+`( prefix, home, name )` that `KernelFacts.lookup` takes. It gives `Nothing` when
 the kernel has no row, or when its row's `params` is empty because the borrow
 axis has not been audited; either way every argument is to be treated as owned.
 -}
-lookup : ( Name, Name ) -> Maybe KernelSig
+lookup : ( Name, Name, Name ) -> Maybe KernelSig
 lookup key =
     case KF.lookup key of
         Nothing ->

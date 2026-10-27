@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Threaded GC 02 — Promotion buffers via bitmap allocation
 
 **Status:** DONE (2026-09-25). Compiled defaults: `old_gen_bitmap_alloc` on,

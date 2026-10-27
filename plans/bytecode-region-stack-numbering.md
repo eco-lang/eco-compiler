@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Region-Stack Value Numbering for MLIR Bytecode
 
 ## Status

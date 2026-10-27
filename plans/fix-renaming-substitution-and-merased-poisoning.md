@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/mvar-id-global-assignment.md (renaming removed by global MVarIds); plans/remove-merased.md (MErased dropped)"
+---
+
 # Fix Renaming/Substitution Alignment & MErased Poisoning
 
 ## Overview

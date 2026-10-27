@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: XHR Eco.Crash via Debug.todo (no --optimize for Stage 1)
 
 ## Problem

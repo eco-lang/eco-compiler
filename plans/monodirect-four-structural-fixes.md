@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "plans/monosolver-drop-in-monomorphizer.md"
+---
+
 # MonoDirect: Four Structural Fixes
 
 This plan implements four root-cause fixes to align MonoDirect with the standard monomorphizer, eliminating competing type sources, normalizing poly-let handling, making accessor typing robust, and adding a shared joinpoint-flattening pass.

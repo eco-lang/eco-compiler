@@ -1,3 +1,9 @@
+---
+status: partial
+updated: 2026-10-27
+remaining: "Phase 6 (~80 tests extending existing suites) was not done: SpecializeConstructorCases has 12 cases (plan: +20, e.g. the Suit/Rec4/Nat examples, which are absent), SpecializeCycleCases 9 (+25), RecordCases 17 (+20), TupleCases 9 (+15). The plan's coverage targets were never re-measured."
+---
+
 # MLIR and Monomorphize Coverage Test Plan
 
 ## Overview

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Bounded GC rooting in list-building kernels
 
 Status: **DONE** (2026-10-06; results §6). Found by plans/staging-honesty-and-production-test-pipeline.md

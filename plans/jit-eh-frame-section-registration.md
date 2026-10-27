@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: JIT `.eh_frame` section-style registration for LLVM libunwind
 
 ## Problem

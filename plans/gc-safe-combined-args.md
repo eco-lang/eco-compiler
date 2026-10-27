@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: GC-Safe Closure Calls (`combined_args` + `eco_pap_extend`)
 
 ## Problem

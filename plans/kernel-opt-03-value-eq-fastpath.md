@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel-Opt 03: eco.value.eq inline word-equality fast path
 
 **Status: IMPLEMENTATION-READY v2 — 2026-08-10.** (deepened from OUTLINE v1; anchors

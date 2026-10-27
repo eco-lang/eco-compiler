@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Build-tree `eco/kernel` resolution (B) + a clear "kernel not found" error (D)
 
 ## Summary

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Kernel call census — dynamic heat + gc-leaf coverage
 
 **Status: NEW 2026-08-09. Executable in one sitting; results land back in this

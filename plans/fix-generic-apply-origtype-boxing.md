@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Fix lowerGenericApply to Use Original Types for Boxing Decisions
 
 ## Problem

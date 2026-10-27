@@ -1,3 +1,8 @@
+---
+status: abandoned
+updated: 2026-10-27
+---
+
 # IO Monad Refactoring Plan
 
 **STATUS: SHELVED** - Blocked on prerequisite work (Bytes over Ports)

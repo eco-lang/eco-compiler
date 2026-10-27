@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Wide heap objects, Phase 3: Custom and Record (3A runtime, 3B lowering, 3C front end, 3D limits and final gate)
 
 **Parent:** [`wide-object-tail-kind-words.md`](wide-object-tail-kind-words.md). The overview's §S

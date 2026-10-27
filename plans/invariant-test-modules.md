@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Invariant Test Modules Plan
 
 This plan describes the implementation of test logic modules for invariants defined in `design_docs/invariant-test-logic.md`.

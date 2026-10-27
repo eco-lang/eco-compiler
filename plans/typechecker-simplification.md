@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Typechecker Simplification Plan
 
 Reduce the complexity and improve the readability of the eco constraint-based typechecker

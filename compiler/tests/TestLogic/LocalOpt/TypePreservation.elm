@@ -290,12 +290,12 @@ checkExpr env context expr =
                 Nothing ->
                     []
 
-        TOpt.VarKernel _ _ home name meta ->
+        TOpt.VarKernel _ prefix home name meta ->
             let
                 tipe =
                     meta.tipe
             in
-            case KernelTypes.lookup home name env.kernelEnv of
+            case KernelTypes.lookup prefix home name env.kernelEnv of
                 Just kernelType ->
                     if TypeEq.alphaEqStrict tipe kernelType then
                         []

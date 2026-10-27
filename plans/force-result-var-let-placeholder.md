@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Make Recursive Let RHS Define Placeholder SSA Var Directly
 
 ## Status: Already Implemented — Test Coverage Needed

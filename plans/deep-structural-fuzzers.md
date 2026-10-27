@@ -1,3 +1,9 @@
+---
+status: superseded
+updated: 2026-10-27
+superseded_by: "Focused fuzz suites compiler/tests/SourceIR/AccessorFuzzCases.elm and PatternComplexityFuzzCases.elm (cd3df0c23f); no replacing plan file"
+---
+
 # Deep Structural Fuzzers for Elm Syntax
 
 ## Overview

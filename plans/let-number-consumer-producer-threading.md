@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Thread consumer→producer numeric types for the remaining `let`-number cases
 
 **Status:** PROPOSED

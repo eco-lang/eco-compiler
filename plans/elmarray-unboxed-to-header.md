@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Move ElmArray.unboxed into Header.unboxed
 
 ## Problem

@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Disablable commands — disable `repl`/`test`, remove `format`
 
 ## Overview

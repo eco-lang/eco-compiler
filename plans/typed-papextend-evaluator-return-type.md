@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Typed papExtend uses evaluator's func.func result type (CGEN_056)
 
 ## Problem

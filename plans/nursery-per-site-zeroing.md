@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: Per-site nursery zeroing (retire the bulk to-space memset)
 
 ## Goal

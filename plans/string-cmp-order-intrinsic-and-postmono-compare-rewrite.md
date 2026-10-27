@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Plan: `eco.string.cmp_order` intrinsic + post-mono compare→branch rewrite
 
 **Status: IMPLEMENTED 2026-08-10 — Phases A, B, D landed; C not needed (see

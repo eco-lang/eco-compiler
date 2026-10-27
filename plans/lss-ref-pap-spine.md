@@ -1,3 +1,8 @@
+---
+status: done
+updated: 2026-10-27
+---
+
 # Reference-spine PAP successors — `lss.refPapSpine`
 
 **Status: COMPLETE + FLIPPED DEFAULT-ON 2026-08-28 (user decision, same-day

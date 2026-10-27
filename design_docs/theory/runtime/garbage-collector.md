@@ -189,4 +189,4 @@ Invariants (`design_docs/invariants.csv`):
 - HEAP_026, HEAP_062, HEAP_080, HEAP_081: large objects and the young large-object space.
 - HEAP_048 to HEAP_055: old-generation blocks and bitmaps. HEAP_058 to HEAP_060: helper pool. HEAP_063 to HEAP_066, HEAP_076: marking and triggers.
 - HEAP_033, HEAP_035, HEAP_036: the permanent space (HEAP_036 calls it default-off; the code has it on).
-- HEAP_018: states that values are acyclic; wrong for closures.
+- HEAP_018: value data is acyclic; closures of recursive local functions can form cycles.
