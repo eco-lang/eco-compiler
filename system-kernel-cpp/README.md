@@ -61,7 +61,7 @@ main =
 ## Acknowledgements
 
 This package began as a copy of Gren's standard libraries, gren-lang/core and gren-lang/node,
-used with the permission of their author, **Robin Heggelund Hanses**. Its `Stream` model of
+used with the permission of their author, **Robin Heggelund Hansen**. Its `Stream` model of
 reading, writing and piping data is one of Robin's notable innovations in Gren, and `eco/system`
 is built around it. Many thanks to Robin.
 
