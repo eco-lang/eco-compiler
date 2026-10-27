@@ -1,19 +1,25 @@
 module Compiler.Generate.HtmlLeadingLinesTest exposing (suite)
 
-{-| SD-15: `Compiler.Generate.Html.leadingLines` (2) is the shift applied to
-source-map generated lines when the JavaScript is embedded by `Html.sandwich`.
-The page puts 14 lines before the first line of JavaScript, but the source map
-travels inside the inline `<script>` (a `//# sourceMappingURL=` comment at the
-end of the JavaScript), and an inline script's source map is resolved against
-the script's own text, which starts right after `<script>`. Within that text
-the JavaScript is preceded by exactly two lines: the empty remainder of the
-`<script>` line and `try {`. So 2 is the right shift; the "does not match the
-page" remark in the `leadingLines` doc compares against the wrong origin.
+{-| Without this test, `Compiler.Generate.Html.sandwich` could gain or lose a
+line before the embedded JavaScript while `Html.leadingLines` stayed the same,
+and every source-map line for a generated HTML page would be off by the
+difference without anything failing.
 
-This test pins that relationship: `leadingLines` must equal the number of line
-breaks between the end of the `<script>` tag and the first character of the
-embedded JavaScript. It passes today, and fails if either the sandwich or the
-constant changes without the other.
+`leadingLines` counts lines from the end of the `<script>` tag, not from the top
+of the page; why that is the right origin is stated in its docstring in
+`Compiler.Generate.Html`. This test checks the count against that origin.
+
+The fixture is one call to `sandwich` with the module name `"Main"` and a
+JavaScript text whose first line is `marker` and whose second line is
+`var x = 1;`.
+
+  - The one test takes the text between the first `<script>` in the page and
+    `marker`, and expects the number of `\n` characters in it to equal
+    `leadingLines`. It fails with a message instead if the page has no
+    `<script>` followed by `marker`.
+
+Among what is not tested: the lines of the page above the `<script>` tag, the
+rest of the page after the JavaScript, and any source map itself.
 
 -}
 
@@ -22,11 +28,18 @@ import Expect
 import Test exposing (Test, describe, test)
 
 
+{-| A JavaScript comment used as the first line of the embedded JavaScript, so
+that the test can find where that JavaScript starts in the page.
+-}
 marker : String
 marker =
     "/*SD15-FIRST-JS-LINE*/"
 
 
+{-| Checks that `Html.leadingLines` equals the number of line breaks between the
+first `<script>` tag of a sandwiched page and the start of the embedded
+JavaScript.
+-}
 suite : Test
 suite =
     describe "SD-15: Html.leadingLines matches the lines before the JS inside <script>"

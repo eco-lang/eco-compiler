@@ -1,20 +1,28 @@
 module TestLogic.Generate.Bytecode.DenseArrayEncodingTest exposing (suite)
 
-{-| Checks that the bytecode attribute section writes each element of a dense
-array (`ArrayAttr (Just t) …`, an MLIR `DenseArrayAttr`) in the width of its
-element type: one byte for `i8`, eight for `i64`.
+{-| Without these tests, a dense array could be written with the wrong
+element width and the data section would still encode without error; the
+mismatch would only show when the back end read the bytecode.
 
-Each test collects one op carrying the array into a fresh table, encodes the
-attribute data section, and looks for the array's whole entry in it: the
-`DenseArrayAttr` code (17), the element type's index, the element count, the
-blob length and the blob bytes, all as `Mlir.Bytecode.AttrType` writes them.
+A dense array here is an `ArrayAttr (Just t) …`, written as MLIR's
+`DenseArrayAttr`: code 17, the index of the element type `t`, the element
+count, the length of the blob, and the blob, which holds each element in the
+width of `t`. `Mlir.Bytecode.AttrType` owns that layout.
+
+The fixture is one op, `eco.probe`, whose only attribute is the dense array.
+Each test collects that op into a fresh table, encodes the attribute data
+section, and looks for the array's whole entry anywhere in it, after checking
+that the element type was given an index.
 
 What the tests establish:
 
-  - an `i8` array `[0,1,2,3]` is written as count 4, blob length 4, blob
-    `00 01 02 03` (the `slot_kinds` form, wide-object Phase 2 step 2.0);
-  - an `i64` array `[5]` is still written as count 1, blob length 8, blob
-    `05 00 00 00 00 00 00 00` (byte-identical to the encoder before the fix).
+  - an `i8` array of 0, 1, 2, 3 is written with count 4, blob length 4 and blob
+    `00 01 02 03`, one byte per element;
+  - an `i64` array of 5 is written with count 1, blob length 8 and blob
+    `05 00 00 00 00 00 00 00`, eight little-endian bytes.
+
+Among what is not tested: `i1`, `i16` and `i32` arrays, negative values or
+values too wide for the element type, an empty array, and the offset section.
 
 -}
 
@@ -32,6 +40,8 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 import Test exposing (Test)
 
 
+{-| The two element-width tests, one for `i8` and one for `i64`.
+-}
 suite : Test
 suite =
     Test.describe "Bytecode dense array element widths"
@@ -42,7 +52,8 @@ suite =
         ]
 
 
-{-| An op whose only attribute is `kinds`, the dense array of `ty` holding `vals`.
+{-| Builds an op whose only attribute is `kinds`, the dense array of `ty`
+holding `vals`.
 -}
 denseOp : MlirType -> List Int -> MlirOp
 denseOp ty vals =
@@ -58,12 +69,18 @@ denseOp ty vals =
     }
 
 
+{-| Returns the bytes of `bytes` as a list of integers from 0 to 255, in
+order.
+-}
 toList : Bytes -> List Int
 toList bytes =
     BD.decode (BD.loop ( Bytes.width bytes, [] ) step) bytes
         |> Maybe.withDefault []
 
 
+{-| Returns the decoder for one step of `toList`'s loop: with `n` bytes left
+to read it reads one more, and at zero it finishes with the bytes read so far.
+-}
 step : ( Int, List Int ) -> BD.Decoder (BD.Step ( Int, List Int ) (List Int))
 step ( n, acc ) =
     if n <= 0 then
@@ -73,6 +90,9 @@ step ( n, acc ) =
         BD.map (\b -> BD.Loop ( n - 1, b :: acc )) BD.unsignedInt8
 
 
+{-| Returns whether `needle` occurs as a contiguous run anywhere in `hay`. An
+empty `needle` always occurs.
+-}
 isInfixOf : List Int -> List Int -> Bool
 isInfixOf needle hay =
     if List.take (List.length needle) hay == needle then
@@ -87,8 +107,9 @@ isInfixOf needle hay =
                 isInfixOf needle rest
 
 
-{-| Collects `denseOp ty vals`, encodes the data section, and expects it to
-contain the entry `17, typeIndex ty, count, blob length, blob`.
+{-| Expects that the data section encoded for `denseOp ty vals` gives `ty` an
+index and contains the entry 17, that index, the count of `vals`, the length of
+`blob`, then `blob` itself.
 -}
 expectEntry : MlirType -> List Int -> List Int -> Expect.Expectation
 expectEntry ty vals blob =

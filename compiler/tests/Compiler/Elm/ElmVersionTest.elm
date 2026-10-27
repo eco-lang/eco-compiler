@@ -1,11 +1,15 @@
 module Compiler.Elm.ElmVersionTest exposing (suite)
 
-{-| Tests which Elm versions this compiler builds a project for: every 0.19.x,
-and no other (plans/accept-any-elm-0-19.md).
+{-| Tests which Elm versions this compiler accepts in an `elm.json`: any 0.19.x
+and no other. Without them, a project asking for a 0.19 release other than the
+one the compiler implements could start being refused, or a 0.18 or 0.20 one
+accepted, unnoticed.
 
-`Version.isSupportedElm` is the check on an application's `"elm-version"`, and
-`Constraint.goodElm` the one on a package's `"elm-version"` constraint, which
-the dependency solver also applies to every candidate package.
+Two functions make the check. `Version.isSupportedElm` takes one version, as an
+application's `"elm-version"` gives it. `Constraint.goodElm` takes a range, as a
+package's `"elm-version"` gives it, and is True when the range admits some
+0.19.x. Both are pure, so the fixtures are just versions and constraints built
+with `Constraint.untilNextMinor`, `untilNextMajor` and `exactly`.
 
 What the tests establish:
 
@@ -18,6 +22,9 @@ What the tests establish:
     is the empty `0.19.0 <= v < 0.19.0`, for `0.20.0 <= v < 0.21.0`, and for
     exactly 0.18.0.
 
+Among what is not tested: a range whose lower bound is exclusive, and the
+`Builder` code that applies these checks to a project's `elm.json`.
+
 -}
 
 import Compiler.Elm.Constraint as Constraint
@@ -26,7 +33,8 @@ import Expect
 import Test exposing (Test)
 
 
-{-| The `isSupportedElm` and `goodElm` tests.
+{-| Returns the `isSupportedElm` tests, one per version, and the `goodElm`
+tests, one per constraint, each comparing the result with the expected Bool.
 -}
 suite : Test
 suite =

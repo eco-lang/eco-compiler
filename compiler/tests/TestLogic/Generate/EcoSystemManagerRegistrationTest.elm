@@ -1,20 +1,31 @@
 module TestLogic.Generate.EcoSystemManagerRegistrationTest exposing (suite)
 
-{-| Pins the registration of eco/system effect managers in the
-`@__eco_register_ports` preamble (plans/eco-system-library.md §3.6, Phase 1
-step 1.6).
+{-| Tests that the generated module registers each eco/system effect manager
+before the program starts.
 
-An effect-manager leaf (`Mono.MonoManagerLeaf`) whose home module belongs to
-package `eco/system` makes the generated module call
-`@Eco_System_registerManager_<Home with . replaced by _>()` once, as the first
-operation of `@__eco_register_ports`, so that the C++ manager is in the
-runtime's table before `initWorker` reads it. A leaf of any other package
-(elm/time's `Time`) registers nothing; its manager is built into the runtime.
+An _effect-manager leaf_ is a `Mono.MonoManagerLeaf` node: a command or
+subscription of a module with an effect manager. When the registry key of a
+leaf names a module of package eco/system, the generated preamble
+`@__eco_register_ports` calls `@Eco_System_registerManager_<home>`, where
+`<home>` is the module name with every `.` replaced by `_`.
 
-The fixtures are hand-built `MonoGraph`s run through
-`Compiler.Generate.MLIR.Backend.generateMlirModule`, the same per-node code
-generator and context threading the streaming writers use. The checks read the
-printed MLIR text.
+The fixtures are graphs built by `generate`, holding only the given leaves, an
+extern `Main.main` and, optionally, a flags decoder. Each is printed with
+`Backend.generateProgram`, and the tests read the printed MLIR text.
+
+  - Two eco/system leaves of the module `System` give exactly one registration
+    call in the preamble, and it is the preamble's first call.
+  - A leaf of `Socket.Udp` registers `Eco_System_registerManager_Socket_Udp`.
+  - With a flags decoder, the preamble's calls are, in order, the registration,
+    the decoder's value (the leaf's own specialization), and
+    `Elm_Kernel_Platform_registerFlagsDecoder`.
+  - With a manager leaf and no ports or flags, `main` calls the preamble and then
+    `Main.main`.
+  - An elm/time `Time` leaf gives no registration symbol anywhere in the text, no
+    preamble, and a `main` that calls only `Main.main`.
+
+Among what is not tested: ports alongside a manager, leaves of two different
+eco/system modules, and the streaming writers.
 
 -}
 
@@ -87,6 +98,9 @@ suite =
 -- ====== FIXTURES ======
 
 
+{-| An effect-manager leaf to put in a fixture: the package and module that own
+it and the name of the command or subscription.
+-}
 type alias Leaf =
     { pkg : Pkg.Name
     , home : String
@@ -94,11 +108,15 @@ type alias Leaf =
     }
 
 
+{-| Returns a leaf named `name` in module `home` of package eco/system.
+-}
 ecoSystemLeaf : String -> String -> Leaf
 ecoSystemLeaf home name =
     { pkg = Pkg.ecoSystem, home = home, name = name }
 
 
+{-| A leaf of elm/time: `Time.every`.
+-}
 timeLeaf : Leaf
 timeLeaf =
     { pkg = ( "elm", "time" ), home = "Time", name = "every" }
@@ -112,9 +130,10 @@ leafType =
     Mono.mFunction Mono.topPoison [ Mono.MString ] Mono.MString
 
 
-{-| Builds a graph with the given leaves plus a `Main.main` (an extern, so it
-needs no body), and, when `withFlags`, a flags decoder (the first leaf's spec,
-which only has to name a function), then prints the generated module.
+{-| Returns the printed MLIR module for a graph holding `leaves`, in order, and
+an extern `Main.main` as the static main. When `withFlags` is true, the graph's
+flags decoder is the first leaf's specialization, which serves only as a
+function to name.
 -}
 generate : List Leaf -> Bool -> String
 generate leaves withFlags =
@@ -175,10 +194,10 @@ generate leaves withFlags =
 -- ====== TEXT HELPERS ======
 
 
-{-| The printed body of the top-level `func.func` whose `sym_name` is `name`,
-or `Nothing` when the module has none. The generic MLIR form prints each
-function as `"func.func"() ({ body }) {attrs}`, so the module text splits into
-one chunk per function on that prefix.
+{-| Returns the printed text of the function whose `sym_name` is `name`, or
+`Nothing` when `text` has none. The text is split at each `"func.func"() (`, the
+prefix the generic MLIR form prints before every function, and the first chunk
+containing the symbol name is returned.
 -}
 funcBody : String -> String -> Maybe String
 funcBody name text =
@@ -187,12 +206,15 @@ funcBody name text =
         |> List.head
 
 
+{-| Returns the printed text of the `@__eco_register_ports` preamble, if any.
+-}
 registerPortsBody : String -> Maybe String
 registerPortsBody =
     funcBody "__eco_register_ports"
 
 
-{-| The callees of the `eco.call`s in a function body, in order.
+{-| Returns the callee symbols named in `body`, in the order they appear, each
+read from a `callee = @` up to the next `}`.
 -}
 callees : String -> List String
 callees body =
@@ -201,6 +223,8 @@ callees body =
         |> List.map (String.split "}" >> List.head >> Maybe.withDefault "")
 
 
+{-| Tells whether a callee symbol is an eco/system manager registration.
+-}
 isManagerRegistration : String -> Bool
 isManagerRegistration =
     String.startsWith "Eco_System_registerManager_"

@@ -1,28 +1,31 @@
 module Compiler.Generate.MLIR.UnscopedTailJumpTest exposing (suite)
 
-{-| SD-12: `Expr.generateExpr` used to lower a `MonoTailCall` it was handed
-(through a `generateTailCall` fallback) to an `eco.jump` to joinpoint 0, yet the
-code generator never emits an `eco.joinpoint` (tail recursion is lowered to
-`scf.while` by `Compiler.Generate.MLIR.TailRec`). That jump was therefore
-unscoped, breaking CGEN_030 (a jump must target a lexically enclosing
-joinpoint).
+{-| An `eco.jump` is only valid inside an `eco.joinpoint` it targets (rule
+`CGEN_030`), and the code generator emits no `eco.joinpoint`. A tail call
+therefore has to be lowered as a loop by `Compiler.Generate.MLIR.TailRec`, and
+`Expr.generateExpr` crashes on any `MonoTailCall` that reaches it instead of
+emitting a jump. These tests guard both sides of that arrangement: that the
+crash explains itself, and that ordinary tail-recursive programs never reach
+it.
 
-No program reached the fallback: every `MonoTailFunc` / `MonoTailDef` body goes
-through `TailRec.compileTailFuncToWhile`, whose `compileStep` intercepts each
-`MonoTailCall` in tail position (if / case / let / destruct), and the inliner
-refuses to inline tail functions. The fallback is gone; `generateExpr` now
-crashes with `Expr.unscopedTailCallError` on a `MonoTailCall`, so it can no
-longer emit an `eco.jump` at all.
+The fixtures are the programs of `SourceIR.TailRecCaseCases` (top-level
+tail-recursive functions whose tail calls sit in `case` branches, an `if`
+inside a branch, a nested `case` and a wildcard destruct) and of
+`SourceIR.LocalTailRecCases` (let-bound tail-recursive functions, alone, several
+in one `let`, nested, and inside an outer function).
 
-An Elm test cannot catch that crash, so this module checks the two halves that
-it can:
+What the tests establish:
 
-  - the crash message names the function and the rule (CGEN_030) and says
-    which pass should have lowered the call;
-  - tail-recursive programs (top-level and let-bound, with the tail call in
-    `case` branches and nested positions) still compile, every one of them to
-    MLIR with an `scf.while` and no `eco.jump`, which shows `TailRec` still
-    takes every tail call before `generateExpr` would crash on it.
+  - The message of `Expr.unscopedTailCallError "loop"` contains the quoted name
+    `` `loop` ``, the word `TailRec` and the rule id `CGEN_030`.
+  - Each program of the two case modules compiles to MLIR that contains at
+    least one `scf.while` op and no `eco.jump` op. Each case module's programs
+    run as one test.
+
+Among what is not tested: that `generateExpr` actually crashes on a
+`MonoTailCall` (an Elm test cannot observe the crash), and that each
+tail-recursive function, rather than just some function in the module, became
+an `scf.while`.
 
 -}
 
@@ -36,6 +39,9 @@ import TestLogic.Generate.CodeGen.Invariants exposing (findOpsNamed)
 import TestLogic.TestPipeline exposing (runToMlir)
 
 
+{-| The crash-message test and the two case-module suites checked with
+`expectLoopNoJump`.
+-}
 suite : Test
 suite =
     describe "SD-12: a MonoTailCall never becomes an unscoped eco.jump"
@@ -56,8 +62,8 @@ suite =
         ]
 
 
-{-| Compiles `srcModule` to MLIR and passes when compilation succeeds, the
-module holds at least one `scf.while` and no `eco.jump`.
+{-| Compiles `srcModule` to MLIR and passes when compilation succeeds and the
+module holds at least one `scf.while` op and no `eco.jump` op, at any depth.
 -}
 expectLoopNoJump : Src.Module -> Expectation
 expectLoopNoJump srcModule =

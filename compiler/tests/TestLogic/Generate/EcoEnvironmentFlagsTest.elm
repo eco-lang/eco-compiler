@@ -1,13 +1,35 @@
 module TestLogic.Generate.EcoEnvironmentFlagsTest exposing (suite)
 
-{-| Pins `Compiler.Elm.EcoEnvironment.isEnvironmentFlags`
-(plans/eco-system-api-refactor.md D13, §10.1): a `main` whose flags are
-eco/system's `System.Environment` gets the environment decoder of `System`
-instead of a JSON flags decoder. The check looks through aliases of the flags
-type and of the whole `Program` type, and only matches the `System` module of
-package `eco/system`.
--}
+{-| An eco/system program's flags are `System.Environment`, which cannot be
+decoded from JSON, so the compiler must recognise such a `main` and give it
+eco/system's own environment decoder instead. These tests check that
+recognition, `Compiler.Elm.EcoEnvironment.isEnvironmentFlags`, which owns the
+rule; a mistake there would either hand an eco/system program a JSON decoder
+or take the JSON decoder away from an ordinary program.
 
+The fixture is built directly as canonical types. `program` makes a
+`Platform.Program flags () ()`, `environment` is the alias `Environment` of the
+`System` module of package `eco/system`, standing for an empty record, and
+`userAlias` wraps a type in an alias of a module `Main` of package
+`author/project`. The empty record matters only in that it is not itself
+recognisable: the alias's name is what the check looks for.
+
+The tests establish that:
+
+  - `Program System.Environment () ()` is recognised.
+  - Flags given as a user alias of `System.Environment` are recognised.
+  - A user alias of the whole `Program` type is looked through and recognised.
+  - Unit flags are not recognised.
+  - An alias named `Environment` in a `System` module of another package, with
+    the same empty record, is not recognised.
+  - `System.Environment` on its own, not as the flags of a `Program`, is not
+    recognised.
+
+Among what is not tested: a `Program` with a different number of arguments, a
+`Program` from a module other than `Platform`, and an alias with type
+arguments.
+
+-}
 import Compiler.AST.Canonical as Can
 import Compiler.Elm.EcoEnvironment as EcoEnvironment
 import Compiler.Elm.ModuleName as ModuleName
@@ -17,6 +39,8 @@ import Expect
 import Test exposing (Test)
 
 
+{-| The six recognition tests, one per case listed in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "eco/system Environment flags (eco-system-api-refactor D13)"
@@ -48,21 +72,32 @@ suite =
         ]
 
 
+{-| Returns the type `Platform.Program flags () ()`.
+-}
 program : Can.Type String -> Can.Type String
 program flags =
     Can.TType ModuleName.platform "Program" [ flags, Can.TUnit, Can.TUnit ]
 
 
+{-| The alias `System.Environment` of package `eco/system`, standing for an
+empty record.
+-}
 environment : Can.Type String
 environment =
     Can.TAlias (ModuleName.Canonical Pkg.ecoSystem "System") "Environment" [] (Can.Filled environmentRecord)
 
 
+{-| An empty closed record, used as the expansion of every `Environment` alias
+in these tests.
+-}
 environmentRecord : Can.Type String
 environmentRecord =
     Can.TRecord Dict.empty Nothing
 
 
+{-| Returns an alias called `name`, in module `Main` of package
+`author/project`, standing for `aliased`.
+-}
 userAlias : String -> Can.Type String -> Can.Type String
 userAlias name aliased =
     Can.TAlias (ModuleName.Canonical ( "author", "project" ) "Main") name [] (Can.Filled aliased)

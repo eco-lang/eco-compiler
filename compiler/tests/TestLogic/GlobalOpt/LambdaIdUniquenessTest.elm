@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.LambdaIdUniquenessTest exposing (suite)
 
-{-| MONO_019: within one `MonoGraph` no two `MonoClosure` nodes share a
+{-| `MONO_019`: within one `MonoGraph` no two `MonoClosure` nodes share a
 `lambdaId`. Code generation names a nested closure's function after its
 `lambdaId`, so a repeat would be two functions under one symbol.
 
@@ -28,7 +28,7 @@ import Test exposing (Test)
 import TestLogic.GlobalOpt.LambdaIdUniqueness exposing (expectLambdaIdUniqueness, lambdaIdIssues)
 
 
-{-| The MONO_019 check over the standard catalogue, and the two checks of the
+{-| The `MONO_019` check over the standard catalogue, and the two checks of the
 checker.
 -}
 suite : Test
@@ -53,11 +53,16 @@ suite =
         ]
 
 
+{-| The module every fixture closure's `lambdaId` is numbered in, so that two
+closures given the same number share a `lambdaId`.
+-}
 home : ModuleName.Canonical
 home =
     ModuleName.Canonical ( "author", "proj" ) "M"
 
 
+{-| The type `String -> String`, used for both fixture specs and their closures.
+-}
 fnTy : Mono.MonoType
 fnTy =
     Mono.mFunction Mono.topLegacy [ Mono.MString ] Mono.MString

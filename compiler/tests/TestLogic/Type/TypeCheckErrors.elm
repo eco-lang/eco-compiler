@@ -77,8 +77,9 @@ typeCheck srcModule =
                     TypeErrors (NE.toList errors)
 
 
-{-| A one-line description of an outcome, listing every error with
-`describeError`, or the canonicalization errors by constructor.
+{-| Returns a one-line description of `outcome`: each type error as
+`describeError` gives it, or each canonicalization error by its constructor
+name.
 -}
 describeOutcome : Outcome -> String
 describeOutcome outcome =
@@ -93,8 +94,9 @@ describeOutcome outcome =
             "the program type checked"
 
 
-{-| A one-line description of a type error: its kind, its start position, its
-category and where its expected type came from. Types are not printed.
+{-| Returns a one-line description of a type error: its constructor, its start
+position as `row:column`, and, for an expression or pattern error, its category
+and where its expected type came from. Types are not printed.
 -}
 describeError : TypeError.Error -> String
 describeError error =
@@ -127,7 +129,7 @@ describeError error =
             "InfiniteType " ++ name ++ " at " ++ regionToString region
 
 
-{-| True for an expression error whose expected type came from the annotation
+{-| Returns `True` for an expression error whose expected type came from the annotation
 of the definition named `name`, or for a pattern error on an argument of that
 definition's annotation.
 -}
@@ -144,7 +146,7 @@ isAnnotationMismatch name error =
             False
 
 
-{-| True for an infinite-type error on the variable named `name`.
+{-| Returns `True` for an infinite-type error on the variable named `name`.
 -}
 isInfiniteTypeFor : Name -> TypeError.Error -> Bool
 isInfiniteTypeFor name error =
@@ -156,7 +158,7 @@ isInfiniteTypeFor name error =
             False
 
 
-{-| True for an expression error on the call argument at zero-based position
+{-| Returns `True` for an expression error on the call argument at zero-based position
 `index`, whatever the function is called.
 -}
 isCallArgMismatch : Int -> TypeError.Error -> Bool
@@ -196,6 +198,9 @@ expectTypeErrorWhere what wanted srcModule =
 -- ====== HELPERS ======
 
 
+{-| Returns where an expression error's expected type came from: no context, a
+context as `contextName` gives it, or the annotation of a named definition.
+-}
 describeExpected : TypeError.Expected a -> String
 describeExpected expected =
     case expected of
@@ -209,7 +214,7 @@ describeExpected expected =
             "from the annotation of " ++ name ++ " (" ++ Debug.toString subContext ++ ")"
 
 
-{-| The constructor of a context, with its position or name where it has one.
+{-| Returns the constructor name of a context, with its position or name where it has one.
 `RecordUpdateKeys` carries canonical expressions, which are not printed.
 -}
 contextName : TypeError.Context -> String
@@ -225,6 +230,9 @@ contextName context =
             Debug.toString context
 
 
+{-| Returns the constructor name of a canonicalization error, taken as the
+first word of its `Debug.toString`, or `"?"` if that is empty.
+-}
 canErrorName : CanError.Error -> String
 canErrorName error =
     Debug.toString error
@@ -233,6 +241,8 @@ canErrorName error =
         |> Maybe.withDefault "?"
 
 
+{-| Returns the start of a region as `row:column`.
+-}
 regionToString : A.Region -> String
 regionToString (A.Region (A.Position row col) _) =
     String.fromInt row ++ ":" ++ String.fromInt col

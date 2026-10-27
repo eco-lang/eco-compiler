@@ -1,29 +1,34 @@
 module Mlir.PrettyTextRoundTripTest exposing (suite)
 
-{-| SD-9 review list item: the debug TEXT form of MLIR (`Mlir.Pretty`) is lossy.
+{-| Tests that the MLIR text `Mlir.Pretty` prints for a constant reads back
+as the value the constant was built from.
 
-`Mlir.Pretty.ppAttr` spells a `TypedFloatAttr` with `String.fromFloat`, and
-when that text has no `.` re-formats it with exactly one decimal place. So:
+Without them, a float or string attribute could print as text that MLIR's
+parser rejects, or that it accepts as a different value, and nothing would
+notice until a compiled program carried the wrong constant.
 
-  - NaN and the infinities print as nothing (`value =  : f64`), which ecoc
-    rejects ("expected attribute value"); MLIR spells them as hexadecimal bit
-    patterns (`0x7FF8000000000000 : f64`).
-  - A value `String.fromFloat` writes in exponent form without a `.`
-    (`1e-7`, `5e-324`) is rounded to one decimal place (`0.0`), a different
-    value.
+Each test builds one generic-form `arith.constant` op whose `value` attribute
+is either a `TypedFloatAttr` of type `f64` or a `StringAttr`, prints it with
+`Mlir.Pretty.ppTopLevelOp`, and takes the text after `value =`.
 
-`escapeForMlir` turns a `\uXXXX` escape into the character it names and
-writes it raw, so a vertical tab or a newline lands raw inside the MLIR
-string literal (ecoc's lexer rejects both), and a backslash named that way
-starts a bogus escape.
+  - NaN, +Infinity and -Infinity: the literal, ignoring case, is the
+    hexadecimal bit pattern `0x7FF8000000000000`, `0x7FF0000000000000` and
+    `0xFFF0000000000000` respectively.
+  - `1e-7`, `5e-324`, `0.1 + 0.2` and `1.7976931348623157e308`: the literal
+    contains a `.` (MLIR lexes a decimal float only when it does) and
+    `String.toFloat` reads it back as exactly the original value.
+  - The stored escapes `\u000B`, `\u000A` and `\u0000`: the literal holds no
+    raw NUL, newline, vertical tab or form feed, and decodes to the string with
+    that character.
+  - The stored escape `\u005C` followed by `n`: the literal decodes to a
+    backslash and an `n`, not a newline.
+  - The stored escapes `\"`, `\n`, `\t`, `\\` and `\r`: the literal decodes to
+    the quote, newline, tab, backslash and carriage return they name.
 
-Each test pretty-prints one `arith.constant` (generic form) with
-`Mlir.Pretty.ppTopLevelOp` and checks that the attribute text reads back as
-the value it was built from. Nine FAIL against the current printer and pass
-once it spells these values losslessly. The default bytecode output does not
-go through this printer and is unaffected. Three are controls that already
-pass: `0.1 + 0.2` (17 significant digits), the largest finite float, and the
-plain `\n \t \" \\ \r` escapes.
+Among what is not tested: `f32` and other float types, integer, array and
+other attribute kinds, negative zero, `\uXXXX` escapes for characters above
+U+00FF, surrogate pairs, and the parsing of the printed text by MLIR itself;
+the decoding here is this module's own reading of MLIR's escapes.
 
 -}
 
@@ -35,6 +40,8 @@ import Mlir.Pretty as Pretty
 import Test exposing (Test)
 
 
+{-| The float and string constant round-trip tests.
+-}
 suite : Test
 suite =
     Test.describe "SD-9: Mlir.Pretty text form round-trips constants"
@@ -73,6 +80,9 @@ suite =
 -- PRINTING
 
 
+{-| Produces a generic-form `arith.constant` op with result `%c` of type `ty`
+and `value` as its only attribute.
+-}
 constantOp : MlirAttr -> MlirType -> MlirOp
 constantOp value ty =
     { name = "arith.constant"
@@ -87,7 +97,8 @@ constantOp value ty =
     }
 
 
-{-| The text between `value = ` and the closing `}` of the printed op.
+{-| Returns the text of the printed constant op between the first `value =`
+and the last `}`, or `Nothing` if either is missing.
 -}
 printedValue : MlirAttr -> MlirType -> Maybe String
 printedValue value ty =
@@ -112,7 +123,9 @@ printedValue value ty =
             Nothing
 
 
-{-| The float literal of a printed `TypedFloatAttr`, without its `: f64`.
+{-| Returns the literal `f` prints as in an `f64` constant, without its
+`: f64` suffix, or `Nothing` if the printed value does not end with that
+suffix.
 -}
 printedFloatLiteral : Float -> Maybe String
 printedFloatLiteral f =
@@ -131,6 +144,9 @@ printedFloatLiteral f =
 -- FLOATS
 
 
+{-| Passes when the printed `f64` literal for `f` equals `expectedHex`,
+ignoring case.
+-}
 expectHexFloat : String -> Float -> Expectation
 expectHexFloat expectedHex f =
     case printedFloatLiteral f of
@@ -144,8 +160,9 @@ expectHexFloat expectedHex f =
             Expect.fail ("could not find `value = ... : f64` in: " ++ Pretty.ppTopLevelOp (constantOp (TypedFloatAttr f F64) F64))
 
 
-{-| MLIR lexes a decimal float literal only when it contains a `.`; it must
-then read back as exactly `f`.
+{-| Passes when the printed `f64` literal for `f` contains a `.`, which MLIR
+needs to lex it as a decimal float, and `String.toFloat` reads it back as
+exactly `f`.
 -}
 expectDecimalRoundTrip : Float -> Expectation
 expectDecimalRoundTrip f =
@@ -174,10 +191,13 @@ expectDecimalRoundTrip f =
 -- STRINGS
 
 
-{-| `stored` is the `StringAttr` text (escape sequences written out, as
-`Mlir.Mlir` describes); `expected` is the string it denotes. The printed
-literal must be a valid MLIR string literal (no raw control characters) that
-decodes to `expected`.
+{-| Passes when a `StringAttr` holding `stored` prints as a quoted literal
+whose body contains no character `isRawForbidden` rejects and decodes, by
+`decodeMlirString`, to `expected`.
+
+`stored` is the attribute's text with its escape sequences written out;
+`expected` is the string those escapes denote.
+
 -}
 expectStringRoundTrip : String -> String -> Expectation
 expectStringRoundTrip stored expected =
@@ -215,6 +235,9 @@ expectStringRoundTrip stored expected =
             Expect.fail "could not find `value = ...`"
 
 
+{-| Tells whether `c` is NUL, a newline, a vertical tab or a form feed, the
+characters this module treats as forbidden raw inside an MLIR string literal.
+-}
 isRawForbidden : Char -> Bool
 isRawForbidden c =
     let
@@ -224,9 +247,13 @@ isRawForbidden c =
     code == 0 || code == 10 || code == 11 || code == 12
 
 
-{-| Decode an MLIR string literal body (`\n`, `\t`, `\"`, `\\` and two-digit
-hex escapes `\XX`). `Nothing` for an escape MLIR does not accept or an
-unescaped `"`.
+{-| Returns the string an MLIR string literal body denotes, reading the
+escapes `\n`, `\t`, `\"`, `\\` and two-hex-digit `\XX`, or `Nothing` for
+any other escape, a trailing backslash or an unescaped `"`.
+
+A `\XX` escape becomes the character with code `XX`, so a multi-byte UTF-8
+sequence written as hex escapes decodes to several characters, not one.
+
 -}
 decodeMlirString : String -> Maybe String
 decodeMlirString body =
@@ -271,6 +298,8 @@ decodeMlirString body =
     go [] (String.toList body)
 
 
+{-| Returns the value of a hexadecimal digit, in either case, or `Nothing`.
+-}
 hexDigit : Char -> Maybe Int
 hexDigit c =
     let
@@ -287,6 +316,9 @@ hexDigit c =
         Nothing
 
 
+{-| Returns `s` with each character below U+0020 written as `<U+n>`, `n` in
+decimal, for failure messages.
+-}
 escapeVisible : String -> String
 escapeVisible s =
     String.toList s

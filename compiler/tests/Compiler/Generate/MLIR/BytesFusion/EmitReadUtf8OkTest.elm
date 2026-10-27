@@ -1,21 +1,22 @@
 module Compiler.Generate.MLIR.BytesFusion.EmitReadUtf8OkTest exposing (suite)
 
-{-| SD-22/SD-23 review list, item SD-23: the fused decoder must not discard
-the validity flag of `bf.read.utf8`.
+{-| Checks that a fused decoder turns invalid UTF-8 into `Nothing` rather than
+`Just` a string.
 
-`bf.read.utf8` has three results: the string, the advanced cursor and `ok`.
-`ok` is false when the bytes are not valid UTF-8 (BFToLLVM lowers it to
-`elm_utf8_decode(...) != null`, and `elm_utf8_decode` returns 0 on malformed
-input). Stock elm/bytes makes the whole decode `Nothing` in that case
-(BFOPS_016, BFOPS_018). `Emit.emitReadUtf8Nested` and
-`Emit.emitReadUtf8VarNested` mint the `ok` result but never use it: only the
-`bf.require` bounds flag guards the rest of the decoder, so an invalid
-string decodes to `Just <null string>` instead of `Nothing`.
+`bf.read.utf8` has three results: the string, the advanced cursor and `ok`, an
+`i1` that is false when the bytes are not valid UTF-8. A separate `bf.require`
+only checks that enough bytes remain, so if the emitter dropped `ok` an invalid
+string would still decode to `Just` and nothing else would notice. Here
+`Emit.emitFusedDecoder` is driven directly with hand-built Loop IR (the
+decoder operations of `Compiler.Generate.MLIR.BytesFusion.LoopIR`) and a stub
+expression compiler.
 
-The defect is latent while `Bytes.Decode.string` does not fuse (the inliner
-expands it to kernel calls first), so these tests drive `emitFusedDecoder`
-directly with hand-built Loop IR and check that the `ok` result of every
-emitted `bf.read.utf8` is an operand of some other op.
+  - `ReadUtf8` with its length given by an expression: the emitted ops contain a
+    `bf.read.utf8`, and the third result of each one is an operand of some op.
+  - `ReadUtf8Var` with its length read earlier by `ReadU8`: the same assertion.
+
+Among what is not tested: which op consumes `ok`, or that it makes the decoder
+return `Nothing`; the emitted MLIR is not run.
 
 -}
 
@@ -34,6 +35,8 @@ import OrderedDict
 import Test exposing (Test)
 
 
+{-| The two tests, one per UTF-8 read operation.
+-}
 suite : Test
 suite =
     Test.describe "SD-23: fused bf.read.utf8 validity flag is used"
@@ -55,12 +58,16 @@ suite =
         ]
 
 
+{-| The input expression given to `InitReadCursor`. The emitter does not compile
+it; the cursor starts on the `%bytes` name passed to `emitFusedDecoder`.
+-}
 bytesExpr : Mono.MonoExpr
 bytesExpr =
     Mono.MonoVarLocal "bytes" Mono.MInt
 
 
-{-| Stub expression compiler: every expression becomes an i64 constant.
+{-| A stand-in expression compiler that compiles every expression to the `i64`
+constant 3.
 -}
 stubCompile : Emit.ExprCompiler
 stubCompile _ ctx =
@@ -74,11 +81,18 @@ stubCompile _ ctx =
     { ops = [ op ], resultVar = v, resultType = I64, ctx = ctx2 }
 
 
+{-| An empty development-mode code generation context.
+-}
 freshContext : Context
 freshContext =
     Context.initContext (Mode.Dev Nothing) Registry.emptyRegistry Array.empty HashMap.empty
 
 
+{-| Emits a fused decoder for `decoderOps` and passes if it contains at least one
+`bf.read.utf8` and the third result of every one is an operand of some emitted
+op, at any nesting depth. Fails naming each unused result, or
+`<no ok result>` for a read with fewer than three results.
+-}
 expectOkUsed : List IR.DecoderOp -> Expectation
 expectOkUsed decoderOps =
     let
@@ -127,11 +141,16 @@ expectOkUsed decoderOps =
                     )
 
 
+{-| Returns `op` followed by every op nested in its regions, depth first.
+-}
 flatten : MlirOp -> List MlirOp
 flatten op =
     op :: List.concatMap flattenRegion op.regions
 
 
+{-| Returns every op in a region, nested ones included, entry block first and
+each block's terminator after its body.
+-}
 flattenRegion : MlirRegion -> List MlirOp
 flattenRegion (MlirRegion r) =
     let

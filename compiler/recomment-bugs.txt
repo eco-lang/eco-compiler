@@ -14,7 +14,7 @@ AST, Type and Data layers) not yet commented; it was completed on 2026-10-27 aga
 then-current tree, and entries from that run are tagged "run 2026-10-27" (line numbers
 against that tree).
 
-1196 entries in 358 files.
+1200 entries in 360 files.
 
 === CMakeLists.txt
 
@@ -3720,7 +3720,16 @@ against that tree).
     of element type: a negative element (upper bytes should be 0xFF), an element at or above
     2^32, or a non-i64 element type is written wrongly. Latent while all uses are ArrayAttr
     (Just I64) of small non-negative tags.
-
+- line 980  [reported 3x by: comment, review; run 2026-10-27]
+    encodeDenseElem writes only the low 32 bits (zero-fill shift) and forces bytes 4..7 to
+    0, so a negative or >= 2^32 i64 element is encoded wrongly, and a value too wide for
+    i8/i16 is silently truncated; the docstring's 'non-negative and below 2^31' precondition
+    is not enforced.
+- line 1139  [reported 1x by: rework; run 2026-10-27]
+    encodeDenseElem writes only the low 32 bits, and bytes 4..7 are always 0. An i64 dense
+    element that is negative or at least 2^32 is encoded wrongly, and an element too wide
+    for i8 or i16 is silently truncated. The line number is approximate (the EDenseArrayAttr
+    arm is around 1139-1157).
 
 === src/Mlir/Bytecode/DialectSection.elm
 
@@ -7408,3 +7417,19 @@ against that tree).
     modules' (:893-929) declare kernel-bound definitions (cons/singleton/append;
     cons/batch/succeed) that testValue never references (testValue is [1,2,3] or 42), so the
     scenario their names describe, several kernels used together, is never exercised.
+
+
+=== tests/Mlir/PrettyTextRoundTripTest.elm
+
+- line 260  [reported 1x by: comment; run 2026-10-27]
+    decodeMlirString turns each \XX hex escape into one character (Char.fromCode), not into
+    a UTF-8 byte. A multi-byte character written as hex escapes would therefore decode to
+    several characters. No current test exercises this.
+
+
+=== tests/TestLogic/Canonicalize/LimitErrors.elm
+
+- line 104  [reported 3x by: comment, review; run 2026-10-27]
+    The `Just []` branch of expectFirstReportContains can never run, because
+    canonicalizeErrors builds its list from a OneOrMore, which is never empty. It is a dead
+    defensive branch and does no harm.

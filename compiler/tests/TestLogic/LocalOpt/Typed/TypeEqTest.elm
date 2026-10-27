@@ -1,21 +1,21 @@
 module TestLogic.LocalOpt.Typed.TypeEqTest exposing (suite)
 
 {-| Tests for `TestLogic.LocalOpt.Typed.TypeEq.alphaEqStrict`, the
-alpha-equivalence the typed-optimization checks compare types with. A check
-built on it is only as good as the comparison, so each test pins one case the
-comparison once got wrong, or the one it must keep refusing.
+comparison of canonical types up to a one-to-one renaming of type variables. A
+type check built on it is only as good as the comparison, and a comparison that
+is too loose or too strict passes or fails such a check silently.
 
 The types are built by hand as `Can.Type Name` values. `Id`, `G`, `R` and
 `Tagged` are aliases in module `Test` of package `author/project`; `Msg` is a
-custom type declared in two modules of that package.
+named type with that name in two modules, `A` and `B`, of that package.
 
 What the tests establish:
 
   - Alpha-equivalence itself: `a -> b` matches `x -> y`, `a -> a` does not
     match `x -> y`, and a type variable does not match `Int`.
   - An alias against a bare type variable is expanded: `Id b` matches `b`.
-  - A `Filled` alias body is not substituted into again: `G b a`, whose
-    `Filled` body is `( b, a )`, matches `( b, a )`.
+  - A `Filled` alias body is not substituted into again: `G b a -> b`, where
+    `G`'s `Filled` body is `( b, a )`, matches `( b, a ) -> b`.
   - A `Holey` alias body has its arguments substituted for record extension
     variables: `R { y : Int }` matches `{ x : Int, y : Int }`.
   - Extension variables and type variables share one renaming:
@@ -24,6 +24,13 @@ What the tests establish:
     `Tagged Int` matches `Tagged String`.
   - Named types in different modules of one package differ: `A.Msg` does not
     match `B.Msg`.
+
+Among what is not tested:
+
+  - Arrow slots and record field indices being ignored.
+  - An open record against a closed one.
+  - Tuples of different arity.
+  - Constrained type variables such as `number`.
 
 -}
 
@@ -86,14 +93,14 @@ suite =
         ]
 
 
-{-| The home of module `name` in package `author/project`.
+{-| Returns the home of module `name` in package `author/project`.
 -}
 home : String -> ModuleName.Canonical
 home name =
     ModuleName.Canonical ( "author", "project" ) name
 
 
-{-| The type variable `name`.
+{-| Builds the type variable with the given name.
 -}
 v : Name -> Can.Type Name
 v =
@@ -107,14 +114,14 @@ int =
     Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" []
 
 
-{-| The function type `a -> b`.
+{-| Builds the function type from its argument type to its result type.
 -}
 arrow : Can.Type Name -> Can.Type Name -> Can.Type Name
 arrow =
     Can.tLambda
 
 
-{-| The alias `name`, declared in module `Test`, applied to `args`, with body
+{-| Builds the alias `name`, declared in module `Test`, applied to `args`, with body
 `body`.
 -}
 alias : Name -> List ( Name, Can.Type Name ) -> Can.AliasType Name -> Can.Type Name
@@ -122,7 +129,8 @@ alias name args body =
     Can.TAlias (home "Test") name args body
 
 
-{-| The record type with `fields`, in order, and extension variable `ext`.
+{-| Builds the record type with `fields`, indexed in list order, and
+extension variable `ext`.
 -}
 record : List ( Name, Can.Type Name ) -> Maybe Name -> Can.Type Name
 record fields ext =

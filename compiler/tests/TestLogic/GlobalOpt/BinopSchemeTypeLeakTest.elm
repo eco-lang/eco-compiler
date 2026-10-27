@@ -3,41 +3,47 @@ module TestLogic.GlobalOpt.BinopSchemeTypeLeakTest exposing (suite)
 {-| A binary operator's occurrence must carry the type it is used at, not the
 operator's generic scheme type.
 
-`Compiler.LocalOpt.Typed.Expression` turns `left op right` (`Can.Binop`) into a
-call of the operator's global. It used to type that global reference with the
-operator's annotation as written: for `*`, `number -> number -> number`, whose
-`number` is `Basics.mul`'s own scheme variable. Inside the enclosing
-definition, type variables are identified by NAME
-(`Compiler.Monomorphize.AssignMVarIds` keeps one id per name within a
-definition), so when the definition's own scheme also had a `number`, the
-operator's `number` was taken for it. The reference is now typed from the
-operands' types and the result type (`Can.VarOperator` likewise uses its node's
-use-site type), as every other global reference is.
+`Compiler.LocalOpt.Typed.Expression` turns most operator applications
+(`Can.Binop`), `*` among them, into a call of the operator's global. That
+global reference must be typed from the operands' types and the result type,
+not with the operator's annotation as written: for `*`, `number -> number ->
+number`, whose `number` is `Basics.mul`'s own scheme variable. Type variables
+are identified by NAME within a scope (`Compiler.Monomorphize.AssignMVarIds`
+keeps one id per name within a scope, such as a definition's own type
+variables), so when the enclosing definition's scheme also has a `number`, the
+operator's `number` would be taken for it.
 
-The failure this guards against: in `wrapInt x = ( x * 1, 4 * 2 * 2 )` with
-`wrapInt 2.5`, every `*` reference was typed by `x`'s type, so under the
-substitution engine the `*` of the Int chain `4 * 2 * 2` was specialized at
-`Float -> Float -> Float`. With alias forwarding
-(`Compiler.GlobalOpt.PreMono.AliasForward`, default on) the reference was
-forwarded to `Elm.Kernel.Basics.mul` with that type and code generation aborted
-with `Kernel signature mismatch for Elm_Kernel_Basics_mul_Float: existing
-(f64, f64 -> f64) vs new (i64, f64 -> f64)` (`ECO_MONO_ENGINE=subst`; the
-default solver engine was not affected). Fixed 2026-10-05.
+In `wrapInt x = ( x * 1, 4 * 2 * 2 )` with `wrapInt 2.5`, a scheme-typed
+reference would give every `*` the type of `x`, so under the substitution
+engine (`ECO_MONO_ENGINE=subst`) the `*` of the Int chain `4 * 2 * 2` would be
+specialized at `Float -> Float -> Float`. With alias forwarding
+(`Compiler.GlobalOpt.PreMono.AliasForward`, default on) the reference would be
+forwarded to `Elm.Kernel.Basics.mul` with that type, and code generation would
+abort with a kernel signature mismatch for `Elm_Kernel_Basics_mul_Float`.
+
+The fixture is one module, `WrapInt`, holding `wrapInt x = ( x * 1, 4 * 2 * 2 )`
+and `testValue = wrapInt 2.5`. The second test also adds a `Basics.mul` node
+defined as `Elm.Kernel.Basics.mul`, since the mock interfaces carry no code.
 
 The tests:
 
   - The typed optimizer's graph: every call of a global must have its
     reference typed with parameter types equal to its arguments' types and a
-    result type equal to the call's type, the precondition
-    `AliasForward`'s docstring states ("the reference's own instantiation").
-    This is the root-cause check; it is engine-independent. Before the fix it
-    reported `mul is referenced at number -> number -> number but called with
+    result type equal to the call's type. `AliasForward` relies on this, since
+    it carries the caller's reference metadata (its type) unchanged. This is
+    the root-cause check; it is engine-independent. A failure reports, e.g.,
+    `mul is referenced at number -> number -> number but called with
     [number1, number1] giving number1`.
   - The substitution engine, after alias forwarding as the build runs it,
     with `Basics.mul` an alias of `Elm.Kernel.Basics.mul` as in `elm/core`:
     every call of a kernel must have parameter types equal to its arguments'
-    types. Before the fix: `Basics.mul is typed [MFloat,MFloat] but called with
-    [MFloat,MInt]`.
+    types. A failure reports, e.g., `Basics.mul is typed [MFloat,MFloat] but
+    called with [MFloat,MInt]`.
+
+Among what is not tested: calls nested inside a `case`, a destructuring, a
+record, or (in the typed graph) a `let`-bound definition, since the expression
+walks do not descend into them; the fixture has none. Operator values passed
+as arguments (`Can.VarOperator`) are not exercised.
 
 -}
 
@@ -61,6 +67,11 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| Two checks: in the typed optimizer's graph, each global call the
+expression walk reaches has a reference type matching its arguments and
+result; in the substitution engine's output after alias forwarding, each
+kernel call the walk reaches has parameter types matching its arguments.
+-}
 suite : Test
 suite =
     Test.describe "A binop's operator reference is typed at its use (subst + alias forwarding)"
@@ -149,6 +160,8 @@ withMulAlias (TOpt.GlobalGraph nodes fields annotations roots supers) =
         supers
 
 
+{-| Passes on an empty list; otherwise fails with the problems, one per line.
+-}
 expectNone : List String -> Expect.Expectation
 expectNone problems =
     if List.isEmpty problems then
@@ -162,6 +175,9 @@ expectNone problems =
 -- ====== TYPED OPTIMIZED GRAPH ======
 
 
+{-| Returns the body of a `Define` or `TrackedDefine` node; other node kinds
+give nothing.
+-}
 nodeExprs : TOpt.Node Name -> List (TOpt.Expr Name)
 nodeExprs node =
     case node of
@@ -175,8 +191,9 @@ nodeExprs node =
             []
 
 
-{-| Every call, at any depth, whose function is a global reference typed with
-a function type that disagrees with the arguments or the call's result.
+{-| Returns a problem line for each call reached by `children` whose function
+is a global reference typed with a function type that disagrees with the
+arguments or the call's result.
 -}
 globalCallMismatches : TOpt.Expr Name -> List String
 globalCallMismatches expr =
@@ -210,6 +227,10 @@ globalCallMismatches expr =
     here ++ List.concatMap globalCallMismatches (children expr)
 
 
+{-| Splits up to `n` parameter types off a function type, returning them with
+the remaining type. Stops early, with the type reached as the result, when that
+type is not a `Can.TLambda` (an alias-wrapped function type is not unwrapped).
+-}
 peel : Int -> Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 peel n tipe =
     case ( n, tipe ) of
@@ -227,6 +248,11 @@ peel n tipe =
             ( [], tipe )
 
 
+{-| Returns the direct subexpressions the typed-graph walk descends into: a
+call's function and arguments, tuple and list elements, function bodies, an
+`if`'s conditions and branches, and a `let`'s body (not its definition). Every
+other expression gives none.
+-}
 children : TOpt.Expr Name -> List (TOpt.Expr Name)
 children expr =
     case expr of
@@ -259,6 +285,9 @@ children expr =
 -- ====== MONO GRAPH ======
 
 
+{-| Returns the body of a `MonoDefine` or `MonoTailFunc` node; other node kinds
+give nothing.
+-}
 monoNodeExprs : Mono.MonoNode -> List Mono.MonoExpr
 monoNodeExprs node =
     case node of
@@ -272,8 +301,8 @@ monoNodeExprs node =
             []
 
 
-{-| Every kernel call, at any depth, whose argument types differ from the
-kernel reference's parameter types.
+{-| Returns a problem line for each kernel call reached by `monoChildren` whose
+argument types differ from the kernel reference's parameter types.
 -}
 kernelCallMismatches : Mono.MonoExpr -> List String
 kernelCallMismatches expr =
@@ -300,6 +329,10 @@ kernelCallMismatches expr =
     here ++ List.concatMap kernelCallMismatches (monoChildren expr)
 
 
+{-| Returns the first `n` parameter types of a monomorphic function type,
+continuing into the result type when one `MFunction` holds fewer than `n`
+parameters. A non-function type ends the list early.
+-}
 monoParams : Int -> Mono.MonoType -> List Mono.MonoType
 monoParams n tipe =
     if n <= 0 then
@@ -314,6 +347,11 @@ monoParams n tipe =
                 []
 
 
+{-| Returns the direct subexpressions the mono-graph walk descends into: a
+call's function and arguments, tuple and list elements, a closure's body, a
+`let`'s bound expression and body, and an `if`'s conditions and branches. Every
+other expression gives none.
+-}
 monoChildren : Mono.MonoExpr -> List Mono.MonoExpr
 monoChildren expr =
     case expr of

@@ -1,23 +1,26 @@
 module Compiler.Eco.ConfigTest exposing (suite)
 
-{-| Tests that `Compiler.Eco.Config.decoder` keeps the default monomorphizer
-engine when an `eco-config.json` overrides only part of the `mono` object.
+{-| Tests that a `mono` object in `eco-config.json` which sets some of its keys
+but not `engine` keeps the monomorphizer engine of `Compiler.Eco.Config.default`.
 
-SD-2: `monoDecoder` reads a missing `engine` key as the string `"subst"`, so a
-document whose `mono` object sets only `lss` or `limits` selects `EngineSubst`,
-while `Config.default` (and a document with no `mono` object at all) selects
-`EngineSolver`. Setting one LSS knob or one watchdog limit therefore silently
-switches engines and turns lambda-set specialization off, against the module's
-own rule that a missing key takes its value from `default`.
+`Config.decoder` treats the file as a partial override of `default`, so a
+missing key keeps its default value. Without these tests, a fallback for a
+missing `engine` that differs from `default`'s would go unnoticed: setting one
+lambda-set (LSS) setting or one watchdog limit would then also switch engines.
+
+The fixtures are short JSON documents written inline, each decoded with
+`Config.decoder` through `Compiler.Json.Decode.fromByteString`; only the
+decoded `mono.engine` is compared.
 
 What the tests establish:
 
-  - A document with no `mono` object decodes to `default`'s engine (a control
-    that passes today).
-  - A `mono` object with only `lss`, only `limits`, or no keys at all decodes
-    to `default`'s engine. These fail while the missing-`engine` fallback is
-    `"subst"`.
-  - An explicit `"engine": "subst"` still selects `EngineSubst`.
+  - A document with no `mono` object decodes to `default`'s engine.
+  - A `mono` object with only `lss`, with only `limits`, or with no keys
+    decodes to `default`'s engine.
+  - An explicit `"engine": "subst"` decodes to `EngineSubst`.
+
+Among what is not tested: the `"solver"` and `"diff"` engine strings, an
+unrecognized engine string, and every setting other than `mono.engine`.
 
 -}
 
@@ -27,7 +30,8 @@ import Expect
 import Test exposing (Test)
 
 
-{-| The engine `src` decodes to, or the decode failure rendered as a string.
+{-| Returns the `mono.engine` that `Config.decoder` reads from the JSON text
+`src`, or, when decoding fails, an error message quoting `src`.
 -}
 engineOf : String -> Result String Config.MonoEngine
 engineOf src =
@@ -44,7 +48,8 @@ engineOf src =
             Err ("eco-config did not decode: " ++ src)
 
 
-{-| The SD-2 tests.
+{-| The tests of the `mono.engine` fallback, as the module docstring lists
+them.
 -}
 suite : Test
 suite =

@@ -1,12 +1,11 @@
 module TestLogic.Canonicalize.LimitErrorsTest exposing (suite)
 
-{-| Eco limits a closure's stage arity to 2047 (`HEAP_078`): a function or
+{-| Eco limits a closure's stage arity to 2047: a function or
 lambda with more parameters, or a lambda whose parameters plus captured
 variables exceed it, must be rejected by canonicalization with a located
-`TooLarge` error (bug B18, decision D5 and §S.9 of
-`plans/wide-object-tail-kind-words.md`), not fail late in the backend. Eco also
-limits a constructor to 2040 fields and a record to 2047 fields (`HEAP_019`,
-Phase 3D, decision 3D-D4), with the same kind of error. These tests check that
+`TooLarge` error, not fail late in the backend. Eco also limits a constructor
+to 2040 fields and a record to 2047 fields, with the same kind of
+error. These tests check that
 each such shape is reported as the right `TooLarge` variant, that a function,
 constructor and record at exactly the limit are accepted, and that the reports
 name the definition and the limit.
@@ -26,7 +25,7 @@ The tests establish:
   - a lambda with 2000 parameters capturing 48 locals is a `TooLarge` with
     `TooManyClosureSlots Nothing`, 2048 and 2047;
   - a function with 2047 parameters is accepted;
-  - the report of the 2048-parameter error is titled `TOO MANY PARAMETERS`
+  - the report of the 2048-parameter error contains `TOO MANY PARAMETERS`
     and names `big` and the limit 2047;
   - a constructor with 2041 fields is a `TooLarge` with
     `TooManyCtorFields "Big"`, 2041 and 2040;
@@ -36,7 +35,9 @@ The tests establish:
     fields, are each a `TooLarge` with `TooManyRecordFields Nothing`;
   - a constructor with 2040 fields and a record alias with 2047 fields are
     accepted;
-  - the report of the 2041-field constructor is titled `TOO MANY FIELDS` and
+  - `HeapLimits.maxCtorFields` and `HeapLimits.maxRecordFields` are 2040 and
+    2047, the numbers the field tests are written against;
+  - the report of the 2041-field constructor contains `TOO MANY FIELDS` and
     names `Big`, the limit 2040 and `HEAP_019`.
 
 Among what is not tested: the region the error carries, and compiler-generated

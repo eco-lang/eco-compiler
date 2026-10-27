@@ -3,7 +3,7 @@ module TestLogic.GlobalOpt.LambdaIdUniqueness exposing
     , lambdaIdIssues
     )
 
-{-| MONO_019 says that within one `MonoGraph` each `lambdaId` names one logical
+{-| `MONO_019` says that within one `MonoGraph` each `lambdaId` names one logical
 lambda: no two `MonoClosure` nodes share a `lambdaId`. Code generation emits a
 nested closure as a function named after its `lambdaId`
 (`Compiler.Generate.MLIR.Expr.lambdaIdToString`), so two closures sharing one
@@ -31,7 +31,7 @@ captures and bodies, `let` definitions (both kinds), `if` and `case` branches
 (both the bodies a decision tree holds inline and those it jumps to),
 destructuring, records, tuples, lists and tail-call arguments.
 
-Among what is not checked: `ClosureInfo.srcLambda`, which MONO_019 explicitly
+Among what is not checked: `ClosureInfo.srcLambda`, which `MONO_019` explicitly
 allows to repeat; `CallInfo.fastEvaluator`, which names a `lambdaId` rather than
 defining one; and whether a closure found twice is the same closure reached
 twice, since an expression tree reaches each node once.
@@ -141,6 +141,8 @@ lambdaKey (Mono.AnonymousLambda (ModuleName.Canonical ( author, project ) module
     ( [ author, project, moduleName ], index )
 
 
+{-| Renders a `lambdaKey` as `author/project/Module.Name#index`.
+-}
 renderKey : ( List String, Int ) -> String
 renderKey ( parts, index ) =
     String.join "/" parts ++ "#" ++ String.fromInt index
@@ -254,6 +256,9 @@ deciderLambdaIds decider acc =
                 (List.foldl (\( _, d ) a -> deciderLambdaIds d a) acc edges)
 
 
+{-| Returns the expression a `let` definition binds, for either kind of
+definition.
+-}
 defBound : Mono.MonoDef -> Mono.MonoExpr
 defBound def =
     case def of

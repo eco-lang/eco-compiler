@@ -1,66 +1,41 @@
 module TestLogic.GlobalOpt.LoopifyLastRoundCaptureTest exposing (suite)
 
-{-| Regression tests for a scoping bug in the post-monomorphization inliner,
-`Compiler.GlobalOpt.MonoInlineSimplify`: when H5 loopification of a
-CAPTURING lambda literal happens in the LAST fixpoint round the inliner is
-allowed (`inline.postMonoFixpointIterations`, default 4), the output graph
-held a closure whose body names a variable that is neither its parameter
-nor its capture. MLIR codegen then crashed with
+{-| Tests that a capturing lambda loopified in the post-monomorphization
+inliner's last fixpoint round leaves no open closure in the graph. Without
+the capture renaming described below, a closure whose body names a variable
+that is neither its parameter nor its capture would reach MLIR codegen, which
+fails on the unbound name.
 
-    lookupVar: unbound variable mono_inline_N [in <Module>_lambda_M; in-scope mono_inline: ]
+`Compiler.GlobalOpt.MonoInlineSimplify.loopifyCall` binds each local capture
+of a qualifying lambda literal to a fresh name in a `let` outside the loop and
+substitutes that name into the lambda's body. The rebuilt lambda captures the
+fresh names, so it is well scoped even if no later round beta-reduces it. The
+fixpoint (`iterate`) stops after `postMonoFixpointIterations` rounds (4 in
+`Config.default`) whether or not that reduction has happened, so a loopify in
+the last round is the case that depends on the captures.
 
-which is how the bug was found: a self-compile with
-`{"inline": {"postMonoFixpointIterations": 5}}` crashed in
-`MonoCse.dropOverlapping` (a `List.foldl` over a `List.any` over a
-`List.any` with a capturing lambda: three nested loopifies, the third in
-round index 4).
+The fixtures are two modules built from source. `myAny` is a user
+tail-recursive higher-order function, so the inliner can loopify calls to it.
+`hasK` searches a list of lists of `Int`, and `testValue` calls it.
 
-**Root cause.** `loopifyCall` (MonoInlineSimplify.elm, the `lambdaPairs`
-fold, around line 2190-2225) re-binds every capture of the qualifying
-lambda to a fresh `mono_inline_N` name in a prelude `let` OUTSIDE the loop,
-substitutes that name into the lambda's body, and then rebuilt the lambda
-with `captures = []`. The rebuilt closure was deliberately OPEN: it was only
-well scoped once the beta arm of `rewriteExpr` reduces
-`(\b -> ...) @ x` at its single call site inside the loop, which happens in
-the NEXT fixpoint round (the comment in `rewriteExpr`'s direct-call arm,
-"the fixpoint's next iteration beta-reduces the inlined lambda literal").
-`iterate` (around line 2798) stops at `n >= maxIterations` without checking
-that this pending beta has happened, so a loopify in round index
-`maxIterations - 1` left the open closure in the graph.
+  - `nestedModule`: `hasK k ls = myAny (\xs -> myAny (\x -> x == k) xs) ls`;
+    both lambdas capture `k`.
+  - `appliedLambdaModule`: the same body inside an immediately applied lambda,
+    `hasK k0 ls = (\k -> ...) k0`, which puts one extra reduction in front of
+    the first loopify and so shifts the rounds in which the loopifies happen.
 
-**Fix.** The rebuilt lambda now captures the fresh prelude names, so it is
-closed whether or not a later round beta-reduces it (`betaReduce` ignores
-captures).
+The tests establish:
 
-Each nested loopify level costs two rounds (loopify, then beta, which
-exposes the next level's call), so nested loopifies alone land in EVEN round
-indices and only odd round limits (1, 3, 5, ...) hit the bug. One extra
-round in front of the first loopify — here an immediately applied lambda
-`(\k -> ...) k0`, which is beta-reduced in round 0 without rewriting its
-body — moves every loopify to an ODD round index, so the DEFAULT limit of 4
-cuts between the second loopify (round 3) and its beta (round 4). The same
-program as an E2E source (`hasK k0 ls = k0 |> (\k -> myAny (\xs -> myAny
-(\x -> x == k) xs) ls)`) crashed `eco make` with the default config.
+  - with `Config.default.inline`, `MonoInlineSimplify.optimize` on
+    `appliedLambdaModule`'s monomorphized graph reports `hofLoopified` = 2 and
+    leaves a graph that passes `MonoGraphIntegrity.localVarScopingChecks`;
+  - the graph `runToGlobalOpt` produces for `appliedLambdaModule` after the
+    inliner, prune and global optimization passes those checks;
+  - for each `postMonoFixpointIterations` from 1 to 6, the inliner's output
+    for each fixture passes those checks.
 
-The fixtures (`myAny` is a user tail-recursive HOF, so it is loopifiable;
-the test pipeline has no node bodies for `List.any`):
-
-  - `appliedLambdaModule`: `hasK k0 ls = (\k -> myAny (\xs -> myAny (\x -> x == k) xs) ls) k0`.
-    Two loopifies, in rounds 1 and 3.
-  - `nestedModule`: `hasK k ls = myAny (\xs -> myAny (\x -> x == k) xs) ls`.
-    Two loopifies, in rounds 0 and 2.
-
-The tests establish, by `MonoGraphIntegrity.localVarScopingChecks` (the
-MONO\_011 local-variable half of `expectMonoGraphClosed`):
-
-  - with the default inline configuration, `appliedLambdaModule`'s graph is
-    well scoped after `MonoInlineSimplify.optimize` and after the whole
-    `runToGlobalOpt` pipeline (before the fix: `MONO_011: MonoVarLocal 'mono_inline_11' is not
-    in scope at SpecId 3`), and both loopifies happened (so the
-    check is not vacuous);
-  - for every round limit 1..6, both fixtures are well scoped after the
-    inliner (before the fix these failed at 2 and 4 for `appliedLambdaModule`,
-    and at 1 and 3 for `nestedModule`).
+Among what is not tested: the loopify count for any round limit other than the
+default, the loopify count for `nestedModule`, and codegen of the result.
 
 -}
 
@@ -95,6 +70,8 @@ import TestLogic.Generate.MonoGraphIntegrity as Integrity
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The default-configuration tests and one pair of tests per round limit.
+-}
 suite : Test
 suite =
     Test.describe "MonoInlineSimplify loopify in the last fixpoint round leaves an open closure"
@@ -134,9 +111,9 @@ suite =
         ]
 
 
-{-| Monomorphizes `srcModule` as a default build does (solver engine, LSS
-on; the `monoGraph` of `runToGlobalOpt`, taken before its own inliner
-runs) and applies `check` to the graph.
+{-| Applies `check` to the monomorphized graph of `srcModule`: the
+`monoGraph` of `runToGlobalOpt`, taken before the pipeline's own inliner runs.
+Fails with the pipeline's message if the pipeline fails.
 -}
 withMono : Src.Module -> (Mono.MonoGraph -> Expect.Expectation) -> Expect.Expectation
 withMono srcModule check =
@@ -148,6 +125,10 @@ withMono srcModule check =
             check artifacts.monoGraph
 
 
+{-| Runs the inliner with `Config.default.inline` and the given
+`postMonoFixpointIterations` on `graph`, and expects the result to pass the
+local-variable scoping checks.
+-}
 expectWellScopedAt : Int -> Mono.MonoGraph -> Expect.Expectation
 expectWellScopedAt fpi graph =
     let
@@ -160,6 +141,10 @@ expectWellScopedAt fpi graph =
     expectWellScoped after
 
 
+{-| Passes when `graph` has no out-of-scope local reference
+(`MonoGraphIntegrity.localVarScopingChecks`); otherwise fails with every
+failing check.
+-}
 expectWellScoped : Mono.MonoGraph -> Expect.Expectation
 expectWellScoped graph =
     case Integrity.localVarScopingChecks graph of
@@ -174,16 +159,22 @@ expectWellScoped graph =
 -- FIXTURES
 
 
+{-| The source type `Int`.
+-}
 tInt : Src.Type
 tInt =
     tType "Int" []
 
 
+{-| The source type `Bool`.
+-}
 tBool : Src.Type
 tBool =
     tType "Bool" []
 
 
+{-| The source type `List t`.
+-}
 tList : Src.Type -> Src.Type
 tList t =
     tType "List" [ t ]
@@ -225,6 +216,9 @@ nestedAny =
         ]
 
 
+{-| A module `Test` with `myAny`, a `hasK : Int -> List (List Int) -> Bool`
+with the given arguments and body, and `testValue = hasK 3 [ [ 1 ], [ 3 ] ]`.
+-}
 fixture : List Src.Pattern -> Src.Expr -> Src.Module
 fixture hasKArgs hasKBody =
     makeModuleWithTypedDefsUnionsAliases "Test"
@@ -244,14 +238,16 @@ fixture hasKArgs hasKBody =
         []
 
 
-{-| `hasK k0 ls = (\k -> myAny (\xs -> myAny (\x -> x == k) xs) ls) k0` -}
+{-| The fixture with `hasK k0 ls = (\k -> myAny (\xs -> myAny (\x -> x == k) xs) ls) k0`.
+-}
 appliedLambdaModule : Src.Module
 appliedLambdaModule =
     fixture [ pVar "k0", pVar "ls" ]
         (callExpr (parensExpr (lambdaExpr [ pVar "k" ] nestedAny)) [ varExpr "k0" ])
 
 
-{-| `hasK k ls = myAny (\xs -> myAny (\x -> x == k) xs) ls` -}
+{-| The fixture with `hasK k ls = myAny (\xs -> myAny (\x -> x == k) xs) ls`.
+-}
 nestedModule : Src.Module
 nestedModule =
     fixture [ pVar "k", pVar "ls" ] nestedAny

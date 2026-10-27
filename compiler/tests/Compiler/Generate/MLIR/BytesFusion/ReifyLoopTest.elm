@@ -1,48 +1,51 @@
 module Compiler.Generate.MLIR.BytesFusion.ReifyLoopTest exposing (suite)
 
 {-| Tests for the `Bytes.Decode.loop` arm of
-`Compiler.Generate.MLIR.BytesFusion.Reify.reifyDecoder`
-(src/Compiler/Generate/MLIR/BytesFusion/Reify.elm).
+`Compiler.Generate.MLIR.BytesFusion.Reify.reifyDecoder`.
 
-elm/bytes 1.0.8 declares
+elm/bytes declares
 
     loop : state -> (state -> Decoder (Step state a)) -> Decoder a
 
     andThen : (a -> Decoder b) -> Decoder a -> Decoder b
 
-The reifier used to match `loop`'s arguments step function first, and the
-sentinel recogniser matched `andThen` decoder first, so no loop written against
-the real package was ever fused; it also accepted `==` only as a kernel named
-`eq`. Behind that, its count-loop recogniser looked only at the item decoder,
-ignoring the `Done` expression, so `Done acc`, `Done (List.reverse acc)` and
-`Done (List.length acc)`, three different values, would all have been fused to
-the same list. `reifyLoop` now matches the real argument orders, `==` as
-`Basics.eq` or the `Utils.equal` kernel, and only the whole idiom, recording the
-order of the list the `Done` result builds.
+A recogniser that matched either argument list the other way round would never
+fuse a loop written against the real package, and nothing else would notice:
+the unfused decoder still gives the right answer. A count-loop recogniser that
+ignored the `Done` expression would be worse: `Done acc`,
+`Done (List.reverse acc)` and `Done (List.length acc)` are three different
+values, and fusing them to one list would change the program's result.
 
-The fixture programs are parsed from source text and run through
-`TestLogic.TestPipeline.runToGlobalOpt`, against the mock interfaces of
-`Compiler.Elm.Interface.Basic.testIfaces`. In that environment the elm/bytes
-functions are externs with no body, so the `Bytes.Decode.loop`,
-`Bytes.Decode.map` and `Bytes.Decode.andThen` calls survive as calls and reach
-the reifier exactly as written. (In a real build the inliner inlines `map`,
-`succeed` and `andThen`, a form the reifier also recognises; the E2E tests
-`test/elm-bytes/src/BytesLoop*Test.elm` cover it.)
+The fixture programs are parsed from source text as elm/core modules and run
+through `TestLogic.TestPipeline.runToGlobalOpt`, against the mock interfaces of
+`Compiler.Elm.Interface.Basic.testIfaces`. There the elm/bytes functions are
+externs with no body, so the `Bytes.Decode.loop`, `Bytes.Decode.map` and
+`Bytes.Decode.andThen` calls survive as calls and reach the reifier as written.
+Each fixture must contain exactly one `Bytes.Decode.loop` call.
 
 The tests:
 
-  - "loop in elm/bytes argument order is recognised": the count loop
-    `loop ( 3, [] ) step` reifies to operations containing a
+  - "loop in elm/bytes argument order (state first) is recognised as a count
+    loop": `D.loop ( 3, [] ) step`, with a step that counts `n` down and conses
+    one `unsignedInt8` per iteration, reifies to operations containing a
     `LoopDecodeList`.
   - "sentinel loop with andThen in elm/bytes argument order is recognised":
-    `loop [] (\acc -> andThen (\b -> ...) unsignedInt8)` with an `if b == 0`
-    test reifies to operations containing a `LoopSentinelDecodeList`.
-  - GUARD "Done variants are not reified identically": among the three `Done`
-    variants, no two reify to the same operations (declining, `Nothing`, is
-    allowed).
+    `D.loop [] (\acc -> D.andThen (\byte -> ...) D.unsignedInt8)` with an
+    `if byte == 0` test reifies to operations containing a
+    `LoopSentinelDecodeList`.
+  - "GUARD: Done acc / Done (List.reverse acc) / Done (List.length acc) are not
+    reified identically": every one of the three count-loop variants compiles,
+    and no two that reify give equal operations. Declining, `Nothing`, is
+    allowed.
   - "each Done variant reifies to its own list order, or not at all":
-    `Done acc` gives a loop in reverse read order, `Done (List.reverse acc)` one
-    in read order, and `Done (List.length acc)` is not fused.
+    `Done acc` gives exactly one count loop, in `ReverseReadOrder`,
+    `Done (List.reverse acc)` one in `InReadOrder`, and
+    `Done (List.length acc)` is not reified.
+
+Among what is not tested: the `Basics.eq`, `Utils.equal` and `Utils.eq`
+spellings of `==` are not told apart, sentinels other than `0` and the
+`s == byte` order are not tried, and the inlined form of `map`, `succeed` and `andThen` that a full build
+produces is not reached here.
 
 -}
 

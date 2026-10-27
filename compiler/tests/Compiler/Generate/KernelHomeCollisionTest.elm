@@ -1,30 +1,28 @@
 module Compiler.Generate.KernelHomeCollisionTest exposing (suite)
 
-{-| SD-16: kernel modules were keyed in the optimized (JavaScript-backend)
-global graph by their home only, without the `Elm`/`Eco` kernel prefix.
-`Builder.Elm.Details.addLocalOptGraph` registered a kernel module with
-`GA.addOptKernel (Tuple.second (Name.getKernel name))`, and
-`GraphAssembly.toKernelGlobal` keyed it as `elm/kernel:<home>.$`. So
-`Elm.Kernel.File` (package elm/file) and `Eco.Kernel.File` (package eco/kernel)
-landed on the same key, and when the two packages' graphs were merged with
-`GA.addOptGlobalGraph` one kernel's chunks silently replaced the other's.
+{-| An `Elm` kernel module and an `Eco` kernel module can share a home:
+`Elm.Kernel.File` (package elm/file) and `Eco.Kernel.File` (package
+eco/kernel) both have home `File`. If the two were registered under the same
+graph key, merging the two packages' global graphs, a left-biased union, would
+keep one kernel's node and silently drop the other's, and the dropped
+kernel's JavaScript would be missing from the merged graph. This test catches
+that.
 
-Observed on a real program (deps elm/file + eco/kernel, `main` reaching both
-`File.decoder` and `Eco.File.readString`, built with `eco make --output=x.js`):
-the JS contains only Eco's `_File_*` definitions and fails at load with
-`ReferenceError: _File_decoder is not defined`. (Separately, both kernels'
-JavaScript defines `_File_size`, so even with distinct graph keys the emitted
-names would still clash.) The native MLIR path is unaffected: its C symbols
-keep the prefix (`Elm_Kernel_File_size` vs `Eco_Kernel_File_size`).
+The fixture is two global graphs, each built from `Opt.empty` by
+`GA.addOptKernel` with one kernel module holding a single JavaScript chunk, a
+comment naming its package and module, so that the chunks of the merged graph
+show which kernels survived. `packageKernelGraph` passes the whole module name,
+as `Builder.Elm.Details.addLocalOptGraph` does; the key it gets is the one
+`Opt.toKernelGlobal` describes.
 
-This test builds the two package graphs exactly as `Details` does and merges
-them. It failed before the fix (one kernel's chunks were lost) and passes now
-that both kernels survive the merge. The fix changed how `Details` registers a
-kernel: `GA.addOptKernel` now takes the whole kernel module name and keys an
-`Eco` kernel by it (`Opt.toKernelGlobal`), so `packageKernelGraph` below passes
-the module name where it used to pass `Tuple.second (Name.getKernel name)`.
-The JavaScript names are kept apart by `JsName.fromEcoKernel`
-(`_Eco_File_size`).
+The test establishes:
+
+  - Merging the `Elm.Kernel.File` graph and the `Eco.Kernel.File` graph with
+    `GA.addOptGlobalGraph` yields a graph whose kernel nodes hold both chunks.
+
+Among what is not tested: the key each kernel is given, the dependencies and
+field counts `addOptKernel` records, and the JavaScript names generated for
+the two kernels' definitions.
 
 -}
 
@@ -37,13 +35,17 @@ import Test exposing (Test, describe, test)
 
 
 {-| The kernel graph of one package holding the kernel module `moduleName`,
-registered the way `Builder.Elm.Details.addLocalOptGraph` registers it.
+with `marker` as its one JavaScript chunk, registered the way
+`Builder.Elm.Details.addLocalOptGraph` registers it.
 -}
 packageKernelGraph : String -> String -> Opt.GlobalGraph
 packageKernelGraph moduleName marker =
     GA.addOptKernel moduleName [ K.JS marker ] Opt.empty
 
 
+{-| Returns the JavaScript chunks of every kernel node in the graph, sorted, so
+that the result does not depend on node order.
+-}
 jsChunksOf : Opt.GlobalGraph -> List String
 jsChunksOf (Opt.GlobalGraph nodes _) =
     Data.Map.values nodes
@@ -68,6 +70,8 @@ jsChunksOf (Opt.GlobalGraph nodes _) =
         |> List.sort
 
 
+{-| The test of merging the elm/file and eco/kernel kernel graphs.
+-}
 suite : Test
 suite =
     describe "SD-16: Elm.Kernel.File and Eco.Kernel.File share a kernel graph key"

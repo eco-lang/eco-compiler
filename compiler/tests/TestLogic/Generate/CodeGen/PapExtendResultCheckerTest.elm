@@ -1,21 +1,26 @@
 module TestLogic.Generate.CodeGen.PapExtendResultCheckerTest exposing (suite)
 
-{-| SD-8: pins the `eco.papExtend` result checker,
-`TestLogic.Generate.CodeGen.PapExtendResult.checkPapExtendResult`, on
-hand-built MLIR.
+{-| Tests that pin `TestLogic.Generate.CodeGen.PapExtendResult.checkPapExtendResult`
+on hand-built MLIR, so that the checker's verdict on an `i1` result is tested
+even when no compiled program produces one.
 
-A Bool never crosses a function or closure boundary as `i1`: at every ABI
-boundary it is `!eco.value` (REP\_ABI\_001, `Types.monoTypeToAbi`), no `i1`
-may reach `eco.papExtend` or `eco.return` (CGEN\_009), and a typed-mode
-`eco.papExtend` result is its callee's result type (CGEN\_056), which is
-therefore never `i1`. A generic-mode op's result is never `i1` either
-(CGEN\_034). So an `i1` result is wrong in both modes.
+An `eco.papExtend` op gives a closure more arguments. It is in _typed mode_
+when it carries an integer `remaining_arity` attribute and in _generic mode_
+otherwise. A Bool crosses a closure boundary as `!eco.value`, never as `i1`,
+so the checker must reject an `i1` result in either mode.
 
-The checker rejects an `i1` result in generic mode, as `PapExtendOp::verify`
-does, but its typed-mode allow-list (`isValidPapExtendResultType`) still
-includes `i1`, so a typed-mode `i1` result passes. The first test below fails
-until that is fixed; the other two pin the cases the checker already gets
-right.
+The fixture is a module of one function whose body is a single `eco.papExtend`
+applying `%f` to `%x`, with the attributes and result type each test chooses.
+
+The tests establish that:
+
+  - a typed-mode op with an `i1` result gives exactly one violation;
+  - a generic-mode op (`_call_kind` `generic_apply`) with an `i1` result gives
+    exactly one violation;
+  - a typed-mode op with an `!eco.value` result gives no violation.
+
+Among what is not tested: the `i16`, `i64` and `f64` results; an op with a
+result count other than one; and the missing-`remaining_arity` rule.
 
 -}
 
@@ -28,7 +33,7 @@ import Test exposing (Test)
 import TestLogic.Generate.CodeGen.PapExtendResult exposing (checkPapExtendResult)
 
 
-{-| The checker on hand-built MLIR, as the module docstring describes.
+{-| The three checker tests listed in the module docstring.
 -}
 suite : Test
 suite =

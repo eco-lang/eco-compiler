@@ -1,19 +1,38 @@
 module Terminal.LocalPackageFlagTest exposing (suite)
 
-{-| Checks how `eco make` reads its `--local-package` flags.
+{-| Checks how `eco make` reads its `--local-package` flags. Without these
+tests, a path containing `=` could be cut short, a malformed mapping accepted,
+or a repeated flag lost or rejected, with nothing else failing.
 
-`Terminal.Make.parseLocalPackage` turns one mapping, `author/project=path`,
-into a package name and a path. It splits on the **first** `=` only, so a path
-may itself contain `=`, and it rejects a mapping with no `=`, no `/` in the
-package name, or an empty path.
+There is no fixture: the tests parse literal strings and chomp literal command
+lines, declaring the one flag `--local-package`.
 
-`Terminal.Terminal.Chomp.chompRepeatableFlag` collects every occurrence of a
-flag, in command-line order, written either `--flag value` or `--flag=value`.
-Because it takes every occurrence out, `checkForUnknownFlags` accepts the
-repeats; a repeat of an ordinary `chompNormalFlag` flag is still rejected as
-unknown. A bad value fails with `FlagWithBadValue`.
+What the tests establish, for `Terminal.Make.parseLocalPackage`:
 
-There is no fixture: the tests chomp literal command lines.
+  - `eco/kernel=../eco-kernel-cpp` gives the name `( "eco", "kernel" )` and
+    the path `../eco-kernel-cpp`.
+  - The mapping is split at the first `=` only, so `eco/system=/tmp/a=b/c=d`
+    keeps `/tmp/a=b/c=d` as its path.
+  - A mapping with no `=`, a name with no `/`, a name containing `=` (split
+    at the first `=`, it has no `/`), and an empty path each give `Nothing`.
+
+For `Terminal.Terminal.Chomp.chompRepeatableFlag`, each command line followed
+by `checkForUnknownFlags`:
+
+  - Two occurrences, one written `--flag value` and one `--flag=value`, with a
+    positional argument between them, give both mappings in command-line order,
+    and the check accepts the repeat.
+  - No occurrence gives the empty list; one gives a one-element list.
+  - A valid occurrence followed by `--local-package nonsense` fails with
+    `FlagWithBadValue` naming `nonsense`.
+  - A lone `--local-package` with nothing after it fails with
+    `FlagWithNoValue`.
+
+For `chompNormalFlag`, the same flag given twice fails with `FlagUnknown`
+naming the second occurrence.
+
+Among what is not tested: the expectation and suggestion carried by an error,
+a value written after a following flag, and an empty package author or project.
 
 -}
 
@@ -24,6 +43,9 @@ import Terminal.Terminal.Internal exposing (Error(..), Flag(..), FlagError(..), 
 import Test exposing (Test, describe, test)
 
 
+{-| The `--local-package` tests: one group for `parseLocalPackage` and one for
+chomping the flag.
+-}
 suite : Test
 suite =
     describe "--local-package"
@@ -92,16 +114,25 @@ suite =
         ]
 
 
+{-| The flag description given to `checkForUnknownFlags`: the single flag
+`--local-package`.
+-}
 flags : Flags
 flags =
     FMore FDone (Flag "local-package" Make.localPackage "Resolve a package from a local path.")
 
 
+{-| Chomps `strings` with `--local-package` read as a repeatable flag, giving
+every mapping in command-line order or the failure rendered by `describeError`.
+-}
 chompRepeatable : List String -> Result String (List ( ( String, String ), String ))
 chompRepeatable strings =
     run strings (Chomp.chompRepeatableFlag "local-package" Make.localPackage Make.parseLocalPackage)
 
 
+{-| Chomps `strings` with `--local-package` read as an ordinary flag, giving
+the first mapping, if any, or the failure rendered by `describeError`.
+-}
 chompNormal : List String -> Result String (Maybe ( ( String, String ), String ))
 chompNormal strings =
     run strings (Chomp.chompNormalFlag "local-package" Make.localPackage Make.parseLocalPackage)
@@ -128,6 +159,10 @@ run strings flagChomper =
         |> Result.mapError describeError
 
 
+{-| Renders a chomp error as its kind followed by the flag name (and the bad
+value, for a bad value), or, for an unknown flag, the unknown string; `BadArgs`
+gives only its kind.
+-}
 describeError : Error -> String
 describeError error =
     case error of

@@ -1,44 +1,44 @@
 module TestLogic.Type.NodeTypeVarNamesDistinctTest exposing (suite)
 
 {-| Within one top-level definition, one type variable name in the solver's
-node types must stand for one solver variable.
+node types must stand for one solver variable, because monomorphization
+identifies type variables by name within a definition
+(`Compiler.Monomorphize.AssignMVarIds.ensureBinder`). If two different
+variables shared a name there, a let-bound helper could be specialized at the
+type of an unrelated variable.
 
-`Compiler.Type.Type.toCanTypeBatch` names the variables of every node type with
-one shared name state. `Compiler.Type.Solve.runWithIds` has already run
-`Type.toAnnotation` on every top-level definition, which names each variable
-of that definition's annotation; those variables keep their names in the node
-types, and `toCanTypeBatch` is handed the annotations' names so that no other
-variable is given one of them. It cannot find them itself: `toAnnotation`'s
-`getVarNames` walk leaves `getVarNamesMark` on those variables, and its own
-`getVarNames` walk skips marked variables.
+The names come from two places. `Compiler.Type.Solve.runWithIds` runs
+`Type.toAnnotation` on every top-level definition, which names the variables
+of that definition's annotation, and those variables keep their names in the
+node types. `Compiler.Type.Type.toCanTypeBatch` then names every other node
+variable in one shared naming scope, and is handed the annotations' names so
+that it gives none of them to another variable; its docstring says why it
+cannot find them itself.
 
-Before that was done, in `f x = let h y = y in ( h x, h 1 )`, `x`'s variable
-was named `a` by `f`'s annotation and the batch also named `h`'s own,
-generalized variable `a`: two different variables, one name, inside one
-definition. Monomorphization identifies type variables by name within a
-definition (`Compiler.Monomorphize.AssignMVarIds.ensureBinder`), so it took
-one for the other.
+The fixtures are small modules built with `Compiler.AST.SourceBuilder`, each
+with a top-level function that takes an argument and defines a let-bound
+polymorphic helper, `h` or `k`, whose type variable is not the argument's.
 
-The first two tests resolve the solver variable of every node whose type is a
-bare type variable to its union-find root
-(`Compiler.Type.SolverRoots.normalizeNodeVars`) and require, for each
-top-level definition, each name used in that definition's expressions and
-patterns to belong to a single root. Two definitions may each use a name for
-a variable of their own scheme, as their annotations do.
+  - The first two tests type-check a module, resolve the solver variable of
+    every node whose type is a bare type variable to its union-find root
+    (`Compiler.Type.SolverRoots.normalizeNodeVars`), and fail if, within one
+    top-level definition, a name is the type of nodes with different roots.
+    The first uses `f x = let h y = y in ( h x, h 1 )`. The second adds a
+    second polymorphic definition, `first p q = p`, beside
+    `g z = let k w = w in ( k z, k "s" )`; a name shared between two
+    definitions is allowed, since each definition is checked on its own.
+  - The substitution engine test runs `wrapIntModule` through
+    `TestPipeline.runToMonoStage5` and requires the printed mono graph to
+    contain a specialization with parameter `y` at `MInt` and none with `y`
+    at `MFloat`.
+  - The solver engine test runs `captureModule` through
+    `TestPipeline.runToGlobalOpt` and requires the printed mono graph not to
+    contain `[MInt,MInt]`; the program has no `( Int, Int )` tuple, so such
+    text would mean a specialization of `h` typed with one.
 
-The other two check the effect on monomorphization as `TestLogic.TestPipeline`
-runs it:
-
-  - Substitution engine (`TestPipeline.runToMonoStage5`): in
-    `wrapInt x = let h y = y * 2147483648 * 2147483648 in ( x * 1, h 4 )`
-    applied to a `Float`, `h` must be specialized at `Int`, its use, not at
-    `Float`. With the collision it was specialized at `Float -> Float`, and
-    its MLIR multiplied the `Int` 4 with the `Float` multiplication.
-  - Solver engine (`TestPipeline.runToGlobalOpt`, the default engine): in
-    `capture x = let h y = ( x, y ) in ( h 1, h 2.5 )` applied to a `String`,
-    no specialization may be typed with an `( Int, Int )` tuple. With the
-    collision the `Int` specialization of `h` was declared
-    `Int -> ( Int, Int )` while its body builds a `( String, Int )`.
+Among what is not tested: node types that are not a bare type variable (a
+variable nested inside a function or tuple type is not checked), names
+across definitions, and the generated MLIR.
 
 -}
 
@@ -55,6 +55,8 @@ import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
 
 
+{-| The four tests described in the module docstring.
+-}
 suite : Test
 suite =
     Test.describe "Node type variable names are unique per solver variable (toCanTypeBatch)"
@@ -118,7 +120,7 @@ suite =
         ]
 
 
-{-| `wrapInt x = let h y = y * 2147483648 * 2147483648 in ( x * 1, h 4 )` and
+{-| A module defining `wrapInt x = let h y = y * 2147483648 * 2147483648 in ( x * 1, h 4 )` and
 `testValue = wrapInt 2.5`.
 -}
 wrapIntModule : Src.Module
@@ -140,7 +142,7 @@ wrapIntModule =
         ]
 
 
-{-| `capture x = let h y = ( x, y ) in ( h 1, h 2.5 )` and
+{-| A module defining `capture x = let h y = ( x, y ) in ( h 1, h 2.5 )` and
 `testValue = capture "s"`.
 -}
 captureModule : Src.Module
@@ -217,8 +219,8 @@ expectNamesDistinct srcModule =
                 Expect.fail (String.join "\n" collisions)
 
 
-{-| The node ids of the expressions and patterns of each top-level definition,
-its argument patterns included.
+{-| Returns, for each top-level definition of the module, its name and the
+node ids of its expressions and patterns, argument patterns included.
 -}
 topLevelNodeIds : Can.Module -> List ( String, List Int )
 topLevelNodeIds (Can.Module modData) =
@@ -245,7 +247,8 @@ topLevelNodeIds (Can.Module modData) =
     go modData.decls
 
 
-{-| The ids of an expression and of every expression and pattern inside it.
+{-| Returns the node id of an expression and of every expression and pattern
+inside it, including those of let-bound definitions.
 -}
 exprIds : Can.Expr -> List Int
 exprIds (A.At _ info) =
@@ -307,7 +310,7 @@ exprIds (A.At _ info) =
            )
 
 
-{-| The ids of a pattern and of every pattern inside it.
+{-| Returns the node id of a pattern and of every pattern inside it.
 -}
 patternIds : Can.Pattern -> List Int
 patternIds (A.At _ info) =

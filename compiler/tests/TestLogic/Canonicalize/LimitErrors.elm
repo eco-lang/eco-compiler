@@ -4,10 +4,13 @@ module TestLogic.Canonicalize.LimitErrors exposing
     , expectTooLarge
     )
 
-{-| Canonicalization must reject, with a located `TooLarge` error, any function
-or lambda whose parameters (plus, for a lambda or local function, its captured
-variables) exceed the closure stage-arity limit of 2047 (`HEAP_078`,
-`plans/wide-object-tail-kind-words.md` §S.9). This module provides the
+{-| Expectations for tests of canonicalization's size limits, which would
+otherwise go unchecked until a too-large function reached code generation.
+
+Canonicalization rejects a function or lambda whose parameters exceed
+`Compiler.Data.HeapLimits.maxStageArity`, and a lambda or local function whose
+parameters plus captured variables exceed it, with a located `TooLarge` error;
+`Compiler.Canonicalize.Expression` owns the rule. This module provides the
 expectations that check it, given a source module built by the caller.
 
 Each expectation runs `Compiler.Canonicalize.Module.canonicalize` on the module,
@@ -18,8 +21,8 @@ Warnings are ignored.
   - `expectTooLarge` passes when canonicalization fails with exactly one error,
     a `CanError.TooLarge` whose `CanError.TooLargeWhat` is the given one and
     whose actual and limit numbers are the given ones.
-  - `expectCanonicalizes` passes when canonicalization succeeds; it is for the
-    boundary case at exactly the limit.
+  - `expectCanonicalizes` passes when canonicalization succeeds, as it should
+    for a function at exactly the limit.
   - `expectFirstReportContains` renders the first error with `CanError.toReport`
     (title, then the message laid out by `Compiler.Reporting.Doc.toString`) and
     passes when the text contains every given string.
