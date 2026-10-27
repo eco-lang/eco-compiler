@@ -3,55 +3,54 @@ module Compiler.GlobalOpt.InlineSimplify exposing
     , optimize
     )
 
-{-| PRE-MONOMORPHIZATION inliner (plans/pre-mono-inline-simplify.md).
+{-| Inlining a small function once, before monomorphization, saves doing it
+once per specialization afterwards. This module is that pre-monomorphization
+inliner.
 
-`MonoInlineSimplify` runs on fully-specialized code, so a small polymorphic
-definition is monomorphized into N copies and each copy is inlined
-independently. This pass inlines once, before specialization.
+The program at this point is the typed-optimized graph (`TOpt`), in which a
+polymorphic function still has one body. After monomorphization the same
+function is copied once per type it is used at, and an inliner working there
+inlines each copy separately. Here a call `f a b` to a small global `f` is
+replaced by a copy of `f`'s body, once, wherever it occurs.
 
-**Copying a polymorphic body needs its TYPE identity freshened** — see
-`freshenBody`. `AssignMVarIds` now runs BEFORE this pass, so the body already
-carries `MVarId`s, `SrcLambdaId`s and `ArrowId`s; two copies that kept them
-would force the two call sites' instantiations to meet. Each copy therefore goes
-through `PreMono.Fresh.freshenCopy`, which substitutes the call site's types and
-re-mints every other id. Refusing polymorphic candidates instead — v1's answer —
-rejected ~98% of what the pass could inline (plan §11.2, §12).
+A global that may be inlined is a _candidate_. It is a `Define` or
+`TrackedDefine` whose value is a function of at least one parameter, that is
+not recursive, whose `cost` is at most the configured threshold, and that
+passes every guard in `buildCandidates`. Each guard refuses a function that
+cannot safely be copied before monomorphization: a polymorphic kernel
+reference, an open record type, a function-typed parameter, or a type variable
+with a supertype constraint. Only a call with exactly as many arguments as the
+candidate has parameters is inlined.
 
-Measured motivation (that plan's §8.1): the self-compile performs 65,949
-inlines over only 27,130 distinct SOURCE call sites — a redundancy factor of
-**2.43x**, which is the ceiling on the work this position change can avoid.
+The input already carries the identities `AssignMVarIds` gives it: an `MVarId`
+for every type variable, a lambda id for every function and an arrow id for
+every function type. A copy that kept them would share them with the original,
+so every copy is made with `PreMono.Fresh.freshenCopy`, as that module
+describes. The facts this pass adds are about the types the copy is given.
 
-It is also the position at which inlining cannot destroy LSS identity: `TOpt`
-has no `ClosureInfo`, no `lssMember` and no `CallInfo`, so the four
-identity-clearing sites in `MonoInlineSimplify` have no analogue here
-(`plans/lss-inline-member-propagation.md` §7.2 measures those at 863 members
-destroyed per self-compile).
+A copy's type variables must end up ground, meaning free of type variables,
+because nothing solves them once the call that carried them is gone. So a call
+is inlined only if it _determines_ the candidate: matching the candidate's
+parameter types against the argument types, and its body type against the
+call's type, binds every type variable of the candidate to a ground type
+(`determines`). Those bindings are substituted into the copy. A call that does
+not determine its candidate is left as it is, while other calls to the same
+candidate may still be inlined.
 
-**Scope of v1** — deliberately narrower than the post-mono pass
-(that plan's §3): exact-arity inlining of small non-recursive globals, plus the
-fixpoint. `loopify`, `arityRaise` and the kernel cost classes are
-monomorphic-only by nature and stay out. Partial/over-application inlining, let
-forwarding and DCE are left to the post-mono pass.
+The copy is spliced in as `let p1_piN = arg1 in ... body`, where every local
+name of the body, binders and uses alike, gets the suffix `_piN` with `N`
+unique to the copy. Binding the arguments, rather than substituting them into
+the body, evaluates each argument once in the caller's scope, where no binder
+of the body can capture its free variables. The suffix keeps two copies in one
+caller from binding the same name twice, and because it is applied uniformly
+it preserves shadowing within the body.
 
-**Why arguments are LET-BOUND rather than substituted.** Splicing an argument
-expression into the callee body risks capture: a free variable of the argument
-could be captured by a binder inside the body. Binding `p = arg` in the CALLER's
-scope and renaming `p` inside the body evaluates every argument outside the
-body, so that class of capture cannot arise.
-
-**Why the body's binders are freshened anyway.** Inlining one body at two sites
-in one caller would otherwise produce two `let x = …` with the same name, which
-the backend rejects as an SSA redefinition (`memory:
-eco-inliner-dup-let-names-ssa-redef` — a real shipped bug in the post-mono
-pass). `freshenBody` gives every local name a per-copy `_pi<n>` suffix,
-`Destruct` binders included; that is the exact shape whose omission caused the
-post-mono pass's destructure-binder capture bug.
-
-**`SrcLambdaId` duplication is prevented by `PreMono.Fresh`**: because
-`AssignMVarIds` runs before the pre-mono passes, a copy that kept its lambda
-ids would put two bodies under one LSS member. `Fresh.freshenCopy` re-mints
-every `SrcLambdaId` and `ArrowId` in the copy, and `Fresh.assertMinted`
-(`mono.validate`) catches a repeated id.
+Rewriting runs in rounds over every node, up to the configured number of
+rounds and stopping after a round that inlines nothing. The bodies copied are
+always the candidates' original bodies, so a call inside a copy is not
+considered until the next round, if one remains. Much of the file is census
+code, the `Metrics` counters, most of which are filled only when inline
+reporting is on.
 
 @docs Metrics, emptyMetrics
 @docs optimize
@@ -73,8 +72,30 @@ import Data.Set as EverySet
 import Dict as CoreDict
 
 
-{-| Census counters, mirroring `MonoInlineSimplify.Metrics` where the two
-passes measure the same thing so the A/B arms are directly comparable.
+{-| Counts of what one run of the pass did and why it declined the rest.
+
+The candidate counts are taken once, when the candidate index is built:
+`candidates` is the number admitted, `bodiesSeen` the number of globals whose
+`Define` or `TrackedDefine` value is a function, and `recursiveSkipped`,
+`overBudget`, `polyKernel`, `rowPoly`, `hofParam` and `superVar` the number
+refused by each guard, the first guard that fires being the one counted.
+`polymorphic` counts admitted candidates that have any type variable. The call
+counts, `inlineCount`, `inlinedByCallee` and `undetermined`, accumulate over
+every round, so a call that stays undetermined is counted again in each round
+that visits it.
+
+The remaining fields are filled only when inline reporting is on and are zero
+or empty otherwise, except `undetermined`, the guard counts and
+`inlinedByCallee`, which are always kept. An undetermined call is classed by
+the candidate type variables it leaves unbound or non-ground: `undLocal` when
+the call site's types for one of them mention a variable that is not in the
+caller's own annotation, else `undBodyOnly` when the call site's types offer no
+variable at all for one of them, as for a variable that occurs in no parameter
+type and not in the result type, else `undCallerPoly`, when every variable
+offered is one of the caller's annotation variables. `undLeak` counts
+undetermined calls to a candidate whose annotation, if it has one, quantifies
+no type variables, although its body's types do.
+
 -}
 type alias Metrics =
     { inlineCount : Int
@@ -89,36 +110,17 @@ type alias Metrics =
     , undetermined : Int
     , bodiesSeen : Int
     , inlinedByCallee : CoreDict.Dict String Int
-
-    -- Q1 CENSUS (inline.report only; every field stays zero/empty when off).
-    -- `undetermined` split by WHY the call site failed to pin the callee's
-    -- type variables: every offending free var is a binder of the CALLER's own
-    -- annotation scheme (`undCallerPoly`); some offending free var is an
-    -- unsolved local that only MonoSolver resolves (`undLocal`); or the callee
-    -- var occurs in no parameter and not in the result — a let-polymorphic
-    -- inner variable (`undBodyOnly`).
     , undCallerPoly : Int
     , undLocal : Int
     , undBodyOnly : Int
     , undLeak : Int
     , undeterminedByCallee : CoreDict.Dict String Int
     , undCallerPolyByCallee : CoreDict.Dict String Int
-
-    -- overBudget candidates by pre-mono `cost`: (11-15, 16-25, 26-50, >50),
-    -- plus every over-budget (callee, cost) so the list can be joined against
-    -- the post-mono pass's `inlinedByCallee`.
-    , overBudgetBuckets : ( Int, Int, ( Int, Int ) )
+    , overBudgetBuckets : ( Int, Int, ( Int, Int ) ) -- over-budget candidates by cost: up to 15, 16-25, 26-50, over 50
     , overBudgetCosts : List ( String, Int )
-
-    -- hofParam candidates, by the SHAPE of the function argument at each call
-    -- site's function-typed positions: a syntactic lambda (the shape whose
-    -- inlining keeps a singleton lambda set), a global, or anything else.
-    , hofArgLambda : Int
+    , hofArgLambda : Int -- function-typed arguments, at calls to a hofParam-refused global, that are lambdas
     , hofArgGlobal : Int
     , hofArgOther : Int
-
-    -- Names refused by each candidate-level guard, so post-mono's per-callee
-    -- inline counts can be attributed to the guard that keeps them out here.
     , hofNames : List String
     , polyKernelNames : List String
     , superVarNames : List String
@@ -127,7 +129,8 @@ type alias Metrics =
     }
 
 
-{-| All-zero metrics — what `optimize` reports when the pass is off.
+{-| Metrics with every count zero and every collection empty, for a caller
+that does not run the pass.
 -}
 emptyMetrics : Metrics
 emptyMetrics =
@@ -162,44 +165,41 @@ emptyMetrics =
     }
 
 
+{-| The state threaded through the rewrite of the whole graph.
+
+`state` is the id supply every copy's new identities are minted from.
+`callerBinders` holds the type variables of the annotation of the node being
+rewritten, and is kept only while `censusOn`.
+
+-}
 type alias Ctx =
     { candidates : CoreDict.Dict String Candidate
     , metrics : Metrics
-    , fresh : Int
-    , fuel : Int
-
-    -- The id allocator. A copied body's lambda ids, arrow ids and
-    -- unsubstituted type variables are all minted from it through
-    -- `PreMono.Fresh` — which is what replaced the `_pi` TYPE-name suffix and
-    -- the `varSupers`-by-name re-keying this pass used before `AssignMVarIds`
-    -- moved in front of it.
+    , fresh : Int -- the N of the next copy's `_piN` suffix
+    , fuel : Int -- rounds left
     , state : AssignMVarIds.GlobalMVarState
-
-    -- Q1 census plumbing. `censusOn` = `inline.report`; when off nothing
-    -- below is consulted. `callerBinders` is the free-variable set of the
-    -- annotation of the top-level definition currently being rewritten
-    -- (`rewriteGraph` sets it per node). `hofDeclined` maps a global refused
-    -- by the `hofParam` guard to its per-parameter is-function flags, so the
-    -- shape of the arguments at its call sites can be tallied.
     , censusOn : Bool
     , callerBinders : CoreDict.Dict Int ()
-    , hofDeclined : CoreDict.Dict String (List Bool)
+    , hofDeclined : CoreDict.Dict String (List Bool) -- per parameter of a hofParam-refused global, whether it is function-typed
     }
 
 
+{-| A global admitted for inlining: its parameters and body as they will be
+copied, and what the call-site check needs to know about its types.
+
+`typeVars` are the type variables of `params` and `body`, as `candidateTypeVars`
+gives them; a call must determine all of them. `annBinders` is the number of
+variables the global's annotation quantifies over, zero when it has no
+annotation; zero alongside a non-empty
+`typeVars` means the global has no annotation or the body's types mention
+variables its annotation does not.
+
+-}
 type alias Candidate =
     { params : List ( Name, Can.Type TypeIds.MVarId )
     , body : TOpt.Expr TypeIds.MVarId
     , name : String
-
-    -- Every type variable in `params` and `body` as `Id.toComparable` keys,
-    -- computed once when the candidate is built rather than per inline. Used by
-    -- the `polymorphic` census and by `determines`.
     , typeVars : List Int
-
-    -- Number of binders in the callee's OWN annotation (`Can.Forall`). Zero
-    -- with a non-empty `typeVars` means the body's node types carry variables
-    -- the signature does not — a TYPE_007/POST_010 leak, not polymorphism.
     , annBinders : Int
     }
 
@@ -210,7 +210,13 @@ type alias Candidate =
 -- ============================================================================
 
 
-{-| Inline small non-recursive globals across the whole graph, to a fixpoint.
+{-| Returns `graph` with calls to candidates inlined, the id state advanced
+past every id minted for the copies, and the metrics of the run.
+
+The configuration supplies the cost threshold, the maximum number of rounds
+(at least one is always run) and whether the census is on. Whether the pass
+runs at all is decided by the caller; this function does not read that flag.
+
 -}
 optimize : Config.InlineConfig -> AssignMVarIds.GlobalMVarState -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
 optimize cfg state graph =
@@ -248,6 +254,9 @@ optimize cfg state graph =
     rounds ctx0 graph
 
 
+{-| Runs rewrite rounds over the graph until the fuel runs out or a round
+inlines nothing, and returns the final graph, id state and metrics.
+-}
 rounds : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, AssignMVarIds.GlobalMVarState, Metrics )
 rounds ctx graph =
     if ctx.fuel <= 0 then
@@ -262,7 +271,6 @@ rounds ctx graph =
                 rewriteGraph ctx graph
         in
         if ctx1.metrics.inlineCount == before then
-            -- Fixpoint: a round that inlined nothing cannot be improved on.
             ( graph1, ctx1.state, ctx1.metrics )
 
         else
@@ -275,12 +283,16 @@ rounds ctx graph =
 -- ============================================================================
 
 
-{-| Globals whose body is a small, non-recursive `Function`.
+{-| Builds the candidate index, keyed by `TOpt.toComparableGlobal`, together
+with the candidate counts of `Metrics`.
 
-Recursion is read straight off `Node.Define`'s dependency set: a global that
-reaches itself through the dep graph is refused, which is the same guard
-`MonoInlineSimplify` applies via its call graph. Self-reference alone catches
-direct recursion; the SCC closure below catches mutual recursion.
+Every `Define` or `TrackedDefine` whose value is a function is considered, and
+the guards are tried in this order, the first that applies refusing it:
+recursive (`recursiveGlobals`), no parameters (refused without being counted),
+`cost` above the threshold, `polyKernel`, `hasOpenRecord`, a function-typed
+parameter, and a type variable that has a supertype constraint in the state's
+`superVars`. The per-guard name lists, the over-budget buckets and costs and
+`hofDeclined` are filled only when the census is on.
 
 -}
 buildCandidates :
@@ -406,12 +418,6 @@ buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
                                     candidateTypeVars params body
                             in
                             { a
-                              -- POLYMORPHIC CANDIDATES ARE ADMITTED. This
-                              -- counter used to gate a refusal, and refusing
-                              -- rejected ~98% of what the pass could inline
-                              -- (2,738 of 3,236 on the self-compile). It is
-                              -- kept as a census of how much of the admitted
-                              -- set `PreMono.Fresh`'s type freshening is carrying.
                                 | polymorphic =
                                     if List.isEmpty tvs then
                                         a.polymorphic
@@ -461,18 +467,11 @@ buildCandidates cfg state (TOpt.GlobalGraph nodes _ annotations _ _) =
         nodes
 
 
-{-| Whether a type is a function type — a parameter this pass will not inline
-through.
+{-| Returns whether a type is a function type, looking through aliases.
 
-A higher-order callee's lambda argument has no settled staging or PAP shape
-before monomorphization, and its lambda set is exactly what the LSS track spends
-its effort deriving. `MonoInlineSimplify` has a whole apparatus for this
-(`hofThreshold`, `exactOnly`, `partialHof`, `loopify`) built on
-already-specialized code; none of it is available here.
-
-Measured: inlining `List.foldr` pre-mono made `LetNumberFoldrTest` print `0`
-instead of `105` — a `List number` whose defaulting depends on which of its uses
-survive.
+A candidate with a function-typed parameter is refused. Before
+monomorphization the set of functions that can reach such a parameter, and how
+they will be called, is not yet settled.
 
 -}
 isFunctionType : Can.Type TypeIds.MVarId -> Bool
@@ -488,14 +487,12 @@ isFunctionType tipe =
             False
 
 
-{-| Whether any type in the candidate is an OPEN (row-polymorphic) record.
+{-| Returns whether a parameter type, or the type of any expression in the
+body, contains an open record type `{ r | field : t }`.
 
-`{ r | field : t }` has its layout decided by the ACTUAL record supplied, and
-`matchType` binds only the fields it can see — it has no way to bind the row
-variable `r`, so a copy keeps an open record whose layout is then wrong.
-Measured: the ten `RecordNarrow*` E2E tests SIGSEGV without this guard.
-
-Binding rows properly is the natural successor to this pass, not part of it.
+Such a candidate is refused. The layout of an open record is that of the record
+actually supplied, and `matchType` cannot bind the row variable `r`, so a copy
+would keep a record type whose layout is not known.
 
 -}
 hasOpenRecord : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Bool
@@ -504,12 +501,19 @@ hasOpenRecord params body =
         || openRecordInExpr body
 
 
+{-| Returns whether the type of `expr` or of any expression below it contains
+an open record type.
+-}
 openRecordInExpr : TOpt.Expr TypeIds.MVarId -> Bool
 openRecordInExpr expr =
     openRecordInType (TOpt.typeOf expr)
         || List.any openRecordInExpr (children expr)
 
 
+{-| Returns whether a type contains a record type with an extension variable,
+looking inside arrows, type arguments, tuples, alias arguments and alias
+bodies.
+-}
 openRecordInType : Can.Type TypeIds.MVarId -> Bool
 openRecordInType tipe =
     case tipe of
@@ -538,21 +542,14 @@ openRecordInType tipe =
             False
 
 
-{-| Whether a candidate's body reaches a KERNEL call whose type mentions a type
-variable — in which case it must not be copied, because substituting the call
-site's types into the copy changes that kernel's registered signature.
+{-| Returns whether a candidate has any type variable and its body references
+a kernel whose type mentions a type variable.
 
-`Eco.Crash.crash : String -> a` is the case that found this. Its body is a
-kernel call whose result is the bare variable `a`, so 134 inlines registered
-`Eco_Kernel_Crash_crash` at whatever each caller needed:
-
-    Kernel signature mismatch for Eco_Kernel_Crash_crash:
-        existing (eco.value -> eco.value) vs new (eco.value -> i16)
-
-A kernel symbol is registered by NAME with one ABI, so a polymorphic kernel
-wrapper cannot be instantiated per copy the way ordinary Elm code can. Pure-Elm
-polymorphic candidates — the overwhelming majority — are unaffected: only a
-kernel node whose own type is still variable declines.
+Such a candidate is refused. A kernel symbol has one signature, whatever type
+it is used at, so a copy that substituted the call site's types into the
+kernel reference would ask for the same kernel at a different type. A
+polymorphic candidate whose kernel references all have ground types is not
+refused by this guard.
 
 -}
 polyKernel : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Bool
@@ -561,6 +558,9 @@ polyKernel params body =
         && hasPolymorphicKernel body
 
 
+{-| Returns whether `expr` contains a kernel reference whose type mentions a
+type variable.
+-}
 hasPolymorphicKernel : TOpt.Expr TypeIds.MVarId -> Bool
 hasPolymorphicKernel expr =
     case expr of
@@ -571,32 +571,29 @@ hasPolymorphicKernel expr =
             List.any hasPolymorphicKernel (children expr)
 
 
+{-| A binding of a candidate's type variables to the types a call site gives
+them, as `PreMono.Fresh.Subst` describes.
+-}
 type alias Subst =
     Fresh.Subst
 
 
-{-| One-way structural match of a CALLEE type against the ACTUAL type at the
-call site, binding the callee's variables.
+{-| Returns `subst` extended with the bindings that matching the candidate's
+type `pattern` against the call site's type `actual` gives its type variables.
 
-Renaming a copied body's type variables makes each copy INDEPENDENTLY
-polymorphic, which is sound but leaves the copy's nodes variable-typed with
-nothing to solve them: the call that carried the demand is exactly what
-inlining removed. Measured — `swap : ( a, b ) -> ( b, a )` used at
-`( Int, String )` and at `( String, Int )` produced pointer-sized garbage,
-because the spliced `Tuple` node's slot kinds were laid out from a type that
-was still a variable.
-
-So determine what can be determined, and rename only the rest. Deliberately
-PERMISSIVE: a shape mismatch binds nothing rather than failing, because a
-missing binding degrades to the (sound) rename while a wrong one would not.
+The match is one way and permissive. A variable already bound keeps its first
+binding, even if a later position gives it a different type. Where the two
+types have different shapes, or name different types, nothing is bound there
+and no failure is reported. Aliases are expanded when the two sides are not
+the same alias. Record fields are matched by name, and a record's extension
+variable is never bound. A call whose bindings leave a variable unbound or
+non-ground is refused by `determines`; a conflicting binding is not detected.
 
 -}
 matchType : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Subst -> Subst
 matchType pattern actual subst =
     case ( pattern, actual ) of
         ( Can.TVar n, _ ) ->
-            -- First binding wins; a second, different one would mean the call
-            -- site is inconsistent, and refusing the call is the safe answer.
             if CoreDict.member (Id.toComparable n) subst then
                 subst
 
@@ -646,6 +643,9 @@ matchType pattern actual subst =
             subst
 
 
+{-| Returns `subst` extended by matching each pattern against the actual type in
+the same position, ignoring the extra elements of the longer list.
+-}
 matchList : List (Can.Type TypeIds.MVarId) -> List (Can.Type TypeIds.MVarId) -> Subst -> Subst
 matchList patterns actuals subst =
     List.foldl (\( p, a ) acc -> matchType p a acc)
@@ -653,6 +653,9 @@ matchList patterns actuals subst =
         (List.map2 Tuple.pair patterns actuals)
 
 
+{-| Returns the type an alias's body stores, `Holey` or `Filled`, without
+substituting its parameters.
+-}
 aliasBody : Can.AliasType TypeIds.MVarId -> Can.Type TypeIds.MVarId
 aliasBody alias_ =
     case alias_ of
@@ -663,18 +666,22 @@ aliasBody alias_ =
             t
 
 
-{-| The alias's body with its parameters replaced by the arguments — the
-type the alias stands for. Never matched against with the parameter names
-still in it: they would bind as if they were the caller's variables.
+{-| Returns the type an alias stands for: a `Holey` body with each parameter
+replaced by its argument, or a `Filled` body as it is. Any other type is
+returned unchanged.
+
+`matchType` matches against this expansion, never against a `Holey` body,
+whose parameters would otherwise be bound as if they were the candidate's own
+type variables.
+
 -}
 expandAlias : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 expandAlias tipe =
     case tipe of
         Can.TAlias _ _ args (Can.Holey body) ->
-            -- Alias parameters are alias-LOCAL and are matched BY POSITION, never
-            -- by id membership: after assignment a parameter id was minted by
-            -- name in the definition's env, so it can share an id with a
-            -- same-named scheme binder.
+            -- Parameter ids are minted by name, so one can equal a same-named
+            -- variable of the enclosing definition; only the alias's own pairs
+            -- are substituted.
             substTypeVars
                 (CoreDict.fromList (List.map (\( pn, t ) -> ( Id.toComparable pn, t )) args))
                 body
@@ -686,6 +693,10 @@ expandAlias tipe =
             tipe
 
 
+{-| Returns `tipe` with each type variable found in `env` replaced by its entry.
+A record's extension variable and an alias's stored body are left as they are;
+an alias's arguments are substituted.
+-}
 substTypeVars : CoreDict.Dict Int (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 substTypeVars env tipe =
     case tipe of
@@ -711,26 +722,15 @@ substTypeVars env tipe =
             Can.TAlias h n (List.map (\( pn, t ) -> ( pn, substTypeVars env t )) args) real
 
 
-{-| Every type variable reachable from a candidate's parameter types and body,
-as `Id.toComparable` keys.
+{-| Returns every type variable in a candidate's parameter types and in the
+type of every expression of its body, as `Id.toComparable` keys, without
+duplicates.
 
-**Do not narrow this to exclude reference-node metas.** It feeds three
-consumers — `Candidate.typeVars` (hence `determines`), the `superVar` guard and
-`polyKernel`, whose first conjunct is
-`not (List.isEmpty (candidateTypeVars params body))`. A `VarKernel` meta IS a
-reference meta, so dropping those empties that conjunct for exactly the
-kernel-bodied candidates the guard exists to refuse, and each copy then
-registers one kernel symbol under a different ABI
-(`Kernel signature mismatch for Elm_Kernel_*`). Narrowing the DECISION set
-alone was built, measured and removed on 2026-09-15: it recovered 136 of the
-1,877 undetermined call sites for +34 inlines and a 3-byte artifact move
-(`benchmarks/call-stats.md` Runs 15/16;
-`plans/pre-mono-lss-transforms-05-determines-caller-binders.md` §10).
-
-Used by the `polymorphic` census and by `determines`. The supertype constraint
-of a variable the copy re-mints is carried across by
-`PreMono.Fresh.freshenCopy`, which copies it into `superVars` BY ID — that is
-what replaced this pass's old `varSupers`-by-name re-keying.
+The types of reference nodes, kernel references included, are part of the
+result. `polyKernel` depends on that: its first condition is that this list is
+non-empty, and a candidate whose only type variables are in a kernel
+reference's type would otherwise escape it. The same list is what `determines`
+requires to be ground and what the `superVar` guard checks.
 
 -}
 candidateTypeVars : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> List Int
@@ -742,6 +742,10 @@ candidateTypeVars params body =
         )
 
 
+{-| Returns `acc` with the type variables of the type of `expr` and of every
+expression below it added. Types written elsewhere, such as a `let`
+definition's declared type, are not visited.
+-}
 typeVarsOfExpr : TOpt.Expr TypeIds.MVarId -> CoreDict.Dict Int () -> CoreDict.Dict Int ()
 typeVarsOfExpr expr acc =
     List.foldl typeVarsOfExpr
@@ -749,6 +753,9 @@ typeVarsOfExpr expr acc =
         (children expr)
 
 
+{-| Returns `acc` with the type variables of a type added, a record's extension
+variable included. An alias contributes the variables of its arguments only.
+-}
 typeVarsOfType : Can.Type TypeIds.MVarId -> CoreDict.Dict Int () -> CoreDict.Dict Int ()
 typeVarsOfType tipe acc =
     case tipe of
@@ -780,20 +787,13 @@ typeVarsOfType tipe acc =
             List.foldl typeVarsOfType (typeVarsOfType b (typeVarsOfType a acc)) rest
 
         Can.TAlias _ _ args _ ->
-            -- ALIAS PARAMETERS ARE NOT FREE VARIABLES. `TAlias`'s list pairs the
-            -- alias's own parameter NAMES with the argument types, and a `Holey`
-            -- body mentions those names; `MonoSolver.Store` binds each to its
-            -- argument's Point and restores afterwards ("params are
-            -- alias-local"). Counting them made every `Task`/`IO`-returning
-            -- callee look polymorphic and `determines` refuse it — 273 spurious
-            -- `undetermined` at `Utils.Main.envLookupEnv` alone. A `Filled`
-            -- body's free variables are a subset of the arguments' anyway, so
-            -- the arguments are the whole answer in both cases.
+            -- Alias parameters are local to the alias, not free variables; the
+            -- variables of the type it stands for are those of its arguments.
             List.foldl (\( _, t ) a -> typeVarsOfType t a) acc args
 
 
-{-| Immediate sub-expressions, for the ground-type walk. Includes the decider's
-`Inline` choices — an unshared `case` branch body lives there.
+{-| Returns the immediate sub-expressions of an expression, including the
+branch bodies held in a `case` decider's `Inline` leaves.
 -}
 children : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 children expr =
@@ -844,6 +844,9 @@ children expr =
             []
 
 
+{-| Returns the expression a `let` definition binds, or a tail definition's
+body.
+-}
 defChildren : TOpt.Def TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 defChildren def =
     case def of
@@ -854,6 +857,8 @@ defChildren def =
             [ body ]
 
 
+{-| Returns the expressions in a decider's `Inline` leaves.
+-}
 deciderChildren : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId)
 deciderChildren decider =
     case decider of
@@ -871,17 +876,12 @@ deciderChildren decider =
                 ++ deciderChildren fallback
 
 
-{-| The inlinable `(params, body)` of a top-level node, if it has one.
+{-| Returns the parameters and body of a `Define` or `TrackedDefine` node whose
+value is a `Function` or `TrackedFunction`, and `Nothing` for any other node.
+The parameter list may be empty.
 
-Both `Define` and `TrackedDefine` carry bodies, and both `Function` and
-`TrackedFunction` are lambda forms — `TrackedFunction` is what the front end
-emits for a definition with source-tracked parameter names, which is the
-COMMON case for user code. Missing it here is why the first census run
-reported a single candidate for the whole program.
-
-`TrackedFunction`'s params are `A.Located Name`; they are stripped to bare
-names because the inlined copy binds them as ordinary `Let`s, which take a
-bare `Name`.
+A `TrackedFunction`'s parameter names lose their regions, because the copy
+binds them with ordinary `let` definitions, which take a bare name.
 
 -}
 bodyOf : TOpt.Node TypeIds.MVarId -> Maybe ( List ( Name, Can.Type TypeIds.MVarId ), TOpt.Expr TypeIds.MVarId )
@@ -909,21 +909,14 @@ bodyOf node =
             Nothing
 
 
-{-| Globals that must never be inlined because inlining them would not
-terminate: anything in a dependency CYCLE, plus anything that names itself.
+{-| Returns the globals that are recursive, as `TOpt.toComparableGlobal` keys.
 
-Three independent sources, unioned, because no one of them is complete:
-
-  - `Compiler.Graph.stronglyConnComp` over the `Define`/`TrackedDefine`/`Cycle`
-    dependency sets — this is what catches MUTUAL recursion, `f -> g -> f`,
-    which a self-reference test cannot see;
-  - membership of a `Cycle` node, which is recursive by construction;
-  - a STRUCTURAL scan of the body for a `VarGlobal`/`VarCycle` naming the node
-    itself. This is not redundant with the SCC: a self-recursive function's
-    `deps` set did not contain itself in the graph the test harness builds, so
-    the SCC reported it acyclic and the self-recursive fixture was admitted as
-    an inline candidate. The structural scan is the one that cannot be wrong,
-    because it reads the body that would actually be copied.
+A global is recursive if any of three tests says so, because no one of them
+is relied on to be complete. It is in a cyclic strongly connected component of
+the graph whose edges are the nodes' dependency sets, which finds mutual
+recursion. It is a `Cycle` node. Or the body `bodyOf` gives for it names the
+global itself (`namesSelf`), which does not depend on the dependency set
+listing the node itself.
 
 -}
 recursiveGlobals : Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> CoreDict.Dict String ()
@@ -1003,7 +996,8 @@ recursiveGlobals nodes =
     CoreDict.union inCycle structural
 
 
-{-| Whether an expression mentions the given global by name, anywhere.
+{-| Returns whether an expression refers to the given global anywhere, as a
+global, a cycle member, an enum constructor or a box constructor.
 -}
 namesSelf : TOpt.Global -> TOpt.Expr TypeIds.MVarId -> Bool
 namesSelf ((TOpt.Global home name) as g) expr =
@@ -1024,6 +1018,8 @@ namesSelf ((TOpt.Global home name) as g) expr =
             List.any (namesSelf g) (children expr)
 
 
+{-| Returns the name under which a global is reported in the metrics.
+-}
 qualifiedName : TOpt.Global -> String
 qualifiedName g =
     TOpt.toComparableGlobal g
@@ -1035,9 +1031,14 @@ qualifiedName g =
 -- ============================================================================
 
 
-{-| Body cost, mirroring `MonoInlineSimplify.computeCost`'s shape with the
-kernel arm collapsed to the flat 6 (that plan's §3: pre-mono the kernel is
-known but its concrete instance is not, so the cost-class vector cannot apply).
+{-| Returns the size of an expression as the inliner prices it, which is what
+is compared with the cost threshold.
+
+A literal, a variable reference of any kind (a kernel reference included), a
+unit, an accessor or a shader costs 1. A compound expression costs a fixed
+amount for itself, from 1 for a field access to 5 for a function or a call,
+plus the cost of its parts.
+
 -}
 cost : TOpt.Expr TypeIds.MVarId -> Int
 cost expr =
@@ -1133,11 +1134,9 @@ cost expr =
             1
 
 
-{-| The cost of a decider tree. `Case`'s branch list holds only the SHARED
-jump targets; an unshared branch body sits in a `Leaf (Inline expr)` inside the
-decider. Omitting this arm under-counts a `case`-heavy body by its whole
-branch weight, which is how a budget-respecting inliner ends up copying
-something enormous.
+{-| Returns the cost of a decision tree, including the branch bodies in its
+`Inline` leaves. A branch body held in the tree rather than in the `case`'s
+list of `Jump` targets is priced only here.
 -}
 costDecider : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Int
 costDecider decider =
@@ -1155,6 +1154,9 @@ costDecider decider =
             1 + sumBy (\( _, d ) -> costDecider d) branches + costDecider fallback
 
 
+{-| Returns the cost of the expression a `let` definition binds, or of a tail
+definition's body.
+-}
 costDef : TOpt.Def TypeIds.MVarId -> Int
 costDef def =
     case def of
@@ -1165,6 +1167,8 @@ costDef def =
             cost body
 
 
+{-| Returns the sum of `f` over a list.
+-}
 sumBy : (a -> Int) -> List a -> Int
 sumBy f =
     List.foldl (\x acc -> acc + f x) 0
@@ -1176,6 +1180,9 @@ sumBy f =
 -- ============================================================================
 
 
+{-| Runs one round: rewrites every node of the graph, and returns the new graph
+with its other parts unchanged, together with the context after the round.
+-}
 rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, Ctx )
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
@@ -1187,16 +1194,7 @@ rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSuper
                             if c.censusOn then
                                 { c
                                     | callerBinders =
-                                        -- From the annotation's TYPE, not its
-                                        -- `FreeVars`: `Can.FreeVars` is
-                                        -- `Dict Name ()` and is NOT
-                                        -- id-parameterised, so it still carries
-                                        -- NAMES after assignment. The two agree
-                                        -- by construction —
-                                        -- `AssignMVarIds.rewriteAnnotation`
-                                        -- seeds every binder through
-                                        -- `ensureBinder`, so the type's
-                                        -- variables ARE the scheme's binders.
+                                        -- Read from the annotation's type: its FreeVars are keyed by name, not id.
                                         case Dict.get TOpt.toComparableGlobal g annotations of
                                             Just (Can.Forall _ annType) ->
                                                 typeVarsOfType annType CoreDict.empty
@@ -1219,6 +1217,10 @@ rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSuper
     ( TOpt.GlobalGraph nodes1 fields annotations schemeRoots varSupers, ctx1 )
 
 
+{-| Returns a node with every call in its expression rewritten. Only `Define`,
+`TrackedDefine` and port nodes have an expression rewritten; every other node,
+a `Cycle` included, is returned unchanged.
+-}
 rewriteNode : Ctx -> TOpt.Node TypeIds.MVarId -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx node =
     case node of
@@ -1251,11 +1253,17 @@ rewriteNode ctx node =
             ( TOpt.PortOutgoing e1 deps meta, c1 )
 
         _ ->
-            -- Ctor/Enum/Box/Link/Manager/Kernel/Cycle carry no inlinable body
-            -- (Cycle is recursive by construction and refused above).
             ( node, ctx )
 
 
+{-| Returns an expression with every call to a candidate inlined where the call
+has as many arguments as the candidate has parameters and determines it.
+
+The function and arguments of a call are rewritten before the call itself is
+tried, and the copy that replaces a call is not rewritten again in the same
+round.
+
+-}
 rewriteExpr : Ctx -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 rewriteExpr ctx expr =
     case expr of
@@ -1407,10 +1415,11 @@ rewriteExpr ctx expr =
             ( TOpt.Update region record1 fields1 meta, c1 )
 
         _ ->
-            -- Literals, vars, accessors, shaders: no sub-expressions.
             ( expr, ctx )
 
 
+{-| Returns a record's or record update's field expressions, each rewritten.
+-}
 rewriteLocatedFields :
     Ctx
     -> Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
@@ -1428,9 +1437,8 @@ rewriteLocatedFields ctx fields =
         fields
 
 
-{-| Rewrite the expressions hanging off a decider tree. `Leaf (Inline e)` is a
-whole unshared `case` branch body, so skipping this loses inlining across every
-non-jump branch in the program.
+{-| Returns a decision tree with the branch bodies in its `Inline` leaves
+rewritten. Its tests and paths are unchanged.
 -}
 rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 rewriteDecider ctx decider =
@@ -1475,6 +1483,8 @@ rewriteDecider ctx decider =
             ( TOpt.FanOut path (List.reverse branches1) fallback1, cf )
 
 
+{-| Rewrites `body` and returns `rebuild` applied to the result.
+-}
 mapBody : Ctx -> TOpt.Expr TypeIds.MVarId -> (TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId) -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 mapBody ctx body rebuild =
     let
@@ -1484,6 +1494,8 @@ mapBody ctx body rebuild =
     ( rebuild body1, c1 )
 
 
+{-| Returns a list of expressions, each rewritten, in their original order.
+-}
 rewriteList : Ctx -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteList ctx items =
     let
@@ -1502,6 +1514,9 @@ rewriteList ctx items =
     ( List.reverse rev, c )
 
 
+{-| Returns a `let` definition with its bound expression, or a tail definition's
+body, rewritten.
+-}
 rewriteDef : Ctx -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteDef ctx def =
     case def of
@@ -1526,18 +1541,14 @@ rewriteDef ctx def =
 -- ============================================================================
 
 
-{-| Exact-arity inline of a known global.
+{-| Returns the copy that replaces a call, or `Nothing` if the call is not
+inlined, together with the updated context.
 
-`Call (VarGlobal g) args` where `g`'s body is `Function params body` and
-`List.length args == List.length params` becomes
-
-    let p1' = arg1 in
-    let p2' = arg2 in
-    body'
-
-with `p_i'` fresh and `body'` the body with EVERY binder freshened. Arguments
-are bound rather than substituted so they evaluate in the caller's scope (see
-the module doc).
+A call is inlined when its function is a direct reference to a candidate, it
+has exactly as many arguments as the candidate has parameters, and it
+determines the candidate. A call that fails only the last test is counted as
+undetermined; a call to a global refused for a function-typed parameter is
+counted in the argument-shape census when the census is on.
 
 -}
 tryInline : Ctx -> A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> ( Maybe (TOpt.Expr TypeIds.MVarId), Ctx )
@@ -1559,9 +1570,6 @@ tryInline ctx region func args callMeta =
                                 (doInline ctx region cand args subst)
 
                         else
-                            -- The CALL SITE does not pin this callee's types
-                            -- down, so decline THIS call rather than the
-                            -- candidate. See `determines`.
                             ( Nothing
                             , { ctx
                                 | metrics =
@@ -1582,10 +1590,9 @@ tryInline ctx region func args callMeta =
             ( Nothing, ctx )
 
 
-{-| Q1 census: why did `determines` fail at this call? Off unless
-`inline.report`. A site is `undLocal` if ANY offending free variable is not a
-binder of the caller's annotation; else `undBodyOnly` if any callee variable
-occurs in no parameter and not in the result; else `undCallerPoly`.
+{-| Returns the metrics after one undetermined call: `bump` applied to `m0`,
+and, when the census is on, the call classed as the `Metrics` docstring
+describes and counted under the candidate's name.
 -}
 censusUndetermined : Ctx -> Candidate -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Subst -> (Metrics -> Metrics) -> Metrics -> Metrics
 censusUndetermined ctx cand args callMeta subst bump m0 =
@@ -1610,7 +1617,7 @@ censusUndetermined ctx cand args callMeta subst bump m0 =
             freeOf t =
                 CoreDict.keys (typeVarsOfType t CoreDict.empty)
 
-            -- The free variables the call site offers for callee var `v`.
+            -- The variables the call site's types offer for callee variable `v`.
             offered v =
                 case CoreDict.get v subst of
                     Just t ->
@@ -1711,8 +1718,10 @@ censusUndetermined ctx cand args callMeta subst bump m0 =
         }
 
 
-{-| Q1 census: at a call to a global refused by the `hofParam` guard, what
-shape is each function-typed argument? Off unless `inline.report`.
+{-| Returns the context with the census of argument shapes updated for a call
+to `g`: when the census is on and `g` was refused for a function-typed
+parameter, each argument in such a position is counted as a lambda, a global
+reference or anything else.
 -}
 censusHofArgs : Ctx -> TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Ctx
 censusHofArgs ctx g args =
@@ -1752,9 +1761,9 @@ censusHofArgs ctx g args =
                 { ctx | metrics = m }
 
 
-{-| What the call site says each of the callee's type variables is: parameters
-against the actual arguments, plus the callee's result type against the call's
-own type.
+{-| Returns what a call site says each of a candidate's type variables is, by
+matching each parameter type against its argument's type and then the body's
+type against the call's own type.
 -}
 callSiteSubst : Candidate -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Subst
 callSiteSubst cand args callMeta =
@@ -1767,22 +1776,15 @@ callSiteSubst cand args callMeta =
         )
 
 
-{-| Whether the call site determines EVERY one of the callee's type variables,
-concretely.
+{-| Returns whether `subst` binds every type variable of the candidate to a
+ground type.
 
-**This is the guard that makes copying a polymorphic body safe, and it has to
-be per CALL rather than per candidate.** Renaming a copy's type variables makes
-it independently polymorphic, which is sound but leaves its nodes
-variable-typed with nothing to solve them — the call that carried the demand is
-what inlining removed. The layout decisions then go wrong: `swap` at two tuple
-types returned pointer-sized garbage, and `Tuple.second` SIGSEGV'd the ten
-`RecordNarrow*` tests.
-
-The tempting reading is that a call site always knows its argument types. It
-does not: this pass runs BEFORE monomorphization, so an argument's `meta.tipe`
-is frequently still a variable that only `MonoSolver` resolves. Where that
-happens the copy would be variable-typed however carefully it is renamed, so
-the only safe answer is to leave the call alone.
+This is checked per call, not per candidate. Before monomorphization the type
+of an argument or of the call is often still a variable that only
+monomorphization resolves, and a copy made at such a call would keep
+variable-typed nodes with nothing left to resolve them, so the call is left in
+place. Another call to the same candidate, with ground types, can still be
+inlined.
 
 -}
 determines : Candidate -> Subst -> Bool
@@ -1799,11 +1801,18 @@ determines cand subst =
         cand.typeVars
 
 
+{-| Returns whether a type contains no type variable, by the variables
+`typeVarsOfType` collects.
+-}
 isGroundType : Can.Type TypeIds.MVarId -> Bool
 isGroundType tipe =
     CoreDict.isEmpty (typeVarsOfType tipe CoreDict.empty)
 
 
+{-| Returns the copy that replaces a call: the candidate's freshened body
+wrapped in one `let` per parameter, binding the suffixed parameter to its
+argument, the first parameter outermost. The inline counts are updated.
+-}
 doInline : Ctx -> A.Region -> Candidate -> List (TOpt.Expr TypeIds.MVarId) -> Subst -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 doInline ctx region cand args subst =
     let
@@ -1835,29 +1844,18 @@ doInline ctx region cand args subst =
     )
 
 
-{-| Freshen a candidate body before splicing it into the caller: TYPE identity
-through `PreMono.Fresh`, TERM names by a uniform per-copy suffix.
+{-| Returns a candidate's body and parameters as one copy needs them, and the
+context with the copy counter and the id state advanced.
 
-**Types.** `Fresh.freshenCopy` mints a new `SrcLambdaId` for every lambda in the
-copy, a new `ArrowId` for every arrow, and — for every type variable the call
-site did NOT determine — a fresh `MVarId` carrying the original's supertype
-constraint. Determined variables are replaced by the call site's own type,
-spliced verbatim. This replaced the `_pi` TYPE-name suffix, the
-`varSupers`-by-name re-keying and the `SolverRoot -> NoArrow` clearing that this
-pass used while it ran before `AssignMVarIds`.
+The types are freshened by `PreMono.Fresh`: `freshenCopy` for the body and
+`freshenType` for each parameter type, with `subst` giving the call site's
+types. Because `determines` has accepted the call, every type variable in
+`typeVars` is substituted.
 
-**Terms.** Every LOCAL name in the body — binder or use, `Let`/`TailDef`/
-`Destruct` binder, `Function`/`TrackedFunction` parameter, `Case` label and
-root, `TailCall` label, `Path` root — gets the same `_pi<n>` suffix, unique to
-this copy. Globals are untouched. A uniform suffix is INJECTIVE on names, so it
-preserves shadowing exactly and needs no scope tracking: an inner `\x -> x`
-under an outer `let x` still shadows, because both become the same `x_pi7` at
-the same two depths.
-
-Inlining one body at two sites in one caller would otherwise produce two
-`let x = …` with the same name, which the backend rejects as an SSA
-redefinition; and the mono pass's destructure-binder capture bug cannot recur
-here because the walk has no per-binder-kind opt-out.
+Every local name, in the body and in the parameters, gets the suffix `_piN`,
+where `N` is this copy's number. Global names are untouched. Because the same
+suffix is added to every local name, two names are equal after the rename
+exactly when they were before, so shadowing within the body is unchanged.
 
 -}
 freshenBody : Ctx -> Subst -> Candidate -> ( TOpt.Expr TypeIds.MVarId, List ( Name, Can.Type TypeIds.MVarId ), Ctx )
@@ -1866,13 +1864,10 @@ freshenBody ctx subst cand =
         suffix =
             "_pi" ++ String.fromInt ctx.fresh
 
-        -- One `freshenCopy` walk over the body, then the parameter types
-        -- through the same allocator. The parameter types are the declared
-        -- types of the `let` wrappers `doInline` builds; they are copies of the
-        -- candidate's, so they mint their own arrow ids exactly as the body's do.
         ( freshBody, state1 ) =
             Fresh.freshenCopy subst ctx.state cand.body
 
+        -- The parameter types become the declared types of the `let`s, so they get fresh arrow ids too.
         ( renamedParams, state2 ) =
             List.foldl
                 (\( n, t ) ( acc, st ) ->
@@ -1891,8 +1886,11 @@ freshenBody ctx subst cand =
     )
 
 
-{-| Apply the copy suffix to every local name in an expression. See
-`freshenBody` for why a blanket rename is the right thing here.
+{-| Returns an expression with `sfx` appended to every local name: variable
+uses, function parameters, `let`, tail-definition and destructuring binders,
+`case` labels and roots, tail-call labels and argument names, and the roots of
+destructuring paths. Global names, types and decision-tree tests are left
+unchanged.
 -}
 suffixExpr : String -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId
 suffixExpr sfx expr =
@@ -1907,12 +1905,6 @@ suffixExpr sfx expr =
             A.At (A.toRegion ln) (nm (A.toValue ln))
     in
     case expr of
-        -- Literals and globals have no local names and no sub-expressions, but
-        -- they DO carry a `Meta`, and that type can hold a variable — a numeric
-        -- literal is `TVar "number42"`, and a `VarGlobal` carries the callee's
-        -- instantiated type. A catch-all `_ -> expr` here silently leaves those
-        -- unrenamed, which is the same shared-variable collapse the rename
-        -- exists to prevent, just harder to see.
         TOpt.Bool region b meta ->
             TOpt.Bool region b meta
 
@@ -2021,6 +2013,9 @@ suffixExpr sfx expr =
             TOpt.Shader src inputs outputs meta
 
 
+{-| Returns a `let` or tail definition with `sfx` appended to its name, its
+parameter names and every local name in its expression.
+-}
 suffixDef : String -> TOpt.Def TypeIds.MVarId -> TOpt.Def TypeIds.MVarId
 suffixDef sfx def =
     case def of
@@ -2046,6 +2041,8 @@ suffixDef sfx def =
                 tvar
 
 
+{-| Returns a destructuring path with `sfx` appended to the name at its root.
+-}
 suffixPath : String -> TOpt.Path -> TOpt.Path
 suffixPath sfx path =
     case path of
@@ -2065,6 +2062,9 @@ suffixPath sfx path =
             TOpt.Root (n ++ sfx)
 
 
+{-| Returns a decision tree with `sfx` applied to the expressions in its
+`Inline` leaves.
+-}
 suffixDecider : String -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> TOpt.Decider (TOpt.Choice TypeIds.MVarId)
 suffixDecider sfx decider =
     case decider of

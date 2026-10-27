@@ -5,12 +5,26 @@ module Compiler.Elm.Kernel exposing
     , chunkEncoder, chunkDecoder
     )
 
-{-| Parser and utilities for Elm kernel JavaScript code.
+{-| A kernel module is a JavaScript file that implements part of an Elm package
+by hand, and the JavaScript back end has to rename things inside it as it emits
+it. This module parses such a file into the pieces that need renaming and the
+plain text between them.
 
-Kernel modules contain JavaScript code that interfaces with Elm values. This module parses
-kernel files into chunks representing JavaScript code, Elm variable references, field accesses,
-and conditional compilation markers. The parser recognizes special tags like \_\_x where x identifies
-the type of reference (Elm variable, JS variable, field, enum, DEBUG/PROD).
+A kernel file opens with a `/* ... */` comment holding Elm `import` lines. Each
+import names either an Elm module or another kernel module (one whose name starts
+with `Elm.Kernel.` or `Eco.Kernel.`), and its `exposing` list names the values the
+file refers to. In the body, a value is referred to by a _kernel tag_: two
+underscores followed by a name. The tag `__List_map`, given
+`import List exposing (map)`, is the Elm function `List.map`. For an Elm module
+the part before the underscore is its alias or, without one, its name; for a
+kernel module it is the name after `Elm.Kernel.` or `Eco.Kernel.`, so
+`import Elm.Kernel.Utils exposing (eq)` gives `__Utils_eq`.
+
+The body is split at every kernel tag into a list of _chunks_. The character
+after the two underscores decides what a tag is: `$` makes an Elm record field,
+a digit an enumeration value, a lower case letter a JavaScript field, and
+`__DEBUG` and `__PROD` are mode markers. Any other tag must be one of the names
+the header imports, and is otherwise an error.
 
 
 # Types
@@ -55,20 +69,29 @@ import Utils.Crash exposing (crash)
 -- ====== CHUNK ======
 
 
-{-| Represents a parsed chunk of kernel JavaScript code.
+{-| One piece of a parsed kernel file: either JavaScript text copied as it is, or
+something the back end writes in place of a kernel tag.
 
-Kernel code is parsed into chunks that represent different types of content:
+`JS` is the text between two tags, or before the first or after the last. It may
+be empty.
 
-  - JS: Raw JavaScript code
-  - ElmVar: Reference to an Elm variable from another module
-  - JsVar: Reference to a JavaScript variable from a kernel module, given by
-    the kernel prefix (`Elm` or `Eco`) and home of the module it is imported
-    from, as in `import Eco.Kernel.File exposing (size)`, and its name
-  - ElmField: Reference to an Elm record field (\_\_$fieldName)
-  - JsField: Reference to a JavaScript field by index
-  - JsEnum: Reference to an enumeration value by index
-  - Debug: Conditional compilation marker for debug mode
-  - Prod: Conditional compilation marker for production mode
+`ElmVar` is an Elm value imported in the header, with the canonical name of its
+module.
+
+`JsVar` is a value of another kernel module imported in the header. It carries
+the kernel prefix (`Elm` or `Eco`), the rest of the module name (`File` for
+`Eco.Kernel.File`), and the value's name.
+
+`ElmField` is the Elm record field named after `__$`.
+
+`JsField` and `JsEnum` are numbers standing for names. Within one file, each
+distinct `__name` that starts with a lower case letter gets the next field
+number, from 0, in order of first appearance. Tags starting with a digit are
+numbered the same way, with a separate count for each leading digit, so `__1a`
+and `__2a` may both be 0.
+
+`Debug` and `Prod` are the `__DEBUG` and `__PROD` markers, which the back end
+renders differently in development and production mode.
 
 -}
 type Chunk
@@ -86,17 +109,17 @@ type Chunk
 -- ====== COUNT FIELDS ======
 
 
-{-| Count the number of times each Elm field is referenced in a list of chunks.
-
-Returns a dictionary mapping field names to their occurrence counts. Only ElmField
-chunks are counted; all other chunk types are ignored.
-
+{-| Returns, for each record field named by an `ElmField` chunk in `chunks`, how
+many times it occurs.
 -}
 countFields : List Chunk -> Dict Name Int
 countFields chunks =
     List.foldr addField Dict.empty chunks
 
 
+{-| Returns `fields` with the count of the chunk's field raised by one, starting at 1,
+when the chunk is an `ElmField`, and `fields` unchanged otherwise.
+-}
 addField : Chunk -> Dict Name Int -> Dict Name Int
 addField chunk fields =
     case chunk of
@@ -135,31 +158,32 @@ addField chunk fields =
 -- ====== FROM FILE ======
 
 
-{-| Represents the parsed content of a kernel module file.
-
-Contains the list of imports from the kernel module header comment and the parsed
-chunks representing the JavaScript code body.
-
+{-| A parsed kernel file: the imports from its header comment, in source order,
+and the chunks of its body.
 -}
 type Content
     = Content (List (Src.C1 Src.Import)) (List Chunk)
 
 
-{-| Maps module names to their package names.
+{-| The package each Elm module visible to a kernel file comes from, keyed by
+module name.
 
-Used to resolve imported Elm modules to their canonical package locations when
-processing kernel module imports.
+A module imported in the header that is missing from it is taken to be in the
+kernel file's own package.
 
 -}
 type alias Foreigns =
     Dict ModuleName.Raw Pkg.Name
 
 
-{-| Parse a kernel module file from a string.
+{-| Parses the text of a kernel file belonging to package `pkg`.
 
-Expects kernel files to start with a comment block containing imports, followed by
-JavaScript code with special tags (\_\_x patterns) that reference Elm and JS variables,
-fields, and conditional compilation markers. Returns Nothing if parsing fails.
+The file must open with `/*`, then the header's import lines, each on a line of
+its own, then `*/`. It returns `Nothing` if the header does not parse, or if the
+body has a kernel tag that is in no category and was not imported. Some headers
+that parse are rejected by crashing instead: an `as` on a kernel import, a dotted
+Elm module imported without `as`, `exposing (..)`, `Type(..)`, or an operator in
+an `exposing` list.
 
 -}
 fromByteString : Pkg.Name -> Foreigns -> String -> Maybe Content
@@ -172,6 +196,9 @@ fromByteString pkg foreigns bytes =
             Nothing
 
 
+{-| Produces the parser for a whole kernel file of package `pkg`, as
+`fromByteString` describes.
+-}
 parser : Pkg.Name -> Foreigns -> P.Parser () Content
 parser pkg foreigns =
     P.word2 '/' '*' toError
@@ -186,11 +213,16 @@ parser pkg foreigns =
             )
 
 
+{-| Returns the parse error, which carries nothing, whatever the position.
+-}
 toError : Row -> Col -> ()
 toError _ _ =
     ()
 
 
+{-| Returns the parse error, which carries nothing, discarding the error of a
+sub-parser and its position.
+-}
 ignoreError : a -> Row -> Col -> ()
 ignoreError _ _ _ =
     ()
@@ -200,6 +232,9 @@ ignoreError _ _ _ =
 -- ====== PARSE CHUNKS ======
 
 
+{-| Produces a parser that reads the rest of the input as kernel file body, resolving
+imported tags with `vtable`. It fails unless every tag in the body is understood.
+-}
 parseChunks : VarTable -> Enums -> Fields -> P.Parser () (List Chunk)
 parseChunks vtable enums fields =
     P.Parser
@@ -216,6 +251,14 @@ parseChunks vtable enums fields =
         )
 
 
+{-| Returns the chunks of `src` from `pos` to `end`, with the position, row and column
+reached.
+
+`lastPos` is where the current run of plain JavaScript started, and `revChunks`
+holds the chunks already found, most recent first. The returned position is
+`end` on success; any smaller position means a tag could not be resolved.
+
+-}
 chompChunks : VarTable -> Enums -> Fields -> String -> Int -> Int -> Row -> Col -> Int -> List Chunk -> ( ( List Chunk, Int ), ( Row, Col ) )
 chompChunks vs es fs src pos end row col lastPos revChunks =
     if pos >= end then
@@ -265,20 +308,29 @@ chompChunks vs es fs src pos end row col lastPos revChunks =
             chompChunks vs es fs src newPos end row (col + 1) lastPos revChunks
 
 
+{-| The enumeration numbers given so far in one file, keyed by leading digit, then
+by tag name.
+
+The digit key is the digit's value, 0 to 9, not its character code.
+
+-}
 type alias Enums =
     Dict Int (Dict Name Int)
 
 
+{-| The JavaScript field numbers given so far in one file, keyed by tag name.
+-}
 type alias Fields =
     Dict Name Int
 
 
+{-| Returns the text of `src` from index `pos` up to, but not including, `end`.
+-}
 toByteString : String -> Int -> Int -> String
 toByteString src pos end =
     let
         off : Int
         off =
-            -- pos - unsafeForeignPtrToPtr src
             pos
 
         len : Int
@@ -288,6 +340,16 @@ toByteString src pos end =
     String.slice off (off + len) src
 
 
+{-| Returns the chunks of `src` from `pos`, the first character after the tag's
+character (the one after `__`), to `end`, having first added the chunk for that
+tag.
+
+The tag's name runs to the end of the identifier characters after `pos`. For
+`__$` the name excludes the `$`; for every other tag it includes the tag
+character, so `__1a` and `__a` have the names `1a` and `a`. An unresolved tag
+returns `revChunks` and the position `pos`, which `parseChunks` takes as failure.
+
+-}
 chompTag : VarTable -> Enums -> Fields -> String -> Int -> Int -> Row -> Col -> List Chunk -> ( ( List Chunk, Int ), ( Row, Col ) )
 chompTag vs es fs src pos end row col revChunks =
     let
@@ -349,6 +411,9 @@ chompTag vs es fs src pos end row col revChunks =
                     ( ( revChunks, pos ), ( row, col ) )
 
 
+{-| Returns the field number of `name`, giving it the next unused number when it has
+none, with the table that records it.
+-}
 lookupField : Name -> Fields -> ( Int, Fields )
 lookupField name fields =
     case Dict.get name fields of
@@ -364,6 +429,10 @@ lookupField name fields =
             ( n, Dict.insert name n fields )
 
 
+{-| Returns the enumeration number of `var` among the tags whose leading digit has
+the value `Char.toCode word`, giving it the next unused number when it has none,
+with the table that records it.
+-}
 lookupEnum : Char -> Name -> Enums -> ( Int, Enums )
 lookupEnum word var allEnums =
     let
@@ -393,15 +462,29 @@ lookupEnum word var allEnums =
 -- ====== PROCESS IMPORTS ======
 
 
+{-| The chunk each imported tag name stands for, keyed by the tag name without its
+leading `__`, such as `List_map`.
+-}
 type alias VarTable =
     Dict Name Chunk
 
 
+{-| Builds the table of imported tag names from the header's `imports`. When two
+imports produce the same tag name, the later one wins.
+-}
 toVarTable : Pkg.Name -> Foreigns -> List (Src.C1 Src.Import) -> VarTable
 toVarTable pkg foreigns imports =
     List.foldl (addImport pkg foreigns) Dict.empty imports
 
 
+{-| Returns `vtable` with an entry for every name in one import's `exposing` list.
+
+A kernel module's names are prefixed with the module name after `Elm.Kernel.` or
+`Eco.Kernel.`, and become `JsVar` chunks. An Elm module's names are prefixed as
+`toPrefix` says and become `ElmVar` chunks, in the package `foreigns` gives, or
+`pkg` when it has none. It crashes on an `as` on a kernel import.
+
+-}
 addImport : Pkg.Name -> Foreigns -> Src.C1 Src.Import -> VarTable -> VarTable
 addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, exposing_ ) ) vtable =
     if Name.isKernel importName then
@@ -437,6 +520,9 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
         List.foldl add vtable (toNames exposing_)
 
 
+{-| Returns the prefix of the tag names for an Elm module `home`: its alias when it
+has one, and otherwise its name, which must then have no dot or it crashes.
+-}
 toPrefix : Name -> Maybe Name -> Name
 toPrefix home maybeAlias =
     case maybeAlias of
@@ -451,6 +537,8 @@ toPrefix home maybeAlias =
                 home
 
 
+{-| Returns the names in an explicit `exposing` list, and crashes on `exposing (..)`.
+-}
 toNames : Src.Exposing -> List Name
 toNames exposing_ =
     case exposing_ of
@@ -461,6 +549,9 @@ toNames exposing_ =
             List.map (Src.c2Value >> toName) exposedList
 
 
+{-| Returns the name of one exposed item. It crashes on an operator and on a type
+exposed with its constructors.
+-}
 toName : Src.Exposed -> Name
 toName exposed =
     case exposed of
@@ -481,12 +572,10 @@ toName exposed =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a Chunk to bytes for serialization.
+{-| Produces the binary encoding of a chunk, which `chunkDecoder` reads back.
 
-Each chunk type is encoded with a tag byte followed by its data. Used for caching
-parsed kernel modules in artifact files. A `JsVar` of an `Elm` kernel keeps the
-tag (2) it had before `JsVar` carried a prefix, so cached `Elm` kernels still
-decode the same; one of an `Eco` kernel has a tag of its own (8).
+Each chunk starts with a tag byte. A `JsVar` has tag 8 when its kernel prefix is
+`Eco` and tag 2 for any other prefix, which `chunkDecoder` reads back as `Elm`.
 
 -}
 chunkEncoder : Chunk -> Bytes.Encode.Encoder
@@ -543,11 +632,8 @@ chunkEncoder chunk =
             Bytes.Encode.unsignedInt8 7
 
 
-{-| Decode a Chunk from bytes during deserialization.
-
-Reads the tag byte to determine the chunk type, then decodes the corresponding data.
-Used for loading cached kernel module artifacts.
-
+{-| The decoder for a chunk written by `chunkEncoder`. It fails on an unknown tag
+byte.
 -}
 chunkDecoder : Bytes.Decode.Decoder Chunk
 chunkDecoder =

@@ -4,11 +4,48 @@ module Compiler.LocalOpt.Typed.Expression exposing
     , destructArgs
     )
 
-{-| Optimizes TypedCanonical expressions into TypedOptimized expressions.
+{-| Monomorphization needs to know the type of every expression it specializes,
+and this module lowers one expression of a definition into the typed optimized
+AST of `Compiler.AST.TypedOptimized` with that type attached.
 
-This module transforms TypedCanonical AST (where every expression has its type)
-into TypedOptimized representation suitable for code generation. Each (TOpt.Expr Name)
-carries a Can.Type Name annotation.
+Every node it builds carries a _meta_: the node's `Can.Type`, and where one is
+known, its _solver variable_, the type checker's variable for that expression.
+Both come from two tables indexed by canonical node id, _exprTypes_ (each
+expression's or pattern's solved type) and _exprVars_ (its solver variable), as
+`Compiler.AST.TypedCanonical` describes. The typed canonical AST wraps only a
+definition's top expression, so each sub-expression is wrapped with
+`Compiler.TypedCanonical.Build.toTypedExpr` as it is reached. A type missing
+from a table, a local name not in scope, or a top-level name with no annotation
+crashes the compiler; there is no error value.
+
+Most nodes take the type at the expression itself. The exceptions follow from
+where a correct type can be found:
+
+  - A local variable is typed by its binding, not its use: each binder (a
+    function argument, a destructured name, a `let` or `let rec` name) is added
+    to the local type environment of `Compiler.LocalOpt.Typed.Names` before its
+    scope is lowered.
+  - A reference to a name in the current `Cycle` is a `VarCycle` typed with the
+    name's annotation.
+  - A `Debug` function carries its annotation's generic type.
+  - `Char` and `String` literals carry the fixed `Char` and `String` types.
+  - A kernel reference, a number literal and an operator reference carry the
+    type checker's type at the use. The kernel type environment is passed
+    through the lowering functions but never read.
+
+Four operators written as operators (a `Can.Binop`) are rewritten rather than
+called. `&&` and `||` become an `If` with a synthesized `Bool` literal, so
+that the right operand is evaluated only when needed. `|>` and `<|` become the
+application they denote, so that a rewritten pipe is never a call to
+`Basics.apR` or `Basics.apL`; they are only a way to avoid brackets. The same
+operators used as values, as in `List.foldl (&&)`, stay references to
+`Basics.and`, `Basics.or`, `Basics.apR` and `Basics.apL`.
+
+A function definition's patterns are lowered by `destructArgs` to one named
+argument each and a list of `Destructor`s that bind the names inside the
+patterns. `optimizePotentialTailCall` lowers a definition whose body calls
+itself in tail position to a `TailDef` whose tail-position self-calls with a
+full set of arguments are `TailCall`s.
 
 @docs Cycle, Annotations
 @docs optimize, optimizePotentialTailCall
@@ -42,16 +79,20 @@ import Utils.Main as Utils
 -- ====== TYPES ======
 
 
-{-| Set of names that participate in a recursive definition cycle.
+{-| The names of a recursive group of top-level definitions whose references
+are lowered to `VarCycle`.
+
+The caller decides which names are in it. A reference to a top-level name in
+the set becomes a `VarCycle`, and so does a local variable whose name is in it.
+
 -}
 type alias Cycle =
     EverySet String Name.Name
 
 
-{-| Dictionary mapping variable names to their type annotations.
+{-| The type annotations of the module's top-level definitions, by name.
 
-Used to look up types during optimization for kernel function typing
-and other type-directed optimizations.
+Here it gives the type of a `VarCycle` reference.
 
 -}
 type alias Annotations =
@@ -62,14 +103,17 @@ type alias Annotations =
 -- ====== TYPE HELPERS ======
 
 
-{-| Build a function type from argument types and a result type.
+{-| Returns the curried function type taking `argTypes` in order and returning
+`resultType`.
 -}
 buildFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 buildFunctionType argTypes resultType =
     List.foldr Can.tLambda resultType argTypes
 
 
-{-| Peel n argument types from a function type to get the result type.
+{-| Returns what is left of `tipe` after removing `n` argument types from the
+front. It stops early, returning what remains, if `tipe` stops being a function
+type.
 -}
 peelFunctionType : Int -> Can.Type Name -> Can.Type Name
 peelFunctionType n tipe =
@@ -85,39 +129,32 @@ peelFunctionType n tipe =
                 tipe
 
 
-{-| The canonical `Bool` type.
+{-| The type `Basics.Bool`.
 -}
 boolType : Can.Type Name
 boolType =
     Can.TType ModuleName.basics "Bool" []
 
 
-{-| Synthesize a TypedOptimized `Bool` literal carrying consistent Meta.
-Threading the outer `tvar` keeps the synthesized node mapped to the same
-solver variable as the surrounding expression.
+{-| Builds a `Bool` literal of type `Bool` with solver variable `tv`. It is
+used for the literal branch of a rewritten `&&` or `||`, given the variable of
+the whole operator expression.
 -}
 boolLit : A.Region -> Bool -> Maybe Vars.Variable -> TOpt.Expr Name
 boolLit region value tv =
     TOpt.Bool region value { tipe = boolType, tvar = tv }
 
 
-{-| Apply an already-lowered function expression to ONE more argument — the
-lowering of `(|>)` / `(<|)`.
+{-| Returns the lowered function `optFn` applied to one more argument, `optArg`:
+the lowering of `|>` and `<|`.
 
-**Flattening into an existing call spine is the whole point.** `x |> f a b`
-must become the single saturated call `f a b x`, not a one-argument
-application of the already-applied `f a b`: the latter asks the backend to
-extend a partial application where a direct call was available, which is most
-of what the rewrite was supposed to buy.
-
-Both shapes are ones the pipeline already produces from ordinary source — `f a
-b x` canonicalizes to a flat `Can.Call f [a,b,x]`, `(f a b) x` to the nested
-form — so this is a shape choice, not a semantic one, and the flat shape is
-exactly what the un-piped source would have given.
-
-The `Meta` comes from the BINOP node, which is the type of the whole
-application; the extended call keeps the inner call's region, since that is
-the call being saturated.
+When `optFn` is already a `Call`, the argument is appended to its arguments, so
+`x |> f a b` becomes the single call `f a b x`, the shape `f a b x` written
+directly would give. A one-argument call of the call `f a b` would instead
+extend a partial application where a direct call is available. A function that
+is not a `Call` gets a new one-argument `Call` at `region`; an extended call
+keeps its own region. Either way the call's meta is `tipe` and `tv`, the type
+and variable of the whole operator expression.
 
 -}
 applyOneMore : A.Region -> Can.Type Name -> Maybe Vars.Variable -> TOpt.Expr Name -> TOpt.Expr Name -> TOpt.Expr Name
@@ -130,19 +167,16 @@ applyOneMore region tipe tv optFn optArg =
             TOpt.Call region optFn [ optArg ] { tipe = tipe, tvar = tv }
 
 
-{-| Find the solver tvar for a local variable by scanning a Canonical
-expression for `VarLocal name` occurrences.
+{-| Returns the solver variable of the first `VarLocal targetName` in an
+expression that has one recorded, or `Nothing` if no occurrence has one.
+Record fields are searched in field-name order.
 
-Used to recover the _function_ type variable for locally-defined functions:
-
-  - LetRec single-def: scan the RHS body for self-calls.
-  - Non-recursive let: scan the continuation body for uses of the bound name.
-
-Returns the tvar from the first `VarLocal name` found, which is the binder's
-solver variable for the full (possibly polymorphic) function type.
-
-Note: canonicalization forbids name shadowing, so all VarLocal occurrences
-of targetName within a scope refer to the same binding.
+It is how a local function definition gets a solver variable for its function
+type: the search runs over a `let` body for uses of the bound name, or over a
+recursive definition's own body for a reference to its own name. The variable
+found is the one recorded at that occurrence, so for a polymorphic `let`
+function it is the variable of that one use. Canonical names cannot shadow
+one another, so every occurrence found refers to the same binding.
 
 -}
 findVarLocalTvar : Name -> ExprVars -> Can.Expr -> Maybe Vars.Variable
@@ -155,7 +189,6 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
             else
                 Nothing
 
-        -- Leaf nodes: no sub-expressions to search
         Can.VarTopLevel _ _ ->
             Nothing
 
@@ -195,7 +228,6 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
         Can.Shader _ _ ->
             Nothing
 
-        -- Single sub-expression
         Can.Negate e ->
             findVarLocalTvar targetName exprVars e
 
@@ -205,11 +237,9 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
         Can.Access recordExpr _ ->
             findVarLocalTvar targetName exprVars recordExpr
 
-        -- Two sub-expressions
         Can.Binop _ _ _ _ left right ->
             firstJust2 targetName exprVars left right
 
-        -- Function call
         Can.Call func args ->
             case findVarLocalTvar targetName exprVars func of
                 Just v ->
@@ -218,7 +248,6 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                 Nothing ->
                     firstJustList targetName exprVars args
 
-        -- Lists, tuples, records
         Can.List entries ->
             firstJustList targetName exprVars entries
 
@@ -248,7 +277,6 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                         exprVars
                         (List.map (\(Can.FieldUpdate _ e) -> e) (Data.Map.values fieldUpdates))
 
-        -- Control flow
         Can.If branches final ->
             let
                 tryBranch ( cond, branchExpr ) =
@@ -299,6 +327,8 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
             firstJust2 targetName exprVars boundExpr body
 
 
+{-| Returns `findVarLocalTvar` over the body of a `let` definition.
+-}
 findVarLocalTvarInDef : Name -> ExprVars -> Can.Def -> Maybe Vars.Variable
 findVarLocalTvarInDef targetName exprVars def =
     case def of
@@ -309,7 +339,7 @@ findVarLocalTvarInDef targetName exprVars def =
             findVarLocalTvar targetName exprVars body
 
 
-{-| Helper: return first Just from two expressions
+{-| Returns the variable `findVarLocalTvar` finds in `a`, or else in `b`.
 -}
 firstJust2 : Name -> ExprVars -> Can.Expr -> Can.Expr -> Maybe Vars.Variable
 firstJust2 targetName exprVars a b =
@@ -321,7 +351,8 @@ firstJust2 targetName exprVars a b =
             findVarLocalTvar targetName exprVars b
 
 
-{-| Helper: return first Just from a list of expressions
+{-| Returns the variable `findVarLocalTvar` finds in the first expression of
+`exprs` that has one.
 -}
 firstJustList : Name -> ExprVars -> List Can.Expr -> Maybe Vars.Variable
 firstJustList targetName exprVars exprs =
@@ -338,7 +369,8 @@ firstJustList targetName exprVars exprs =
                     firstJustList targetName exprVars rest
 
 
-{-| Helper: return first Just from mapping over a list
+{-| Returns the first `Just` that `f` gives for an element of `list`, trying
+them in order.
 -}
 firstJustMap : (a -> Maybe Vars.Variable) -> List a -> Maybe Vars.Variable
 firstJustMap f list =
@@ -359,17 +391,13 @@ firstJustMap f list =
 -- ====== OPTIMIZE ======
 
 
-{-| Transforms a TypedCanonical expression into a TypedOptimized expression.
+{-| Lowers a typed canonical expression into a typed optimized expression,
+recording its dependencies, field uses and new names in the tracker.
 
-Takes the kernel type environment, annotations, expression types map, home module,
-cycle names, and a typed expression. The type of the expression is taken from the
-TypedCanonical node.
-
-The `exprTypes` parameter is needed to convert subexpressions (which are still
-`Can.Expr`) back to `TCan.Expr` when recursing.
-
-The `home` parameter is needed to create `VarCycle` references for local recursive
-definitions.
+The result's own meta is the type and solver variable on the typed canonical
+node, except where the module docstring says a node is typed otherwise.
+`exprTypes` and `exprVars` type the sub-expressions. `home` is the module of a
+`VarCycle` made from a local variable whose name is in `cycle`.
 
 -}
 optimize : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> ModuleName.Canonical -> Cycle -> TCan.Expr -> Names.Tracker (TOpt.Expr Name)
@@ -379,14 +407,14 @@ optimize kernelEnv annotations exprTypes exprVars home cycle (A.At region texpr)
             optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr
 
 
+{-| Lowers the canonical expression `expr`, whose own type and solver variable
+are `tipe` and `tvar`; `optimize` after unwrapping.
+-}
 optimizeExpr : KernelTypes.KernelTypeEnv -> Annotations -> ExprTypes -> ExprVars -> ModuleName.Canonical -> Cycle -> A.Region -> Can.Type Name -> Maybe Vars.Variable -> Can.Expr_ -> Names.Tracker (TOpt.Expr Name)
 optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr =
     case expr of
         Can.VarLocal name ->
-            -- Check if this local variable is part of a recursive cycle
             if EverySet.member identity name cycle then
-                -- For local recursive definitions, create a VarCycle reference
-                -- to ensure it gets properly linked to the global cycle node
                 let
                     defType =
                         lookupAnnotationType name annotations
@@ -410,10 +438,8 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 Names.registerGlobal region varHome name tipe tvar
 
         Can.VarKernel kernelPrefix kernelHome name ->
-            -- Use the solver-inferred type (tipe) rather than the kernel env type.
-            -- The kernel env stores a single type per kernel (first-usage-wins),
-            -- which is wrong for polymorphic kernels used through aliases
-            -- (e.g., String.fromFloat vs String.fromInt both alias String.fromNumber).
+            -- The use-site type, not one stored per kernel: a polymorphic kernel
+            -- reached through several aliases has a different type at each.
             Names.registerKernel kernelHome (TOpt.VarKernel region kernelPrefix kernelHome name { tipe = tipe, tvar = tvar })
 
         Can.VarForeign foreignHome name _ ->
@@ -423,8 +449,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             Names.registerCtor region ctorHome (A.At region name) index opts tipe tvar
 
         Can.VarDebug debugHome name (Can.Forall _ debugType) ->
-            -- Use the full function type from the annotation, not the instantiated type
-            -- This is needed for the monomorphizer to correctly derive the kernel ABI
+            -- The annotation's generic type, not the type at this use.
             Names.registerDebug name debugHome region debugType tvar
 
         Can.VarOperator _ opHome name _ ->
@@ -441,7 +466,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             Names.pure (TOpt.Str region str { tipe = Can.TType ModuleName.string "String" [], tvar = tvar })
 
         Can.Int int ->
-            -- Use the canonical type `tipe` computed by PostSolve / type inference
             Names.pure (TOpt.Int region int { tipe = tipe, tvar = tvar })
 
         Can.Float float ->
@@ -463,28 +487,10 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             |> Names.map (\optSub -> TOpt.Call region func [ optSub ] { tipe = tipe, tvar = tvar })
                     )
 
-        -- Binop: use the annotation from the constructor.
-        --
-        -- (&&) / (||) are rewritten to TOpt.If so that every downstream backend
-        -- inherits correct short-circuit evaluation from the If codegen path.
-        -- Strict `Basics.and` / `Basics.or` call sites (e.g. `List.foldl (&&)`)
-        -- still reach the strict intrinsics via the non-Binop VarOperator path.
-        --
-        -- (|>) / (<|) are rewritten to the application they denote, so the
-        -- monomorphizer never sees `Basics.apR` / `Basics.apL` at all. They are
-        -- bracket-avoidance sugar, and specializing them is pure waste: on a
-        -- self-compile census they owned 4,704 of 40,996 registry entries
-        -- (11.5% of ALL specializations) and ~13% of total key node mass, at
-        -- 3,210 / 1,463 genuinely distinct instantiated types respectively —
-        -- every one of which is a clone of `\x f -> f x`.
-        -- The same rewrite already exists for the JS backend, in codegen
-        -- (`Generate/JavaScript/Expression.elm`, "apL" / "apR"); this is the
-        -- native path's equivalent, done one stage earlier so the registry
-        -- never grows the entries in the first place.
-        -- Operator-as-VALUE (`List.map2 (|>) xs fs`) canonicalizes to
-        -- `Can.VarOperator`, not `Can.Binop`, and still reaches the real
-        -- definitions — exactly like the `and` / `or` note above. This is a
-        -- saturated-application peephole, never a deletion.
+        -- `&&`, `||`, `|>` and `<|` are rewritten as the module docstring
+        -- describes. Each specialization of `apR` or `apL` would be a copy of
+        -- `\x f -> f x` or `\f x -> f x`; the JavaScript backend does the
+        -- same rewrite in its code generator.
         Can.Binop _ binopHome name _ left right ->
             let
                 optimizeArg =
@@ -570,19 +576,15 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 |> Names.andThen
                     (\( argNamesWithTypes, destructors ) ->
                         let
-                            -- Root argument bindings (e.g., "_v0" for a tuple pattern)
                             argBindings =
                                 List.map (\( A.At _ n, t ) -> ( n, t )) argNamesWithTypes
 
-                            -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                             destructorBindings =
                                 List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
-                            -- Combine all bindings so pattern variables are in scope
                             allBindings =
                                 argBindings ++ destructorBindings
 
-                            -- Compute body type by peeling off arg types from function type
                             bodyType =
                                 peelFunctionType (List.length args) tipe
                         in
@@ -632,7 +634,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                     )
 
         Can.Let def body ->
-            -- Add the let-bound variable to scope BEFORE optimizing the body
             let
                 ( defName, defType ) =
                     getDefNameAndType exprTypes def
@@ -645,7 +646,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe defNodeTvar)
 
         Can.LetRec defs body ->
-            -- For LetRec, all definitions are mutually recursive, so add all names to scope
+            -- Every name of the group is in scope in every definition and the body.
             let
                 defBindings =
                     List.map (getDefNameAndType exprTypes) defs
@@ -679,7 +680,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             |> Names.andThen
                                 (\oBoundExpr ->
                                     let
-                                        -- Add pattern bindings to scope
                                         destructorBindings =
                                             List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructs
 
@@ -710,7 +710,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                         |> Names.andThen
                             (\destructors ->
                                 let
-                                    -- Extract bindings from destructors for scope
                                     destructorBindings =
                                         List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
                                 in
@@ -835,16 +834,16 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             Names.pure (TOpt.Shader src (EverySet.fromList identity (Data.Map.keys attributes)) (EverySet.fromList identity (Data.Map.keys uniforms)) { tipe = tipe, tvar = tvar })
 
 
-{-| Catch a missing local type error and use a fallback.
+{-| Returns `tracker` unchanged. A missing local type is not caught: the
+lookup it wraps crashes instead.
 -}
 catchMissing : Names.Tracker a -> Names.Tracker a
 catchMissing tracker =
-    -- In a proper implementation, we'd catch the error
-    -- For now, just use the tracker
     tracker
 
 
-{-| Look up the type of a top-level definition from annotations.
+{-| Returns the type in `name`'s annotation, without its quantifier. It
+crashes if `name` has no annotation.
 -}
 lookupAnnotationType : Name -> Annotations -> Can.Type Name
 lookupAnnotationType name annotations =
@@ -860,9 +859,16 @@ lookupAnnotationType name annotations =
 -- ====== TAIL CALL OPTIMIZATION ======
 
 
-{-| Optimize an expression in tail position.
-This function detects tail calls to the function being defined and converts them
-to TailCall nodes for efficient tail call elimination.
+{-| Lowers an expression in tail position of the definition `rootName`, whose
+parameters are `argNames` and whose body type is `resultType`.
+
+A call in tail position whose function is the name `rootName` and whose
+argument count equals the parameter count becomes a `TailCall` pairing each
+parameter with its new value, typed `resultType`. Tail position passes through
+`if` branches, `case` branches and the bodies of `let`, `let rec` and `let`
+destructuring; every other expression, and every non-tail part of these, is
+lowered by `optimize`.
+
 -}
 optimizeTail :
     KernelTypes.KernelTypeEnv
@@ -882,6 +888,9 @@ optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNam
             optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType region tipe tvar expr
 
 
+{-| Lowers the canonical expression `expr` in tail position; `optimizeTail` after
+unwrapping.
+-}
 optimizeTailExpr :
     KernelTypes.KernelTypeEnv
     -> Annotations
@@ -951,7 +960,6 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                     )
 
         Can.Let def body ->
-            -- Add the let-bound variable to scope BEFORE optimizing the body
             let
                 ( defName, defType ) =
                     getDefNameAndType exprTypes def
@@ -964,7 +972,7 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                 |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe defNodeTvar)
 
         Can.LetRec defs body ->
-            -- For LetRec, all definitions are mutually recursive, so add all names to scope
+            -- Every name of the group is in scope in every definition and the body.
             let
                 defBindings =
                     List.map (getDefNameAndType exprTypes) defs
@@ -1069,7 +1077,6 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                 )
                     )
 
-        -- For other expressions, use regular optimization (not in tail position)
         _ ->
             optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tvar expr
 
@@ -1078,10 +1085,12 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
 -- ====== LET DEFINITIONS ======
 
 
-{-| Extract the name and type of a definition for scope management.
+{-| Returns the name a `let` definition binds and the type to put in scope for
+it: the function type from its argument types to its body type.
 
-For TypedDef, builds the function type from explicit arg types and result type.
-For Def, looks up pattern and expression types from exprTypes.
+An annotated definition takes these from its annotation; an unannotated one from
+the types of its argument patterns and body in `exprTypes`, crashing if one is
+missing.
 
 -}
 getDefNameAndType : ExprTypes -> Can.Def -> ( Name, Can.Type Name )
@@ -1089,7 +1098,6 @@ getDefNameAndType exprTypes def =
     case def of
         Can.Def (A.At _ name) args (A.At _ bodyInfo) ->
             let
-                -- Get argument types by looking up each pattern's type
                 argTypes =
                     List.map
                         (\(A.At _ patInfo) ->
@@ -1102,7 +1110,6 @@ getDefNameAndType exprTypes def =
                         )
                         args
 
-                -- Get body type
                 bodyType =
                     case Array.get bodyInfo.id exprTypes |> Maybe.andThen identity of
                         Just t ->
@@ -1121,7 +1128,11 @@ getDefNameAndType exprTypes def =
             ( name, buildFunctionType argTypes resultType )
 
 
-{-| Optimize a definition inside a let expression.
+{-| Returns the already lowered `body` inside a `Let` binding the lowered
+definition `def`, typed `resultType`.
+
+`defNodeTvar`, when given, is the solver variable of a function definition.
+
 -}
 optimizeDef :
     KernelTypes.KernelTypeEnv
@@ -1144,6 +1155,15 @@ optimizeDef kernelEnv annotations exprTypes exprVars home cycle def resultType d
             optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) expr resultType defNodeTvar body
 
 
+{-| Builds the `Let` for `optimizeDef` from a definition's parts.
+
+A definition with no arguments binds its lowered expression. One with arguments
+binds a `TrackedFunction` whose type is built from the argument types and the
+lowered body's type. The function's solver variable is `defNodeTvar` if given,
+else that of a reference to its own name found in `expr`, else `expr`'s own
+variable. The `Let` takes the variable of `body`.
+
+-}
 optimizeDefHelp :
     KernelTypes.KernelTypeEnv
     -> Annotations
@@ -1161,15 +1181,10 @@ optimizeDefHelp :
     -> Names.Tracker (TOpt.Expr Name)
 optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType defNodeTvar body =
     let
-        -- Extract the definition body's tvar from exprVars
         defBodyTvar : Maybe Vars.Variable
         defBodyTvar =
             Array.get (A.toValue expr).id exprVars |> Maybe.andThen identity
 
-        -- Resolve the function tvar with cascading fallbacks:
-        --   1. Caller-provided tvar (from continuation-body scan for non-recursive let)
-        --   2. Self-call scan of def RHS (for multi-def LetRec with direct self-recursion)
-        --   3. defBodyTvar (body/return type — last resort)
         funcTvar : Maybe Vars.Variable
         funcTvar =
             case defNodeTvar of
@@ -1184,7 +1199,6 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                         Nothing ->
                             defBodyTvar
 
-        -- The Let expression's tvar is the tvar of the continuation body
         letTvar : Maybe Vars.Variable
         letTvar =
             TOpt.tvarOf body
@@ -1202,20 +1216,16 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                     )
 
         _ ->
-            -- Function definition: process args first to get bindings, then optimize body with args in scope
             destructArgs exprTypes exprVars args
                 |> Names.andThen
                     (\( argNamesWithTypes, destructors ) ->
                         let
-                            -- Root argument bindings (e.g., "_v0" for a tuple pattern)
                             argBindings =
                                 List.map (\( A.At _ n, t ) -> ( n, t )) argNamesWithTypes
 
-                            -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                             destructorBindings =
                                 List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
-                            -- Combine all bindings so pattern variables are in scope
                             allBindings =
                                 argBindings ++ destructorBindings
                         in
@@ -1227,7 +1237,6 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                                         bodyType =
                                             TOpt.typeOf oexpr
 
-                                        -- Build function type from arg types
                                         argTypes =
                                             List.map Tuple.second argNamesWithTypes
 
@@ -1245,8 +1254,14 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                     )
 
 
-{-| Optimize a potentially tail-recursive definition from a Can.Def.
-For LetRec with a single definition.
+{-| Lowers the one definition of a `let rec` with `optimizePotentialTailCall`.
+
+For an unannotated definition the type passed on is the function type
+`getDefNameAndType` builds. For an annotated one it is the annotation's result
+type as the `TypedDef` holds it, after the argument types. Its solver variable
+is that of a reference to its own name found in its body, else the body's
+variable.
+
 -}
 optimizePotentialTailCallDef :
     KernelTypes.KernelTypeEnv
@@ -1291,7 +1306,16 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
 -- ====== DEFINITIONS ======
 
 
-{-| Optimize a potentially tail-recursive definition.
+{-| Lowers the definition `name` with parameter patterns `args`, body `body` and
+type `defType`.
+
+If the lowered body contains a `TailCall` to `name` in tail position, the
+result is a `TailDef`; otherwise it is a `Def` of a `TrackedFunction`. Either
+way the stored type is `defType` as given, and its `TailCall`s and
+destructuring wrappers are typed `defType` with one argument type removed per
+pattern. The solver variable is `name`'s entry in `annotationVars`, or else the
+body's.
+
 -}
 optimizePotentialTailCall :
     KernelTypes.KernelTypeEnv
@@ -1309,15 +1333,12 @@ optimizePotentialTailCall :
     -> Names.Tracker (TOpt.Def Name)
 optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType annotationVars =
     let
-        -- Extract the body's tvar from the TCan.Expr
         bodyTvar : Maybe Vars.Variable
         bodyTvar =
             case A.toValue body of
                 TCan.TypedExpr info ->
                     info.tvar
 
-        -- For function definitions, look up the annotation-level solver variable
-        -- from the solver's Env to get the full function type variable.
         nodeTvar : Maybe Vars.Variable
         nodeTvar =
             case Dict.get name annotationVars of
@@ -1331,15 +1352,12 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
         |> Names.andThen
             (\( argNamesWithTypes, destructors ) ->
                 let
-                    -- Root argument bindings (e.g., "_v0" for a tuple pattern)
                     argBindings =
                         List.map (\( A.At _ n, t ) -> ( n, t )) argNamesWithTypes
 
-                    -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                     destructorBindings =
                         List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
-                    -- Combine all bindings so pattern variables are in scope
                     allBindings =
                         argBindings ++ destructorBindings
 
@@ -1363,7 +1381,9 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
             )
 
 
-{-| Check if an expression contains a tail call to the given function.
+{-| Tells whether `expr` has a `TailCall` to `funcName` in tail position: in
+an `if` or `case` branch, including every `case` jump, or the body of a `Let`
+or `Destruct`.
 -}
 hasTailCall : Name -> TOpt.Expr Name -> Bool
 hasTailCall funcName expr =
@@ -1388,8 +1408,8 @@ hasTailCall funcName expr =
             False
 
 
-{-| Check if a decider contains a tail call to the given function.
-This is needed to detect tail calls in inlined Case branches.
+{-| Tells whether a branch inlined in a `case` decision tree has a `TailCall`
+to `funcName`. Branches held as jumps are checked by `hasTailCall`.
 -}
 decidecHasTailCall : Name -> TOpt.Decider (TOpt.Choice Name) -> Bool
 decidecHasTailCall funcName decider =
@@ -1409,7 +1429,8 @@ decidecHasTailCall funcName decider =
             decidecHasTailCall funcName fallback || List.any (Tuple.second >> decidecHasTailCall funcName) tests
 
 
-{-| Wrap an expression in a Destruct node.
+{-| Wraps `expr` in a `Destruct` applying `destructor`, typed `bodyType` and
+taking `expr`'s solver variable.
 -}
 wrapDestruct : Can.Type Name -> TOpt.Destructor Name -> TOpt.Expr Name -> TOpt.Expr Name
 wrapDestruct bodyType destructor expr =
@@ -1420,14 +1441,13 @@ wrapDestruct bodyType destructor expr =
 -- ====== DESTRUCTURING ======
 
 
-{-| Look up a pattern's type from the exprTypes dictionary.
-Returns Complete if found, ToSolve with location info if not found.
-Negative IDs are synthetic patterns that won't have types.
+{-| Returns the type of the pattern with id `patId` from `exprTypes`. It
+crashes, naming `location`, for a negative id (a pattern built during
+optimization) or an id with no type.
 -}
 lookupPatternType : ExprTypes -> Int -> String -> Can.Type Name
 lookupPatternType exprTypes patId location =
     if patId < 0 then
-        -- Synthetic pattern (negative ID), no type available
         Utils.Crash.crash (location ++ ": synthetic")
 
     else
@@ -1439,8 +1459,8 @@ lookupPatternType exprTypes patId location =
                 Utils.Crash.crash (location ++ ": not in exprTypes")
 
 
-{-| Look up a pattern's type variable from the exprVars dictionary.
-Returns Nothing for synthetic patterns (negative IDs).
+{-| Returns the solver variable of the pattern with id `patId`, or `Nothing`
+for a negative id or a pattern without one.
 -}
 lookupPatternVar : ExprVars -> Int -> Maybe Vars.Variable
 lookupPatternVar exprVars patId =
@@ -1451,14 +1471,21 @@ lookupPatternVar exprVars patId =
         Array.get patId exprVars |> Maybe.andThen identity
 
 
-{-| Build a Meta record for a destructor, combining type and optional type variable.
+{-| Returns the meta for a destructor of the pattern with id `patId`: `tipe`
+and the pattern's solver variable.
 -}
 makeDestructorMeta : ExprVars -> Int -> Can.Type Name -> TOpt.Meta Name
 makeDestructorMeta exprVars patId tipe =
     { tipe = tipe, tvar = lookupPatternVar exprVars patId }
 
 
-{-| Converts a list of function argument patterns into argument names with types and destructuring operations.
+{-| Lowers function argument patterns to one named, typed argument per pattern
+and the `Destructor`s, in order, that bind the names inside them.
+
+A variable pattern or an alias pattern names the argument itself. Any other
+pattern gets a generated name, and its destructors read from that name. An
+argument's type is its pattern's type in `exprTypes`; a missing type crashes.
+
 -}
 destructArgs : ExprTypes -> ExprVars -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type Name ), List (TOpt.Destructor Name) )
 destructArgs exprTypes exprVars args =
@@ -1470,6 +1497,9 @@ destructArgs exprTypes exprVars args =
             )
 
 
+{-| Lowers one argument or `let` pattern to its name and type and the
+`Destructor`s, in order, that bind the names inside it.
+-}
 destruct : ExprTypes -> ExprVars -> Can.Pattern -> Names.Tracker ( ( A.Located Name, Can.Type Name ), List (TOpt.Destructor Name) )
 destruct exprTypes exprVars ((A.At region patternInfo) as pattern) =
     case patternInfo.node of
@@ -1504,38 +1534,40 @@ destruct exprTypes exprVars ((A.At region patternInfo) as pattern) =
                     )
 
 
+{-| Prepends to `revDs`, in reverse order, the destructors that bind the names in
+`pattern` read from `path`.
+-}
 destructHelp : ExprTypes -> ExprVars -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor Name) -> Names.Tracker (List (TOpt.Destructor Name))
 destructHelp exprTypes exprVars path pattern revDs =
     destructHelpWithType exprTypes exprVars Nothing Nothing path pattern revDs
 
 
-{-| Internal helper that also threads parent pattern ID for synthetic patterns.
+{-| Like `destructHelp`, but a pattern built during optimization (negative id) is
+typed through `parentPatId`, the pattern it was built from.
 -}
 destructHelpWithParent : ExprTypes -> ExprVars -> Int -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor Name) -> Names.Tracker (List (TOpt.Destructor Name))
 destructHelpWithParent exprTypes exprVars parentPatId path pattern revDs =
     destructHelpWithType exprTypes exprVars (Just parentPatId) Nothing path pattern revDs
 
 
-{-| Destructure a pattern with optional type hint and parent pattern ID.
+{-| Prepends to `revDs`, in reverse order, the destructors that bind the names in
+a pattern read from `path`.
 
-When destructuring constructor arguments, we have access to the argument's type
-from PatternCtorArg. This type hint is used when creating destructors for PVar
-patterns, allowing the type system to track the actual field types instead of
-using placeholder ToSolve types.
+A pattern built during optimization has a negative id; with `maybeParentPatId`
+it is typed by that pattern instead. Such a pattern is the tail of a list
+pattern, and has the same list type as the pattern it was built from.
 
-The optional parent pattern ID is used for synthetic patterns (like list tails)
-that have negative IDs and can't be looked up directly. We use the parent's ID
-to look up the container type.
+`maybeType`, when given, is the type of a variable pattern, used instead of a
+lookup. A constructor argument is passed its own pattern type this way.
 
-This is critical for correct code generation: when a constructor like Circle Int
-stores its Int field unboxed, the destructor needs to know the field type is Int
-so that eco.project can read the value with the correct unboxed flag.
+When `path` is not a `Root`, a tuple, list, cons or multi-argument constructor
+pattern first binds it to a generated name, so that the inner destructors read
+from a root. A tuple of more than three elements crashes.
 
 -}
 destructHelpWithType : ExprTypes -> ExprVars -> Maybe Int -> Maybe (Can.Type Name) -> TOpt.Path -> Can.Pattern -> List (TOpt.Destructor Name) -> Names.Tracker (List (TOpt.Destructor Name))
 destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At region patternInfo) revDs =
     let
-        -- Use parent pattern ID if provided and current pattern is synthetic
         effectivePatId =
             if patternInfo.id < 0 then
                 Maybe.withDefault patternInfo.id maybeParentPatId
@@ -1548,7 +1580,6 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
             Names.pure revDs
 
         Can.PVar name ->
-            -- Use the type hint if available, then try exprTypes lookup, then ToSolve
             let
                 varType =
                     case maybeType of
@@ -1562,11 +1593,8 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
 
         Can.PRecord fields ->
             let
-                -- For record fields, we need to look up each field's type from the pattern
-                -- The pattern itself has a record type, but we need to extract field types
                 toDestruct : Name -> TOpt.Destructor Name
                 toDestruct name =
-                    -- Try to get record field type from pattern's type
                     let
                         fieldType =
                             case Maybe.map Type.iteratedDealias (Array.get effectivePatId exprTypes |> Maybe.andThen identity) of
@@ -1622,15 +1650,13 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                             )
 
         Can.PTuple _ _ _ ->
-            -- Elm only supports tuples up to size 3 (handled by PTuple2/PTuple3 above).
-            -- This case should never be reached for valid Elm code.
             Utils.Crash.crash "Expression.destructHelpWithType: PTuple with more than 3 elements is not supported in Elm"
 
         Can.PList [] ->
             Names.pure revDs
 
         Can.PList (hd :: tl) ->
-            -- Use placeholder ID (-1) for synthesized patterns, but pass parent pattern ID (effectivePatId)
+            -- The tail pattern is built here, with id -1, and typed through this pattern.
             destructTwo exprTypes exprVars effectivePatId TOpt.HintList path hd (A.At region { id = -1, node = Can.PList tl }) revDs
 
         Can.PCons hd tl ->
@@ -1655,7 +1681,7 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                         (Can.Union unionData) =
                             union
 
-                        -- Look up the inferred type from exprTypes instead of using argType
+                        -- The pattern's own type, not the constructor's declared argument type.
                         patternId =
                             (A.toValue arg).id
 
@@ -1704,11 +1730,14 @@ destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At re
                                     )
 
 
+{-| Prepends the destructors for the two parts `a` and `b` of a pair or a cons
+pattern read from `path`, with container `hint`. `parentPatId` is the whole
+pattern's id, which types the generated name a non-root `path` is bound to.
+-}
 destructTwo : ExprTypes -> ExprVars -> Int -> TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List (TOpt.Destructor Name) -> Names.Tracker (List (TOpt.Destructor Name))
 destructTwo exprTypes exprVars parentPatId hint path a b revDs =
     case path of
         TOpt.Root _ ->
-            -- Thread the parent pattern ID through for synthetic patterns
             destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.first hint path) a revDs
                 |> Names.andThen (destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.second hint path) b)
 
@@ -1720,8 +1749,6 @@ destructTwo exprTypes exprVars parentPatId hint path a b revDs =
                             newRoot =
                                 TOpt.Root name
 
-                            -- For the generated binding, use the parent pattern's type
-                            -- since that's the container type (tuple/list) being destructured
                             genType =
                                 lookupPatternType exprTypes parentPatId "Expression.destructTwo: generated"
                         in
@@ -1730,6 +1757,9 @@ destructTwo exprTypes exprVars parentPatId hint path a b revDs =
                     )
 
 
+{-| Prepends the destructors for one argument of the constructor `ctorName`, read
+from its index under `path` and typed by its own pattern type.
+-}
 destructCtorArg : ExprTypes -> ExprVars -> Name -> TOpt.Path -> List (TOpt.Destructor Name) -> Can.PatternCtorArg -> Names.Tracker (List (TOpt.Destructor Name))
 destructCtorArg exprTypes exprVars ctorName path revDs (Can.PatternCtorArg index _ arg) =
     let
@@ -1742,8 +1772,6 @@ destructCtorArg exprTypes exprVars ctorName path revDs (Can.PatternCtorArg index
                     Just t
 
                 Nothing ->
-                    -- Pattern IDs from canonicalization must be in exprTypes.
-                    -- If missing, this indicates a compiler bug in earlier phases.
                     Utils.Crash.crash
                         ("destructCtorArg: Pattern ID "
                             ++ String.fromInt patternId
@@ -1755,8 +1783,8 @@ destructCtorArg exprTypes exprVars ctorName path revDs (Can.PatternCtorArg index
     destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
 
 
-{-| Destructure a case pattern into a list of destructors.
-This is used when processing case branches.
+{-| Returns, in order, the destructors that bind the names in a `case` branch
+pattern, read from the variable `rootName`.
 -}
 destructCase : ExprTypes -> ExprVars -> Name -> Can.Pattern -> Names.Tracker (List (TOpt.Destructor Name))
 destructCase exprTypes exprVars rootName pattern =

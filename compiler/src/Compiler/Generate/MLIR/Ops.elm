@@ -12,10 +12,34 @@ module Compiler.Generate.MLIR.Ops exposing
     , aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
     )
 
-{-| MLIR operation builders.
+{-| The MLIR generator builds every op through this module, so that each op's
+name, operand order and attributes are written down in one place.
 
-This module provides helper functions for building MLIR operations
-in the eco dialect and standard dialects (arith, scf, func).
+Each builder takes the generation context and returns it, with a fresh op id
+used, together with the op. The ops are in the eco dialect, which holds Elm's
+values, heap objects, calls and pattern matches, and in the standard `arith`,
+`scf` and `func` dialects.
+
+Almost every op with operands carries an `_operand_types` attribute listing
+the operands' types in order; an op with no operands either omits it or
+carries an empty list.
+
+Several facts recur across the builders:
+
+  - An Elm value that is not unboxed is an `!eco.value`. The `eco.constant`
+    kinds are 0 for False, 1 for True and 2 for the _empty constant_, a single
+    value shared by Unit, the empty record, the empty list, `Nothing` and the
+    empty string. Any other constructor without fields is an
+    `eco.constant.null_cons` carrying its tag.
+  - A _slot kind_ says how a field or capture is stored: 0 boxed, 1 Int, 2
+    Float, 3 Char, as `Types.mlirTypeToKind` gives it.
+  - A _value aggregate_ is a tuple or custom-type value held in SSA values
+    rather than on the heap, typed `!eco.tuple2<...>`, `!eco.tuple3<...>` or
+    `!eco.custom<...>` by its slot types. `eco.make.*` builds one,
+    `eco.to_heap` and `eco.from_heap` move one to and from the heap, and the
+    `...Agg` projections read from one.
+  - A multi-result `func.func`, with its multi-value `eco.return` and
+    multi-result `eco.call`, is how a function returns several values at once.
 
 
 # Op Builder Plumbing
@@ -66,6 +90,10 @@ in the eco dialect and standard dialects (arith, scf, func).
 # PAP Group Creation
 
 @docs ecoPapCreateGroup, GroupSibling, slotKindsAttr, withSlotKinds, assertStageArity
+
+
+# Value Aggregates, Multi-Result Functions and Globals
+
 @docs aggCustomType, aggTupleType, ecoCallNamedMulti, ecoFromHeap, ecoGlobal, ecoMakeCustom, ecoMakeTuple2, ecoMakeTuple3, ecoProjectCustomAgg, ecoProjectTuple2Agg, ecoProjectTuple3Agg, ecoReturnMulti, ecoToHeap, funcFuncMulti
 
 -}
@@ -91,14 +119,16 @@ import Utils.Crash exposing (crash)
 -- ====== OP BUILDER PLUMBING ======
 
 
-{-| Operation builder functions for MLIR.
+{-| The `Mlir.Mlir` op builder functions, re-exported so that callers chain
+`withOperands`, `withAttrs` and the rest without importing `Mlir.Mlir`.
 -}
 opBuilder : Mlir.OpBuilderFns e
 opBuilder =
     Mlir.opBuilder
 
 
-{-| Create an MLIR operation with the given opcode.
+{-| Starts building an op called by the given name, taking a fresh op id from
+the context.
 -}
 mlirOp : Ctx.Context -> String -> Mlir.OpBuilder Ctx.Context
 mlirOp env =
@@ -109,33 +139,21 @@ mlirOp env =
 -- ====== ECO CONSTANTS ======
 
 
-{-| eco.constant - create an embedded constant value.
-
-The `kind` is a 2-bit constant code matching the runtime `Constant` enum and
-`value_enc::ConstantKind` (see plan D3/D6):
-
-  - False = 0
-  - True = 1
-  - Empty = 2 (the unified empty constant: Unit, EmptyRec, Nil, Nothing, "")
-
-The five former empty constants now all emit kind 2; the type checker guarantees
-each is only produced/matched where its type is expected, so a shared bit pattern
-is safe.
-
+{-| Builds the empty constant for Unit.
 -}
 ecoConstantUnit : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantUnit ctx resultVar =
     ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for an empty record.
+{-| Builds the empty constant for the empty record.
 -}
 ecoConstantEmptyRec : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyRec ctx resultVar =
     ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for True (kind 1).
+{-| Builds the `eco.constant` for True, kind 1, as an `!eco.value`.
 -}
 ecoConstantTrue : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantTrue ctx resultVar =
@@ -145,7 +163,7 @@ ecoConstantTrue ctx resultVar =
         |> opBuilder.build
 
 
-{-| Create an eco.constant op for False (kind 0).
+{-| Builds the `eco.constant` for False, kind 0, as an `!eco.value`.
 -}
 ecoConstantFalse : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantFalse ctx resultVar =
@@ -155,29 +173,28 @@ ecoConstantFalse ctx resultVar =
         |> opBuilder.build
 
 
-{-| Create an eco.constant op for Nil (empty list) — the unified empty constant.
+{-| Builds the empty constant for the empty list.
 -}
 ecoConstantNil : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNil ctx resultVar =
     ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for Nothing — the unified empty constant.
+{-| Builds the empty constant for `Nothing`.
 -}
 ecoConstantNothing : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantNothing ctx resultVar =
     ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for an empty string — the unified empty constant.
+{-| Builds the empty constant for the empty string.
 -}
 ecoConstantEmptyString : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmptyString ctx resultVar =
     ecoConstantEmpty ctx resultVar
 
 
-{-| Create an eco.constant op for the unified empty constant (kind 2), shared by
-Unit, EmptyRec, Nil, Nothing, and the empty string.
+{-| Builds the empty constant: an `eco.constant` of kind 2.
 -}
 ecoConstantEmpty : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoConstantEmpty ctx resultVar =
@@ -187,11 +204,11 @@ ecoConstantEmpty ctx resultVar =
         |> opBuilder.build
 
 
-{-| Create an eco.constant.null\_cons op: the embedded HPointer word for a
-nullary constructor, carrying its zero-based declaration index (HEAP\_044,
-plans/null-cons-hpointer-embedding.md §2.1). The caller passes the ctor's
-effective tag through `CtorTag.checkNullConsCapacity` first — indices past
-1023 crash the compile at emission.
+{-| Builds the `eco.constant.null_cons` for a nullary constructor whose tag is
+`tag`, as an `!eco.value`.
+
+Nothing here checks the tag against the range the embedded word can hold.
+
 -}
 ecoConstantNullCons : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
 ecoConstantNullCons ctx resultVar tag =
@@ -205,14 +222,15 @@ ecoConstantNullCons ctx resultVar tag =
 -- ====== ECO CONSTRUCTION ======
 
 
-{-| eco.construct.list - create a list cons cell
+{-| Builds an `eco.construct.list` cons cell from a head and a tail.
+
+When `headUnboxed` is true, `head_kind` is the slot kind of the head's type;
+otherwise it is 0, boxed.
+
 -}
 ecoConstructList : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Ctx.Context, MlirOp )
 ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headUnboxed =
     let
-        -- `head_kind` encodes the 2-bit slot kind (0=boxed, 1=Int, 2=Float, 3=Char)
-        -- derived from the head operand type. Lowering reads this to populate
-        -- `cons->header.unboxed` slot 0.
         headKind =
             if headUnboxed then
                 Types.mlirTypeToKind headType
@@ -237,7 +255,8 @@ ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headU
         |> opBuilder.build
 
 
-{-| eco.construct.tuple2 - create a 2-tuple
+{-| Builds an `eco.construct.tuple2` heap tuple. The last argument becomes the
+`unboxed_bitmap` attribute unchanged.
 -}
 ecoConstructTuple2 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
 ecoConstructTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
@@ -258,7 +277,8 @@ ecoConstructTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) unboxedBitmap =
         |> opBuilder.build
 
 
-{-| eco.construct.tuple3 - create a 3-tuple
+{-| Builds an `eco.construct.tuple3` heap tuple. The last argument becomes the
+`unboxed_bitmap` attribute unchanged.
 -}
 ecoConstructTuple3 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> Int -> ( Ctx.Context, MlirOp )
 ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) unboxedBitmap =
@@ -279,9 +299,12 @@ ecoConstructTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType )
         |> opBuilder.build
 
 
-{-| eco.construct.record - create a record. `slotKinds` holds one kind per
-field (0 boxed, 1 Int, 2 Float, 3 Char) in layout order, from
-`Types.recordSlotKinds`, and is emitted as the `slot_kinds` attribute.
+{-| Builds an `eco.construct.record` heap record from its field operands in
+layout order.
+
+`slotKinds` holds one slot kind per field and becomes `slot_kinds`. It crashes
+the compile when `slotKinds` does not have `fieldCount` entries.
+
 -}
 ecoConstructRecord : Ctx.Context -> String -> List ( String, MlirType ) -> Int -> List Int -> ( Ctx.Context, MlirOp )
 ecoConstructRecord ctx resultVar fieldPairs fieldCount slotKinds =
@@ -315,9 +338,13 @@ ecoConstructRecord ctx resultVar fieldPairs fieldCount slotKinds =
         |> opBuilder.build
 
 
-{-| eco.construct.custom - create a custom ADT value. `slotKinds` holds one
-kind per field (0 boxed, 1 Int, 2 Float, 3 Char) in field order, from
-`Types.ctorSlotKinds`, and is emitted as the `slot_kinds` attribute.
+{-| Builds an `eco.construct.custom` heap value with constructor tag `tag` and
+`size` fields, from the field operands.
+
+`slotKinds` holds one slot kind per field and becomes `slot_kinds`; it crashes
+the compile when `slotKinds` does not have `size` entries. A constructor name,
+when given, becomes the `constructor` attribute.
+
 -}
 ecoConstructCustom : Ctx.Context -> String -> Int -> Int -> List Int -> List ( String, MlirType ) -> Maybe String -> ( Ctx.Context, MlirOp )
 ecoConstructCustom ctx resultVar tag size slotKinds operands maybeCtorName =
@@ -362,9 +389,8 @@ ecoConstructCustom ctx resultVar tag size slotKinds operands maybeCtorName =
         |> opBuilder.build
 
 
-{-| Crashes when a construct op is given a kinds list whose length is not its
-slot count: the C++ verifier would reject the op anyway, and the crash names
-the emitter.
+{-| Returns `kinds` unchanged when it has `count` entries, and otherwise crashes
+the compile with a message naming `opName`.
 -}
 checkKindsLength : String -> Int -> List Int -> List Int
 checkKindsLength opName count kinds =
@@ -386,7 +412,8 @@ checkKindsLength opName count kinds =
 -- ====== ECO PROJECTION ======
 
 
-{-| eco.project.list\_head - extract head from a cons cell
+{-| Builds an `eco.project.list_head` reading the head of a cons cell at
+`resultType`.
 -}
 ecoProjectListHead : Ctx.Context -> String -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoProjectListHead ctx resultVar resultType listVar =
@@ -401,7 +428,7 @@ ecoProjectListHead ctx resultVar resultType listVar =
         |> opBuilder.build
 
 
-{-| eco.project.list\_tail - extract tail from a cons cell
+{-| Builds an `eco.project.list_tail` reading the tail of a cons cell.
 -}
 ecoProjectListTail : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
 ecoProjectListTail ctx resultVar listVar =
@@ -416,7 +443,8 @@ ecoProjectListTail ctx resultVar listVar =
         |> opBuilder.build
 
 
-{-| eco.project.tuple2 - extract field from a 2-tuple
+{-| Builds an `eco.project.tuple2` reading field `field` of a heap 2-tuple at
+`resultType`.
 -}
 ecoProjectTuple2 : Ctx.Context -> String -> Int -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoProjectTuple2 ctx resultVar field resultType tupleVar =
@@ -434,7 +462,8 @@ ecoProjectTuple2 ctx resultVar field resultType tupleVar =
         |> opBuilder.build
 
 
-{-| eco.project.tuple3 - extract field from a 3-tuple
+{-| Builds an `eco.project.tuple3` reading field `field` of a heap 3-tuple at
+`resultType`.
 -}
 ecoProjectTuple3 : Ctx.Context -> String -> Int -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoProjectTuple3 ctx resultVar field resultType tupleVar =
@@ -453,13 +482,12 @@ ecoProjectTuple3 ctx resultVar field resultType tupleVar =
 
 
 
--- ====== VALUE-AGGREGATE OPS (U-T1.3.1, plans/opt-tier1-aggregate-promotion.md) ======
+-- ====== VALUE-AGGREGATE OPS ======
 
 
-{-| Render an SSA slot type for an aggregate type-parameter list.
-Slot types are only ever i64/f64/i16 (unboxed primitives) or a named eco
-type (boxed `!eco.value`) — the promoted form mirrors the heap layout's
-slot discipline exactly (CGEN\_061: no heap-layout attrs on value ops).
+{-| Returns the text of one slot type inside a value aggregate type: the type's
+own name for an integer or float type, `!` followed by the name for a named
+type, and `!eco.value` for a function type.
 -}
 aggSlotTypeString : MlirType -> String
 aggSlotTypeString ty =
@@ -486,14 +514,15 @@ aggSlotTypeString ty =
             "!" ++ s
 
         FunctionType _ ->
-            -- Function types never appear as tuple slot SSA types (closures
-            -- are !eco.value); render defensively as the boxed form.
+            -- A closure in a slot is an !eco.value.
             "!eco.value"
 
 
-{-| The parameterised value-tuple type, e.g. `!eco.tuple2<i64, !eco.value>`
-(as a `NamedStruct` so text and bytecode both render it verbatim — the
-bytecode path encodes NamedStruct as a dialect asm type).
+{-| Returns the value tuple type for the given slot types, such as
+`!eco.tuple2<i64, !eco.value>`.
+
+Three slot types give `!eco.tuple3`; any other number gives `!eco.tuple2`.
+
 -}
 aggTupleType : List MlirType -> MlirType
 aggTupleType elemTypes =
@@ -508,9 +537,8 @@ aggTupleType elemTypes =
     NamedStruct (arity ++ String.join ", " (List.map aggSlotTypeString elemTypes) ++ ">")
 
 
-{-| eco.make.tuple2 — build a VALUE-level 2-tuple (`!eco.tuple2<...>`), no
-heap allocation (Pure, CGEN\_061; lowered to insertvalue chains by
-EcoToLLVMValueAgg and dissolved by SROA before RS4GC — REP\_AGG\_001).
+{-| Builds an `eco.make.tuple2`: a value-level 2-tuple, typed by `aggTupleType`
+of its operand types.
 -}
 ecoMakeTuple2 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoMakeTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) =
@@ -525,7 +553,8 @@ ecoMakeTuple2 ctx resultVar ( aVar, aType ) ( bVar, bType ) =
         |> opBuilder.build
 
 
-{-| eco.make.tuple3 — build a VALUE-level 3-tuple (`!eco.tuple3<...>`).
+{-| Builds an `eco.make.tuple3`: a value-level 3-tuple, typed by `aggTupleType`
+of its operand types.
 -}
 ecoMakeTuple3 : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoMakeTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) =
@@ -540,19 +569,20 @@ ecoMakeTuple3 ctx resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) =
         |> opBuilder.build
 
 
-{-| The parameterised value-custom type, e.g.
-`!eco.custom<i64, !eco.value>` (slot types per the ctor layout — tag is
-structural, on the op, never in the type: Q-B/CGEN\_061).
+{-| Returns the value custom type for the given slot types, such as
+`!eco.custom<i64, !eco.value>`. The constructor tag is not part of the type.
 -}
 aggCustomType : List MlirType -> MlirType
 aggCustomType slotTypes =
     NamedStruct ("eco.custom<" ++ String.join ", " (List.map aggSlotTypeString slotTypes) ++ ">")
 
 
-{-| eco.make.custom — build a VALUE-level custom (U-T1.3.2): no heap
-allocation; `tag` + `constructor` attrs mirror `eco.construct.custom`
-minus the heap-layout `slot_kinds` (value slots carry their types in the
-parameterised result type instead).
+{-| Builds an `eco.make.custom`: a value-level custom-type value with tag `tag`,
+typed by `aggCustomType` of its operand types.
+
+It carries `tag` and, when given, `constructor`, like `eco.construct.custom`,
+but no `size` or `slot_kinds`.
+
 -}
 ecoMakeCustom : Ctx.Context -> String -> Int -> Maybe String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoMakeCustom ctx resultVar tag maybeCtorName operands =
@@ -578,8 +608,9 @@ ecoMakeCustom ctx resultVar tag maybeCtorName operands =
         |> opBuilder.build
 
 
-{-| eco.project.custom over a VALUE-level custom operand (see
-`ecoProjectTuple2Agg` for why `_operand_types` must carry the aggregate).
+{-| Builds an `eco.project.custom` reading field `fieldIndex` of a value-level
+custom-type value. Its `_operand_types` names the aggregate type, as for
+`ecoProjectTuple2Agg`.
 -}
 ecoProjectCustomAgg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoProjectCustomAgg ctx resultVar fieldIndex resultType ( containerVar, containerType ) =
@@ -597,10 +628,13 @@ ecoProjectCustomAgg ctx resultVar fieldIndex resultType ( containerVar, containe
         |> opBuilder.build
 
 
-{-| eco.project.tuple2 over a VALUE-level tuple operand: identical to
-`ecoProjectTuple2` but `_operand_types` carries the aggregate type (the
-dual-form lowering dispatches on the converted operand type; the attr must
-not lie about it or the parse re-types the operand as `!eco.value`).
+{-| Builds an `eco.project.tuple2` reading field `field` of a value-level
+2-tuple.
+
+The op name is the heap form's; what differs is that `_operand_types` names the
+aggregate type rather than `!eco.value`, and it must do so for the op to be
+read as a projection from an aggregate.
+
 -}
 ecoProjectTuple2Agg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoProjectTuple2Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
@@ -618,8 +652,9 @@ ecoProjectTuple2Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
         |> opBuilder.build
 
 
-{-| eco.project.tuple3 over a VALUE-level tuple operand (see
-`ecoProjectTuple2Agg`).
+{-| Builds an `eco.project.tuple3` reading field `field` of a value-level
+3-tuple, with `_operand_types` naming the aggregate type as for
+`ecoProjectTuple2Agg`.
 -}
 ecoProjectTuple3Agg : Ctx.Context -> String -> Int -> MlirType -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoProjectTuple3Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
@@ -637,7 +672,8 @@ ecoProjectTuple3Agg ctx resultVar field resultType ( tupleVar, tupleType ) =
         |> opBuilder.build
 
 
-{-| eco.project.record - extract field from a record
+{-| Builds an `eco.project.record` reading the field at layout index
+`fieldIndex` of a heap record at `resultType`.
 -}
 ecoProjectRecord : Ctx.Context -> String -> Int -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoProjectRecord ctx resultVar fieldIndex resultType recordVar =
@@ -655,7 +691,8 @@ ecoProjectRecord ctx resultVar fieldIndex resultType recordVar =
         |> opBuilder.build
 
 
-{-| eco.project.custom - extract field from a custom ADT
+{-| Builds an `eco.project.custom` reading field `fieldIndex` of a heap
+custom-type value at `resultType`.
 -}
 ecoProjectCustom : Ctx.Context -> String -> Int -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
@@ -677,11 +714,8 @@ ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
 -- ====== ECO CALLS ======
 
 
-{-| kernel-opt-12: is this callee symbol safe to merge AND to erase?
-Whitelist discipline — anything the table does not list (every non-kernel
-symbol included) answers False and the emitter stamps nothing, which is
-exactly today's behaviour. `lookupSymbol` owns prefix + ABI-suffix
-normalisation (kernel-opt-07 cross-plan contract pt 3).
+{-| Returns whether `KernelFacts` lists the callee symbol as droppable. A symbol
+it does not list, which includes every non-kernel symbol, answers False.
 -}
 calleeIsDroppable : String -> Bool
 calleeIsDroppable funcName =
@@ -690,12 +724,18 @@ calleeIsDroppable funcName =
         |> Maybe.withDefault False
 
 
-{-| eco.call - call a function by name
+{-| Builds an `eco.call` to the function named `funcName` with a single result.
+
+When `funcName` starts with `Elm_Kernel_` or `Eco_Kernel_`, the returned context
+also records it as a kernel declaration through `Ctx.registerKernelCall`, with
+the operand types and `returnType` as its ABI. The `eco.cse_safe` attribute is
+added when `callPurityAttrs` is on in the context's config and the callee is
+droppable by `KernelFacts`.
+
 -}
 ecoCallNamed : Ctx.Context -> String -> String -> List ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
 ecoCallNamed ctx resultVar funcName operands returnType =
     let
-        -- Register kernel functions for declaration generation.
         ctxWithKernel =
             if String.startsWith "Elm_Kernel_" funcName || String.startsWith "Eco_Kernel_" funcName then
                 Ctx.registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
@@ -717,10 +757,6 @@ ecoCallNamed ctx resultVar funcName operands returnType =
                 Dict.singleton "_operand_types"
                     (ArrayAttr Nothing (List.map TypeAttr allTypes))
 
-        -- kernel-opt-12: purity channel. Stamped ONLY for direct calls whose
-        -- KernelFacts row derives `droppable`. Unlisted callee => no attr =>
-        -- CallOp::getEffects reports conservative read+write (today's
-        -- behaviour). Never stamped when the flag is off.
         csePurityAttr =
             if ctx.ecoConfig.callPurityAttrs && calleeIsDroppable funcName then
                 Dict.singleton "eco.cse_safe" UnitAttr
@@ -741,7 +777,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
         |> opBuilder.build
 
 
-{-| eco.return - return a value from a function or joinpoint body
+{-| Builds an `eco.return` terminator returning one value.
 -}
 ecoReturn : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoReturn ctx operand operandType =
@@ -756,9 +792,8 @@ ecoReturn ctx operand operandType =
         |> opBuilder.build
 
 
-{-| U-T1.3.3: multi-operand eco.return — the terminator of an sret worker.
-The lowering (EcoToLLVMControlFlow's multi arm) stores each operand into
-the caller's slot immediately before returning void (CGEN\_067).
+{-| Builds an `eco.return` terminator returning several values: the terminator
+of a multi-result function built by `funcFuncMulti`.
 -}
 ecoReturnMulti : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoReturnMulti ctx operandPairs =
@@ -774,9 +809,13 @@ ecoReturnMulti ctx operandPairs =
         |> opBuilder.build
 
 
-{-| U-T1.3.3: multi-result direct call to an sret worker. The lowering
-(EcoToLLVMClosures' multi arm) allocates the slot in the caller's entry
-block, passes it as the leading argument, and reloads the fields.
+{-| Builds an `eco.call` to the function named `funcName` with one result per
+pair in the first list, as used to call a multi-result function built by
+`funcFuncMulti`.
+
+It adds `eco.cse_safe` under the same conditions as `ecoCallNamed`, but unlike
+`ecoCallNamed` it never records a kernel declaration.
+
 -}
 ecoCallNamedMulti : Ctx.Context -> List ( String, MlirType ) -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoCallNamedMulti ctx resultPairs funcName operands =
@@ -795,8 +834,6 @@ ecoCallNamedMulti ctx resultPairs funcName operands =
                 Dict.singleton "_operand_types"
                     (ArrayAttr Nothing (List.map TypeAttr allTypes))
 
-        -- kernel-opt-12: same purity channel as ecoCallNamed — the $sret
-        -- worker path can also target a kernel.
         csePurityAttr =
             if ctx.ecoConfig.callPurityAttrs && calleeIsDroppable funcName then
                 Dict.singleton "eco.cse_safe" UnitAttr
@@ -817,8 +854,8 @@ ecoCallNamedMulti ctx resultPairs funcName operands =
         |> opBuilder.build
 
 
-{-| eco.to\_heap — box an SSA value aggregate into a heap object (the
-allocating mirror of from\_heap).
+{-| Builds an `eco.to_heap`, which allocates a heap object holding a value
+aggregate and gives it as an `!eco.value`.
 -}
 ecoToHeap : Ctx.Context -> String -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoToHeap ctx resultVar ( aggVar, aggType ) =
@@ -833,9 +870,8 @@ ecoToHeap ctx resultVar ( aggVar, aggType ) =
         |> opBuilder.build
 
 
-{-| U-T1.3.3: eco.from\_heap — unbox a heap aggregate (addressed by
-`!eco.value`) into the corresponding SSA value aggregate. Pure loads;
-used to bridge a boxed value onto the aggregate result spine.
+{-| Builds an `eco.from_heap`, which reads a heap object, given as an
+`!eco.value`, into a value aggregate of type `aggType`.
 -}
 ecoFromHeap : Ctx.Context -> String -> MlirType -> String -> ( Ctx.Context, MlirOp )
 ecoFromHeap ctx resultVar aggType operandVar =
@@ -846,15 +882,16 @@ ecoFromHeap ctx resultVar aggType operandVar =
         |> opBuilder.build
 
 
-{-| eco.yield - yield a value from an eco.case alternative region
+{-| Builds an `eco.yield` terminator yielding one value from an `eco.case`
+alternative.
 -}
 ecoYield : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoYield ctx operand operandType =
     ecoYieldMany ctx [ ( operand, operandType ) ]
 
 
-{-| eco.yield with multiple operands - yield values from an eco.case alternative region.
-The \_operand\_types attribute must exactly match the operand count (including empty list for 0 operands).
+{-| Builds an `eco.yield` terminator yielding any number of values, none
+included, from an `eco.case` alternative.
 -}
 ecoYieldMany : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 ecoYieldMany ctx operands =
@@ -872,7 +909,7 @@ ecoYieldMany ctx operands =
         |> opBuilder.build
 
 
-{-| eco.string\_literal - create a string constant
+{-| Builds an `eco.string_literal` holding `value`, as an `!eco.value`.
 -}
 ecoStringLiteral : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
 ecoStringLiteral ctx resultVar value =
@@ -886,7 +923,7 @@ ecoStringLiteral ctx resultVar value =
 -- ====== ARITH DIALECT ======
 
 
-{-| arith.constant for integers
+{-| Builds an `i64` `arith.constant`.
 -}
 arithConstantInt : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
 arithConstantInt ctx resultVar value =
@@ -896,7 +933,7 @@ arithConstantInt ctx resultVar value =
         |> opBuilder.build
 
 
-{-| arith.constant for i32 integers (used for tags)
+{-| Builds an `i32` `arith.constant`.
 -}
 arithConstantInt32 : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
 arithConstantInt32 ctx resultVar value =
@@ -906,8 +943,13 @@ arithConstantInt32 ctx resultVar value =
         |> opBuilder.build
 
 
-{-| arith.cmpi for integer comparison (returns i1)
-Predicate values: eq=0, ne=1, slt=2, sle=3, sgt=4, sge=5, ult=6, ule=7, ugt=8, uge=9
+{-| Builds an `arith.cmpi` comparing two integers by the predicate named
+`predicateName` (`eq`, `ne`, `slt`, `sle`, `sgt`, `sge`, `ult`, `ule`, `ugt` or
+`uge`), with an `i1` result.
+
+An unrecognised predicate name is emitted as `eq`. Both entries of
+`_operand_types` are the left operand's type.
+
 -}
 arithCmpI : Ctx.Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 arithCmpI ctx predicateName resultVar ( lhs, lhsTy ) ( rhs, _ ) =
@@ -960,7 +1002,7 @@ arithCmpI ctx predicateName resultVar ( lhs, lhsTy ) ( rhs, _ ) =
         |> opBuilder.build
 
 
-{-| arith.constant for floats
+{-| Builds an `f64` `arith.constant`.
 -}
 arithConstantFloat : Ctx.Context -> String -> Float -> ( Ctx.Context, MlirOp )
 arithConstantFloat ctx resultVar value =
@@ -974,7 +1016,7 @@ arithConstantFloat ctx resultVar value =
         |> opBuilder.build
 
 
-{-| arith.constant for booleans
+{-| Builds an `i1` `arith.constant`.
 -}
 arithConstantBool : Ctx.Context -> String -> Bool -> ( Ctx.Context, MlirOp )
 arithConstantBool ctx resultVar value =
@@ -984,7 +1026,7 @@ arithConstantBool ctx resultVar value =
         |> opBuilder.build
 
 
-{-| arith.constant for characters
+{-| Builds an `arith.constant` of the unboxed Char type holding `codepoint`.
 -}
 arithConstantChar : Ctx.Context -> String -> Int -> ( Ctx.Context, MlirOp )
 arithConstantChar ctx resultVar codepoint =
@@ -998,7 +1040,8 @@ arithConstantChar ctx resultVar codepoint =
 -- ====== ECO OPERATORS ======
 
 
-{-| Build a unary eco op (e.g., eco.int.negate, eco.float.sqrt)
+{-| Builds the eco op named `opName`, such as `eco.int.negate`, with one
+operand.
 -}
 ecoUnaryOp : Ctx.Context -> String -> String -> ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
 ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
@@ -1013,7 +1056,7 @@ ecoUnaryOp ctx opName resultVar ( operand, operandTy ) resultTy =
         |> opBuilder.build
 
 
-{-| Build a binary eco op (e.g., eco.int.add, eco.float.mul)
+{-| Builds the eco op named `opName`, such as `eco.int.add`, with two operands.
 -}
 ecoBinaryOp : Ctx.Context -> String -> String -> ( String, MlirType ) -> ( String, MlirType ) -> MlirType -> ( Ctx.Context, MlirOp )
 ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
@@ -1028,7 +1071,8 @@ ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
         |> opBuilder.build
 
 
-{-| Build a nullary eco op (no operands), e.g., eco.array.empty.
+{-| Builds the eco op named `opName`, such as `eco.array.empty`, with no
+operands and no attributes.
 -}
 ecoNullaryOp : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoNullaryOp ctx opName resultVar resultTy =
@@ -1037,9 +1081,8 @@ ecoNullaryOp ctx opName resultVar resultTy =
         |> opBuilder.build
 
 
-{-| Build a ternary eco op (e.g., eco.array.slice). Each operand carries
-its MLIR type so the standard `_operand_types` attribute is set correctly
-for downstream type-aware passes.
+{-| Builds the eco op named `opName`, such as `eco.array.slice`, with three
+operands.
 -}
 ecoTernaryOp :
     Ctx.Context
@@ -1063,7 +1106,8 @@ ecoTernaryOp ctx opName resultVar ( a, aTy ) ( b, bTy ) ( c, cTy ) resultTy =
         |> opBuilder.build
 
 
-{-| Generate an eco.array.get operation.
+{-| Builds an `eco.array.get` reading the element at an `i64` index at
+`elementType`.
 -}
 ecoArrayGet : Ctx.Context -> String -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoArrayGet ctx resultVar arrayVar indexVar elementType =
@@ -1078,7 +1122,8 @@ ecoArrayGet ctx resultVar arrayVar indexVar elementType =
         |> opBuilder.build
 
 
-{-| Generate an eco.array.set operation.
+{-| Builds an `eco.array.set`, whose result is an array with the element at an
+`i64` index set to the value.
 -}
 ecoArraySet : Ctx.Context -> String -> String -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoArraySet ctx resultVar arrayVar indexVar valueVar valueType =
@@ -1093,7 +1138,7 @@ ecoArraySet ctx resultVar arrayVar indexVar valueVar valueType =
         |> opBuilder.build
 
 
-{-| Generate an eco.array.length operation.
+{-| Builds an `eco.array.length`, with an `i64` result.
 -}
 ecoArrayLength : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
 ecoArrayLength ctx resultVar arrayVar =
@@ -1112,7 +1157,8 @@ ecoArrayLength ctx resultVar arrayVar =
 -- ====== REGIONS AND FUNCTIONS ======
 
 
-{-| Create a region with a single entry block
+{-| Returns a region with a single block: its arguments, its body ops and its
+terminator.
 -}
 mkRegion : List ( String, MlirType ) -> List MlirOp -> MlirOp -> MlirRegion
 mkRegion args body terminator =
@@ -1126,9 +1172,11 @@ mkRegion args body terminator =
         }
 
 
-{-| Build a region from ops that already end with a terminator.
-The last op becomes the region's terminator.
-Use this when the body ends with eco.case or eco.jump.
+{-| Returns a single-block region whose terminator is the last of `ops` and
+whose body is the rest.
+
+It crashes the compile when `ops` is empty.
+
 -}
 mkRegionTerminatedByOps : List ( String, MlirType ) -> List MlirOp -> MlirRegion
 mkRegionTerminatedByOps args ops =
@@ -1147,11 +1195,9 @@ mkRegionTerminatedByOps args ops =
                 }
 
 
-{-| eco.global - module-level GC-rooted value slot (CAF memoization,
-plans/caf-memoization-implementation.md). Lowered to an internal i64 LLVM
-global initialized to 0 and registered as a GC root at startup by
-`__eco_init_globals` (EcoToLLVMGlobals.cpp). No operands, results, or
-regions — an attr-only module-level op like eco.type\_table.
+{-| Builds an `eco.global` named `symName`: a module-level slot that holds one
+value for the whole run, used to memoise a top-level value. It has no
+operands, results or regions.
 -}
 ecoGlobal : Ctx.Context -> String -> ( Ctx.Context, MlirOp )
 ecoGlobal ctx symName =
@@ -1160,7 +1206,8 @@ ecoGlobal ctx symName =
         |> opBuilder.build
 
 
-{-| func.func - define a function
+{-| Builds a private `func.func` named `funcName` with a single result of type
+`returnType`.
 -}
 funcFunc : Ctx.Context -> String -> List ( String, MlirType ) -> MlirType -> MlirRegion -> ( Ctx.Context, MlirOp )
 funcFunc ctx funcName args returnType bodyRegion =
@@ -1185,9 +1232,8 @@ funcFunc ctx funcName args returnType bodyRegion =
         |> opBuilder.build
 
 
-{-| U-T1.3.3: a MULTI-RESULT func.func — the sret worker form. The C++
-side (SretFuncOpLowering) recognises any func.func with 2+ results and
-lowers it to the (slot ptr, args...) -> void ABI.
+{-| Builds a private `func.func` named `funcName` with one result per entry of
+`resultTypes`.
 -}
 funcFuncMulti : Ctx.Context -> String -> List ( String, MlirType ) -> List MlirType -> MlirRegion -> ( Ctx.Context, MlirOp )
 funcFuncMulti ctx funcName args resultTypes bodyRegion =
@@ -1216,14 +1262,9 @@ funcFuncMulti ctx funcName args resultTypes bodyRegion =
 -- ====== CONTROL FLOW ======
 
 
-{-| eco.case - pattern matching expression that produces SSA results
+{-| Builds an `eco.case` with a single result.
 
-Takes a result variable name, scrutinee SSA name, scrutinee type, case kind ("ctor", "int", "chr", "str"),
-list of tags, list of regions (one per alternative), and result type.
-Emits an eco.case operation that produces an SSA result value.
-
-eco.case is NOT a terminator - it's a value-producing expression.
-Each alternative region must terminate with eco.yield.
+See `ecoCaseMany`, which this calls with a one-element result list.
 
 -}
 ecoCase : Ctx.Context -> String -> String -> MlirType -> String -> List Int -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
@@ -1231,15 +1272,9 @@ ecoCase ctx resultVar scrutinee scrutineeType caseKind tags regions resultType =
     ecoCaseMany ctx scrutinee scrutineeType caseKind tags regions [ ( resultVar, resultType ) ]
 
 
-{-| eco.case for string pattern matching.
+{-| Builds an `eco.case` over a string with a single result.
 
-Takes a result variable name, scrutinee SSA name, scrutinee type, list of tags (positional indices),
-list of string patterns (N-1 for N alternatives, last is default),
-list of regions (one per alternative), and result type.
-Emits an eco.case operation with string\_patterns attribute.
-
-eco.case is NOT a terminator - it's a value-producing expression.
-Each alternative region must terminate with eco.yield.
+See `ecoCaseStringMany`, which this calls with a one-element result list.
 
 -}
 ecoCaseString : Ctx.Context -> String -> String -> MlirType -> List Int -> List String -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
@@ -1247,15 +1282,13 @@ ecoCaseString ctx resultVar scrutinee scrutineeType tags stringPatterns regions 
     ecoCaseStringMany ctx scrutinee scrutineeType tags stringPatterns regions [ ( resultVar, resultType ) ]
 
 
-{-| eco.case with multiple results - for TailRec step compilation.
+{-| Builds an `eco.case` that selects one of `regions` by the scrutinee and
+produces the values listed in `results`.
 
-Takes scrutinee SSA name, scrutinee type, case kind, list of tags,
-list of regions (one per alternative), and list of result (name, type) pairs.
-Emits an eco.case operation that produces multiple SSA values.
-
-eco.case is NOT a terminator - it's a value-producing expression.
-Each alternative region must terminate with eco.yieldMany yielding values
-matching the result types in order.
+`caseKind` becomes the `case_kind` attribute (for example `ctor`, `int`, `chr`,
+`str` or `bool`) and `tags` the `tags` attribute, one per region. `eco.case` is
+not a terminator: it produces values, and each region must end in an
+`eco.yield` of values matching `results`.
 
 -}
 ecoCaseMany : Ctx.Context -> String -> MlirType -> String -> List Int -> List MlirRegion -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
@@ -1276,16 +1309,12 @@ ecoCaseMany ctx scrutinee scrutineeType caseKind tags regions results =
         |> opBuilder.build
 
 
-{-| eco.case for string pattern matching with multiple results.
+{-| Builds an `eco.case` of kind `str` that matches a string scrutinee and
+produces the values listed in `results`.
 
-Takes scrutinee SSA name, scrutinee type, list of tags (positional indices),
-list of string patterns (N-1 for N alternatives, last is default),
-list of regions (one per alternative), and list of result (name, type) pairs.
-Emits an eco.case operation with string\_patterns attribute.
-
-eco.case is NOT a terminator - it's a value-producing expression.
-Each alternative region must terminate with eco.yieldMany yielding values
-matching the result types in order.
+`stringPatterns` becomes the `string_patterns` attribute, one string for each
+region but the last, which is the default. `eco.case` is not a terminator: each
+region must end in an `eco.yield` of values matching `results`.
 
 -}
 ecoCaseStringMany : Ctx.Context -> String -> MlirType -> List Int -> List String -> List MlirRegion -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
@@ -1307,7 +1336,8 @@ ecoCaseStringMany ctx scrutinee scrutineeType tags stringPatterns regions result
         |> opBuilder.build
 
 
-{-| eco.getTag - get the tag from a value (for eco.case scrutinee)
+{-| Builds an `eco.get_tag` reading the constructor tag of an `!eco.value` as an
+`i32`.
 -}
 ecoGetTag : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
 ecoGetTag ctx resultVar operand =
@@ -1322,8 +1352,8 @@ ecoGetTag ctx resultVar operand =
         |> opBuilder.build
 
 
-{-| scf.yield with multiple operands - terminator for scf.if/scf.while regions.
-The \_operand\_types attribute must exactly match the operand count (including empty list for 0 operands).
+{-| Builds an `scf.yield` terminator yielding any number of values, none
+included.
 -}
 scfYieldMany : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 scfYieldMany ctx operands =
@@ -1341,20 +1371,12 @@ scfYieldMany ctx operands =
         |> opBuilder.build
 
 
-{-| scf.while - structured while loop.
+{-| Builds an `scf.while` loop. Each triple names a loop result, its initial
+value and their type.
 
-Structure:
-%results = scf.while (%args = %inits) : (ArgTypes) -> ResultTypes {
-// "before" region - condition computation
-scf.condition(%cond) %args : ArgTypes
-} do {
-^bb0(%args: ArgTypes):
-// "after" region - body computation
-scf.yield %newArgs : ArgTypes
-}
-
-The before region computes the condition and passes values to either exit or continue.
-The after region computes new values for the next iteration.
+The "before" region computes the condition and ends in `scfCondition`; the
+"after" region is the loop body and ends in an `scf.yield` of the next
+iteration's values.
 
 -}
 scfWhile :
@@ -1385,10 +1407,10 @@ scfWhile ctx loopVars beforeRegion afterRegion =
         |> opBuilder.build
 
 
-{-| scf.condition - terminator for scf.while "before" region.
+{-| Builds the `scf.condition` terminator of an `scf.while` "before" region.
 
-If condition is true, continues to "after" region with the provided values.
-If condition is false, exits the while loop, returning the provided values as results.
+When `condVar` is true the loop continues into the "after" region with `args`;
+when it is false the loop ends and `args` become its results.
 
 -}
 scfCondition : Ctx.Context -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
@@ -1414,28 +1436,23 @@ scfCondition ctx condVar args =
 -- ====== CLOSURE KINDS AND LIMITS ======
 
 
-{-| One kind per slot (0 boxed, 1 Int, 2 Float, 3 Char), as a dense i8 array:
-the `slot_kinds` attribute of papCreate (one per capture), papExtend (one per
-newarg) and each papCreateGroup sibling. The kind of each slot is
-`Types.mlirTypeToKind` of its operand type.
+{-| Returns the slot kinds of the given types, one per type by
+`Types.mlirTypeToKind`, as a dense `i8` array attribute.
 -}
 slotKindsAttr : List MlirType -> MlirAttr
 slotKindsAttr tys =
     slotKindListAttr (List.map Types.mlirTypeToKind tys)
 
 
-{-| A list of slot kinds (0 boxed, 1 Int, 2 Float, 3 Char) as a dense i8
-array: the `slot_kinds` attribute of `eco.construct.record` and
-`eco.construct.custom`, whose kinds come from the layout rather than from the
-operand types.
+{-| Returns a list of slot kinds as a dense `i8` array attribute.
 -}
 slotKindListAttr : List Int -> MlirAttr
 slotKindListAttr kinds =
     ArrayAttr (Just I8) (List.map (IntAttr Nothing) kinds)
 
 
-{-| Adds `slot_kinds = slotKindsAttr tys` to an op's attributes, unless `tys`
-is empty: an op with no captures or newargs carries no `slot_kinds`.
+{-| Returns `attrs` with `slot_kinds` set to `slotKindsAttr tys`, or unchanged
+when `tys` is empty.
 -}
 withSlotKinds : List MlirType -> Dict.Dict String MlirAttr -> Dict.Dict String MlirAttr
 withSlotKinds tys attrs =
@@ -1446,11 +1463,8 @@ withSlotKinds tys attrs =
         Dict.insert "slot_kinds" (slotKindsAttr tys) attrs
 
 
-{-| Returns a closure's stage `arity` unchanged, and crashes when it exceeds
-`HeapLimits.maxStageArity` (HEAP\_078). Canonicalization reports user-written
-functions over the limit and `Compiler.Monomorphize.ValidateLimits` reports
-specialized closures over it, so reaching this crash is an internal compiler
-error.
+{-| Returns `arity` unchanged, and crashes the compile with an internal compiler
+error when it exceeds `HeapLimits.maxStageArity`.
 -}
 assertStageArity : Int -> Int
 assertStageArity arity =
@@ -1471,17 +1485,14 @@ assertStageArity arity =
 -- ====== ECO papCreateGroup ======
 
 
-{-| Describes one sibling in a `eco.papCreateGroup` op.
+{-| One closure of an `eco.papCreateGroup`: what `ecoPapCreateGroup` needs to
+describe it.
 
-`resultKind` is the saturated return ABI kind (REP\_ABI\_001):
-
-  - 0 = Boxed (HPtr) — default; emitted when the lambda's body evaluates
-    to a non-primitive type, including multi-stage closures whose body
-    returns another closure.
-  - 1 = Int (i64), 2 = Float (f64), 3 = Char (i16) — primitive returns.
-
-The runtime stores this on each sibling's closure header so dispatch
-paths cast `closure->evaluator` correctly.
+`slotKinds` gives the types whose slot kinds describe the closure's slots.
+`resultKind` is the slot-kind code of the function's saturated result: 0 for a
+boxed result, 1 Int, 2 Float, 3 Char. `numCaptured` and the length of
+`captureVars` are emitted as separate attributes, and nothing here makes them
+agree.
 
 -}
 type alias GroupSibling =
@@ -1496,14 +1507,16 @@ type alias GroupSibling =
     }
 
 
-{-| Emit a single `eco.papCreateGroup` op that atomically allocates
-a group of sibling closures for mutual let-rec. See the runtime op
-description for details on the attribute layout.
+{-| Builds one `eco.papCreateGroup` that creates a group of sibling closures
+together, for mutually recursive local functions, binding them to `resultVars`
+in sibling order.
 
-`siblings` are listed in sibling-index order. `crossEdges` is a list of
-`(producer, consumer, slot)` triples where slot indexes into the
-consumer's `values[]` array. `resultVars` are the SSA names to bind
-the resulting closure HPointers to, in sibling order.
+`siblings` are in sibling-index order. Each `crossEdges` triple is
+`(producer, consumer, slot)`, sibling indices and a slot index into the
+consumer's captured values, emitted flattened as `cross_edges`. Every
+sibling's captured values become the op's operands, concatenated in sibling
+order. `_result_kinds` is emitted only when some sibling's `resultKind` is not
+0, and every sibling's arity goes through `assertStageArity`.
 
 -}
 ecoPapCreateGroup :
@@ -1520,11 +1533,8 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
         fastEvaluators =
             siblings |> List.map (.fastEvaluator >> SymbolRefAttr) |> ArrayAttr Nothing
 
-        -- Emit as a standard ArrayAttr<IntegerAttr<i64>> (printed as
-        -- `[1 : i64, 2 : i64, ...]`) — matches TableGen `I64ArrayAttr`.
-        -- `ArrayAttr (Just I64) ...` would serialize as the distinct
-        -- `DenseI64ArrayAttr` form (`array<i64: ...>`), which the op
-        -- verifier does not accept.
+        -- An array of i64 attributes, not `ArrayAttr (Just I64)`, which is the
+        -- dense array form these attributes are not declared as.
         i64Array ints =
             ArrayAttr Nothing (List.map (\i -> IntAttr (Just I64) i) ints)
 
@@ -1534,17 +1544,9 @@ ecoPapCreateGroup ctx siblings crossEdges resultVars =
         numCaptured =
             siblings |> List.map .numCaptured |> i64Array
 
-        -- One dense i8 array per sibling, one kind per values[] slot (S.5).
         slotKinds =
             siblings |> List.map (.slotKinds >> slotKindsAttr) |> ArrayAttr Nothing
 
-        -- Per-sibling result kinds (REP_ABI_001). The op spec declares
-        -- `_result_kinds` as `OptionalAttr<I64ArrayAttr>`, so emit values
-        -- through `i64Array` (TableGen's verifier rejects I8-typed entries).
-        -- The runtime stores the byte on each sibling's closure header, so
-        -- only the low 8 bits matter — but we send full i64 to satisfy the
-        -- verifier. Omitted when every sibling is PK_Boxed to keep MLIR
-        -- diffs minimal.
         anyPrimitiveResult =
             List.any (\s -> s.resultKind /= 0) siblings
 

@@ -1,76 +1,61 @@
 module Compiler.Type.Constrain.Typed.Expression exposing (constrainDefWithIds, constrainRecursiveDefsWithIds)
 
-{-| Type constraint generation for expressions (Typed pathway).
+{-| Type checking a module starts by turning its canonical expressions into a
+tree of `Constraint`s, which `Compiler.Type.Solve` then solves. This module
+builds that tree for expressions and for local and top-level definitions, and
+while it does so it can note which solver variable stands for each node's type,
+so that every node's type can be read back after solving.
 
-This module walks canonical expression AST nodes and generates type
-constraints while tracking expression IDs to solver variables (via `NodeIds`,
-whose state lives in `IO.State`), enabling later retrieval of expression
-types from the solver.
+The same code serves both pathways. The typed pathway runs it with node
+recording on; the erased pathway runs it with recording off, and then the
+`NodeIds` operations it calls record nothing (`Compiler.Type.Constrain.Typed.NodeIds`
+owns the record). The constraints differ only in the placeholders described
+below, and check the same program either way.
 
-The generator is written as ordinary recursive `IO` functions (Design B).
-Stack safety relies on the axis classification below: every axis along which
-`Can.Expr_` nesting depth is unbounded in practice is walked with an explicit
-`IO.loop` spine; everything else recurses directly on the JS stack.
-
-
-## Expression axis classification (the stack-safety argument)
-
-Linear-unbounded (spine loop required — one `IO.loop` per axis):
-
-  - `Let` / `LetRec` / `LetDestruct` — `let`-chains nest down the BODY one
-    level per `let`; the def RHS is a separate (bounded) expression.
-    Walked by `constrainLetSpine`.
-  - `Binop` — left-associative chains (`1 + 2 + 3`, `a |> f |> g`) nest down
-    the LEFT operand; right-associative chains (`a ++ b ++ c`, `f <| g <| x`)
-    nest down the RIGHT operand. `constrainBinopSpine` handles both: it
-    descends into whichever single operand is itself a `Binop` (left takes
-    priority to preserve walk order), deferring the other side. Only a node
-    whose operands are BOTH binops costs a JS frame — that is genuine tree
-    branching, bounded by the balanced-tree argument below.
-  - `Call` — curried application (`((f x) y) z`) nests down the FUNC;
-    nested application (`f (g (h x))`) nests down the LAST argument.
-    `constrainCallSpine` handles both, preferring the func axis.
-  - `If` — `else if` ladders and machine-generated conditionals nest down
-    the FINAL (else) branch. Walked by `constrainIfSpine`.
-  - `Access` — field chains (`r.a.b.c...`) nest down the record expression.
-    Walked by `constrainAccessSpine`.
-
-Bounded (direct recursion OK):
-
-  - `Case` — the scrutinee and each branch body are separate subtrees; a
-    `case` nested in a branch costs one JS frame per level, but case-ladders
-    are written source (an N-deep ladder needs N written `case`s with their
-    own patterns), not data-scaled.
-  - `List` / `Tuple` / `Record` / `Update` / `Call` args — children are
-    width-bounded element/field/argument lists.
-  - `Lambda` — argument patterns are width-bounded; a `\x -> \y -> ...`
-    chain requires a written lambda per level (idiomatic Elm uses one
-    multi-arg lambda), so depth is written-source-bounded.
-  - `Negate` — `-(-(-x))` requires explicit parentheses per level.
-  - `Accessor`, `Shader`, literals, and the `Var*` leaf forms — leaves.
-
-A balanced expression tree of depth d holds ~2^d nodes, so genuine branching
-depth stays in the low tens even for enormous programs; only the linear axes
-above can grow with data size, and each has a spine loop plus a deep-nesting
-regression test (see `DeepSpineStackSafetyTest`).
+An _expectation_ (`Expected`) is the type an expression must have together with
+the reason it must have it, from which a type error is worded. A _rigid_ type
+variable is one named in an annotation; `rtv`, passed to almost every function
+here, maps those in scope to their types.
 
 
-## Spine loop shape
+## Recording a node's variable
 
-Each spine is a two-phase `IO.loop`:
+A _Group A_ node records a variable of its own with `NodeIds.recordNodeVar`.
+These are the integer literal, negation, operator application, function
+application, `if`, `case`, field access, record update, field accessor, list,
+tuple, record, anonymous function and the three kinds of `let`. Most record a
+fresh variable equated with the expectation; integer literals and negations
+record their `number` variable, applications their result variable, and field
+accesses their field variable. An `if` or `case` under a `FromAnnotation`
+expectation records the expected type's own variable when that type is a bare
+variable, and otherwise a fresh variable equated with it.
 
-1.  DESCEND the chain iteratively, at each level allocating and recording
-    that node's variable(s) and pushing the level's residual work onto a
-    frame list, then advancing to the deep child. The IO operation order is
-    identical to the recursive formulation's (allocations happen parent
-    first, in source order).
-2.  Constrain the first non-matching node (the leaf) via the ordinary
-    re-entrant `constrainWithIds`, then FOLD BACK UP the frames (innermost
-    first, via `IO.foldM`), combining each frame with the running child
-    constraint exactly as the recursive arm would have.
+A _Group B_ node has no variable of its own: string, character, float and unit
+literals, shaders, and every `Var*` reference. With recording on,
+`constrainGenericWithIds` gives it a placeholder variable, recorded with
+`NodeIds.recordSyntheticExprVar` and equated with the expectation.
+
+A kernel reference with no `Compiler.Type.KernelIntrinsics` row contributes no
+constraint of its own, so its type is bounded only by its context; one with a
+row is checked against the row's annotation like a foreign function.
 
 
-# Constraint Generation with ID Tracking
+## Stack safety
+
+The compiled compiler overflows its stack on deep enough recursion. Most
+directions in which an expression nests are only as deep as written source,
+and are walked by direct recursion. The directions that can grow with the size
+of the data in a program are walked by _spines_ instead: the body of a `let`,
+the operands of an operator chain, the function or last argument of an
+application, the final branch of an `if`/`else if` ladder, and the record of a
+field-access chain.
+
+A spine is a self-tail-recursive function, which Elm compiles into a loop. It
+descends the chain, at each level making and recording that level's variables
+and pushing a _frame_, the level's remaining work. It constrains the first node
+off the chain with `constrainWithIds`, then folds the frames back up, innermost
+first, with `IO.foldM`, giving the constraint a direct recursion would give.
+`DeepSpineStackSafetyTest` builds deep chains along these axes.
 
 @docs constrainDefWithIds, constrainRecursiveDefsWithIds
 
@@ -100,8 +85,16 @@ import Utils.Main as Utils
 -- ====== DEFINITIONS ======
 
 
-{-| Generate constraints for a definition, also tracking node IDs
-(expressions and patterns).
+{-| Builds the constraint for one non-recursive definition `def` whose scope is
+`bodyCon`, the constraint of the code that can see it.
+
+An unannotated definition gets fresh flexible variables for its arguments and
+result, and its type is generalized in `bodyCon`. For an annotated definition,
+each type variable of the annotation not already in `rtv` becomes a new rigid
+variable, recorded with `NodeIds.recordSchemeBinders` under the definition's
+name; the body is checked against the type left after one arrow per argument,
+with a `FromAnnotation` expectation.
+
 -}
 constrainDefWithIds : RigidTypeVar -> Can.Def -> Constraint -> IO Constraint
 constrainDefWithIds rtv def bodyCon =
@@ -173,14 +166,30 @@ constrainDefWithIds rtv def bodyCon =
                     )
 
 
-{-| Generate constraints for recursive definitions, also tracking node IDs
-(expressions and patterns).
+{-| Builds the constraint for a group of mutually recursive definitions `defs`
+whose scope is `bodyCon`.
+
+Every annotated definition's type is in scope for the whole group and the body.
+The unannotated definitions are checked together against their own, not yet
+generalized, types, and are generalized only for the annotated definitions and
+`bodyCon`.
+
 -}
 constrainRecursiveDefsWithIds : RigidTypeVar -> List Can.Def -> Constraint -> IO Constraint
 constrainRecursiveDefsWithIds rtv defs bodyCon =
     recDefsHelpWithIds rtv defs bodyCon (Info [] [] Dict.empty) (Info [] [] Dict.empty)
 
 
+{-| Builds the constraint for `defs` after adding each one to `rigidInfo` (if
+annotated) or `flexInfo` (if not), then nests the two groups around `bodyCon`
+as `constrainRecursiveDefsWithIds` describes.
+
+The flexible variables gathered so far are threaded into the next unannotated
+definition's pattern state, so they are declared in that definition's
+constraint. An annotated definition's constraint is wrapped in a `CLet` that
+introduces its new rigid variables.
+
+-}
 recDefsHelpWithIds : RigidTypeVar -> List Can.Def -> Constraint -> Info -> Info -> IO Constraint
 recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
     case defs of
@@ -205,7 +214,6 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                         (Info flexVars flexCons flexHeaders) =
                             flexInfo
                     in
-                    -- Match original: thread accumulated flexVars through pattern state
                     argsHelpWithIds args (State Dict.empty flexVars [])
                         |> IO.andThen
                             (\props ->
@@ -221,7 +229,6 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                                                 defCon =
                                                     CLet [] pvars headers (CAnd (List.reverse revCons)) exprCon
 
-                                                -- Match original: just props.vars (flexVars already in pvars)
                                                 newFlexInfo : Info
                                                 newFlexInfo =
                                                     Info props.vars
@@ -263,7 +270,6 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                                                             |> IO.andThen
                                                                 (\exprCon ->
                                                                     let
-                                                                        -- Match original: defCon has empty rigid vars
                                                                         defCon : Constraint
                                                                         defCon =
                                                                             CLet []
@@ -272,7 +278,6 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                                                                                 (CAnd (List.reverse revCons))
                                                                                 exprCon
 
-                                                                        -- Match original: wrap defCon in CLet that introduces rigids
                                                                         wrappedDefCon : Constraint
                                                                         wrappedDefCon =
                                                                             CLet (Dict.values newRigids) [] Dict.empty defCon CTrue
@@ -288,16 +293,17 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo =
                             )
 
 
-{-| Generate constraints for a list of function argument patterns,
-also tracking pattern IDs.
+{-| Constrains the argument patterns of an unannotated function, giving each a
+fresh type variable, and returns the function's type, its result variable and
+the patterns' bindings and constraints.
 -}
 constrainArgsWithIds : List Can.Pattern -> IO Args
 constrainArgsWithIds args =
     argsHelpWithIds args Common.emptyState
 
 
-{-| Helper for constraining function arguments with ID tracking.
-Recursively processes patterns (width-bounded), building up the function type.
+{-| Constrains `args` on top of the pattern `state`, as `constrainArgsWithIds`
+does, ending the function type with a fresh result variable.
 -}
 argsHelpWithIds : List Can.Pattern -> State -> IO Args
 argsHelpWithIds args state =
@@ -332,8 +338,9 @@ argsHelpWithIds args state =
                     )
 
 
-{-| Generate constraints for explicitly typed function arguments,
-also tracking pattern IDs.
+{-| Constrains the argument patterns of the annotated definition `name` against
+their annotated types, and returns the function's type, the type left after the
+arguments, and the patterns' bindings and constraints.
 -}
 constrainTypedArgsWithIds :
     Dict Name Type
@@ -345,8 +352,8 @@ constrainTypedArgsWithIds rtv name args srcResultType =
     typedArgsHelpWithIds rtv name Index.first args srcResultType Common.emptyState
 
 
-{-| Helper for constraining typed arguments with ID tracking.
-Recursively processes pattern-type pairs (width-bounded).
+{-| Constrains `args`, numbered from `index`, on top of the pattern `state`, as
+`constrainTypedArgsWithIds` does.
 -}
 typedArgsHelpWithIds :
     Dict Name Type
@@ -390,26 +397,16 @@ typedArgsHelpWithIds rtv name index args srcResultType state =
 -- ====== EXPRESSION DISPATCH ======
 
 
-{-| Generate constraints for an expression, tracking expression ID → Variable
-mappings.
+{-| Builds the constraint that expression `expr` has the type `expected` asks for,
+recording its node's variable as the module docstring describes.
 
-This function dispatches to specialized helpers based on expression type:
-
-  - Group A expressions record a node var via NodeIds.recordNodeVar.
-    This includes: Int, Negate, Binop, Call, If, Case, Access, Update,
-    Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct.
-  - Group B expressions (Str, Chr, Float, Unit, Shader, and leaf Var\* forms)
-    use the generic path that allocates a synthetic exprVar via
-    recordSyntheticExprVar, later fixed by PostSolve.
-
-The linear-unbounded axes (see the module docs) route to their spine loops;
-everything else recurses directly.
+Group A forms go to their own helpers, those that can nest down a spine axis
+go to their spine; every other form goes to `constrainGenericWithIds`.
 
 -}
 constrainWithIds : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainWithIds rtv ((A.At region exprInfo) as expr) expected =
     case exprInfo.node of
-        -- Group A: specialized helpers that record the natural result var
         Can.Int _ ->
             constrainIntWithIds region exprInfo.id expected
 
@@ -434,7 +431,6 @@ constrainWithIds rtv ((A.At region exprInfo) as expr) expected =
         Can.Update updateExpr fields ->
             constrainUpdateWithIds rtv region exprInfo.id updateExpr fields expected
 
-        -- Group A: accessor, containers, lambdas, and let expressions
         Can.Accessor field ->
             constrainAccessorGroupAWithIds region exprInfo.id field expected
 
@@ -464,11 +460,12 @@ constrainWithIds rtv ((A.At region exprInfo) as expr) expected =
             constrainGenericWithIds rtv region exprInfo expected
 
 
-{-| Generic implementation for expressions without natural result variables.
+{-| Builds the constraint for a Group B node.
 
-Allocates a synthetic exprVar for ID tracking, then generates constraints
-matching the erased path, adding a CEqual to connect exprVar to the expected
-type. On the erased pathway (recording off) the wrapper is skipped entirely.
+With recording on, it makes a placeholder variable, records it with
+`NodeIds.recordSyntheticExprVar`, and equates it with `expected` beside the
+node's own constraint. With recording off it returns the node's own constraint
+alone.
 
 -}
 constrainGenericWithIds : RigidTypeVar -> A.Region -> Can.ExprInfo -> E.Expected Type -> IO Constraint
@@ -477,9 +474,6 @@ constrainGenericWithIds rtv region info expected =
         |> IO.andThen
             (\state ->
                 if state.recording then
-                    -- Typed pathway: allocate a synthetic placeholder var for this
-                    -- Group B node (Str, Chr, Float, Unit, Shader, Var*), record it,
-                    -- and tie it to the expected type so nodeTypes gets the resolved type.
                     Type.mkFlexVar
                         |> IO.andThen
                             (\exprVar ->
@@ -505,13 +499,12 @@ constrainGenericWithIds rtv region info expected =
                             )
 
                 else
-                    -- Erased pathway: no synthetic placeholder var; emit the node's
-                    -- constraint directly against the expected type.
                     constrainNodeWithIds rtv region info.node expected
             )
 
 
-{-| Specialized Int handling - record the number variable directly.
+{-| Builds the constraint for an integer literal: a fresh `number` variable,
+recorded for the node and equated with `expected`.
 -}
 constrainIntWithIds : A.Region -> Int -> E.Expected Type -> IO Constraint
 constrainIntWithIds region exprId expected =
@@ -526,7 +519,8 @@ constrainIntWithIds region exprId expected =
             )
 
 
-{-| Specialized Negate handling - record the number variable directly.
+{-| Builds the constraint for a negation: a fresh `number` variable, recorded for
+the node, that the operand must have and that is equated with `expected`.
 -}
 constrainNegateWithIds : RigidTypeVar -> A.Region -> Int -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainNegateWithIds rtv region exprId expr expected =
@@ -555,8 +549,11 @@ constrainNegateWithIds rtv region exprId expr expected =
 -- ====== LET SPINE ======
 
 
-{-| The residual work of one `let` level: the def(s) to constrain and the
-Group A wrapping, applied once the deeper body is done.
+{-| The definitions of one `let` level, waiting for the constraint of its body.
+
+`LetDef` is a single definition, `LetRecDefs` a recursive group, and
+`LetDestructPat` a pattern with the expression it destructures.
+
 -}
 type LetPayload
     = LetDef Can.Def
@@ -564,6 +561,9 @@ type LetPayload
     | LetDestructPat Can.Pattern Can.Expr
 
 
+{-| One `let` level whose body is still to be constrained: its definitions, the
+variable recorded for the node, and the expectation on the whole `let`.
+-}
 type alias LetFrame =
     { region : A.Region
     , exprVar : Vars.Variable
@@ -572,21 +572,17 @@ type alias LetFrame =
     }
 
 
-{-| Walk a `let`-chain iteratively (constant JS stack).
+{-| Builds the constraint for a chain of `let`s, nesting down the body, without
+using stack for its length.
 
-Descend: at each `Let`/`LetRec`/`LetDestruct` allocate + record the node's
-exprVar and push the defs as a frame; advance into the body. Constrain the
-first non-let body via the ordinary dispatcher. Fold up: constrain each
-level's defs against the running body constraint (innermost first) and apply
-the Group A exists/CEqual wrapper — exactly what the recursive arms did.
+Each level's body is checked against that level's own fresh variable, and the
+variable is then equated with the level's expectation under category `Lambda`.
+So a mismatch between a `let`'s body and what is expected of it is reported at
+the whole `let`.
 
 -}
 constrainLetSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainLetSpine rtv expr expected s0 =
-    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
-    -- the `IO.loop`/`Step` trampoline. `descend` is inlined into each Let* arm so
-    -- the recursive call is a DIRECT self-tail-call of `letSpineGo` (Elm does not
-    -- TCO through a local helper). Byte-identical order/allocations sans trampoline.
     let
         ( s1, ( leafCon, frames ) ) =
             letSpineGo rtv expr expected [] s0
@@ -594,6 +590,10 @@ constrainLetSpine rtv expr expected s0 =
     IO.foldM (applyLetFrame rtv) leafCon frames s1
 
 
+{-| Descends the `let` chain from `current`, recording a variable for each level
+and pushing it onto `frames`, and returns the constraint of the first body that
+is not a `let` together with the frames, innermost first.
+-}
 letSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List LetFrame -> IO.State -> ( IO.State, ( Constraint, List LetFrame ) )
 letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
@@ -635,6 +635,9 @@ letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
+{-| Builds one `let` level's constraint around `bodyCon`: its definitions scope
+over the body, and its variable is equated with the level's expectation.
+-}
 applyLetFrame : RigidTypeVar -> Constraint -> LetFrame -> IO Constraint
 applyLetFrame rtv bodyCon frame =
     (case frame.payload of
@@ -662,8 +665,9 @@ applyLetFrame rtv bodyCon frame =
 -- ====== BINOP SPINE ======
 
 
-{-| Everything of one binop level that is independent of its operand
-constraints.
+{-| What one operator application contributes to the constraint apart from its
+operands: its variables, the constraint on the operator itself, and its
+expectation.
 -}
 type alias BinopLevel =
     { region : A.Region
@@ -677,11 +681,21 @@ type alias BinopLevel =
     }
 
 
+{-| One operator application waiting for the constraint of the operand the spine
+descended into.
+
+`BinopDeferRight` descended into the left operand and still has the right one
+to constrain, with its expectation. `BinopLeftDone` descended into the right
+operand and holds the left operand's constraint.
+
+-}
 type BinopFrame
     = BinopDeferRight BinopLevel Can.Expr (E.Expected Type)
     | BinopLeftDone BinopLevel Constraint
 
 
+{-| Tells whether an expression is an operator application.
+-}
 isBinopNode : Can.Expr -> Bool
 isBinopNode (A.At _ info) =
     case info.node of
@@ -692,6 +706,10 @@ isBinopNode (A.At _ info) =
             False
 
 
+{-| Builds one operator application's constraint from its level and its two
+operand constraints: the operator's type is `left -> right -> answer`, and
+`answer` must meet the expectation.
+-}
 assembleBinop : BinopLevel -> Constraint -> Constraint -> Constraint
 assembleBinop level leftCon rightCon =
     Type.exists [ level.leftVar, level.rightVar, level.answerVar ]
@@ -704,26 +722,19 @@ assembleBinop level leftCon rightCon =
         )
 
 
-{-| Walk a binop chain iteratively (constant JS stack), whichever operand it
-nests down.
+{-| Builds the constraint for a chain of operator applications without using
+stack for its length, whichever operand the chain nests down.
 
-At each level: allocate left/right/answer vars and record the answer var
-(exactly the recursive order). Then:
-
-  - left operand is a binop → defer the right operand to the fold-up and
-    descend left (preserves left-before-right constraining);
-  - otherwise constrain the left operand now; if the right operand is a
-    binop, descend right; else constrain it and close the level (spine leaf).
-
-Only when BOTH operands are binops does the deferred right side re-enter
-`constrainWithIds` (a fresh spine) during fold-up — genuine branching.
+At each level the spine descends into the left operand when it is an operator
+application, deferring the right; otherwise it constrains the left operand and
+descends into the right one when that is an operator application. An
+application whose operands are both operator applications constrains its right
+operand by a fresh call to `constrainWithIds` on the way back up, which costs
+stack.
 
 -}
 constrainBinopSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainBinopSpine rtv expr expected s0 =
-    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
-    -- the `IO.loop`/`Step` trampoline. Both `Loop` transitions are DIRECT self-tail-
-    -- calls of `binopSpineGo`. Byte-identical var-alloc order + frame stack.
     let
         ( s1, ( leafCon, frames ) ) =
             binopSpineGo rtv expr expected [] s0
@@ -731,6 +742,10 @@ constrainBinopSpine rtv expr expected s0 =
     IO.foldM (applyBinopFrame rtv) leafCon frames s1
 
 
+{-| Descends the operator chain from `current`, making and recording each level's
+variables and pushing a frame, and returns the constraint of the innermost
+level together with the frames, innermost first.
+-}
 binopSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List BinopFrame -> IO.State -> ( IO.State, ( Constraint, List BinopFrame ) )
 binopSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
@@ -745,7 +760,6 @@ binopSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                 ( s3, answerVar ) =
                     Type.mkFlexVar s2
 
-                -- Record answerVar as the type for this binop expression
                 ( s4, () ) =
                     NodeIds.recordNodeVar exprInfo.id answerVar s3
 
@@ -812,6 +826,9 @@ binopSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
+{-| Completes one operator application around `childCon`, the constraint of the
+operand the spine descended into, constraining a deferred right operand first.
+-}
 applyBinopFrame : RigidTypeVar -> Constraint -> BinopFrame -> IO Constraint
 applyBinopFrame rtv childCon frame =
     case frame of
@@ -827,8 +844,9 @@ applyBinopFrame rtv childCon frame =
 -- ====== CALL SPINE ======
 
 
-{-| Everything of one call level that is independent of its func/arg
-constraints.
+{-| What one function application contributes to the constraint apart from its
+function and arguments: its variables, the name used in error messages, its
+argument count, and its expectation.
 -}
 type alias CallLevel =
     { region : A.Region
@@ -843,11 +861,22 @@ type alias CallLevel =
     }
 
 
+{-| One function application waiting for the constraint of the part the spine
+descended into.
+
+`CallDeferArgs` descended into the function and still has all the arguments to
+constrain. `CallLastArg` descended into the last argument and holds the
+function's constraint and every earlier argument's variable, type and
+constraint, then the last argument's variable and type.
+
+-}
 type CallFrame
     = CallDeferArgs CallLevel (List Can.Expr)
     | CallLastArg CallLevel Constraint (List Vars.Variable) (List Type) (List Constraint) Vars.Variable Type
 
 
+{-| Tells whether an expression is a function application.
+-}
 isCallNode : Can.Expr -> Bool
 isCallNode (A.At _ info) =
     case info.node of
@@ -858,6 +887,13 @@ isCallNode (A.At _ info) =
             False
 
 
+{-| Builds one function application's constraint from its level, the function's
+constraint and the arguments' variables, types and constraints.
+
+The function's type must be the arguments' types arrowed into the result type,
+and the result type must meet the expectation.
+
+-}
 assembleCall : CallLevel -> Constraint -> List Vars.Variable -> List Type -> List Constraint -> Constraint
 assembleCall level funcCon argVars argTypes argCons =
     let
@@ -879,24 +915,18 @@ assembleCall level funcCon argVars argTypes argCons =
         )
 
 
-{-| Walk a call chain iteratively (constant JS stack), down either the func
-axis (curried application) or the last-argument axis (nested application).
+{-| Builds the constraint for a chain of function applications without using
+stack for its length, nesting down either the function (`((f x) y) z`) or the
+last argument (`f (g (h x))`).
 
-At each level: allocate funcVar/resultVar and record the result var (exactly
-the recursive order). Then:
-
-  - func is a call → defer all args to the fold-up and descend into func;
-  - otherwise constrain func and the args in order; if the LAST arg is a
-    call, descend into it; else close the level (spine leaf).
+At each level the spine descends into the function when it is an application,
+deferring the arguments. Otherwise it constrains the function and the
+arguments in order, and descends into the last argument when that is an
+application.
 
 -}
 constrainCallSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainCallSpine rtv expr expected s0 =
-    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
-    -- the IO.loop/Step trampoline. callSpineGo self-tail-calls on each spine descent
-    -- (func axis / last-arg axis); the width-bounded arg walk callSpineArgsGo returns
-    -- a CallArgsOutcome that callSpineGo inspects (no trampoline, no mutual tail-
-    -- recursion). Byte-identical var-alloc/constrain order + frame stack.
     let
         ( s1, ( leafCon, frames ) ) =
             callSpineGo rtv expr expected [] s0
@@ -904,11 +934,19 @@ constrainCallSpine rtv expr expected s0 =
     IO.foldM (applyCallFrame rtv) leafCon frames s1
 
 
+{-| The result of walking one application's arguments: either the level's
+finished constraint, or the last argument to descend into, with its
+expectation and the frame that completes the level.
+-}
 type CallArgsOutcome
     = CallArgsDone Constraint
     | CallArgsDescend Can.Expr (E.Expected Type) CallFrame
 
 
+{-| Descends the application chain from `current`, making and recording each
+level's variables and pushing a frame, and returns the constraint of the
+innermost level together with the frames, innermost first.
+-}
 callSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List CallFrame -> IO.State -> ( IO.State, ( Constraint, List CallFrame ) )
 callSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
@@ -962,6 +1000,9 @@ callSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
+{-| Constrains the arguments `remaining`, numbered from `index`, after those
+already accumulated, stopping at a last argument that is an application.
+-}
 callSpineArgsGo : RigidTypeVar -> CallLevel -> Constraint -> Index.ZeroBased -> List Can.Expr -> List Vars.Variable -> List Type -> List Constraint -> IO.State -> ( IO.State, CallArgsOutcome )
 callSpineArgsGo rtv level funcCon index remaining accVars accTypes accCons s0 =
     case remaining of
@@ -1020,6 +1061,9 @@ callSpineArgsGo rtv level funcCon index remaining accVars accTypes accCons s0 =
             callSpineArgsGo rtv level funcCon (Index.next index) rest (argVar :: accVars) (argType :: accTypes) (argCon :: accCons) s2
 
 
+{-| Completes one function application around `childCon`, the constraint of the
+function or last argument the spine descended into.
+-}
 applyCallFrame : RigidTypeVar -> Constraint -> CallFrame -> IO Constraint
 applyCallFrame rtv childCon frame =
     case frame of
@@ -1041,8 +1085,9 @@ applyCallFrame rtv childCon frame =
                 )
 
 
-{-| Constrain a call's arguments by direct recursion (width-bounded); used on
-the fold-up path where the loop is no longer available.
+{-| Constrains `args`, numbered from `index`, each against a fresh variable, and
+returns every argument's variable, type and constraint in order, after the
+accumulated ones.
 -}
 constrainCallArgsWithIds :
     RigidTypeVar
@@ -1079,9 +1124,9 @@ constrainCallArgsWithIds rtv level index args accVars accTypes accCons =
 -- ====== IF SPINE ======
 
 
-{-| One deferred `if` level: the constraints of everything except the final
-(else) branch, plus the assembly closure that finishes the level once the
-final branch constraint arrives.
+{-| One `if` level waiting for the constraint of its final branch: the constraints
+of its earlier branches, and the function that builds the level's constraint
+from all its branch constraints.
 -}
 type alias IfFrame =
     { assemble : List Constraint -> Constraint
@@ -1089,6 +1134,8 @@ type alias IfFrame =
     }
 
 
+{-| Tells whether an expression is an `if`.
+-}
 isIfNode : Can.Expr -> Bool
 isIfNode (A.At _ info) =
     case info.node of
@@ -1099,20 +1146,16 @@ isIfNode (A.At _ info) =
             False
 
 
-{-| Walk an `if`/`else if` ladder iteratively (constant JS stack) down the
-final (else) branch.
+{-| Builds the constraint for an `if`/`else if` ladder without using stack for its
+length, nesting down the final `else` branch.
 
-At each level, in exactly the recursive order: constrain all conditions,
-allocate/record the branch var per the expected shape, constrain the `then`
-branches in index order, and descend into the final branch when it is itself
-an `if` (else constrain it and close the level).
+At each level it constrains the conditions as `Bool`, records the level's
+variable, constrains the earlier branches in order, and descends into the
+final branch when that is an `if`.
 
 -}
 constrainIfSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainIfSpine rtv expr expected s0 =
-    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
-    -- the IO.loop/Step trampoline; the width-bounded branch walk returns an
-    -- IfBranchesOutcome that ifSpineGo inspects (no trampoline). Byte-identical.
     let
         ( s1, ( leafCon, frames ) ) =
             ifSpineGo rtv expr expected [] s0
@@ -1120,11 +1163,19 @@ constrainIfSpine rtv expr expected s0 =
     IO.foldM applyIfFrame leafCon frames s1
 
 
+{-| The result of walking one `if` level's branches: either the level's finished
+constraint, or the final branch to descend into, with its expectation and the
+frame that completes the level.
+-}
 type IfBranchesOutcome
     = IfBranchesDone Constraint
     | IfBranchesDescend Can.Expr (E.Expected Type) IfFrame
 
 
+{-| Descends the `if` ladder from `current`, pushing a frame for each level, and
+returns the constraint of the innermost level together with the frames,
+innermost first.
+-}
 ifSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List IfFrame -> IO.State -> ( IO.State, ( Constraint, List IfFrame ) )
 ifSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
@@ -1161,6 +1212,9 @@ ifSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
+{-| Constrains the branches `remaining`, numbered from `index`, stopping at a final
+branch that is an `if`.
+-}
 ifSpineBranchesGo : RigidTypeVar -> (Index.ZeroBased -> E.Expected Type) -> (List Constraint -> Constraint) -> Index.ZeroBased -> List Can.Expr -> List Constraint -> IO.State -> ( IO.State, IfBranchesOutcome )
 ifSpineBranchesGo rtv mkExpected assemble index remaining accCons s0 =
     case remaining of
@@ -1186,9 +1240,9 @@ ifSpineBranchesGo rtv mkExpected assemble index remaining accCons s0 =
             ifSpineBranchesGo rtv mkExpected assemble (Index.next index) rest (con :: accCons) s1
 
 
-{-| The expectation for each branch of one `if` level, and the closure that
-assembles the level's constraint once all its branch constraints are known,
-for an `if` with node id `exprId` at `region` whose conditions gave
+{-| Returns the expectation for each branch of one `if` level, and the
+closure that assembles the level's constraint once all its branch constraints
+are known, for an `if` with node id `exprId` at `region` whose conditions gave
 `condCons`, under `expected`. On the typed pathway it records the level's node
 variable.
 
@@ -1208,14 +1262,12 @@ ifLevelExpectations : A.Region -> Int -> List Constraint -> E.Expected Type -> I
 ifLevelExpectations region exprId condCons expected =
     case expected of
         FromAnnotation name arity _ tipe ->
-            -- Record ID with the expected type (tipe is the type var)
             (case tipe of
                 VarN v ->
                     NodeIds.recordNodeVar exprId v
                         |> IO.map (\() -> Nothing)
 
                 _ ->
-                    -- Need to create a var for tracking, and constrain it to equal the annotation type
                     Type.mkFlexVar
                         |> IO.andThen
                             (\v ->
@@ -1246,7 +1298,6 @@ ifLevelExpectations region exprId condCons expected =
             Type.mkFlexVar
                 |> IO.andThen
                     (\branchVar ->
-                        -- Record branchVar for this if expression
                         NodeIds.recordNodeVar exprId branchVar
                             |> IO.map
                                 (\() ->
@@ -1269,6 +1320,8 @@ ifLevelExpectations region exprId condCons expected =
                     )
 
 
+{-| Completes one `if` level with `childCon`, the constraint of its final branch.
+-}
 applyIfFrame : Constraint -> IfFrame -> IO Constraint
 applyIfFrame childCon frame =
     IO.pure (frame.assemble (frame.earlierBranchCons ++ [ childCon ]))
@@ -1278,6 +1331,9 @@ applyIfFrame childCon frame =
 -- ====== ACCESS SPINE ======
 
 
+{-| One field access waiting for the constraint of the record expression: its
+field and variables, and its expectation.
+-}
 type alias AccessFrame =
     { region : A.Region
     , field : Name
@@ -1288,19 +1344,15 @@ type alias AccessFrame =
     }
 
 
-{-| Walk a field-access chain (`r.a.b.c...`) iteratively (constant JS stack)
-down the record expression.
+{-| Builds the constraint for a chain of field accesses (`r.a.b.c`) without using
+stack for its length, nesting down the record expression.
 
-At each level allocate ext/field vars and record the field var (exactly the
-recursive order); constrain the first non-access record expression via the
-ordinary dispatcher; fold up applying each level's exists/CEqual wrapper.
+At each level the record expression must be a record with the field, and the
+field's variable, recorded for the node, must meet the expectation.
 
 -}
 constrainAccessSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainAccessSpine rtv expr expected s0 =
-    -- A5: direct self-tail-recursive spine (TCO -> while-loop; stack-safe) replacing
-    -- the IO.loop/Step trampoline. The Access arm ends in a DIRECT self-tail-call of
-    -- accessSpineGo. Byte-identical var-alloc/recording order + frame stack.
     let
         ( s1, ( leafCon, frames ) ) =
             accessSpineGo rtv expr expected [] s0
@@ -1308,6 +1360,10 @@ constrainAccessSpine rtv expr expected s0 =
     IO.foldM applyAccessFrame leafCon frames s1
 
 
+{-| Descends the access chain from `current`, recording each level's field
+variable and pushing a frame, and returns the constraint of the innermost
+record expression together with the frames, innermost first.
+-}
 accessSpineGo : RigidTypeVar -> Can.Expr -> E.Expected Type -> List AccessFrame -> IO.State -> ( IO.State, ( Constraint, List AccessFrame ) )
 accessSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
     case exprInfo.node of
@@ -1360,6 +1416,9 @@ accessSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
             ( s1, ( con, frames ) )
 
 
+{-| Completes one field access around `recordCon`, the constraint of its record
+expression.
+-}
 applyAccessFrame : Constraint -> AccessFrame -> IO Constraint
 applyAccessFrame recordCon frame =
     IO.pure
@@ -1376,15 +1435,14 @@ applyAccessFrame recordCon frame =
 -- ====== GROUP A WRAPPERS (bounded nodes) ======
 
 
-{-| Specialized Accessor handling - treat `.field` as Group A and
-record a node variable for the accessor expression's type.
+{-| Builds the constraint for a field accessor function (`.field`), with a fresh
+variable recorded for the node and equated with `expected`.
 -}
 constrainAccessorGroupAWithIds : A.Region -> Int -> Name -> E.Expected Type -> IO Constraint
 constrainAccessorGroupAWithIds region exprId field expected =
     Type.mkFlexVar
         |> IO.andThen
             (\exprVar ->
-                -- Record exprVar as the type variable for this accessor expression
                 NodeIds.recordNodeVar exprId exprVar
                     |> IO.andThen
                         (\() ->
@@ -1393,7 +1451,6 @@ constrainAccessorGroupAWithIds region exprId field expected =
                                 exprType =
                                     VarN exprVar
                             in
-                            -- Reuse existing accessor constraints, then tie exprVar to `expected`
                             constrainAccessorWithIds region field expected
                                 |> IO.map
                                     (\accessorCon ->
@@ -1408,7 +1465,8 @@ constrainAccessorGroupAWithIds region exprId field expected =
             )
 
 
-{-| Group A wrapper for List expressions.
+{-| Builds the constraint for a list literal, with a fresh variable recorded for
+the node and equated with `expected`.
 -}
 constrainListGroupAWithIds : RigidTypeVar -> A.Region -> Int -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainListGroupAWithIds rtv region exprId elements expected =
@@ -1437,7 +1495,8 @@ constrainListGroupAWithIds rtv region exprId elements expected =
             )
 
 
-{-| Group A wrapper for Tuple expressions.
+{-| Builds the constraint for a tuple, with a fresh variable recorded for the
+node and equated with `expected`.
 -}
 constrainTupleGroupAWithIds : RigidTypeVar -> A.Region -> Int -> Can.Expr -> Can.Expr -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainTupleGroupAWithIds rtv region exprId a b cs expected =
@@ -1466,7 +1525,8 @@ constrainTupleGroupAWithIds rtv region exprId a b cs expected =
             )
 
 
-{-| Group A wrapper for Record literal expressions.
+{-| Builds the constraint for a record literal, with a fresh variable recorded
+for the node and equated with `expected`.
 -}
 constrainRecordGroupAWithIds : RigidTypeVar -> A.Region -> Int -> DMap.Dict String (A.Located Name) Can.Expr -> E.Expected Type -> IO Constraint
 constrainRecordGroupAWithIds rtv region exprId fields expected =
@@ -1495,7 +1555,8 @@ constrainRecordGroupAWithIds rtv region exprId fields expected =
             )
 
 
-{-| Group A wrapper for Lambda expressions.
+{-| Builds the constraint for an anonymous function, with a fresh variable
+recorded for the node and equated with `expected`.
 -}
 constrainLambdaGroupAWithIds : RigidTypeVar -> A.Region -> Int -> List Can.Pattern -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainLambdaGroupAWithIds rtv region exprId args body expected =
@@ -1524,10 +1585,9 @@ constrainLambdaGroupAWithIds rtv region exprId args body expected =
             )
 
 
-{-| The name `CForeign` reports in a type error for an intrinsic-annotated
-kernel. Rendered fully qualified (`Elm.Kernel.List.fromArray`) because the only
-people who can write a kernel reference are kernel-package authors, and the
-prefix distinguishes the two packages' same-named kernels.
+{-| Returns the name a type error uses for the kernel function `name` of module
+`home` under `prefix`, written in full as `Elm.Kernel.List.fromArray` so that
+same-named kernels under the `Elm` and `Eco` prefixes are told apart.
 -}
 kernelErrorName : Name -> Name -> Name -> Name
 kernelErrorName prefix home name =
@@ -1538,11 +1598,14 @@ kernelErrorName prefix home name =
 -- ====== GROUP B NODE DISPATCH ======
 
 
-{-| Constrain a node's structure without the Group A recording wrapper.
+{-| Builds a node's own constraint against `expected`, without recording a
+variable for it.
 
-Reachable only for the Group B leaf forms (Str, Chr, Float, Unit, Shader,
-Var\*) via `constrainGenericWithIds`; the composite arms are defensive
-(their nodes are dispatched to Group A helpers by `constrainWithIds`).
+Only the Group B forms reach it, from `constrainGenericWithIds`. A kernel
+reference with a `Compiler.Type.KernelIntrinsics` row becomes a `CForeign` on
+the row's annotation; one without a row contributes no constraint of its own.
+The arms for the other forms are not reached; `Access` and `Update` there give
+`CTrue`.
 
 -}
 constrainNodeWithIds : RigidTypeVar -> A.Region -> Can.Expr_ -> E.Expected Type -> IO Constraint
@@ -1555,15 +1618,6 @@ constrainNodeWithIds rtv region node expected =
             IO.pure (CLocal region name expected)
 
         Can.VarKernel prefix home name ->
-            -- `Elm.Kernel.*` references carry no constraint by default, so a
-            -- kernel is typed entirely by its context: one used INLINE (rather
-            -- than through an eta-free aliasing def) is bounded by NOTHING, and
-            -- `toArray` behaves as `alpha -> beta` with the two sides never
-            -- equated. An INTRINSIC row supplies the missing annotation and
-            -- makes this a `CForeign`, instantiated fresh per occurrence and
-            -- unified with the context exactly as a foreign function's is —
-            -- see `Compiler.Type.KernelIntrinsics` for the table, the
-            -- representation-claim rule, and why it is keyed by PREFIX too.
             case KernelIntrinsics.lookup prefix home name of
                 Just row ->
                     IO.pure (CForeign region (kernelErrorName prefix home name) row.annotation expected)
@@ -1589,7 +1643,6 @@ constrainNodeWithIds rtv region node expected =
         Can.Chr _ ->
             IO.pure (CEqual region Char Type.char expected)
 
-        -- Group A: handled by constrainIntWithIds
         Can.Int _ ->
             Type.mkFlexNumber
                 |> IO.map (\var -> Type.exists [ var ] (CEqual region E.Number (VarN var) expected))
@@ -1604,7 +1657,6 @@ constrainNodeWithIds rtv region node expected =
             constrainListWithIds rtv region elements expected
 
         Can.Negate expr ->
-            -- In generic path, create fresh var
             Type.mkFlexNumber
                 |> IO.andThen
                     (\numberVar ->
@@ -1651,14 +1703,10 @@ constrainNodeWithIds rtv region node expected =
         Can.Accessor field ->
             constrainAccessorWithIds region field expected
 
-        -- Group A: handled by constrainAccessSpine
         Can.Access _ _ ->
-            -- Should not reach here since Access is handled by Group A dispatch
             IO.pure CTrue
 
-        -- Group A: handled by constrainUpdateWithIds
         Can.Update _ _ ->
-            -- Should not reach here since Update is handled by Group A dispatch
             IO.pure CTrue
 
         Can.Record fields ->
@@ -1675,6 +1723,10 @@ constrainNodeWithIds rtv region node expected =
 -- ====== NODE HELPERS ======
 
 
+{-| Builds the constraint that a GLSL shader literal has the `WebGL.Shader` type
+made from its attribute, uniform and varying declarations, with the attribute
+and uniform records left open.
+-}
 constrainShaderWithIds : A.Region -> Shader.Types -> Expected Type -> IO Constraint
 constrainShaderWithIds region (Shader.Types attributes uniforms varyings) expected =
     Type.mkFlexVar
@@ -1706,8 +1758,9 @@ constrainShaderWithIds region (Shader.Types attributes uniforms varyings) expect
             )
 
 
-{-| Non-recording Binop constraint (defensive; Binop nodes are dispatched to
-the binop spine by `constrainWithIds`).
+{-| Builds an operator application's constraint by direct recursion, without
+recording; not reached, since `constrainWithIds` sends operator applications
+to the spine.
 -}
 constrainBinopNodeWithIds : RigidTypeVar -> A.Region -> Name -> Can.Annotation Name -> Can.Expr -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainBinopNodeWithIds rtv region op annotation leftExpr rightExpr expected =
@@ -1762,8 +1815,9 @@ constrainBinopNodeWithIds rtv region op annotation leftExpr rightExpr expected =
             )
 
 
-{-| Non-recording Call constraint (defensive; Call nodes are dispatched to
-the call spine by `constrainWithIds`).
+{-| Builds a function application's constraint by direct recursion, without
+recording; not reached, since `constrainWithIds` sends applications to the
+spine.
 -}
 constrainCallNodeWithIds : RigidTypeVar -> A.Region -> Can.Expr -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainCallNodeWithIds rtv region ((A.At funcRegion _) as func) args expected =
@@ -1800,8 +1854,8 @@ constrainCallNodeWithIds rtv region ((A.At funcRegion _) as func) args expected 
             )
 
 
-{-| Non-recording If constraint (defensive; If nodes are dispatched to the
-if spine by `constrainWithIds`).
+{-| Builds an `if`'s constraint by direct recursion, without recording; not
+reached, since `constrainWithIds` sends `if`s to the spine.
 -}
 constrainIfNodeWithIds : RigidTypeVar -> A.Region -> List ( Can.Expr, Can.Expr ) -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainIfNodeWithIds rtv region branches finally expected =
@@ -1845,6 +1899,9 @@ constrainIfNodeWithIds rtv region branches finally expected =
             )
 
 
+{-| Constrains each of `exprs` against the same `expected`, returning the
+constraints in order after the reversed accumulator `acc`.
+-}
 constrainExprsWithIds : RigidTypeVar -> List Can.Expr -> E.Expected Type -> List Constraint -> IO (List Constraint)
 constrainExprsWithIds rtv exprs expected acc =
     case exprs of
@@ -1859,6 +1916,10 @@ constrainExprsWithIds rtv exprs expected acc =
                     )
 
 
+{-| Constrains each of `exprs` against `mkExpected` of its position, counted
+from `index`, returning the constraints in order after the reversed
+accumulator `acc`.
+-}
 constrainIndexedExprsWithIds : RigidTypeVar -> List Can.Expr -> (Index.ZeroBased -> E.Expected Type) -> Index.ZeroBased -> List Constraint -> IO (List Constraint)
 constrainIndexedExprsWithIds rtv exprs mkExpected index acc =
     case exprs of
@@ -1877,6 +1938,17 @@ constrainIndexedExprsWithIds rtv exprs mkExpected index acc =
 -- ====== CASE ======
 
 
+{-| Builds the constraint for a `case`: every pattern must match the scrutinee's
+type, and every branch must meet `expected`.
+
+Under a `FromAnnotation` expectation each branch is checked against the
+expected type, keeping the `FromAnnotation` reason, and the node records the
+expected type's own variable when that type is a bare variable, otherwise a
+fresh variable equated with it.
+Under any other expectation the branches share a fresh variable, recorded for
+the node and equated with `expected`.
+
+-}
 constrainCaseWithIds : RigidTypeVar -> A.Region -> Int -> Can.Expr -> List Can.CaseBranch -> Expected Type -> IO Constraint
 constrainCaseWithIds rtv region exprId expr branches expected =
     Type.mkFlexVar
@@ -1898,15 +1970,12 @@ constrainCaseWithIds rtv region exprId expr branches expected =
                             bodyExpect index =
                                 FromAnnotation name arity (TypedCaseBranch index) tipe
                         in
-                        -- Record ID with the expected type
                         (case tipe of
                             VarN v ->
-                                -- Type is already a variable, just record it
                                 NodeIds.recordNodeVar exprId v
                                     |> IO.map (\() -> Nothing)
 
                             _ ->
-                                -- Type is concrete; create a flex var and constrain it to equal tipe
                                 Type.mkFlexVar
                                     |> IO.andThen
                                         (\v ->
@@ -1924,11 +1993,9 @@ constrainCaseWithIds rtv region exprId expr branches expected =
                                                         (\branchCons ->
                                                             case maybeCaseVar of
                                                                 Nothing ->
-                                                                    -- tipe was VarN, no extra constraint needed
                                                                     Type.exists [ ptrnVar ] (CAnd (exprCon :: branchCons))
 
                                                                 Just caseVar ->
-                                                                    -- tipe was concrete, add constraint: caseVar = tipe
                                                                     Type.exists [ ptrnVar, caseVar ]
                                                                         (CAnd
                                                                             [ exprCon
@@ -1944,7 +2011,6 @@ constrainCaseWithIds rtv region exprId expr branches expected =
                         Type.mkFlexVar
                             |> IO.andThen
                                 (\branchVar ->
-                                    -- Record branchVar for this case expression
                                     NodeIds.recordNodeVar exprId branchVar
                                         |> IO.andThen
                                             (\() ->
@@ -1977,8 +2043,8 @@ constrainCaseWithIds rtv region exprId expr branches expected =
             )
 
 
-{-| Non-recording Case constraint (defensive; Case nodes are dispatched to
-`constrainCaseWithIds` by `constrainWithIds`).
+{-| Builds a `case`'s constraint without recording; not reached, since
+`constrainWithIds` sends `case`s to `constrainCaseWithIds`.
 -}
 constrainCaseNodeWithIds : RigidTypeVar -> A.Region -> Can.Expr -> List Can.CaseBranch -> Expected Type -> IO Constraint
 constrainCaseNodeWithIds rtv region expr branches expected =
@@ -2043,6 +2109,9 @@ constrainCaseNodeWithIds rtv region expr branches expected =
             )
 
 
+{-| Constrains each branch, counted from `index`, with its pattern expected to
+have `ptrnType` and its body expected to meet `mkExpected` of its position.
+-}
 constrainCaseBranchesWithIds : RigidTypeVar -> A.Region -> Type -> List Can.CaseBranch -> (Index.ZeroBased -> Expected Type) -> Index.ZeroBased -> List Constraint -> IO (List Constraint)
 constrainCaseBranchesWithIds rtv region ptrnType branches mkExpected index acc =
     case branches of
@@ -2057,6 +2126,8 @@ constrainCaseBranchesWithIds rtv region ptrnType branches mkExpected index acc =
                     )
 
 
+{-| Builds one branch's constraint: the pattern's bindings scope over the body.
+-}
 constrainCaseBranchWithIds : RigidTypeVar -> Can.CaseBranch -> PExpected Type -> Expected Type -> IO Constraint
 constrainCaseBranchWithIds rtv (Can.CaseBranch pattern expr) pExpect bExpect =
     Pattern.addWithIds pattern pExpect Common.emptyState
@@ -2074,6 +2145,10 @@ constrainCaseBranchWithIds rtv (Can.CaseBranch pattern expr) pExpect bExpect =
 -- ====== LAMBDA / LIST / TUPLE / RECORD / UPDATE / ACCESSOR / DESTRUCT ======
 
 
+{-| Builds an anonymous function's own constraint: fresh variables for the
+arguments and result, the arguments' bindings scoping over the body, and the
+function type equated with `expected`.
+-}
 constrainLambdaWithIds : RigidTypeVar -> A.Region -> List Can.Pattern -> Can.Expr -> E.Expected Type -> IO Constraint
 constrainLambdaWithIds rtv region args body expected =
     constrainArgsWithIds args
@@ -2099,6 +2174,9 @@ constrainLambdaWithIds rtv region args body expected =
             )
 
 
+{-| Builds a list literal's own constraint: every entry has one fresh element type,
+and the list of it is equated with `expected`.
+-}
 constrainListWithIds : RigidTypeVar -> A.Region -> List Can.Expr -> E.Expected Type -> IO Constraint
 constrainListWithIds rtv region entries expected =
     Type.mkFlexVar
@@ -2126,6 +2204,9 @@ constrainListWithIds rtv region entries expected =
             )
 
 
+{-| Constrains each list entry, counted from `index`, to have the element type
+`tipe`.
+-}
 constrainListEntriesWithIds : RigidTypeVar -> A.Region -> Type -> Index.ZeroBased -> List Can.Expr -> List Constraint -> IO (List Constraint)
 constrainListEntriesWithIds rtv region tipe index entries acc =
     case entries of
@@ -2140,6 +2221,9 @@ constrainListEntriesWithIds rtv region tipe index entries acc =
                     )
 
 
+{-| Builds a record literal's own constraint: each field gets a fresh variable,
+and the closed record of those fields is equated with `expected`.
+-}
 constrainRecordWithIds : RigidTypeVar -> A.Region -> DMap.Dict String (A.Located Name) Can.Expr -> Expected Type -> IO Constraint
 constrainRecordWithIds rtv region fields expected =
     let
@@ -2179,6 +2263,10 @@ constrainRecordWithIds rtv region fields expected =
             )
 
 
+{-| Constrains each field's value against a fresh variable, returning each field
+with its variable, type and constraint, in order after the reversed
+accumulator `acc`.
+-}
 constrainFieldsWithIds : RigidTypeVar -> List ( A.Located Name, Can.Expr ) -> List ( A.Located Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( A.Located Name, ( Vars.Variable, Type, Constraint ) ))
 constrainFieldsWithIds rtv fields acc =
     case fields of
@@ -2202,6 +2290,13 @@ constrainFieldsWithIds rtv fields acc =
                     )
 
 
+{-| Builds the constraint for a record update.
+
+The record being updated, the result and the variable recorded for the node
+are one type, a record holding at least the updated fields, each with the type
+of its new value. So an update cannot change a field's type.
+
+-}
 constrainUpdateWithIds : RigidTypeVar -> A.Region -> Int -> Can.Expr -> DMap.Dict String (A.Located Name) Can.FieldUpdate -> Expected Type -> IO Constraint
 constrainUpdateWithIds rtv region exprId expr locatedFields expected =
     Type.mkFlexVar
@@ -2210,7 +2305,6 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
                 Type.mkFlexVar
                     |> IO.andThen
                         (\recordVar ->
-                            -- Record recordVar for this update expression
                             NodeIds.recordNodeVar exprId recordVar
                                 |> IO.andThen
                                     (\() ->
@@ -2266,6 +2360,10 @@ constrainUpdateWithIds rtv region exprId expr locatedFields expected =
             )
 
 
+{-| Constrains each updated field's new value against a fresh variable, returning
+each field with its variable, type and constraint, in order after the reversed
+accumulator `acc`.
+-}
 constrainUpdateFieldsWithIds : RigidTypeVar -> List ( Name, Can.FieldUpdate ) -> List ( Name, ( Vars.Variable, Type, Constraint ) ) -> IO (List ( Name, ( Vars.Variable, Type, Constraint ) ))
 constrainUpdateFieldsWithIds rtv fields acc =
     case fields of
@@ -2293,6 +2391,9 @@ constrainUpdateFieldsWithIds rtv fields acc =
                     )
 
 
+{-| Builds a tuple's own constraint: each element gets a fresh variable, and the
+tuple of them is equated with `expected`.
+-}
 constrainTupleWithIds : RigidTypeVar -> A.Region -> Can.Expr -> Can.Expr -> List Can.Expr -> Expected Type -> IO Constraint
 constrainTupleWithIds rtv region a b cs expected =
     Type.mkFlexVar
@@ -2336,6 +2437,9 @@ constrainTupleWithIds rtv region a b cs expected =
             )
 
 
+{-| Constrains the tuple elements after the second against fresh variables,
+returning their constraints and variables in order.
+-}
 constrainTupleRestWithIds : RigidTypeVar -> List Can.Expr -> List Constraint -> List Vars.Variable -> IO ( List Constraint, List Vars.Variable )
 constrainTupleRestWithIds rtv cs accCons accVars =
     case cs of
@@ -2359,6 +2463,9 @@ constrainTupleRestWithIds rtv cs accCons accVars =
                     )
 
 
+{-| Builds a field accessor's own constraint: `.field` is a function from any
+record with `field` to that field's type, equated with `expected`.
+-}
 constrainAccessorWithIds : A.Region -> Name -> Expected Type -> IO Constraint
 constrainAccessorWithIds region field expected =
     Type.mkFlexVar
@@ -2385,6 +2492,10 @@ constrainAccessorWithIds region field expected =
             )
 
 
+{-| Builds the constraint for a destructuring `let` whose scope is `bodyCon`: the
+expression must have the pattern's type, and the pattern's bindings scope over
+`bodyCon`.
+-}
 constrainDestructWithIds : RigidTypeVar -> A.Region -> Can.Pattern -> Can.Expr -> Constraint -> IO Constraint
 constrainDestructWithIds rtv region pattern expr bodyCon =
     Type.mkFlexVar

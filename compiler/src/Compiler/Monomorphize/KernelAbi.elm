@@ -6,23 +6,37 @@ module Compiler.Monomorphize.KernelAbi exposing
     , alwaysPolymorphicModules, hasAnyFreeVar
     )
 
-{-| Kernel ABI type derivation for monomorphization.
+{-| A kernel function is implemented in C++, not in Elm, so the types it is
+called with cannot shape its machine-level signature the way they shape a
+specialized Elm function's. This module supplies what decides, for each
+reference to a kernel, which of its type variables are kept boxed.
 
-This module implements the algorithm that determines the MonoType used for
-kernel function ABIs. The key insight is that polymorphic kernels must use
-a consistent ABI (all `eco.value`) regardless of call-site type instantiation.
+The _kernel ABI_ is the MonoType a kernel reference carries; it decides which
+arguments and results cross the call boundary boxed. A type variable kept as
+`MVar _ CEcoValue` is always boxed, whatever type the call site supplies.
 
-Two cases:
+The rule rests on one distinction. A kernel whose canonical type has no type
+variable (e.g. `Basics.modBy : Int -> Int -> Int`) has one signature, and its
+ABI is simply its type after call-site substitution. A kernel with a type
+variable (e.g. `List.cons : a -> List a -> List a`), or any kernel of a module
+in `alwaysPolymorphicModules`, has one boxed root implementation shared by every
+instantiation, so its ABI turns each type variable into `MVar _ CEcoValue`.
+`deriveKernelAbiMode` makes that choice and `canTypeToMonoType_preserveVars`
+builds the boxed ABI.
 
-1.  **Monomorphic kernels** (e.g., `Basics.modBy : Int -> Int -> Int`):
-    ABI matches the concrete types. Use call-site substitution.
+The exception is _suffix selection_: a few kernels also have C++ variants
+specialized to `Int`, `Float` or `Char`, named with an `_Int`, `_Float` or
+`_Char` suffix. `suffixSelectingKernels` lists the kernels for which a caller
+may keep the concrete call-site type, so that the variant can be picked. How
+the mode and the set combine is decided by the callers
+(`Compiler.Monomorphize.Specialize.deriveKernelAbiType` and the kernel ABI
+derivation in `Compiler.MonoSolver.Translate`), not here.
 
-2.  **Polymorphic kernels** (e.g., `List.cons : a -> List a -> List a`):
-    Type variables become `MVar _ CEcoValue`, always boxed.
+The rest of the module is support: finding the free type variables of a
+canonical type, and renumbering the boxed variables of an ABI.
 
-This module is backend-neutral: it decides which type variables stay boxed,
-expressed purely in terms of `MonoType`. The MLIR-specific lowering of a
-kernel instantiation to a C symbol and `MlirType` ABI lives in
+This module is backend-neutral: it speaks only of `MonoType`. Choosing the C
+symbol and the MLIR types of a kernel instantiation is the job of
 `Compiler.Generate.MLIR.KernelAbi`.
 
 
@@ -41,10 +55,7 @@ kernel instantiation to a C symbol and `MlirType` ABI lives in
 @docs suffixSelectingKernels, comparePair
 
 
-# Free Variable Extraction (for AssignMVarIds, operates on Can.Type Name)
-
-
-# Free Variable Ids
+# Free Type Variables
 
 @docs freeVarIds
 @docs alwaysPolymorphicModules, hasAnyFreeVar
@@ -69,10 +80,15 @@ import Set exposing (Set)
 -- ============================================================================
 
 
-{-| The ABI mode determines how a kernel function's MonoType is derived.
+{-| How a kernel's ABI is derived from its type.
 
-  - `UseSubstitution`: Monomorphic kernel - apply call-site substitution normally
-  - `PreserveVars`: Polymorphic kernel - preserve all type vars as `CEcoValue`
+`UseSubstitution` is for a kernel whose type has no type variable: its ABI is
+its type with the call-site substitution applied.
+
+`PreserveVars` is for a polymorphic kernel: each type variable becomes
+`MVar _ CEcoValue`, so it is boxed whatever the call site supplies, unless the
+caller applies the suffix-selection exception described in the module
+docstring.
 
 -}
 type KernelAbiMode
@@ -80,29 +96,20 @@ type KernelAbiMode
     | PreserveVars
 
 
-{-| Determine which ABI mode to use for a kernel function.
-
-Arguments:
-
-  - `(home, name)`: Kernel identifier (e.g., `("List", "cons")`)
-  - `canFuncType`: Canonical function type (Can.Type MVarId)
-  - `mvarEnv`: MVarEnv for constraint lookups
-
-Returns the appropriate `KernelAbiMode`.
-
+{-| Returns the ABI mode for the kernel `( home, name )` with canonical type
+`canFuncType`: `PreserveVars` when `home` is in `alwaysPolymorphicModules` or
+the type has any free type variable, and `UseSubstitution` otherwise. The
+kernel's name is not consulted.
 -}
 deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> KernelAbiMode
 deriveKernelAbiMode ( home, _ ) canFuncType =
-    -- Debug kernels are always polymorphic
     if EverySet.member List.singleton home alwaysPolymorphicModules then
         PreserveVars
 
     else if not (hasAnyFreeVar canFuncType) then
-        -- Case A: Monomorphic kernel - use substitution
         UseSubstitution
 
     else
-        -- Case B: Polymorphic kernel
         PreserveVars
 
 
@@ -112,98 +119,56 @@ deriveKernelAbiMode ( home, _ ) canFuncType =
 -- ============================================================================
 
 
-{-| Kernels registered for **suffix selection** under per-instance kernel
-ABIs. Membership is the registration mechanism: when a kernel is in this
-set AND its call-site type is fully monomorphic,
-`deriveKernelAbiType` keeps the concrete MonoType (rather than erasing
-to `CEcoValue`-typed type variables via `canTypeToMonoType_preserveVars`).
-The concrete type then flows into `kernelInstanceSymbol`, which pattern-
-matches on `[MInt, MInt]` / `[MFloat, MFloat]` / `[MChar, MChar]` (etc.)
-and picks the `_Int` / `_Float` / `_Char` C symbol variant.
+{-| The kernels, as `( home, name )` pairs, for which a call site may keep its
+concrete call-site type instead of the boxed ABI that
+`canTypeToMonoType_preserveVars` builds. The exact condition is the callers'. A kernel outside
+this set never reaches its `_Int`, `_Float` or `_Char` variant, because by the
+time the symbol is chosen the element type is already `CEcoValue`.
 
-This set is **load-bearing**, not a transitional shim. Without
-`canTypeToMonoType_preserveVars` erases primitive type variables to
-`CEcoValue` before the suffix selector sees them, and lookups like
-`("List","cons",[MInt,_])` no longer match.
+Two kinds of kernel are listed. Element-aware container kernels (`List.cons`,
+`Json.wrap`, the `JsArray` element kernels, `MVar.put`) use the concrete element
+type. Primitive-specialized kernels (the `Utils` comparisons, `Basics.add`,
+`sub`, `mul` and `pow`, `String.fromNumber`) have per-type C++ variants.
 
-Two distinct downstream consumers benefit:
-
-  - **Element-aware container kernels** (e.g. `List.cons`): the concrete
-    MonoType drives Elm-level wrapper generation — different
-    `List_cons_$_N` closures per element type.
-
-  - **Primitive-specialized kernels** (e.g. `Utils.compare`,
-    `Basics.add`): the concrete MonoType lets `kernelInstanceSymbol`
-    select the per-instance C symbol variant.
-
-For polymorphic call sites (e.g. `compare "a" "b"` reaching
-`Utils.compare` with `[MString, MString]`), the suffix selector falls
-through to the boxed root symbol.
-
-(Phase F renamed this from `concreteTypeAwareKernels`.)
+The symbol choice is `Compiler.Generate.MLIR.KernelAbi`'s; where no variant
+matches the types (e.g. `Utils.compare` at `String`) the boxed root symbol is
+used.
 
 -}
 suffixSelectingKernels : EverySet (List String) ( String, String )
 suffixSelectingKernels =
     EverySet.fromList comparePair
-        [ -- Element-aware wrapper specialization
-          ( "List", "cons" )
-
-        -- Phase B
+        [ ( "List", "cons" )
         , ( "Utils", "compare" )
-
-        -- Phase C: Utils equality and ordering (comparable / a)
         , ( "Utils", "equal" )
         , ( "Utils", "notEqual" )
         , ( "Utils", "lt" )
         , ( "Utils", "le" )
         , ( "Utils", "gt" )
         , ( "Utils", "ge" )
-
-        -- Phase C: JSON value boxing (element axis)
         , ( "Json", "wrap" )
-
-        -- Phase C: JsArray element-axis kernels
         , ( "JsArray", "singleton" )
         , ( "JsArray", "push" )
         , ( "JsArray", "unsafeSet" )
-
-        -- Eco-kernel: MVar.put specialises on the value-type axis. Without
-        -- this entry, deriveKernelAbiType under PreserveVars erases `a` to
-        -- CEcoValue, hiding the Int/Float/Char axis from the suffix selector
-        -- in kernelInstanceSymbol.
         , ( "MVar", "put" )
-
-        -- Phase E.2: Basics.add/sub/mul/pow get per-instance _Int/_Float
-        -- variants. Indirect uses (e.g. `List.foldl (+) 0 xs`) need this
-        -- entry so PreserveVars keeps the concrete numeric type and the
-        -- suffix selector can pick the unboxed C symbol. Direct uses are
-        -- intrinsic-lowered upstream and never reach the kernel symbol.
         , ( "Basics", "add" )
         , ( "Basics", "sub" )
         , ( "Basics", "mul" )
         , ( "Basics", "pow" )
-
-        -- Phase F step 1: String.fromNumber moved here from
-        -- numberBoxedKernels. _Int / _Float per-instance variants exist
-        -- in StringExports.cpp and the kernelInstanceSymbol selector
-        -- picks them when the argument type is concrete; the boxed root
-        -- handles any genuinely polymorphic uses.
         , ( "String", "fromNumber" )
         ]
 
 
-{-| Modules whose kernels are always polymorphic regardless of type variables.
-
-Debug kernels always use boxed ABI because they work with any type.
-
+{-| The modules whose kernels always get `PreserveVars`, even when the kernel's
+type has no type variable. The one member is `Debug`.
 -}
 alwaysPolymorphicModules : EverySet (List String) String
 alwaysPolymorphicModules =
     EverySet.fromList List.singleton [ "Debug" ]
 
 
-{-| Comparison function for (String, String) pairs.
+{-| Returns the key under which a `( home, name )` pair is stored in an
+`EverySet`, the two strings as a list.
 -}
 comparePair : ( String, String ) -> List String
 comparePair ( a, b ) =
@@ -212,17 +177,14 @@ comparePair ( a, b ) =
 
 
 -- ============================================================================
--- FREE VARIABLE EXTRACTION (Name-based, for AssignMVarIds)
--- ============================================================================
--- ============================================================================
--- FREE VARIABLE EXTRACTION (MVarId-based, for post-rewrite)
+-- FREE TYPE VARIABLES
 -- ============================================================================
 
 
-{-| D6: True iff `canType` has any free type variable — a short-circuiting walk
-that avoids materializing the full `freeVarIds` list just to test emptiness.
-Mirrors `freeVarIdsHelp` exactly (record extension var counts; Holey-alias body
-and args both count), so `hasAnyFreeVar t == not (List.isEmpty (freeVarIds t []))`.
+{-| Returns whether `canType` has any type variable, stopping at the first one
+found. It counts exactly what `freeVarIds` collects, including a record's
+extension variable and both the body and the arguments of a holey alias, so
+`hasAnyFreeVar t == not (List.isEmpty (freeVarIds t []))`.
 -}
 hasAnyFreeVar : Can.Type MVarId -> Bool
 hasAnyFreeVar canType =
@@ -269,6 +231,9 @@ freeVarIds canType acc =
     Tuple.first (freeVarIdsHelp canType ( acc, seen ))
 
 
+{-| Walks `canType` left to right, adding each type variable whose id is not in
+the set to the front of the list and to the set.
+-}
 freeVarIdsHelp : Can.Type MVarId -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
 freeVarIdsHelp canType (( acc, seen ) as pair) =
     case canType of
@@ -331,20 +296,24 @@ freeVarIdsHelp canType (( acc, seen ) as pair) =
 
 
 -- ============================================================================
--- TYPE CONVERTERS (MVarId-based, for post-rewrite)
+-- TYPE CONVERTERS
 -- ============================================================================
 
 
-{-| Convert canonical type to MonoType, preserving all type variables as CEcoValue.
+{-| Converts a canonical type to the boxed kernel ABI used under
+`PreserveVars`: every type variable becomes `MVar id CEcoValue` with its own id.
 
-Used for polymorphic kernels where the ABI must be all-boxed.
+A record's extension variable is dropped, aliases are replaced by their bodies,
+and each arrow becomes a one-argument function. `Int`, `Float`, `Bool`, `Char`,
+`String` and `List` from `elm/core` become their primitive MonoTypes; a `List`
+without exactly one argument becomes a list of unit. The environment is passed
+through unchanged.
 
 -}
 canTypeToMonoType_preserveVars : MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType_preserveVars env canType =
     case canType of
         Can.TVar mvarId ->
-            -- Directly reuse the MVarId, force CEcoValue constraint for ABI
             ( Mono.MVar mvarId Mono.CEcoValue, env )
 
         Can.TLambda _ from to ->
@@ -402,7 +371,10 @@ canTypeToMonoType_preserveVars env canType =
             canTypeToMonoType_preserveVars env inner
 
 
-{-| Helper for converting TType nodes with shared logic.
+{-| Converts the type constructor `name` from module `canonical`, applied to
+`args`, converting each argument with `convert` and threading the environment
+through. The `elm/core` primitives map as `canTypeToMonoType_preserveVars`
+describes; any other type becomes a custom type.
 -}
 convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> ModuleName.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
 convertTType convert env canonical name args =
@@ -462,15 +434,17 @@ convertTType convert env canonical name args =
         ( Mono.mCustom canonical name monoArgs, env1 )
 
 
-{-| Replace every `MVar _ CEcoValue` in a kernel ABI with a fresh id (one per
-distinct source id, sharing preserved), starting at `nextId0`, and return the
+{-| Replaces every `MVar _ CEcoValue` in a kernel ABI with a fresh id (one per
+distinct source id, sharing preserved), starting at `nextId0`, and returns the
 next unused id.
 
 The variables of a preserved-vars kernel ABI are layout placeholders (always
-boxed). Kept at their source ids they can be number-tainted (`superVars`) by
-the program's own unification, and `Compiler.Monomorphize.Prune` would then
-close them to `MInt`; fresh ids make them immune (MONO\_009 for `Debug`).
-Both monomorphization engines use this.
+boxed). Kept at their source ids they can be unified with a number variable
+by the program's own unification, and `Compiler.Monomorphize.Prune` would then
+close them to `MInt`; fresh ids make them immune, e.g. for `Debug` kernels.
+
+Every `MVar _ CEcoValue` anywhere in the type is renamed; `CNumber` variables
+are left unchanged.
 
 -}
 remapEcoVarsFresh : MVarId -> Mono.MonoType -> ( Mono.MonoType, MVarId )

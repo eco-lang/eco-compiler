@@ -4,18 +4,33 @@ module Builder.Deps.Diff exposing
     , toMagnitude, moduleChangeMagnitude, bump
     )
 
-{-| Computes API differences between package versions to determine semantic version bumps.
+{-| A package's version number must say how far its public API moved, and this
+module works that out by comparing the API of two versions.
 
-This module compares package documentation across versions, detecting breaking changes,
-new additions, and patches. It determines whether changes require MAJOR, MINOR, or PATCH
-version bumps according to semantic versioning rules.
+The API of a version is its documentation, the `docs.json` describing every
+exposed module, type, value and operator (`Compiler.Elm.Docs`). `getDocs` fetches
+it for one version. `diff` compares two of them, and `toMagnitude` reduces the
+comparison to a _magnitude_, the class of change in `Compiler.Elm.Magnitude`:
+MAJOR when something was removed or changed, MINOR when something was only added,
+PATCH when the API is the same. `bump` applies it to a version.
 
-Key checks include:
+The comparison is in two levels. Between versions, modules are added, removed or
+kept. Within a kept module, each kind of declaration (unions, aliases, values and
+operators) is split the same way, and a declaration present in both versions
+counts as changed unless the two are _equivalent_. Doc comments play no part, so
+editing only documentation is not a change.
 
-  - Type signature compatibility (including type variable renaming)
-  - Module additions and removals
-  - Public API changes in unions, aliases, values, and operators
-  - Operator precedence and associativity changes
+Two declarations are equivalent when their types have the same structure and
+their type variables correspond by an _equivalent renaming_: each old variable
+maps to exactly one new one, no two old variables map to the same new one, and
+each mapping is allowed by the variables' categories (`number`, `comparable`,
+`appendable`, `compappend`, or unconstrained). A variable may stay in its
+category, go from `number` to `comparable`, or become unconstrained; any other
+change of category is a change. Record fields are compared regardless of order,
+and a type name is compared by its last dotted segment when either side is
+unqualified. A union also needs the same constructor names in the same order,
+and an operator the same associativity and precedence. A union none of whose
+exposed constructors has an argument is compared by constructor names only.
 
 
 # Change Types
@@ -53,14 +68,20 @@ import Task exposing (Task)
 import Utils.Main as Utils
 
 
-{-| Changes between two package versions: added modules, changed modules, and removed modules.
-Only includes module changes that are not just patches (MAJOR or MINOR changes).
+{-| The differences between two versions of a package, module by module.
+
+The constructor holds the names of the added modules, the changes in each module
+present in both versions, and the names of the removed modules. As `diff` builds
+it, a module appears among the changed ones only when its changes are more than
+PATCH.
+
 -}
 type PackageChanges
     = PackageChanges (List ModuleName.Raw) (Dict ModuleName.Raw ModuleChanges) (List ModuleName.Raw)
 
 
-{-| Changes within a module broken down by declaration type: unions, aliases, values, and binops.
+{-| The changes in one module, one `Changes` per kind of declaration, each keyed
+by declaration name. `binops` are the operators.
 -}
 type alias ModuleChangesData =
     { unions : Changes Name.Name Docs.Union
@@ -70,18 +91,27 @@ type alias ModuleChangesData =
     }
 
 
-{-| Changes within a single module between versions.
+{-| The changes in one module between two versions of a package.
 -}
 type ModuleChanges
     = ModuleChanges ModuleChangesData
 
 
-{-| Generic change tracking: added items, changed items (with old and new values), and removed items.
+{-| The differences between an old and a new collection of named items.
+
+The constructor holds the items only in the new collection, the items in both
+that are not equivalent (each with its old and then its new value), and the items
+only in the old collection.
+
 -}
 type Changes k v
     = Changes (Dict k v) (Dict k ( v, v )) (Dict k v)
 
 
+{-| Returns the `Changes` from `old` to `new`, where an item present in both is
+changed exactly when `isEquivalent` says its old and new values are not
+equivalent.
+-}
 getChanges : (v -> v -> Bool) -> Dict comparable v -> Dict comparable v -> Changes comparable v
 getChanges isEquivalent old new =
     let
@@ -99,6 +129,9 @@ getChanges isEquivalent old new =
         (Dict.diff old new)
 
 
+{-| Returns the entries whose key is in both dictionaries, each value made by
+`func` from the value in `d1` and the value in `d2`.
+-}
 dictIntersectionWith : (a -> b -> c) -> Dict comparable a -> Dict comparable b -> Dict comparable c
 dictIntersectionWith func d1 d2 =
     Dict.merge (\_ _ acc -> acc) (\k v1 v2 acc -> Dict.insert k (func v1 v2) acc) (\_ _ acc -> acc) d1 d2 Dict.empty
@@ -108,8 +141,11 @@ dictIntersectionWith func d1 d2 =
 -- ====== DIFF ======
 
 
-{-| Compare two versions of package documentation to determine what changed.
-Filters out patch-level changes, returning only MAJOR and MINOR changes.
+{-| Returns the changes from the API in `oldDocs` to the API in `newDocs`.
+
+Added and removed modules are always listed. A module in both is listed among
+the changed ones only when `moduleChangeMagnitude` gives more than PATCH for it.
+
 -}
 diff : Docs.Documentation -> Docs.Documentation -> PackageChanges
 diff oldDocs newDocs =
@@ -127,6 +163,8 @@ diff oldDocs newDocs =
         (Dict.keys removed)
 
 
+{-| Returns the changes between the old and the new documentation of one module.
+-}
 diffModule : ( Docs.Module, Docs.Module ) -> ModuleChanges
 diffModule ( Docs.Module m1, Docs.Module m2 ) =
     ModuleChanges
@@ -141,6 +179,16 @@ diffModule ( Docs.Module m1, Docs.Module m2 ) =
 -- ====== EQUIVALENCE ======
 
 
+{-| Tells whether two versions of a union type are equivalent.
+
+They are when they have the same constructor names in the same order and each
+constructor's argument types are equivalent, with the union's type variables
+paired in order. Each argument type is checked on its own, together with the
+variable list, so the renaming need only be consistent within one argument and
+the variable list. When no constructor has an argument, the variable lists are
+never compared.
+
+-}
 isEquivalentUnion : Docs.Union -> Docs.Union -> Bool
 isEquivalentUnion (Docs.Union oldComment oldVars oldCtors) (Docs.Union newComment newVars newCtors) =
     let
@@ -162,6 +210,10 @@ isEquivalentUnion (Docs.Union oldComment oldVars oldCtors) (Docs.Union newCommen
         && List.all identity (Dict.values (dictIntersectionWith equiv (Dict.fromList oldCtors) (Dict.fromList newCtors)))
 
 
+{-| Tells whether two versions of a type alias are equivalent: the types have the
+same structure, the variable lists have the same length, and the variables they
+pair, in order and wherever they occur in the types, form an equivalent renaming.
+-}
 isEquivalentAlias : Docs.Alias -> Docs.Alias -> Bool
 isEquivalentAlias (Docs.Alias _ oldVars oldType) (Docs.Alias _ newVars newType) =
     case diffType oldType newType of
@@ -173,11 +225,17 @@ isEquivalentAlias (Docs.Alias _ oldVars oldType) (Docs.Alias _ newVars newType) 
                 && isEquivalentRenaming (List.map2 Tuple.pair oldVars newVars ++ renamings)
 
 
+{-| Tells whether two versions of a value are equivalent, which is when their
+types are, as for an alias with no variables.
+-}
 isEquivalentValue : Docs.Value -> Docs.Value -> Bool
 isEquivalentValue (Docs.Value c1 t1) (Docs.Value c2 t2) =
     isEquivalentAlias (Docs.Alias c1 [] t1) (Docs.Alias c2 [] t2)
 
 
+{-| Tells whether two versions of an operator are equivalent: equivalent types,
+and the same associativity and precedence.
+-}
 isEquivalentBinop : Docs.Binop -> Docs.Binop -> Bool
 isEquivalentBinop (Docs.Binop data1) (Docs.Binop data2) =
     isEquivalentAlias (Docs.Alias data1.comment [] data1.tipe) (Docs.Alias data2.comment [] data2.tipe)
@@ -189,6 +247,15 @@ isEquivalentBinop (Docs.Binop data1) (Docs.Binop data2) =
 -- ====== DIFF TYPES ======
 
 
+{-| Returns the pairs of old and new type variable names found at the same
+places in the two types, or `Nothing` when the types differ in structure or in a
+type name.
+
+The pairs are not checked here; a variable may appear in several pairs, and
+`isEquivalentRenaming` decides whether they are consistent. A record's extension
+variable is paired like any other variable.
+
+-}
 diffType : Type.Type -> Type.Type -> Maybe (List ( Name.Name, Name.Name ))
 diffType oldType newType =
     case ( oldType, newType ) of
@@ -236,10 +303,13 @@ diffType oldType newType =
             Nothing
 
 
+{-| Tells whether two type names refer to the same type.
 
--- handle very old docs that do not use qualified names
+When either name has no dots, only the last dotted segment of each is compared,
+so `List` matches `List.List`. This allows for very old documentation, which does
+not qualify type names. Otherwise the full names must be equal.
 
-
+-}
 isSameName : Name.Name -> Name.Name -> Bool
 isSameName oldFullName newFullName =
     let
@@ -258,6 +328,10 @@ isSameName oldFullName newFullName =
             oldFullName == newFullName
 
 
+{-| Returns the variable pairs of two records' fields, as `diffType` does for
+types, or `Nothing` when the records do not have the same field names. Field
+order does not matter.
+-}
 diffFields : List ( Name.Name, Type.Type ) -> List ( Name.Name, Type.Type ) -> Maybe (List ( Name.Name, Name.Name ))
 diffFields oldRawFields newRawFields =
     if List.length oldRawFields /= List.length newRawFields then
@@ -288,6 +362,10 @@ diffFields oldRawFields newRawFields =
 -- ====== TYPE VARIABLES ======
 
 
+{-| Tells whether a list of old and new variable pairs, as `diffType` collects
+them, is an equivalent renaming: each old name pairs with a single new name, no
+two old names share a new name, and `compatibleVars` allows every pair.
+-}
 isEquivalentRenaming : List ( Name.Name, Name.Name ) -> Bool
 isEquivalentRenaming varPairs =
     let
@@ -336,6 +414,10 @@ isEquivalentRenaming varPairs =
                 && allUnique (List.map Tuple.second verifiedRenamings)
 
 
+{-| Tells whether an old type variable may become the new one: either may keep
+its category, `number` may become `comparable`, and any variable may become
+unconstrained.
+-}
 compatibleVars : ( Name.Name, Name.Name ) -> Bool
 compatibleVars ( old, new ) =
     case ( categorizeVar old, categorizeVar new ) of
@@ -361,6 +443,10 @@ compatibleVars ( old, new ) =
             False
 
 
+{-| The kind of constraint a type variable's name puts on it, as
+`Compiler.Data.Name` reads it from the name's prefix. `Var` is an unconstrained
+variable.
+-}
 type TypeVarCategory
     = CompAppend
     | Comparable
@@ -369,6 +455,8 @@ type TypeVarCategory
     | Var
 
 
+{-| Returns the category of the type variable called `name`.
+-}
 categorizeVar : Name.Name -> TypeVarCategory
 categorizeVar name =
     if Name.isCompappendType name then
@@ -391,7 +479,8 @@ categorizeVar name =
 -- ====== MAGNITUDE ======
 
 
-{-| Compute the new version by applying the appropriate bump (MAJOR, MINOR, or PATCH) to the current version.
+{-| Returns `version` raised by the magnitude of `changes`, as `toMagnitude`
+gives it.
 -}
 bump : PackageChanges -> Version -> Version
 bump changes version =
@@ -406,8 +495,9 @@ bump changes version =
             V.bumpMajor version
 
 
-{-| Determine the semantic version magnitude (MAJOR, MINOR, or PATCH) required by package changes.
-MAJOR for removed items or breaking changes, MINOR for additions, PATCH for no changes.
+{-| Returns the magnitude of the changes to a package: the largest of MAJOR if
+any module was removed, MINOR if any was added, and `moduleChangeMagnitude` of
+each changed module, or PATCH when there are none of these.
 -}
 toMagnitude : PackageChanges -> M.Magnitude
 toMagnitude (PackageChanges added changed removed) =
@@ -435,8 +525,8 @@ toMagnitude (PackageChanges added changed removed) =
     Utils.listMaximum M.compare (addMag :: removeMag :: changeMags)
 
 
-{-| Determine the semantic version magnitude required by changes within a single module.
-Returns the maximum magnitude across all declaration types (unions, aliases, values, binops).
+{-| Returns the magnitude of the changes to one module: MAJOR if any declaration
+was removed or changed, otherwise MINOR if any was added, otherwise PATCH.
 -}
 moduleChangeMagnitude : ModuleChanges -> M.Magnitude
 moduleChangeMagnitude (ModuleChanges changes) =
@@ -448,6 +538,9 @@ moduleChangeMagnitude (ModuleChanges changes) =
         ]
 
 
+{-| Returns MAJOR if any item was removed or changed, otherwise MINOR if any was
+added, otherwise PATCH.
+-}
 changeMagnitude : Changes comparable v -> M.Magnitude
 changeMagnitude (Changes added changed removed) =
     if not (Dict.isEmpty removed) || not (Dict.isEmpty changed) then
@@ -464,8 +557,15 @@ changeMagnitude (Changes added changed removed) =
 -- ====== GET DOCS ======
 
 
-{-| Fetch documentation for a specific package version, either from local cache or the package server.
-Caches downloaded documentation locally for future use.
+{-| Returns the documentation of version `version` of package `name`.
+
+It is read from `docs.json` in the package's directory in `cache` when that file
+exists. A cached file that does not decode is deleted and `DP_Cache` returned;
+the documentation is not fetched again in the same call. Otherwise it is
+downloaded from the package website and, when it decodes, written to the cache.
+A failed request gives `DP_Http`, and a body that does not decode gives
+`DP_Data` with the URL and the body, and is not cached.
+
 -}
 getDocs : Stuff.PackageCache -> Http.Manager -> Pkg.Name -> V.Version -> Task Never (Result Exit.DocsProblem Docs.Documentation)
 getDocs cache manager name version =

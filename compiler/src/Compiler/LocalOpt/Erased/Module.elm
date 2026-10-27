@@ -3,20 +3,34 @@ module Compiler.LocalOpt.Erased.Module exposing
     , Annotations, MResult
     )
 
-{-| Optimization phase entry point that transforms canonical AST into optimized representation.
+{-| Turns one type-checked module into the graph of definitions that the
+JavaScript backend generates code from, without type information.
 
-This module serves as the main interface for the optimization phase of the Elm compiler.
-It takes a canonicalized module (after type checking) and produces an optimized LocalGraph
-suitable for code generation. The optimization process:
+That graph is an `Opt.LocalGraph`: one node per global of the module, each
+node holding its optimized code and the set of globals it depends on, together
+with the module's `main` if it has one and a count of how often each record
+field name is used. The dependency sets are what let later phases keep only
+what is reachable; the field counts are kept for the backend.
 
-1.  Converts type aliases into constructor functions
-2.  Registers union type constructors
-3.  Handles effect managers (Cmd/Sub/Fx)
-4.  Processes port declarations with encoder/decoder generation
-5.  Optimizes value declarations and recursive definition groups
+Every kind of declaration contributes nodes. A record type alias becomes a
+function that builds the record; any other alias contributes nothing. Each
+constructor of a custom type becomes a node saying how its values are
+represented. An effect manager contributes a `$fx$` manager node, with its
+`command` and `subscription` functions linked to it. A port becomes a node
+carrying the generated decoder or encoder for its payload. A value declaration
+becomes a definition node, and a group of mutually recursive declarations
+becomes a single cycle node that each member links to.
 
-The optimization tracks dependencies between globals and field access patterns to enable
-dead code elimination and efficient code generation.
+`main` is checked here rather than by the type checker. It must have type
+`VirtualDom.Node msg` or `Platform.Program flags model msg` after dealiasing,
+its flags must be a type that can come from JavaScript (except eco/system's
+`System.Environment` flags, which are accepted unchecked and built by the
+environment decoder instead of decoded from JSON), and it may not be part of a
+recursive group. A violation is reported as an error from this phase.
+
+Expression bodies are optimized by `Compiler.LocalOpt.Erased.Expression`, and
+the dependencies and field counts are collected by the tracker in
+`Compiler.LocalOpt.Erased.Names`.
 
 
 # Optimization
@@ -54,22 +68,33 @@ import Utils.Crash exposing (crash)
 -- ====== Optimization ======
 
 
-{-| Result type for module optimization, carrying errors and warnings.
+{-| The outcome of optimizing a module: the result, or a `Compiler.Reporting.Error.Main`
+error, with warnings of type `w` collected either way.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
 
 
-{-| Maps definition names to their type annotations from the canonical phase.
+{-| The type of each top-level definition of the module, keyed by name,
+whether it was written in the source or inferred.
+
+`optimize` looks up `main` and every unannotated definition outside a recursive
+group here, and crashes if one is missing.
+
 -}
 type alias Annotations =
     Dict Name.Name (Can.Annotation Name)
 
 
-{-| Optimize a canonical module to produce an optimized local graph.
+{-| Builds the graph of the module from its aliases, custom types, effects and
+declarations, using `annotations` for the types of `main` and of unannotated
+definitions.
 
-Processes all declarations, union types, type aliases, and effects in the module.
-Returns a LocalGraph containing optimized nodes and field access counts.
+Each top-level definition outside a recursive group that has no written
+annotation adds a `MissingTypeAnnotation` warning. The result is an error when
+`main` has a type other than `VirtualDom.Node msg` or `Platform.Program flags
+model msg` (after dealiasing), when its flags (other than `System.Environment`)
+cannot come from JavaScript, or when it is part of a recursive group.
 
 -}
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
@@ -81,34 +106,31 @@ optimize annotations (Can.Module canData) =
 -- ====== Union Types ======
 
 
+{-| The nodes of a graph, keyed by global.
+-}
 type alias Nodes =
     Data.Map.Dict String Opt.Global Opt.Node
 
 
-
--- Registers all union type constructors in the optimization graph by processing each union type
--- and adding its constructors as optimized nodes.
-
-
+{-| Adds a node for every constructor of every custom type in `unions`.
+-}
 addUnions : ModuleName.Canonical -> Dict Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
     Opt.LocalGraph main (Dict.foldr (\_ -> addUnion home) nodes unions) fields
 
 
-
--- Processes a single union type and adds all its constructor alternatives to the nodes dictionary.
-
-
+{-| Adds a node for every constructor of one custom type.
+-}
 addUnion : ModuleName.Canonical -> Can.Union -> Nodes -> Nodes
 addUnion home (Can.Union unionData) nodes =
     List.foldl (addCtorNode home unionData.opts) nodes unionData.alts
 
 
-
--- Creates and registers an optimized node for a union type constructor.
--- The node type depends on constructor options: Normal (with arity), Unbox (newtype wrapper), or Enum.
-
-
+{-| Adds the node for one constructor, chosen by how the type's values are
+represented (`opts`): a `Ctor` with its index and argument count, a `Box` for
+a type whose values are represented by their single argument, or an `Enum`
+with its index.
+-}
 addCtorNode : ModuleName.Canonical -> Can.CtorOpts -> Can.Ctor -> Nodes -> Nodes
 addCtorNode home opts (Can.Ctor c) nodes =
     let
@@ -129,20 +151,20 @@ addCtorNode home opts (Can.Ctor c) nodes =
 
 
 -- ====== Type Aliases ======
--- Processes all type aliases and converts record type aliases into constructor functions.
--- Only record aliases generate actual code; other aliases are purely compile-time.
 
 
+{-| Adds a record-building function for every alias in `aliases` whose body is
+a closed record; other aliases add nothing.
+-}
 addAliases : ModuleName.Canonical -> Dict Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
     Dict.foldr (addAlias home) graph aliases
 
 
-
--- Converts a single type alias into an optimized node if it's a record type.
--- Record aliases become constructor functions that build records from their fields.
-
-
+{-| Adds, when the alias is a record without an extension, a function named
+after it that takes the fields as arguments, in the order `Can.fieldsToList`
+gives, and returns the record. Each field name's use count goes up by one.
+-}
 addAlias : ModuleName.Canonical -> Name.Name -> Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) as graph) =
     case tipe of
@@ -165,10 +187,8 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
             graph
 
 
-
--- Increments the usage count for a record field accessed by a record constructor function.
-
-
+{-| Adds one to the use count of the field `name`.
+-}
 addRecordCtorField : Name.Name -> Can.FieldType Name -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
     Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
@@ -176,10 +196,12 @@ addRecordCtorField name _ fields =
 
 
 -- ====== Effects ======
--- Processes module effects including ports and effect managers (Cmd/Sub/Fx).
--- Effect managers register special $fx$ nodes and link command/subscription exports.
 
 
+{-| Adds the nodes for the module's effects: one per port, or, for an effect
+manager, a `$fx$` `Manager` node and a `Link` to it from `command`,
+`subscription` or both, according to what the manager provides.
+-}
 addEffects : ModuleName.Canonical -> Can.Effects -> Opt.LocalGraph -> Opt.LocalGraph
 addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
     case effects of
@@ -222,11 +244,10 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
             Opt.LocalGraph main newNodes fields
 
 
-
--- Converts a port declaration into an optimized node with encoder/decoder.
--- Incoming ports generate decoders for JS→Elm values, outgoing ports generate encoders for Elm→JS.
-
-
+{-| Adds the node for one port: for an incoming port, the decoder of its
+payload from JavaScript; for an outgoing one, the encoder of its payload to
+JavaScript.
+-}
 addPort : ModuleName.Canonical -> Name.Name -> Can.Port -> Opt.LocalGraph -> Opt.LocalGraph
 addPort home name port_ graph =
     case port_ of
@@ -255,9 +276,11 @@ addPort home name port_ graph =
 
 
 -- ====== Graph Helper ======
--- Inserts a node into the optimization graph and merges field access counts.
 
 
+{-| Adds `node` under the global `name` and adds `fields` to the graph's
+field use counts.
+-}
 addToGraph : Opt.Global -> Opt.Node -> Dict Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
 addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
     Opt.LocalGraph
@@ -266,6 +289,8 @@ addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
         (mergeFieldCounts fields fieldCounts)
 
 
+{-| Returns the field use counts of `a` and `b` added together.
+-}
 mergeFieldCounts : Dict Name.Name Int -> Dict Name.Name Int -> Dict Name.Name Int
 mergeFieldCounts a b =
     Dict.foldl (\k v acc -> Dict.update k (\mv -> Just (Maybe.withDefault 0 mv + v)) acc) b a
@@ -273,20 +298,21 @@ mergeFieldCounts a b =
 
 
 -- ====== Value Declarations ======
--- Processes all value declarations in the module, handling both single definitions and
--- mutually recursive definition groups.
 
 
+{-| Adds every declaration in `decls` to the graph, stopping at the first error.
+-}
 addDecls : ModuleName.Canonical -> Annotations -> Can.Decls -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDecls home annotations decls graph =
     ReportingResult.loop (addDeclsHelp home annotations) ( decls, graph )
 
 
+{-| Adds the first declaration in `decls` and returns the rest to continue with,
+or the finished graph when none remain.
 
--- Recursively processes declarations, distinguishing between single defs and recursive groups.
--- Rejects recursive groups containing 'main' which must be a single top-level definition.
+A recursive group that contains `main` is a `BadCycle` error.
 
-
+-}
 addDeclsHelp : ModuleName.Canonical -> Annotations -> ( Can.Decls, Opt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( Can.Decls, Opt.LocalGraph ) Opt.LocalGraph)
 addDeclsHelp home annotations ( decls, graph ) =
     case decls of
@@ -311,11 +337,9 @@ addDeclsHelp home annotations ( decls, graph ) =
             ReportingResult.ok (ReportingResult.Done graph)
 
 
-
--- Searches for 'main' in a list of definitions, returning its region if found.
--- Used to detect and reject recursive definitions involving 'main'.
-
-
+{-| Returns the region of the name of the definition called `main` in `defs`,
+if there is one.
+-}
 findMain : List Can.Def -> Maybe A.Region
 findMain defs =
     case defs of
@@ -339,10 +363,8 @@ findMain defs =
                         findMain rest
 
 
-
--- Extracts the name from a definition.
-
-
+{-| Returns the name a definition defines.
+-}
 defToName : Can.Def -> Name.Name
 defToName def =
     case def of
@@ -355,10 +377,14 @@ defToName def =
 
 
 -- ====== Single Definitions ======
--- Processes a single value definition, issuing a warning if a type annotation is missing.
--- Handles both regular definitions and 'main' which requires special validation.
 
 
+{-| Adds one definition that is not part of a recursive group.
+
+A definition without a written annotation adds a `MissingTypeAnnotation`
+warning carrying its type from `annotations`.
+
+-}
 addDef : ModuleName.Canonical -> Annotations -> Can.Def -> Opt.LocalGraph -> MResult i (List W.Warning) Opt.LocalGraph
 addDef home annotations def graph =
     case def of
@@ -374,11 +400,16 @@ addDef home annotations def graph =
             addDefHelp region annotations home name (List.map Tuple.first typedArgs) body graph
 
 
+{-| Adds the definition `name`, and for `main` also sets the graph's main.
 
--- Optimizes and adds a definition to the graph, with special handling for 'main'.
--- The 'main' function must have a valid Platform.Program or VirtualDom.Node type.
+A `main` of type `VirtualDom.Node msg` after dealiasing is static and depends
+on the `VirtualDom` kernel. A `main` of type `Platform.Program flags model msg`
+is dynamic and carries a decoder for its flags; when the flags are
+`System.Environment`, that decoder is the eco/system environment decoder and
+the flags are not checked. Any other type of `main` is a `BadType` error, and
+flags that cannot come from JavaScript are a `BadFlags` error.
 
-
+-}
 addDefHelp : A.Region -> Annotations -> ModuleName.Canonical -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.LocalGraph -> MResult i w Opt.LocalGraph
 addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes fieldCounts) as graph) =
     if name /= Name.main_ then
@@ -403,8 +434,8 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
 
             Can.TType hm nm [ flags, _, message ] ->
                 if hm == ModuleName.platform && nm == Name.program && EcoEnvironment.isEnvironmentFlags tipe then
-                    -- eco/system program (D13): the environment decoder ignores the host
-                    -- JSON and builds the Environment, so no payload check applies.
+                    -- The environment decoder ignores the host JSON and builds the
+                    -- Environment, so no payload check applies.
                     Names.registerGlobal A.zero EcoEnvironment.systemHome EcoEnvironment.environmentDecoderName
                         |> Names.map (Opt.Dynamic message)
                         |> Names.run
@@ -426,11 +457,13 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
                 ReportingResult.throw (E.BadType region tipe)
 
 
+{-| Adds a `TrackedDefine` node for the definition `name`, whose dependencies
+are those of its body together with `mainDeps`.
 
--- Creates an optimized definition node by transforming arguments and body into optimized form.
--- Functions with arguments get pattern destructuring; zero-arg definitions are plain values.
+With arguments, the node holds a function whose arguments that are patterns
+are destructured at the start of the body.
 
-
+-}
 addDefNode : ModuleName.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet String Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
 addDefNode home region name args body mainDeps graph =
     let
@@ -456,9 +489,12 @@ addDefNode home region name args body mainDeps graph =
 
 
 -- ====== Recursive Definitions ======
--- Accumulator for collecting optimized values and functions from a recursive group.
 
 
+{-| The optimized members of a recursive group collected so far: the
+zero-argument definitions as `values` and the others as `functions`, each list
+with the latest member first.
+-}
 type State
     = State
         { values : List ( Name.Name, Opt.Expr )
@@ -466,11 +502,14 @@ type State
         }
 
 
+{-| Adds a recursive group as one `Cycle` node, named by `Name.fromManyNames` of
+the members' names, and a `Link` to it under each member's name.
 
--- Processes a mutually recursive definition group into a single Cycle node.
--- All definitions in the group are linked to a shared cycle that contains the optimized forms.
+References to the zero-argument members inside the group are compiled as
+cycle references; references to the function members stay global references.
+No `MissingTypeAnnotation` warning is issued for members of a group.
 
-
+-}
 addRecDefs : ModuleName.Canonical -> List Can.Def -> Opt.LocalGraph -> Opt.LocalGraph
 addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
     let
@@ -502,10 +541,8 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
         (mergeFieldCounts fields fieldCounts)
 
 
-
--- Extracts the name from a definition.
-
-
+{-| Returns the name a definition defines.
+-}
 toName : Can.Def -> Name.Name
 toName def =
     case def of
@@ -516,11 +553,8 @@ toName def =
             name
 
 
-
--- Adds zero-argument definitions to the value name set for cycle detection.
--- Only values (not functions) are tracked since they may form true cyclic dependencies.
-
-
+{-| Adds the name of `def` to `names` when it takes no arguments.
+-}
 addValueName : Can.Def -> EverySet String Name.Name -> EverySet String Name.Name
 addValueName def names =
     case def of
@@ -539,10 +573,8 @@ addValueName def names =
                 names
 
 
-
--- Creates a link node pointing to the shared cycle for each definition in the group.
-
-
+{-| Adds `link` under the global named by `def`.
+-}
 addLink : ModuleName.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict String Opt.Global Opt.Node -> Data.Map.Dict String Opt.Global Opt.Node
 addLink home link def links =
     case def of
@@ -553,10 +585,8 @@ addLink home link def links =
             Data.Map.insert Opt.toComparableGlobal (Opt.Global home name) link links
 
 
-
--- Optimizes a single definition within a recursive group, accumulating results in State.
-
-
+{-| Optimizes one member of a recursive group and adds it to `state`.
+-}
 addRecDef : EverySet String Name.Name -> State -> Can.Def -> Names.Tracker State
 addRecDef cycle state def =
     case def of
@@ -567,11 +597,11 @@ addRecDef cycle state def =
             addRecDefHelp cycle region state name (List.map Tuple.first args) body
 
 
-
--- Optimizes the body of a recursive definition, distinguishing values from functions.
--- Functions in recursive groups may be eligible for tail-call optimization.
-
-
+{-| Optimizes one member of a recursive group, given its name, arguments and
+body, and adds it to `state`: a zero-argument member as a value, any other as
+a function, which becomes a tail-call loop when it calls itself with all its
+arguments in tail position.
+-}
 addRecDefHelp : EverySet String Name.Name -> A.Region -> State -> Name.Name -> List Can.Pattern -> Can.Expr -> Names.Tracker State
 addRecDefHelp cycle region (State { values, functions }) name args body =
     case args of
@@ -600,6 +630,8 @@ addRecDefHelp cycle region (State { values, functions }) name args body =
 -- ====== Helpers ======
 
 
+{-| Returns the annotation of `name`, and crashes when `annotations` has none.
+-}
 findAnnotation : Name.Name -> Annotations -> Can.Annotation Name
 findAnnotation name annotations =
     case Dict.get name annotations of

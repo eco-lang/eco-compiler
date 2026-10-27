@@ -1,10 +1,23 @@
 module Terminal.Main exposing (main)
 
-{-| Command-line interface entry point for the Eco compiler.
+{-| The program behind the `eco` command: it says which subcommands exist, what
+each one accepts, and which command module runs it.
 
-This module defines the main entry point for the compiler's command-line interface,
-coordinating all available commands (repl, init, make, install, etc.) and providing
-a unified interface for users interacting with the compiler through the terminal.
+A subcommand is described as a `Terminal.Terminal.Internal.Command`: its name,
+help text, the argument and flag shapes shown in help, and a `run` function.
+Those shapes only describe; they parse nothing. Parsing is done inside each
+`run` by a chain of `Terminal.Terminal.Chomp` chompers, which reads the
+positional arguments and flags, rejects any flag the command does not declare,
+and hands the result to the command module's own `run`. So each flag appears
+twice in this file, once in the declared flags for help and once in the
+chomper chain, and the two lists are kept in step by hand.
+
+The available commands are `init`, `make`, `install`, `uninstall`, `bump` and
+`diff`. Two further slots in the command list are `Terminal.Terminal.disabled`,
+so they are neither listed nor runnable.
+
+Some help text is worded as for the Elm compiler: the `diff` example runs
+`elm diff`, and the closing message points to the Elm Slack.
 
 
 # Program Entry
@@ -30,7 +43,12 @@ import Terminal.Terminal.Internal as Terminal
 import Terminal.Uninstall as Uninstall
 
 
-{-| The main entry point for the Eco compiler CLI application.
+{-| The program: runs the command line given to `eco` and then exits the
+process with success.
+
+The explicit exit is what ends the process; `System.IO.run` does not stop by
+itself when the task finishes.
+
 -}
 main : IO.Program
 main =
@@ -40,6 +58,9 @@ main =
         )
 
 
+{-| The command-line application: the greeting, the closing message, and the
+registered commands, with two disabled slots.
+-}
 app : Task Never ()
 app =
     Terminal.app intro
@@ -55,6 +76,9 @@ app =
         ]
 
 
+{-| The greeting shown above the list of commands, naming the user-facing Eco
+version and recommending the Elm guide.
+-}
 intro : D.Doc
 intro =
     D.vcat
@@ -78,6 +102,9 @@ intro =
         ]
 
 
+{-| The closing message shown below the list of commands, suggesting the Elm Slack
+for help.
+-}
 outro : D.Doc
 outro =
     D.fillSep <|
@@ -91,6 +118,9 @@ outro =
 -- ====== INIT ======
 
 
+{-| The `init` command, which takes no arguments and the `--package` and `--yes`
+switches, and runs `Terminal.Init.run`.
+-}
 init : Terminal.Command
 init =
     let
@@ -141,10 +171,18 @@ init =
 
 
 
--- ====== REPL ======
 -- ====== MAKE ======
 
 
+{-| The `make` command, which takes zero or more `.elm` files and runs
+`Terminal.Make.run`.
+
+The help for `--output` lists `.o`, `.so` and `.node` endings, but
+`Terminal.Make.parseOutput` tells apart only `.html`, `.js`, `.mlir` and a null
+device; any other non-empty name, those three included, is taken as a native
+executable target. `--local-package` may be given more than once.
+
+-}
 make : Terminal.Command
 make =
     let
@@ -286,6 +324,10 @@ make =
 -- ====== INSTALL ======
 
 
+{-| The `install` command, which takes no argument or one package name and the
+`--test`, `--yes` and `--refresh-registry` switches, and runs
+`Terminal.Install.run`.
+-}
 install : Terminal.Command
 install =
     let
@@ -364,6 +406,9 @@ install =
 -- ====== UNINSTALL ======
 
 
+{-| The `uninstall` command, which takes no argument or one package name and the
+`--yes` switch, and runs `Terminal.Uninstall.run`.
+-}
 uninstall : Terminal.Command
 uninstall =
     let
@@ -434,6 +479,9 @@ uninstall =
 -- ====== BUMP ======
 
 
+{-| The `bump` command, which takes no arguments and no flags, and runs
+`Terminal.Bump.run`.
+-}
 bump : Terminal.Command
 bump =
     let
@@ -478,6 +526,13 @@ bump =
 -- ====== DIFF ======
 
 
+{-| The `diff` command, which takes no flags and runs `Terminal.Diff.run`.
+
+Its arguments are tried in this order: none (`CodeVsLatest`), one version
+(`CodeVsExactly`), two versions (`LocalInquiry`), or a package and two versions
+(`GlobalInquiry`).
+
+-}
 diff : Terminal.Command
 diff =
     let
@@ -569,15 +624,19 @@ diff =
 
 
 
--- ====== TEST ======
 -- ====== HELPERS ======
 
 
+{-| Stacks `docs` vertically with a blank line between each pair.
+-}
 stack : List D.Doc -> D.Doc
 stack docs =
     List.intersperse (D.fromChars "") docs |> D.vcat
 
 
+{-| Builds a paragraph from the words of `string`, breaking lines between words
+where the next word would not fit.
+-}
 reflow : String -> D.Doc
 reflow string =
     String.words string |> List.map D.fromChars |> D.fillSep

@@ -4,29 +4,60 @@ module Compiler.GlobalOpt.Borrow exposing
     , analyzeDefForTest
     )
 
-{-| Borrow inference: works out which values a function only reads (borrows)
-and which it consumes (owns).
+{-| Borrow inference asks, for every function in the monomorphized graph,
+which of its arguments it only reads and which it consumes. A function
+_borrows_ an argument when the caller still owns the value after the call, and
+_owns_ it when the function takes the value over. This module drives that
+analysis over the whole graph and reports what it found; it never changes the
+graph.
 
-  - Each definition gets constraints generated for it (`Borrow.Constrain`)
-    and solved in four stages (`Borrow.Solve`), and the results are counted
-    in a census.
-  - Calls are given interprocedural `BorrowSig`s by a fixpoint over the
-    call graph's strongly connected components in reverse topological order
-    (`Borrow.Sig`), and kernel calls by the audited kernel table
-    (`Borrow.KernelSigs`), so direct and kernel calls are not treated as
-    owning all their arguments.
+The analysis of one definition is done elsewhere: `Compiler.GlobalOpt.Borrow.Constrain`
+generates constraints over its _resources_ (the heap objects inside its
+values) and `Compiler.GlobalOpt.Borrow.Solve` solves them. What this module
+adds is the interprocedural part. A call can only be analysed if the callee's
+_signature_ (`BorrowSig`: the mode of each heap position of each parameter and
+of the result, and which result positions may alias which parameters) is
+known, so the signatures of all specializations are solved together, into a
+_signature table_ indexed by `SpecId`.
 
-`reify = ROff` (the only mode) ⇒ the graph is returned UNCHANGED (census /
-uniqueness oracle only; byte-identical emitted MLIR). The census is computed
-in a single pass AFTER the fixpoint converges, so intermediate iterations
-never contribute to the counters.
+The signature table is built one strongly connected component of the
+reference graph at a time, callees before callers. An edge is a `MonoVarGlobal`
+in a body, as `Compiler.Monomorphize.MonoTraverse.collectSpecEdges` collects
+them, and the components come in the order `Compiler.Graph.stronglyConnCompInt`
+returns, which puts each component after the ones it refers to. A definition
+outside any cycle is analysed once against the signatures solved so far. The
+members of a cycle start from the optimistic signature (every position
+borrowed) and are re-analysed until no signature changes; if that has not
+happened after 20 rounds, every member is given the all-owned signature
+instead, and the run counts a bailout. A node that is not a definition, such as
+a constructor or an extern, gets the all-owned signature. While building the
+table, closure calls are not routed through lambda sets, so every call of a
+function value counts as consuming its arguments.
 
-`deriveFacts` is the readback: sig fixpoint + lambda sigs distilled to
-SpecId/member-keyed borrowed-param sets. The build does not call it and code
-generation has no consumer for its facts; only the borrow-fence tests read it.
+A function value reached through a lambda set is named by its lambda-set
+member id, not a `SpecId`, and needs a signature of its own, its _lambda
+signature_. One member can have several closure instances. When it has one, or
+all of them have the same `Compiler.GlobalOpt.AbiCloning.instanceFingerprint`,
+the first instance's signature is used; otherwise the instances' signatures are
+combined with `Compiler.GlobalOpt.Borrow.LssFacts.meetSig`, which is safe for
+whichever instance is called.
 
-`readbackSig` lives here (not in `Sig`) so `Sig` stays free of a `Solve`
-import (`Constrain` imports `Sig`; `Solve` imports `Constrain`).
+The results are used in two ways. `run` analyses every definition once more
+against the finished tables, this time routing closure calls through the lambda
+sets, and adds up a _census_ of counters (`BorrowStats`). `deriveFacts` stops
+after the signatures and reduces them to the oracle facts of
+`Compiler.GlobalOpt.Borrow.Facts`.
+
+Most of the census is about what an ownership-aware back end could save, and
+part of it is an escape analysis: an owned resource that cannot outlive the
+call that made it could live on the stack. Two counts bound that from either
+side. `nonEscapingOwned` treats a resource as escaping when it may alias a
+parameter, is part of the result, or has a lifetime that reaches the
+parameters; it does not follow a resource stored into another that escapes, so
+it overcounts. `nonEscapingOwnedLB` also joins resources that are read out of
+or stored into each other, and treats every resource joined to an escaping one,
+to a tail-call argument, or to a resource the constraint walk marked as
+escaping as escaping too.
 
 
 # Running
@@ -67,11 +98,19 @@ import Set exposing (Set)
 
 
 
--- CENSUS (design §13 counter set; ≤32 fields)
+-- CENSUS
 
 
-{-| Census counters collected by a borrow-inference run over the whole graph,
-printed by `renderStats`.
+{-| The census a borrow-inference run collects over the whole graph, as
+`renderStats` prints it.
+
+Most fields are sums over every analysed definition. `maxSccIter` and
+`maxBorrowExtension` are maxima, and `sccFixpointBailouts`, `maxSccIter`,
+`lambdaSigMeets` and `poisonedParams` come from the signature tables rather
+than from the per-definition analyses. `poisonedParams` counts owned parameter
+positions in every signature in the table, including the all-owned signatures
+of nodes that are not definitions.
+
 -}
 type alias BorrowStats =
     { defsAnalyzed : Int
@@ -81,28 +120,28 @@ type alias BorrowStats =
     , wouldDrop : Int
     , wouldFree : Int
     , poisonedByClosure : Int
-    , closureRouted : Int -- B3.5: closure calls routed via LSS (recovered)
+    , closureRouted : Int -- closure calls given a signature through the lambda sets
     , poisonedByErased : Int
     , poisonedByKernel : Int
-    , poisonedParams : Int -- B3: owned param positions across all sigs
-    , poisoningCallSites : Int -- B3: direct-call sites forcing ≥1 heap arg owned
-    , sigMissReads : Int -- B3: expected 0 steady-state
-    , kernelSigHits : Int -- B3: allowlisted kernel calls
-    , kernelDefaultedHeapCalls : Int -- B3: kernel misses with heap args
-    , sccFixpointBailouts : Int -- B3: expected 0
-    , maxSccIter : Int -- B3: max fixpoint iterations observed (design predicts 2-3)
-    , lambdaSigMeets : Int -- Fingerprint fence (BORROW_006 amendment): members whose instances fingerprint-diverge — their stored sig is the MEET over per-instance sigs, never one representative's
+    , poisonedParams : Int -- owned parameter positions across all signatures
+    , poisoningCallSites : Int
+    , sigMissReads : Int
+    , kernelSigHits : Int -- kernel calls given a signature from the kernel table
+    , kernelDefaultedHeapCalls : Int -- kernel calls with heap arguments and no table entry
+    , sccFixpointBailouts : Int
+    , maxSccIter : Int -- most signature-changing rounds any cycle took
+    , lambdaSigMeets : Int -- members whose lambda signature is a meet of differing instances
     , capturesForcedOwned : Int
     , nonVarOperandHeapOwnedFresh : Int
     , nonVarOperandHeapBorrowedProducer : Int
     , updateCopiedHeapFields : Int
-    , maxBorrowExtension : Int
-    , ltpRefined : Int -- Stage D: resources whose precise ltP differs from ltA
-    , ownedResources : Int -- reifiedOwned resources (escape-analysis universe)
-    , nonEscapingOwned : Int -- owned + not coupled to a param, not returned, ltP-local (stack-alloc candidate proxy; upper bound — misses transitive store-escape)
-    , nonEscapingOwnedLB : Int -- U-T1.1: owned + provably non-escaping under the storage-transitive escape closure (the tight LOWER bound)
-    , escClassHisto : Dict String ( Int, Int ) -- U-T1.1: per allocation-site class → (total sites, nonEscLB sites), weighted (list literals weigh their cell count)
-    , kernelDefaultedNames : Dict ( Name, Name ) Int -- audit histogram: per-kernel heap-defaulting call count
+    , maxBorrowExtension : Int -- deepest nesting of a borrowed resource's precise lifetime
+    , ltpRefined : Int -- resources whose precise lifetime differs from the approximate one
+    , ownedResources : Int -- resources that must be treated as owned
+    , nonEscapingOwned : Int -- upper bound
+    , nonEscapingOwnedLB : Int -- lower bound
+    , escClassHisto : Dict String ( Int, Int ) -- per allocation-site class: (weighted sites, weighted sites that are owned and do not escape by the lower bound)
+    , kernelDefaultedNames : Dict ( Name, Name ) Int -- kernelDefaultedHeapCalls per kernel (home, name)
     , immortalLiterals : Int
     }
 
@@ -144,6 +183,9 @@ emptyStats =
     }
 
 
+{-| The most rounds a cycle of definitions is re-analysed before its
+signatures are given up as all-owned.
+-}
 maxIterConst : Int
 maxIterConst =
     20
@@ -154,23 +196,23 @@ maxIterConst =
 
 
 {-| Runs borrow inference over the graph and returns the graph unchanged together
-with its census. When the config asks for neither a report, validation nor
-reification, the analysis is skipped and `emptyStats` is returned.
+with its census. Unless `cfg` turns on `report` or `validate`, or sets `reify`
+to something other than `ROff`, nothing is analysed and the census is
+`emptyStats`. Every `reify` mode leaves the graph unchanged.
 -}
 run : Config.BorrowConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, BorrowStats )
 run cfg graph =
     if not (cfg.report || cfg.validate || cfg.reify /= Config.ROff) then
-        -- The census/oracle is the ONLY product of the analysis (reify=ROff leaves
-        -- the graph untouched), and it is consumed only when `report`/`validate` is
-        -- on. When neither is, running `solveSigs` + the whole-graph `censusNode`
-        -- fold (which re-invokes constrainDef+Solve.solve on every def) is pure dead
-        -- work — skip it entirely. (perf item 1)
         ( graph, emptyStats )
 
     else
         runCensus graph
 
 
+{-| Solves the signature and lambda-signature tables of `graph`, then analyses
+every definition against them with closure calls routed through the lambda
+sets, and returns the graph unchanged with the summed census.
+-}
 runCensus : Mono.MonoGraph -> ( Mono.MonoGraph, BorrowStats )
 runCensus graph =
     let
@@ -186,8 +228,6 @@ runCensus graph =
         table =
             firstOf sigTable
 
-        -- B3.5: build LSS handshake facts (instance index + per-member lambda
-        -- sigs), computed once after the def-fixpoint converges.
         ( byMember, _ ) =
             LssFacts.buildInstances nodes
 
@@ -220,27 +260,15 @@ runCensus graph =
     ( graph, { stats1 | poisonedParams = countPoisonedParams table } )
 
 
-{-| Per-member lambda signatures (B3.5): analyze one representative instance
-of each (non-blocked) member, with the converged def SigTable and NO lambda
-routing (lambda→lambda calls conservatively poison; sound v1).
+{-| Returns the lambda signature of every member in `byMember`, with the
+number of members whose signature is a meet.
 
-LSS\_024 fence (the §7.2 obligation of plans/lss-layout-qualified-members.md,
-amended BORROW\_006): the representative's sig speaks for the member ONLY
-when the member's instance population is fingerprint-unanimous
-(`AbiCloning.instanceFingerprint` — verbatim bodies modulo positions and
-supply numbering). Under LSS\_024 id sharing, same-id instances can be
-behaviorally DIVERGENT (the E11 class), so "stored sigs equal by
-construction" no longer holds by id identity; a divergent member's stored
-sig is instead the MEET of its per-instance sigs — params any-owned-wins,
-result any-borrowed-wins, the pessimistic corner, sound for whichever clone
-actually flows (same argument as the call-site meet; this is a
-CONSTRUCTION-time definition of the member summary, not the forbidden
-call-site write-back — the def fixpoint has already converged when this
-runs). The fence is UNCONDITIONAL (unlike AbiCloning's flag-gated one):
-Borrow has no byte-identity constraint — census numbers may move. Fingerprints are computed only
-for multi-instance members (the lazy discipline); single-instance members —
-the vast majority — pay nothing. Returns the sig table and the count of
-members that took the meet (censused `lambdaSigMeets`).
+A member with one instance, or whose instances all have the same
+`AbiCloning.instanceFingerprint`, gets the first instance's signature. Any
+other member gets the `LssFacts.meetSig` of all its instances' signatures:
+instances that share a member id can still behave differently, and the meet is
+safe for whichever one is called. Fingerprints are computed only for members
+with more than one instance. Members with no instances get no entry.
 
 -}
 buildLambdaSigs : SigTable -> Dict Int (List LssFacts.LambdaRef) -> ( Dict Int BorrowSig, Int )
@@ -270,7 +298,8 @@ buildLambdaSigs table byMember =
         byMember
 
 
-{-| One instance's borrow signature against the converged def table.
+{-| Analyses one closure instance as if it were a definition, against `table`
+and with closure calls not routed, and returns its signature.
 -}
 memberInstanceSig : SigTable -> LssFacts.LambdaRef -> BorrowSig
 memberInstanceSig table ref =
@@ -284,8 +313,8 @@ memberInstanceSig table ref =
     readbackSig solved da
 
 
-{-| Fingerprint unanimity across a member's instances (rep vs the rest;
-short-circuits on the first mismatch).
+{-| Tells whether every instance in `rest` has the same
+`AbiCloning.instanceFingerprint` as `ref`.
 -}
 fpUnanimousRefs : LssFacts.LambdaRef -> List LssFacts.LambdaRef -> Bool
 fpUnanimousRefs ref rest =
@@ -296,17 +325,23 @@ fpUnanimousRefs ref rest =
     List.all (\r -> AbiCloning.instanceFingerprint r.closureInfo r.body == fp0) rest
 
 
+{-| A signature table: the signature of each specialization, indexed by
+`SpecId`, with `Nothing` where there is no node or it has not been solved yet.
+-}
 type alias SigTable =
     Array (Maybe BorrowSig)
 
 
+{-| Returns the table from the result of `solveSigs`.
+-}
 firstOf : ( SigTable, Int, Int ) -> SigTable
 firstOf ( t, _, _ ) =
     t
 
 
-{-| Run the SCC fixpoint, returning the converged table + bailout/iteration
-counts.
+{-| Solves the signature table of `nodes` one strongly connected component at a
+time, callees first, and returns it with the number of cycles that gave up and
+the most signature-changing rounds any cycle took.
 -}
 solveSigs : Array (Maybe Mono.MonoNode) -> ( SigTable, Int, Int )
 solveSigs nodes =
@@ -323,20 +358,22 @@ solveSigs nodes =
     List.foldl (solveScc nodes indexToSpecId) ( emptyTable, 0, 0 ) sccs
 
 
+{-| Looks up the signature of a specialization in a table.
+-}
 sigLookup : SigTable -> Mono.SpecId -> Maybe BorrowSig
 sigLookup table specId =
     Array.get specId table |> Maybe.andThen identity
 
 
-{-| OC0.2 (plans/borrow-oracle-consumers.md): derive the distilled oracle
-facts. Runs the sig fixpoint + per-member lambda sigs ONLY — no census fold,
-no escape closure — so it costs the sigs-only slice, not the full report-mode
-analysis.
+{-| Derives the oracle facts of a graph: for each specialization and each
+lambda-set member, the parameters it wholly borrows, as
+`Compiler.GlobalOpt.Borrow.Facts` defines that.
 
-The facts describe the graph they are derived from: a pass that rewrites the
-graph afterwards (CafDedupe/CafHoist) makes them stale. Keyed by SpecId / LSS
-member id only, so the facts carry no per-def state. Nothing in the build calls
-it; the borrow-fence tests do.
+Only the signature table and the lambda signatures are computed, not the
+census. Both are built with closure calls not routed through the lambda sets,
+so an argument passed to a call of a function value is never found borrowed.
+The facts describe `graph`; a later rewrite of the graph is not reflected in
+them.
 
 -}
 deriveFacts : Mono.MonoGraph -> Facts.OracleFacts
@@ -371,12 +408,10 @@ deriveFacts (Mono.MonoGraph { nodes }) =
     }
 
 
-{-| A param index is "wholly borrowed" when its `SigTy` carries at least one
-heap position, EVERY position's mode is `Borrowed`, and the index appears in
-no `resultLts` coupling — the callee neither retains nor returns-any-alias-of
-the argument. Scalar params (empty `modes`) are excluded: membership in
-`borrowedParams` must mean "heap-carrying and proven borrowed", never
-"vacuously true".
+{-| Returns the parameter indices of `sig` that are wholly borrowed: the
+parameter has at least one heap position, every one of them is `Borrowed`, and
+no `resultLts` entry names it. A parameter with no heap position is never
+included.
 -}
 distillSig : BorrowSig -> Facts.CalleeParamFacts
 distillSig sig =
@@ -402,9 +437,9 @@ distillSig sig =
     }
 
 
-{-| Index `registry.reverseMapping` (SpecId → (Global, MonoType)) into
-`Global-key → [(MonoType, SpecId)]` for B3.5 OriginGlobal resolution. A Global
-is one-to-many over SpecIds; the query layout-matches by type.
+{-| Builds, from the registry, every specialization of each global, keyed by
+`Mono.toComparableGlobal`, as pairs of its type and `SpecId`. One global can
+have several specializations.
 -}
 buildGlobalIndex : Mono.SpecializationRegistry -> Dict String (List ( Mono.MonoType, Mono.SpecId ))
 buildGlobalIndex registry =
@@ -427,8 +462,9 @@ buildGlobalIndex registry =
         )
 
 
-{-| Build an analysis Env with the given sig lookup (record-update on the
-qualified `C.emptyEnv` must go through a local binding).
+{-| Builds a constraint environment that finds callee signatures with `lookup`
+and routes closure calls through `facts`, or does not route them when `facts`
+is `Nothing`.
 -}
 mkEnv : (Mono.SpecId -> Maybe BorrowSig) -> Maybe LssFacts.Facts -> C.Env
 mkEnv lookup facts =
@@ -440,15 +476,14 @@ mkEnv lookup facts =
 
 
 
--- EDGE RE-COLLECTION (callEdges is empty at Phase 6 — verified fact 1)
--- Moved to `MonoTraverse.collectSpecEdges` so the post-inline prune
--- (`plans/post-inline-dead-spec-prune.md`) collects the SAME relation: a
--- second every-`MonoVarGlobal` walk that could drift from this one is exactly
--- the hazard that plan's §3.1 records.
--- SCC COMPUTATION (copied from MonoInlineSimplify.buildCallGraph, modified to
--- return (indexToSpecId, sccs) — reverse-topological, callees first)
+-- STRONGLY CONNECTED COMPONENTS
 
 
+{-| Returns the strongly connected components of the reference graph `edges`
+over the nodes present in `nodes`, callees first, together with the `SpecId`
+of each component vertex. Vertices are numbered densely over the present
+nodes, in `SpecId` order, and an edge to an absent node is dropped.
+-}
 buildSCC : Array (Maybe Mono.MonoNode) -> Array (Maybe (List Mono.SpecId)) -> ( Array Mono.SpecId, List (Graph.SCC Int) )
 buildSCC nodes edges =
     let
@@ -544,6 +579,11 @@ buildSCC nodes edges =
 -- FIXPOINT
 
 
+{-| Solves the signatures of one component into the table, adding to the
+bailout count and the most rounds seen. A cycle starts from optimistic
+signatures; if it has not settled within `maxIterConst` rounds, every member
+gets the all-owned signature.
+-}
 solveScc : Array (Maybe Mono.MonoNode) -> Array Mono.SpecId -> Graph.SCC Int -> ( SigTable, Int, Int ) -> ( SigTable, Int, Int )
 solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
     case scc of
@@ -570,13 +610,17 @@ solveScc nodes indexToSpecId scc ( table, bailouts, maxIter ) =
                 ( tableN, bailouts, max maxIter iters )
 
             else
-                -- bailout: total poison fallback (design §5.3 discipline)
                 ( List.foldl (\sid t -> setSig t sid (Just (allOwnedSigFor nodes sid))) tableN specIds
                 , bailouts + 1
                 , max maxIter iters
                 )
 
 
+{-| Re-analyses the members of a cycle in order, each against the table as
+updated by the members before it, until a round changes no signature. Returns
+the table, the number of rounds that changed something, and whether it
+settled before `maxIterConst` rounds.
+-}
 iterateScc : Array (Maybe Mono.MonoNode) -> List Mono.SpecId -> SigTable -> Int -> ( SigTable, Int, Bool )
 iterateScc nodes specIds table iter =
     if iter >= maxIterConst then
@@ -613,13 +657,16 @@ iterateScc nodes specIds table iter =
             ( table1, iter, True )
 
 
+{-| Sets the signature of one specialization in a table.
+-}
 setSig : SigTable -> Mono.SpecId -> Maybe BorrowSig -> SigTable
 setSig table specId maybeSig =
     Array.set specId maybeSig table
 
 
-{-| Analyze a def against the current table and read back its signature; for
-non-def nodes return the appropriate baseline sig.
+{-| Returns the signature of a node against `table`: analysed for a tail
+function or a define, all-owned for any other node, and `Nothing` when there
+is no node at `specId`.
 -}
 analyzeAndReadback : Array (Maybe Mono.MonoNode) -> SigTable -> Mono.SpecId -> Maybe BorrowSig
 analyzeAndReadback nodes table specId =
@@ -633,13 +680,15 @@ analyzeAndReadback nodes table specId =
                     Just (analyzeNodeSig table node)
 
                 _ ->
-                    -- ctor/enum → construct (result owned); extern/manager/port → RPort poison.
                     Just (allOwnedSigFor nodes specId)
 
         Nothing ->
             Nothing
 
 
+{-| Analyses a definition against `table`, with closure calls not routed, and
+returns its signature.
+-}
 analyzeNodeSig : SigTable -> Mono.MonoNode -> BorrowSig
 analyzeNodeSig table node =
     let
@@ -655,6 +704,9 @@ analyzeNodeSig table node =
     readbackSig solved da
 
 
+{-| Returns the parameter types and result type a node's signature is shaped
+from. A define whose body is not a closure has no parameters.
+-}
 defSigShapes : Mono.MonoNode -> ( List Mono.MonoType, Mono.MonoType )
 defSigShapes node =
     case node of
@@ -671,6 +723,8 @@ defSigShapes node =
             ( [], Mono.nodeType node )
 
 
+{-| Returns the optimistic signature of a node, the starting point for a cycle.
+-}
 initSig : Array (Maybe Mono.MonoNode) -> Mono.SpecId -> BorrowSig
 initSig nodes specId =
     case Array.get specId nodes |> Maybe.andThen identity of
@@ -685,6 +739,8 @@ initSig nodes specId =
             Sig.optimisticSig [] Mono.MUnit
 
 
+{-| Returns the all-owned signature of a node.
+-}
 allOwnedSigFor : Array (Maybe Mono.MonoNode) -> Mono.SpecId -> BorrowSig
 allOwnedSigFor nodes specId =
     case Array.get specId nodes |> Maybe.andThen identity of
@@ -700,9 +756,13 @@ allOwnedSigFor nodes specId =
 
 
 
--- SIGNATURE READBACK (needs Solved ⇒ lives here, not in Sig)
+-- SIGNATURE READBACK
 
 
+{-| Reads a definition's signature out of its solution: each parameter and
+result position is `Owned` when its resource must be treated as owned, and the
+result's aliasing comes from the alpha sets.
+-}
 readbackSig : Solve.Solved -> C.DefAnalysis -> BorrowSig
 readbackSig solved da =
     { params = List.map2 (sigTyReadback solved) da.paramTys da.paramRtys
@@ -711,8 +771,8 @@ readbackSig solved da =
     }
 
 
-{-| Argument-return coupling (paper §5.1): each result resource position that
-carries a non-empty α-set couples to those param positions.
+{-| Returns, for each result position whose resource has a non-empty alpha
+set, that position and the parameter positions in the set.
 -}
 resultLtsOf : Solve.Solved -> Rty.RTy -> List ( Int, Set Int )
 resultLtsOf solved resultRty =
@@ -731,6 +791,9 @@ resultLtsOf solved resultRty =
         (List.indexedMap Tuple.pair (Rty.allRes resultRty))
 
 
+{-| Reads the mode of each heap position of a value of type `ty` with
+resources `rty`.
+-}
 sigTyReadback : Solve.Solved -> Mono.MonoType -> Rty.RTy -> Sig.SigTy
 sigTyReadback solved ty rty =
     { shape = ty
@@ -749,13 +812,14 @@ sigTyReadback solved ty rty =
     }
 
 
+{-| Counts the owned parameter positions over every signature in the table.
+-}
 countPoisonedParams : SigTable -> Int
 countPoisonedParams table =
     Array.foldl
         (\maybeSig acc ->
             case maybeSig of
                 Just sig ->
-                    -- item 27: fold param sig-tys directly (no intermediate List.map list)
                     List.foldl (\st a -> Array.foldl ownedInc a st.modes) acc sig.params
 
                 Nothing ->
@@ -765,6 +829,8 @@ countPoisonedParams table =
         table
 
 
+{-| Adds one to the count for an `Owned` mode.
+-}
 ownedInc : Mode -> Int -> Int
 ownedInc m a =
     case m of
@@ -776,9 +842,12 @@ ownedInc m a =
 
 
 
--- CENSUS PASS (one analysis per def with the converged sig table)
+-- CENSUS PASS
 
 
+{-| Adds a node's counts to the census when it is a define or a tail function,
+and leaves the census unchanged otherwise.
+-}
 censusNode : SigTable -> LssFacts.Facts -> Mono.MonoNode -> BorrowStats -> BorrowStats
 censusNode table facts node stats =
     case node of
@@ -792,6 +861,14 @@ censusNode table facts node stats =
             stats
 
 
+{-| Analyses one definition against the finished tables, routing closure calls
+through `facts`, and adds its counts to the census.
+
+A resource counts as borrowed when it need not be treated as owned. `wouldDup`
+counts uses whose first resource is owned, `wouldDrop` owned resources with a
+recorded scope, and `wouldFree` those of them that are strings.
+
+-}
 mergeDef : SigTable -> LssFacts.Facts -> Mono.MonoNode -> BorrowStats -> BorrowStats
 mergeDef table facts node stats =
     let
@@ -840,7 +917,6 @@ mergeDef table facts node stats =
         wouldFree =
             countWhere (\r -> BitSet.member r stringSet) ownedScoped
 
-        -- precise borrow-lifetime depth (Stage D ltP, not the ltA approximation).
         maxExt =
             List.foldl
                 (\r acc ->
@@ -853,16 +929,11 @@ mergeDef table facts node stats =
                 0
                 resList
 
-        -- how many resources Stage D refined vs the ltA approximation.
         ltpRefined =
             countWhere (\r -> not (L.eq (Solve.ltPOf r solved) (Solve.ltAOf r solved))) resList
 
-        -- ESCAPE ANALYSIS (stack-allocation proxy): an owned resource is
-        -- stack-allocatable iff it does not escape the activation. We treat r
-        -- as escaping if it couples to a param (α non-empty), is part of the
-        -- returned value (a result resvar), or its lifetime reaches a param
-        -- position (LParams). This is an UPPER bound — it does not chase
-        -- transitive store-into-escaping-container escape.
+        -- Escaping for the upper bound: aliases a parameter, is in the result,
+        -- or lives into the parameters.
         resultResSet =
             List.foldl BitSet.insertGrowing BitSet.empty (Rty.allRes da.resultRty)
 
@@ -883,14 +954,9 @@ mergeDef table facts node stats =
         nonEscapingOwned =
             countWhere (\r -> Solve.reifiedOwned r solved && not (escapesR r)) resList
 
-        -- U-T1.1: STORAGE-TRANSITIVE ESCAPE CLOSURE (the tight lower bound).
-        -- Stage A already unions flows+storageEq into the DSU, so value webs
-        -- are one class; extend a copy of it with the projection (`gets`) and
-        -- escape-only (`escEdges`) alias pairs, then mark every class that
-        -- contains an escape seed: the §15.1 predicate resvars, consumption
-        -- seeds from the walk (poisoned/owned call args, captures,
-        -- global-resident values, immortals), and tail-call args (BORROW_005).
-        -- A resource is non-escaping-LB iff its component holds no seed.
+        -- The storage classes, also joined across container reads and escEdges;
+        -- a class escapes for the lower bound when it holds an escSeeds or
+        -- tail-call resource or one escaping for the upper bound.
         escDsu =
             List.foldl (\( a, b ) d -> Dsu.union a b d)
                 (List.foldl
@@ -996,10 +1062,10 @@ mergeDef table facts node stats =
     }
 
 
-{-| Test hook: solves the borrow signatures of the whole graph, then analyses the
-definition with the given `SpecId` against them. Returns its solution, the
-resources of its tail-call arguments, and its resource count, or `Nothing`
-when there is no node at that id.
+{-| Solves the signature table of the whole graph, then analyses the node at
+`specId` against it, with closure calls not routed. Returns its solution, the
+resources of its tail-call arguments and its resource count, or `Nothing` when
+there is no node at that id. It exists for tests.
 -}
 analyzeDefForTest : Mono.MonoGraph -> Mono.SpecId -> Maybe ( Solve.Solved, List ResVar, Int )
 analyzeDefForTest graph specId =
@@ -1029,6 +1095,8 @@ analyzeDefForTest graph specId =
 -- HELPERS
 
 
+{-| Counts the elements of a list that satisfy `pred`.
+-}
 countWhere : (a -> Bool) -> List a -> Int
 countWhere pred =
     List.foldl
@@ -1042,6 +1110,9 @@ countWhere pred =
         0
 
 
+{-| Returns how deeply a lifetime's end is nested in the skeleton: 0 for
+`LEmpty`, `LParams` and an end at the root.
+-}
 lifeDepth : Lifetime -> Int
 lifeDepth lt =
     case lt of
@@ -1055,6 +1126,9 @@ lifeDepth lt =
             localDepth l
 
 
+{-| Returns the nesting depth of a local lifetime's end, taking the deepest
+arm of an alternatives node.
+-}
 localDepth : Life -> Int
 localDepth l =
     case l of
@@ -1069,10 +1143,11 @@ localDepth l =
 
 
 
--- RENDER (stderr census line; grep -a-safe key=value)
+-- RENDER
 
 
-{-| Renders a census as one line of `key=value` pairs for the stderr report.
+{-| Renders a census as a line of `key=value` pairs, followed by the
+escape-class histogram and the kernel audit list, one entry per line.
 -}
 renderStats : BorrowStats -> String
 renderStats s =
@@ -1148,6 +1223,10 @@ renderStats s =
         ++ renderKernelAudit s.kernelDefaultedNames
 
 
+{-| Renders the escape-class histogram as one `class=ownedNonEscaping/total`
+line per class, largest total first, the numerator counting owned sites that do
+not escape by the lower bound.
+-}
 renderEscClasses : Dict String ( Int, Int ) -> String
 renderEscClasses d =
     Dict.toList d
@@ -1159,8 +1238,8 @@ renderEscClasses d =
         |> String.join "\n"
 
 
-{-| Rank un-audited kernels by how many heap-bearing call sites they poison —
-the audit worklist (biggest blast-radius reduction first).
+{-| Renders the 40 kernels with the most calls that had heap arguments and no
+kernel-table entry, one `home.name=count` line each, most calls first.
 -}
 renderKernelAudit : Dict ( Name, Name ) Int -> String
 renderKernelAudit d =

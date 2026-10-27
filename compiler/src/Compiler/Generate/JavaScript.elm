@@ -1,14 +1,36 @@
 module Compiler.Generate.JavaScript exposing (generate, generateForRepl, generateForReplEndpoint)
 
-{-| JavaScript code generation for the Elm compiler.
+{-| Turns an optimized program into one JavaScript text, either a whole program
+or a snippet that the REPL runs to show one value.
 
-This module is the entry point for generating JavaScript from optimized Elm AST.
-It takes an optimized global graph and produces executable JavaScript code, handling:
+The input is the _global graph_ of `Compiler.AST.Optimized`: every top-level
+definition of the program and its packages, each a node keyed by its global
+(module and name) and listing the globals it uses. Most of the graph is not
+needed. Generation starts from the entry points, a module's `main` for a program
+and the evaluated value for the REPL, and walks the graph depth first. Each node
+is added to the state once, after the nodes it depends on; kernel text and the
+members of a cycle are the exceptions. A `State` records the text so far and
+the globals already visited. Dependencies are visited in
+`Opt.compareGlobal` order, which makes the output the same on every run.
 
-  - Module code generation with dependency resolution
-  - REPL evaluation with type printing
-  - Source map generation for debugging
-  - Kernel JavaScript integration
+A node becomes a `var`, a constructor, a group of mutually recursive
+definitions, an effect manager registration, a port, or the text of a _kernel
+module_, which is hand-written JavaScript from a package, split into chunks by
+`Compiler.Elm.Kernel`. Kernel text is collected apart from the rest and placed
+before all other generated code.
+
+`generate` wraps the program in a function that is called at once with
+`this`, after the `F`/`A` helpers of `Compiler.Generate.JavaScript.Functions`.
+The program's `main`s are exported as a nested object following the dots of
+their module names, so the `main` of `Page.Home` is the `init` field of the
+`Home` field of the `Page` field. The _trie_ at the end of this file is that
+nesting, one level per module-name segment.
+
+The mode decides how much is kept for development. In production, a type
+whose constructors all take no arguments has them as integers, a type with a
+single one-argument constructor has it as `identity`, and cycles of values are
+not guarded. In development a cycle of values that loops throws an error that
+draws the cycle.
 
 
 # Code Generation
@@ -48,20 +70,22 @@ import Utils.Main as Utils
 -- ====== Main Code Generation ======
 
 
-{-| Map from module names to their optimized nodes in the global dependency graph.
+{-| The nodes of the global graph, keyed by the global each defines.
 -}
 type alias Graph =
     DataMap.Dict String Opt.Global Opt.Node
 
 
-{-| Calculate the line number where generated JavaScript code begins after prelude.
+{-| Returns the number of lines in the prelude for `mode`, the line on which the
+builder's generated code is counted as starting.
 -}
 firstGeneratedLineNumber : Mode.Mode -> Int
 firstGeneratedLineNumber mode =
     List.length (String.lines (prelude mode))
 
 
-{-| Generate the JavaScript prelude that wraps all generated code in an IIFE.
+{-| Returns the opening of a program: the start of the wrapping function, the
+runtime helpers, and the development-mode warning.
 -}
 prelude : Mode.Mode -> String
 prelude mode =
@@ -70,10 +94,17 @@ prelude mode =
         ++ perfNote mode
 
 
-{-| Generates JavaScript code from an optimized global graph.
+{-| Generates the JavaScript program that runs `mains`, from `graph`.
 
-Takes the optimized AST and produces executable JavaScript wrapped in an IIFE,
-including all dependencies, kernel functions, and main exports.
+The text is one function called at once with `this`. Inside it are
+the runtime helpers, a console warning unless `mode` is production, the kernel
+code, a few definitions that let ports carry `Bytes`, every global reachable
+from a `main` in dependency order, the export of the `main`s, and a few
+definitions for tuples of more than three elements in `Debug.toString`.
+
+With source maps the text ends with a source map comment. `leadingLines` is
+the number of lines that will come before this text in the file it is written
+to, and is added to every mapped line.
 
 -}
 generate : CodeGen.SourceMaps -> Int -> Mode.Mode -> Opt.GlobalGraph -> CodeGen.Mains -> String
@@ -108,14 +139,20 @@ function _Utils_TupleN(a, b, ...cs) {
         ++ generateSourceMaps sourceMaps leadingLines state
 
 
-{-| Wrap custom JavaScript code with markers for debugging.
+{-| Returns `code` on lines of its own between a `//__START__` and an
+`//__END__` comment line.
 -}
 escapeNewCode : String -> String
 escapeNewCode code =
     "//__START__\n" ++ code ++ "\n//__END__\n"
 
 
-{-| Generate source map comments linking generated JS back to original Elm source.
+{-| Returns the source map comment for the code in `state`, or the empty string
+without source maps.
+
+The builder counts lines from the end of the prelude, so the lines of the kernel
+code, which goes in before the builder's text, are added here.
+
 -}
 generateSourceMaps : CodeGen.SourceMaps -> Int -> State -> String
 generateSourceMaps sourceMaps leadingLines state =
@@ -134,14 +171,15 @@ generateSourceMaps sourceMaps leadingLines state =
             SourceMap.generate leadingLines kernelLeadingLines moduleSources (stateToMappings state)
 
 
-{-| Add a module's main function to the generation state.
+{-| Adds the `main` of `home`, and everything it depends on, to `state`.
 -}
 addMain : Mode.Mode -> Graph -> ModuleName.Canonical -> Opt.Main -> State -> State
 addMain mode graph home _ state =
     addGlobal mode graph state (Opt.Global home "main")
 
 
-{-| Generate a console warning for non-production builds.
+{-| Returns a statement that warns on the console that the program was compiled
+in development or debug mode, or the empty string in production.
 -}
 perfNote : Mode.Mode -> String
 perfNote mode =
@@ -160,10 +198,13 @@ perfNote mode =
                 ++ " for better performance and smaller assets.');"
 
 
-{-| Generates JavaScript for REPL evaluation with type display.
+{-| Generates a script that prints the value `name` of `home` and its type to
+the console, with ANSI colours when `ansi` is set.
 
-Produces code that evaluates an expression and prints its value and type
-to the console, formatted for terminal display with optional ANSI colors.
+The code is generated in development mode, with `Debug.toString` and everything
+the value depends on. An uncaught exception is written to standard error and
+ends the process with status 1. The type goes on its own line when it holds a
+newline or the whole would reach 80 characters.
 
 -}
 generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Name.Name -> Can.Annotation Name -> String
@@ -187,7 +228,8 @@ generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _
         ++ print ansi localizer home name tipe
 
 
-{-| Generate code to print a REPL value with its type annotation to the console.
+{-| Returns the code that prints the value `name` of `home` followed by `tipe`,
+as `generateForRepl` describes.
 -}
 print : Bool -> L.Localizer -> ModuleName.Canonical -> Name.Name -> Can.Type Name -> String
 print ansi localizer home name tipe =
@@ -234,10 +276,13 @@ print ansi localizer home name tipe =
 -- ====== REPL Endpoint Generation ======
 
 
-{-| Generates JavaScript for REPL evaluation in a web worker.
+{-| Generates a script that sends the REPL's value and its type with
+`self.postMessage`, as a web worker does.
 
-Similar to generateForRepl but outputs via postMessage for use in browser
-environments. Returns a message object with name, value, and type fields.
+The value is `maybeName` of `home`, or `Name.replValueToPrint` when there is no
+name. The message has the fields `name` (the name, or `null` without one),
+`value` (the value as `Debug.toString` shows it, with ANSI colours) and `type`.
+The code is generated in development mode.
 
 -}
 generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> ModuleName.Canonical -> Maybe Name.Name -> Can.Annotation Name -> String
@@ -264,7 +309,12 @@ generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.
         ++ postMessage localizer home maybeName tipe
 
 
-{-| Generate code to send a REPL value and type via postMessage for web workers.
+{-| Returns the `self.postMessage` call that `generateForReplEndpoint`
+describes.
+
+The name is put between double quotes with no escaping, and the rendered type
+is inserted as it is, not as a string literal.
+
 -}
 postMessage : L.Localizer -> ModuleName.Canonical -> Maybe Name.Name -> Can.Type Name -> String
 postMessage localizer home maybeName tipe =
@@ -300,27 +350,32 @@ postMessage localizer home maybeName tipe =
         ++ "\n});\n"
 
 
-{-| Code generation state tracking generated JavaScript and visited globals.
+{-| Generation in progress: the JavaScript built so far, and the globals already
+visited, so that each is emitted once.
 -}
 type State
     = State JS.Builder (EverySet String Opt.Global)
 
 
-{-| Create an empty code generation state at the given starting line number.
+{-| Creates a state with no code and nothing visited, whose code is counted from
+line `startingLine`.
 -}
 emptyState : Int -> State
 emptyState startingLine =
     State (JS.emptyBuilder startingLine) EverySet.empty
 
 
-{-| Extract the generated JavaScript string from the state.
+{-| Returns the code in the state: the kernel code in the order it was added,
+then `bytesForPorts`, then the rest of the generated code.
 -}
 stateToBuilder : State -> String
 stateToBuilder (State (JS.Builder b) _) =
     prependBuilders b.revKernels (bytesForPorts ++ b.revBuilders)
 
 
-{-| JavaScript code for encoding/decoding bytes through ports.
+{-| The JavaScript definitions of `_Json_decodeBytes` and `_Json_encodeBytes`.
+The decoder accepts a `Uint8Array`, an `ArrayBuffer` or a `DataView` and gives a
+`DataView`; the encoder gives a `Uint8Array` over the same bytes.
 -}
 bytesForPorts : String
 bytesForPorts =
@@ -345,28 +400,30 @@ var _Json_encodeBytes = function(bytes) {
 """
 
 
-{-| Prepend kernel JavaScript code to the main generated code monolith.
+{-| Returns `monolith` with the pieces of `revBuilders`, which are newest first,
+put before it oldest first.
 -}
 prependBuilders : List String -> String -> String
 prependBuilders revBuilders monolith =
     List.foldl (\b m -> b ++ m) monolith revBuilders
 
 
-{-| Extract source map mappings from the generation state.
+{-| Returns the source map mappings recorded in the state, newest first.
 -}
 stateToMappings : State -> List JS.Mapping
 stateToMappings (State (JS.Builder b) _) =
     b.mappings
 
 
-{-| Extract the list of kernel JavaScript strings from the generation state.
+{-| Returns the kernel code in the state, newest first.
 -}
 stateKernels : State -> List String
 stateKernels (State (JS.Builder b) _) =
     b.revKernels
 
 
-{-| Add a global definition and its dependencies to the generation state.
+{-| Adds `global` and everything it depends on to the state, unless it has
+already been visited.
 -}
 addGlobal : Mode.Mode -> Graph -> State -> Opt.Global -> State
 addGlobal mode graph ((State builder seen) as state) global =
@@ -377,7 +434,13 @@ addGlobal mode graph ((State builder seen) as state) global =
         State builder (EverySet.insert Opt.toComparableGlobal global seen) |> addGlobalHelp mode graph global
 
 
-{-| Generate code for a global definition based on its node type.
+{-| Adds the code for the node of `global`, after its dependencies.
+
+A `Link` adds the global it links to instead. A debugger kernel is skipped
+unless `mode` is debug. A kernel's dependencies are resolved as
+`resolveKernelGlobal` describes. The global is looked up with `Utils.find`, so
+one missing from the graph crashes.
+
 -}
 addGlobalHelp : Mode.Mode -> Graph -> Opt.Global -> State -> State
 addGlobalHelp mode graph ((Opt.Global home _) as global) state =
@@ -387,7 +450,7 @@ addGlobalHelp mode graph ((Opt.Global home _) as global) state =
             let
                 sortedDeps : List Opt.Global
                 sortedDeps =
-                    -- This is required given that it looks like `Data.Set.union` sorts its elements
+                    -- Sorted so that the output order does not depend on the set's own order.
                     List.sortWith Opt.compareGlobal (EverySet.toList deps)
             in
             List.foldl (flip (addGlobal mode graph)) someState sortedDeps
@@ -439,35 +502,37 @@ addGlobalHelp mode graph ((Opt.Global home _) as global) state =
                 (generatePort mode global "outgoingPort" encoder)
 
 
-{-| Add a JavaScript statement to the generation state.
+{-| Appends `stmt` to the code in the state.
 -}
 addStmt : State -> JS.Stmt -> State
 addStmt (State builder seen) stmt =
     State (JS.stmtToBuilder stmt builder) seen
 
 
-{-| Add kernel JavaScript code to the generation state.
+{-| Adds `kernel` to the state's kernel code.
 -}
 addKernel : State -> String -> State
 addKernel (State builder seen) kernel =
     State (JS.addKernel kernel builder) seen
 
 
-{-| Generate a variable declaration statement for a global definition.
+{-| Returns the `var` statement defining the global as `code`.
 -}
 var : Opt.Global -> Expr.Code -> JS.Stmt
 var (Opt.Global home name) code =
     JS.Var (JsName.fromGlobal home name) (Expr.codeToExpr code)
 
 
-{-| Generate a variable declaration with source map tracking information.
+{-| Returns the `var` statement defining the global as `code`, recording a
+source map mapping from the start of `region`.
 -}
 trackedVar : A.Region -> Opt.Global -> Expr.Code -> JS.Stmt
 trackedVar (A.Region startPos _) (Opt.Global home name) code =
     JS.TrackedVar home startPos (JsName.fromGlobalHumanReadable home name) (JsName.fromGlobal home name) (Expr.codeToExpr code)
 
 
-{-| Check if a global is the Elm debugger module.
+{-| Tells whether `global` belongs to a module named `Name.debugger`. For a
+kernel node this is the kernel module `Elm.Kernel.Debugger`.
 -}
 isDebugger : Opt.Global -> Bool
 isDebugger (Opt.Global (ModuleName.Canonical _ home) _) =
@@ -478,7 +543,17 @@ isDebugger (Opt.Global (ModuleName.Canonical _ home) _) =
 -- ====== Mutually Recursive Definitions ======
 
 
-{-| Generate JavaScript for mutually recursive definitions (cycles).
+{-| Returns the statements for a cycle: a group of definitions in one module
+that refer to each other.
+
+The `functions` are defined first, as ordinary `var`s; a function body does not
+run when it is defined, so their order does not matter. Each of the `values` is
+then defined as a function of no arguments that computes it, and called in turn.
+After the call, that function is replaced with one returning the value. A value
+that needs itself while being computed calls its function again and recurses
+without end. In development, any exception thrown while the values are computed
+is replaced with an error message that draws the cycle `names`.
+
 -}
 generateCycle : Mode.Mode -> Opt.Global -> List Name.Name -> List ( Name.Name, Opt.Expr ) -> List Opt.Def -> JS.Stmt
 generateCycle mode (Opt.Global ((ModuleName.Canonical _ module_) as home) _) names values functions =
@@ -509,7 +584,7 @@ generateCycle mode (Opt.Global ((ModuleName.Canonical _ module_) as home) _) nam
         ]
 
 
-{-| Generate JavaScript for a function definition within a cycle.
+{-| Returns the `var` statement for one function of a cycle.
 -}
 generateCycleFunc : Mode.Mode -> ModuleName.Canonical -> Opt.Def -> JS.Stmt
 generateCycleFunc mode home def =
@@ -521,14 +596,16 @@ generateCycleFunc mode home def =
             JS.Var (JsName.fromGlobal home name) (Expr.codeToExpr (Expr.generateTailDef mode home name args expr))
 
 
-{-| Generate a thunk wrapper for a value definition within a cycle.
+{-| Returns the function of no arguments that computes one value of a cycle,
+named as `JsName.fromCycle` names it.
 -}
 generateSafeCycle : Mode.Mode -> ModuleName.Canonical -> ( Name.Name, Opt.Expr ) -> JS.Stmt
 generateSafeCycle mode home ( name, expr ) =
     Expr.codeToStmtList (Expr.generate mode home expr) |> JS.FunctionStmt (JsName.fromCycle home name) []
 
 
-{-| Generate the real cycle definition that calls the thunk wrapper.
+{-| Returns the statements that define one value of a cycle by calling its
+function, and then replace that function with one returning the value.
 -}
 generateRealCycle : ModuleName.Canonical -> ( Name.Name, expr ) -> JS.Stmt
 generateRealCycle home ( name, _ ) =
@@ -547,7 +624,9 @@ generateRealCycle home ( name, _ ) =
         ]
 
 
-{-| Draw a visual representation of a recursive cycle for error messages.
+{-| Returns `names` drawn as a loop of arrows, for the error message of a cycle.
+The line breaks are written as a backslash followed by `n`, ready to go inside
+a JavaScript string literal.
 -}
 drawCycle : List Name.Name -> String
 drawCycle names =
@@ -571,16 +650,14 @@ drawCycle names =
     String.concat (topLine :: List.intersperse midLine (List.map nameLine names) ++ [ bottomLine ])
 
 
-{-| Generate JavaScript code from the chunks of the kernel module keyed by
+{-| Generates JavaScript code from the chunks of the kernel module keyed by
 `global`.
 
 An `Eco` kernel's values are named `_Eco_Home_name` (`JsName.fromEcoKernel`)
-so that they cannot clash with an `Elm` kernel of the same home, such as
-`Eco.Kernel.File` and elm/file's `Elm.Kernel.File`, which both define
-`_File_size` in their source (SD-16). An `Elm` kernel's text is emitted as
-written, as in stock Elm. A kernel's source, though, spells its own values
-`_Home_name` in its plain JavaScript text, and eco/kernel's also reads another
-of its modules' values that way (`_Process_streamHandles`). So in the text of
+so that they cannot clash with an `Elm` kernel of the same home. An `Elm`
+kernel's text is emitted as written. A kernel's source, though, spells its own
+values `_Home_name` in its plain JavaScript text, and can read another kernel
+module's values that way. So in the text of
 an `Eco` kernel each identifier `_Home_...` whose `Home` is an `Eco` kernel of
 the program becomes `_Eco_Home_...` (`qualifyEcoKernelNames`), and the rest of
 its text is left alone.
@@ -609,7 +686,7 @@ generateKernel mode graph global chunks =
     List.foldr (addChunk mode isEcoHome qualifyText) "" chunks
 
 
-{-| Add a single kernel chunk to the generated JavaScript string. `isEcoHome`
+{-| Returns one kernel chunk's JavaScript followed by `builder`. `isEcoHome`
 tells whether the program has an `Eco` kernel of a home, and `qualifyText`
 rewrites plain JavaScript text, as `generateKernel` describes.
 -}
@@ -660,11 +737,8 @@ addChunk mode isEcoHome qualifyText chunk builder =
 `graph`.
 
 A kernel import `import Eco.Kernel.Home` names the `Eco` kernel `Home`. When the
-program has none, it names the `Elm` kernel `Home` instead: eco/kernel's
-JavaScript imports `Eco.Kernel.Scheduler` and `Eco.Kernel.Utils`, which are
-elm/core's `Elm.Kernel.Scheduler` and `Elm.Kernel.Utils`. That was harmless while
-kernels were keyed by home alone, and this keeps it working. Every other global
-is returned as it is.
+graph has none, the global of the `Elm` kernel `Home` is returned instead.
+Every other global is returned as it is.
 
 -}
 resolveKernelGlobal : Graph -> Opt.Global -> Opt.Global
@@ -681,7 +755,7 @@ resolveKernelGlobal graph global =
             global
 
 
-{-| A kernel node's dependencies, each resolved by `resolveKernelGlobal`.
+{-| Returns a kernel node's dependencies, each resolved by `resolveKernelGlobal`.
 -}
 resolveKernelDeps : Graph -> EverySet String Opt.Global -> EverySet String Opt.Global
 resolveKernelDeps graph deps =
@@ -693,11 +767,10 @@ resolveKernelDeps graph deps =
 `JsName.fromEcoKernel` gives the values of `Eco` kernel `Home`.
 
 An identifier here is a `_` that does not follow a letter, digit, `_` or `$`,
-then a capital letter and more letters and digits (`Home`), then `_`. The text
-of a kernel chunk starts at such a boundary: a tag before it would have taken
-any identifier characters that followed it. The scan does not tell code from
-strings and comments, so it would rewrite `_Home_` there too; eco/kernel and
-eco/system put no such text in their strings.
+then a capital letter followed by any number of ASCII letters and digits
+(`Home`), then `_`. The start of `js` counts as such a boundary. The scan
+does not tell code from strings and comments, so it rewrites `_Home_` there
+too.
 
 -}
 qualifyEcoKernelNames : (Name -> Bool) -> String -> String
@@ -760,7 +833,8 @@ qualifyEcoKernelNames isEcoHome js =
 -- ====== Enum Constructors ======
 
 
-{-| Generate JavaScript for an enum constructor (custom type with no arguments).
+{-| Returns the `var` statement for a constructor with no arguments: the
+constructor's object in development, and its index as an integer in production.
 -}
 generateEnum : Mode.Mode -> Opt.Global -> Index.ZeroBased -> JS.Stmt
 generateEnum mode ((Opt.Global home name) as global) index =
@@ -777,7 +851,9 @@ generateEnum mode ((Opt.Global home name) as global) index =
 -- ====== Box Constructors ======
 
 
-{-| Generate JavaScript for a box constructor (single-argument custom type).
+{-| Returns the `var` statement for the one constructor, of one argument, of a
+type: a constructor function in development, and `identity` in production, so
+that the value is the argument itself.
 -}
 generateBox : Mode.Mode -> Opt.Global -> JS.Stmt
 generateBox mode ((Opt.Global home name) as global) =
@@ -790,7 +866,7 @@ generateBox mode ((Opt.Global home name) as global) =
                 JS.ExprRef (JsName.fromGlobal ModuleName.basics Name.identity_)
 
 
-{-| Reference to the identity function global.
+{-| The global of `Basics.identity`.
 -}
 identity_ : Opt.Global
 identity_ =
@@ -801,7 +877,9 @@ identity_ =
 -- ====== Ports ======
 
 
-{-| Generate JavaScript for a port definition (incoming or outgoing).
+{-| Returns the `var` statement defining a port as a call of the platform
+kernel's `makePort` with the port's name and `converter`, its decoder or
+encoder.
 -}
 generatePort : Mode.Mode -> Opt.Global -> Name.Name -> Opt.Expr -> JS.Stmt
 generatePort mode (Opt.Global home name) makePort converter =
@@ -816,7 +894,9 @@ generatePort mode (Opt.Global home name) makePort converter =
 -- ====== Effect Managers ======
 
 
-{-| Generate JavaScript for an effect manager (commands/subscriptions/both).
+{-| Adds an effect manager to the state: its functions, the registration of the
+manager under its module's name, and the `command` or `subscription` function,
+or both, that make its effects.
 -}
 generateManager : Mode.Mode -> Graph -> Opt.Global -> Opt.EffectsType -> State -> State
 generateManager mode graph (Opt.Global ((ModuleName.Canonical _ moduleName) as home) _) effectsType state =
@@ -837,21 +917,25 @@ generateManager mode graph (Opt.Global ((ModuleName.Canonical _ moduleName) as h
     JS.Block (createManager :: stmts) |> addStmt (List.foldl (flip (addGlobal mode graph)) state deps)
 
 
-{-| Generate a leaf effect manager registration statement.
+{-| Returns the `var` statement defining `name` of `home` as the platform's
+`leaf` for the module.
 -}
 generateLeaf : ModuleName.Canonical -> Name.Name -> JS.Stmt
 generateLeaf ((ModuleName.Canonical _ moduleName) as home) name =
     JS.ExprCall leaf [ JS.ExprString moduleName ] |> JS.Var (JsName.fromGlobal home name)
 
 
-{-| JavaScript expression for the platform leaf function.
+{-| A reference to the platform kernel's `leaf` function.
 -}
 leaf : JS.Expr
 leaf =
     JS.ExprRef (JsName.fromKernel Name.platform "leaf")
 
 
-{-| Helper to generate effect manager dependencies, arguments, and statements.
+{-| Returns, for an effect manager of `home`, the globals it needs, the
+arguments of its registration, and the statements defining its `command`
+and `subscription`. A subscription-only manager passes `0` where a command
+manager passes `cmdMap`.
 -}
 generateManagerHelp : ModuleName.Canonical -> Opt.EffectsType -> ( List Opt.Global, List JS.Expr, List JS.Stmt )
 generateManagerHelp home effectsType =
@@ -890,7 +974,8 @@ generateManagerHelp home effectsType =
 -- ====== Main Exports ======
 
 
-{-| Generate the exports object for all main functions in the bundle.
+{-| Returns the call of the platform's `export` with the nested object of
+`mains`, as the module docstring describes.
 -}
 toMainExports : Mode.Mode -> CodeGen.Mains -> String
 toMainExports mode mains =
@@ -906,7 +991,8 @@ toMainExports mode mains =
     export ++ "(" ++ exports ++ ");"
 
 
-{-| Generate a nested JavaScript object representing the module structure and main functions.
+{-| Returns the JavaScript object for a trie: an `init` field for the `main` at
+this level, if any, and one field for each next module-name segment.
 -}
 generateExports : Mode.Mode -> Trie -> String
 generateExports mode (Trie maybeMain subs) =
@@ -939,7 +1025,7 @@ generateExports mode (Trie maybeMain subs) =
                 ++ List.foldl (flip (addSubTrie mode)) "}" otherSubTries
 
 
-{-| Add a single sub-trie to the exports object with the given module name segment.
+{-| Returns the field for one sub-trie, preceded by a comma, followed by `end`.
 -}
 addSubTrie : Mode.Mode -> String -> ( Name.Name, Trie ) -> String
 addSubTrie mode end ( name, trie ) =
@@ -950,27 +1036,29 @@ addSubTrie mode end ( name, trie ) =
 -- ====== Module Trie Structure ======
 
 
-{-| A trie structure for organizing modules by their dotted name segments.
+{-| The `main`s of a program arranged by the segments of their module names.
+The `main` at a level belongs to the module whose name ends there; the
+dictionary leads on to longer names.
 -}
 type Trie
     = Trie (Maybe ( ModuleName.Canonical, Opt.Main )) (Dict Name.Name Trie)
 
 
-{-| Create an empty trie with no modules.
+{-| The trie with no `main`.
 -}
 emptyTrie : Trie
 emptyTrie =
     Trie Nothing Dict.empty
 
 
-{-| Add a module and its main function to the trie.
+{-| Adds the `main` of `home` to the trie.
 -}
 addToTrie : ModuleName.Canonical -> Opt.Main -> Trie -> Trie
 addToTrie ((ModuleName.Canonical _ moduleName) as home) main trie =
     segmentsToTrie home (Name.splitDots moduleName) main |> merge trie
 
 
-{-| Build a trie from a module's name segments and main function.
+{-| Creates a trie holding only `main`, reached through `segments`.
 -}
 segmentsToTrie : ModuleName.Canonical -> List Name.Name -> Opt.Main -> Trie
 segmentsToTrie home segments main =
@@ -982,7 +1070,7 @@ segmentsToTrie home segments main =
             Trie Nothing (Dict.singleton segment (segmentsToTrie home otherSegments main))
 
 
-{-| Merge two tries together, combining their module structures.
+{-| Returns a trie holding the `main`s of both tries.
 -}
 merge : Trie -> Trie -> Trie
 merge (Trie main1 subs1) (Trie main2 subs2) =
@@ -991,7 +1079,8 @@ merge (Trie main1 subs1) (Trie main2 subs2) =
         (Dict.merge Dict.insert (\k v1 v2 acc -> Dict.insert k (merge v1 v2) acc) Dict.insert subs1 subs2 Dict.empty)
 
 
-{-| Merge two Maybe values, ensuring no conflicts (two modules with same name).
+{-| Returns whichever of `a` and `b` is present. Both present means two `main`s
+for one module name, and crashes.
 -}
 checkedMerge : Maybe a -> Maybe a -> Maybe a
 checkedMerge a b =

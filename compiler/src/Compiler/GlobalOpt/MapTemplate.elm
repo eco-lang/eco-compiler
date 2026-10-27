@@ -4,56 +4,52 @@ module Compiler.GlobalOpt.MapTemplate exposing
     , ArgTaintCauses, UnresolvedCauses
     )
 
-{-| Licence analysis for the forward `List.map` MLIR template
-(`plans/list-map-mlir-template.md` Phase 1.2).
+{-| Decides which specializations of elm/core's `List.map` code generation may
+emit as the `eco.list.map` MLIR op, and records what emission needs to name the
+callback when it may.
 
-Decides, per `List.map` specialization, whether its body may be replaced by a
-forward-iterating `eco.list.map` op instead of the elm/core foldr lowering, and
-carries the devirtualization facts emission needs when it may.
+The ordinary lowering of `List.map` is elm/core's own definition, which applies
+the callback to the elements from last to first. The `eco.list.map` op applies
+it from first to last, once per element. The two give the same list, and they
+differ only in the order the callback runs. That order can be observed only
+through `Debug`, whose kernels log or crash. So the rule this module rests on is:
+a spec is _licensed_ for the op only when every function its callback may be is
+proven _Debug-free_, meaning no evaluation of it reaches a `Debug` kernel.
+Anything not proven is _declined_, which keeps the ordinary lowering and is
+always sound.
 
-**What licenses the replacement.** The template applies the callback
-left-to-right where foldr applies it right-to-left, so it needs policy `D-4a`
-(`design_docs/debug-log-ordering-policy.md`): the applied callback
-specialization must be **transitively `Debug`-free**, and the template must
-apply it exactly once per element (which it does). A callback that cannot be
-PROVEN Debug-free keeps today's lowering — declining is always sound.
+The callback parameter's type carries a lambda-set annotation, the set of
+functions (its _members_) that value may be. An `LSet` lists every member. An
+`LPartial` lists only some, so it never licenses, and neither do `LTop` (the set
+is unknown) and `LVar` (not yet named). Each member gets a _verdict_: `Clean`,
+or the poison that stops it. Three sources feed the verdicts.
 
-**Three components, and the third is the one `CsePurity` does not have.**
+  - A global spec is judged by `CsePurity.analyze`: it is trusted when its id is
+    in `safeSpecs`.
+  - An inline lambda has no spec id, so its body is walked here, and the globals
+    it mentions are looked up in `safeSpecs`.
+  - A function value reaching a call is checked here, in two positions.
+    In callee position, as in `\x -> g x` with `g` a captured or parameter
+    function, the value's own lambda set must be Debug-free. In argument
+    position, as in `\x -> List.sortWith g x`, the callee may be trusted and
+    still apply `g`, so every argument whose type contains a function must be
+    Debug-free as a value. This is _argument taint_.
 
-1.  `CsePurity.analyze` — the per-spec transitive fixpoint. Answers
-    Debug-freedom for a callback that resolves to a global spec.
+One walker, `scanWith`, builds the table of member verdicts, and a map spec's
+callback is judged by looking up its members in that table. The table is built by
+scanning every member, recording each reference to another member as an edge,
+and then propagating poison along the edges until nothing changes.
 
-2.  A per-closure-INSTANCE extension. An inline lambda has no spec id, so its
-    body is walked here and its global references are looked up in (1).
+A licensed spec's `Info` names what the op calls per element. A single Clean
+member that is not a constructor is named by the stamp `Compiler.GlobalOpt.AbiCloning`
+left on the `f x` call in the map body, so a spec that pass did not stamp is
+declined. A single constructor or global is named by its own spec id, found by
+matching its type in the specialization registry. A set of several Clean members
+is licensed as a generic, indirect call, but only when the result element is
+boxed.
 
-3.  **A higher-order poison arm, in TWO positions.** `CsePurity.scanBody`
-    collects only `MonoVarGlobal` callees and treats `MonoVarLocal` as inert,
-    so a function value reaching a call site contributes no poison at all.
-    Both positions it can reach are covered here:
-
-      - **Callee** — `\x -> g x` with `g` a captured `Debug`-wrapping
-        function. `ListMapTemplateCapturedDebugTest.elm` is the canary.
-      - **Argument** (F-4) — `\x -> List.sortWith g x`, where the callee is a
-        trusted kernel and the poison rides in as an ARGUMENT for that kernel
-        to apply. `ListMapTemplateLaunderedDebugTest.elm` is the canary.
-
-    Both are decided by ONE walker (`scanWith`) over a settled member-verdict
-    table, so the discipline cannot be present in one consumer and absent in
-    another — the failure mode that made the two items inseparable.
-
-**v1 scope: singleton-devirtualized sites only** (recorded per the plan's
-"record the choice"). A licensed-but-multi-member set would still buy the
-loop/chunk/root-range wins through a generic-apply arm, but it doubles the
-expansion's callback surface for the tail of the pool and needs a meet over
-every member's licence; the op supports it (callee attr is optional) and the
-expansion has the arm, so v1 declining here is a policy choice, not a
-capability limit.
-
-**Devirtualization facts are not re-derived here.** `AbiCloning` has already
-stamped the `f x` call inside the map body with `fastEvaluator` + `captureAbi`
-if and only if that site is safely devirtualizable — including its self-capture
-and args-array-convention declines. Reading that stamp reuses every guard the
-pass makes instead of replicating (and drifting from) them.
+When `list.mapTemplate` is on, `Stats` counts every recognized map spec
+exactly once, as licensed or under one decline cause, and `report` prints it.
 
 @docs Info, Callee, Templates, Stats
 @docs derive, empty, lookup, report
@@ -73,15 +69,12 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| Everything emission needs for one licensed `List.map` spec.
+{-| The licence for one `List.map` spec: what the op calls per element, and the
+kinds of the elements it reads and writes.
 
-`callee` is the fast-clone symbol WITHOUT the `$cap` decision applied —
-emission owns that, because it owns `lambdaIdToString`. `captureTypes` is the
-instance's capture row in slot order; emission projects them out of the
-closure parameter once, before the loop.
-
-`inKind` / `outKind` are 2-bit slot kinds (REP\_HEAP\_002) for the input element
-and the callback result.
+`inKind` and `outKind` are slot kinds, the 2-bit code for how a value is stored
+in a heap slot: 0 boxed, 1 Int, 2 Float, 3 Char. Bool is boxed. `inKind` is for
+the input list's elements and `outKind` for the callback's result.
 
 -}
 type alias Info =
@@ -91,23 +84,18 @@ type alias Info =
     }
 
 
-{-| What the emitted `eco.list.map` calls per element.
+{-| What the emitted `eco.list.map` op calls for each element.
 
-`CalleeLambda` is the v1 shape: a devirtualized closure instance, whose
-capture row emission projects out of the closure parameter once, before the
-loop. `CalleeSpec` is a RESOLVED SPEC used directly as the callback — F-5B's bare
-constructor (`List.map Just`) and G-3's bare global (`List.map untag`). Either
-way there are no captures and no fast-clone symbol: the callback IS a spec, so
-emission names it and skips the projection block. Constructors were first only
-because their `g|` member resolves to exactly one spec by construction; a
-global needs the same layout match plus a Debug-freedom proof.
+`CalleeLambda` is one closure, named by the lambda id `AbiCloning` stamped on
+the map body's call of the callback. The list holds the types of its captured
+values, in capture order.
 
-`CalleeGeneric` is G-1's: a MULTI-MEMBER callback set, where no single symbol
-can be named. Emission omits the `callee` attribute and passes no captures —
-the shape `ListMapOp::verify` demands ("a generic-apply eco.list.map must have
-none") and `EcoListTemplate`'s `emitCallback` falls back to, a saturated
-indirect call through the closure value. It buys the loop / chunk / root-range
-work, NOT the devirtualized dispatch.
+`CalleeSpec` is a spec id used directly as the callback: a bare constructor, as
+in `List.map Just`, or a bare global function, as in `List.map f`. It has no
+captures.
+
+`CalleeGeneric` is a callback that may be any of several functions, so no single
+one can be named, and the op calls the closure value indirectly.
 
 -}
 type Callee
@@ -116,8 +104,19 @@ type Callee
     | CalleeGeneric
 
 
-{-| Why each recognized map spec was or was not licensed. Reconciles as
-`licensed + declined* == recognized` (plan Gate 3).
+{-| The census of one `derive`: how many `List.map` specs were recognized, how
+many were licensed, and why each of the rest was declined.
+
+Every recognized spec is counted once, as `licensed` or in one `declined`
+field. When `list.chunks` is off, `recognized` stays 0 and only
+`declinedChunksOff` is set; otherwise `licensed` plus the `declined` fields
+equals `recognized`.
+`argTaintCauses` and `unresolvedCauses` split `declinedArgTaint` and
+`declinedUnresolvedMember` by cause and are not part of that sum.
+`declinedCalleeLocalLSet` is never incremented. `allocFreeCallbacks` counts
+licensed closure callbacks that `allocationFree` judges not to allocate; it only
+feeds the census.
+
 -}
 type alias Stats =
     { recognized : Int
@@ -138,22 +137,20 @@ type alias Stats =
     , declinedNoStamp : Int
     , allocFreeCallbacks : Int
 
-    -- Breakdown of `declinedArgTaint` by cause. NOT part of the Gate-3 sum
-    -- (it re-partitions one term of it); printed as a second census line only
-    -- when the term is non-zero, because the landing gate for the taint rule
-    -- is a per-decline genuine/collateral classification.
+    -- Splits of one counter each, outside the sum
     , argTaintCauses : ArgTaintCauses
-
-    -- Breakdown of `declinedUnresolvedMember`, on the same footing as
-    -- `argTaintCauses`: a re-partition of one Gate-3 term, never part of the
-    -- sum. Only `global` is addressable (G-3).
     , unresolvedCauses : UnresolvedCauses
     }
 
 
-{-| Breakdown of `declinedUnresolvedMember` by cause: a member with no scannable
-instance (`blocked`), a `g|` member whose Global could be layout-matched to a
-spec (`global`), and a member with neither instance nor origin (`missing`).
+{-| The split of `declinedUnresolvedMember` by why a member had no verdict.
+
+`blocked` counts members `LssFacts` records as `MemberBlocked`. `global` counts
+members standing for, or reaching along a callee edge, a global function or a
+partial application of one, whose verdict the member table cannot give.
+`missing` likewise counts members absent from the table, or reaching one along
+a callee edge.
+
 -}
 type alias UnresolvedCauses =
     { blocked : Int
@@ -162,9 +159,15 @@ type alias UnresolvedCauses =
     }
 
 
-{-| Breakdown of `declinedArgTaint` by why an argument's provenance could not be
-proven: an `LTop` annotation, a global value outside `safeSpecs`, a poisoned
-resolved member, or an inline lambda argument whose own body is poison.
+{-| The split of `declinedArgTaint` by why a function-valued argument could not
+be proven Debug-free.
+
+`ltop` counts an argument whose lambda set is not fully listed, or whose type
+contains a type variable. `opaqueGlobal` counts a global outside `safeSpecs`.
+`memberPoison` counts a listed member that
+is poisoned, or poison reaching a member along an argument edge.
+`closurePoison` counts an inline lambda whose body is poisoned.
+
 -}
 type alias ArgTaintCauses =
     { ltop : Int
@@ -174,8 +177,8 @@ type alias ArgTaintCauses =
     }
 
 
-{-| The analysis result: the licence `Info` for each licensed `List.map` spec,
-keyed by SpecId, together with the census `Stats`.
+{-| The result of `derive`: the licence for each licensed `List.map` spec, keyed
+by spec id, and the census.
 -}
 type alias Templates =
     { bySpec : Dict Int Info
@@ -183,7 +186,7 @@ type alias Templates =
     }
 
 
-{-| No licensed specs and all-zero statistics.
+{-| The result with no licensed specs and every count zero.
 -}
 empty : Templates
 empty =
@@ -192,6 +195,8 @@ empty =
     }
 
 
+{-| The census with every count zero.
+-}
 emptyStats : Stats
 emptyStats =
     { recognized = 0
@@ -216,6 +221,8 @@ emptyStats =
     }
 
 
+{-| Returns `causes` with the count for `cause` raised by one.
+-}
 bumpUnresolved : UnresolvedCause -> UnresolvedCauses -> UnresolvedCauses
 bumpUnresolved cause causes =
     case cause of
@@ -229,6 +236,8 @@ bumpUnresolved cause causes =
             { causes | missing = causes.missing + 1 }
 
 
+{-| Returns `causes` with the count for `cause` raised by one.
+-}
 bumpCause : ArgCause -> ArgTaintCauses -> ArgTaintCauses
 bumpCause cause causes =
     case cause of
@@ -245,16 +254,20 @@ bumpCause cause causes =
             { causes | closurePoison = causes.closurePoison + 1 }
 
 
-{-| The licence `Info` for a spec, or `Nothing` if that spec is not a licensed
-`List.map` specialization.
+{-| Returns the licence for `specId`, or `Nothing` when that spec is not
+licensed.
 -}
 lookup : Int -> Templates -> Maybe Info
 lookup specId templates =
     Dict.get specId templates.bySpec
 
 
-{-| One-line census, greppable as `[map-template]`. Printed like the LSS stats
-line; `licensed + declined* == recognized` is the Gate-3 reconciliation.
+{-| Renders the census as text, each line starting `[map-template]`.
+
+The first line has every top-level count of `Stats`. A line of the `argTaintCauses` split
+follows only when `declinedArgTaint` is not zero, and one of the
+`unresolvedCauses` split only when `declinedUnresolvedMember` is not zero.
+
 -}
 report : Templates -> String
 report { stats } =
@@ -324,10 +337,11 @@ report { stats } =
 -- DERIVATION
 
 
-{-| Licence every `List.map` spec the flags and the oracle allow.
+{-| Returns the licences and census for every `List.map` spec in `graph`.
 
-Returns `empty` (no work done) when either flag is off, so a flag-off compile
-pays nothing and emits nothing — the byte-identity property Gate 2 certifies.
+With `list.mapTemplate` off it returns `empty` without looking at the graph.
+With `list.chunks` off it licenses nothing and counts every map spec as
+`declinedChunksOff`.
 
 -}
 derive : Config.EcoConfig -> Mono.MonoGraph -> Templates
@@ -336,8 +350,7 @@ derive cfg graph =
         empty
 
     else if not cfg.list.chunks then
-        -- The scratch/chunk machinery is the substrate the expansion builds
-        -- on; without it the op has nothing to finish into.
+        -- The op's expansion is built on the chunk machinery.
         { bySpec = Dict.empty
         , stats = { emptyStats | declinedChunksOff = countMapSpecs graph }
         }
@@ -346,6 +359,8 @@ derive cfg graph =
         deriveLicensed graph
 
 
+{-| Returns how many specs `ListCombinators.recognize` marks as `Map`.
+-}
 countMapSpecs : Mono.MonoGraph -> Int
 countMapSpecs graph =
     ListCombinators.recognize graph
@@ -360,6 +375,12 @@ countMapSpecs graph =
             0
 
 
+{-| Returns the licences and census for every map spec, with both flags on.
+
+A map spec whose node is missing from the graph is declined as
+`declinedShape`.
+
+-}
 deriveLicensed : Mono.MonoGraph -> Templates
 deriveLicensed graph =
     let
@@ -418,25 +439,30 @@ deriveLicensed graph =
         mapSpecs
 
 
+{-| What licensing reads for every spec: the purity oracle, what each lambda-set
+member is, the settled member verdicts, and the specialization registry.
+-}
 type alias Env =
     { purity : CsePurity.Oracle
-
-    -- ONE table over the member universe (`LssFacts.MemberInfo`): blocked,
-    -- instance-bearing and standalone members are disjoint arms of a sum, not
-    -- three parallel dicts of the same key set.
     , info : Dict Int LssFacts.MemberInfo
     , verdicts : Dict Int Verdict
     , registry : Mono.SpecializationRegistry
     }
 
 
+{-| Returns `t` with `f` applied to its census.
+-}
 bump : (Stats -> Stats) -> Templates -> Templates
 bump f t =
     { t | stats = f t.stats }
 
 
-{-| The per-spec decision ladder. Every arm but the last declines, and every
-decline leaves today's foldr lowering in place.
+{-| Returns `acc` with the map spec `specId` licensed or declined.
+
+Only a definition of a closure with exactly two parameters, the callback and the
+list, goes on to be judged by its callback; anything else is declined as
+`declinedShape`.
+
 -}
 classify : Env -> Int -> Mono.MonoNode -> Templates -> Templates
 classify env specId node acc =
@@ -444,27 +470,20 @@ classify env specId node acc =
         Mono.MonoDefine (MonoClosure closureInfo body _) specType ->
             case closureInfo.params of
                 [ ( callbackName, callbackType ), ( _, listType ) ] ->
-                    -- `resultKind` is the element kind of the spec's RESULT
-                    -- list. The stamped path reads it off the callback's ABI
-                    -- return type instead; the arms that have no stamp (a
-                    -- ctor callee, and G-1's generic apply) need it from the
-                    -- type, and G-0's census needs it to size the pool the
-                    -- generic arm can actually take.
                     classifyBody env specId callbackName callbackType listType (resultElemKind specType) body acc
 
                 _ ->
-                    -- Not the two-parameter `map f xs` shape (a partially
-                    -- applied or arity-raised specialization).
                     bump (\s -> { s | declinedShape = s.declinedShape + 1 }) acc
 
         _ ->
             bump (\s -> { s | declinedShape = s.declinedShape + 1 }) acc
 
 
-{-| The element kind of a two-parameter map spec's result list.
+{-| Returns the slot kind of the elements of the list a map spec returns, read
+from the result of the outermost function stage of `specType`.
 
-`MFunction _ _ _ result` peels the spec's own arrow; `kindOfElement` then
-answers the `List b` element kind, or 0 for anything that is not a list.
+It returns 0, boxed, when `specType` is not a function or that stage's result is
+not a list.
 
 -}
 resultElemKind : Mono.MonoType -> Int
@@ -477,13 +496,21 @@ resultElemKind specType =
             0
 
 
+{-| Returns `acc` with the map spec licensed or declined according to the
+lambda-set annotation on its callback parameter.
+
+An `LTop`, `LVar` or `LPartial` annotation is declined: as `declinedEngine` when
+the member table is empty, and as `declinedWidened` otherwise. A
+single member that is `Clean` goes to `license`. A single member standing for a
+global function or a partial application of one goes to
+`licenseResolvedGlobal`, because only here is the
+callback's type at hand to resolve it with. Any other single member is declined
+under its verdict. Several members go to `licenseGeneric`.
+
+-}
 classifyBody : Env -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> Int -> MonoExpr -> Templates -> Templates
 classifyBody env specId callbackName callbackType listType resultKind body acc =
     let
-        -- Shared by the LTop and LVar arms so the two can never drift.
-        -- Unknown or widened set. Also the whole subst-engine population:
-        -- `headAnno` is never `LSet` there, so subst compiles decline
-        -- uniformly and the counter separates the two causes.
         declineTopLike () =
             if Dict.isEmpty env.info then
                 bump (\s -> { s | declinedEngine = s.declinedEngine + 1 }) acc
@@ -496,13 +523,10 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
             declineTopLike ()
 
         Mono.LVar _ ->
-            -- A variable is as unlicensable as a widened set: the template
-            -- needs a NAMED callback, and a variable names nothing yet.
             declineTopLike ()
 
         Mono.LPartial _ ->
-            -- A lower bound never licenses (lss-lpartial §2): the listed
-            -- members may not be all of them.
+            -- The listed members may not be all of them.
             declineTopLike ()
 
         Mono.LSet [ member ] ->
@@ -511,12 +535,6 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
                     license env specId member callbackName callbackType listType body acc
 
                 PoisonUnresolved UnresolvedGlobal ->
-                    -- G-3: the table cannot answer a `g|` member (a Global is
-                    -- one-to-many over SpecIds), but HERE the callback's own
-                    -- type is in hand, which is exactly what the registry
-                    -- layout match needs. Resolution has to happen at this
-                    -- site rather than inside `standaloneVerdict`, which sees
-                    -- only the origin.
                     licenseResolvedGlobal env specId member callbackType listType acc
 
                 poisoned ->
@@ -526,15 +544,9 @@ classifyBody env specId callbackName callbackType listType resultKind body acc =
             licenseGeneric env specId members listType resultKind acc
 
 
-{-| Record a decline under the cause the verdict names.
+{-| Returns `acc` with one decline counted under the cause `verdict` names.
 
-Shared by the singleton and multi-member paths so a decline reads the same
-whichever set shape produced it — which is what let G-1 retire
-`declinedMultiMember`: after it, the member COUNT is no longer a reason to
-decline, only what the members are.
-
-`Clean` is unreachable here (its callers license instead) and is total for
-exhaustiveness only.
+`Clean` changes nothing; no caller passes it.
 
 -}
 countDecline : Verdict -> Templates -> Templates
@@ -576,19 +588,13 @@ countDecline verdict acc =
                 acc
 
 
-{-| G-1: a multi-member callback set, licensed through the generic arm.
+{-| Returns `acc` with a map spec whose callback may be any of `members`
+licensed as `CalleeGeneric`, or declined.
 
-EVERY member must be `Clean` — the meet runs over all of them, and a member
-the table cannot answer is `PoisonUnresolved`, never `Clean`. The first
-poisoned member's verdict is what the census records.
-
-The `out_kind == 0` precondition is not policy: the expansion derives the
-callback's SSA result type from `out_kind` (`headTypeForKind(ctx,
-op.getOutKind())`) AND stamps the result list's cells with it, while a
-saturated indirect apply yields `!eco.value`. Licensing an unboxed result
-would either mistype the call or build a list whose cells disagree with their
-static element kind — the defect class the kernel `List.sortWith` fix closed.
-Measured 2026-08-15: the restriction costs 1 site of 55.
+Every member must be `Clean`; otherwise the first poisoned member's verdict is
+counted. The result element must also be boxed (`resultKind` 0), or the spec is
+declined as `declinedGenericUnboxed`: an indirect call returns a boxed value, and
+`outKind` would have to describe an unboxed one.
 
 -}
 licenseGeneric : Env -> Int -> List Int -> Mono.MonoType -> Int -> Templates -> Templates
@@ -609,9 +615,6 @@ licenseGeneric env specId members listType resultKind acc =
     case meet of
         Clean ->
             if resultKind == 0 then
-                -- `allocFreeCallbacks` stays 0 for these: with no
-                -- devirtualized callee there is no symbol for CGEN_072's
-                -- gc-leaf stamp to propagate through.
                 licenseWith specId
                     { callee = CalleeGeneric
                     , inKind = kindOfElement listType
@@ -627,22 +630,16 @@ licenseGeneric env specId members listType resultKind acc =
             countDecline poisoned acc
 
 
-{-| The callback is Debug-free; now emission needs a callee it can name.
+{-| Returns `acc` with a map spec whose single callback `member` is `Clean`
+licensed, or declined because no callee can be named.
 
-Two routes, chosen by the member's ORIGIN:
-
-  - A **constructor** member (F-5B) needs no stamp at all. Recognition is
-    registry-origin — `ListCombinators.recognize` admits only elm/core's
-    `List.map` — so the spec's denotation is `map` regardless of what
-    mono-time devirtualization did to its body, and the stamp's ONLY role was
-    ABI discovery. `CalleeCtorSpec` supplies that directly. (This matters
-    because E9 devirt rewrites `f x` into a direct ctor call, destroying the
-    stamp the other route reads: without this arm every bare-ctor callback
-    dead-ends at `declinedNoStamp`.)
-  - Anything else reads the stamp `AbiCloning` already annotated on the `f x`
-    call. No stamp means that pass declined this instance for one of its own
-    reasons (self-capture, args-array convention, non-representative
-    instance) — decline with it.
+A constructor member is licensed as `CalleeSpec` of the constructor's spec at
+the callback's type, with `outKind` 0 because a constructed value is boxed; if
+`resolveSpecFor` finds no unique spec it is declined as
+`declinedSpecUnresolved`. Any other member is licensed as `CalleeLambda` from
+the stamp `findCallbackStamp` finds on the call of the callback in `body`, with
+`outKind` read from the stamped return type, and is declined as
+`declinedNoStamp` when there is none.
 
 -}
 license : Env -> Int -> Int -> Name -> Mono.MonoType -> Mono.MonoType -> MonoExpr -> Templates -> Templates
@@ -651,9 +648,6 @@ license env specId member callbackName callbackType listType body acc =
         Just (LssFacts.MemberStandalone (Mono.OriginCtor ctorGlobal)) ->
             case resolveSpecFor env ctorGlobal callbackType of
                 Just ctorSpecId ->
-                    -- `allocFreeCallbacks` is NOT incremented: constructing a
-                    -- value allocates, by definition. `outKind` is 0 because a
-                    -- constructor's result is always a heap value.
                     licenseWith specId
                         { callee = CalleeSpec ctorSpecId
                         , inKind = kindOfElement listType
@@ -663,11 +657,6 @@ license env specId member callbackName callbackType listType body acc =
                         acc
 
                 Nothing ->
-                    -- Zero or ambiguous layout matches. A separate counter
-                    -- from `declinedNoStamp` on purpose: reusing that one
-                    -- would re-create exactly the conflation F-5A abolished,
-                    -- and a resolution regression would then hide inside a
-                    -- counter with three other causes.
                     bump (\s -> { s | declinedSpecUnresolved = s.declinedSpecUnresolved + 1 }) acc
 
         _ ->
@@ -690,6 +679,9 @@ license env specId member callbackName callbackType listType body acc =
                         acc
 
 
+{-| Returns `acc` with `info` recorded for `specId`, `licensed` raised by one and
+`allocFreeCallbacks` raised by `allocFreeInc`.
+-}
 licenseWith : Int -> Info -> Int -> Templates -> Templates
 licenseWith specId info allocFreeInc acc =
     { bySpec = Dict.insert specId info acc.bySpec
@@ -705,18 +697,15 @@ licenseWith specId info allocFreeInc acc =
     }
 
 
-{-| G-3: a bare GLOBAL used as the callback (`List.map untag`).
+{-| Returns `acc` with a map spec whose single callback `member` stands for a
+global function licensed as `CalleeSpec`, or declined.
 
-Two conditions, and the second is what makes this a licence rather than a
-guess: the registry layout match must be UNIQUE (`resolveSpecFor` declines
-zero-or-ambiguous, copying `LssFacts.matchGlobal`'s discipline), and the
-resolved spec must be one the purity oracle vouches for. A resolved-but-
-unvouched spec is `PoisonOpaqueGlobal` — resolving a SpecId proves WHICH code
-runs, never that it is `Debug`-free.
-
-`allocFreeCallbacks` is not incremented: whether the resolved spec allocates
-is `allocationFree`'s question and it has no instance index entry to answer
-from.
+The global is resolved to one spec at the callback's type by `resolveSpecFor`,
+and declined as `declinedSpecUnresolved` when there is no unique match. Knowing
+which spec runs is not knowing it is Debug-free, so the spec must also be in
+`safeSpecs`, or it is declined as `declinedOpaqueGlobal`. A member that stands
+for a partial application rather than a bare global is declined as an
+unresolved member.
 
 -}
 licenseResolvedGlobal : Env -> Int -> Int -> Mono.MonoType -> Mono.MonoType -> Templates -> Templates
@@ -744,13 +733,8 @@ licenseResolvedGlobal env specId member callbackType listType acc =
             countDecline (PoisonUnresolved UnresolvedGlobal) acc
 
 
-{-| The element kind the callback RETURNS, read off its own arrow.
-
-A constructor always yields a heap value, so F-5B pins `outKind = 0`; a global
-spec may return an unboxed scalar, and `out_kind` drives both the callback's
-SSA result type and the result list's cell kind in the expansion, so it must
-be the truth.
-
+{-| Returns the slot kind of the callback's result, read from the result of its
+outermost function stage, or 0 when `callbackType` is not a function.
 -}
 resultKindOfCallback : Mono.MonoType -> Int
 resultKindOfCallback callbackType =
@@ -762,19 +746,13 @@ resultKindOfCallback callbackType =
             0
 
 
-{-| Which SpecId IS this global, at this callback's type?
+{-| Returns the one spec in the registry for the global `ctorGlobal` whose type
+has the same layout (`Mono.eqLayout`) as `callbackType`, or `Nothing` when no
+spec or more than one matches.
 
-Constructors are registered at their FULL function type
-(`Translate.elm`'s ctor registration), so a layout match against the
-callback parameter's own type zero-matches any non-unary ctor — **the unary
-match IS the arity proof**, and no TOpt access is needed here (GlobalOpt has
-none). The same match serves G-3's globals. The type compared is
-`callbackType` itself, never a re-derived `elemType -> resultType`:
-`callbackType` is what the body's devirtualization registered, so the two
-cannot drift after a registry join rewrites the stored entry.
-
-`eqLayout` is name-sensitive for `MCustom`, so an ambiguous match is
-effectively impossible; it is still rejected rather than guessed.
+A constructor's specs are registered at the constructor's whole function type,
+so a constructor taking more than one argument does not match a one-argument
+callback type.
 
 -}
 resolveSpecFor : Env -> Mono.Global -> Mono.MonoType -> Maybe Int
@@ -805,9 +783,15 @@ resolveSpecFor env ctorGlobal callbackType =
             Nothing
 
 
-{-| Find the saturated, exactly-stamped application of the callback parameter
-inside the map body. Mirrors `Expr.fastDispatchStamp`'s admissibility test so
-emission and licence cannot disagree about what "devirtualized" means.
+{-| Returns the lambda id and capture ABI stamped on the first call in `root`, in
+traversal order, that applies the local `callbackName` to one argument and
+carries a usable stamp.
+
+A usable stamp names a lambda (`fastEvaluator`) and a capture ABI with one
+parameter, and has no partial-application prefix and no `fastEvaluatorSpec`.
+A call stamped with a `fastEvaluatorSpec` is skipped because its instance is
+emitted under the spec's name, and `CalleeLambda` names it by its lambda id.
+
 -}
 findCallbackStamp : Name -> MonoExpr -> Maybe ( Mono.LambdaId, Mono.CaptureABI )
 findCallbackStamp callbackName root =
@@ -827,10 +811,6 @@ findCallbackStamp callbackName root =
                                             if
                                                 (name == callbackName)
                                                     && (callInfo.fastPapPrefix == Nothing)
-                                                    -- LSS_031: this template renders the callee
-                                                    -- with `lambdaIdToString`. An instance emitted
-                                                    -- under its SPEC name has no such symbol, so
-                                                    -- decline rather than name a missing function.
                                                     && (callInfo.fastEvaluatorSpec == Nothing)
                                                     && (List.length args == 1)
                                                     && (List.length abi.paramTypes == 1)
@@ -860,25 +840,26 @@ findCallbackStamp callbackName root =
 -- DEBUG-FREEDOM (the shared walker, the member table, and the taint rule)
 
 
-{-| Why a member is not licensable, or `Clean`.
+{-| The verdict on whether a lambda-set member, or a body being walked, is
+proven Debug-free, and if not, why not.
 
-`PoisonOpaqueGlobal` **conflates two causes** and the boolean `CsePurity`
-oracle cannot distinguish them: a global that genuinely reaches `Debug.*`
-transitively, and a global starved out of `safeSpecs` by the bodiless-spec
-hole (`CsePurity` cannot summarize a spec whose body it never sees, so ctor /
-enum / accessor-backed specs are absent and every caller of one is poisoned).
-On the current self-compile corpus the split is 100% starvation — the Stage-5
-artifact contains zero `Elm_Kernel_Debug_log`/`_todo` symbols (measured
-2026-08-14) — so no member here reaches `Debug` at all. The split becomes
-exact only with `plans/effect-polymorphic-purity.md`'s cause tag; do NOT
-"fix" `CsePurity` from this module, which is behaviour-changing and belongs
-to that plan.
+`PoisonDebug` is a reference to a `Debug` kernel in a walked body, a member that
+stands for a `Debug` kernel, or either of these reached along an edge in the
+member table.
 
-`PoisonArgTaint` is F-4's: a function VALUE of unprovable provenance reached
-an argument position, where a callee this walk cannot see may apply it. It
-carries its cause because the landing gate for that rule is a per-decline
-classification — genuine (provenance really is unprovable) vs collateral (a
-gap in the shape-dispatch rows) — and a bare counter cannot answer it.
+`PoisonOpaqueGlobal` is a global spec outside `CsePurity`'s `safeSpecs`. That
+covers a spec that really reaches `Debug` and one `CsePurity` cannot vouch for,
+such as an external or effect-manager spec, and the oracle does not tell them
+apart.
+
+`PoisonHigherOrder` is a call whose callee is a function value not proven
+Debug-free: a local whose lambda set is not fully listed, or another expression
+shape the walk does not trust.
+
+`PoisonArgTaint` is a function value passed as an argument that is not proven
+Debug-free, since the callee may apply it.
+
+`PoisonUnresolved` is a member the table has no verdict for.
 
 -}
 type Verdict
@@ -890,16 +871,20 @@ type Verdict
     | PoisonUnresolved UnresolvedCause
 
 
-{-| Why an argument's provenance could not be proven.
+{-| Why a function-valued argument could not be proven Debug-free.
 
-  - `ArgLTop` — the value's arrow annotation is `LTop`: the set is unknown, so
-    nothing can be proven about what it holds.
-  - `ArgOpaqueGlobal` — a global VALUE outside `safeSpecs` (the `CsePurity`
-    bodiless-spec starvation, mostly).
-  - `ArgMemberPoison` — the annotation resolved to members, and one of them is
-    poison; the recorded standalone limitation (`OriginGlobal` members are
-    unresolvable here) lands in this bucket too.
-  - `ArgClosurePoison` — an inline lambda argument whose own body is poison.
+`ArgLTop` is an argument whose type contains a function whose lambda set is
+`LTop`, `LVar` or `LPartial`, or a type variable, which might stand for a
+function.
+
+`ArgOpaqueGlobal` is a global spec outside `safeSpecs`.
+
+`ArgMemberPoison` is a listed member that is poisoned, including one standing
+for a global function, which the member table never resolves. Any poison other
+than `PoisonDebug` that reaches a member along one of its argument edges is
+also counted here.
+
+`ArgClosurePoison` is an inline lambda whose body is poisoned.
 
 -}
 type ArgCause
@@ -909,13 +894,12 @@ type ArgCause
     | ArgClosurePoison
 
 
-{-| Why a resolved singleton's member could not be answered.
+{-| Why the member table has no verdict for a member.
 
-`declinedUnresolvedMember` is a THREE-way funnel and only one slice is
-addressable: `UnresolvedGlobal` names a `g|` member whose Global could be
-layout-matched to a SpecId (G-3), whereas a blocked member has no scannable
-instance and a miss has neither instance nor origin. Splitting them is what
-decides whether that resolution work is worth building.
+`UnresolvedBlocked` is a member `LssFacts` records as `MemberBlocked`.
+`UnresolvedGlobal` is a member standing for a global function or a partial
+application of one; a global has a spec per type, and the table has no type to
+choose one by. `UnresolvedMissing` is a member absent from the table.
 
 -}
 type UnresolvedCause
@@ -924,14 +908,11 @@ type UnresolvedCause
     | UnresolvedMissing
 
 
-{-| Which untrusted callee shape poisoned the member.
+{-| Which kind of untrusted callee caused a `PoisonHigherOrder`.
 
-The distinction is a go/no-go instrument, not a decision input: `HOLocalLSet`
-is the only kind lambda-set-directed callee resolution could ever recover
-(the callee local's type names a resolvable member set), so its size decides
-whether that resolution is worth building at all. Measured 2026-08-14 at
-budget 64: LSet 1, LTop 3, Other 0 — ⊤-through-locals dominates, exactly as
-the LSS census predicted.
+`HOLocalLTop` is a local whose lambda set is `LTop`, `LVar` or `LPartial`.
+`HOOther` is any callee expression the walk does not recognize as trusted. The
+two only choose the census counter.
 
 -}
 type HOKind
@@ -939,15 +920,12 @@ type HOKind
     | HOOther
 
 
-{-| The two positions where a walk meets a lambda SET, hooked so that ONE
-walker serves both consumers.
+{-| What `scanWith` does on meeting a fully listed lambda set, given its member
+ids: `calleeSet` for a local in callee position, `argSet` for an argument.
 
-`scanDirect` (the member-table builder) cannot consult a table that is not
-built yet, so its hooks record EDGES and let the settle pass resolve them.
-The licence walk's hooks resolve against the settled table instead. The
-argument-taint discipline lives in the walker itself, so it cannot be
-present in one consumer and absent in the other — the failure mode the
-F-3/F-4 joint-architecture section exists to prevent.
+The only hooks value is `deferHooks`, used to build the member table. Its hooks
+answer `Clean` and record the members as edges, because the table they would be
+looked up in does not exist yet.
 
 -}
 type alias Hooks =
@@ -956,14 +934,10 @@ type alias Hooks =
     }
 
 
-{-| Deferred dependencies of a member, kept SEPARATE by position.
+{-| The members a scanned body depends on, by the position it met them in.
 
-Callee edges propagate their verdict verbatim. Argument edges propagate as
-`PoisonArgTaint` unless the edge is genuine `Debug` reachability, so the
-counter that names F-4's new declines actually counts them — an
-undifferentiated edge set would scatter them across whichever bucket the
-depended-on member happened to land in, and the regression-enumeration gate
-reads that counter.
+`settle` passes a callee edge's poison on unchanged, and an argument edge's as
+`PoisonArgTaint ArgMemberPoison` unless it is `PoisonDebug`.
 
 -}
 type alias Edges =
@@ -972,17 +946,22 @@ type alias Edges =
     }
 
 
+{-| The empty set of edges.
+-}
 noEdges : Edges
 noEdges =
     { callee = Set.empty, arg = Set.empty }
 
 
+{-| Returns the edges of `a` and `b` together, position by position.
+-}
 unionEdges : Edges -> Edges -> Edges
 unionEdges a b =
     { callee = Set.union a.callee b.callee, arg = Set.union a.arg b.arg }
 
 
-{-| Table-building hooks: never resolve, always defer to edges.
+{-| The hooks for building the member table: each answers `Clean` and records
+the set's members as edges of its position.
 -}
 deferHooks : Hooks
 deferHooks =
@@ -991,18 +970,22 @@ deferHooks =
     }
 
 
+{-| A `Clean` verdict with no edges.
+-}
 clean : ( Verdict, Edges )
 clean =
     ( Clean, noEdges )
 
 
+{-| Returns verdict `v` with no edges.
+-}
 poison : Verdict -> ( Verdict, Edges )
 poison v =
     ( v, noEdges )
 
 
-{-| First poison wins; edges always union (a poisoned member's edges are
-simply never read).
+{-| Returns the first verdict unless it is `Clean`, in which case the second,
+together with the edges of both.
 -}
 mergeInto : ( Verdict, Edges ) -> ( Verdict, Edges ) -> ( Verdict, Edges )
 mergeInto ( v1, e1 ) ( v2, e2 ) =
@@ -1015,25 +998,15 @@ mergeInto ( v1, e1 ) ( v2, e2 ) =
     )
 
 
-{-| The shared walk over one lambda body.
+{-| Returns the verdict on `root`, with the edges the hooks recorded.
 
-Component 1 supplies the verdict for `MonoVarGlobal` edges (the transitive
-`CsePurity` fixpoint). Component 3 is the `MonoCall` arm, which asks two
-independent questions:
-
-1.  **Callee position** — applying anything that is not a resolved global /
-    kernel / ctor / accessor is poison, because the applied value could be a
-    captured `Debug`-wrapping function.
-2.  **Argument position** (F-4) — a call may also LAUNDER such a function by
-    handing it to a callee that applies it. `List.sortWith` is the canonical
-    case: the callee is a trusted kernel, and the poison rides in as an
-    argument. Every argument whose type contains an arrow must therefore be
-    provably `Debug`-free as a VALUE.
-
-The order inside the arm is PINNED: the ordinary argument recursion runs
-first and the taint check only if the fold is still `Clean`, so pre-existing
-decline labels are unchanged and `declinedArgTaint` counts exactly the NEW
-declines — which is what the regression-enumeration gate assumes.
+The walk stops at the first poison, which decides the verdict: a `Debug` kernel
+gives `PoisonDebug`, a global spec outside `safeSpecs` gives
+`PoisonOpaqueGlobal`. A closure's capture expressions are not walked. At a
+call, the callee position is judged by `calleeVerdict`, the callee and arguments
+are walked, and only if all of that is `Clean` is each argument checked for
+argument taint by `argTaint`. So a call whose arguments are poisoned in their
+own right is declined under that poison, not as argument taint.
 
 -}
 scanWith : CsePurity.Oracle -> Hooks -> MonoExpr -> ( Verdict, Edges )
@@ -1058,10 +1031,8 @@ scanWith purity hooks root =
                             acc
 
                         else
-                            -- NOT `PoisonDebug`: absence from `safeSpecs`
-                            -- means the oracle could not PROVE freedom, which
-                            -- on this corpus is entirely bodiless-spec
-                            -- starvation. See `Verdict`.
+                            -- Not `PoisonDebug`: outside `safeSpecs` means only
+                            -- "not proven Debug-free". See `Verdict`.
                             mergeInto acc (poison PoisonOpaqueGlobal)
 
                     MonoCall _ func args _ _ ->
@@ -1084,12 +1055,14 @@ scanWith purity hooks root =
     go root clean
 
 
-{-| May this call's callee position be trusted, and with what verdict?
+{-| Returns the verdict on the expression in a call's callee position.
 
-`MonoVarLocal` is a function-typed parameter or capture. Its TYPE names the
-lambda set it can hold, so the hook decides: the table builder records the
-set as edges, and the licence walk either resolves it through the settled
-table or declines it as an untrusted higher-order callee.
+A global in `safeSpecs`, a kernel other than `Debug`, and a record accessor are
+`Clean`. A local is judged by its lambda set: a fully listed set goes to the
+`calleeSet` hook, and any other set is `PoisonHigherOrder HOLocalLTop`. An
+inline lambda applied directly is judged by walking its body, and a call in
+callee position by its own callee. Anything else is
+`PoisonHigherOrder HOOther`.
 
 -}
 calleeVerdict : CsePurity.Oracle -> Hooks -> MonoExpr -> ( Verdict, Edges )
@@ -1121,31 +1094,25 @@ calleeVerdict purity hooks func =
                     poison (PoisonHigherOrder HOLocalLTop)
 
                 Mono.LVar _ ->
-                    -- Same verdict as LTop: an unnamed higher-order local.
                     poison (PoisonHigherOrder HOLocalLTop)
 
                 Mono.LPartial _ ->
-                    -- A lower bound admits unknown inhabitants (lss-lpartial
-                    -- §2) — same verdict as LTop for the template's purposes.
                     poison (PoisonHigherOrder HOLocalLTop)
 
         MonoClosure _ body _ ->
-            -- An immediately-applied lambda: its captures resolve against the
-            -- table through their own annotations, by the same walk.
             scanWith purity hooks body
 
         MonoCall _ inner _ _ _ ->
-            -- Over-application of something already trusted stays trusted;
-            -- the inner callee carries the real question.
+            -- The result of a call is applied again; the inner call's own
+            -- arguments are walked separately by `scanWith`.
             calleeVerdict purity hooks inner
 
         _ ->
             poison (PoisonHigherOrder HOOther)
 
 
-{-| F-4: an argument whose type contains an arrow must be provably
-`Debug`-free as a VALUE, or the call may launder it into an application this
-walk never sees.
+{-| Returns `acc` joined with the argument-taint verdict on `arg`, when `acc` is
+still `Clean` and the type of `arg` contains a function.
 -}
 argTaint : CsePurity.Oracle -> Hooks -> MonoExpr -> ( Verdict, Edges ) -> ( Verdict, Edges )
 argTaint purity hooks arg acc =
@@ -1161,13 +1128,15 @@ argTaint purity hooks arg acc =
                 mergeInto acc (argProvenance purity hooks arg annos)
 
 
-{-| Is this argument provably `Debug`-free as a value?
+{-| Returns the verdict on a function-valued argument, given the lambda-set
+annotations `annos` found in its type.
 
-**Shape dispatch runs BEFORE the annotation route, and that order is
-load-bearing**: `typeOf` on a statically known clean global can still carry
-an `LTop` annotation, and LTop is ~89% of zonked arrows on this corpus, so
-without the shape rows every callback that passes a named function to a HOF
-would mass-decline. `ListMapTemplateCleanHofTest.elm` is that pin.
+The argument's shape is tried first: a global in `safeSpecs`, a kernel other
+than `Debug` and a record accessor are `Clean`, and an inline lambda is judged by
+walking its body. Only another shape is judged by `annos`, where any set not
+fully listed is `ArgLTop` and a fully listed one goes to the `argSet` hook. The
+order matters because the type of a global's reference can carry an `LTop`
+annotation even when the global is in `safeSpecs`.
 
 -}
 argProvenance : CsePurity.Oracle -> Hooks -> MonoExpr -> List Mono.LambdaSetAnno -> ( Verdict, Edges )
@@ -1210,13 +1179,9 @@ argProvenance purity hooks arg annos =
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LVar _ ->
-                                -- Same taint as LTop: the argument carries an
-                                -- arrow whose inhabitants are not named yet.
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LPartial _ ->
-                                -- Lower bound: unknown inhabitants may exist
-                                -- (lss-lpartial §2) — same taint as LTop.
                                 ( PoisonArgTaint ArgLTop, Tuple.second acc )
 
                             Mono.LSet ms ->
@@ -1236,16 +1201,12 @@ argProvenance purity hooks arg annos =
                 annos
 
 
-{-| Every lambda-set annotation reachable through a type's ARROWS.
+{-| Returns the lambda-set annotations of the function types found in `ty`.
 
-`MCustom` recurses its TYPE ARGUMENTS — which is NOT field coverage: a
-function stored in a concrete field (`type Wrap = Wrap (Int -> Int)`) is
-invisible here. That residual is recorded in the F-4 landing note; closing it
-needs ctor-shape metadata (or the purity plan, which closes it structurally
-for global callees).
-
-`MVar` answers `LTop`: erased polymorphism can hide an arrow, so a type
-variable must be treated as if it might be one.
+Function parameters and results, list elements, tuple elements, record fields
+and the type arguments of a custom type are searched. The fields of a custom
+type are not, so a function held in a field of a type with no type arguments is
+not found. A type variable gives `LTop`, because it may stand for a function.
 
 -}
 arrowAnnos : Mono.MonoType -> List Mono.LambdaSetAnno
@@ -1277,18 +1238,21 @@ arrowAnnos ty =
 -- THE MEMBER-VERDICT TABLE
 
 
+{-| A member's verdict from its own scan, before `settle`, with the members it
+depends on.
+-}
 type alias Entry =
     { verdict : Verdict
     , edges : Edges
     }
 
 
-{-| Every lambda-set member's verdict, settled.
+{-| Returns the settled verdict for every member in `info`.
 
-Instance members are scanned with the deferring hooks (their callee/argument
-sets become EDGES); standalone members resolve immediately from their origin;
-blocked members are unresolvable. The settle pass then propagates poison
-along the edges to a fixed point.
+A lambda member's instances are scanned with `deferHooks`. A member that is not
+a lambda gets its verdict from what it stands for, and a blocked member is
+`PoisonUnresolved UnresolvedBlocked`. `settle` then spreads poison along the
+edges.
 
 -}
 buildVerdictTable : CsePurity.Oracle -> Dict Int LssFacts.MemberInfo -> Dict Int Verdict
@@ -1310,7 +1274,8 @@ buildVerdictTable purity info =
         )
 
 
-{-| Every instance of a member must be clean: first-poison meet, edge union.
+{-| Returns the entry for a lambda member with instances `refs`: the first
+poisoned instance's verdict, or `Clean`, with the edges of all of them.
 -}
 combineInstances : CsePurity.Oracle -> List LssFacts.LambdaRef -> Entry
 combineInstances purity refs =
@@ -1333,12 +1298,14 @@ combineInstances purity refs =
         refs
 
 
-{-| Standalone member: global / kernel / ctor / accessor.
+{-| Returns the verdict for a member that is not a lambda, from what it stands
+for.
 
-`OriginGlobal` is unresolvable HERE: a global member is one-to-many over
-SpecIds and this module has no layout-matching index, so resolving it would
-duplicate `LssFacts.matchGlobal`'s machinery. Recorded limitation — a
-`let f = someGlobal in … f x` callback still declines.
+A `Debug` kernel is `PoisonDebug`; any other kernel, a constructor and a record
+accessor are `Clean`. A global function, or a partial application of one, is
+`PoisonUnresolved UnresolvedGlobal`: a global has a spec per type and the origin
+carries no type to choose one by. `classifyBody` resolves such a member only
+when it is a map spec's single callback.
 
 -}
 standaloneVerdict : Mono.MemberOrigin -> Verdict
@@ -1361,20 +1328,23 @@ standaloneVerdict origin =
             PoisonUnresolved UnresolvedGlobal
 
         Mono.OriginPap _ _ ->
-            -- Same verdict as OriginGlobal and for the same reason: the
-            -- template cannot tell whether the underlying global's body
-            -- reaches Debug.
             PoisonUnresolved UnresolvedGlobal
 
 
-{-| Propagate poison along the edges to a fixed point.
+{-| Returns the verdicts after spreading poison along the edges until nothing
+changes.
 
-A `Clean` member with an edge to a non-`Clean` member takes that member's
-verdict; a `PoisonDebug` edge wins over any other poison, so `declinedDebug`
-keeps naming genuine `Debug` reachability. Verdicts only ever move from
-`Clean` to poison over a finite map, so this terminates structurally and
-cycles need no special handling: mutually-recursive clean members correctly
-stay clean unless poison actually reaches them.
+A `Clean` member with an edge to a poisoned member takes that member's poison:
+unchanged along a callee edge, and as `PoisonArgTaint ArgMemberPoison` along an
+argument edge unless it is `PoisonDebug`. An edge to a member with no entry
+counts as `PoisonUnresolved UnresolvedMissing`. When a member's edges lead to
+several poisons in one pass, `PoisonDebug` is preferred, otherwise the first
+found. A member already poisoned is never changed, so a later pass that finds
+`PoisonDebug` behind it does not replace its verdict. Members in a cycle with no
+poison reaching them stay `Clean`.
+
+Each pass that changes anything poisons at least one more member, so the pass
+count is bounded by the number of members.
 
 -}
 settle : Dict Int Entry -> Dict Int Verdict
@@ -1406,11 +1376,6 @@ settle entries =
                 start
                 edges
 
-        {- An ARGUMENT edge's poison is F-4's decline, whatever the
-           depended-on member's own cause was — except genuine `Debug`
-           reachability, which keeps its own name so `declinedDebug` stays
-           honest (the F-1L rule).
-        -}
         asArgTaint : Verdict -> Verdict
         asArgTaint v =
             if v == PoisonDebug then
@@ -1458,12 +1423,8 @@ settle entries =
     loop (Dict.map (\_ entry -> entry.verdict) entries) (Dict.size entries + 1)
 
 
-{-| Is every reachable evaluation of this lambda-set member `Debug`-free?
-
-A lookup in the settled table. A member absent from it has no instance index
-entry and no origin, so it is unresolvable: the licence is a proof
-obligation, and "cannot tell" is a decline.
-
+{-| Returns the settled verdict for `member`, or
+`PoisonUnresolved UnresolvedMissing` when the table has none.
 -}
 debugFreedom : Env -> Int -> Verdict
 debugFreedom env member =
@@ -1471,22 +1432,14 @@ debugFreedom env member =
 
 
 
--- ALLOCATION-FREEDOM (Phase 0.2 second axis; census only)
+-- ALLOCATION-FREEDOM (census only)
 
 
-{-| Does every instance of this callback member avoid allocating?
+{-| Returns whether `member` is a lambda member with at least one instance and
+no instance body that `noAllocIn` finds allocating.
 
-The callback's body is NOT reachable from the map spec's own body — the lambda
-lives at the call site — so this resolves it through the member index, the same
-channel the licence walk uses.
-
-Cheap syntactic approximation of the mono cost model's `CAlloc` oracle, used
-ONLY to size the statepoint-free-loop pool (Goal 3) in the census. Nothing in
-emission or expansion consults it — the gc-leaf stamp is CGEN\_072's business
-(clause (a)'s poison list is authoritative) and the template never queries it.
-It is an under-approximation in both directions: it does not see allocation
-inside called globals, and it counts an `eco.box` of a projected scalar as
-allocation-free. The near-exact figure is the backend's `calleeGcLeaf` counter.
+It is used only for the `allocFreeCallbacks` count. It is a syntactic
+approximation: allocation inside a called function is not seen.
 
 -}
 allocationFree : Env -> Int -> Bool
@@ -1499,6 +1452,9 @@ allocationFree env member =
             False
 
 
+{-| Returns whether `root` contains no list literal, record creation or update,
+tuple creation or closure.
+-}
 noAllocIn : MonoExpr -> Bool
 noAllocIn root =
     let
@@ -1530,12 +1486,11 @@ noAllocIn root =
 
 
 
--- KINDS (REP_BOUNDARY_002/003)
+-- KINDS
 
 
-{-| The 2-bit slot kind implied by a mono type. Int/Float/Char are the only
-unboxed kinds; everything else — Bool included, per FORBID\_CLOSURE\_001 — is
-the boxed kind 0. Never a boolean "is unboxed".
+{-| Returns the slot kind of a value of type `ty`: 1 for Int, 2 for Float, 3 for
+Char, and 0, boxed, for everything else, Bool included.
 -}
 kindOf : Mono.MonoType -> Int
 kindOf ty =
@@ -1553,7 +1508,8 @@ kindOf ty =
             0
 
 
-{-| The element kind of a `List a`, or boxed when the type is not a list.
+{-| Returns the slot kind of the elements of a list type, or 0, boxed, when `ty`
+is not a list.
 -}
 kindOfElement : Mono.MonoType -> Int
 kindOfElement ty =
@@ -1569,9 +1525,13 @@ kindOfElement ty =
 -- TRAVERSAL
 
 
-{-| Fold over DIRECT sub-expressions. Exhaustive on purpose: a new `MonoExpr`
-constructor must break this compile rather than be silently skipped, which for
-a Debug-freedom PROOF would be an unsound-optimistic answer.
+{-| Returns `acc` folded with `f` over the direct sub-expressions of `expr`,
+except a closure's capture expressions, which are not visited.
+
+The case has no wildcard, so a new `MonoExpr` constructor fails to compile here
+rather than having its sub-expressions skipped, which would let a Debug kernel
+inside them go unseen.
+
 -}
 foldChildren : (MonoExpr -> a -> a) -> a -> MonoExpr -> a
 foldChildren f acc expr =
@@ -1633,6 +1593,9 @@ foldChildren f acc expr =
             List.foldl f acc items
 
 
+{-| Returns `acc` folded with `f` over the expressions inlined in the leaves of a
+decision tree.
+-}
 foldDecider : (MonoExpr -> a -> a) -> a -> Mono.Decider Mono.MonoChoice -> a
 foldDecider f acc decider =
     case decider of
@@ -1651,6 +1614,8 @@ foldDecider f acc decider =
                 fallback
 
 
+{-| Returns the expression a `let` definition binds.
+-}
 defBound : Mono.MonoDef -> MonoExpr
 defBound def =
     case def of

@@ -4,10 +4,19 @@ module Compiler.Reporting.Error exposing
     , toJson, moduleEncoder, moduleDecoder
     )
 
-{-| Error reporting infrastructure for the Elm compiler.
+{-| A module can fail to compile in any of several phases, and each phase has its
+own error type; this module gathers them into one `Error` so that a failed build
+can be shown, exported and cached the same way whichever phase failed.
 
-This module defines the core error types that can arise during compilation
-and provides functions to format them for display or serialize them for caching.
+`Module` pairs an `Error` with what is needed to report it: the module's name,
+its absolute path, its modification time and its full source text. The source is
+kept because a report quotes the lines it is about.
+
+Every phase's error becomes one or more reports, each a title, a source region
+and a message (see `Compiler.Reporting.Report`). Those reports are then shown in
+two ways: `toDoc` lays them out for a terminal, and `toJson` turns them into JSON.
+Separately, `moduleEncoder` and `moduleDecoder` store the failed `Module` in
+binary so that it can be reported again without recompiling.
 
 
 # Error Types
@@ -57,10 +66,10 @@ import Utils.Main as Utils
 -- ====== Module Errors ======
 
 
-{-| Represents a module that failed to compile, along with its error context.
+{-| A module that failed, with what is needed to report its failure.
 
-Contains the module name, file path, modification time, source code, and the
-specific error that occurred during compilation.
+`source` is the whole text of the module, from which reports quote lines.
+`modificationTime` decides the order in which `toDoc` lists failing modules.
 
 -}
 type alias Module =
@@ -72,17 +81,28 @@ type alias Module =
     }
 
 
-{-| Errors that can occur during different phases of compilation.
+{-| Why one module failed, named by the phase that rejected it.
 
-Each variant corresponds to a specific compiler phase:
+`BadSyntax` holds the one syntax error that stopped the module, as
+`Compiler.Reporting.Error.Syntax` describes; not all of them come from the
+parser itself.
 
-  - `BadSyntax` - Parse errors in source code
-  - `BadImports` - Problems resolving imports
-  - `BadNames` - Name resolution and canonicalization errors
-  - `BadTypes` - Type checking errors
-  - `BadMains` - Invalid main function definitions
-  - `BadPatterns` - Non-exhaustive pattern matches
-  - `BadDocs` - Malformed documentation comments
+`BadImports` holds the problems found with the module's imports.
+
+`BadNames` holds the errors found while canonicalizing, that is, while resolving
+every name to its definition.
+
+`BadTypes` holds the type errors, with the `Localizer` their reports use to
+print type names.
+
+`BadMains` holds the problems with the module's `main` value, with a `Localizer`
+for the same purpose.
+
+`BadPatterns` holds both missing and redundant patterns in case expressions and
+other pattern matches.
+
+`BadDocs` holds the one problem found when the build checks a module's
+documentation, which it does only when the documentation is needed.
 
 -}
 type Error
@@ -97,9 +117,10 @@ type Error
 
 
 -- ====== Report Generation ======
--- Converts an Error to one or more Report objects for display.
 
 
+{-| Returns the reports for `err`, quoting lines from `source`.
+-}
 toReports : Code.Source -> Error -> NE.Nonempty Report.Report
 toReports source err =
     case err of
@@ -129,10 +150,12 @@ toReports source err =
 -- ====== Document Formatting ======
 
 
-{-| Format compilation errors for terminal display.
+{-| Lays out the reports of every failing module for a terminal.
 
-Sorts modules by modification time and formats each error with a visual
-separator. Returns a Doc that can be rendered with color to the terminal.
+The modules are listed in order of modification time, oldest first. Each report
+is headed by a bar holding its title and the module's path, made relative to
+`root`, and consecutive modules are divided by a red line naming the module
+above and the module below.
 
 -}
 toDoc : String -> Module -> List Module -> D.Doc
@@ -152,6 +175,9 @@ toDoc root err errs =
     D.vcat (toDocHelp root m ms)
 
 
+{-| Returns the documents for `module1` and `modules` in order, with a separator
+between consecutive modules and an empty line at the end.
+-}
 toDocHelp : String -> Module -> List Module -> List D.Doc
 toDocHelp root module1 modules =
     case modules of
@@ -166,6 +192,9 @@ toDocHelp root module1 modules =
                 :: toDocHelp root module2 otherModules
 
 
+{-| Returns the red divider between two modules, naming `beforeModule` above
+the line, right-aligned to 80 columns, and `afterModule` below it.
+-}
 toSeparator : Module -> Module -> D.Doc
 toSeparator beforeModule afterModule =
     let
@@ -191,6 +220,9 @@ toSeparator beforeModule afterModule =
 -- ====== MODULE TO DOC ======
 
 
+{-| Returns every report of one module, each headed by its path relative to
+`root`.
+-}
 moduleToDoc : String -> Module -> D.Doc
 moduleToDoc root { absolutePath, source, error } =
     let
@@ -205,6 +237,8 @@ moduleToDoc root { absolutePath, source, error } =
     List.map (reportToDoc relativePath) (NE.toList reports) |> D.vcat
 
 
+{-| Returns one report under its message bar, followed by an empty line.
+-}
 reportToDoc : String -> Report.Report -> D.Doc
 reportToDoc relativePath (Report.Report props) =
     D.vcat
@@ -215,6 +249,10 @@ reportToDoc relativePath (Report.Report props) =
         ]
 
 
+{-| Returns the cyan heading line of a report: `--`, the title, a run of dashes
+and the file path, padded to 80 columns when they fit and with at least one dash
+when they do not.
+-}
 toMessageBar : String -> String -> D.Doc
 toMessageBar title filePath =
     let
@@ -237,11 +275,8 @@ toMessageBar title filePath =
 -- ====== JSON Serialization ======
 
 
-{-| Serialize a module's errors to JSON format.
-
-Produces a JSON object with the module path, name, and a list of problems.
-Used by editor integrations and build tools to consume compiler errors.
-
+{-| Returns a JSON object for one failing module: its absolute `path`, its
+`name`, and its reports as `problems`, each in the form `reportToJson` gives.
 -}
 toJson : Module -> E.Value
 toJson { name, absolutePath, source, error } =
@@ -257,11 +292,9 @@ toJson { name, absolutePath, source, error } =
         ]
 
 
-{-| Convert a single report to JSON format.
-
-Produces a JSON object with the error title, source region (line/column positions),
-and formatted message. Used by `toJson` to serialize individual error reports.
-
+{-| Returns a JSON object for one report: its `title`, its `region` as `start`
+and `end` positions of `line` and `column`, and its `message` in the form
+`Compiler.Reporting.Doc.encode` gives.
 -}
 reportToJson : Report.Report -> E.Value
 reportToJson (Report.Report props) =
@@ -272,6 +305,8 @@ reportToJson (Report.Report props) =
         ]
 
 
+{-| Returns `region` as JSON `start` and `end` objects of `line` and `column`.
+-}
 encodeRegion : A.Region -> E.Value
 encodeRegion (A.Region (A.Position sr sc) (A.Position er ec)) =
     E.object
@@ -294,7 +329,8 @@ encodeRegion (A.Region (A.Position sr sc) (A.Position er ec)) =
 -- ====== Binary Serialization ======
 
 
-{-| Encode a module's error for binary caching.
+{-| Produces the binary encoding of a failed module, which `moduleDecoder`
+reads back.
 -}
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder modul =
@@ -307,7 +343,7 @@ moduleEncoder modul =
         ]
 
 
-{-| Decode a module's error from binary cache.
+{-| A decoder for a failed module as `moduleEncoder` writes it.
 -}
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
@@ -319,6 +355,9 @@ moduleDecoder =
         errorDecoder
 
 
+{-| Produces the binary encoding of `error`: a one-byte tag numbering the
+constructor in declaration order, from 0, followed by its contents.
+-}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
     case error of
@@ -367,6 +406,9 @@ errorEncoder error =
                 ]
 
 
+{-| A decoder for an `Error` as `errorEncoder` writes it, failing on an unknown
+tag.
+-}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
     Bytes.Decode.unsignedInt8

@@ -1,13 +1,13 @@
 module Compiler.Generate.CodeGen.JavaScript exposing (backend)
 
-{-| JavaScript code generation backend.
+{-| The JavaScript code generator, packaged as the `CodeGen` record a builder
+calls, so that a builder can produce JavaScript without depending on
+`Compiler.Generate.JavaScript` directly.
 
-This module provides the JavaScript backend implementation that conforms to the CodeGen
-interface. It generates optimized JavaScript code from the optimized AST, with support
-for full program compilation, REPL evaluation, and browser-based REPL endpoints.
-
-The backend delegates to the Compiler.Generate.JavaScript module for the actual code
-generation logic.
+The generation itself is done in `Compiler.Generate.JavaScript`, whose
+functions take their inputs as positional arguments. `backend` passes each
+field of the configuration record `Compiler.Generate.CodeGen` defines to the
+matching function, and wraps the JavaScript it returns in `TextOutput`.
 
 
 # Backend
@@ -20,7 +20,10 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.JavaScript as JS
 
 
-{-| The JavaScript backend implementation that generates optimized JavaScript from the standard optimized AST.
+{-| The JavaScript code generator as a `CodeGen`: its whole-program, terminal
+REPL and browser REPL functions are `Compiler.Generate.JavaScript`'s
+`generate`, `generateForRepl` and `generateForReplEndpoint`, each with its
+result wrapped in `TextOutput`.
 -}
 backend : CodeGen.CodeGen
 backend =

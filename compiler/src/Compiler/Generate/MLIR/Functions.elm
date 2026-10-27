@@ -1,16 +1,38 @@
 module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl)
 
-{-| Function generation for the MLIR backend.
+{-| Every top-level thing a monomorphized program contains becomes one or more
+MLIR `func.func` ops, and this module is where each of them is built.
 
-This module handles generation of all function types:
+A _node_ is one specialization of a top-level definition: a function or value,
+a tail-recursive function, a constructor, an enum constructor, an extern, an
+effect-manager leaf or a port. `generateNode` turns one node into its function
+ops. A node's name is `<Module>_<name>_$_<specId>` (`accessor_<field>_$_<specId>`
+for a record accessor, `unknown_$_<specId>` when the registry has no key), so
+a reference to a specialization can be named from its SpecId alone. A capture
+clone or worker function appends `$cap`, `$sret` or `$psplit` to that name.
+`generateNode` clears `varMappings`, `definedSsaVars`, `sretTailLayout` and
+`splitAggParams` before returning the context, so the next node cannot see this
+node's variables.
 
-  - Main entry point
-  - Defines (regular functions)
-  - Tail functions
-  - Constructors
-  - Enums
-  - Externs
-  - Cycles
+A few terms recur. A _thunk_ is the nullary function a top-level value compiles
+to. _CAF memoisation_ gives a thunk an `eco.global` slot, its _CAF slot_, and
+the attribute `eco.caf_memo`, so that lowering can make it compute its value
+once. A function with a promoted result or promoted parameters is emitted as a
+_worker_ with the promoted ABI (`$sret` returns each field of its tuple result
+separately; `$psplit` takes promoted parameters as their fields) and a _shim_
+under the original name that keeps the boxed ABI by calling the worker. A
+closure with captures is emitted as its _fast clone_, `$cap`, which takes the
+captures followed by the parameters.
+
+Two rewrites change a node's body before or instead of compiling it. A
+`List.map` specialization licensed by `Compiler.GlobalOpt.MapTemplate` becomes a
+single `eco.list.map` op. When chunked lists are enabled, a _shunt_ replaces
+the body of a capture-free elm/core `List.reverse`, `append`, `concat`, `take`
+or `drop` specialization by a direct call to the kernel of the same name.
+
+The module also builds the program entry point `@main` with its registration
+preamble `@__eco_register_ports`, and the stub declarations of kernel
+functions.
 
 @docs generateMainEntry, generateNode, generateKernelDecl
 
@@ -41,11 +63,15 @@ import Utils.Crash exposing (crash)
 -- ====== GENERATE MAIN ENTRY ======
 
 
-{-| Generate the main entry point function.
+{-| Builds the program entry point `@main`, which calls the function of the
+main specialization and returns its result, together with the
+`@__eco_register_ports` function that `@main` calls first when there is
+anything to register.
 
-`managers` is the set of home modules of the eco/system effect managers the
-program reaches (`Ctx.ecoSystemManagers`, accumulated while the node bodies
-were generated); the preamble registers each one before anything else.
+`managers` is the set of home modules of the eco/system effect managers to
+register. Under chunked lists, `@main` carries the `eco.list_chunks` attribute,
+which tells lowering that the program uses chunked lists. The returned
+context records the registration kernels as kernel declarations.
 
 -}
 generateMainEntry : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Set.Set String -> Mono.MainInfo -> ( List MlirOp, Ctx.Context )
@@ -56,13 +82,10 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                 ( portFnOps, ctxPorts ) =
                     generateRegisterPorts ctx ports flagsDecoder managers
 
-                -- main has no block args, so reset scope completely
                 ctxMain =
                     { ctxPorts | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
 
-                -- Register ports before the program runs (PORT_003): the
-                -- @__eco_register_ports call precedes the Main_main call,
-                -- which is what eventually enters Platform.worker.
+                -- Registration must happen before the program's main runs.
                 ( preambleOps, ctx0 ) =
                     if List.isEmpty portFnOps then
                         ( [], ctxMain )
@@ -97,12 +120,6 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                 ( ctx4, mainOp0 ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
 
-                -- Chunked-list mode marker (plans/chunked-list-representation.md
-                -- §6): stamp `eco.list_chunks` on the @main entry func so the
-                -- backend lowers list head/tail projections chunk-aware. A
-                -- func attr (like eco.shadow_roots) flows through BOTH the
-                -- text and bytecode emitters unchanged; EcoToLLVM's pre-scan
-                -- walk picks it up.
                 mainOp =
                     if ctx.ecoConfig.list.chunks then
                         { mainOp0 | attrs = Dict.insert "eco.list_chunks" UnitAttr mainOp0.attrs }
@@ -110,30 +127,23 @@ generateMainEntry ctx ports flagsDecoder managers mainInfo =
                     else
                         mainOp0
             in
-            -- Return the threaded context: generateRegisterPorts records
-            -- the registration kernels in ctx.kernelDecls, and the backend
-            -- emits kernel stubs from the context AFTER main generation.
             ( portFnOps ++ [ mainOp ], ctx4 )
 
 
-{-| Generate the synthetic `@__eco_register_ports` function (PORT\_003).
+{-| Builds the `@__eco_register_ports` function, which registers with the
+runtime everything it must know before the program starts, and returns `unit`.
 
-For every port reached during monomorphization it emits a runtime
-registration call before `Platform.worker` runs:
+Its calls come in this order. First one call per home in `managers`, in set
+order, to that manager's `ecoSystemRegisterManagerSymbol`. Then, when there is a
+flags decoder, a call to its thunk and to
+`Elm_Kernel_Platform_registerFlagsDecoder` with the decoder. Then, for each port
+in order, a call to `Elm_Kernel_Platform_registerIncomingPort` with the port's
+name and decoder (obtained by calling the decoder thunk named by
+`decoderSpecId`) for an incoming port that has a decoder, and to
+`Elm_Kernel_Platform_registerOutgoingPort` with the name for any other port.
 
-  - incoming: `Elm_Kernel_Platform_registerIncomingPort(name, decoder)`
-    where `decoder` is produced by calling the port's Decoder-value thunk
-    (the separate specialization recorded in `PortRegistration.decoderSpecId`)
-  - outgoing: `Elm_Kernel_Platform_registerOutgoingPort(name)`
-
-Before all of those it registers every eco/system effect manager in
-`managers` (plans/eco-system-library.md §3.6): one
-`Eco_System_registerManager_<Home with . replaced by _>()` call per home, in
-set order, so the C++ managers are in the runtime's table before
-`initWorker` reads it.
-
-Returns `( [], ctx )` for programs without ports, flags decoder or eco/system
-managers, so no preamble is emitted at all.
+Returns no ops, and the context unchanged, when there are no ports, no flags
+decoder and no managers.
 
 -}
 generateRegisterPorts : Ctx.Context -> List Mono.PortRegistration -> Maybe Mono.SpecId -> Set.Set String -> ( List MlirOp, Ctx.Context )
@@ -143,7 +153,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
 
     else
         let
-            -- Fresh SSA scope for the synthetic function.
             ctxClean =
                 { ctx0 | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
 
@@ -153,8 +162,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
             hasOutgoing =
                 List.any (\p -> not p.incoming) ports
 
-            -- Track the registration kernels so the backend emits their
-            -- is_kernel stubs (resolved to the C++ exports at link time).
             ctxKernels =
                 ctxClean
                     |> (\c ->
@@ -188,10 +195,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                                 c
                        )
 
-            -- eco/system effect managers (plans/eco-system-library.md §3.6):
-            -- one nullary registration call per home, emitted FIRST. Each
-            -- callee is declared like the other preamble kernels; the C
-            -- function returns uint64_t = encode(unit()), i.e. !eco.value.
             ( managerRevOps, ctxAfterManagers ) =
                 Set.foldl
                     (\home ( accOps, c ) ->
@@ -210,10 +213,6 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
                     ( [], ctxKernels )
                     managers
 
-            -- Flags decoder registration (Phase 5): call the decoder's
-            -- value thunk, then hand the decoder to the runtime. Emitted
-            -- after the manager registrations and before the port
-            -- registrations.
             ( flagsRevOps, ctxAfterFlags ) =
                 case flagsDecoder of
                     Nothing ->
@@ -314,21 +313,19 @@ generateRegisterPorts ctx0 ports flagsDecoder managers =
         ( [ funcOp ], ctxF )
 
 
-{-| The C symbol that registers the eco/system effect manager of `home`:
-`Eco_System_registerManager_` followed by the module name with every `.`
-replaced by `_` (plans/eco-system-library.md T6).
+{-| Returns the symbol of the function that registers the eco/system effect
+manager of module `home`: `Eco_System_registerManager_` followed by `home` with
+every `.` replaced by `_`.
 -}
 ecoSystemRegisterManagerSymbol : String -> String
 ecoSystemRegisterManagerSymbol home =
     "Eco_System_registerManager_" ++ String.replace "." "_" home
 
 
-{-| Records `home` in `ctx.ecoSystemManagers` when the manager leaf `specId`
-belongs to package eco/system (plans/eco-system-library.md §3.6). The set
-deduplicates: a home reached through several leaf specializations (several
-leaves of one module, or clones at different types) is registered once.
-Leaves of any other package (elm/time's `Time`, ...) are not recorded; their
-managers are built into the runtime.
+{-| Returns `ctx` with `home` added to `ecoSystemManagers` when the manager leaf
+`specId` is a global of a module in package eco/system, and `ctx` unchanged
+otherwise. Being a set, it holds a home once however many leaf specializations
+reach it.
 -}
 recordEcoSystemManager : Mono.SpecId -> String -> Ctx.Context -> Ctx.Context
 recordEcoSystemManager specId home ctx =
@@ -345,16 +342,12 @@ recordEcoSystemManager specId home ctx =
 
 
 
--- ====== TIER-B CLOSURE-FREE COMBINATOR SHUNTS (chunked lists) ======
+-- ====== LIST COMBINATOR SHUNTS (chunked lists) ======
 
 
-{-| Shunt-eligible elm/core `List` combinators and their arities
-(plans/chunked-list-representation.md §6 L1.3 / §9.2). All closure-free —
-no LSS devirtualization is at stake — and each has a chunk-producing
-kernel export (`Elm_Kernel_List_<name>`, ListExports.cpp) that builds
-through `alloc::listFromUnboxables`, replacing the `foldl cons`
-per-element cell chains (the L0 census's dominant 498M-cons HOF pool;
-`reverse` = `foldl cons []` is the single biggest producer).
+{-| The elm/core `List` functions a shunt may replace, each with the number of
+parameters its specialization must take. Each is replaced by a call to the
+`List` kernel function of the same name.
 -}
 listShuntKernels : Dict.Dict Name.Name Int
 listShuntKernels =
@@ -367,14 +360,12 @@ listShuntKernels =
         ]
 
 
-{-| Under `config.list.chunks`, rewrite a recognized combinator
-specialization's body into a direct saturated kernel call. Guarded hard:
-only a capture-free `MonoDefine`/`MonoClosure` node whose flat param count
-matches the combinator's arity is rewritten (recognition is by
-specialization ORIGIN via the registry, so user functions named `reverse`
-are never touched); every other shape — staged closures, `MonoTailFunc`
-TCO forms (elm/core `drop`), partial stagings — compiles unchanged.
-Flag-off this is the identity, so default builds are byte-identical.
+{-| Returns `node` with its body replaced by a direct kernel call, when chunked
+lists are enabled and `specId` is a specialization of one of the
+`listShuntKernels` functions of elm/core's `List` module. The function is
+recognised by the registry's key for `specId`, so a program's own function of
+the same name is never rewritten. Otherwise, and for any node `listShuntNode`
+declines, `node` is returned unchanged.
 -}
 listChunksShunt : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> Mono.MonoNode
 listChunksShunt ctx specId node =
@@ -399,6 +390,11 @@ listChunksShunt ctx specId node =
                 node
 
 
+{-| Returns `node` with its body replaced by a call to the `List` kernel
+`kernelName`, when `node` is a `MonoDefine` of a closure with no captures and
+exactly `arity` parameters, and `node` unchanged otherwise. A tail-recursive
+node is never rewritten.
+-}
 listShuntNode : Name.Name -> Int -> Mono.MonoNode -> Mono.MonoNode
 listShuntNode kernelName arity node =
     case node of
@@ -418,11 +414,10 @@ listShuntNode kernelName arity node =
             node
 
 
-{-| The synthesized body: one saturated `CallDirectFlat` kernel call over
-the closure's own params. `CallDirectFlat` routes generateCall to the
-ABI-flattened kernel path (KernelAbi derives the C symbol + per-arg ABI
-from the concrete param types — e.g. `take`'s `Int` argument crosses as
-raw i64, matching the C export's `int64_t`).
+{-| Builds a saturated call of the `List` kernel `kernelName` on `params`,
+returning `resultTy`. The call kind is `CallDirectFlat`, so each argument is
+passed at the ABI of its own type; an `Int` argument, for example, is passed
+unboxed.
 -}
 listShuntCall : Name.Name -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoExpr
 listShuntCall kernelName params resultTy =
@@ -450,8 +445,17 @@ listShuntCall kernelName params resultTy =
 -- ====== GENERATE NODE ======
 
 
-{-| Generate MLIR code for a monomorphized node.
-Returns a list of MlirOps (may be multiple for closures with captures).
+{-| Builds the ops for the node `specId`, after applying the list shunt.
+
+Most nodes give one function. A promoted function gives a worker and a shim,
+and a memoised thunk gives its CAF slot and the thunk.
+
+Every global named `main`, in whichever module, has its CAF memoisation
+removed and its functions marked `eco.shadow_roots`, which asks lowering to
+keep the function's parameters in a shadow root frame across collections. A
+memoised thunk returns early once its value is computed, which would skip the
+balancing of that frame.
+
 -}
 generateNode : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
 generateNode ctx specId node =
@@ -466,8 +470,6 @@ generateNode ctx specId node =
                 specId
                 (listChunksShunt ctx specId node)
 
-        -- Mark the main entrypoint's func.func with eco.shadow_roots so that
-        -- EcoToLLVM installs a shadow root frame for its parameters (TCO safety).
         isMainEntry =
             case Registry.lookupSpecKey specId ctx.registry of
                 Just ( Mono.Global _ name, _ ) ->
@@ -478,11 +480,6 @@ generateNode ctx specId node =
 
         finalOps =
             if isMainEntry then
-                -- main is a MonoDefine thunk too, but its shadow-root frame
-                -- epilogues must balance the prologue on EVERY return — a CAF
-                -- guard's hit-path early return would skip the frame push.
-                -- Strip the memoization here (the C++ installer also skips
-                -- shadow-root funcs — belt and braces). main runs once anyway.
                 ops
                     |> List.filter (\op -> op.name /= "eco.global")
                     |> List.map (\op -> { op | attrs = Dict.remove "eco.caf_memo" op.attrs })
@@ -491,29 +488,28 @@ generateNode ctx specId node =
             else
                 ops
 
-        -- Reset varMappings and definedSsaVars after each node.
-        -- Each node generates one or more top-level func.func ops, each with
-        -- their own SSA scope. The dirty context carries stale var entries
-        -- from the node's body compilation that must not leak to the next node.
+        -- The next node's functions must not see this node's variables.
         cleanCtx =
             { dirtyCtx | varMappings = Dict.empty, definedSsaVars = Set.empty, sretTailLayout = Nothing, splitAggParams = Dict.empty }
     in
     ( finalOps, cleanCtx )
 
 
+{-| Builds the ops for `node`, named `funcName`, choosing the generator by
+the kind of node.
+
+A `List.map` specialization with a template licence is compiled as an
+`eco.list.map` op when its closure has the expected two parameters, and as an
+ordinary definition otherwise. Ports are compiled as definitions that are never
+memoised.
+
+-}
 generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
 generateNodeInner ctx funcName specId node =
     case node of
         Mono.MonoDefine expr monoType ->
             case ( MapTemplate.lookup specId ctx.mapTemplates, expr ) of
                 ( Just info, Mono.MonoClosure closureInfo _ _ ) ->
-                    -- plans/list-map-mlir-template.md: a LICENSED List.map
-                    -- spec's body is replaced wholesale by the forward
-                    -- template. Sret/psplit promotion cannot apply here (this
-                    -- returns a List, never a promotable aggregate), so the
-                    -- untouched legacy path stays reachable for every spec the
-                    -- licence declined — including via this emitter's own
-                    -- `Nothing`.
                     case generateMapTemplateBody ctx funcName info closureInfo monoType of
                         Just result ->
                             result
@@ -539,7 +535,6 @@ generateNodeInner ctx funcName specId node =
 
         Mono.MonoEnum tag monoType ->
             let
-                -- Look up the spec key to get the constructor name
                 maybeCtor : Maybe ( ModuleName.Canonical, String )
                 maybeCtor =
                     case Registry.lookupSpecKey specId ctx.registry of
@@ -547,7 +542,6 @@ generateNodeInner ctx funcName specId node =
                             Just ( home, Name.toElmString ctorName )
 
                         Just ( Mono.Accessor _, _ ) ->
-                            -- Accessors don't have constructor names
                             Nothing
 
                         Nothing ->
@@ -555,12 +549,6 @@ generateNodeInner ctx funcName specId node =
 
                 ( ctx1, op ) =
                     generateEnum ctx funcName tag monoType maybeCtor
-
-                -- No CAF slot (amends M4/CGEN_068): every enum ctor now
-                -- compiles to an embedded null-cons (or legacy well-known)
-                -- constant — a constant-returning body needs no once-guard,
-                -- and a slot would be a second copy of nothing (HEAP_044,
-                -- plans/null-cons-hpointer-embedding.md §5.4).
             in
             ( [ op ], ctx1 )
 
@@ -578,9 +566,6 @@ generateNodeInner ctx funcName specId node =
             in
             ( [ op ], ctx1 )
 
-        -- Ports stay unmemoized (PORT_003: the registration preamble owns
-        -- their lifecycle); port DECODER specs are plain MonoDefines above
-        -- and memoize normally.
         Mono.MonoPortIncoming expr monoType ->
             generateDefine ctx funcName False expr monoType Nothing Nothing
 
@@ -588,6 +573,10 @@ generateNodeInner ctx funcName specId node =
             generateDefine ctx funcName False expr monoType Nothing Nothing
 
 
+{-| Returns the function name of the specialization `specId`:
+`<Module>_<name>_$_<specId>` for a global, `accessor_<field>_$_<specId>` for a
+record accessor, and `unknown_$_<specId>` when `registry` has no key for it.
+-}
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
     case Registry.lookupSpecKey specId registry of
@@ -601,9 +590,8 @@ specIdToFuncName registry specId =
             "unknown_$_" ++ String.fromInt specId
 
 
-{-| Add the eco.shadow\_roots unit attribute to a func.func op.
-This tells EcoToLLVM to install a shadow root frame for the function's
-parameters, protecting them from LLVM's sibling-call TCO across GC.
+{-| Returns `op` with the `eco.shadow_roots` attribute when it is a
+`func.func`, and unchanged otherwise.
 -}
 addShadowRootsAttr : MlirOp -> MlirOp
 addShadowRootsAttr op =
@@ -618,30 +606,23 @@ addShadowRootsAttr op =
 -- ====== GENERATE DEFINE ======
 
 
-{-| The eco.global slot symbol for a memoized thunk. Keyed on the emitted
-thunk symbol, which embeds the SpecId — monomorphization splits one source
-CAF into several specialized thunks (one per demanded type, more under LSS
-keying) with DIFFERENT layouts, so slots are per-SpecId by construction and
-must never be shared across specializations. The C++ guard installer
-(EcoToLLVMGlobals.cpp installCafMemoGuard) derives the same name.
+{-| Returns the name of the CAF slot of the thunk `funcName`. The thunk's name
+contains its SpecId, so each specialization of one source value has its own
+slot. Lowering derives the slot from the thunk's name the same way, so the two
+must agree.
 -}
 cafSlotName : String -> String
 cafSlotName funcName =
     "__eco_caf$" ++ funcName
 
 
-{-| Does this nullary value thunk get a memoization slot?
+{-| Returns whether the thunk for the value `expr` of type `monoType` is
+memoised: CAF memoisation must be enabled, the value's ABI type must be
+`!eco.value`, and `expr` must not be a closure, a literal or `unit`.
 
-v1 scope (design\_docs/caf-memoization-design.md DS5): `!eco.value` ABI
-results only — a slot holding a raw scalar (i64 Int, f64, i16 Char) must
-never be GC-rooted (the root scan would misread it as a heap address).
-Slots are no longer pre-registered (the rooting walk skips `__eco_caf$`;
-eco\_caf\_promote roots on decline, HEAP\_036), but the scalar exclusion
-stands: a declined scalar slot would still be rooted. Slot value 0 is
-the uninitialized sentinel; no valid `!eco.value` word is 0 (pointers are
-nonzero, embedded constants are 0x4/0x5/0x6). Trivial single-node bodies
-(scalar/string literal, unit) are skipped — the guard would cost more than
-the body.
+A slot is only ever given to a value whose ABI type is `!eco.value`, because a
+rooted slot holding a raw scalar would be scanned as a pointer. A literal or
+`unit` costs less to produce than the check of a slot would.
 
 -}
 cafMemoQualifies : Ctx.Context -> Mono.MonoExpr -> Mono.MonoType -> Bool
@@ -663,21 +644,13 @@ cafMemoQualifies ctx expr monoType =
            )
 
 
-{-| Effect types (Task/Cmd/Sub) are NO LONGER excluded from CAF memoization
-(plans/task-purity-and-caf-guard-removal.md, 2026-07-23). The old
-`monoTypeHasEffects` guard worked around two native-runtime impurities that
-have been FIXED at the source:
+{-| Builds the functions of the definition `funcName` with body `expr`.
 
-1.  The scheduler's Task\_Binding kill-handle install now builds a
-    per-execution COPY instead of mutating the shared node (Scheduler.cpp,
-    Task immutability).
-2.  The last eager kernel tasks now defer their effects to fulfilment
-    (MVar new/read/take/put/drop always-binding, Scheduler spawn/kill as
-    bindings) — KERNEL\_TASK\_IO\_001 with no partial-eager exemptions.
-
-A Task is an immutable request for IO, fulfilled once per execution — so a
-memoized CAF holding one is sound (pinned by MVarSharedNewTaskTest and the
-MVar E2E suite).
+A closure is compiled by `generateClosureFunc`, with its promotions. Any other
+value becomes a thunk; when `cafEligible` is `True` and `cafMemoQualifies`
+holds, the thunk is marked `eco.caf_memo` and preceded by its CAF slot. Values
+of type `Task`, `Cmd` and `Sub` are memoised like any other: a `Task` is a
+description of work, not the work, so sharing one value is safe.
 
 -}
 generateDefine : Ctx.Context -> String -> Bool -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
@@ -687,9 +660,7 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
             generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit
 
         _ ->
-            -- Value (thunk) - wrap in nullary function
             let
-                -- Thunks have no parameters, but still need fresh scope.
                 ctxFreshScope : Ctx.Context
                 ctxFreshScope =
                     { ctx | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
@@ -704,16 +675,11 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
                 region : MlirRegion
                 region =
                     if exprResult.isTerminated then
-                        -- Expression is a control-flow exit (eco.case, eco.jump).
-                        -- The ops already contain the terminator - don't add eco.return.
-                        -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
+                        -- The ops end in their own terminator, and resultVar means nothing.
                         Ops.mkRegionTerminatedByOps [] exprResult.ops
 
                     else
-                        -- Normal expression - add eco.return with the result value.
                         let
-                            -- Handle type mismatch between expression result and expected return type.
-                            -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
                             ( coerceOps, finalVar, ctxFinal ) =
                                 Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType retTy
 
@@ -726,10 +692,6 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
                     Ops.funcFunc exprResult.ctx funcName [] retTy region
             in
             if cafEligible && cafMemoQualifies ctx expr monoType then
-                -- CAF memoization (plans/caf-memoization-implementation.md):
-                -- emit the per-SpecId slot next to the thunk and tag it; the
-                -- EcoToLLVM serial post-Stage-2 phase installs the lazy
-                -- once-init guard (CGEN_068).
                 let
                     ( ctx3, globalOp ) =
                         Ops.ecoGlobal ctx2 (cafSlotName funcName)
@@ -743,10 +705,10 @@ generateDefine ctx funcName cafEligible expr monoType maybeSret maybePsplit =
                 ( [ funcOp ], ctx2 )
 
 
-{-| Generate closure functions.
-For closures with captures: generates the fast clone `$cap` (captures +
-params), the function its `eco.papCreate` names.
-For zero-capture closures: generates just the original function.
+{-| Builds the functions of the closure definition `funcName`: its fast clone
+when the closure has captures, and otherwise the function itself with any
+`$sret` or `$psplit` promotion in `maybeSret` and `maybePsplit`. The
+promotions are ignored for a closure with captures.
 -}
 generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
 generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit =
@@ -755,16 +717,19 @@ generateClosureFunc ctx funcName closureInfo body monoType maybeSret maybePsplit
             not (List.isEmpty closureInfo.captures)
     in
     if hasCaptures then
-        -- Fast clone only (sret selection excludes captured closures, so
-        -- maybeSret is Nothing here)
         generateClosureFuncWithCaptures ctx funcName closureInfo body monoType
 
     else
-        -- Zero captures: single function (original lambda)
         generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit
 
 
-{-| Generate a single function for zero-capture closures.
+{-| Builds the function `funcName` for a closure with no captures, taking the
+closure's parameters and returning the result of `monoType` at its ABI type.
+
+With `maybeSret` it instead returns a `$sret` worker and a shim, and with only
+`maybePsplit` a `$psplit` worker and a shim; `maybeSret` wins when both are
+given.
+
 -}
 generateClosureFuncSingle : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> Maybe Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
 generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybePsplit =
@@ -775,7 +740,6 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybe
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 closureInfo.params
 
-        -- Create fresh varMappings with only function parameters
         freshVarMappings : Dict.Dict String Ctx.VarInfo
         freshVarMappings =
             List.foldl
@@ -847,39 +811,26 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType maybeSret maybe
     in
     case ( maybeSret, maybePsplit ) of
         ( Nothing, Just psplitInfo ) ->
-            -- U-T1.3.5: emit the $psplit WORKER (scalar params) and the
-            -- projecting shim; the funcOp computed above is discarded.
             generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType psplitInfo
 
         ( Nothing, Nothing ) ->
             ( [ funcOpWithLogical ], ctx2 )
 
         ( Just sretInfo, _ ) ->
-            -- U-T1.3.3: emit the $sret WORKER (real body, multi-result ABI)
-            -- and REPLACE the original's body with a thin re-boxing shim so
-            -- non-migrated callers and function-as-value uses keep the boxed
-            -- ABI. The funcOp computed above is DISCARDED (its full-body ops
-            -- were computed; only the worker/shim pair is emitted).
             generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sretInfo
 
 
-{-| plans/list-map-mlir-template.md Phase 1.4: emit a licensed `List.map`
-specialization as a single `eco.list.map` op instead of the elm/core foldr
-body.
+{-| Builds the function `funcName` of a licensed `List.map` specialization as
+one `eco.list.map` op over the list and the callback, in place of the body.
+Returns `Nothing` when the closure does not have exactly two parameters, the
+callback and then the list.
 
-**The replacement is semantic and wholesale.** The spec's whole body becomes
-`eco.list.map %xs, %f {...}` + return; the `foldr`/`foldrHelper` call chain
-simply disappears from THIS function. The foldr specs themselves are untouched
-and remain for their other callers.
-
-Captures are projected out of the closure parameter ONCE, here, before the op —
-so the expansion's loop body never re-extracts them (they arrive as ordinary
-loop-invariant SSA operands and relocate like any other value).
-
-Declines to the caller (returning `Nothing`) rather than emitting something
-half-formed if the parameter row is not the expected `(f, xs)` shape — the
-`gateIntrinsic` discipline: a declining gate always falls through to today's
-untouched path.
+The callback's captures, whose types the licence `info` records, are projected
+out of the callback once, before the op, and passed to it as operands. The op
+names the callee function in its `callee` attribute: the lambda's own name when
+it has no captures and its `$cap` fast clone when it has some, or the function
+of a specialization. A callback the licence calls generically gets no `callee`
+attribute.
 
 -}
 generateMapTemplateBody : Ctx.Context -> String -> MapTemplate.Info -> Mono.ClosureInfo -> Mono.MonoType -> Maybe ( List MlirOp, Ctx.Context )
@@ -912,11 +863,6 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                         |> Ctx.resetDefinedSsaVars
                             [ "%" ++ callbackName, "%" ++ listName ]
 
-                -- The instance's capture row, in slot order, projected out of
-                -- the closure parameter exactly once. A `CalleeCtorSpec`
-                -- callback (F-5B: `List.map Just`) has NO captures by
-                -- construction, so the whole projection block below folds to
-                -- nothing for it.
                 captureAbiTypes : List MlirType
                 captureAbiTypes =
                     case info.callee of
@@ -959,12 +905,6 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                 captureVars =
                     List.reverse captureVarsRev
 
-                -- The callee symbol. For a lambda: the fast-clone symbol; a
-                -- captureless instance IS its own fast evaluator and
-                -- Lambdas.elm emits it un-suffixed, so the `$cap` suffix keys
-                -- on the real capture count — the same choice
-                -- `generateFastDispatchCall` makes. For a ctor: the spec's
-                -- own function name, which needs no suffix decision.
                 calleeSymbol : String
                 calleeSymbol =
                     case info.callee of
@@ -979,12 +919,10 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
                             specIdToFuncName ctx.registry calleeSpecId
 
                         MapTemplate.CalleeGeneric ->
-                            -- Unused: `calleeAttrs` omits the attribute.
+                            -- Unused: calleeAttrs omits the attribute.
                             ""
 
-                -- A generic-apply site names no symbol: `eco.list.map`'s
-                -- `callee` is an OptionalAttr, and `ListMapOp::verify`
-                -- REQUIRES its absence to come with zero captures.
+                -- The op's verifier accepts a missing callee only with no captures.
                 calleeAttrs : List ( String, MlirAttr )
                 calleeAttrs =
                     case info.callee of
@@ -1050,18 +988,20 @@ generateMapTemplateBody ctx funcName info closureInfo monoType =
             Just ( [ funcOpWithLogical ], ctxFunc )
 
         _ ->
-            -- Not the two-parameter shape the licence assumed. MapTemplate
-            -- already filters these, so this is belt-and-braces: decline.
             Nothing
 
 
-{-| U-T1.3.3 result promotion: the `$sret` worker compiles the REAL body
-with `sretTailLayout` set (result-spine tuple literals emit the SSA
-make-form; result-spine cases declare aggregate results), coerces the
-final value to the aggregate (from\_heap for boxed fallback shapes),
-projects each slot, and multi-returns. The C++ SretFuncOpLowering gives
-any multi-result func.func the (slot ptr, args...) -> void ABI. The shim
-re-boxes: multi-call the worker, construct the tuple, return.
+{-| Builds the `$sret` worker and the shim of the closure `funcName`, whose
+result is the tuple `sretInfo` describes.
+
+The worker `funcName$sret` compiles `body` with `sretTailLayout` set, so the
+tuples on the result's path are built as values rather than on the heap. It
+converts the result to the tuple aggregate, projects each field and returns
+the fields as separate results. The shim `funcName` takes the same parameters,
+calls the worker, builds the boxed tuple from its results and returns it.
+Crashes when `body` ends in its own terminator, or when the tuple does not have
+two or three fields.
+
 -}
 generateSretWorkerAndShim : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Ctx.SretInfo -> ( List MlirOp, Ctx.Context )
 generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sretInfo =
@@ -1091,7 +1031,6 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
         aggTy =
             Ops.aggTupleType sretInfo.slotTypes
 
-        -- ---- WORKER ----
         ctxWorker : Ctx.Context
         ctxWorker =
             { ctx
@@ -1140,7 +1079,6 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
         ( wCtx4, workerOp ) =
             Ops.funcFuncMulti wCtx3 (funcName ++ "$sret") argPairs sretInfo.slotTypes workerRegion
 
-        -- ---- SHIM ----
         ctxShim : Ctx.Context
         ctxShim =
             { wCtx4
@@ -1208,16 +1146,16 @@ generateSretWorkerAndShim ctx funcName closureInfo body extractedReturnType sret
     ( [ workerOp, shimWithLogical ], ctxOut )
 
 
-{-| U-T1.3.5: the `$psplit` worker takes each promoted param's FIELDS as
-separate scalar params (unboxed field ⇒ ABI primitive, boxed ⇒ its own
-`!eco.value`) — no aggregate type ever appears on the boundary, so the
-existing multi-param lowering handles everything (zero C++). The body
-binds each promoted param as SLOTS via `ctx.splitAggParams` (the
-T1.3.3L consumer machinery; admissibility guarantees every use is a
-projection, so materialization is impossible) with the varMapping
-REMOVED (bypass ⇒ loud `lookupVar` crash). The shim keeps the original
-boxed ABI: heap-project each promoted param's fields and call the
-worker.
+{-| Builds the `$psplit` worker and the shim of the closure `funcName`, whose
+promoted parameters `psplitInfo` describes.
+
+The worker `funcName$psplit` takes each promoted parameter as one parameter
+per field, named `<param>_s<index>`, at the type the plan gives the field, and
+every other parameter as it is. In the body, a promoted parameter is bound as
+its fields in `splitAggParams` and has no variable of its own. The shim
+`funcName` takes the original parameters, projects the fields of each promoted
+one, calls the worker and returns its result.
+
 -}
 generatePsplitWorkerAndShim : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Ctx.PsplitInfo -> ( List MlirOp, Ctx.Context )
 generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType psplitInfo =
@@ -1228,7 +1166,6 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
         paramsWithPlans =
             List.map2 Tuple.pair closureInfo.params psplitInfo.paramPlans
 
-        -- ---- WORKER signature + bindings ----
         workerPieces =
             List.map
                 (\( ( name, ty ), mPlan ) ->
@@ -1294,7 +1231,6 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
         ( wCtx2, workerOp ) =
             Ops.funcFunc { wResCtx | splitAggParams = ctx.splitAggParams } (funcName ++ "$psplit") workerArgPairs returnType workerRegion
 
-        -- ---- SHIM: original ABI; project promoted params; call worker ----
         shimArgPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
@@ -1369,9 +1305,10 @@ generatePsplitWorkerAndShim ctx funcName closureInfo body extractedReturnType ps
     ( [ workerOp, shimWithLogical ], { ctxS4 | splitAggParams = ctx.splitAggParams } )
 
 
-{-| Generate the fast clone (funcName$cap) of a closure with captures:
-(captures..., params...) -> R. It is the function the closure's
-`eco.papCreate` names, both in `function` and in `_fast_evaluator`.
+{-| Builds the fast clone `funcName$cap` of a closure with captures: a function
+taking the captures, as `%cap_<index>`, followed by the parameters, and
+returning the closure's result. Within the body each capture's name refers to
+its `%cap_<index>` parameter.
 -}
 generateClosureFuncWithCaptures : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
 generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
@@ -1379,7 +1316,6 @@ generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
         fastCloneName =
             funcName ++ "$cap"
 
-        -- Capture types for fast clone signature
         captureTypes : List ( String, MlirType )
         captureTypes =
             List.indexedMap
@@ -1388,14 +1324,12 @@ generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
                 )
                 closureInfo.captures
 
-        -- Parameter types
         paramPairs : List ( String, MlirType )
         paramPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 closureInfo.params
 
-        -- Fast clone arguments: captures + params
         fastCloneArgs : List ( String, MlirType )
         fastCloneArgs =
             captureTypes ++ paramPairs
@@ -1413,8 +1347,6 @@ generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
         returnType =
             Types.monoTypeToAbi extractedReturnType
 
-        -- Build var mappings for fast clone: captures use cap_N names,
-        -- but the body references original capture names
         captureMappings : Dict.Dict String Ctx.VarInfo
         captureMappings =
             List.foldl
@@ -1479,8 +1411,6 @@ generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
         ( ctx1, fastCloneOpRaw ) =
             Ops.funcFunc exprResult.ctx fastCloneName fastCloneArgs returnType fastCloneRegion
 
-        -- $cap logical params = capture MonoTypes ++ param MonoTypes
-        -- (matches fastCloneArgs = captureTypes ++ paramPairs).
         captureMonoTypes : List Mono.MonoType
         captureMonoTypes =
             List.map (\( _, expr, _ ) -> Mono.typeOf expr) closureInfo.captures
@@ -1504,18 +1434,26 @@ generateClosureFuncWithCaptures ctx funcName closureInfo body monoType =
 -- ====== GENERATE TAIL FUNC ======
 
 
+{-| Builds the function `funcName` of a tail-recursive definition, its body
+compiled to a loop by `Compiler.Generate.MLIR.TailRec`.
+
+The function returns what `monoType` gives after `params`, which is itself a
+function type when the definition has fewer parameters than its type has
+arrows. With `maybeSret`, the loop returns the fields of the tuple result
+separately: the function is emitted as the worker `funcName$sret` with a shim
+under `funcName` that builds the boxed tuple, as for a closure. Crashes when
+that tuple does not have two or three fields.
+
+-}
 generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> Maybe Ctx.SretInfo -> ( List MlirOp, Ctx.Context )
 generateTailFunc ctx funcName params expr monoType maybeSret =
     let
-        -- Function parameters use the original names (%n, %acc, ...) that
-        -- the body expression expects.
         funcArgPairs : List ( String, MlirType )
         funcArgPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 params
 
-        -- Create fresh varMappings with function parameters
         freshVarMappings : Dict.Dict String Ctx.VarInfo
         freshVarMappings =
             List.foldl
@@ -1538,36 +1476,22 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings, splitAggParams = Dict.empty }
                 |> Ctx.resetDefinedSsaVars paramSsaVarsTail
 
-        -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt)).
-        -- A NORMAL def consumes every arrow arg, so the ABI return is the final leaf
-        -- (sumHelper : Int -> Int -> Int extracts MInt). But a STAGED-RESULT def
-        -- (`mk : Int -> (Int -> Int)` written `mk a = \b -> ...`) has FEWER value
-        -- params than its type has arrow args; dropping every arg would collapse the
-        -- returned CLOSURE to its leaf (mistyping the func as returning i64 and forcing
-        -- an unbox of the closure). Drop exactly the consumed params so any residual
-        -- arrows survive as the function-typed (closure) result.
         actualReturnType =
             Ctx.residualResultType (List.length params) monoType
 
         retTy =
             Types.monoTypeToAbi actualReturnType
 
-        -- Use TailRec to compile the function body to scf.while.
-        -- U-T1.3.6: a promoted tail func's loop carries DECOMPOSED result
-        -- columns and terminates with a multi-operand eco.return — the
-        -- $sret worker form.
         ( bodyOps, ctx1 ) =
             TailRec.compileTailFuncToWhile ctxWithArgs funcName funcArgPairs (List.map Tuple.second params) expr retTy maybeSret
 
-        -- The body ops include init ops, scf.while, and eco.return
-        -- We need to separate the non-terminator ops from the terminator
         ( bodyNonTermOps, bodyTerminator ) =
             case List.reverse bodyOps of
                 term :: rest ->
                     ( List.reverse rest, term )
 
                 [] ->
-                    -- This shouldn't happen - compileTailFuncToWhile always returns at least the return op
+                    -- Not expected: TailRec always ends the body with a return.
                     let
                         ( dummyOps, dummyVar, ctxDummy ) =
                             Expr.createDummyValue ctx1 retTy
@@ -1577,7 +1501,6 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
                     in
                     ( dummyOps, dummyRetOp )
 
-        -- Function body region
         funcBodyRegion : MlirRegion
         funcBodyRegion =
             Ops.mkRegion funcArgPairs bodyNonTermOps bodyTerminator
@@ -1602,11 +1525,6 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
             ( [ funcOpWithLogical ], ctx2 )
 
         Just sretInfo ->
-            -- U-T1.3.6: the loop body above was compiled in worker form
-            -- (multi-result terminal); emit it as `name$sret` and add the
-            -- re-boxing shim under the original name. The funcOp built for
-            -- the plain path is DISCARDED (funcFuncMulti re-wraps the same
-            -- region ops with the multi-result signature).
             let
                 ( wCtx, workerOp ) =
                     Ops.funcFuncMulti ctx2 (funcName ++ "$sret") funcArgPairs sretInfo.slotTypes funcBodyRegion
@@ -1671,16 +1589,23 @@ generateTailFunc ctx funcName params expr monoType maybeSret =
 -- ====== GENERATE CTOR ======
 
 
+{-| Builds the constructor function `funcName` for the constructor laid out by
+`ctorLayout`, and registers its type with the context.
+
+A nullary constructor gives a function with no parameters returning a
+constant: `Nothing`, `True` or `False` of elm/core give their `eco.constant`,
+and any other gives a null-cons constant carrying its tag, which must fit
+(`CtorTag.checkNullConsCapacity`). A constructor with fields takes one
+parameter per field at the field's ABI type, boxes those the layout stores
+boxed, and allocates the value with `eco.construct.custom`.
+
+-}
 generateCtor : Ctx.Context -> String -> Types.CtorLayout -> Mono.MonoType -> ( Ctx.Context, MlirOp )
 generateCtor ctx funcName ctorLayout monoType =
-    -- Register the custom type and its constructor for the type graph
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
 
-        -- Logical-type attrs for the ctor function. Result is the
-        -- Custom type (peeled from any MFunction wrapping); params
-        -- are the field MonoTypes.
         ( ctorArgMonoTypes, ctorResultMonoType ) =
             Mono.decomposeFunctionType monoType
 
@@ -1700,8 +1625,7 @@ generateCtor ctx funcName ctorLayout monoType =
         constructorName =
             Just (Name.toElmString ctorLayout.name)
 
-        -- Well-known constants are elm/core's True/False/Nothing only: the
-        -- ctor's home is the home of the custom type it builds.
+        -- The constructor's home is the home of the custom type it builds.
         wellKnownName : Maybe String
         wellKnownName =
             case ctorResultMonoType of
@@ -1716,12 +1640,10 @@ generateCtor ctx funcName ctorLayout monoType =
                     Nothing
     in
     if arity == 0 then
-        -- Nullary constructor - check for well-known constants first
         let
             ( resultVar, ctx1 ) =
                 Ctx.freshVar ctxWithType
 
-            -- Check for well-known constants that must use eco.constant
             ( ctx2, valueOp ) =
                 case wellKnownName of
                     Just "Nothing" ->
@@ -1734,10 +1656,6 @@ generateCtor ctx funcName ctorLayout monoType =
                         Ops.ecoConstantFalse ctx1 resultVar
 
                     _ ->
-                        -- Nullary ctor: embedded null-cons constant carrying
-                        -- the declaration index (HEAP_044/CGEN_079). After
-                        -- P3.0, ctorLayout.tag IS the plain declaration index
-                        -- for every nullary ctor, RBEmpty (= 1) included.
                         Ops.ecoConstantNullCons ctx1
                             resultVar
                             (CtorTag.checkNullConsCapacity
@@ -1758,7 +1676,6 @@ generateCtor ctx funcName ctorLayout monoType =
         ( ctxOut, attachLogical funcOp )
 
     else
-        -- Constructor with arguments - use eco.construct.custom
         let
             argNames : List String
             argNames =
@@ -1766,10 +1683,8 @@ generateCtor ctx funcName ctorLayout monoType =
                     (\i _ -> "%arg" ++ String.fromInt i)
                     ctorLayout.fields
 
-            -- REP_ABI_001: every parameter crosses the call at its ABI type;
-            -- slotTypes is the type each field is stored at (every Int/Float/Char
-            -- field is unboxed whatever its index; they differ for a number type
-            -- variable, i64 at the ABI but boxed in the heap).
+            -- A parameter's ABI type and its field's stored type can differ:
+            -- a field the layout stores boxed may still arrive as a primitive.
             argTypes : List MlirType
             argTypes =
                 List.map (\field -> Types.monoTypeToAbi field.monoType) ctorLayout.fields
@@ -1795,8 +1710,6 @@ generateCtor ctx funcName ctorLayout monoType =
                 { ctxWithType | nextVar = arity, varMappings = Dict.empty }
                     |> Ctx.resetDefinedSsaVars argNames
 
-            -- Box each argument whose ABI type is a primitive but whose slot
-            -- is boxed (the same coercion as Expr.prepareCtorSlots).
             ( boxOpsRev, slotPairsRev, ctxBoxed ) =
                 List.foldl
                     (\( ( argName, argTy ), slotTy ) ( opsAcc, pairsAcc, ctxAcc ) ->
@@ -1832,10 +1745,15 @@ generateCtor ctx funcName ctorLayout monoType =
 -- ====== GENERATE ENUM ======
 
 
+{-| Builds the function `funcName` of an enum constructor: no parameters,
+returning a constant. `maybeCtor` is the constructor's home and name; `Nothing`,
+`True` and `False` of elm/core give their `eco.constant`, and any other
+constructor a null-cons constant carrying `tag`, which must fit
+(`CtorTag.checkNullConsCapacity`). The type is registered with the context.
+-}
 generateEnum : Ctx.Context -> String -> Int -> Mono.MonoType -> Maybe ( ModuleName.Canonical, String ) -> ( Ctx.Context, MlirOp )
 generateEnum ctx funcName tag monoType maybeCtor =
     let
-        -- Register the custom type and its constructor for the type graph
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType monoType ctx
 
@@ -1846,8 +1764,6 @@ generateEnum ctx funcName tag monoType maybeCtor =
         maybeCtorName =
             Maybe.map Tuple.second maybeCtor
 
-        -- Well-known constants (elm/core's True/False/Nothing only, matched
-        -- by home module too) must use eco.constant (CGEN_019).
         wellKnownName : Maybe String
         wellKnownName =
             case maybeCtor of
@@ -1873,11 +1789,7 @@ generateEnum ctx funcName tag monoType maybeCtor =
                     Ops.ecoConstantNothing ctx1 resultVar
 
                 _ ->
-                    -- Enum ctor: embedded null-cons constant (HEAP_044,
-                    -- CGEN_079). The incoming tag is already effective
-                    -- (Specialize.elm mints MonoEnum through
-                    -- CtorTag.effective — identity for enums); do NOT apply
-                    -- CtorTag.effective a second time here.
+                    -- tag is already the effective tag; it is used as given.
                     Ops.ecoConstantNullCons ctx1
                         resultVar
                         (CtorTag.checkNullConsCapacity
@@ -1913,18 +1825,16 @@ generateEnum ctx funcName tag monoType maybeCtor =
 -- ====== GENERATE EXTERN ======
 
 
+{-| Builds the private function `funcName` for an extern of type `monoType`.
+Its body only returns a placeholder value of the result type, built by
+`generateStubValue`.
+-}
 generateExtern : Ctx.Context -> String -> Mono.MonoType -> ( Ctx.Context, MlirOp )
 generateExtern ctx funcName monoType =
-    -- Generate an extern declaration with a placeholder body.
-    -- MLIR's func.func requires at least one region, so we create a stub body
-    -- that returns a default value of the correct type. The actual implementation
-    -- will be provided by the runtime linker.
     let
-        -- Decompose function type to get argument types and return type
         ( argMonoTypes, resultMonoType ) =
             Mono.decomposeFunctionType monoType
 
-        -- Convert to MLIR types
         argMlirTypes : List MlirType
         argMlirTypes =
             List.map Types.monoTypeToAbi argMonoTypes
@@ -1933,17 +1843,14 @@ generateExtern ctx funcName monoType =
         resultMlirType =
             Types.monoTypeToAbi resultMonoType
 
-        -- Create block argument pairs (arg0, arg1, etc.)
         argPairs : List ( String, MlirType )
         argPairs =
             List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
 
-        -- Start fresh var counter after block args
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
             { ctx | nextVar = List.length argPairs }
 
-        -- Create a stub return value of the correct type
         ( stubVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
@@ -1977,9 +1884,6 @@ generateExtern ctx funcName monoType =
                 |> Ops.opBuilder.withAttrs attrs
                 |> Ops.opBuilder.build
 
-        -- Externs have no Elm-source body — emit "value"-shaped attrs
-        -- so cross-spec sees explicit LUnknown shapes (CGEN_065) and
-        -- skips specialization.
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttr
                 ctxOut.ecoConfig.logicalTypes.customMaxFields
@@ -1991,24 +1895,19 @@ generateExtern ctx funcName monoType =
     ( ctxOut, funcOpWithLogical )
 
 
-{-| Generate a manager leaf function that calls Elm\_Kernel\_Platform\_leaf.
-
-Effect module `command` and `subscription` globals are compiled to functions
-that create Fx\_Leaf bags. This is the MLIR equivalent of the JS backend's
-`_Platform_leaf(moduleName)`.
-
-The generated function takes one argument (the effect value) and calls
-`Elm_Kernel_Platform_leaf(homeString, value)` to create an Fx\_Leaf bag.
-
+{-| Builds the private function `funcName` of an effect manager leaf, the
+`command` or `subscription` of the effect module `homeModuleName`. It returns
+the result of `Elm_Kernel_Platform_leaf` given the module name as a string and
+its first parameter, which wraps the effect value as a leaf of the manager's
+effects. Only `%arg0` is passed, whatever the number of parameters `monoType`
+gives.
 -}
 generateManagerLeaf : Ctx.Context -> String -> String -> Mono.MonoType -> ( Ctx.Context, MlirOp )
 generateManagerLeaf ctx funcName homeModuleName monoType =
     let
-        -- Decompose function type to get argument types and return type
         ( argMonoTypes, resultMonoType ) =
             Mono.decomposeFunctionType monoType
 
-        -- Convert to MLIR types
         argMlirTypes : List MlirType
         argMlirTypes =
             List.map Types.monoTypeToAbi argMonoTypes
@@ -2017,12 +1916,10 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
         resultMlirType =
             Types.monoTypeToAbi resultMonoType
 
-        -- Create block argument pairs (arg0, arg1, etc.)
         argPairs : List ( String, MlirType )
         argPairs =
             List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
 
-        -- Reset scope for this function's block args
         argSsaVars =
             List.map Tuple.first argPairs
 
@@ -2041,15 +1938,12 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
             { ctx | nextVar = List.length argPairs, varMappings = argVarMappings }
                 |> Ctx.resetDefinedSsaVars argSsaVars
 
-        -- Create string constant for home module name (its allocation call
-        -- is handled by RS4GC at LLVM level).
         ( homeVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
         ( ctx2, homeOp ) =
             Ops.ecoStringLiteral ctx1 homeVar homeModuleName
 
-        -- Call Elm_Kernel_Platform_leaf(home, arg0).
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2
 
@@ -2098,13 +1992,11 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
     ( ctxOut, funcOpWithLogical )
 
 
-{-| Generate a stub value of the given type for extern function bodies.
+{-| Builds a placeholder value of `mlirType` named `resultVar`: zero for
+`i64`, `f64` and `i16`, `False` for `i1`, and `unit` for any other type.
 -}
 generateStubValue : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 generateStubValue ctx resultVar mlirType =
-    -- Use mlirType instead of monoType because mlirType represents the actual
-    -- concrete type after monomorphization, which may be a primitive even when
-    -- the monoType is a type variable.
     case mlirType of
         I64 ->
             Ops.arithConstantInt ctx resultVar 0
@@ -2119,14 +2011,18 @@ generateStubValue ctx resultVar mlirType =
             Ops.arithConstantChar ctx resultVar 0
 
         _ ->
-            -- For all other types (EcoValue, etc.), return Unit
             Ops.ecoConstantUnit ctx resultVar
 
 
-{-| Generate a kernel function declaration with a stub body.
-The stub body is required by MLIR's func dialect (func.func must have a region).
-The stub will be replaced with an external declaration during lowering to LLVM.
-We mark it with an `is_kernel` attribute so the lowering pass can identify it.
+{-| Builds the declaration of the kernel function `info` describes: a private
+`func.func` at the recorded ABI types, marked `is_kernel`, whose body only
+returns a placeholder value because `func.func` must have a body. Lowering
+replaces it by an external declaration.
+
+It is also marked `eco.gc_leaf` when the configuration enables kernel gc-leaf
+marking and `info` records the kernel as a gc-leaf. Its logical types are
+recorded as unknown, since a kernel declaration carries no Elm types.
+
 -}
 generateKernelDecl : Ctx.Context -> Ctx.KernelDeclInfo -> ( Ctx.Context, MlirOp )
 generateKernelDecl ctx info =
@@ -2139,21 +2035,17 @@ generateKernelDecl ctx info =
         resultMlirType =
             info.abiResultType
 
-        -- Create block argument pairs (arg0, arg1, etc.)
         argPairs : List ( String, MlirType )
         argPairs =
             List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
 
-        -- Start fresh var counter after block args
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
             { ctx | nextVar = List.length argPairs }
 
-        -- Create a stub return value of the correct type
         ( stubVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
-        -- Generate stub value based on MLIR type
         ( ctx2, stubOp ) =
             generateStubValueFromMlirType ctx1 stubVar resultMlirType
 
@@ -2168,7 +2060,7 @@ generateKernelDecl ctx info =
             Dict.fromList
                 [ ( "sym_name", StringAttr info.symbolName )
                 , ( "sym_visibility", VisibilityAttr Private )
-                , ( "is_kernel", BoolAttr True ) -- Mark as kernel for lowering
+                , ( "is_kernel", BoolAttr True )
                 , ( "function_type"
                   , TypeAttr
                         (FunctionType
@@ -2179,11 +2071,8 @@ generateKernelDecl ctx info =
                   )
                 ]
 
-        -- kernel-opt-08 / CGEN_072(f): the ONE declaration-level gc-leaf channel.
-        -- UnitAttr (presence == eligible) matching eco.caf_memo / eco.shadow_roots
-        -- / eco.list_chunks, because the C++ side tests hasAttr -- a BoolAttr False
-        -- would read as "present". kernel-opt-09's module marking pass reads this
-        -- SAME attr; there is no second one.
+        -- A unit attribute: lowering tests only for its presence, so a false
+        -- value would still read as set.
         attrs =
             if ctx.ecoConfig.kernelGcLeaf && info.gcLeaf then
                 Dict.insert "eco.gc_leaf" UnitAttr baseAttrs
@@ -2197,9 +2086,6 @@ generateKernelDecl ctx info =
                 |> Ops.opBuilder.withAttrs attrs
                 |> Ops.opBuilder.build
 
-        -- Kernel decls carry no MonoType; fall back to ABI-only
-        -- encoding so the attrs are present but mark all aggregate
-        -- slots as opaque (CGEN_065 absent-or-LUnknown clause).
         funcOpWithLogical =
             LogicalTypes.addLogicalTypesAttrUnknown
                 argMlirTypes
@@ -2209,7 +2095,9 @@ generateKernelDecl ctx info =
     ( ctxOut, funcOpWithLogical )
 
 
-{-| Generate a stub value for kernel declaration bodies, based on MLIR type.
+{-| Builds a placeholder value of `mlirType` named `resultVar` for a kernel
+declaration's body: zero for `i64`, `f64` and `i16`, `False` for `i1`, and
+`unit` for any other type.
 -}
 generateStubValueFromMlirType : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 generateStubValueFromMlirType ctx resultVar mlirType =
@@ -2227,5 +2115,4 @@ generateStubValueFromMlirType ctx resultVar mlirType =
             Ops.arithConstantChar ctx resultVar 0
 
         _ ->
-            -- For all other types (EcoValue, etc.), return Unit
             Ops.ecoConstantUnit ctx resultVar

@@ -1,22 +1,45 @@
 module Compiler.GlobalOpt.CseCensus exposing (report)
 
-{-| C1 census for Mono-level CSE (kernel-opt-13 Phase 0, executing
-`plans/cse-pure-calls.md` §4). **Measures only — no behaviour change.** Runs
-behind `ECO_CSE_REPORT=1`, writes to stderr, and is excluded from `Config.hash`.
+{-| Common subexpression elimination (CSE) merges structurally equal
+expressions into one shared value. This module measures how much such a pass
+could merge inside each spec body, without changing the graph, so the answer is
+known before the pass is relied on. `report` returns the measurements as text
+lines, and nothing in the module writes them anywhere.
 
-Its job is to answer, before a line of transform is written, whether a
-bounded-scope CSE pass has anything to merge. The load-bearing definition is the
-DISTANCE BUCKET: two structurally equal occurrences are only mergeable without
-speculation if at least one of them dominates the other's continuation. Each
-occurrence carries its root→node path; the pair's bucket is read off the two
-path suffixes below their lowest common ancestor.
+A _candidate_ is a call that a merge could take: one whose result is not a
+function, that contains no binder (`let`, destructuring, `case` or closure),
+mentions no `Debug` kernel, is accepted by `CsePurity.isSafeExpr`, and whose
+`CsePurity.costOf` is at least `minCost`. Each rejection except the purity one
+is counted. Candidates are first divided by `CafHoist.kindTagOf` and result
+type, and then grouped by `==` after `CafHoist.zeroRegions`, so two calls are
+"the same" exactly when those functions say so. A _group_ of `n` equal
+candidates holds `n - 1` redundant occurrences.
 
-Equality machinery is reused verbatim from `CafHoist`/`CafDedupe`
-(`kindTagOf` + type-keyed `SpecMap` to bucket, `zeroRegions` + `==` inside the bucket) — this
-module invents none of its own.
+Whether a group can be merged without evaluating something that would not
+otherwise have been evaluated depends on where its members sit relative to
+each other. Every occurrence therefore carries its _path_, the list of `Step`s
+from the body's root down to it. The members' longest common path prefix is
+their lowest common ancestor, and each member's _suffix_ is the rest of its
+path. The group's _distance bucket_ is read off those suffixes, first rule
+that applies:
 
-The `cse-dce:` lines are kernel-opt-11's free ride-along, per that plan's
-Phase 0.
+  - `b3_frame`: some suffix enters a closure body, which runs at a different
+    time and frequency from the code around it.
+  - `b0_block`: every suffix is strict argument or field steps only.
+  - `b1_seq`: every suffix is strict or `let`/destructuring steps only.
+  - `b1c_probe`: at least one member's suffix is all unconditional steps
+    (strict, sequential, or the first guard of an `if`).
+  - `b2_branch`: everything else.
+
+Redundancy in `b0_block`, `b1_seq` or `b1c_probe` is _near_ redundancy.
+`b4_crossdef` is printed but no group is ever put in it, so it is always 0.
+_loopNear_ counts near redundancy in the body of a top-level tail-recursive
+function, whose body runs once per iteration.
+
+The same walk also counts dead plain `let`s, those whose name
+`CsePurity.countLocalUses` finds unused in the body, and how many of those bind
+a safe call or a call to a kernel that `KernelFacts.droppableFor` allows to be
+deleted. These are the `cse-dce` lines.
 
 @docs report
 
@@ -32,14 +55,24 @@ import Compiler.GlobalOpt.KernelFacts as KernelFacts
 import Dict exposing (Dict)
 
 
-{-| One step of a root→node path.
+{-| One step of a path from a spec body's root down to a sub-expression.
 
-`SGuard 0` is the ONLY guard position treated as unconditional: it is the first
-condition of a `MonoIf` chain, so it is evaluated on every path reaching the
-chain. `SGuard i>0` is reached only if guards `<i` all failed.
+`SStrict` is the position of an argument, list item, field or other operand
+that is always evaluated with its parent, counted from 0 (a call's function is
+0 and its arguments follow).
 
-`SClosure` marks entering a closure body — a DIFFERENT evaluation frequency,
-which is why `b3_frame` is excluded permanently rather than deferred.
+`SSeq` is the bound expression (0) or the body (1) of a `let`, or the body (1)
+of a destructuring.
+
+`SGuard` is the condition at that position in an `if` chain. Only `SGuard 0`
+counts as unconditional, because the first condition is evaluated whenever the
+chain is; a later one is reached only when every condition before it fails.
+
+`SBranch` is a branch: the result at that position of an `if` chain (the final
+`else` takes the next number), a jump branch of a `case`, or an inline leaf of
+a `case` decision tree, numbered as `foldDeciderPaths` describes.
+
+`SClosure` is the body of a closure.
 
 -}
 type Step
@@ -50,7 +83,8 @@ type Step
     | SClosure
 
 
-{-| Unconditional steps: the suffix shapes that dominate the LCA's continuation.
+{-| Returns whether a step is always taken when its parent is evaluated:
+strict and sequential steps, and the first guard of an `if`.
 -}
 isUnconditional : Step -> Bool
 isUnconditional step =
@@ -71,14 +105,24 @@ isUnconditional step =
             False
 
 
+{-| The callee of a candidate call, used to name it in the per-head counts: a
+global spec by SpecId, a kernel by home and name, or anything else.
+-}
 type Head
     = HGlobal Int
     | HKernel Name Name
     | HOther
 
 
+{-| One candidate call and where it sits.
+
+`key` and `ty` together pick the partition the candidate is compared in, and
+`shape` is the call with its regions zeroed, compared by `==` within that
+partition. `cost` is the call's `CsePurity.costOf`.
+
+-}
 type alias Occ =
-    { key : String -- kind tag only; the demanded type is `ty`, keyed structurally
+    { key : String
     , ty : Mono.MonoType
     , shape : MonoExpr
     , head : Head
@@ -87,6 +131,16 @@ type alias Occ =
     }
 
 
+{-| The census totals over every spec visited, as `report` prints them.
+
+`callOccs` counts every `MonoCall` the walk reaches, candidate or not. The `b*`
+fields, `nearRedundant`, `loopNear`, `perHead` and `perSpec` count redundant
+occurrences, `n - 1` per group of `n`, and `nearCost` weights each by the
+call's cost. `perHead` and `perSpec` count near redundancy only. The `c*` fields bin candidates by cost.
+`b4Crossdef`, `shadowBlocked` and `callInfoBlocked` are never increased and
+stay 0. `deadHeads` counts dead `let`s by kernel callee.
+
+-}
 type alias Counts =
     { specs : Int
     , callOccs : Int
@@ -121,6 +175,8 @@ type alias Counts =
     }
 
 
+{-| The census with every count at zero.
+-}
 empty : Counts
 empty =
     { specs = 0
@@ -156,8 +212,17 @@ empty =
     }
 
 
-{-| Render the census for one graph. `minCost` matches the pass's own cut so the
-histogram and the exclusion agree.
+{-| Returns the census of `graph` as text lines, each starting `cse-census`
+or `cse-dce` followed by `label`.
+
+The bodies visited are those of defines, tail functions and ports; other nodes
+are skipped. A call costing less than `minCost` is counted as excluded rather
+than taken as a candidate. A spec is named by its module and name, so the
+per-spec counts add together different specializations of one definition.
+`nearShareBp` is near redundancy per 10,000 calls, and `nearTop20Bp` is the
+share, per 10,000, of near redundancy that falls to the 20 most frequent callee
+heads.
+
 -}
 report : String -> Int -> Mono.MonoGraph -> String
 report label minCost ((Mono.MonoGraph g) as graph) =
@@ -318,11 +383,16 @@ report label minCost ((Mono.MonoGraph g) as graph) =
         ]
 
 
+{-| Returns an integer as decimal text.
+-}
 n_ : Int -> String
 n_ =
     String.fromInt
 
 
+{-| Returns the body of a node the census visits, with whether it is the body
+of a tail-recursive function, or `Nothing` for any other node.
+-}
 bodyOf : Mono.MonoNode -> Maybe ( MonoExpr, Bool )
 bodyOf node =
     case node of
@@ -330,9 +400,6 @@ bodyOf node =
             Just ( body, False )
 
         Mono.MonoTailFunc _ body _ ->
-            -- loopNear's dynamic-heat proxy: redundancy inside a tail-recursive
-            -- body is executed many times, so it is worth more than its static
-            -- count suggests.
             Just ( body, True )
 
         Mono.MonoPortIncoming body _ ->
@@ -345,9 +412,8 @@ bodyOf node =
             Nothing
 
 
-{-| Walk one spec body: collect candidate occurrences with their paths, group
-them, classify each group's pairs into distance buckets, and fold the
-kernel-opt-11 dead-let counters in the same pass.
+{-| Returns `acc0` with the census of one spec body added: its candidates
+grouped and each group given a distance bucket, and its dead `let`s counted.
 -}
 scanSpec :
     CsePurity.Oracle
@@ -394,8 +460,12 @@ scanSpec oracle minCost specName headName sid body inLoop acc0 =
         buckets
 
 
-{-| Exact equality inside a fingerprint bucket, then distance classification of
-each group. `CafDedupe.classify`'s partition idiom, on `Occ` instead of specs.
+{-| Returns `acc` with the groups among `members` counted.
+
+`members` share a kind tag and type. Each is grouped with every later member
+whose `shape` is `==` to it, a group of one is ignored, and each group of two or
+more is given its bucket by `groupBucket`.
+
 -}
 classifyBucket :
     (Head -> String)
@@ -470,6 +540,8 @@ classifyBucket headName specName sid inLoop members acc =
             classifyBucket headName specName sid inLoop different acc1
 
 
+{-| Returns `current` plus `amount` when `cond` holds, else `current`.
+-}
 bump : Bool -> Int -> Int -> Int
 bump cond amount current =
     if cond then
@@ -479,6 +551,9 @@ bump cond amount current =
         current
 
 
+{-| The distance bucket of a group, as the module docstring defines them.
+`b4_crossdef` has no constructor because no group is put in it.
+-}
 type Bucket
     = B3Frame
     | B0Block
@@ -487,9 +562,9 @@ type Bucket
     | B2Branch
 
 
-{-| A group's bucket is the WORST of its pairwise buckets: a group is only
-mergeable at bounded distance if every member is. Ordered decision list, first
-match wins, catch-all last, so every group lands in exactly one bucket.
+{-| Returns the distance bucket of a group, by the first rule in the module
+docstring's list that holds for the members' suffixes below their longest
+common path prefix.
 -}
 groupBucket : List Occ -> Bucket
 groupBucket group =
@@ -525,6 +600,8 @@ groupBucket group =
         B2Branch
 
 
+{-| Returns whether a step is `SStrict`.
+-}
 isStrictStep : Step -> Bool
 isStrictStep s =
     case s of
@@ -535,6 +612,8 @@ isStrictStep s =
             False
 
 
+{-| Returns whether a step is `SSeq`.
+-}
 isSeqStep : Step -> Bool
 isSeqStep s =
     case s of
@@ -545,8 +624,9 @@ isSeqStep s =
             False
 
 
-{-| The suffix of `path` below the lowest common ancestor of every path in
-`paths`. All paths are root-anchored, so the LCA is their longest common prefix.
+{-| Returns `path` without the longest prefix shared by every path in
+`paths`. All paths start at the body's root, so that prefix leads to their
+lowest common ancestor.
 -}
 dropCommonPrefix : List (List Step) -> List Step -> List Step
 dropCommonPrefix paths path =
@@ -562,6 +642,8 @@ dropCommonPrefix paths path =
     List.drop commonLen path
 
 
+{-| Returns the length of the longest common prefix of two paths.
+-}
 sharedLen : List Step -> List Step -> Int
 sharedLen a b =
     case ( a, b ) of
@@ -576,8 +658,13 @@ sharedLen a b =
             0
 
 
-{-| Collect candidate occurrences, counting every exclusion so the gate can see
-what was thrown away, and folding in kernel-opt-11's dead-let counters.
+{-| Returns the candidates and counts of `expr` and everything below it added
+to the accumulator, where `path` leads to `expr`.
+
+A `let` is dead when `CsePurity.countLocalUses` finds no use of its name in the
+body. Only `let`s of a plain definition are checked; a tail-recursive local
+definition never counts as dead.
+
 -}
 collect :
     CsePurity.Oracle
@@ -596,7 +683,6 @@ collect oracle minCost expr path ( occs, acc ) =
                 _ ->
                     acc
 
-        -- kernel-opt-11 ride-along, on the same walk.
         acc2 =
             case expr of
                 MonoLet (Mono.MonoDef n bound) body _ ->
@@ -636,7 +722,13 @@ collect oracle minCost expr path ( occs, acc ) =
     foldWithPaths (collect oracle minCost) path ( occs1, acc3 ) expr
 
 
-{-| Is this node a CSE candidate? Each rejection is counted.
+{-| Returns the accumulator with `expr` added as a candidate if it is one.
+
+Only a `MonoCall` can be a candidate. The tests run in order, and a call
+rejected for a function-typed result, a binder, a `Debug` mention or a cost
+below `minCost` is counted under that reason; a call `CsePurity.isSafeExpr`
+rejects is not counted anywhere.
+
 -}
 admit :
     CsePurity.Oracle
@@ -667,8 +759,8 @@ admit oracle minCost expr path ( occs, acc ) =
                     hasDebug expr
             in
             if Mono.isFunctionType ty then
-                -- CGEN_069: a hoisted function-typed value invalidates the
-                -- enclosing call's staged CallInfo (typed-apply arity assert).
+                -- Moving a function-typed result into a binding would invalidate
+                -- the CallInfo of the enclosing call that applies it.
                 ( occs, { acc | fnResultExcluded = acc.fnResultExcluded + 1 } )
 
             else if hasBinder expr then
@@ -705,14 +797,17 @@ admit oracle minCost expr path ( occs, acc ) =
             ( occs, acc )
 
 
-{-| Does any node in the tree satisfy `pred`? Plain structural recursion; the
-path-carrying fold is the wrong tool for a yes/no question.
+{-| Returns whether `pred` holds for `root` or any expression below it that
+`childrenOf` reaches.
 -}
 anyNode : (MonoExpr -> Bool) -> MonoExpr -> Bool
 anyNode pred root =
     pred root || List.any (anyNode pred) (childrenOf root)
 
 
+{-| Returns whether an expression references a kernel whose home is `Debug`,
+outside closure captures.
+-}
 hasDebug : MonoExpr -> Bool
 hasDebug =
     anyNode
@@ -726,8 +821,9 @@ hasDebug =
         )
 
 
-{-| v1 keeps clear of every binder-capture and duplicate-SSA-name question by
-refusing any candidate that contains a binder or a closure.
+{-| Returns whether an expression contains a `let`, destructuring, `case` or
+closure. Such a candidate is refused, so a merge never has to deal with
+variables bound inside it.
 -}
 hasBinder : MonoExpr -> Bool
 hasBinder =
@@ -751,7 +847,11 @@ hasBinder =
         )
 
 
-{-| Direct sub-expressions, order irrelevant (only `anyNode` consumes this).
+{-| Returns the direct sub-expressions of an expression, in no particular
+order.
+
+A closure's capture expressions are not included.
+
 -}
 childrenOf : MonoExpr -> List MonoExpr
 childrenOf expr =
@@ -811,6 +911,8 @@ childrenOf expr =
             items
 
 
+{-| Returns the expressions held inline at the leaves of a decision tree.
+-}
 deciderExprs : Mono.Decider Mono.MonoChoice -> List MonoExpr
 deciderExprs decider =
     case decider of
@@ -827,10 +929,12 @@ deciderExprs decider =
             List.concatMap (\( _, d ) -> deciderExprs d) tests ++ deciderExprs fallback
 
 
-{-| Fold over direct children, extending the path with each child's step.
+{-| Returns `acc` after applying `f` to each direct sub-expression of `expr`,
+each with `path` extended by the step that reaches it.
 
-Exhaustive on purpose: a new `MonoExpr` constructor must break this compile
-rather than silently drop a sub-tree from the census.
+The steps given are those `Step` describes. A closure's capture expressions
+are not visited. The `case` is written out for every `MonoExpr` constructor, so
+a new constructor fails to compile here instead of being skipped.
 
 -}
 foldWithPaths :
@@ -914,13 +1018,17 @@ foldWithPaths f path acc expr =
             indexed SStrict items acc
 
 
-{-| `depth` distinguishes decider leaves.
+{-| Returns `acc` after applying `f` to each expression held inline at a leaf
+of a `case` decision tree, each with `path` extended by `SBranch` and a number
+derived from `depth`.
 
-Every `Leaf (Inline _)` in a `Chain`/`FanOut` tree is a branch position, but they
-are DIFFERENT branch positions. Giving them all one path step would make two
-distinct occurrences share a path key, their common prefix would swallow both
-suffixes, and the pair would classify as `b0_block` — silently inflating the
-near pool with occurrences that are not mergeable at all.
+The number exists so that two leaves do not share a path, which would let
+their common prefix absorb both and classify them as near. At a `Chain` the
+success side gets `2 * depth + 1` and the failure side `2 * depth + 2`; at a
+`FanOut` test `n` gets `2 * depth + 3 + n` and the fallback `2 * depth + 2`.
+These numbers are not unique across a whole tree, and they can equal the
+numbers `foldWithPaths` gives the `case`'s jump branches, which start at 0, so
+two different leaves or branches can share a step.
 
 -}
 foldDeciderPaths :
@@ -957,6 +1065,9 @@ foldDeciderPaths f path depth acc decider =
                 fallback
 
 
+{-| Returns the expression a local definition binds, which for a
+tail-recursive one is its body.
+-}
 defBound : Mono.MonoDef -> MonoExpr
 defBound def =
     case def of

@@ -3,27 +3,45 @@ module Compiler.LocalOpt.Typed.DecisionTree exposing
     , compile
     )
 
-{-| Compiles pattern matching into efficient decision trees with container type hints.
+{-| A `case` expression has to be run as a sequence of tests on the value it
+matches, and this module works out which tests to make and in what order, for
+the typed pipeline.
 
-This module is a typed variant of `Compiler.LocalOpt.Erased.DecisionTree` that
-extends `Path` with `ContainerHint` information. This allows typed backends
-(MLIR/native) to use type-specific projection operations instead of generic ones.
+The value a `case` matches on is its _scrutinee_. A _decision tree_ examines
+the scrutinee one part at a time: each inner node names a position in the
+scrutinee, a `Path`, and branches on a `Test` of the value found there, and
+each leaf names the `case` branch that matches. Paths and tests are defined in
+`Compiler.AST.DecisionTree.TypedPath` and `Compiler.AST.DecisionTree.Test`.
 
-The algorithm is identical to the erased version, described in "When Do Match-Compilation
-Heuristics Matter?" by Kevin Scott and Norman Ramsey.
+`Compiler.LocalOpt.Erased.DecisionTree` builds the same trees by the same
+algorithm for the pipeline that carries no types. The difference is the path:
+here each `Index` step into a list cell, a tuple or a constructor's fields
+records that kind of container as a `ContainerHint`, so that a back end that
+lays those out differently can choose how to take the field. Paths are compared
+with `==`, hint included, so the hint given to a position must be the same
+everywhere it is built; this module gives it from the constructor name, the
+tuple size, or `HintList` for a list cell.
 
+The algorithm works on rows. A row is one `case` branch, held as the list of
+positions it still has to check, each with the pattern expected there. At the
+start every row has one position, the scrutinee. Patterns whose shape the type
+already fixes are expanded first: a tuple, or a constructor of a type with only
+one constructor, is replaced by its parts at sub-positions, an alias is split
+into its pattern and a variable, and unit is dropped. Then, if the first row
+has nothing left that needs a test, it matches. Otherwise one position is
+chosen, the different tests that rows make there become the edges of a node,
+each edge keeps the rows that agree with its test (with the matched pattern's
+parts added as new positions), and rows that make no test at that position are
+carried into every edge, and into the fallback when there is one. The tree is
+built again for each edge and for the fallback.
 
-# Core Types
+The position is chosen by two heuristics. The first prefers the position
+where the fewest rows make no test. Ties are broken by the second, which
+prefers the position whose node would have the fewest edges, counting a
+fallback as one edge.
 
 @docs DecisionTree, Test, Path, ContainerHint
-
-
-# Compilation
-
 @docs compile
-
-
-# Binary Encoding
 
 -}
 
@@ -42,14 +60,13 @@ import Utils.Main as Utils
 -- ====== COMPILE CASES ======
 
 
-{-| Users of this module will mainly interact with this function. It takes
-some normal branches and gives out a decision tree that has "labels" at all
-the leafs and a dictionary that maps these "labels" to the code that should
-run.
+{-| Builds the decision tree for the `case` branches given as patterns, each
+paired with the number its `Match` leaves are to carry.
 
-If 2 or more leaves point to the same label, we need to do some tricks in JS to
-make that work nicely. When is JS getting goto?! ;) That is outside the scope
-of this module though.
+Branches are tried in the order given: where several match the same value,
+the leaf names the earliest. A branch may be named by several leaves, or by
+none. Patterns are assumed to have passed the exhaustiveness check, since a
+missing case can lead to a node with no fallback.
 
 -}
 compile : List ( Can.Pattern, Int ) -> DecisionTree
@@ -66,10 +83,20 @@ compile rawBranches =
 -- ====== DECISION TREES ======
 
 
-{-| A decision tree representation for efficient pattern matching.
+{-| A plan for finding which `case` branch matches a value, made of tests on
+parts of that value.
 
-  - `Match Int`: A leaf node indicating successful match with the branch index
-  - `Decision Path (List (Test, DecisionTree)) (Maybe DecisionTree)`: A decision node that tests a value at the given path, with edges for each test outcome and an optional fallback for unmatched cases
+`Match` is a leaf, and carries the number that `compile` was given with the
+matching branch's pattern.
+
+`Decision` tests the value at its path. Each edge pairs a test with the tree
+to follow when the test succeeds. The optional tree is the fallback, followed
+when no edge's test succeeds. It is `Nothing` when the edges' tests cover
+every value that can be at the path (every constructor of the type, both
+`Bool`s, both an empty and a non-empty list, or a tuple test), and when no
+branch could match without one of the edges' tests succeeding. A node whose
+one edge would have no fallback is not built: the edge's tree stands in its
+place, so its test is never made.
 
 -}
 type DecisionTree
@@ -77,22 +104,23 @@ type DecisionTree
     | Decision Path (List ( Test, DecisionTree )) (Maybe DecisionTree)
 
 
-{-| A runtime test to determine which branch to take in a decision tree.
-Re-exported from Compiler.AST.DecisionTree.Test for backward compatibility.
+{-| A question a `Decision` node asks about the value at its path. This is
+another name for `Compiler.AST.DecisionTree.Test.Test`, which describes it.
 -}
 type alias Test =
     Test.Test
 
 
-{-| Indicates what kind of container an TypedPath.Index navigates into.
-Re-exported from Compiler.AST.DecisionTree.TypedPath for backward compatibility.
+{-| The kind of container a path step takes a field from. This is another
+name for `Compiler.AST.DecisionTree.TypedPath.ContainerHint`, which describes
+it.
 -}
 type alias ContainerHint =
     TypedPath.ContainerHint
 
 
-{-| A path describing how to access a value within a matched pattern.
-Re-exported from Compiler.AST.DecisionTree.TypedPath for backward compatibility.
+{-| A position in the scrutinee, as the steps that reach it. This is another
+name for `Compiler.AST.DecisionTree.TypedPath.Path`, which describes it.
 -}
 type alias Path =
     TypedPath.Path
@@ -102,10 +130,16 @@ type alias Path =
 -- ====== ACTUALLY BUILD DECISION TREES ======
 
 
+{-| One row: a `case` branch's number, and the positions it still has to
+check, each with the pattern expected there.
+-}
 type Branch
     = Branch Int (List ( Path, Can.Pattern ))
 
 
+{-| Builds the decision tree for the rows, earliest row first, as the module
+docstring describes.
+-}
 toDecisionTree : List Branch -> DecisionTree
 toDecisionTree rawBranches =
     let
@@ -144,6 +178,13 @@ toDecisionTree rawBranches =
                     Decision path decisionEdges (Just (toDecisionTree fallback))
 
 
+{-| Returns whether the tests, all made at one position and with no duplicates,
+cover every value that can be there, so that no fallback is needed.
+
+The kind of test is read from the first one, which must exist. Tests of `Int`,
+`Char` or `String` literals are never complete, and a tuple test always is.
+
+-}
 isComplete : List Test -> Bool
 isComplete tests =
     case Prelude.head tests of
@@ -176,14 +217,25 @@ isComplete tests =
 -- ====== FLATTEN PATTERNS ======
 
 
-{-| Flatten type aliases and use the VariantDict to figure out when a tag is
-the only variant so we can skip doing any tests on it.
+{-| Returns the row with every pattern whose shape the type already fixes
+expanded, as `flatten` does.
 -}
 flattenPatterns : Branch -> Branch
 flattenPatterns (Branch goal pathPatterns) =
     Branch goal (List.foldr flatten [] pathPatterns)
 
 
+{-| Puts a position and its pattern in front of the other positions, first
+expanding any pattern whose shape the type already fixes.
+
+A tuple, or a constructor of a type with one constructor, is replaced by its
+parts at sub-positions. A one-constructor type is expanded this way whatever
+its `Can.CtorOpts`: a single argument is taken with `Unbox`, several with
+`Index` steps. An alias pattern becomes its inner pattern and a variable
+pattern for the alias name at the same position. Unit is dropped. Every
+other pattern is kept as it is.
+
+-}
 flatten : ( Path, Can.Pattern ) -> List ( Path, Can.Pattern ) -> List ( Path, Can.Pattern )
 flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
     case patternInfo.node of
@@ -226,8 +278,7 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
                             TypedPath.HintTuple3
 
                         _ ->
-                            -- Larger tuples are encoded more like custom ADTs
-                            -- Use empty string since tuples don't have constructor names
+                            -- A tuple of more than three; canonicalization rejects these.
                             TypedPath.HintCustom ""
             in
             all
@@ -246,7 +297,6 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
 
         Can.PAlias realPattern alias ->
             flatten ( path, realPattern ) <|
-                -- Use placeholder ID (-1) for synthesized patterns
                 ( path, A.At region { id = -1, node = Can.PVar alias } )
                     :: otherPathPatterns
 
@@ -272,11 +322,16 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
             pathPattern :: otherPathPatterns
 
 
+{-| Pairs each pattern with the position of the field it matches, numbering the
+fields from zero within the container at `path`.
+-}
 subPositions : ContainerHint -> Path -> List Can.Pattern -> List ( Path, Can.Pattern )
 subPositions hint path patterns =
     Index.indexedMap (\index pattern -> ( TypedPath.Index index hint path, pattern )) patterns
 
 
+{-| Returns the pattern of a constructor argument.
+-}
 dearg : Can.PatternCtorArg -> Can.Pattern
 dearg (Can.PatternCtorArg _ _ pattern) =
     pattern
@@ -286,10 +341,8 @@ dearg (Can.PatternCtorArg _ _ pattern) =
 -- ====== SUCCESSFULLY MATCH ======
 
 
-{-| If the first branch has no more "decision points" we can finally take that
-path. If that is the case we give the resulting label and a mapping from free
-variables to "how to get their value". So a pattern like (Just (x,\_)) will give
-us something like ("x" => value.0.0)
+{-| Returns the number of the first row when none of its remaining patterns
+needs a test, and `Nothing` otherwise or when there are no rows.
 -}
 checkForMatch : List Branch -> Maybe Int
 checkForMatch branches =
@@ -309,6 +362,14 @@ checkForMatch branches =
 -- ====== GATHER OUTGOING EDGES ======
 
 
+{-| Returns the edges of a node testing `path`, one per distinct test that rows
+make there, each with the rows that can still match when that test succeeds,
+together with the fallback rows.
+
+The fallback rows are the rows that make no test at `path`, and there are none
+when the tests are complete.
+
+-}
 gatherEdges : List Branch -> Path -> ( List ( Test, List Branch ), List Branch )
 gatherEdges branches path =
     let
@@ -335,6 +396,9 @@ gatherEdges branches path =
 -- ====== FIND RELEVANT TESTS ======
 
 
+{-| Returns the distinct tests that rows make at `selectedPath`, telling tests
+apart by `Test.testToComparable`.
+-}
 testsAtPath : Path -> List Branch -> List Test
 testsAtPath selectedPath branches =
     let
@@ -355,6 +419,13 @@ testsAtPath selectedPath branches =
     Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)
 
 
+{-| Returns the test a row makes at `selectedPath`, or `Nothing` when it has no
+pattern there or its pattern there is a variable, a wildcard or a record.
+
+A tuple or unit pattern gives `IsTuple`. An alias pattern crashes, since
+`flatten` has removed every alias.
+
+-}
 testAtPath : Path -> Branch -> Maybe Test
 testAtPath selectedPath (Branch _ pathPatterns) =
     Utils.listLookup selectedPath pathPatterns
@@ -417,6 +488,9 @@ testAtPath selectedPath (Branch _ pathPatterns) =
 -- ====== BUILD EDGES ======
 
 
+{-| Returns the edge for `test`: the test, and the rows that can still match
+when it succeeds at `path`.
+-}
 edgesFor : Path -> List Branch -> Test -> ( Test, List Branch )
 edgesFor path branches test =
     ( test
@@ -424,6 +498,17 @@ edgesFor path branches test =
     )
 
 
+{-| Returns the row as it stands once `test` has succeeded at `path`, or
+`Nothing` when the row's pattern there cannot match a value that passes.
+
+A row whose pattern agrees with the test has that pattern replaced by its
+parts at sub-positions: a constructor's arguments, or a list's head and tail.
+A literal, or an empty list under `IsNil`, that agrees is removed. Whatever
+the test, a unit pattern is removed and a tuple is replaced by its elements.
+A row with no pattern at `path`, or with a variable, wildcard, record or
+alias pattern there, is kept unchanged.
+
+-}
 toRelevantBranch : Test -> Path -> Branch -> Maybe Branch
 toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
     case extract path pathPatterns of
@@ -469,7 +554,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                     case test of
                         Test.IsCons ->
                             let
-                                -- Use placeholder ID (-1) for synthesized patterns
+                                -- The tail pattern is synthesized, so it has no real id.
                                 tl_ : Can.Pattern
                                 tl_ =
                                     A.At region { id = -1, node = Can.PList tl }
@@ -555,7 +640,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                                     TypedPath.HintTuple3
 
                                 _ ->
-                                    -- Larger tuples use empty string for constructor name
+                                    -- A tuple of more than three; canonicalization rejects these.
                                     TypedPath.HintCustom ""
                     in
                     Just
@@ -582,11 +667,16 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
             Just branch
 
 
+{-| The result of looking for a position in a row: the positions before it,
+its pattern, and the positions after it, or `NotFound`.
+-}
 type Extract
     = NotFound
     | Found (List ( Path, Can.Pattern )) Can.Pattern (List ( Path, Can.Pattern ))
 
 
+{-| Finds the first entry for `selectedPath` in a row's positions.
+-}
 extract : Path -> List ( Path, Can.Pattern ) -> Extract
 extract selectedPath pathPatterns =
     case pathPatterns of
@@ -610,6 +700,9 @@ extract selectedPath pathPatterns =
 -- ====== FIND IRRELEVANT BRANCHES ======
 
 
+{-| Returns whether a row makes no test at `selectedPath`: it has no pattern
+there, or one that needs no test.
+-}
 isIrrelevantTo : Path -> Branch -> Bool
 isIrrelevantTo selectedPath (Branch _ pathPatterns) =
     case Utils.listLookup selectedPath pathPatterns of
@@ -620,6 +713,10 @@ isIrrelevantTo selectedPath (Branch _ pathPatterns) =
             not (needsTests pattern)
 
 
+{-| Returns whether matching the pattern needs a test. Variables, wildcards and
+record patterns do not. An alias pattern crashes, since `flatten` has removed
+every alias.
+-}
 needsTests : Can.Pattern -> Bool
 needsTests (A.At _ patternInfo) =
     case patternInfo.node of
@@ -667,6 +764,10 @@ needsTests (A.At _ patternInfo) =
 -- ====== PICK A PATH ======
 
 
+{-| Chooses the position to test next among those where some row needs a test,
+by the two heuristics the module docstring describes. Of positions still tied
+after both, the one whose first occurrence in the rows comes first wins.
+-}
 pickPath : List Branch -> Path
 pickPath branches =
     let
@@ -682,6 +783,8 @@ pickPath branches =
             Prelude.head (bests (addWeights (smallBranchingFactor branches) tiedPaths))
 
 
+{-| Returns the position when its pattern needs a test.
+-}
 isChoicePath : ( Path, Can.Pattern ) -> Maybe Path
 isChoicePath ( path, pattern ) =
     if needsTests pattern then
@@ -691,11 +794,16 @@ isChoicePath ( path, pattern ) =
         Nothing
 
 
+{-| Pairs each path with its weight.
+-}
 addWeights : (Path -> Int) -> List Path -> List ( Path, Int )
 addWeights toWeight paths =
     List.map (\path -> ( path, toWeight path )) paths
 
 
+{-| Returns the paths of least weight, in reverse order of the list given.
+Crashes on an empty list.
+-}
 bests : List ( Path, Int ) -> List Path
 bests allPaths =
     case allPaths of
@@ -722,11 +830,17 @@ bests allPaths =
 -- ====== PATH PICKING HEURISTICS ======
 
 
+{-| Returns how many rows make no test at `path`, the weight for the first
+heuristic.
+-}
 smallDefaults : List Branch -> Path -> Int
 smallDefaults branches path =
     List.length (List.filter (isIrrelevantTo path) branches)
 
 
+{-| Returns how many edges a node testing `path` would have, counting a fallback
+as one, the weight for the second heuristic.
+-}
 smallBranchingFactor : List Branch -> Path -> Int
 smallBranchingFactor branches path =
     let
@@ -740,7 +854,3 @@ smallBranchingFactor branches path =
            else
             1
           )
-
-
-
--- ====== ENCODERS and DECODERS ======

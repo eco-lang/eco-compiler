@@ -1,12 +1,24 @@
 module API.Uninstall exposing (run)
 
-{-| Remove Elm packages from an application or package project. This module handles
-removing packages from elm.json and recalculating the dependency graph to ensure
-all remaining dependencies are satisfied.
+{-| Removes one package from the `elm.json` of the project the command is run
+in, for the API-mode `uninstall` command. Nothing is asked of the user.
 
-For applications, the solver recomputes the dependency solution after removal. For
-packages, direct removal is performed since package dependencies use version ranges
-rather than exact versions.
+The work is split into a plan and its application. The plan is either the new
+outline or the finding that the package is not there to remove. An application
+lists exact versions, so removing a direct dependency means solving again, as
+`Builder.Deps.Solver.removeFromApp` describes. Only the direct and test-direct
+dependencies are searched: a package that is only an indirect dependency is
+reported as not installed. A package project lists version ranges, so its plan
+just deletes the package from its dependencies and test dependencies, and
+solves nothing.
+
+Applying a plan writes the new `elm.json` and then checks that the project's
+dependencies can be installed, through `Builder.Elm.Details.verifyInstall`. If
+that check fails, the old `elm.json` is written back.
+
+Errors are not returned: `Builder.Reporting.attempt` reports them on standard
+error and exits with failure. On success, plain text is printed to standard
+output.
 
 
 # Uninstallation
@@ -36,8 +48,14 @@ import Utils.Task.Extra as Task
 -- ====== RUN ======
 
 
-{-| Remove a package from the project's dependencies and update elm.json.
-Recalculates the dependency graph to ensure all remaining dependencies are satisfied.
+{-| Removes `pkg` from the dependencies of the project whose root
+`Builder.Stuff.findRoot` finds, and prints "Success!", or "It is not currently
+installed!" when there was nothing to remove.
+
+Having no project root, an unreadable registry or `elm.json`, no solution
+without `pkg`, a solver failure, or a failed install check is reported and ends
+the process with failure.
+
 -}
 run : Pkg.Name -> Task Never ()
 run pkg =
@@ -76,11 +94,20 @@ run pkg =
 -- ====== ATTEMPT CHANGES ======
 
 
+{-| A plan for the uninstall: `Changes` carries the whole new outline, and
+`AlreadyNotPresent` means the package was not found where the plan looked.
+
+The type parameter is not used by either constructor.
+
+-}
 type Changes vsn
     = AlreadyNotPresent
     | Changes Outline.Outline
 
 
+{-| Applies `changes` to the project at `root`, or prints that the package is
+not installed when there is nothing to change.
+-}
 attemptChanges : String -> Solver.Env -> Outline.Outline -> Changes a -> Task Exit.Uninstall ()
 attemptChanges root env oldOutline changes =
     case changes of
@@ -91,6 +118,14 @@ attemptChanges root env oldOutline changes =
             attemptChangesHelp root env oldOutline newOutline
 
 
+{-| Writes `newOutline` to the project at `root` and verifies that its
+dependencies install, printing "Success!" if they do. If they do not,
+`oldOutline` is written back and the verification error is returned.
+
+The task waits for every background write the verification starts before it
+finishes.
+
+-}
 attemptChangesHelp : FilePath -> Solver.Env -> Outline.Outline -> Outline.Outline -> Task Exit.Uninstall ()
 attemptChangesHelp root env oldOutline newOutline =
     Task.eio Exit.UninstallBadDetails <|
@@ -116,6 +151,11 @@ attemptChangesHelp root env oldOutline newOutline =
 -- ====== MAKE APP PLAN ======
 
 
+{-| Plans the removal of `pkg` from an application: re-solves without it when
+it is a direct or test-direct dependency, and otherwise gives
+`AlreadyNotPresent`. Fails with an uninstall error when there is no solution or
+the solver has trouble.
+-}
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Uninstall (Changes V.Version)
 makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
     let
@@ -152,6 +192,10 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 -- ====== MAKE PACKAGE PLAN ======
 
 
+{-| Plans the removal of `pkg` from a package project by deleting it from both
+the dependencies and the test dependencies, or gives `AlreadyNotPresent` when
+it is in neither.
+-}
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)
 makePkgPlan pkg (Outline.PkgOutline pkgData) =
     let

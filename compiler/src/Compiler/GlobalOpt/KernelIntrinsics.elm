@@ -5,10 +5,20 @@ inline operation instead of a call to the kernel function.
 
 `kernelIntrinsic` makes that decision from the kernel function's home and name
 and the monomorphic types of its arguments and result. The decision is needed
-both by the back end, which emits the operation, and by the inliner, which
-prices an intrinsic call as an operation rather than a call, so it lives here,
-below both. `Compiler.Generate.MLIR.Intrinsics` emits the MLIR for each
+by the back end, which emits the operation, by the inliner, which prices an
+intrinsic call as an operation rather than a call, and by the constant-thunk
+analysis, which asks whether a call is pure arithmetic, so it lives here, below
+all three. `Compiler.Generate.MLIR.Intrinsics` emits the MLIR for each
 `Intrinsic`.
+
+The decision is a whitelist: every shape not listed gets `Nothing` and stays
+an ordinary kernel call. Declining is always safe; choosing the wrong operation
+is not.
+
+This module reads no configuration and sees no SSA types. Where an intrinsic is
+also switched by a configuration flag, or needs the operands' SSA types to
+agree with it, `Compiler.Generate.MLIR.Expr` applies that test after this
+module has chosen.
 
 @docs Intrinsic, CompareKind, kernelIntrinsic
 
@@ -24,7 +34,43 @@ import Mlir.Mlir exposing (MlirType)
 -- ====== INTRINSIC TYPE ======
 
 
-{-| Intrinsic operation type representing operations that can be lowered directly to MLIR.
+{-| The inline operation a kernel call is lowered to instead of a call.
+
+Where a constructor carries `op`, it is the name of the MLIR operation to
+emit, such as `"eco.int.add"`; the constructor says what kind of operands and
+result that operation has.
+
+`UnaryInt`, `BinaryInt`, `UnaryFloat`, `BinaryFloat`, `UnaryBool` and
+`BinaryBool` take and give values of one type. `IntComparison`,
+`FloatComparison` and `CharComparison` take two values of their type and give a
+Bool, as does `FloatClassify` from one Float. `IntToFloat` is `toFloat`;
+`FloatToInt` is one of `round`, `floor`, `ceiling` and `truncate`.
+
+`ConstantFloat` is a kernel constant (`pi` or `e`) replaced by its value.
+
+`CharToInt` and `CharFromInt` are `Char.toCode` and `Char.fromCode`;
+`StringFromInt` and `StringFromFloat` are `String.fromNumber` at Int and Float;
+`StringLength` is `String.length`.
+
+The `Array` constructors are the `JsArray` kernel functions: `ArrayGet` is
+`unsafeGet`, `ArraySet` is `unsafeSet`, and the others share their names.
+Where one carries `elementMlirType`, it is the ABI type of the array's
+elements, which decides whether a slot is read or written unboxed.
+`ArrayEmpty`, `ArrayLength`, `ArraySlice` and `ArrayAppendN` do not need it.
+
+`ConstructList` is `List.cons`; `headMlirType` is the ABI type of the head,
+which decides the kind recorded for the head slot of the new cell.
+
+`AppendString` and `AppendList` are `++` on two Strings and on two Lists.
+
+`CompareToOrder` is `compare` on two values of the kind it carries, giving an
+`Order`. `StringOrderCompare` is `<`, `<=`, `>` or `>=` on two Strings: the
+Strings are compared to a signed number, and `op` is the Int comparison that
+tests that number against zero.
+
+`ValueEq` is `==` on two boxed values of the same type, and `BoolEq` is `==`
+on two Bools; with `negate` set, each is `/=` instead.
+
 -}
 type Intrinsic
     = UnaryInt { op : String }
@@ -62,7 +108,8 @@ type Intrinsic
     | BoolEq { negate : Bool }
 
 
-{-| Operand kind selector for the `Utils.compare` intrinsic.
+{-| The type of the two operands of a `compare` lowered to `CompareToOrder`,
+which selects the operation that compares them.
 -}
 type CompareKind
     = CompareIntKind
@@ -75,7 +122,15 @@ type CompareKind
 -- ====== INTRINSIC LOOKUP ======
 
 
-{-| Look up an intrinsic for a kernel function call.
+{-| Returns the intrinsic that a call of kernel function `name` from kernel
+module `home` lowers to, given the monomorphic types of its arguments and of
+its result, or `Nothing` when the call stays a kernel call.
+
+`home` is the bare module name, such as `"Basics"` or `"JsArray"`; the kernel
+prefix is not consulted. `argTypes` lists the arguments actually supplied, so a
+reference to a kernel function that is not applied passes `[]` and gets an
+intrinsic only for a constant such as `pi`.
+
 -}
 kernelIntrinsic : Name.Name -> Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 kernelIntrinsic home name argTypes resultType =
@@ -105,13 +160,21 @@ kernelIntrinsic home name argTypes resultType =
             Nothing
 
 
+{-| Returns the intrinsic for a call of the `Basics` kernel function `name`:
+Int, Float and Bool arithmetic, comparison and conversion.
+
+Every arm but the constants is chosen by the argument types alone, because the
+result type of a call can still be a type variable where the call sits in a
+polymorphic context. For the same reason `pi` and `e` accept a type-variable
+result as well as `Float`. `logBase` has no intrinsic.
+
+`and` and `or` here are strict in both arguments. They are reached only for
+the functions themselves, such as `(&&)` passed as a value; the `&&` and `||`
+operators are short-circuited before this point.
+
+-}
 basicsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 basicsIntrinsic name argTypes resultType =
-    -- Note: We match primarily on argument types because the result type from
-    -- the MonoCall might be a type variable (MVar) when the call is used in a
-    -- polymorphic context (e.g., `Debug.log "x" (negate 5)` where the result type
-    -- inherits from Debug.log's `a` parameter). For functions where the return type
-    -- is the same as the argument type, we use wildcard matching on resultType.
     case ( name, argTypes ) of
         ( "pi", [] ) ->
             if resultType == Mono.MFloat || isTypeVar resultType then
@@ -274,13 +337,6 @@ basicsIntrinsic name argTypes resultType =
         ( "neq", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ne" })
 
-        -- Boolean operations.
-        --
-        -- `eco.bool.and` / `eco.bool.or` are strict in both arguments; they are
-        -- only reached for first-class references to Basics.and / Basics.or
-        -- (e.g. `(&&)` passed as a value). Short-circuit semantics for the
-        -- (&&) / (||) operators are implemented earlier in TypedOptimized by
-        -- rewriting Binop to If, and do not flow through this path.
         ( "not", [ Mono.MBool ] ) ->
             Just (UnaryBool { op = "eco.bool.not" })
 
@@ -297,6 +353,9 @@ basicsIntrinsic name argTypes resultType =
             Nothing
 
 
+{-| Returns the intrinsic for a call of the `Bitwise` kernel function `name` on
+Int arguments.
+-}
 bitwiseIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
 bitwiseIntrinsic name argTypes =
     case ( name, argTypes ) of
@@ -325,10 +384,23 @@ bitwiseIntrinsic name argTypes =
             Nothing
 
 
+{-| Returns the intrinsic for a call of the `Utils` kernel function `name`:
+equality, ordering, `compare` and `++`.
+
+Int, Float and Char get their own comparison operations. Char ordering
+compares unsigned. Two Bools are compared as Bools. Two
+values of the same boxed type (see `boxedComparable`) get `ValueEq`; a type
+variable or a function type gets no intrinsic and stays a kernel call.
+`compare` is an intrinsic for Int, Float, Char and
+String, and ordering for String too; every other boxed key stays a kernel call.
+`++` is an intrinsic for two Strings or two Lists, and for any other pair,
+including one with a type-variable operand, stays a kernel call, which chooses
+by the values at run time.
+
+-}
 utilsIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
 utilsIntrinsic name argTypes =
     case ( name, argTypes ) of
-        -- Int comparisons
         ( "equal", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.eq" })
 
@@ -347,7 +419,6 @@ utilsIntrinsic name argTypes =
         ( "ge", [ Mono.MInt, Mono.MInt ] ) ->
             Just (IntComparison { op = "eco.int.ge" })
 
-        -- Float comparisons
         ( "equal", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.eq" })
 
@@ -366,9 +437,6 @@ utilsIntrinsic name argTypes =
         ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ge" })
 
-        -- Char comparisons (i16 unboxed). Equality is signedness-agnostic;
-        -- ordering uses unsigned predicates because Char is a Unicode code
-        -- point.
         ( "equal", [ Mono.MChar, Mono.MChar ] ) ->
             Just (CharComparison { op = "eco.char.eq" })
 
@@ -387,26 +455,12 @@ utilsIntrinsic name argTypes =
         ( "ge", [ Mono.MChar, Mono.MChar ] ) ->
             Just (CharComparison { op = "eco.char.ge" })
 
-        -- Compare-to-Order intrinsics: return one of the three pre-allocated
-        -- Order singletons. Boxed-key compares (Strings, lists, tuples,
-        -- records, user comparables) keep falling through to the kernel call.
-        -- kernel-opt-03 3a. Bool equality never needed the kernel: both sides are
-        -- already i1 in SSA, and the boxed round-trip was pure arm-1/arm-2
-        -- traffic. NOT config-gated -- one arith.xori is unconditionally better.
         ( "equal", [ Mono.MBool, Mono.MBool ] ) ->
             Just (BoolEq { negate = False })
 
         ( "notEqual", [ Mono.MBool, Mono.MBool ] ) ->
             Just (BoolEq { negate = True })
 
-        -- kernel-opt-03 3b. Everything whose ABI is unconditionally !eco.value.
-        -- MVar / MFunction are deliberately EXCLUDED (whitelist discipline, NOT
-        -- a divergence fix -- arm 1 agrees with eqHelp on every shape, closures
-        -- included, because `if (a == b) return true` precedes the tag switch):
-        -- MVar _ CNumber may still resolve to an UNBOXED MInt/MFloat so its SSA
-        -- type is not knowably !eco.value here, and MFunction's ABI may be a PAP.
-        -- The config gate and the ACTUAL SSA-type test are applied by
-        -- Expr.gateIntrinsic, which is the only place that can see them.
         ( "equal", [ x, y ] ) ->
             if boxedComparable x && x == y then
                 Just (ValueEq { negate = False })
@@ -430,20 +484,11 @@ utilsIntrinsic name argTypes =
         ( "compare", [ Mono.MChar, Mono.MChar ] ) ->
             Just (CompareToOrder { kind = CompareCharKind })
 
-        -- String compares leave the boxed kernel root (Elm_Kernel_Utils_compare)
-        -- for a typed op; the remaining boxed-key compares (lists, tuples,
-        -- records, user comparables) still fall through to the kernel call.
         ( "compare", [ Mono.MString, Mono.MString ] ) ->
             Just (CompareToOrder { kind = CompareStringKind })
 
-        -- ++ on statically-known String / List (kernel-opt-05). The residue --
-        -- ANY MVar operand -- falls through to `_ -> Nothing` below and keeps
-        -- emitting eco.call @Elm_Kernel_Utils_append verbatim. The config gate
-        -- is applied by Expr.gateIntrinsic, so this module stays config-free.
-        -- kernel-opt-06: String ordering joins `compare` at the intrinsic
-        -- boundary. Structural orderings (lists, tuples, records, user
-        -- comparables) still fall through to Elm_Kernel_Utils_{lt,le,gt,ge}.
-        -- The cmp3 sign is UNCLAMPED, so the test is always against 0.
+        -- The string comparison's sign is not clamped to -1, 0 or 1, so the
+        -- test is always against 0.
         ( "lt", [ Mono.MString, Mono.MString ] ) ->
             Just (StringOrderCompare { op = "eco.int.lt" })
 
@@ -462,9 +507,7 @@ utilsIntrinsic name argTypes =
         ( "append", [ Mono.MList _ _, Mono.MList _ _ ] ) ->
             Just AppendList
 
-        -- Defensive: a mixed String/List pair violates `appendable a => a -> a
-        -- -> a`. These arms keep such a pair on the polymorphic kernel, which
-        -- still routes by runtime tag, rather than mis-dispatching it.
+        -- Spelled out, though the last arm gives the same answer.
         ( "append", [ Mono.MString, Mono.MList _ _ ] ) ->
             Nothing
 
@@ -475,6 +518,9 @@ utilsIntrinsic name argTypes =
             Nothing
 
 
+{-| Returns the intrinsic for `Char.toCode` on a Char or `Char.fromCode` on an
+Int.
+-}
 charIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
 charIntrinsic name argTypes =
     case ( name, argTypes ) of
@@ -488,6 +534,10 @@ charIntrinsic name argTypes =
             Nothing
 
 
+{-| Returns the intrinsic for a call of the `String` kernel function `name`:
+`fromNumber` at Int or Float, and `length` applied to a String. A reference to
+`length` that is not applied has no argument types and gets none.
+-}
 stringIntrinsic : Name.Name -> List Mono.MonoType -> Maybe Intrinsic
 stringIntrinsic name argTypes =
     case ( name, argTypes ) of
@@ -497,12 +547,6 @@ stringIntrinsic name argTypes =
         ( "fromNumber", [ Mono.MFloat ] ) ->
             Just StringFromFloat
 
-        -- kernel-opt-04. Requires the SATURATED shape: argTypes = [ MString ].
-        -- A bare `Elm.Kernel.String.length` reference reaches generateVarKernel
-        -- with argTypes = [] (Expr.elm:775) and therefore still falls through to
-        -- the papCreate/kernel-decl path -- whitelist discipline, unlisted forms
-        -- keep today's behaviour. The `stringLengthOp` config gate is applied by
-        -- Expr.gateIntrinsic, so this module stays config-free.
         ( "length", [ Mono.MString ] ) ->
             Just StringLength
 
@@ -510,13 +554,12 @@ stringIntrinsic name argTypes =
             Nothing
 
 
-{-| MonoTypes whose ABI representation is unconditionally `!eco.value`
-(REP\_ABI\_001) and whose kernel equality has no closure/primitive hazard.
-Whitelist discipline: anything not listed keeps today's boxed kernel call.
+{-| Returns whether `==` on two values of type `ty` may be the boxed equality
+operation: `True` for String, unit, List, tuple, record and custom types, all
+of which are passed as `!eco.value`.
 
-The leading `Int` on the aggregate constructors is a STRUCTURAL HASH derived from
-the payload, not an identity, so `x == y` on two structurally identical types is
-`True` and the caller's `x == y` guard is a real same-type test.
+Int, Float, Char and Bool have their own arms in `utilsIntrinsic` and give
+`False` here, as do a type variable and a function.
 
 -}
 boxedComparable : Mono.MonoType -> Bool
@@ -541,13 +584,11 @@ boxedComparable ty =
             True
 
         _ ->
-            -- MInt/MFloat/MChar are handled by the primitive arms above and
-            -- MBool by 3a; MVar/MFunction deliberately fall through.
             False
 
 
-{-| `ArraySet` from a value type, declining when it is not concrete. Guessing
-a kind for an unknown element is the defect `unsafeGet` above documents.
+{-| Returns `ArraySet` for an element of type `elt`, or `Nothing` when `elt`
+is a type variable, whose ABI type, and so the slot kind, is not known.
 -}
 concreteArraySet : Mono.MonoType -> Maybe Intrinsic
 concreteArraySet elt =
@@ -559,19 +600,12 @@ concreteArraySet elt =
             Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi elt })
 
 
-{-| The element type of a `JsArray`, if it is recoverable.
+{-| Returns the element type of `ty` when it is a `JsArray` or an `Array` with
+its one type argument, and `Nothing` for any other type.
 
-**The constructor is `JsArray`, not `Array`.** `Elm.JsArray` declares
-`type JsArray a`, so a monomorphized `JsArray Int` is
-`MCustom _ (elm/core, Elm.JsArray) "JsArray" [ MInt ]` — as the LSS type dump
-spells it, `Xelm core Elm.JsArray JsArray(I)`. Matching only `"Array"` (this
-helper's original spelling, and the spelling in the intrinsic arms' comments)
-therefore never matched anything: `singleton` silently declined to a kernel
-call, and `unsafeGet` was left reading its element kind out of `resultType`,
-which is the defect `plans/pre-mono-inline-simplify.md` §13 root-causes.
-
-`"Array"` is kept because `Array.Array a` is also a one-argument type whose
-argument is its element, so the arm is correct where it does fire.
+The element type of a `JsArray` call is read from here, because the array
+arguments of a `JsArray` function are specialized per element type while its
+other arguments and its result may not be.
 
 -}
 arrayElementType : Mono.MonoType -> Maybe Mono.MonoType
@@ -587,12 +621,24 @@ arrayElementType ty =
             Nothing
 
 
+{-| Returns the intrinsic for a call of the `JsArray` kernel function `name`.
+
+The intrinsics that touch an element need its ABI type, because an Int, Float
+or Char element is stored unboxed. `unsafeGet` and `unsafeSet` take it from
+the array argument where they can (see `arrayElementType`).
+
+`unsafeGet` declines when the array's element is a type variable. When the
+array's element type cannot be read at all it falls back on the result type,
+but only when that is unboxed: the result of a function specialized on its own
+can be boxed although the element is not. `unsafeSet` falls back on the value
+argument, and declines only when that is also a type variable. `singleton`
+takes the element from its result, and `push` from its value argument.
+
+-}
 jsArrayIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 jsArrayIntrinsic name argTypes resultType =
     case name of
         "empty" ->
-            -- JsArray.empty : Array a — element kind is recovered later when
-            -- the array is first written. No element-type attribute on the op.
             case argTypes of
                 [] ->
                     Just ArrayEmpty
@@ -601,9 +647,6 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "singleton" ->
-            -- JsArray.singleton : a -> Array a — element kind from the result
-            -- (resultType = MCustom _ "JsArray" [elt]); robust when the value
-            -- arg type is a polymorphic var.
             case ( argTypes, arrayElementType resultType ) of
                 ( [ _ ], Just elt ) ->
                     Just (ArraySingleton { elementMlirType = MonoAbi.monoTypeToAbi elt })
@@ -612,7 +655,6 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "push" ->
-            -- JsArray.push : a -> Array a -> Array a
             case argTypes of
                 [ elt, _ ] ->
                     Just (ArrayPush { elementMlirType = MonoAbi.monoTypeToAbi elt })
@@ -621,7 +663,6 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "slice" ->
-            -- JsArray.slice : Int -> Int -> Array a -> Array a
             case argTypes of
                 [ Mono.MInt, Mono.MInt, _ ] ->
                     Just ArraySlice
@@ -630,7 +671,6 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "appendN" ->
-            -- JsArray.appendN : Int -> Array a -> Array a -> Array a
             case argTypes of
                 [ Mono.MInt, _, _ ] ->
                     Just ArrayAppendN
@@ -639,7 +679,6 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "length" ->
-            -- JsArray.length : Array a -> Int
             case resultType of
                 Mono.MInt ->
                     Just ArrayLength
@@ -648,51 +687,20 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "unsafeGet" ->
-            -- JsArray.unsafeGet : Int -> Array a -> a — element kind from the
-            -- ARRAY ARGUMENT, never from `resultType`.
-            --
-            -- `resultType` is the mono type of the call expression being
-            -- emitted. Inlined into a caller that wants an `i64` that is `MInt`
-            -- and the slot is read unboxed; but when this kernel is emitted as
-            -- a STANDALONE SPEC the same expression is the spec's own declared
-            -- result, which is boxed — so the spec read an unboxed Int slot as
-            -- `!eco.value` and its caller then `eco.unbox`ed a raw int.
-            -- SIGSEGV in the mutator, and only ever reachable when the inliner
-            -- declined this callee (cost 1 against a default budget of 10, so
-            -- it always inlined and the defect stayed hidden).
-            -- `plans/pre-mono-inline-simplify.md` §13 has the two MLIR dumps.
-            --
-            -- The array argument is specialized per element type — a program
-            -- with an `Array Int` and an `Array Float` emits four distinct
-            -- `unsafeGet` specs — so the concrete element is available here.
-            -- `singleton` above already takes this route for the same reason.
-            --
-            -- DECLINE when the element is not concrete rather than defaulting
-            -- to a boxed kind: a boxed default standing in for an unknown
-            -- element kind is exactly the defect above.
             case argTypes of
                 [ Mono.MInt, arrayTy ] ->
                     case arrayElementType arrayTy of
                         Just (Mono.MVar _ _) ->
-                            -- The element is still a VARIABLE, which is how
-                            -- `unsafeGet`'s own specialization arrives: its
-                            -- array parameter is element-polymorphic, so one
-                            -- spec body serves both boxed and unboxed element
-                            -- kinds. An unboxed slot read cannot be emitted
-                            -- for an unknown kind, so decline and let the
-                            -- generic kernel call — which resolves the kind
-                            -- from the array at runtime — do the read.
+                            -- The kernel call reads the slot kind from the
+                            -- array at run time; an inline read cannot.
                             Nothing
 
                         Just elt ->
                             Just (ArrayGet { elementMlirType = MonoAbi.monoTypeToAbi elt })
 
                         Nothing ->
-                            -- The array's element is not recoverable here.
-                            -- `resultType` is then usable ONLY while it is a
-                            -- concrete UNBOXED primitive: a widened result is
-                            -- exactly the defect above, and an unboxed one
-                            -- cannot have been widened.
+                            -- A boxed result type may be a widened stand-in for
+                            -- an unboxed element.
                             if MonoAbi.monoTypeToAbi resultType == MonoAbi.ecoValue then
                                 Nothing
 
@@ -703,31 +711,16 @@ jsArrayIntrinsic name argTypes resultType =
                     Nothing
 
         "unsafeSet" ->
-            -- JsArray.unsafeSet : Int -> a -> Array a -> Array a
-            -- argTypes = [ MInt, elt, MCustom _ "JsArray" [elt] ]
-            --
-            -- The ARRAY argument is preferred over the value argument for the
-            -- same reason as `unsafeGet` and `singleton`: it is specialized per
-            -- element type, whereas the value argument can arrive as a
-            -- polymorphic var. The value argument stays as the fallback because
-            -- it was the only source before and is correct wherever it is
-            -- concrete; if neither is, decline rather than guess a kind.
             case argTypes of
                 [ Mono.MInt, elt, arrayTy ] ->
                     case arrayElementType arrayTy of
                         Just (Mono.MVar _ _) ->
-                            -- Element-polymorphic array (see `unsafeGet`): fall
-                            -- through to the value argument, which is a real
-                            -- argument and may still be concrete.
                             concreteArraySet elt
 
                         Just fromArray ->
                             Just (ArraySet { elementMlirType = MonoAbi.monoTypeToAbi fromArray })
 
                         Nothing ->
-                            -- Unlike `unsafeGet`, the value argument here IS
-                            -- the element, and it is an ARGUMENT — never a
-                            -- widened spec result — so it stays trustworthy.
                             concreteArraySet elt
 
                 _ ->
@@ -737,17 +730,9 @@ jsArrayIntrinsic name argTypes resultType =
             Nothing
 
 
-{-| `List.cons` (`::`) -> `eco.construct.list` (kernel-opt-01). The head slot's
-2-bit kind is a HEAP layout decision (REP\_BOUNDARY\_002, invariants.csv:24) and must
-reproduce the axis `kernelInstanceSymbol` uses for the `_Int`/`_Float`/`_Char` C
-variants (Generate/MLIR/KernelAbi.elm:310-317). Anything outside that axis — an
-unsettled `CNumber` head, a scalar tail/result (the `kernelDevirtShapeOk` hazard,
-MonoSolver/Translate.elm:1869-1892), a non-binary application — DECLINES and keeps
-today's kernel call (whitelist discipline).
-
-The `Config`-level flag is applied by `Expr.consIntrinsicFor`, not here: this module
-takes no `EcoConfig`, and the SSA-type admissibility test needs Expr's view anyway.
-
+{-| Returns `ConstructList` for `List.cons` with a head and a tail, or
+`Nothing` when the head's slot kind is not settled (see `consHeadAbi`) or when
+the tail or the result is not passed as `!eco.value`.
 -}
 listIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
 listIntrinsic name argTypes resultType =
@@ -768,10 +753,13 @@ listIntrinsic name argTypes resultType =
             Nothing
 
 
-{-| The head's ABI type, or `Nothing` when the numeric axis is not settled.
-`MVar _ CNumber` maps to `i64` under `monoTypeToAbi` (`Compiler.AST.MonoAbi`) but does
-NOT match the `_Int` suffix arm, so today's site calls the BOXED root symbol with an
-i64 head — an unsettled shape this intrinsic must not freeze into a heap layout.
+{-| Returns the ABI type of a list head of type `headTy`, which is the kind
+its slot is given, or `Nothing` when that is not settled.
+
+Int, Float and Char are unboxed and any other type that is passed as
+`!eco.value` is boxed. A `number` type variable gives `Nothing`: it may still
+become Int or Float, and its slot kind must not be fixed before it does.
+
 -}
 consHeadAbi : Mono.MonoType -> Maybe MlirType
 consHeadAbi headTy =
@@ -796,13 +784,14 @@ consHeadAbi headTy =
                 Nothing
 
 
+{-| Returns whether a value of type `t` is passed as `!eco.value`.
+-}
 boxedSlot : Mono.MonoType -> Bool
 boxedSlot t =
     MonoAbi.isEcoValueType (MonoAbi.monoTypeToAbi t)
 
 
-{-| Returns whether the type is a type variable (`MVar`). Used for relaxed
-intrinsic matching when the result type might be polymorphic.
+{-| Returns whether `t` is a type variable.
 -}
 isTypeVar : Mono.MonoType -> Bool
 isTypeVar t =

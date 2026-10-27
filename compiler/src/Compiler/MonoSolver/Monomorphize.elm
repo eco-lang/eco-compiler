@@ -3,22 +3,60 @@ module Compiler.MonoSolver.Monomorphize exposing
     , monomorphizeWithReport, monomorphizeWithReportAssigned
     )
 
-{-| The solver-based monomorphizer (Architecture C) — a drop-in replacement for
-`Compiler.Monomorphize.Monomorphize`, using the type checker's real HM
-unification engine (`Compiler.Type.Unify` / `UnionFind`) instead of the
-Dict-substitution engine.
+{-| The driver of the solver-based monomorphizer: it turns a typed optimized
+program graph into a monomorphized one, in which every function is used at one
+concrete type.
 
-**No fallback.** This engine never consults the original one. A construct it
-cannot yet handle returns `Err "MonoSolver.unsupported: <what>"` through the
-normal `Result String MonoGraph` channel, which the pipeline surfaces as a loud
-build failure. It must NOT import `Compiler.Monomorphize.TypeSubst` or
-`.Specialize`, and works only from the total `meta.tipe` (never `meta.tvar`).
+Monomorphization proceeds one work item at a time, as
+`Compiler.MonoSolver.Engine` describes: a work item is one _spec_, a global at
+one concrete `MonoType`, named by a `SpecId` in the specialization registry.
+This module creates the first specs, for the entry point and for its flags
+decoder when it has one, and drains the worklist, handing each item's node to
+`Compiler.MonoSolver.Translate`. Translating an item can create and schedule
+further specs. When the worklist is empty the graph is assembled from the
+translated nodes and passed to `Prune.pruneUnreachableSpecs`, which drops the
+specs no root reaches (the entry point, the flags decoder and every incoming
+port's decoder) and closes the remaining number variables.
 
-The driver mirrors the original phase-for-phase: shared input prep (flags
-decoder, MVarId assignment), seed main + flags decoder, LIFO worklist drain, then
-assemble and hand off to the shared `Prune.pruneUnreachableSpecs` (which closes
-residual number vars and recomputes ctor shapes). Only the per-node
-specialization is the new solver engine.
+Most failures do not come back through the `Result`. A construct the engine
+cannot translate, or a failed unification, aborts the process through
+`Engine.crashFailure`. The `Err` cases are: no entry point of the given name; a
+spec watchdog trip (the limits in `Config.SpecLimits`), reported once the item
+that tripped it has finished; and three broken invariants of this module, each
+an `EngineBug`: too many flush rounds, too many saturation passes, and an
+accessor spec whose type is not a function of one record.
+
+Two loops translate again. A _saturation pass_ translates one item again
+against the same store, when a read-back that gave an erased type variable
+turns out to have been made before that variable was bound, later in the same
+item; the next pass reads the binding. A _flush round_ starts when the
+worklist is empty but some specs are _dirty_: with lambda-set specialization
+(LSS) on, a spec's stored type is the join of every demand made for it, and a
+spec whose stored type grew after it was scheduled is translated again with
+the joined type. Each loop has a cap, past which it fails with an `Err`.
+
+With LSS on, function types carry lambda sets (see `Compiler.MonoSolver.Engine`).
+After the drain, four _settle passes_ rewrite registry types, filling set
+variables (`LVar`) and ⊤ annotations from evidence elsewhere in the registry or
+in the translated closures. They run after the drain because only then has
+every spec contributed, so a union over all of them covers every value that can
+reach a position; a union taken earlier could leave out a construction not yet
+translated. Their order matters: `settleVarCtorRows` reads the ⊤ annotations
+that `settleCtorRows` then fills, and the second `settleVarSuccessors` extends
+sets that `settleVarLambda` writes. With LSS off every settle pass returns its
+input.
+
+The settle passes and the census name an arrow inside a type by its _position
+path_: `/aN` is the Nth argument of a function, `/r` its result, `/l` a list
+element, `/tN` a tuple element, `/f:name` a record field and `/cN` a custom-type
+argument, and the empty path is the type itself. A _cell_ (`VarCell`, and the
+records the settle passes build alike) gathers what several types hold at one
+path: whether any has ⊤, whether any has a set that is not known, and the union
+of the sets.
+
+Nearly half of the file is `renderLssReport`, which renders census counters as
+text when `lss.report` is on. It reads the final state and the pruned graph and
+changes neither.
 
 @docs monomorphize
 @docs monomorphizeWithReport, monomorphizeWithReportAssigned
@@ -61,27 +99,18 @@ import Dict
 import System.TypeCheck.IO as IO
 
 
-{-| Transform a typed optimized graph into a monomorphized graph, entering from
-the named entry point. Same as the original engine plus the LSS knobs (the
-original engine never computes sets). With `lss.enabled = False` the output is
-intended to match the original engine's, but the `EngineDiff` gate checks only
-canonical equivalence (`Compiler.MonoSolver.Diff`: residual `MVar` ids erased,
-record fields ordered), not byte identity.
+{-| Returns the monomorphized graph of `globalGraph`, entered from the
+definition named `entryPointName`, as `monomorphizeWithReportAssigned`
+describes, with the default spec limits and without the census text.
 -}
 monomorphize : Config.LssConfig -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphize lssConfig entryPointName globalTypeEnv globalGraph =
     Result.map Tuple.first (monomorphizeWithReport lssConfig Config.defaultLimits entryPointName globalTypeEnv globalGraph)
 
 
-{-| `monomorphize` additionally returning the rendered LSS census
-(`Just` iff `lss.report`). The report rides the result because this function
-is pure and `compiler/src` cannot use `Debug.toString` — the census is plain
-string concatenation, printed to stderr by the Builder.
-
-Also the MONO\_030 limits entry point: the Builder passes
-`ecoConfig.mono.limits` (env-overridable); the plain `monomorphize` wrapper
-defaults them, so test call sites are unchanged.
-
+{-| Returns what `monomorphizeWithReportAssigned` returns for a graph whose ids
+have not been assigned yet. It first runs `EntryPrep.assign`, with solver roots
+on, and with the stamping census on exactly when `lss.arrowCensus` is.
 -}
 monomorphizeWithReport : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String ( Mono.MonoGraph, Maybe String )
 monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph =
@@ -92,13 +121,15 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
         (EntryPrep.assign ( True, lssConfig.arrowCensus ) entryPointName globalGraph)
 
 
-{-| `monomorphizeWithReport` on a graph that has ALREADY been through
-`AssignMVarIds` — the entry the Builder uses, because the pre-mono passes
-(`plans/pre-mono-lss-transforms.md`) run on the assigned graph and hand their
-result straight here.
+{-| Returns the monomorphized graph of an id-assigned graph, entered from the
+definition named `entryPointName` that `EntryPrep.findEntryPointId` finds,
+together with the LSS census text, which is `Just` exactly when `lss.report` is
+on.
 
-The Name-typed entry above is a wrapper that assigns and calls this, so every
-existing caller and test is unchanged.
+The entry point, and the flags decoder `assigned` carries when the entry is a
+`Program`, are seeded as specs at their annotation types, read with an empty
+super table. The result is `Err` when no definition has that name, or when the
+drain fails as the module docstring describes.
 
 -}
 monomorphizeWithReportAssigned : Config.LssConfig -> Config.SpecLimits -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
@@ -129,21 +160,11 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                 s0 =
                     initState lssConfig limits mainHome nodesWithIds annotationsWithIds globalTypeEnv mvarState
 
-                -- Entry seeding uses an EMPTY super table (matching the original
-                -- engine's `entryPointMonoType Dict.empty`).
                 mainMonoType : Mono.MonoType
                 mainMonoType =
                     Zonk.canTypeToMono Dict.empty mainType
 
-                -- Registration self-identity (AR-7): the seeds bypass
-                -- `enqueueSpec`, so they stamp here or not at all. Main and
-                -- the flags decoder are non-arrow types today, making this a
-                -- structural no-op — but AR-11 says an unstamped demand
-                -- ⊤-collapses a stored type, so the route exists for the day
-                -- an entry global IS an arrow. The Err fallback keeps the
-                -- seed unstamped; sound (entry globals have no other
-                -- callers to join with), and unreachable while the types
-                -- are non-arrows.
+                -- Seeds bypass `Engine.enqueueSpec`, so their own spine is stamped here.
                 ( mainSpecId, s1 ) =
                     case Translate.stampSelfSpine mainGlobal mainMonoType s0 of
                         ( stampedMain, s0b ) ->
@@ -158,32 +179,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
 
                 Ok sDrained ->
                     let
-                        -- lss.destrAnno FIX B (plans/lss-ctor-arrow-identity.md
-                        -- §9.8): ctor registry rows recover their ⊤ field
-                        -- annotations from the COMPLETE union of the ctor's
-                        -- specs' demands. Post-drain is load-bearing for
-                        -- soundness: a translation-time read sees a PARTIAL
-                        -- union, and a set stamped from it excludes
-                        -- constructions that have not happened yet — the
-                        -- false-singleton miscompile class. Here every
-                        -- construction has contributed, so union-widening
-                        -- (AR-D2) holds and the pass is a single order-free
-                        -- sweep.
-                        -- Settle order is LOAD-BEARING
-                        -- (plans/lss-var-chain-roots.md §3): var ctor-row
-                        -- writes read ⊤ contamination HONESTLY, so they run
-                        -- BEFORE the ⊤-heal erases it; successor writes run
-                        -- last to extend heads either pass creates.
-                        -- PRECISION ORDER (measured, §8.4/§8.5): exact
-                        -- writes claim their slots before widened ones —
-                        -- coarse-first measured as pure churn (k1 −1,269 for
-                        -- var −5) when a since-removed row-union pass ran
-                        -- ahead of the successor sweep. varLambda sits after
-                        -- the ⊤-heal (never competes with a healed position)
-                        -- and does not collide with the successor sweep (its
-                        -- `l|`-headed parents are never pap-able); the
-                        -- TRAILING successor sweep extends spines from any
-                        -- pap-able head varLambda just wrote.
+                        -- The order of the settle passes matters; see the module docstring.
                         sFinal =
                             settleVarSuccessors
                                 (settleVarLambda
@@ -203,19 +199,19 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
                     Ok ( graph, report )
 
 
-{-| destrAnno FIX B — the post-drain ctor-row settle (§9.8). For every
-registry entry whose node is a `TOpt.Ctor`/`Box` and whose stored type still
-carries ⊤: enrich its annotations from the set-biased union of ALL entries of
-the same ctor global (`Mono.enrichAnnotations`-folded — a ⊤ contributes
-nothing, sets union). Precision-monotone, structure untouched (MONO\_029),
-complete-union sound (AR-D2). One sweep; no fixpoint needed — the unions are
-final. No-op for globals with a single all-⊤ entry.
+{-| Returns the state with every constructor row of the registry that carries a
+⊤ enriched from the other rows of the same constructor. Does nothing with LSS
+off.
 
-LANDED 2026-08-31 as the Fix B half of `lss.destrAnno`, default-ON: ⊤
-2,133 -> 1,457 (−32 %, the largest single ⊤ cut of the arc), coverage
-88.99 % -> 89.61 %, conflict-⊤ exactly unchanged, wall +2.4 %. Unconditional
-since 2026-09-18. The differential that pinned it (`LssDestrAnnoTest`) is
-also what caught the partial-union false-singleton window §9.8 closed.
+A constructor row is a registry entry whose global is a `Ctor` or `Box` node.
+For each constructor, all of its rows are first folded into one type with
+`Mono.enrichAnnotations`, so the sets at one position are united and a ⊤ or set
+variable gives way to a set another row has there. Each row carrying a ⊤
+anywhere is then enriched from that union with `Mono.enrichAnnotationsTopOnly`,
+which replaces a ⊤ with the union's set where the union has one, adds the
+union's members to `LPartial` and set annotations, a set becoming an `LPartial`
+where the union is one, and leaves every `LVar` alone; set variables are `settleVarCtorRows`'s concern. One sweep is
+enough, because every union is computed before any row is rewritten.
 
 -}
 settleCtorRows : S -> S
@@ -249,7 +245,6 @@ settleCtorRows s =
                     _ ->
                         "?"
 
-            -- pass 1: set-biased unions per ctor global
             unions =
                 Array.foldl
                     (\entry acc ->
@@ -278,7 +273,6 @@ settleCtorRows s =
                     Dict.empty
                     s.registry.reverseMapping
 
-            -- pass 2: enrich ⊤-carrying ctor rows from their union
             registry1 =
                 Tuple.second
                     (Array.foldl
@@ -290,11 +284,6 @@ settleCtorRows s =
                                             Just u ->
                                                 let
                                                     enriched =
-                                                        -- AR-V1 retrofit (plans/lss-var-chain-roots.md §6):
-                                                        -- the ⊤-heal must never flip an LVar slot — its
-                                                        -- union drops ⊤ contributors, which is the
-                                                        -- false-set class on never-written positions.
-                                                        -- Var writes go through settleVarCtorRows' gate.
                                                         Mono.enrichAnnotationsTopOnly monoType u
                                                 in
                                                 if enriched == monoType then
@@ -319,30 +308,26 @@ settleCtorRows s =
         { s | registry = registry1 }
 
 
-{-| Phase 2b (plans/lss-var-chain-roots.md §3): write var
-payload slots on ctor registry rows from the sibling-spec CELL union, under
-the all-sets completeness rule.
+{-| Returns the state with set variables in the constructor rows of the
+registry replaced by the union of the sets the constructor's rows hold at the
+same position, where those rows show the union is complete. Does nothing with
+LSS off.
 
-Cells are keyed by (ctor global, POSITION PATH) across ALL sibling specs —
-path-keyed rather than structural on purpose: sibling specs of one ctor can
-have structurally different types, and a ⊤ in a differently-shaped sibling
-must still contaminate the cell (a structural pairwise union would silently
-miss it).
+A constructor row is a registry entry whose global is a `Ctor` or `Box` node.
+For each constructor, a cell is gathered at every position path over all of its
+rows. Rows of one constructor can differ in shape, so cells are keyed by path
+rather than by walking two types in step, and a ⊤ in a row of another shape
+still reaches the cell. A cell is contaminated by a ⊤, by an `LPartial` (a
+lower bound, so other members may exist), or by an `LVar` in a row whose spec
+is in `flexCtorSpecs`, the constructions whose argument carried an unresolved
+arrow. An `LVar` in an unmarked row contaminates nothing. An `LVar` is replaced
+by its cell's union only when the cell is not contaminated and has seen a set.
 
-The write rule (AR-D2 inheritance): a var slot may take the cell's set
-union iff the cell saw ZERO ⊤ contributors. Var contributors are benign —
-`lssFastOk` guarantees every Elm construction carrying an arrow reaches the
-slow path and leaves a mark (set or honest ⊤) on some sibling row, and
-kernel routes are marked at the boundary by the LSS\_021/022 license or the
-LSS\_004 poison — so an all-var-and-sets cell's union covers every possible
-inhabitant. A ⊤ contributor means unknown inhabitants: skip.
+Cells are keyed by the constructor's name and the path, without the module, so
+constructors of the same name in different modules share cells.
 
-ORDER IS LOAD-BEARING: this pass MUST run BEFORE `settleCtorRows`' ⊤-heal —
-the heal rewrites ⊤ positions to sets and would erase the contamination
-evidence this gate reads.
-
-LANDED 2026-08-31 as `lss.settle.varCtorRows`, default-ON (the flex gate
-protected 1,563 positions). Unconditional since 2026-09-18.
+The numbers of writes and of each kind of skip go to the census, and the writes
+also by module.
 
 -}
 settleVarCtorRows : S -> S
@@ -384,11 +369,6 @@ settleVarCtorRows s =
                     _ ->
                         "?"
 
-            -- pass 1: path-keyed cells over all sibling rows of each ctor
-            -- global. `flexVar` = a var contribution from a spec the slow
-            -- path marked as a flex-transporting CONSTRUCTION — a real
-            -- inhabitant may hide behind it (the wrap-class hazard, §3);
-            -- destructure-only var siblings stay benign.
             emptyCell =
                 { top = False, flexVar = False, sets = Nothing }
 
@@ -400,9 +380,7 @@ settleVarCtorRows s =
                     Mono.LSet ms ->
                         { cell | sets = Just (Mono.unionSortedInts ms (Maybe.withDefault [] cell.sets)) }
 
-                    -- lss-lpartial §2: a lower bound admits unknown
-                    -- inhabitants — contaminates like a MARKED var,
-                    -- regardless of the flex mark.
+                    -- A lower bound: the value may hold members it does not list.
                     Mono.LPartial _ ->
                         { cell | flexVar = True }
 
@@ -476,8 +454,6 @@ settleVarCtorRows s =
                         s.registry.reverseMapping
                     )
 
-            -- pass 2: rewrite var slots from complete cells. Returns the
-            -- rewritten type plus (wrote, skipTop, skipNoInfo) deltas.
             rewriteWalk gname path t st =
                 case t of
                     Mono.MFunction _ anno args result ->
@@ -637,46 +613,26 @@ settleVarCtorRows s =
                     |> bumpN "varctor|skipFlexVar" totals.skipFlexVar
                     |> bumpN "varctor|skipNoInfo" totals.skipNoInfo
         in
-        -- per-module write attribution (Phase 2a audit channel: an elm/*
-        -- module gaining writes is the flag to re-examine the kernel
-        -- boundary argument).
         Dict.foldl (\m n acc -> bumpN ("varctor|mod|" ++ m) n acc) s1 totals.byModule
 
 
-{-| Phase 4v2 (plans/lss-var-chain-roots.md §8.2): enrich
-`l|`-headed var positions from the LAMBDA-HOME table.
+{-| Returns the state with set variables in registry types filled from the
+result types of the closures in the translated nodes. Does nothing with LSS
+off.
 
-A lambda's result set exists in exactly one place — the type of its BODY in
-the item that translated it — and never reaches a registry row, because rows
-record spec parameters and results, not interior values. That is why the mB
-P0 (`writable=65`) and the §4.5 classification (`otherHead=3,339`) both found
-the class empty from the row side. The closure NODES carry it:
-`ClosureInfo.lssMember` names the member, `Mono.typeOf body` is the settled
-result, and `s.nodes` persists to settle time (so no store access and no
-item-completion hook are needed — §8.2's lowering question, answered by the
-P0 measuring `lNoRecord = 0` across 30,544 mids).
+A closure's result set is held in one place: the type of its body, inside the
+node that contains the closure. Registry rows hold the types of specs, not of
+values inside their bodies, so this pass reads the closures, through
+`lambdaHomesOf`.
 
-Three guards, each load-bearing:
-
-  - STRICT CELLS: ⊤ or var anywhere in the merged cell blocks the write.
-    `unionAnno (LSet, LVar) = ⊤` means a surviving set at a join had no var
-    contributor, so a clean cell is the lattice's own completeness witness.
-  - ALL-OR-NOTHING across members, and ONLY `l|` members: any member without
-    a home entry blocks the position (a non-lambda member's inhabitants are
-    not described by this table).
-  - ARITY: the use site's arrow must consume exactly as many arguments as
-    the recorded closure has parameters. Mono can re-arity a value (staged
-    vs flat — the H6 arc), and a mismatch would make the SAME relative path
-    mean different types on the two sides, writing a set from the wrong
-    node. Mids whose recorded closures disagree on arity are unusable.
-
-Deliberately an INDEPENDENT implementation of the cellmap walk from the
-`varfix3` census that measured this class: the census must not share a
-classifier with its mechanism (the Aug-26 audit rule), which keeps its
-`lwould = 568` a genuine upper bound — this pass must write no more.
-
-LANDED 2026-09-01 as `lss.settle.varLambda`, default-ON: 597 writes, 587 k1,
-`andThen` var −328. Unconditional since 2026-09-18.
+In each row, an arrow whose annotation is an `LSet` opens a context when every
+member of the set is a closure member recorded with as many parameters as the
+arrow takes arguments; the context is the merged cells of those closures'
+bodies. Below that arrow, along its result and through lists, tuples, records
+and custom types, an `LVar` is replaced by the union in the matching cell when
+that cell has no ⊤ and no unresolved set. Arguments get no context from above,
+and any `LSet` met below opens its own context or, if its members fail the
+test, none.
 
 -}
 settleVarLambda : S -> S
@@ -689,8 +645,7 @@ settleVarLambda s =
             homes =
                 lambdaHomesOf s.nodes
 
-            -- The cellmap for a head's member set, or Nothing when any guard
-            -- refuses. `nargs` is the use site's arrow arity.
+            -- Nothing unless every member has a closure entry of arity `nargs`.
             openCtx ms nargs =
                 List.foldl
                     (\m acc ->
@@ -739,12 +694,7 @@ settleVarLambda s =
                                     _ ->
                                         ( anno, st )
 
-                            -- A set ALREADY at this arrow opens a fresh
-                            -- context; anything else inherits the enclosing
-                            -- one, one hop deeper. (Mirrors the census: a
-                            -- just-written set does NOT re-open, because its
-                            -- own result is described by the same cellmap at
-                            -- the deeper path.)
+                            -- Opened by the annotation as it was, so a set just written here does not reopen.
                             ctxR =
                                 case anno of
                                     Mono.LSet ms ->
@@ -756,9 +706,6 @@ settleVarLambda s =
                             ( result1, st2 ) =
                                 rewrite result ctxR st1
 
-                            -- Argument subtrees get NO inherited context
-                            -- (AR-V6): they are consumer-fed. A set head
-                            -- inside one opens its own.
                             ( args1, st3 ) =
                                 List.foldr
                                     (\a ( accL, accSt ) ->
@@ -874,14 +821,14 @@ settleVarLambda s =
             |> bumpN "varlam|mids" (Dict.size homes)
 
 
-{-| The lambda-home table: mid → ( parameter count, cells of the body's type
-keyed RELATIVE to the lambda's own arrow, so `/r` is its result ).
+{-| Returns, by member id, every closure with an LSS member in the translated
+nodes, except closures inside a closure's captures: its parameter count and
+the cells of its body's type, keyed by position path relative to the closure's
+own arrow, so that `/r` is the body's type.
 
-Several closures may share one mid (LSS\_024). Merging their cells is the
-unsplit-store union — a superset, and a ⊤/var at ANY instantiation
-contaminates rather than lies. Arity disagreement across instantiations makes
-the entry unusable (`arity = Nothing`), since the relative paths would not
-denote the same nodes.
+Closures with the same member have their cells merged. Where they disagree on
+the parameter count the count is `Nothing`, since a path would then name
+different parts of their types.
 
 -}
 lambdaHomesOf : Array (Maybe Mono.MonoNode) -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
@@ -908,6 +855,10 @@ lambdaHomesOf nodes =
         nodes
 
 
+{-| Returns `acc` with every closure in `e` recorded by `recordLambdaHome`,
+closures nested in other closures included, though not closures in a closure's
+captures.
+-}
 lambdaHomesExpr : Mono.MonoExpr -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell } -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
 lambdaHomesExpr e acc =
     case e of
@@ -961,9 +912,8 @@ lambdaHomesExpr e acc =
             acc
 
 
-{-| Decider leaves flattened first, so the expression walk never calls back
-into a decider walk (Elm rejects mutually recursive let/top-level cycles
-through values).
+{-| Returns the expressions at the `Inline` leaves of a decision tree, consed
+onto `acc`.
 -}
 lambdaHomeDeciderExprs : Mono.Decider Mono.MonoChoice -> List Mono.MonoExpr -> List Mono.MonoExpr
 lambdaHomeDeciderExprs d acc =
@@ -982,6 +932,10 @@ lambdaHomeDeciderExprs d acc =
                 (List.foldl (\( _, dd ) aa -> lambdaHomeDeciderExprs dd aa) acc tests)
 
 
+{-| Returns `acc` with the closure described by `info` and `body` recorded under
+its LSS member, as `lambdaHomesOf` describes. A closure without a member leaves
+`acc` unchanged.
+-}
 recordLambdaHome : Mono.ClosureInfo -> Mono.MonoExpr -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell } -> Dict.Dict Int { arity : Maybe Int, cells : Dict.Dict String VarCell }
 recordLambdaHome info body acc =
     case info.lssMember of
@@ -1020,17 +974,23 @@ recordLambdaHome info body acc =
             acc
 
 
-{-| One position's evidence across every row that mentions it.
+{-| What the arrows at one position path hold, gathered over several types:
+whether any carries ⊤, whether any carries an `LVar` or `LPartial` (`var`), and
+the union of the members of every `LSet` there, `Nothing` when there is none.
 -}
 type alias VarCell =
     { top : Bool, var : Bool, sets : Maybe (List Int) }
 
 
+{-| The cell of a position at which nothing has been seen.
+-}
 varCellEmpty : VarCell
 varCellEmpty =
     { top = False, var = False, sets = Nothing }
 
 
+{-| Returns the cell holding what both cells hold.
+-}
 varCellMerge : VarCell -> VarCell -> VarCell
 varCellMerge ca cb =
     { top = ca.top || cb.top
@@ -1048,6 +1008,9 @@ varCellMerge ca cb =
     }
 
 
+{-| Returns the two cell maps combined, with the cells at a path both have
+merged.
+-}
 varMapMerge : Dict.Dict String VarCell -> Dict.Dict String VarCell -> Dict.Dict String VarCell
 varMapMerge a b =
     Dict.foldl
@@ -1056,6 +1019,9 @@ varMapMerge a b =
         b
 
 
+{-| Returns `acc` with the annotation of every arrow in `t` added to the cell of
+its position path, `t` itself being at `path`.
+-}
 varCellWalk : String -> Mono.MonoType -> Dict.Dict String VarCell -> Dict.Dict String VarCell
 varCellWalk path t acc =
     case t of
@@ -1076,7 +1042,7 @@ varCellWalk path t acc =
                                     Mono.LVar _ ->
                                         { c | var = True }
 
-                                    -- lss-lpartial §2: contaminates as var.
+                                    -- A lower bound counts as unresolved.
                                     Mono.LPartial _ ->
                                         { c | var = True }
 
@@ -1113,27 +1079,26 @@ varCellWalk path t acc =
             acc
 
 
-{-| Phase 1 (plans/lss-var-chain-roots.md §3): post-drain
-successor writes. At any row position whose arrow holds a pap-able set
-(every member `p|X|k` / `g|X` / `c|X`) and whose RESULT arrow slot is flex,
-write the member-wise successor set `{p|X|k+j}` (j = args consumed at this
-arrow), STRICTLY within declared arity — the arrow past the last parameter
-belongs to the value the body produces (LSS\_013), never this pass.
+{-| Returns the state with set variables below sets of partially applicable
+members filled with the members' next partial applications. Does nothing with
+LSS off.
 
-Sound unconditionally: the claim is type-level identity (the only value
-obtainable by further-partially-applying a `p|X|k` value is `p|X|k+j`),
-wherever the application happens, including inside kernels. All-or-nothing
-per position: one member without a defined successor and the position is
-skipped — a partial successor set would exclude real inhabitants.
+A member is _pap-able_ when it is a global (`g|X`), a constructor (`c|X`) or a
+partial application (`p|X|k`). Applying it to `j` more arguments, short of X's
+declared arity, can only give the partial application `p|X|k+j`, with `k` taken
+as 0 for a global or constructor. So where an arrow's set holds only pap-able
+members and its result arrow has an `LVar`, that result is given the set of
+those successors, `j` being the number of arguments the arrow takes. It is all
+or nothing: if any member is not pap-able, or `k + j` reaches
+`LssInfer.declaredArityOf X`, the position is left alone, because the arrow past
+the last parameter belongs to whatever the body returns.
 
-Successor ids ride `LssInfer.papMemberKey`, the SAME key `injectPapMember`
-and `injectPapSuccessors` mint, so all paths unify (E9.2 one-identity).
-Bounded rounds: a write at depth d exposes the head for depth d+1 in the
-next round (the intra-row chains behind the census's 69.7 % interior mass).
-
-LANDED 2026-08-31 as `lss.settle.varSucc`, default-ON with `varCtorRows`:
-var −19.2 %, coverage +1.91 pp, ⊤ unchanged, accounting exact. Unconditional
-since 2026-09-18.
+The successor ids come from `Engine.papMemberIdFor`, so they are the ids every
+other part of the engine gives those partial applications. Each row is walked
+from the top of its result spine down, so a chain of any depth is filled in one
+pass. With `lss.report` on, a second pass checks that nothing is left to do;
+its registry and member table are discarded; its census counts, including the
+verify count, are kept.
 
 -}
 settleVarSuccessors : S -> S
@@ -1142,31 +1107,6 @@ settleVarSuccessors s0 =
         s0
 
     else
-        -- Step 24(ii): ONE pass, with the verification pass kept behind the
-        -- report flag.
-        --
-        -- The pass is IDEMPOTENT, so the round that follows a writing round
-        -- can only discover that there is nothing left to do -- and the
-        -- `varsucc|rounds` census confirms it: rounds=3 decomposes as
-        -- (write + empty) for the first invocation plus (empty) for the
-        -- second, i.e. exactly ONE wasted traversal of all ~43K registry
-        -- rows. Idempotence holds because (1) rows are independent --
-        -- `succType` reads only its own row's type and the member table;
-        -- (2) within a row the walk is TOP-DOWN on the result spine, writing
-        -- `LSet succ` at an arrow and immediately descending into the
-        -- rewritten result, so a chain of any depth completes in one pass;
-        -- (3) the member table is monotone and `succSetFor`'s verdict for a
-        -- member is a pure function of its source, the arg count and
-        -- `declaredArityOf`, all round-invariant, with freshly minted
-        -- successors visible immediately; (4) after the pass every writable
-        -- position IS `LSet` and every skipped position is skipped again for
-        -- the same reason. The old comment claiming "a row rewritten late can
-        -- expose a head an earlier row's walk passed over" describes a
-        -- cross-row dependency this code does not have.
-        --
-        -- Under `report` the second pass still runs as a VERIFICATION RAIL,
-        -- and its registry is discarded so report-on and report-off emit the
-        -- same bytes; only its counters are kept.
         let
             ( s1, _ ) =
                 varSuccPass s0
@@ -1189,6 +1129,9 @@ settleVarSuccessors s0 =
             Engine.bumpArgFlowCensus "varsucc|rounds" s1
 
 
+{-| Returns the state after one successor pass over every registry row, as
+`settleVarSuccessors` describes, and whether any row changed.
+-}
 varSuccPass : S -> ( S, Bool )
 varSuccPass s =
     let
@@ -1201,12 +1144,7 @@ varSuccPass s =
                 Dict.empty
                 s.env.toptNodes
 
-        -- Successor member ids for every member of `ms` at an arrow
-        -- consuming `j` args; Nothing unless ALL are defined and within
-        -- arity. Threads ( S, midKeys ): interning may MINT, and a freshly
-        -- minted successor must be resolvable IMMEDIATELY — a round-start
-        -- snapshot of the key map made every chain advance exactly one depth
-        -- per round (ORDER 3, §4.6).
+        -- Minted successors join the key map at once, so the walk can go on below them.
         succSetFor j ms sIn =
             List.foldl
                 (\m ( maybeAcc, ( sAcc, keysAcc ) ) ->
@@ -1261,13 +1199,6 @@ varSuccPass s =
             case t of
                 Mono.MFunction _ anno args result ->
                     let
-                        -- TOP-DOWN on the result spine: decide THIS arrow's
-                        -- successor write before descending, then walk the
-                        -- rewritten result — so one pass carries a whole
-                        -- chain. (Bottom-up advanced the frontier by exactly
-                        -- one depth per round; with the round-start key
-                        -- snapshot that made deep chains need as many rounds
-                        -- as their depth — ORDER 3, §4.6.)
                         ( resultW, sW, chW ) =
                             case ( anno, result ) of
                                 ( Mono.LSet ms, Mono.MFunction _ (Mono.LVar _) rArgs rRes ) ->
@@ -1308,12 +1239,7 @@ varSuccPass s =
                                 ( [], sR, False )
                                 args
                     in
-                    -- Step 24(i'): return `t` BY POINTER when nothing under it
-                    -- moved. This walk runs over every registry row (~43K) on
-                    -- every round and used to rebuild every node of every row
-                    -- unconditionally; the overwhelming majority of rows carry
-                    -- no pap-able var arrow at all, so all of that was
-                    -- immediate garbage. Same protocol as step 22d.
+                    -- An unchanged subtree is returned as it was rather than rebuilt.
                     if chW || chR || chA then
                         ( Mono.mFunction anno args1 result1, sA, True )
 
@@ -1427,14 +1353,20 @@ varSuccPass s =
                     s.registry.reverseMapping
                 )
     in
-    -- Step 24(ii): the caller decides whether to run a second (verification)
-    -- pass; the `varsucc|rounds` bump moved there with it.
     ( sEnd, changed )
 
 
-{-| The LSS census (design §8.6): member counts, set-size histogram, widening
-events by cause, signature memo stats, and the top per-global spec counts.
-Rendered post-prune; plain string concatenation only.
+{-| Returns the LSS census as text, from the final state and the pruned graph.
+
+Among other things the lines count the members, the lambda sets read back by
+size, the arrows in the pruned registry's types by the form of their annotation
+(`coverage:`), and every set read-back by its outcome (`ledger:`, and
+`ledger-settled:` for the same read-backs replayed when each item had
+finished). Several lines check their own totals and print `RECONCILES=yes` or
+`NO`. The lines from `stampwalk:` to the `pos|` rows appear only with
+`lss.arrowCensus`, and the `Q-infer:` and `Q-shadow:` lines only with
+`lss.qCensus`.
+
 -}
 renderLssReport : S -> Mono.MonoGraph -> String
 renderLssReport sFinal (Mono.MonoGraph g) =
@@ -1514,39 +1446,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     |> List.map (\( k, n ) -> k ++ "=" ++ String.fromInt n)
                     |> String.join " "
 
-        -- ===== The resolution ledger (plans/lss-unknown-elimination.md §2.5)
-        --
-        -- The acceptance metric for the unknown-elimination arc: what fraction
-        -- of arrow positions the analysis can give a CONCRETE answer for, and
-        -- how many of those answers are genuinely multi-member. Derived
-        -- entirely from counters that already exist — no new instrumentation:
-        --
-        --   concrete k=1 = sizeHist[1]
-        --   concrete k>=2 = sum over k>=2 of sizeHist[k]
-        --   over-cap     = widenedBySize   (resolved, then discarded by maxSetSize)
-        --   top          = causePoison + causeEdgeTop
-        --   var          = causeFlex   + causeEdgeEmpty   (Phase 3: LVar)
-        --   ------------------------------------------
-        --   total        = setsZonked
-        --
-        -- and the identity `sum sizeHist == causeSet + causeEdgeSet` closes it.
-        --
-        -- RECONCILES is the point of the line: it is a self-check that fires
-        -- the moment a new zonk cause arm is added to `Store.LssZonkAcc`
-        -- without being wired in here. Any new arm MUST land in exactly one of
-        -- the five buckets above.
-        --
-        -- CAVEAT that must ride with every quote of these numbers: the `zc|`
-        -- cause counters are gated by `censusOn = env.lss.report`
-        -- (`Store.bumpCauseC`) and read 0 without ECO_MONO_LSS_REPORT=1.
-        -- `sizeHist`/`widenedBySize` are unconditional. This whole report only
-        -- renders under `lss.report`, so the line is always self-consistent —
-        -- but never compare it against an arm measured with the flag off.
-        --
-        -- SECOND CAVEAT (§2.5.5): these are per-ZONK-READBACK counts, not per
-        -- distinct arrow position. A hot slot read 50 times counts 50 times.
-        -- Sound as a relative signal across arms of the same corpus; NOT an
-        -- answer to "how many positions did we resolve".
+        -- Every set read-back falls in one of five buckets, which must sum to `setsZonked`.
         censusAt key =
             Maybe.withDefault 0 (Dict.get key stats.sigStats.argFlowCensus)
 
@@ -1568,9 +1468,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         ledgerTop =
             censusAt "zc|all|poison" + censusAt "zc|all|edgeTop"
 
-        -- This bucket is `LVar` — a set VARIABLE, "to be determined". It used
-        -- to be counted inside `top`. The census keys keep their historical
-        -- names so the rows stay joinable against every earlier arm.
+        -- The read-backs that gave an `LVar`.
         ledgerUnknown =
             censusAt "zc|all|flex" + censusAt "zc|all|edgeEmpty"
 
@@ -1588,18 +1486,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             else
                 String.join " " (Dict.foldr (\k v acc -> (String.fromInt k ++ "->" ++ String.fromInt v) :: acc) [] h)
 
-        -- ===== The SETTLED ledger (plans/lss-post-mono-architecture.md §3.2)
-        --
-        -- The same readbacks as `ledgerLine`, replayed at `finishNode` — after
-        -- the item finished writing rather than during. Same variables, same
-        -- multiplicity, so `total` must MATCH the in-flight `setsZonked` and
-        -- only the buckets may move. `MATCHES=NO` means the log lost readbacks
-        -- (a missed clear on a store swap, or a zonk outside any item) and the
-        -- deltas below are then meaningless — a bug signal, not a finding.
-        --
-        -- Because `resetItem` gives every work item a FRESH store, this is not
-        -- an approximation of a post-mono read: it is the complete UPPER BOUND
-        -- on what reading-later can buy inside the current architecture.
+        -- The same read-backs replayed when each item had finished (`Store.rezonkSettled`).
         settled =
             stats.sigStats.settled
 
@@ -1621,13 +1508,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         settledSum =
             settledK1 + settledKN + settled.widenedBySize + settled.causeTop + settled.causeVar
 
-        -- §5.1 `Q` IN SHADOW MODE. The GATE is the `REPRODUCES` verdict: `Q`
-        -- must reproduce the eager answer everywhere the eager answer is
-        -- defined, so every `diverge*` bucket is a defect report on the
-        -- RECORDING, not a result about the program. `unresolved` is the
-        -- separate, legitimate population — classes with no eager answer at
-        -- item end, i.e. what a per-item store cannot settle and a def-boundary
-        -- solve could carry.
         q =
             stats.sigStats.qShadow
 
@@ -1775,14 +1655,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         "yes"
 
                     else
-                        -- A shortfall is EXPECTED, not automatically a bug:
-                        -- readbacks made inside a scratch store
-                        -- (`Engine.withScratchStore`) are counted in-flight but
-                        -- cannot be replayed — those Points die with the
-                        -- scratch store. `scratchCalls` is how many logged
-                        -- readback CALLS were dropped that way; if the
-                        -- shortfall tracks it, the ledger is reconciled and
-                        -- only an UNEXPLAINED shortfall is a log bug.
+                        -- Read-backs made in a scratch store cannot be replayed; `scratchCalls` counts them.
                         "NO(inflight="
                             ++ String.fromInt stats.setsZonked
                             ++ " short="
@@ -1798,25 +1671,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ " dKN="
                 ++ String.fromInt (settledKN - ledgerKN)
 
-        -- §3.2's actual stop criterion. Of the arrows still reading back a
-        -- VARIABLE after their item settled, how many have members recorded —
-        -- from some OTHER item — in the global `multiSetsByArrow` table?
-        --
-        --   known    the information exists in the program but not in this
-        --            item's store, which per-item teardown can never fix and a
-        --            solve over one global graph would. This is the prize.
-        --   unknown  nothing anywhere writes that arrow (kernel/FFI/port/Debug
-        --            boundary). No reordering reaches it; the ceiling is Eco's
-        --            setting, not its schedule.
-        --
-        -- Reads 0/0 unless arrow identity is on — `arrowOfSlot` is empty
-        -- otherwise, so there is no key to attribute a readback to.
-        -- Scored against `setArrows` — every arrow that read back a CONCRETE
-        -- set of ANY size, anywhere in the run — NOT against
-        -- `multiSetsByArrow`, which is gated at |set| >= 2. An arrow resolved
-        -- to a SINGLETON in another item is still known elsewhere; scoring it
-        -- against the multi-set table alone would misfile it as unconstrained
-        -- and overstate the kernel-boundary ceiling.
+        -- Settled `LVar` arrows, by whether the same arrow read back a set anywhere in the run.
         settledKnownElsewhere =
             Dict.foldl
                 (\akey n ( known, unknown ) ->
@@ -1864,12 +1719,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ String.fromInt (Dict.size settled.varArrows - knownArrows)
                 ++ "arr"
 
-        -- ARTIFACT COVERAGE (2026-08-26): the position-based completeness
-        -- metric. One tally per arrow per SPECIALIZATION, taken from the
-        -- registry's stored types — i.e. the signature of every specialized
-        -- function in the emitted program. Unlike the ledger below this has a
-        -- FIXED denominator (it does not move with how many times the analysis
-        -- reads a slot), which is what makes it gateable.
+        -- One count per arrow of each type in the pruned registry, however often it was read.
         coverage =
             Array.foldl
                 (\entry acc ->
@@ -1888,9 +1738,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 concrete =
                     coverage.k1 + coverage.kN
 
-                -- `part` counts as UNCOVERED (a lower bound is not
-                -- consumable) but is reported separately: partials are
-                -- settle-recoverable where ⊤ never was.
+                -- An `LPartial` is counted as a position but not as covered.
                 positions =
                     concrete + coverage.var + coverage.top + coverage.part + coverage.row
             in
@@ -1917,26 +1765,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         (10000 * concrete) // positions
                     )
 
-        -- POSITION ATTRIBUTION (plans/lss-ctor-arrow-identity.md §3 P0): one row
-        -- per UNCOVERED arrow position, naming the global and the structural
-        -- path to the arrow. The aggregate `coverage:` line says HOW MANY
-        -- positions are uncovered; this says WHICH — which is what makes a
-        -- prediction like "the ctor spine ordinals will flip" falsifiable
-        -- BEFORE any mechanism is built.
-        --
-        -- A path-carrying SIBLING of `Mono.annoCoverage` rather than an
-        -- extension of it: that walker runs over every registry entry on every
-        -- compile and must stay allocation-free.
-        --
-        -- Path syntax: `a<n>` argument n, `r` result, `l` list element,
-        -- `t<n>` tuple slot, `f:<name>` record field, `c<n>` custom-type arg.
-        -- The arrow itself is the position; its path is where it sits.
-        --
-        -- Report-gated AND flag-gated (rides `lss.arrowCensus`): probe-scale
-        -- output is a dozen rows, self-compile scale is tens of thousands.
-        -- §12 var dig: member-id → key string (`g|…`/`p|…|k`/`l|…`), so k1
-        -- rows can NAME their singleton — the within-vs-beyond-arity split
-        -- of the successor-injection candidates is decidable offline.
+        -- One `pos|` row per arrow: global, path, annotation form, registry index.
         memberKeyOf =
             Dict.foldl (\k mid acc -> Dict.insert mid k acc) Dict.empty sFinal.lssMemberTable.byKey
 
@@ -1947,16 +1776,8 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         acc1 =
                             case anno of
                                 Mono.LSet [ m ] ->
-                                    -- L4 P0 instrument
-                                    -- (plans/lss-coverage-four-levers.md
-                                    -- §1.4): covered positions emit too,
-                                    -- so the transport candidate set —
-                                    -- (global, path) LSet in one spec,
-                                    -- LVar in another — is computable
-                                    -- post-hoc from one census log.
                                     ( path
-                                      -- member key `|`s become `;` so the
-                                      -- row stays 5 `|`-fields.
+                                      -- `|` in a member key becomes `;`, keeping five fields per row.
                                     , "k1:"
                                         ++ (case Dict.get m memberKeyOf of
                                                 Just mk ->
@@ -1972,25 +1793,12 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                     ( path, "kN" ) :: acc
 
                                 Mono.LPartial ms ->
-                                    -- lss-lpartial: member count rides the
-                                    -- row so partial richness is visible.
                                     ( path, "part@" ++ String.fromInt (List.length ms) ) :: acc
 
                                 Mono.LVar vn ->
-                                    -- P0.a (plans/lss-ctor-arrow-identity.md
-                                    -- §8.1): the zonked flex id, so the
-                                    -- MIRROR hypothesis (one write filling
-                                    -- several positions) is decidable from
-                                    -- one census log. Ids are canonical per
-                                    -- SLOT within ONE entry's zonk only
-                                    -- (AR-v2-7), so the row builder prefixes
-                                    -- the entry index.
                                     ( path, "var@" ++ String.fromInt vn ) :: acc
 
                                 Mono.LTop tpK ->
-                                    -- §4.9: pos| rows carry the birth kind
-                                    -- (`top@abi` etc.) — position-level
-                                    -- provenance in one census log.
                                     ( path, "top@" ++ Mono.topKindLabel tpK ) :: acc
 
                         accR =
@@ -2043,9 +1851,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             _ ->
                                                 "?"
 
-                                    -- P0.a: qualify var ids by ENTRY — a flex
-                                    -- number is canonical only within the
-                                    -- entry that zonked it.
+                                    -- An `LVar` number is only meaningful within the type it was read from.
                                     qualify kind =
                                         if String.startsWith "var@" kind then
                                             "var@" ++ String.fromInt idx ++ "." ++ String.dropLeft 4 kind
@@ -2054,12 +1860,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             kind
                                 in
                                 ( idx + 1
-                                  -- 5th field = registry spec index on EVERY
-                                  -- row (var rows already embed it via
-                                  -- `qualify`): per-INSTANCE parent/child
-                                  -- pairing — "is the head KNOWN in the same
-                                  -- spec whose /r is var?" — is decidable
-                                  -- from one census log (§12 var dig).
                                 , List.map (\( pth, kind ) -> "pos|" ++ gname ++ "|" ++ pth ++ "|" ++ qualify kind ++ "|" ++ String.fromInt idx)
                                     (posWalk "" monoType [])
                                     ++ acc
@@ -2075,18 +1875,13 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         posLine =
             String.join "\n" (List.sort posRows)
 
-        -- §4 P0 (plans/lss-var-chain-roots.md): varfix counters, measured
-        -- BEFORE any mechanism is built. Deliberately independent of any
-        -- future write path — a census must not share a classifier with its
-        -- mechanism (the Aug-26 audit-census rule).
         varfixComparableGlobals =
             HashMap.foldl
                 (\vfG _ acc -> Dict.insert (TOpt.toComparableGlobal vfG) vfG acc)
                 Dict.empty
                 sFinal.env.toptNodes
 
-        -- Just (global, suppliedCount) for pap-able members (p|/g|/c|);
-        -- Nothing for l|/k|/a|/unresolved — no successor semantics.
+        -- The global and arguments supplied, for a `p|`, `g|` or `c|` member.
         varfixPapable mid =
             case Dict.get mid memberKeyOf of
                 Nothing ->
@@ -2108,11 +1903,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         _ ->
                             Nothing
 
-        -- M-A candidate walk: every arrow position holding a SET whose
-        -- result-arrow slot is flex. Classify: 0 = all members pap-able and
-        -- STRICTLY within declared arity (the sound successor write), 1 =
-        -- all pap-able but some at/past arity (body-owned result, LSS_013),
-        -- 2 = some member without successor semantics.
+        -- Set arrows whose result is an `LVar`: 0 successor writable, 1 past arity, 2 no successor.
         varfixWalk rowG t acc =
             case t of
                 Mono.MFunction _ anno args result ->
@@ -2178,9 +1969,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 _ ->
                     acc
 
-        -- AR-V1 hazard: replicate SHIPPED settleCtorRows behaviour (union
-        -- via enrichAnnotations, ⊤-gated rows) and count LVar→LSet flips it
-        -- would perform TODAY without a completeness gate.
+        -- The `LVar` slots an ungated union over constructor rows would turn into sets.
         varfixIsCtor rowKey =
             case rowKey of
                 Mono.Global vfHome vfName ->
@@ -2330,15 +2119,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ "\nvarfixg: "
                 ++ topG
 
-        -- ===== Phase 3 P0 (plans/lss-var-chain-roots.md §3, task #63) =====
-        -- M-row result-side enrichment: for every var position whose NEAREST
-        -- enclosing set-headed arrow has all-g|/c| members, could the union
-        -- over the member globals' registry rows supply a set at the aligned
-        -- sub-path? Result-side descent ONLY: an /aN hop CLEARS the context
-        -- (consumer-fed positions carry the AR-V6 escape hazard); a fresh
-        -- head inside an arg opens its own context. STRICT completeness:
-        -- any ⊤ OR any var contribution at the cell contaminates (function
-        -- results have no pass-through mark, unlike ctor rows' flex mark).
+        -- For each `LVar` under a set arrow: could the set's members' rows or closures fill it?
         vf3RowsByG =
             Array.foldl
                 (\entry acc ->
@@ -2357,15 +2138,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         vf3EmptyCell =
             { top = False, var = False, varShared = False, sets = Nothing }
 
-        -- ORDER 6 P0 (plans/lss-var-chain-roots.md §4.5 contamVar class): a
-        -- ROW-LOCAL pass-through test, needing no new state. `LVar` ids are
-        -- canonical per slot within ONE entry's zonk (AR-v2-7), so an id
-        -- appearing at BOTH a result-side position and an ARGUMENT position
-        -- of the same row means the body threads that parameter through to
-        -- the result — a caller's lambda is then a real inhabitant and the
-        -- cell must stay blocked. An id that appears only result-side has no
-        -- recorded inhabitant route at all: the unlockable share. (Ids are
-        -- NOT comparable across rows — this test is within one row only.)
+        -- `LVar` ids met under an argument; one also met result-side is a parameter passed through.
         vf3ArgIds underArg t acc =
             case t of
                 Mono.MFunction _ anno args result ->
@@ -2414,8 +2187,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                             Mono.LVar n ->
                                                 { c | var = True, varShared = c.varShared || Dict.member n argIds }
 
-                                            -- lss-lpartial §2: contaminates
-                                            -- as var (not shared — no id).
                                             Mono.LPartial _ ->
                                                 { c | var = True }
 
@@ -2473,14 +2244,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 a
                 b
 
-        -- ORDER 1 / §8.1: align a `p|X|k` value against X's row by consuming
-        -- k args along the row's curried spine; the result is the row-path
-        -- PREFIX at which the value's own type sits. A stage split mid-way
-        -- (k < that stage's arity) needs NO re-indexing for result-side
-        -- descent — the partial value `(a2,a3) -> R` and the full arrow
-        -- `(a1,a2,a3) -> R` share the very same `R` node — only `/aN` would
-        -- shift, and this census never descends into args (AR-V6). Counted
-        -- separately anyway, since an /aN mechanism would need the shift.
+        -- The path in a row of `X` where a `p|X|k` value's own type starts, after `k` arguments.
         vf3AlignPrefix t k prefix =
             if k <= 0 then
                 Just ( prefix, False )
@@ -2501,8 +2265,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     _ ->
                         Nothing
 
-        -- Cellmap of `gstr`'s rows REKEYED to a `p|gstr|k` value's own view
-        -- (k = 0 is the plain g|/c| case). Cached per (global, k).
+        -- The cells of `gstr`'s rows as seen by a value with `k` arguments supplied, cached.
         vf3OffsetFor gstr k cache0 =
             let
                 ck =
@@ -2555,21 +2318,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     in
                     ( built, Dict.insert ck built cache0 )
 
-        -- ORDER 2 / §8.2 P0: the LAMBDA-HOME table. A lambda's result set
-        -- lives in exactly one place — the type of its BODY, in the item that
-        -- translated it — and never reaches a registry row (rows record spec
-        -- params and results, not interior values), which is why both the mB
-        -- P0 (writable=65) and §4.5 (otherHead=3,339) found the class empty
-        -- from the row side. The closure NODES carry it: `ClosureInfo
-        -- .lssMember` names the member and `typeOf body` is the settled
-        -- result. This answers §8.2's lowering question (1) — no store access
-        -- and no item-completion hook are needed, because the nodes persist.
-        --
-        -- Keys are RELATIVE to the lambda's own arrow (`/r` = its result), so
-        -- the table drops straight into the same context machinery the row
-        -- cellmaps use. Several closures may share one mid (layout-qualified members): merging
-        -- their cells is the unsplit-store union, and a ⊤/var at ANY
-        -- instantiation contaminates rather than lies.
+        -- Closure body cells by member, as `lambdaHomesOf` builds them, with pass-through marked.
         vf3RecordLambda info body t acc =
             case info.lssMember of
                 Just mid ->
@@ -2599,9 +2348,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 Nothing ->
                     acc
 
-        -- Decider leaves flattened FIRST (self-recursive), so the expression
-        -- walk never needs to call back into the decider walk — Elm rejects
-        -- mutually recursive let bindings.
         vf3DeciderExprs d acc =
             case d of
                 Mono.Leaf (Mono.Inline e) ->
@@ -2690,10 +2436,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 Dict.empty
                 g.nodes
 
-        -- Class tags keep the sources separable: "" = g|/c| rows (the v1
-        -- population, which measured would=0 — mixing would hide which
-        -- source produced any new `would`), "p"/"pp" = pap-offset full and
-        -- partial, "l" = lambda home, "mix" = a set spanning kinds.
+        -- Which kind of member supplied the cells: "" global or constructor, "p"/"pp", "l", or "mix".
         vf3TagJoin mtag t =
             case mtag of
                 Nothing ->
@@ -2801,10 +2544,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                                         vf3Bump (tag ++ "contamTop") tally
 
                                                     else if cell.var then
-                                                        -- ORDER 6 split: shared = a real
-                                                        -- pass-through (stays blocked);
-                                                        -- iso = no inhabitant route
-                                                        -- recorded anywhere (unlockable).
+                                                        -- Shared: the same variable also appears under an argument of the row.
                                                         vf3Bump
                                                             (tag
                                                                 ++ (if cell.varShared then
@@ -2872,14 +2612,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 _ ->
                     ( tally, cache )
 
-        -- M2 P0 REFINEMENT (lss-var-chain-roots §9.12 follow-on): LSS_013
-        -- already spine-injects a lambda's OWN mid across its within-arity
-        -- stage arrows, so M2's real residue is the HOLES — l|-singleton
-        -- heads whose /r is still var. Split them by the lambda's param
-        -- count (from the closure nodes, the varLambda authority):
-        -- arity ≥ 2 ⇒ a genuine uncovered STAGE (spine-completion
-        -- territory); arity 1 ⇒ /r is the BODY's result (varLambda/
-        -- flowConnect territory, not a stage); noHome ⇒ mid unresolvable.
+        -- Singleton `l|` arrows whose result is still an `LVar`, by the closure's parameter count.
         m2Homes =
             lambdaHomesOf g.nodes
 
@@ -3052,17 +2785,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         vf3LambdaHomes
                     )
 
-        -- ===== §9 P0 (plans/lss-var-chain-roots.md, flow-repair arc) =====
-        -- Correlate every residual var position with the SIGNATURE channel
-        -- of its row's global. Signatures (`d⟨ᾱ⟩ : (Q ⇒ τ)` in the paper) are
-        -- how flow crosses the item boundary; a var position means that
-        -- channel failed to deliver. The discriminating question: did it fail
-        -- because the signature carries NOTHING (trivial — recording-side
-        -- loss, hypothesis H-R1), or because the row has arrows the scheme
-        -- never had (born at type-variable instantiation — the paper's
-        -- α-positions, reachable only through Q inclusion constraints,
-        -- hypothesis H-R2)? `extra` = row arrow count > signature arrow
-        -- count, the cheap structural proxy for the α-born class.
+        -- Each remaining `LVar` position against its global's signature: trivial, or fewer arrows.
         sigArrowCountOf t n =
             case t of
                 Mono.MFunction _ _ args result ->
@@ -3236,10 +2959,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         |> List.map
                             (\( gn, r ) ->
                                 let
-                                    -- Name-only aggregation is ambiguous
-                                    -- across homes; report sig detail from
-                                    -- the FIRST key ending ".name" (TOpt
-                                    -- comparable format).
+                                    -- Detail comes from the first signature whose global's key ends in the name.
                                     sigDesc =
                                         HashMap.foldl
                                             (\kg sig found ->
@@ -3278,22 +2998,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
             in
             "sigfact: " ++ cellsLine ++ "\nsigfactg: " ++ topLine
 
-        -- ⊤ SITE SPLIT (plans/lss-provenance-join-and-demand-sigs.md §4.6):
-        -- with rsTop healing the recoverable placeholder class at licensed
-        -- kernel-alias joins, the SURVIVING ⊤s are an undifferentiated mix.
-        -- Classify each final-registry ⊤ position by its NODE class — the
-        -- census attributes by SITE (which mechanism could still reach it),
-        -- not by HISTORY (placeholder-vs-poison transport needs the Part-A
-        -- provenance bit).
-        --   licAlias   licensed kernel alias whose stored side stayed ⊤ —
-        --              the demands never established a set: inherited-unknown
-        --              (transported poison OR a genuinely unknown callback).
-        --   refAlias   TypeFaithful row exists but the license refused this
-        --              occurrence type (LSS_022 fail-safe).
-        --   unlicAlias kernel alias with NO row — recoverable by audit.
-        --   elm/cycle  ⊤ manufactured or absorbed in an Elm body (conflict
-        --              joins, widening, transported poison).
-        --   ctor/port/manager/accessor/none — the rest, named.
+        -- Each ⊤ position of the final registry, classified by the kind of node its global is.
         topSiteClassOf key =
             case key of
                 Mono.Global tsHome tsName ->
@@ -3354,9 +3059,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                                     "port"
 
                                 TOpt.Link target ->
-                                    -- Chase to the linked target's class
-                                    -- (kernelAliasOf already chased the
-                                    -- ALIAS case; this attributes the rest).
                                     topSiteClassOfGlobal target
 
         topPosClassOf pth =
@@ -3405,13 +3107,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ( Dict.empty, Dict.empty )
                 g.registry.reverseMapping
 
-        -- §9.6 step 4 — Fix B's P0, the END-OF-RUN half. For every ctor-node
-        -- registry entry, compare it position-wise against the set-biased
-        -- union of ALL entries of the same ctor global (self included — a ⊤
-        -- contributes nothing under the enrich fold). `top,k1` counts the
-        -- positions a completion-time/late recovery could flip to a
-        -- singleton: the order-free CEILING, against `destrBnow`'s
-        -- translation-time floor. GO for building Fix B: k1+kN ≥ 300 (§9.6).
+        -- Each ⊤ in a constructor row, against what the union of that constructor's rows holds.
         ctorGlobalKeyOf key =
             case key of
                 Mono.Global cgHome cgName ->
@@ -3552,7 +3248,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         (Dict.toList (Tuple.first topSiteAndKindCounts))
                     )
 
-        -- §4.9: WHY (birth kind) × WHERE (node class) for every surviving ⊤.
         topKindLine =
             "top kinds: "
                 ++ String.join " "
@@ -3560,21 +3255,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                         (Dict.toList (Tuple.second topSiteAndKindCounts))
                     )
 
-        -- LIVENESS (plans/lss-provenance-ratio-census.md §7): of the arrows
-        -- that read back as `var`, how many are ever APPLIED?
-        --
-        --   var AND applied   = a real call site whose target we cannot name.
-        --                       The paper would have a set here; genuine
-        --                       incompleteness, and the honest numerator.
-        --   var NOT applied   = a function-typed position never invoked. `var`
-        --                       is defensible and the paper would not have
-        --                       needed a set — arguably not ours to count.
-        --
-        -- `controlBp` is NOT decoration and must be read FIRST. Concrete arrows
-        -- are overwhelmingly ones we resolved because they are called, so if
-        -- they do not register as applied the hook is not seeing applications
-        -- and the var split above means NOTHING. A low control invalidates the
-        -- finding; it does not become the finding.
+        -- How many settled `LVar` arrows some call applies; `controlBp` is the same for set arrows.
         livenessLine =
             let
                 applied =
@@ -3630,24 +3311,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                 ++ " controlBp="
                 ++ String.fromInt (bp setApplied (Dict.size settled.setArrows))
 
-        -- STAMPING-WALK CENSUS (plans/lss-provenance-ratio-census.md §8):
-        -- WHERE the provenance loss happens. `SolverRoots.stampArrowRoots`
-        -- returns a node unstamped AND unrecursed on a lockstep mismatch, so
-        -- one failure sheds a whole subtree — meaning the `provenance:` loss
-        -- could be a few big abandonments or many small ones, which call for
-        -- opposite fixes.
-        --
-        --   partial — SOME arrows stamped, some not. The walk ran, descended,
-        --             and broke: provable mid-walk abandonment. Repairing the
-        --             walk reaches these.
-        --   none    — NO arrow stamped. Never walked, or failed at the root.
-        --             Repairing the walk does NOT reach these; the target
-        --             would be post-solve type construction instead.
-        --
-        -- RECONCILES against the `provenance:` line: the two lost populations
-        -- must sum to `arrows - withRoot`. A mismatch means the census wrapper
-        -- missed a top-level `rewriteCanType` call site, so the line says so
-        -- rather than being quietly believed.
+        -- Arrows that got no solver-root stamp; RECONCILES compares them with all `ArrowId`s drawn.
         stampWalkLine =
             let
                 lost =
@@ -3711,10 +3375,7 @@ renderLssReport sFinal (Mono.MonoGraph g) =
          , ledgerLine
          , settledLine
          ]
-            -- §7.7: the liveness line appears ONLY when its own flag ran the
-            -- census. Under `report` alone the counters are all zero, and a
-            -- zero row reads as "measured, found nothing" rather than "never
-            -- executed" — the `qCensus` misreading, one flag along.
+            -- Each block is printed only when its flag is on (lss.arrowCensus, lss.qCensus).
             ++ (if sFinal.env.lss.arrowCensus then
                     [ stampWalkLine, livenessLine, topSiteLine, topKindLine, destrBendLine, varfixLine, varfix3Line, sigfactLine, m2StageLine, posLine ]
 
@@ -3722,10 +3383,6 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                     []
                )
             ++ (if sFinal.env.lss.qCensus then
-                    -- §5.1/§5.6: the shadow-`Q` verifier lines appear only when
-                    -- the verifier RAN. Printing them under `lss.report` alone
-                    -- would render all-zero counters as `REPRODUCES=yes`, which
-                    -- reads as a passing check that never executed.
                     [ qInferLine, qLine, qSampleLines ]
 
                 else
@@ -3735,59 +3392,20 @@ renderLssReport sFinal (Mono.MonoGraph g) =
                , "widened: bySize=" ++ String.fromInt stats.widenedBySize ++ " byKernel=" ++ String.fromInt stats.widenedByKernel ++ " byBudget=" ++ String.fromInt stats.widenedByBudget ++ " bySigSize=" ++ String.fromInt stats.sigStats.widenedBySigSize
                , "widened sizes: " ++ widenedHistLine
                , "join flush: rounds=" ++ String.fromInt stats.joinRounds ++ " retranslations=" ++ String.fromInt stats.retranslations
-
-               -- Substrate census (Phase 1, plans/lss-set-write-substrate.md).
                , "set-writes: skip=" ++ String.fromInt stats.setWriteSkip ++ " flex=" ++ String.fromInt stats.setWriteFlex ++ " topJoin=" ++ String.fromInt stats.setWriteTopJoin ++ " union=" ++ String.fromInt stats.setWriteUnion ++ " slotsMinted=" ++ String.fromInt stats.slotsMinted
                , "joins: identical=" ++ String.fromInt stats.joinIdenticalHit ++ " noop=" ++ String.fromInt stats.joinNoop ++ " changed=" ++ String.fromInt stats.joinChanged ++ " completion=" ++ String.fromInt stats.completionJoins ++ " completionNoop=" ++ String.fromInt stats.completionJoinNoop
                , "devirtDirect=" ++ String.fromInt stats.devirtDirect ++ " devirtKernel=" ++ String.fromInt stats.devirtKernel ++ " unqualifiedLambdaMints=" ++ String.fromInt stats.unqualifiedLambdaMints
-
-               -- LSS_018 monitoring, derived FREE from implementation state at
-               -- report time (the per-event fidelity counters were removed after
-               -- their one-shot census — Run J: muTied=0 widenedByLet=672
-               -- localMultiBypass=469; see plan §7). Meaningful for the μ-tie;
-               -- reads 0 flag-off (tables are flag-gated).
                , "muTie: tied=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.muTied) ++ " qualifiedRecorded=" ++ String.fromInt (Dict.size sFinal.lssMemberTable.lambdaQualified)
-
-               -- LSS_019 standalone-member grounding census
-               -- (plans/lss-fidelity-2-standalone-member-grounding.md §5):
-               -- `deferred` is the residual-arrow precision frontier.
                , "grounding: grounded=" ++ String.fromInt stats.grounding.grounded ++ " deferred=" ++ String.fromInt stats.grounding.deferred
-
-               -- Layout-qualification census
-               -- (plans/lss-layout-qualified-members.md §2.5): `shared` = id reuse
-               -- across distinct enclosing specs (the fix working), `fallback` =
-               -- mints with no captured widened key (expected 0), `tieBypass` =
-               -- §2.3 equal-id μ-tie bypasses. All 0 flag-off.
                , "layoutQual: mints=" ++ String.fromInt stats.layoutQual.mints ++ " shared=" ++ String.fromInt stats.layoutQual.shared ++ " fallback=" ++ String.fromInt stats.layoutQual.fallback ++ " tieBypass=" ++ String.fromInt stats.layoutQual.tieBypass
                , "instanceQual: applied=" ++ String.fromInt stats.layoutQual.instApplied ++ " capped=" ++ String.fromInt stats.layoutQual.instCapped ++ " rootSkip=" ++ String.fromInt stats.layoutQual.instRootSkip
-
-               -- LSS_020 signature-flow census
-               -- (plans/lss-fidelity-3-signature-flow-completion.md §B.4):
-               -- widenedByCf/kernelFactHits/kernelLicensed are report-gated bumps,
-               -- so they read 0 unless ECO_MONO_LSS_REPORT was on for the run.
-               -- LSS_022: kernelFactHits counts POSITIONAL row applications and
-               -- kernelLicensed counts TypeFaithful pass-throughs — disjoint tiers,
-               -- and only the former can also appear in widenedByKernel.
                , "sigflow: widenedByCf=" ++ String.fromInt stats.sigStats.widenedByCf ++ " kernelFactHits=" ++ String.fromInt stats.sigStats.kernelFactHits ++ " kernelLicensed=" ++ String.fromInt stats.sigStats.kernelLicensed ++ " edges=" ++ String.fromInt stats.sigStats.edgesInstalled ++ " degraded=" ++ String.fromInt stats.sigStats.flowDegraded
-
-               -- LSS_026(a) honest ∅-as-source: how often a members-carrying
-               -- resolution crossed a dangling (FlexVar) inflow and was widened to
-               -- ⊤ rather than published as a false-COMPLETE set — signature side /
-               -- demand side. Unconditional policy counters. The `ARGF` block below
-               -- is the LSS census and is report-gated.
                , "honestSources: topMixedFlex=" ++ String.fromInt stats.sigStats.topMixedFlexSig ++ "/" ++ String.fromInt stats.sigStats.topMixedFlexDemand
 
-               -- Multi-set census (M3): distinct ARROW POSITIONS carrying a
-               -- multi-member set, which is the question `sizeHist`'s per-readback
-               -- counting cannot answer. `readbacks` is the ledger's kN for contrast:
-               -- positions << readbacks means a few hot arrows, positions ~ readbacks
-               -- means a broad population.
+               -- Distinct arrows with a multi-member set, beside the number of such read-backs.
                , "multisets: arrows=" ++ String.fromInt (Dict.size stats.sigStats.multiSetsByArrow) ++ " readbacks=" ++ String.fromInt ledgerKN ++ " byK=" ++ multiSetArrowHist
                , argFlowCensusBlock stats.sigStats.argFlowCensus
                , multiSetCensusBlock stats.sigStats.multiSetsByArrow sFinal.lssMemberTable
-
-               -- Census (2026-07-21): E9.2 guard-decline split (declinedKernelCNumber
-               -- = the E10.0 `declinedUnsettled` proxy) + the whitelist-growth list.
                , "kernel declines: shape=" ++ String.fromInt stats.declinedKernelShape ++ " cnumber=" ++ String.fromInt stats.declinedKernelCNumber ++ " emission=" ++ String.fromInt stats.declinedKernelEmission ++ " arity=" ++ String.fromInt stats.declinedKernelArity
                , "kernel whitelist misses: " ++ kernelMissLine
                , "kernel licenses REFUSED at the occurrence: "
@@ -3806,21 +3424,14 @@ renderLssReport sFinal (Mono.MonoGraph g) =
         )
 
 
-{-| Multi-set census dump (M3). One `MSET\t<arrowId>\t<size>\t<memberKeys>`
-line per ARROW that ever read back a multi-member set, sorted by arrow id so
-two runs of the same tree produce byte-identical blocks.
+{-| Returns one `MSET` line per arrow in `byArrow`, a table of arrow ids to the
+members of the multi-member sets read back at them: the arrow id, the number of
+members and their keys joined by `|`, tab-separated, in arrow-id order. A member
+with no key is shown as `?` and its id. An empty table gives the single line
+`MSET`, `(none)`, `0`, tab-separated with a trailing tab.
 
-**Keyed by ArrowId, and members rendered as KEYS, both deliberately.** ArrowIds
-are minted by `AssignMVarIds` from the syntax and do not depend on any lss
-flag, so they are the one identity that JOINS ACROSS ARMS — unlike symbol
-names (`lambda_N` renumbers; runtime-calls Run AE) and unlike member ids
-(`internMemberKey` assigns them in mint order, which differs per arm). The
-member KEY string is stable, so an offline join can ask the question the
-whole census exists for: is this multi-set present in BOTH arms — structural,
-the analysis found genuine alternatives — or does it appear only when slot
-sharing is on, i.e. merge-induced?
-
-Empty (a single marker line) when the run was not report-gated.
+Members are shown by key rather than by id because ids are numbered in the
+order they are minted.
 
 -}
 multiSetCensusBlock : Dict.Dict Int (List Int) -> Engine.LssMemberTable -> String
@@ -3847,11 +3458,8 @@ multiSetCensusBlock byArrow memberTable =
             )
 
 
-{-| LSS\_026 Phase-0 census dump (plans/lss-gap2-callarg-transport.md §2.1):
-one `ARGF\t<key>\t<count>` line per key, sorted by key so two runs of the
-same tree produce byte-identical blocks (the census rail — compare as
-multisets, never by line index). Empty (a single marker line) when the run
-was not report-gated.
+{-| Returns one `ARGF` line per census key, with its count, tab-separated and
+sorted by key, or the single line `ARGF (none) 0` for an empty census.
 -}
 argFlowCensusBlock : Dict.Dict String Int -> String
 argFlowCensusBlock census =
@@ -3869,6 +3477,11 @@ argFlowCensusBlock census =
 -- ====== INITIAL STATE ======
 
 
+{-| Returns the engine state before any spec exists, for an entry point in
+`currentModule`. The type-variable supply continues from the assignment's next
+id and the member-id supply from its next source-lambda id, so no member id
+equals a source lambda's id. The super table starts as the assignment's.
+-}
 initState : Config.LssConfig -> Config.SpecLimits -> ModuleName.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> AssignMVarIds.GlobalMVarState -> S
 initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarState =
     { worklist = []
@@ -3889,10 +3502,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     , nodeResolution = Dict.empty
     , intern = Intern.empty
     , env =
-        { -- 4c: one O(n) conversion at init (~10-20k globals) buys a
-          -- string-build-free probe at every occurrence site. `DMap.foldl`
-          -- ignores its ordering argument (Data/Map.elm:240-242); it is passed
-          -- for documentation only.
+        { -- A hash map, so a lookup builds no comparable string.
           toptNodes =
             DMap.foldl
                 (\g node acc -> HashMap.insert TOpt.globalHash (==) g node acc)
@@ -3905,9 +3515,7 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
         , lss = lssConfig
         , lamLabels = mvarState.lamLabels
 
-        -- Stamping-walk census denominator, read once here rather than
-        -- recomputed: `nextArrow` less its origin is every arrow occurrence
-        -- stamped.
+        -- How many `ArrowId`s the assignment drew.
         , arrowTotal =
             Id.toComparable mvarState.nextArrow - Id.toComparable TypeIds.firstArrowId
         , stampTypesAll = mvarState.typesAll
@@ -3933,19 +3541,21 @@ initState lssConfig limits currentModule nodes annotations globalTypeEnv mvarSta
     }
 
 
+{-| Returns the `SpecId` of `global` at `monoType`, and the state with that spec
+scheduled at the head of the worklist.
+
+The spec is created in the registry directly, not through
+`Engine.enqueueSpec`, so no spec limit is checked for it. With LSS on its
+annotation-widened key is recorded, which the lambdas minted in its body are
+qualified by (see `Engine.lambdaInstanceMemberId`).
+
+-}
 seedSpec : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
 seedSpec global monoType s =
     let
         ( specId, reg1 ) =
             Registry.getOrCreateSpecId global monoType s.registry
 
-        -- Layout-qualified members §2.2: entry-seeded specs are keyed-ROUTED under the
-        -- all-keyed default (the routing predicate is per-mint, not
-        -- per-creation-path), so their bodies' lambda mints consult
-        -- `specWidenedKeys` — capture here too, or every entry-global lambda
-        -- takes the SpecId fallback and "fallback expected 0" is false by
-        -- construction. One pure widenSets for the 1-2 seeded specs; the
-        -- flags-decoder seed arrives through this same function.
         s1 =
             if s.env.lss.enabled then
                 Engine.recordSpecWidenedKey specId
@@ -3964,6 +3574,11 @@ seedSpec global monoType s =
     )
 
 
+{-| Returns the flags decoder's `SpecId`, seeded like the entry point at its
+annotation type with its own spine stamped, and the state with it scheduled.
+Returns `Nothing` when there is no flags decoder or its node is not a `Define`
+or `TrackedDefine`.
+-}
 seedFlagsDecoder : Maybe TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> S -> ( Maybe Mono.SpecId, S )
 seedFlagsDecoder maybeFlagsGlobal nodes s =
     case maybeFlagsGlobal of
@@ -3992,17 +3607,20 @@ seedFlagsDecoder maybeFlagsGlobal nodes s =
 -- ====== WORKLIST DRAIN ======
 
 
+{-| Returns the state once every work item has been translated, or the first
+failure.
+
+Items are taken from the head of the worklist, so the spec scheduled last is
+translated first. After each item, a watchdog failure the item recorded ends the
+drain. When the worklist is empty and some specs are dirty, a flush round puts
+all of them back on the worklist; starting a round once `maxJoinRounds` have run
+is an `EngineBug`, which names up to five of the dirty specs.
+
+-}
 drain : S -> Result Failure S
 drain s =
     case s.worklist of
         [] ->
-            -- LSS_010 drain-end flush: specs whose stored types were
-            -- annotation-JOINED since their translation re-translate now,
-            -- once per ROUND with their fully-joined demands (never once
-            -- per join — that cascade was hour-scale on the self-compile).
-            -- Each round only exists because some stored type CHANGED, and
-            -- joins are monotone in a finite lattice, so rounds terminate;
-            -- the cap turns a would-be livelock into a loud EngineBug.
             case s.dirtyList of
                 [] ->
                     Ok s
@@ -4050,12 +3668,6 @@ drain s =
                     Err e
 
                 Ok s1 ->
-                    -- Step 10c: the MONO_030 watchdog no longer aborts an item
-                    -- mid-flight (`enqueueSpec*` has no `Result` to carry it);
-                    -- it records `pendingFailure` and the item finishes, so the
-                    -- check lands here, once per item, before the next one
-                    -- starts. The message was built at TRIP time from the
-                    -- global in scope, so it is byte-for-byte the old text.
                     case s1.itemAux.pendingFailure of
                         Just f ->
                             Err f
@@ -4064,25 +3676,43 @@ drain s =
                             drain s1
 
 
-{-| LSS\_010 flush-round cap. Real programs stabilize in a handful of
-rounds (set-flow chain depth); triple digits means something is
-oscillating and must fail loudly rather than spin.
+{-| The number of flush rounds a drain may run; needing another is an
+`EngineBug`.
 -}
 maxJoinRounds : Int
 maxJoinRounds =
     100
 
 
+{-| Returns the state after translating the spec `specId`: its node stored and
+its registry type updated.
+
+A spec that already has a node is skipped unless it is dirty. A dirty one is
+translated again with its stored type, except one whose node has no body (see
+`nodeSupportsRetranslation`), which keeps its node. An accessor spec becomes a
+one-parameter function reading the field from its record argument. A global
+with no node in the graph becomes a `MonoExtern`.
+
+After translation, the item's `number` constraints are added to the super table
+as `Engine.harvestSuperTableExcept` describes, leaving out the global's own
+annotation variables, and accessor values in the node are resolved
+(`ResolveAccessorValues.rewriteNode`). For a node with a body the registry type
+becomes the node's type, or with LSS on the join of the node's type with the
+stored type, so that no member a demand brought is dropped; at a licensed
+kernel alias (`licensedKernelAliasNode`) a ⊤ the join produced where the stored
+type had a set takes that set back, and the global's own spine is stamped on the
+joined type again. A node without a body leaves the stored type as it is: for
+a constructor, the node's type is the value it builds, not the function type
+that was demanded.
+
+-}
 processItem : Mono.SpecId -> S -> Result Failure S
 processItem specId s =
     if BitSet.member specId s.inProgress then
-        -- Recursive self-reference: already being specialized; drop.
         Ok s
 
     else if nodeAlreadyDone specId s && not (BitSet.member specId s.dirtySpecs) then
-        -- Stale duplicate work item: a LSS_010 re-push already satisfied by a
-        -- later (re-)translation, or a duplicate re-push. Flag-off never
-        -- reaches this (each spec is pushed exactly once).
+        -- Already translated and not dirty: a repeated work item.
         Ok s
 
     else
@@ -4109,22 +3739,14 @@ processItem specId s =
                                 , currentGlobal = Just global
                                 , lssStats = stats1
 
-                                -- LSS_010: consume the dirty mark before
-                                -- translating with the (joined) stored type; a
-                                -- join arriving DURING this translation re-marks
-                                -- it for the next flush round.
+                                -- A join made during this translation marks the spec dirty again.
                                 , dirtySpecs = BitSet.removeGrowing specId s.dirtySpecs
                             }
 
                     auxR =
                         sItemR.itemAux
 
-                    -- Fix B (LSS_017): expose the spec being translated to the
-                    -- lambda-instance member mints. AFTER resetItem — it
-                    -- rebuilds itemAux. LSS_018 rides along: the μ-tie scan of
-                    -- the STORED demand for qualified members of raw lambdas
-                    -- (rebuilt per item, so LSS_010 re-translations re-tie
-                    -- against the fully-joined demand — monotone).
+                    -- Set after `resetItem`, which rebuilds `itemAux`.
                     sItem =
                         { sItemR
                             | itemAux =
@@ -4153,10 +3775,6 @@ processItem specId s =
 
                     Mono.Global home name ->
                         let
-                            -- D13: resolve the node + its annotation-id set ONCE per
-                            -- global (both depend only on the immutable node map), then
-                            -- reuse across every spec of the same global. `sItem2`
-                            -- carries the memo insert on the first resolve.
                             ( resolution, sItem2 ) =
                                 resolveGlobalNode home name sItem
                         in
@@ -4166,19 +3784,7 @@ processItem specId s =
 
                             Just node ->
                                 if nodeAlreadyDone specId s && not (nodeSupportsRetranslation node) then
-                                    -- LSS_010 latent-bug guard (found by E9): a
-                                    -- dirty-flush RE-translation only makes sense
-                                    -- for body-bearing nodes. Ctor/enum/box/
-                                    -- kernel/manager specs have no set-consuming
-                                    -- body, AND their registry type was updated
-                                    -- to `nodeType` (the VALUE/result type) at
-                                    -- finishNode — feeding that back through
-                                    -- `specializeCtorViaScheme`'s whole-scheme
-                                    -- unify crashes (arrow vs value). Keep the
-                                    -- existing node; the dirty mark was consumed
-                                    -- above. Mirror finishNode's bookkeeping
-                                    -- (inProgress + currentGlobal) without
-                                    -- touching the node.
+                                    -- A node without a body keeps its node; the dirty mark is already consumed.
                                     Ok
                                         (let
                                             aux2 =
@@ -4198,9 +3804,7 @@ processItem specId s =
 
                                         Ok ( monoNode0, s1raw ) ->
                                             let
-                                                -- Harvest Join-R number taints from this item's store into
-                                                -- the global super table before the store is discarded —
-                                                -- EXCLUDING the node's own annotation vars (per-spec, memoized).
+                                                -- The global's own annotation variables are left out: each spec binds them differently.
                                                 s1 =
                                                     Engine.harvestSuperTableExcept resolution.annIds s1raw
 
@@ -4210,24 +3814,6 @@ processItem specId s =
                                                 actualType =
                                                     Mono.nodeType monoNode
 
-                                                -- LSS_010 registry-join invariant (found by
-                                                -- E9): for a NON-body node (ctor/enum/box/
-                                                -- kernel/manager) `nodeType` is the VALUE/
-                                                -- result type, and overwriting the stored
-                                                -- FUNCTION-typed demand with it makes every
-                                                -- later same-key enqueue mismatch-join —
-                                                -- storedChanged oscillates and the flush
-                                                -- never converges (and a re-translation
-                                                -- would feed the value type to the ctor
-                                                -- scheme unify — a crash). Keep the demand
-                                                -- for those; body-bearing nodes keep the
-                                                -- actualType update they need.
-                                                -- Phase 4a: run the completion join
-                                                -- ONCE, keeping its changed flag for
-                                                -- both the registry write and the
-                                                -- census. `Just` exactly when the
-                                                -- join site is live (lss on + a
-                                                -- body-bearing node).
                                                 completionJoin =
                                                     if s1.env.lss.enabled && nodeSupportsRetranslation node then
                                                         case Registry.lookupSpecKey specId s1.registry of
@@ -4236,14 +3822,7 @@ processItem specId s =
                                                                     ( changedJ, joined0 ) =
                                                                         Mono.joinAnnotationsChanged actualType storedT
 
-                                                                    -- P0 join-collision census
-                                                                    -- (plans/lss-provenance-join-and-demand-sigs.md
-                                                                    -- §4.1, site 1): cells on the RAW
-                                                                    -- pair, BEFORE the L1 re-stamp, so
-                                                                    -- the census sees the collisions
-                                                                    -- the stamp currently masks.
-                                                                    -- aVar = the body zonk was ignorant;
-                                                                    -- sVar = every demand was ignorant.
+                                                                    -- Report only: positions where the body's type and the stored type disagree.
                                                                     censusCells =
                                                                         if s1.env.lss.report then
                                                                             case specKey of
@@ -4259,48 +3838,15 @@ processItem specId s =
                                                                         else
                                                                             []
 
-                                                                    -- P1 restatement-⊤ recovery
-                                                                    -- (plans/lss-provenance-join-and-demand-sigs.md
-                                                                    -- §4.3): licensed kernel-alias
-                                                                    -- nodes only. Where the join
-                                                                    -- reads ⊤ but the stored type
-                                                                    -- held a complete LSet, the ⊤
-                                                                    -- is the ABI rebuild's
-                                                                    -- placeholder restating an
-                                                                    -- ignorance the license already
-                                                                    -- discharges — recover the
-                                                                    -- stored set. Runs BEFORE the
-                                                                    -- L1 stamp (AR-P1-5: the stamp
-                                                                    -- never overwrites an LSet, so
-                                                                    -- the pair is idempotent).
+                                                                    -- At a licensed kernel alias, a ⊤ the join made over a stored set takes the set back.
                                                                     ( joinedR, recoveredN ) =
-                                                                        -- P1 restatement-⊤ recovery, shipped
-                                                                        -- 2026-08-29 as `lss.rsTop` and
-                                                                        -- unconditional since 2026-09-18:
-                                                                        -- coverage 87.64 % -> 88.76 %,
-                                                                        -- ⊤ 3,668 -> 2,153 (−1,515 = 99.9 %
-                                                                        -- of the 1,516-cell P0 target,
-                                                                        -- landing as k1 +1,454 / kN +61),
-                                                                        -- `var` untouched by design.
                                                                         if licensedKernelAliasNode node s1 then
                                                                             Mono.recoverStoredSets joined0 storedT
 
                                                                         else
                                                                             ( joined0, 0 )
 
-                                                                    -- L1 (plans/lss-coverage-four-levers.md
-                                                                    -- §1.1): re-stamp the self spine on the
-                                                                    -- FINALIZED stored type. Heals the two
-                                                                    -- head-⊤ manufacturers (the kernel-ABI
-                                                                    -- rebuild's hardcoded ⊤ — whose store is
-                                                                    -- never read, so no store-side fix can
-                                                                    -- work — and the slot-split LSet∪LVar=⊤
-                                                                    -- join). stampSpineGo is idempotent and
-                                                                    -- never overwrites an LSet, so the write
-                                                                    -- stays monotone; the changed flag is
-                                                                    -- deliberately NOT recomputed (AR-2: the
-                                                                    -- stamp enriches future demands and the
-                                                                    -- census, it does not need a re-flush).
+                                                                    -- The global's own spine, stamped again on the joined type; `changedJ` stays as it was.
                                                                     joined1 =
                                                                         case specKey of
                                                                             Mono.Global sgHome sgName ->
@@ -4309,13 +3855,9 @@ processItem specId s =
                                                                                         stamped
 
                                                                             _ ->
-                                                                                -- Accessor keys: no self
-                                                                                -- global to stamp (AR-3).
+                                                                                -- An accessor has no global of its own to stamp.
                                                                                 joinedR
 
-                                                                    -- P1 census: one cell per
-                                                                    -- recovered position (report-
-                                                                    -- gated inside the bump).
                                                                     censusCells1 =
                                                                         List.repeat recoveredN "rsTop|recovered" ++ censusCells
                                                                 in
@@ -4329,25 +3871,6 @@ processItem specId s =
 
                                                 registry2 =
                                                     if nodeSupportsRetranslation node then
-                                                        -- LSS_010 monotonicity (found by E9): the
-                                                        -- registry entry is the JOIN of every
-                                                        -- admitted demand's annotations; a plain
-                                                        -- actualType overwrite DISCARDS demand-side
-                                                        -- members the body's own zonk doesn't carry
-                                                        -- (arg-side injected globals), so join-grow /
-                                                        -- update-shrink ping-pongs the flush forever
-                                                        -- ("registry/actualType oscillation").
-                                                        -- Structure from actualType, annos UNIONED
-                                                        -- with the stored entry. Flag-off the annos
-                                                        -- are all LTop — keep the byte-identical
-                                                        -- plain update there.
-                                                        --
-                                                        -- Phase 4a: the changed flag does NOT gate
-                                                        -- this write. `False` means the join result
-                                                        -- IS actualType by pointer, but the registry
-                                                        -- still holds storedT, so the update must run
-                                                        -- either way — the win here is the elided
-                                                        -- rebuild, not an elided write.
                                                         case completionJoin of
                                                             Just ( _, joined, _ ) ->
                                                                 Registry.updateRegistryType specId joined s1.registry
@@ -4364,12 +3887,6 @@ processItem specId s =
                                                         , lambdaCounter = newLambdaCounter
                                                     }
 
-                                                -- Phase 1 census: count the joins
-                                                -- this site runs (one per completed
-                                                -- body-bearing spec). Phase 4a splits
-                                                -- out the no-op subset, which the
-                                                -- changed flag gives for free:
-                                                -- `completion` stays the total.
                                                 s3 =
                                                     case completionJoin of
                                                         Just ( True, _, _ ) ->
@@ -4381,7 +3898,6 @@ processItem specId s =
                                                         Nothing ->
                                                             s2
 
-                                                -- P0 site-1 cell bumps.
                                                 s4 =
                                                     case completionJoin of
                                                         Just ( _, _, cells ) ->
@@ -4393,16 +3909,11 @@ processItem specId s =
                                             Ok (finishNode specId monoNode s4)
 
 
-{-| LSS\_018 (μ-tie): raw-lambda → smallest qualified member id present in the
-spec's stored demand type. Consulted by `Engine.lambdaInstanceMemberId` on
-routed mints; smallest-id choice makes the canonical family id
-deterministic. The one-shot eligible census (Run J) measured the population
-at 0 on the self-compile, which is what a bound on a spiral that does not
-occur here looks like when it is working — this is the elm-aws-codegen
-pathological class's terminator, and with the budget at 0 = unlimited it is
-the only structural one. The routing predicate is NOT
-re-checked here: the map is only ever read after
-`lambdaInstanceMemberId`'s own routed check.
+{-| Returns, for each lambda key, the smallest member id that the sets in
+`monoType` carry for a qualified instance of that lambda, according to the
+member table's `lambdaQualified`; empty with LSS off. It becomes
+`ItemAux.demandQualified`, which the μ-tie in `Engine.lambdaInstanceMemberId`
+consults.
 -}
 demandQualifiedFor : Mono.MonoType -> S -> Dict.Dict Int Int
 demandQualifiedFor monoType s =
@@ -4427,22 +3938,16 @@ demandQualifiedFor monoType s =
             (Mono.collectAnnoMembers monoType)
 
 
-{-| MONO\_029 stale-read barrier (R2 of
-plans/solver-layout-connectivity-reconciliation.md): translate the item and, if
-any recorded CEcoValue residual was read from a var the translation LATER
-bound (read-before-saturation), re-translate immediately AGAINST THE SAME
-STORE. The item store is monotone — pass 2's zonks see every binding pass 1
-made anywhere in the body, so the previously-stale reads come back concrete.
-Re-translation must happen here (store in hand), not at the drain-end flush:
-`resetItem` would rebuild the store from scratch and deterministically
-reproduce the same stale snapshot.
+{-| Returns the node `specializeNode` gives, translating again against the same
+store for as long as a recorded read-back of an erased type variable has been
+bound since (`staleResidualRead`).
 
-Convergence: each pass only ADDS bindings to one finite store; a pass with no
-newly-bound residual reads is a fixpoint. The cap turns oscillation into a
-loud EngineBug. Side effects of discarded passes are benign: `enqueueSpec` is
-key-idempotent (a spec enqueued under a since-healed erased key may survive as
-an unreferenced spec and is pruned), and multi-instance stacks are re-pushed
-per pass.
+The store only gains bindings during an item, so the next pass reads them. It
+has to happen here, with the store in hand, because a later flush round would
+start from a fresh store and repeat the same read. When pass `attempt` reaches
+`maxSaturationPasses` with a stale read left, the result is an `EngineBug`.
+Specs enqueued by an earlier pass remain, and pruning drops any that nothing
+references.
 
 -}
 specializeNodeSaturating : Int -> Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> Result Failure ( Mono.MonoNode, S )
@@ -4467,17 +3972,26 @@ specializeNodeSaturating attempt name home node monoType s =
                 specializeNodeSaturating (attempt + 1) name home node monoType (Engine.clearResidualReads s1)
 
 
-{-| Stale-read re-translation cap. One extra pass suffices for the observed
-shapes (a destructure recorded before a later app-shape unification); anything
-deeper indicates reads and bindings chasing each other and must fail loudly.
+{-| The most translation passes `specializeNodeSaturating` makes for one item.
 -}
 maxSaturationPasses : Int
 maxSaturationPasses =
     5
 
 
-{-| Specialize one top-level node. `name`/`home` identify the definition (used
-for ctor tags and to follow links to their target's name/home).
+{-| Returns the node for one spec of the global `name` of `home` at `monoType`,
+by the kind of the global's node.
+
+A definition is translated by `defineFrom`; a constructor, enum or box by
+`Translate`, with its tag from `CtorTag.effective`, a box being a one-field
+constructor with tag 0. A cycle is translated for the member the spec demands,
+which is the current global rather than `name`. An incoming port demanded at a
+function type, and every outgoing port, go to `Translate.specializePort`; an
+incoming port demanded at any other type is its decoder, translated as a
+definition. A link is followed to its target. A kernel, or a link to a global
+with no node, becomes a `MonoExtern`, and an effect manager a
+`MonoManagerLeaf` named after its module.
+
 -}
 specializeNode : Name -> ModuleName.Canonical -> TOpt.Node TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
 specializeNode name home node monoType s =
@@ -4498,7 +4012,7 @@ specializeNode name home node monoType s =
             Translate.enumNode (CtorTag.effective home name index) canType monoType s
 
         TOpt.Box canType ->
-            -- @unbox single-field type: a 1-field ctor with literal tag 0.
+            -- A box is a one-field constructor with tag 0.
             Translate.specializeCtorViaScheme name 0 1 canType monoType s
 
         TOpt.Link linkedGlobal ->
@@ -4517,10 +4031,7 @@ specializeNode name home node monoType s =
                     ( Mono.MonoManagerLeaf (Name.toElmString modName) monoType, s )
 
         TOpt.Cycle _ valueDefs funcDefs _ ->
-            -- The demand reaches the cycle node through a `_M$<first>` Link, so
-            -- `name` here is the group name; the REQUESTED member is the original
-            -- demand preserved in `currentGlobal`. Each member's cross-references
-            -- enqueue its siblings, so members materialize as separate work items.
+            -- `name` is the cycle's own; the member demanded is the current global.
             let
                 reqName =
                     case s.currentGlobal of
@@ -4538,20 +4049,16 @@ specializeNode name home node monoType s =
                     Translate.specializePort True expr meta.tipe monoType s
 
                 _ ->
-                    -- The same port Global demanded at its DECODER (non-function)
-                    -- type: compile the payload decoder as a plain value node
-                    -- (mirrors the original engine's split).
+                    -- Demanded at the decoder's type: the decoder, translated as a definition.
                     defineFrom (TOpt.typeOf expr) expr monoType s
 
         TOpt.PortOutgoing expr _ meta ->
             Translate.specializePort False expr meta.tipe monoType s
 
 
-{-| D13: resolve a `Mono.Global` to its `TOpt.Node` and annotation-id set, memoized
-by the comparable global. The node map and `nodeAnnotationIds` are both functions
-of the immutable `toptNodes`, so a global with N specializations resolves once and
-the DMap descent + `freeVarIds` walk are skipped for the other N-1. The memo lives
-in `S.nodeResolution` (survives `resetItem`); byte-identical to recomputing.
+{-| Returns the node of the global `name` of `home` and its annotation variable
+ids (`nodeAnnotationIds`), memoized per global in `nodeResolution`, which
+`resetItem` keeps, so every spec of a global after the first reuses them.
 -}
 resolveGlobalNode : ModuleName.Canonical -> Name -> S -> ( Engine.NodeResolution, S )
 resolveGlobalNode home name s =
@@ -4582,16 +4089,9 @@ resolveGlobalNode home name s =
             ( resolution, { s | nodeResolution = Dict.insert gkey resolution s.nodeResolution } )
 
 
-{-| The item node's annotation free-var ids (excluded from taint harvest).
-
-Every declared type a spec of this global can be translated against is
-per-spec: one spec binding an annotation var to a `number` super says nothing
-about a sibling spec where the same var stays erased. Harvesting such a var
-into the global super table made Prune close the sibling's
-`MVar _ CEcoValue` to `MInt` (REP\_BOUNDARY\_003: a boxed `List a` spec
-re-typed as an unboxed `List Int`). So every node kind with a declared type
-contributes, a `Cycle` through all its members (self-recursive functions are
-cycles), and a `Link` through its target (`depth` bounds the chase).
+{-| Returns the ids of the type variables in the types of `node`: its
+annotation, the types of every member of a cycle, and those of a link's target,
+following at most `depth` links. A kernel or effect manager has none.
 -}
 nodeAnnotationIds : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Node TypeIds.MVarId -> EverySet.EverySet Int Int
 nodeAnnotationIds toptNodes depth node =
@@ -4648,10 +4148,9 @@ nodeAnnotationIds toptNodes depth node =
             EverySet.empty
 
 
-{-| Specialize a value definition: assert the demanded type against the def's
-annotation in the store (so a polymorphic body concretizes via the shared memo),
-then translate the body. For a monomorphic global the demand equals the
-annotation and the unification is a no-op.
+{-| Returns a `MonoDefine` of `expr` at `demand`. The definition's annotation is
+unified with `demand` first (`Translate.demandUnifyRoot`), so the body is read
+at that instantiation, and the node's type is the translated body's type.
 -}
 defineFrom : Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> S -> ( Mono.MonoNode, S )
 defineFrom annCanType expr demand s =
@@ -4659,22 +4158,18 @@ defineFrom annCanType expr demand s =
         s1 ->
             case Translate.translate expr s1 of
                 ( monoExpr, s2 ) ->
-                    -- LSS_026 §11 tried widening a WRAP-CLASS def's head
-                    -- annotation here (the adoption input of
-                    -- `Mono.singletonHeadMember`). MEASURED NO-GO — see the
-                    -- plan's §11.5: it removed ALL adoption-blocking
-                    -- (`declinedBlocked` 156 → 0) and moved dispatch coverage
-                    -- by 0.000 pp, while costing 19 k singleton sets and 60 %
-                    -- of grounding. Do not re-attempt without first
-                    -- establishing what the fast→gen conversion actually is.
                     ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), s2 )
 
 
-{-| LSS\_010 re-translation eligibility: only body-bearing nodes can be
-meaningfully re-translated with a joined demand. Ctor/enum/box/kernel/
-manager specs are shape-derived — and their registry type is rewritten to
-the node's VALUE type at finishNode, which the ctor-scheme unify rejects.
-Links chase to their target's kind.
+{-| Tells whether a spec of `node` can be translated again with a joined stored
+type: true for definitions, cycles, ports and links, false for constructors,
+enums, boxes, kernels and effect managers.
+
+A node of the second kind has no body that reads lambda sets, and its registry
+type is left as it was stored. A link is accepted whatever its target; links lead
+to cycles and, for an effect module's `command` and `subscription`, to its
+manager.
+
 -}
 nodeSupportsRetranslation : TOpt.Node TypeIds.MVarId -> Bool
 nodeSupportsRetranslation node =
@@ -4695,23 +4190,21 @@ nodeSupportsRetranslation node =
             True
 
         TOpt.Link _ ->
-            -- The linked target is Define/Cycle in practice; allowing the
-            -- chase is safe (specializeNode recurses into the target).
             True
 
         _ ->
             False
 
 
-{-| P1 (plans/lss-provenance-join-and-demand-sigs.md §4.3, AR-P1-2): is this
-node an eta-free KERNEL ALIAS whose kernel carries a `TypeFaithful` license
-that APPLIES at the alias's occurrence type? This is the sole node class
-where restatement-⊤ recovery is sound: the alias body contributes no members
-of its own (the ⊤s on its actual side are the kernel-ABI rebuild's
-placeholders), and the license is the audited proof the kernel fabricates no
-function inhabitants beyond its type's variable sharing — so a stored `LSet`
-(every demand agreed on a complete set) really is complete. Link-chased like
-`LssInfer.kernelAliasOf`, but keeps the body meta for the occurrence check.
+{-| Tells whether `nd` is a kernel alias, a definition whose whole body is a
+kernel reference (following links), whose kernel has a `TypeFaithful` fact that
+`KernelSetFacts.licenseApplies` accepts at the reference's type.
+
+At such a node `processItem` lets a stored set replace a ⊤ that the join
+produced. The alias adds no members of its own, and the license says the kernel
+makes no function values beyond those its type passes through, so the stored
+set is taken as complete.
+
 -}
 licensedKernelAliasNode : TOpt.Node TypeIds.MVarId -> S -> Bool
 licensedKernelAliasNode nd s =
@@ -4743,27 +4236,20 @@ licensedKernelAliasNode nd s =
             False
 
 
+{-| Returns the state with `monoNode` stored as the node of `specId` and the
+item closed: the spec is no longer in progress, no global or spec is current,
+and `qLog` is empty. First the item's read-backs are replayed
+(`Store.rezonkSettled`) and its constraints checked against the store
+(`Store.qShadowCensus`); both only add to the census, and both must run now,
+since the next item starts with a fresh store.
+-}
 finishNode : Mono.SpecId -> Mono.MonoNode -> S -> S
 finishNode specId monoNode s =
-    -- A join that landed mid-translation left the spec's dirty mark set;
-    -- the drain-end flush re-pushes it (LSS_010) — no per-item re-push.
     let
-        -- §3.2 (plans/lss-post-mono-architecture.md): replay this item's
-        -- readbacks NOW — same store, same variables, same multiplicity, just
-        -- after the item finished writing instead of during. Report-gated and
-        -- read-only; the next `resetItem` discards this store, so this is the
-        -- last moment the experiment is possible at all.
-        --
-        -- BEFORE the itemAux update below, because `rezonkSettled` reads
-        -- `itemAux.zonkLog` and `itemAux.arrowOfSlot`.
+        -- Before `itemAux` is changed below: the replay reads its logs.
         sSettled =
             Store.rezonkSettled s
 
-        -- §5.1 (plans/lss-paper-inclusion-constraints.md): solve this item's
-        -- shadow `Q` and score it against the store the eager union built.
-        -- Same placement and the same read-only discipline as the re-zonk
-        -- above, and for the same reason: the next `resetItem` throws this
-        -- store away, so item end is the last moment the comparison exists.
         sQ =
             Store.qShadowCensus sSettled
 
@@ -4775,23 +4261,21 @@ finishNode specId monoNode s =
         , inProgress = BitSet.removeGrowing specId sQ.inProgress
         , currentGlobal = Nothing
 
-        -- Fix B (LSS_017): a mint outside any item must not silently adopt a
-        -- stale spec — clear alongside currentGlobal.
+        -- So a member minted between items is not qualified by this spec.
         , itemAux = { aux | currentSpecId = Nothing, qLog = [] }
     }
 
 
-{-| Did any recorded CEcoValue residual read become resolvable after the fact?
-Point-based reads (`ecoResidualReads`) are stale only when (a) the var's class
-is now bound (structure/alias — or a Number super that Prune would close to
-MInt) AND (b) the class is UF-equivalent to the ITEM MEMO's point for the
-var's canonical id — i.e. the shared canonical family. Isolated per-call
-instantiations (loadType with a fresh memo, the SKI/per-call-site design) are
-read-free-then-bound on EVERY pass by construction; treating them as stale
-livelocks the saturation loop (R0 census finding, RecordNarrow corpus).
-Key-based reads (`ecoResidualKeyReads`) are vars that had not entered the
-store when classified; they are stale only if the memo has since gained a
-BOUND point for them.
+{-| Tells whether a read-back recorded in this item, which gave an erased type
+variable, has since been bound, so that translating again against the same
+store would read it bound.
+
+A read recorded by Point counts when the variable is now bound (`varResolvedNow`)
+and is still equivalent to the item memo's Point for its MVarId. A Point not
+equivalent to the memo's, such as one loaded for a single call site, does not
+count. A read recorded by MVarId counts when the memo now holds a bound Point
+for it.
+
 -}
 staleResidualRead : S -> Bool
 staleResidualRead s =
@@ -4808,6 +4292,9 @@ staleResidualRead s =
             s.itemAux.ecoResidualKeyReads
 
 
+{-| Tells whether the read of `var` counts as stale, as `staleResidualRead`
+describes for reads recorded by Point.
+-}
 staleVarRead : S -> Vars.Variable -> Bool
 staleVarRead s var =
     varResolvedNow s.store var
@@ -4829,6 +4316,9 @@ staleVarRead s var =
            )
 
 
+{-| Tells whether `var` is bound in `store`: to a structure, an alias, or the
+`number` super type, flexible or rigid.
+-}
 varResolvedNow : IO.State -> Vars.Variable -> Bool
 varResolvedNow store var =
     let
@@ -4852,6 +4342,8 @@ varResolvedNow store var =
             False
 
 
+{-| Tells whether a node has been stored for `specId`.
+-}
 nodeAlreadyDone : Mono.SpecId -> S -> Bool
 nodeAlreadyDone specId s =
     case Array.get specId s.nodes of
@@ -4863,9 +4355,20 @@ nodeAlreadyDone specId s =
 
 
 
--- ====== ASSEMBLY (mirror of assembleRawGraphFrom) ======
+-- ====== ASSEMBLY ======
 
 
+{-| Returns the unpruned graph of the drained state, with `mainSpecId` as its
+main and `flagsDecoderSpecId` as its flags decoder.
+
+The call edges of a node are the specs it references, and a node that
+references a kernel of the `Debug` module is marked as having effects. Every
+referenced spec, and main, is marked as used as a value. The registry keeps only
+its reverse mapping, and `ctorShapes` is left empty. `lssMemberKinds`, member id
+to full key, is filled only with `lss.report`. `lssBlockedMembers` are the ids
+the μ-tie reused.
+
+-}
 assembleRawGraph : S -> Mono.SpecId -> Maybe Mono.SpecId -> Mono.MonoGraph
 assembleRawGraph s mainSpecId flagsDecoderSpecId =
     let
@@ -4894,10 +4397,6 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
 
                         Just node ->
                             let
-                                -- D14: one fused walk yields both the call-edges and
-                                -- the effects flag (was two full `foldExpr` passes over
-                                -- the same expr). Byte-identical: same traversal order,
-                                -- same cons order for edges, same Debug-kernel effect.
                                 ( neighbors, hasEffects ) =
                                     collectEdgesAndEffectsFromNode node
 
@@ -4937,14 +4436,6 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         , flagsDecoder = flagsDecoderSpecId
         , lssMemberOrigins = buildMemberOrigins s.env.toptNodes s.lssMemberTable
         , lssMemberKinds =
-            -- CENSUS ONLY, report-gated: invert the interned key table to
-            -- member-id -> FULL interned key (`l|<raw>|<spec or widened key>`,
-            -- `p|<global>|<k>`, ...). `lssMemberOrigins` records standalone
-            -- members only, so a member missing from it may be a lambda (l|),
-            -- a PAP (p|) or an instance that was pruned - and the census
-            -- cannot tell those apart without this. Consumers that want the
-            -- kind take `String.left 1`; the full key is what lets a
-            -- `g1absentl` decline be joined back to its SOURCE lambda.
             if s.env.lss.report then
                 Dict.foldl (\key mid acc -> Dict.insert mid key acc) Dict.empty s.lssMemberTable.byKey
 
@@ -4954,10 +4445,12 @@ assembleRawGraph s mainSpecId flagsDecoderSpecId =
         }
 
 
-{-| B3.5: invert `LssMemberTable.byKey` into member-id → origin, dispatching on
-the 2-char key prefix (`g|`/`c|`/`k|`/`a|`; `l|` lambdas are skipped — resolved
-via the instance index). TOpt.Global payloads convert to Mono.Global here (the
-origin carries Monomorphized's own Global; this site imports TOpt).
+{-| Returns what each member that is not a lambda stands for, by member id, from
+its key's prefix and its recorded source: a `g|` member is a global, or a
+constructor when `globalOrigin` finds one behind it; `c|` a constructor; `k|` a
+kernel; `a|` an accessor, named by the rest of its key; `p|` a partial
+application. Lambda (`l|`) members, and members whose recorded source is not of
+the kind the prefix calls for, are left out.
 -}
 buildMemberOrigins : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Engine.LssMemberTable -> Dict.Dict Int Mono.MemberOrigin
 buildMemberOrigins toptNodes table =
@@ -5006,21 +4499,11 @@ buildMemberOrigins toptNodes table =
         table.byKey
 
 
-{-| F-5A: a `g|` member whose node IS a constructor gets `OriginCtor`.
+{-| Returns `OriginCtor` for a global that is a constructor or box, through
+links and aliases (`ctorBackedGlobal`), and `OriginGlobal` otherwise.
 
-Only nullary-enum and box constructors are minted under `c|`
-(`TypedOptimized.elm:155-156` — `VarEnum` / `VarBox`); every other
-constructor — `Just`, `List.::`, any user-defined unary ctor — canonicalizes
-to a `TOpt.VarGlobal` and lands under `g|`. Consumers read the origin to
-decide whether a member's evaluation can reach `Debug`, and CONSTRUCTING a
-value never can, so the key prefix must not be the answer.
-
-Link-chased, and eta-free ctor ALIASES are chased through their `Define`
-body: without that, `let w = Wrap in List.map w` declines while
-`List.map Wrap` licenses — an asymmetry with no explanation in the census.
-Depth-bounded so a malformed `Link` cycle cannot hang the compiler.
-(`LssInfer.kernelAliasOf` is the same pattern, but it runs against `Engine.S`
-and is not importable here.)
+A constructor can be a `g|` member, not only a `c|` one: a reference to it as
+an ordinary global, such as `Just`, is minted under `g|`.
 
 -}
 globalOrigin : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Global -> Mono.MemberOrigin
@@ -5032,6 +4515,10 @@ globalOrigin toptNodes g =
         Mono.OriginGlobal (toptToMono g)
 
 
+{-| Tells whether `g` is a constructor or box node, following links, and
+definitions whose whole body is a reference to another global or a box, for at
+most `fuel` steps.
+-}
 ctorBackedGlobal : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -> Int -> TOpt.Global -> Bool
 ctorBackedGlobal toptNodes fuel g =
     if fuel <= 0 then
@@ -5064,11 +4551,16 @@ ctorBackedGlobal toptNodes fuel g =
                 False
 
 
+{-| Returns the same global as a `Mono.Global`.
+-}
 toptToMono : TOpt.Global -> Mono.Global
 toptToMono (TOpt.Global h n) =
     Mono.Global h n
 
 
+{-| Returns `rawGraph` pruned and closed by `Prune.pruneUnreachableSpecs`, given
+the drained state's type-variable supply and super table.
+-}
 pruneGraph : S -> Mono.MonoGraph -> Mono.MonoGraph
 pruneGraph s rawGraph =
     Prune.pruneUnreachableSpecs
@@ -5078,14 +4570,12 @@ pruneGraph s rawGraph =
 
 
 
--- ====== CALL-EDGE / EFFECT COLLECTION (mirror of the original private helpers) ======
+-- ====== CALL EDGES AND EFFECTS ======
 
 
-{-| D14: fused edge-and-effect step. One `foldExpr` pass accumulates both the
-call-edge spec ids (a `MonoVarGlobal`, cons order preserved) and the effects flag
-(a `Debug` kernel reference). Replaces the former `extractSpecId` + `checkExpr`
-double walk over the same expr; each expr node contributes to at most one field,
-so the union is exact and byte-identical.
+{-| Returns `acc` with one expression's contribution, as the step of a fold over
+every expression of a body: a global reference adds its spec to the edges, and a
+reference to a kernel of the `Debug` module sets the effects flag.
 -}
 collectEdgesAndEffects : Mono.MonoExpr -> ( List Int, Bool ) -> ( List Int, Bool )
 collectEdgesAndEffects expr (( edges, effects ) as acc) =
@@ -5100,6 +4590,10 @@ collectEdgesAndEffects expr (( edges, effects ) as acc) =
             acc
 
 
+{-| Returns the specs a node's body references, with repeats, and whether it
+references a kernel of the `Debug` module. A node without a body references
+nothing.
+-}
 collectEdgesAndEffectsFromNode : Mono.MonoNode -> ( List Int, Bool )
 collectEdgesAndEffectsFromNode node =
     case node of
@@ -5123,11 +4617,16 @@ collectEdgesAndEffectsFromNode node =
 -- ====== HELPERS ======
 
 
+{-| Returns the same global as a `Mono.Global`.
+-}
 toptToMonoGlobal : TOpt.Global -> Mono.Global
 toptToMonoGlobal (TOpt.Global home name) =
     Mono.Global home name
 
 
+{-| Returns `arr` with `value` at `index`, padded with `Nothing` first when the
+array is too short.
+-}
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)
 arraySetGrowing index value arr =
     let

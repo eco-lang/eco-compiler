@@ -1,12 +1,26 @@
 module Compiler.Canonicalize.Environment.Foreign exposing (FResult, createInitialEnv)
 
-{-| Build the initial canonicalization environment from imported modules.
+{-| Before a module's own declarations can be canonicalized, every name its
+imports make available has to be in scope. This module builds that starting
+environment from the import list and the interfaces of the imported modules.
 
-This module processes import declarations and builds up the environment containing:
+An import makes names available in two ways. Every public value, type and
+constructor of the imported module can be written _qualified_, with the import's
+alias, or its module name when there is no alias, as the prefix. The names its
+`exposing` clause lists can also be written _unqualified_, bare. Operators are
+only ever unqualified.
 
-  - Imported values, types, and constructors
-  - Qualified and unqualified name mappings
-  - Binary operators from imported modules
+Two imports may make the same name available. Where the names merge, a clash is
+recorded as an ambiguity (`Env.Ambiguous`, built by `Env.mergeInfo`) rather than
+reported here. Names merge for `exposing (..)`, for explicitly listed values,
+for the constructors of an explicitly listed `Type(..)`, and for qualified names
+under a shared prefix. An explicitly listed type name or operator does not
+merge: it replaces any earlier entry of the same name.
+
+What an import cannot do is name something that is not there: an explicitly
+listed name the module does not expose is an error, as is `(..)` on an alias.
+
+The type `List` is in scope before any import is read.
 
 @docs FResult, createInitialEnv
 
@@ -27,20 +41,22 @@ import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
-{-| Result type for foreign environment operations that can fail with canonicalization errors.
+{-| A reporting result whose errors are canonicalization errors.
 -}
 type alias FResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
-{-| Create the initial canonicalization environment from a list of imports.
+{-| Builds the environment for the module `home` from its `imports`, reading each
+imported module's interface from `ifaces`.
 
-Processes each import declaration to build the environment with:
+Every import must have an entry in `ifaces`; a missing one crashes the compiler.
+The imports are read in order, and the result is the error of the first import
+that fails.
 
-  - Exposed values, types, and constructors
-  - Qualified names for module-prefixed access
-  - Binary operators
-  - Special handling for kernel imports in kernel packages
+When `home` belongs to a kernel package, imports of kernel modules
+(`Elm.Kernel.*`, `Eco.Kernel.*`) are left out, and such an import written with
+`as` crashes the compiler. Elsewhere a kernel import is read like any other.
 
 -}
 createInitialEnv : ModuleName.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
@@ -59,6 +75,9 @@ createInitialEnv home ifaces imports =
             )
 
 
+{-| Returns the variable entry for an imported value: one foreign definition,
+or several when the name is ambiguous.
+-}
 infoToVar : Env.Info (Can.Annotation Name) -> Env.Var
 infoToVar info =
     case info of
@@ -73,6 +92,10 @@ infoToVar info =
 -- ====== STATE ======
 
 
+{-| The environment as built so far, one import at a time: the unqualified
+names of each kind, and the qualified names grouped by prefix. Operators have
+no qualified form.
+-}
 type alias State =
     { vars : Env.Exposed (Can.Annotation Name)
     , types : Env.Exposed Env.Type
@@ -84,11 +107,16 @@ type alias State =
     }
 
 
+{-| The state before any import is read, in which only `List` is in scope.
+-}
 emptyState : State
 emptyState =
     State Dict.empty emptyTypes Dict.empty Dict.empty Dict.empty Dict.empty Dict.empty
 
 
+{-| The unqualified types in scope before any import is read: the `List` type
+of `elm/core`, which takes one type argument.
+-}
 emptyTypes : Env.Exposed Env.Type
 emptyTypes =
     Dict.fromList [ ( "List", Env.Specific ModuleName.list (Env.Union 1 ModuleName.list) ) ]
@@ -98,6 +126,9 @@ emptyTypes =
 -- ====== TO SAFE IMPORTS ======
 
 
+{-| Returns `imports` without its kernel imports when the module's package is a
+kernel package, and unchanged otherwise.
+-}
 toSafeImports : ModuleName.Canonical -> List Src.Import -> List Src.Import
 toSafeImports (ModuleName.Canonical package _) imports =
     if Pkg.isKernel package then
@@ -107,6 +138,11 @@ toSafeImports (ModuleName.Canonical package _) imports =
         imports
 
 
+{-| Tells whether an import is of an ordinary module rather than a kernel module.
+
+Crashes the compiler for a kernel import written with `as`.
+
+-}
 isNormal : Src.Import -> Bool
 isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
     if Name.isKernel name then
@@ -125,6 +161,17 @@ isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
 -- ====== ADD IMPORTS ======
 
 
+{-| Adds one import to `state`.
+
+All the public names of the imported module are added under the import's prefix.
+For `exposing (..)` they are all added unqualified too, operators included, and
+merged with what is already there. For an explicit list each listed name is
+added in turn by `addExposedValue`, and the first one that fails gives the error.
+
+A union whose constructors are not exposed still contributes its type, and an
+alias of a closed record contributes its record constructor.
+
+-}
 addImport : Dict ModuleName.Raw I.Interface -> State -> Src.Import -> FResult i w State
 addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ )) =
     let
@@ -205,11 +252,17 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
                 (List.map Src.c2Value exposedList)
 
 
+{-| Returns the union of two sets of names, with a name present in both merged
+into one entry by `Env.mergeInfo`.
+-}
 addExposed : Env.Exposed a -> Env.Exposed a -> Env.Exposed a
 addExposed =
     Utils.dictUnionWith Env.mergeInfo
 
 
+{-| Adds `exposed` to `qualified` under `prefix`, merging with the names already
+under that prefix.
+-}
 addQualified : Name -> Env.Exposed a -> Env.Qualified a -> Env.Qualified a
 addQualified prefix exposed qualified =
     Utils.dictInsertWith addExposed prefix exposed qualified
@@ -219,11 +272,18 @@ addQualified prefix exposed qualified =
 -- ====== UNION ======
 
 
+{-| Returns the type entry for an imported union and its constructors, or
+`Nothing` when the interface does not make the union public.
+-}
 unionToType : ModuleName.Canonical -> Name -> I.Union -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
 unionToType home name union =
     Maybe.map (unionToTypeHelp home name) (I.toPublicUnion union)
 
 
+{-| Returns the type entry for a public union and an entry for each of its
+constructors. A union whose constructors are not exposed reaches here with no
+constructors.
+-}
 unionToTypeHelp : ModuleName.Canonical -> Name -> Can.Union -> ( Env.Type, Env.Exposed Env.Ctor )
 unionToTypeHelp home name ((Can.Union unionData) as union) =
     let
@@ -240,11 +300,21 @@ unionToTypeHelp home name ((Can.Union unionData) as union) =
 -- ====== ALIAS ======
 
 
+{-| Returns the type entry for an imported alias and its record constructor, or
+`Nothing` when the interface does not make the alias public.
+-}
 aliasToType : ModuleName.Canonical -> Name -> I.Alias -> Maybe ( Env.Type, Env.Exposed Env.Ctor )
 aliasToType home name alias =
     Maybe.map (aliasToTypeHelp home name) (I.toPublicAlias alias)
 
 
+{-| Returns the type entry for a public alias, with a record constructor when
+the alias is of a closed record (one with no extension variable).
+
+The record constructor is a function taking the fields in the order
+`Can.fieldsToList` gives and returning the alias type.
+
+-}
 aliasToTypeHelp : ModuleName.Canonical -> Name -> Can.Alias -> ( Env.Type, Env.Exposed Env.Ctor )
 aliasToTypeHelp home name (Can.Alias vars tipe) =
     ( Env.Alias (List.length vars) home vars tipe
@@ -273,6 +343,8 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
 -- ====== BINOP ======
 
 
+{-| Returns the entry for the operator `op` exported by the module `home`.
+-}
 binopToBinop : ModuleName.Canonical -> Name -> I.Binop -> Env.Info Env.Binop
 binopToBinop home op (I.Binop data) =
     Env.Specific home (Env.Binop { op = op, home = home, name = data.name, annotation = data.annotation, associativity = data.associativity, precedence = data.precedence })
@@ -282,6 +354,18 @@ binopToBinop home op (I.Binop data) =
 -- ====== ADD EXPOSED VALUE ======
 
 
+{-| Adds one name from an import's explicit `exposing` list to the unqualified
+names in `state`, or fails with an import error.
+
+A lower-case name is a value and is merged with any earlier entry. An operator,
+and a type name, replace any earlier entry. A type listed without `(..)` adds
+only the type when it is a union, and, for an alias of a closed record, also its
+record constructor. A type listed with `(..)` adds a union's constructors,
+merged with earlier entries, and is an error for an alias. An unknown
+capitalized name that is the constructor of one of the module's public unions
+is reported as an attempt to import a constructor by name.
+
+-}
 addExposedValue :
     ModuleName.Canonical
     -> Env.Exposed (Can.Annotation Name)
@@ -370,6 +454,9 @@ addExposedValue home vars types binops state exposed =
                     ReportingResult.throw (Error.ImportExposingNotFound region home op (Dict.keys binops))
 
 
+{-| Returns the names of the unions in `types` that have a constructor named
+`givenName`.
+-}
 checkForCtorMistake : Name -> Dict Name ( Env.Type, Env.Exposed Env.Ctor ) -> List Name
 checkForCtorMistake givenName types =
     let

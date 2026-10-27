@@ -4,11 +4,19 @@ module Builder.Reporting.Exit.Help exposing
     , toStdout, toStderr
     )
 
-{-| Helpers for building and outputting error reports from the build system.
+{-| Every error the build tool reports is turned into one `Report`, and this
+module defines that value and the two ways it leaves the program: as a document
+for a person to read, or as a JSON object for a program such as an editor.
 
-This module provides utilities for constructing and rendering error reports,
-supporting both human-readable terminal output and JSON serialization for
-editor integrations.
+A report is one of two kinds. Most are a titled message, optionally about one
+file, which this module lays out under a cyan bar of dashes naming the title and
+the file. The other kind holds the errors of modules that failed to compile, and
+for those the layout and the JSON both come from `Compiler.Reporting.Error`.
+
+The output functions write a document to standard output or standard error, with
+its colours as ANSI escape sequences when the program is attached to a
+terminal. `System.IO.isTerminal` currently answers `True` whatever is attached,
+so in practice the escape sequences are always written.
 
 
 # Report Construction
@@ -39,35 +47,48 @@ import Task exposing (Task)
 -- ====== REPORT ======
 
 
-{-| Represents an error report that can be displayed to the user or serialized to JSON.
+{-| An error report, ready to be laid out for a terminal or encoded as JSON.
+
+`CompilerReport` holds the project root, against which module paths are shown,
+and the failing modules, at least one of them.
+
+`Report` holds a title, the path of the file the error concerns if there is
+one, and the message.
+
 -}
 type Report
     = CompilerReport String Error.Module (List Error.Module)
     | Report String (Maybe String) D.Doc
 
 
-{-| Creates a report from a title, optional file path, introductory text, and additional documentation sections.
+{-| Creates a report titled `title` about the file at `path`, if any. The
+message is `startString`, filled into a paragraph, followed by `others`, with an
+empty line between each part.
 -}
 report : String -> Maybe String -> String -> List D.Doc -> Report
 report title path startString others =
     D.stack (D.reflow startString :: others) |> Report title path
 
 
-{-| Creates a report from pre-formatted documentation instead of a plain string.
+{-| Creates a report as `report` does, but with the opening paragraph given as a
+ready-made document `startDoc` rather than a string to be filled.
 -}
 docReport : String -> Maybe String -> D.Doc -> List D.Doc -> Report
 docReport title path startDoc others =
     D.stack (startDoc :: others) |> Report title path
 
 
-{-| Creates a report with a single documentation block, typically used for JSON-focused errors.
+{-| Creates a report from a title, an optional file path and the whole message
+as one document. Nothing about it is specific to JSON.
 -}
 jsonReport : String -> Maybe String -> D.Doc -> Report
 jsonReport =
     Report
 
 
-{-| Creates a report from compiler errors, including the root directory and one or more error modules.
+{-| Creates a report of modules that failed to compile. The first argument is
+the project root, against which the modules' paths are shown in the terminal
+layout.
 -}
 compilerReport : String -> Error.Module -> List Error.Module -> Report
 compilerReport =
@@ -78,7 +99,13 @@ compilerReport =
 -- ====== TO DOC ======
 
 
-{-| Converts a report to a formatted document for terminal output.
+{-| Lays out a report for a terminal.
+
+A titled report becomes a cyan bar, an empty line, the message, and a trailing
+empty line. The bar reads `-- TITLE ----- path` and is padded with dashes to
+80 columns, with at least one dash however long the title and path are. A report of failing modules
+is laid out as `Compiler.Reporting.Error.toDoc` describes.
+
 -}
 reportToDoc : Report -> D.Doc
 reportToDoc report_ =
@@ -118,7 +145,14 @@ reportToDoc report_ =
 -- ====== TO JSON ======
 
 
-{-| Converts a report to JSON format for machine consumption.
+{-| Encodes a report as JSON.
+
+A report of failing modules becomes `{"type": "compile-errors", "errors": [...]}`,
+one entry per module as `Compiler.Reporting.Error.toJson` gives it; the project
+root is not included. A titled report becomes `{"type": "error", ...}` with its
+`path` (`null` when it has none), `title` and `message`, the message encoded as
+`Compiler.Reporting.Doc.encode` describes.
+
 -}
 reportToJson : Report -> E.Value
 reportToJson report_ =
@@ -142,20 +176,29 @@ reportToJson report_ =
 -- ====== OUTPUT ======
 
 
-{-| Writes a formatted document to stdout, using ANSI colors if connected to a terminal.
+{-| Writes `doc` to standard output, with ANSI colours if `System.IO.isTerminal`
+answers `True` and as plain text otherwise. It currently always answers `True`.
 -}
 toStdout : D.Doc -> Task Never ()
 toStdout doc =
     toHandle IO.stdout doc
 
 
-{-| Writes a formatted document to stderr, using ANSI colors if connected to a terminal.
+{-| Writes `doc` to standard error, with ANSI colours if `System.IO.isTerminal`
+answers `True` and as plain text otherwise. It currently always answers `True`.
 -}
 toStderr : D.Doc -> Task Never ()
 toStderr doc =
     toHandle IO.stderr doc
 
 
+{-| Writes `doc` to `handle`, with ANSI colours if `System.IO.isTerminal`
+answers `True` and as plain text otherwise.
+
+The question is not asked about `handle`, and `isTerminal` currently always
+answers `True`, so the escape sequences are written even to a file or a pipe.
+
+-}
 toHandle : IO.Handle -> D.Doc -> Task Never ()
 toHandle handle doc =
     IO.isTerminal

@@ -9,11 +9,35 @@ module Terminal.Make exposing
     , localPackage, parseLocalPackage
     )
 
-{-| Build command implementation for compiling Elm code.
+{-| The `eco make` command: it compiles a project's Elm code and writes the
+output the flags ask for.
 
-This module handles the `make` command which compiles source files into JavaScript,
-HTML, MLIR, or validates code without output. It supports debug mode, optimization,
-source maps, and documentation generation.
+What is built depends on whether any files are named. With none, the project
+must be a package, and its exposed modules are built, with their documentation
+written to the `--docs` file when one is given. With files named, those files
+are the roots of the build, and the result is written in the form `--output`
+selects.
+
+The output form is decided by the output file's name alone (see
+`parseOutput`). A `.js` file gets JavaScript, a `.html` file a page that runs
+one program, and a `.mlir` file MLIR, written as bytecode unless `--text-mlir`
+is given. A null device gets nothing, and any other name is a native
+executable. With no `--output`, one root that defines `main` gives
+`index.html`, several give `elm.js`, and none give nothing.
+
+MLIR and native output take the _typed path_: the front end keeps types through
+optimization, which the MLIR back end needs and JavaScript output does not. A
+native executable is made by writing MLIR to a temporary file inside the
+project's `eco-stuff` directory and handing that file to
+`Eco.NativeDriver.lowerAndLink`.
+
+A _build dir_ is a name, given with `--builddir`, for a subdirectory of
+`eco-stuff` with its own caches and lock, so that separate builds of one
+project can run side by side. The whole build runs holding that directory's
+lock, as `Builder.Stuff.withRootLockBuildDir` describes.
+
+Most of the file is the chain of steps from the flags to a finished build, and
+the parsers for the flags' values.
 
 
 # Command Entry
@@ -83,7 +107,12 @@ import Utils.Task.Extra as Task
 -- ====== FLAGS ======
 
 
-{-| Configuration data for the make command, containing all flags and options.
+{-| Every flag of the `make` command, as parsed from the command line.
+
+`docs` is only used when no files are named, since only a package build writes
+documentation. `localPackage` holds the `--local-package` mappings, each from a
+package name to the directory the package is read from.
+
 -}
 type alias FlagsData =
     { debug : Bool
@@ -104,13 +133,22 @@ type alias FlagsData =
     }
 
 
-{-| Wrapper type for make command flags.
+{-| The flags of the `make` command, as `run` takes them.
 -}
 type Flags
     = Flags FlagsData
 
 
-{-| Output format and destination for the compiled code.
+{-| What a build writes, and where.
+
+`JS`, `Html` and `MLIR` carry the file to write. `MLIR` is written as bytecode
+unless `--text-mlir` is given.
+
+`ELF` carries the path of the native executable to write. Despite the name, the
+kind of file is whatever `Eco.NativeDriver.lowerAndLink` makes of that path.
+
+`DevNull` builds and writes nothing.
+
 -}
 type Output
     = JS String
@@ -120,7 +158,11 @@ type Output
     | DevNull
 
 
-{-| Report format type for compiler diagnostics.
+{-| A machine-readable style for reporting errors, chosen with `--report`.
+Without one, errors are reported in the terminal layout.
+
+`Json` reports an error as JSON.
+
 -}
 type ReportType
     = Json
@@ -130,7 +172,9 @@ type ReportType
 -- ====== RUN ======
 
 
-{-| Execute the make command with the given source file paths and flags.
+{-| Runs `eco make` on `paths` with `flags`, as the module docstring describes.
+An error is reported and ends the process with failure. When `--stats` is on,
+front-end statistics are printed once the build is done.
 -}
 run : List String -> Flags -> Task Never ()
 run paths ((Flags flagsData) as flags) =
@@ -144,12 +188,17 @@ run paths ((Flags flagsData) as flags) =
             )
 
 
+{-| Finds the project root and runs the build from it.
+-}
 runWithStyle : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Task Never ()
 runWithStyle paths flags stats style =
     Stuff.findRoot
         |> Task.andThen (runWithRoot paths flags stats style)
 
 
+{-| Runs the build from `maybeRoot`, reporting `MakeNoOutline` when no project
+root was found, and reports any build error in `style`.
+-}
 runWithRoot : List String -> Flags -> FEStats.Handle -> Reporting.Style -> Maybe FilePath -> Task Never ()
 runWithRoot paths flags stats style maybeRoot =
     Reporting.attemptWithStyle style Exit.makeToReport <|
@@ -161,12 +210,18 @@ runWithRoot paths flags stats style maybeRoot =
                 Task.succeed (Err Exit.MakeNoOutline)
 
 
+{-| The kind of JavaScript to generate: `Debug` with `--debug`, `Prod` with
+`--optimize`, and `Dev` with neither.
+-}
 type DesiredMode
     = Debug
     | Dev
     | Prod
 
 
+{-| Everything about the build that the output step needs once the files are
+built.
+-}
 type alias BuildContext =
     { root : FilePath
     , style : Reporting.Style
@@ -183,6 +238,10 @@ type alias BuildContext =
     }
 
 
+{-| Builds `paths` from the project at `root`, with each bundled package that is
+found and not already mapped added to the `--local-package` mappings, inside a
+background-writer scope.
+-}
 runHelp : String -> List String -> Reporting.Style -> FEStats.Handle -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style stats (Flags flagsData) =
     let
@@ -200,6 +259,9 @@ runHelp root paths style stats (Flags flagsData) =
             )
 
 
+{-| Builds while holding the lock of the build dir, after checking that
+`--debug` and `--optimize` are not both given.
+-}
 runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> List ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
 runHelpWithScope root paths style stats noCache debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage localPackages textMlir maybeConfigPath registryPolicy scope =
     Stuff.withRootLockBuildDir root
@@ -211,6 +273,8 @@ runHelpWithScope root paths style stats noCache debug optimize withSourceMaps ma
         )
 
 
+{-| Loads the eco config and the project details, then builds.
+-}
 loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> List ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
 loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage localPackages textMlir maybeConfigPath registryPolicy scope desiredMode =
     EcoConfigLoader.load maybeConfigPath root
@@ -223,6 +287,9 @@ loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput ma
             )
 
 
+{-| Builds the package's exposed modules when `paths` is empty, and otherwise
+builds `paths` and writes the output.
+-}
 buildWithDetails : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> List ( Pkg.Name, FilePath ) -> Bool -> Config.EcoConfig -> DesiredMode -> Details.Details -> Task Exit.Make ()
 buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage localPackages textMlir ecoConfig desiredMode details =
     let
@@ -240,6 +307,9 @@ buildWithDetails root paths style stats noCache withSourceMaps maybeOutput maybe
                 |> Task.andThen (handleArtifacts ctx)
 
 
+{-| Tells whether the build takes the typed path, which it does for MLIR and
+native output.
+-}
 shouldUseTypedOpt : Maybe Output -> Bool
 shouldUseTypedOpt maybeOutput =
     case maybeOutput of
@@ -253,6 +323,8 @@ shouldUseTypedOpt maybeOutput =
             False
 
 
+{-| Writes the output the context asks for from built `artifacts`.
+-}
 handleArtifacts : BuildContext -> Build.Artifacts -> Task Exit.Make ()
 handleArtifacts ctx artifacts =
     case ctx.maybeOutput of
@@ -275,6 +347,10 @@ handleArtifacts ctx artifacts =
             handleElfOutput ctx target artifacts
 
 
+{-| Writes the output for a build with no `--output`: `index.html` for one root
+that defines `main`, `elm.js` for several, and nothing for none. Roots without
+a `main` are left out.
+-}
 handleDefaultOutput : BuildContext -> Build.Artifacts -> Task Exit.Make ()
 handleDefaultOutput ctx artifacts =
     case getMains artifacts of
@@ -290,6 +366,9 @@ handleDefaultOutput ctx artifacts =
                 |> Task.andThen (\builder -> generate ctx.style "elm.js" builder (NE.Nonempty name names))
 
 
+{-| Writes JavaScript for every root to `target`, failing with
+`MakeNonMainFilesIntoJavaScript` when any root does not define `main`.
+-}
 handleJsOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
 handleJsOutput ctx target artifacts =
     case getNoMains artifacts of
@@ -308,23 +387,36 @@ handleJsOutput ctx target artifacts =
             Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
 
 
+{-| Writes an HTML page to `target`, failing unless there is exactly one root
+and it defines `main`.
+-}
 handleHtmlOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
 handleHtmlOutput ctx target artifacts =
     hasOneMain artifacts
         |> Task.andThen (buildAndGenerateHtml ctx target artifacts)
 
 
+{-| Generates JavaScript for `artifacts` and writes it to `target` as a page that
+runs module `name`.
+-}
 buildAndGenerateHtml : BuildContext -> FilePath -> Build.Artifacts -> ModuleName.Raw -> Task Exit.Make ()
 buildAndGenerateHtml ctx target artifacts name =
     toBuilder Generate.javascriptBackend ctx.withSourceMaps Html.leadingLines ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
         |> Task.andThen (generateHtml ctx.style target name)
 
 
+{-| Writes `builder`, the generated JavaScript, to `target` inside a page that
+runs module `name`.
+-}
 generateHtml : Reporting.Style -> FilePath -> ModuleName.Raw -> String -> Task Exit.Make ()
 generateHtml style target name builder =
     generate style target (Html.sandwich name builder) (NE.Nonempty name [])
 
 
+{-| Writes MLIR for the program to `target`, as text with `--text-mlir` and as
+bytecode otherwise. Fails with `MakeNonMainFilesIntoJavaScript` when any root
+does not define `main`.
+-}
 handleMlirOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
 handleMlirOutput ctx target artifacts =
     case getNoMains artifacts of
@@ -333,9 +425,8 @@ handleMlirOutput ctx target artifacts =
                 rootNames =
                     Build.getRootNames artifacts
 
-                -- Bound here so the final closure captures `style`, not `ctx`
-                -- (whose `details` can hold whole graphs):
-                -- plans/frontend-heap-release.md §7.7 row 16.
+                -- Bound so the final closure keeps `style` alive, not `ctx`,
+                -- whose `details` can hold whole graphs.
                 style =
                     ctx.style
 
@@ -374,15 +465,18 @@ handleMlirOutput ctx target artifacts =
             Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
 
 
-{-| Compile the resolved artifacts to a native ELF executable. The
-front-end emits MLIR text to a temp file under `eco-stuff/build/`, then
-the kernel intrinsic `Eco.NativeDriver.lowerAndLink` invokes the
-linked-in MLIR → ELF pipeline in-process. The temp file is removed on
-success or failure.
+{-| Builds a native executable at `target`. Fails with
+`MakeNonMainFilesIntoJavaScript` when any root does not define `main`.
 
-Phase 1 of the Stage 9 single-binary plan. Phases 2/3 swap the temp
-file for an in-memory byte buffer and the spawned `clang++` for embedded
-`lld`, respectively.
+The program is written as MLIR, text with `--text-mlir` and bytecode
+otherwise, to `eco-<name>.mlir` in the `build` directory of the build dir, or of
+the project's stuff directory when no build dir is given, where `<name>` is the
+file name of `target`. After the pre-link collection that
+`Builder.GcPoints.preLink` describes, that file is handed to
+`Eco.NativeDriver.lowerAndLink` along with `target` and the first root's module
+name. A failure there is reported as `GenerateNativeDriverError`. The temporary
+file is removed only on success, so after a failure it is still there to
+reproduce the problem with.
 
 -}
 handleElfOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make ()
@@ -393,22 +487,18 @@ handleElfOutput ctx target artifacts =
                 rootNames =
                     Build.getRootNames artifacts
 
-                -- Bound here so the closures pending during the pre-link
-                -- collection capture these, not `ctx` (whose `details` can
-                -- hold whole graphs): plans/frontend-heap-release.md §6.3.
+                -- Bound so the closures pending during the pre-link
+                -- collection keep these alive, not `ctx`, whose `details` can
+                -- hold whole graphs.
                 style =
                     ctx.style
 
                 gcCfg =
                     ctx.ecoConfig.gc
 
-                -- Root module name baked into .node outputs as
-                -- __eco_root_module so the N-API addon exposes
-                -- Elm.<RootModule> (instead of the "Main" fallback).
                 (NE.Nonempty rootModuleName _) =
                     rootNames
 
-                -- eco-stuff/<ver>[/<buildDir>]/build/eco-<base>.mlir
                 tempMlirDir : FilePath
                 tempMlirDir =
                     Stuff.stuffWithBuildDir ctx.root ctx.maybeBuildDir
@@ -454,20 +544,14 @@ handleElfOutput ctx target artifacts =
                             (Utils.dirCreateDirectoryIfMissing True tempMlirDir)
                     )
                 |> Task.andThen (\_ -> writeMlirTask)
-                -- A full release in its OWN step (plans/frontend-heap-release.md
-                -- §6.3): the step that captured `writeMlirTask` (and with it
-                -- `artifacts`) has returned, so codegen's values are garbage.
+                -- The collection is its own step: the step holding
+                -- `writeMlirTask`, and with it `artifacts`, has returned, so
+                -- codegen's values are unreachable.
                 |> Task.andThen (\_ -> GcPoints.preLink gcCfg)
                 |> Task.andThen
                     (\_ ->
-                        -- lowerAndLink is `Task String ()` so the kernel's
-                        -- nonzero-rc path surfaces as a typed Task error
-                        -- (e.g. "native driver unavailable" from the weak
-                        -- stub in eco-2) rather than a Basics.never crash.
-                        -- We deliberately do NOT delete the temp .mlir on
-                        -- failure — leaving it on disk lets a developer
-                        -- re-run `eco-boot-native <temp>.mlir -o foo` to
-                        -- reproduce the lowering failure.
+                        -- On failure the temporary file is deliberately
+                        -- kept, so the lowering can be reproduced from it.
                         Eco.NativeDriver.lowerAndLink tempMlirPath target rootModuleName
                             |> Task.mapError
                                 (Exit.MakeBadGenerate << Exit.GenerateNativeDriverError)
@@ -489,6 +573,9 @@ handleElfOutput ctx target artifacts =
 -- ====== GET INFORMATION ======
 
 
+{-| Returns the reporting style for `--report`: JSON for `Json`, and the
+terminal style when none is given.
+-}
 getStyle : Maybe ReportType -> Task Never Reporting.Style
 getStyle report =
     case report of
@@ -499,6 +586,9 @@ getStyle report =
             Task.succeed Reporting.json
 
 
+{-| Returns the generation mode for `debug` and `optimize`, failing with
+`MakeCannotOptimizeAndDebug` when both are set.
+-}
 getMode : Bool -> Bool -> Task Exit.Make DesiredMode
 getMode debug optimize =
     case ( debug, optimize ) of
@@ -515,6 +605,9 @@ getMode debug optimize =
             Task.succeed Prod
 
 
+{-| Returns the exposed modules of a package, failing for an application or a
+package that exposes nothing.
+-}
 getExposed : Details.Details -> Task Exit.Make (NE.Nonempty ModuleName.Raw)
 getExposed (Details.Details detailsData) =
     case detailsData.outline of
@@ -534,6 +627,9 @@ getExposed (Details.Details detailsData) =
 -- ====== BUILD PROJECTS ======
 
 
+{-| Builds the package's `exposed` modules, writing documentation to the
+`maybeDocs` file when one is given.
+-}
 buildExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Maybe FilePath -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
 buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats exposed =
     let
@@ -554,6 +650,9 @@ buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs stats
         )
 
 
+{-| Builds the files at `paths`. With `noCache` the build writes no caches.
+`needsTypedOpt` selects the typed path.
+-}
 buildPaths : Bool -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths noCache style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
     Build.fromPathsWith
@@ -578,11 +677,15 @@ buildPaths noCache style root maybeBuildDir maybeKernelPackage details needsType
 -- ====== GET MAINS ======
 
 
+{-| Returns the module names of the roots that define `main`, in root order.
+-}
 getMains : Build.Artifacts -> List ModuleName.Raw
 getMains (Build.Artifacts artifacts) =
     List.filterMap (getMain artifacts.modules) (NE.toList artifacts.roots)
 
 
+{-| Returns the module name of `root` when it defines `main`.
+-}
 getMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw
 getMain modules root =
     case root of
@@ -601,6 +704,8 @@ getMain modules root =
                 Nothing
 
 
+{-| Tells whether `modul` is the module named `targetName` and defines `main`.
+-}
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
@@ -615,6 +720,10 @@ isMain targetName modul =
 -- ====== HAS ONE MAIN ======
 
 
+{-| Returns the module name of the only root, failing with
+`MakeMultipleFilesIntoHtml` when there are several roots and with `MakeNoMain`
+when the one root does not define `main`.
+-}
 hasOneMain : Build.Artifacts -> Task Exit.Make ModuleName.Raw
 hasOneMain (Build.Artifacts artifacts) =
     case artifacts.roots of
@@ -629,11 +738,16 @@ hasOneMain (Build.Artifacts artifacts) =
 -- ====== GET MAINLESS ======
 
 
+{-| Returns the module names of the roots that do not define `main`, in root
+order.
+-}
 getNoMains : Build.Artifacts -> List ModuleName.Raw
 getNoMains (Build.Artifacts artifacts) =
     List.filterMap (getNoMain artifacts.modules) (NE.toList artifacts.roots)
 
 
+{-| Returns the module name of `root` when it does not define `main`.
+-}
 getNoMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw
 getNoMain modules root =
     case root of
@@ -652,12 +766,14 @@ getNoMain modules root =
                 Just name
 
 
-{-| Whether a freshly compiled module defines `main`. On the typed (MLIR/ELF)
-path the erased graph is a stub whose `main` is a presence marker
-(`Opt.typedPathStub`, plan S5). The erased graph is the one to read: in the JS
-build a `Fresh` module crosses an MVar SERIALIZED, and the typed graph's codec
-drops `main` (ECOT\_001), so the typed graph's `main` is `Nothing` there. The
-typed graph is still consulted for a native in-memory module.
+{-| Tells whether a module compiled in this build defines `main`, given its
+erased graph and, on a typed build, its typed graph.
+
+Either graph having a `main` counts. On the typed path the erased graph is the
+stub `Compiler.AST.Optimized.typedPathStub` describes, whose `main` only
+records that one exists. That marker is what survives a graph being written and
+read back, since the typed graph's codec drops `main`.
+
 -}
 graphHasMain : Opt.LocalGraph -> Maybe (TOpt.LocalGraph Name) -> Bool
 graphHasMain (Opt.LocalGraph maybeMain _ _) maybeTyped =
@@ -673,6 +789,9 @@ graphHasMain (Opt.LocalGraph maybeMain _ _) maybeTyped =
 -- ====== GENERATE ======
 
 
+{-| Writes `builder` to `target`, creating its directory if needed, and reports
+that `names` were written there.
+-}
 generate : Reporting.Style -> FilePath -> String -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
 generate style target builder names =
     Task.io
@@ -686,6 +805,10 @@ generate style target builder names =
 -- ====== TO BUILDER ======
 
 
+{-| Generates JavaScript for `artifacts` in `desiredMode`, as a string.
+`leadingLines` is the number of lines that will come before it in the output
+file, which source maps need.
+-}
 toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder backend withSourceMaps leadingLines root maybeBuildDir details desiredMode artifacts =
     (case desiredMode of
@@ -706,7 +829,7 @@ toBuilder backend withSourceMaps leadingLines root maybeBuildDir details desired
 -- ====== PARSERS ======
 
 
-{-| Parser definition for report type command-line arguments.
+{-| The parser for the value of `--report`.
 -}
 reportType : Parser
 reportType =
@@ -718,7 +841,7 @@ reportType =
         }
 
 
-{-| Parse a string into a ReportType value.
+{-| Reads a `--report` value. Only `json` is accepted.
 -}
 parseReportType : String -> Maybe ReportType
 parseReportType string =
@@ -729,7 +852,7 @@ parseReportType string =
         Nothing
 
 
-{-| Parser definition for output file command-line arguments.
+{-| The parser for the value of `--output`.
 -}
 output : Parser
 output =
@@ -741,12 +864,11 @@ output =
         }
 
 
-{-| Parse a string into an Output value based on file extension.
+{-| Reads an `--output` value, choosing the output form from the name.
 
-Extension-less names (and any unrecognized extension) are treated as native
-ELF executable targets — the unified `eco` binary's drop-in-for-`elm-make`
-behaviour. The `.js` / `.html` / `.mlir` paths keep their existing
-front-end-only behaviour.
+`/dev/null`, `NUL` and `<|null` give `DevNull`. A name ending in `.html`, `.js`
+or `.mlir` gives `Html`, `JS` or `MLIR`, provided something comes before the
+extension. The empty string is rejected, and every other name gives `ELF`.
 
 -}
 parseOutput : String -> Maybe Output
@@ -770,7 +892,7 @@ parseOutput name =
         Just (ELF name)
 
 
-{-| Parser definition for documentation file command-line arguments.
+{-| The parser for the value of `--docs`.
 -}
 docsFile : Parser
 docsFile =
@@ -782,7 +904,8 @@ docsFile =
         }
 
 
-{-| Parse a string into a documentation file path (must be .json extension).
+{-| Reads a `--docs` value, accepting a name that ends in `.json` with something
+before the extension.
 -}
 parseDocsFile : String -> Maybe String
 parseDocsFile name =
@@ -793,7 +916,7 @@ parseDocsFile name =
         Nothing
 
 
-{-| Parser definition for build directory command-line arguments.
+{-| The parser for the value of `--builddir`.
 -}
 buildDir : Parser
 buildDir =
@@ -805,8 +928,7 @@ buildDir =
         }
 
 
-{-| Parse a string into a build directory name.
-Must be a simple directory name (no path separators).
+{-| Reads a `--builddir` value, accepting any non-empty name with no `/` or `\`.
 -}
 parseBuildDir : String -> Maybe String
 parseBuildDir dir =
@@ -820,7 +942,7 @@ parseBuildDir dir =
         Just dir
 
 
-{-| Parser definition for the --config flag (path to eco-config.json).
+{-| The parser for the value of `--config`, the path of an eco config file.
 -}
 configFlag : Parser
 configFlag =
@@ -832,8 +954,7 @@ configFlag =
         }
 
 
-{-| Parse a --config value into a file path. Any non-empty string is accepted
-(paths may contain separators).
+{-| Reads a `--config` value, accepting any non-empty path.
 -}
 parseConfig : String -> Maybe String
 parseConfig path =
@@ -844,7 +965,8 @@ parseConfig path =
         Just path
 
 
-{-| Parser for kernel package names in "author/project" format.
+{-| The parser for the value of `--kernel-package`, a package name written
+`author/project`.
 -}
 kernelPackage : Parser
 kernelPackage =
@@ -856,7 +978,8 @@ kernelPackage =
         }
 
 
-{-| Parse a kernel package string like "eco/kernel" into a package name.
+{-| Reads a package name written `author/project`. Any string with exactly one
+`/` is accepted; neither part is checked against the rules for package names.
 -}
 parseKernelPackage : String -> Maybe Pkg.Name
 parseKernelPackage str =
@@ -868,8 +991,8 @@ parseKernelPackage str =
             Nothing
 
 
-{-| Parser for local package mappings in "author/project=path" format. The
-`--local-package` flag may be repeated, once per package.
+{-| The parser for the value of `--local-package`, written
+`author/project=path`. The flag may be repeated, once per package.
 -}
 localPackage : Parser
 localPackage =
@@ -881,10 +1004,12 @@ localPackage =
         }
 
 
-{-| Parse a local package mapping string like "eco/kernel=../path" into a name and path.
+{-| Reads a `--local-package` value written `author/project=path` into the
+package name and the path.
 
-The string is split on the **first** `=` only, so the path may itself contain
-`=`. The path must not be empty.
+The string is split at the first `=` only, so the path may itself contain `=`.
+The path must not be empty, and the name is read as `parseKernelPackage` reads
+it.
 
 -}
 parseLocalPackage : String -> Maybe ( Pkg.Name, FilePath )
@@ -907,11 +1032,15 @@ parseLocalPackage str =
             Nothing
 
 
+{-| Tells whether `path` has the extension `ext` with something before it.
+-}
 hasExt : String -> String -> Bool
 hasExt ext path =
     Utils.fpTakeExtension path == ext && String.length path > String.length ext
 
 
+{-| Tells whether `name` is one of the names for a null device.
+-}
 isDevNull : String -> Bool
 isDevNull name =
     name == "/dev/null" || name == "NUL" || name == "<|null"

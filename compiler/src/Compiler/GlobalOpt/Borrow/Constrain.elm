@@ -4,19 +4,58 @@ module Compiler.GlobalOpt.Borrow.Constrain exposing
     , Get, Occ, Reason
     )
 
-{-| Borrow-inference constraint generation. A direct-recursion walker over
-`MonoExpr` produces a `Constraints` accumulator (flows / gets / storageEq /
-scopes / seeds / forcedOwned / occs) that the four-stage solver (`Solve`)
-consumes.
+{-| Borrow inference decides, for each heap value a function handles, whether
+the function must own it or may borrow it. This module turns the body of one
+definition into the constraints that decision is solved from;
+`Compiler.GlobalOpt.Borrow.Solve` solves them.
 
-At a call boundary the walker uses what is known about the callee: a
-saturated direct call applies the callee's `BorrowSig` from `Env.sigs`, a
-kernel call applies its entry in `KernelSigs`, and a closure call can be
-routed through the LSS facts in `Env.lssFacts`. A call with none of these, or
-a partial application, makes its arguments owned.
+**Resources.** The walk gives every value it meets a resource skeleton, as
+`Compiler.GlobalOpt.Borrow.Rty` describes: one fresh resource for each heap
+position of the value's type. Resources are numbered from the counter in `Gen`,
+so after a walk `next` is the number of resources the definition used. A use of
+a local variable gets its own copy of the binding's skeleton, so the binding and
+each use can be given different access modes.
 
-Walk-time census counters live on `Gen` (flat `Int` fields); the driver reads
-them off the final `Gen` per def.
+**Constraints.** The walk records how resources relate:
+
+  - a _flow_ pairs a resource with the resource of a value that takes it over:
+    a binding with a use of it, or a `case` or `if` arm with the result, in
+    both directions, or an argument with a call result that its callee's
+    signature says may alias it;
+  - a _storage equality_ says two resources share storage, such as an element
+    of a list, tuple or record literal and the literal itself;
+  - a _get_ is a read out of a container;
+  - a _seed_ says a resource is live at least until a point, and a _scope_ is
+    the point a binding stays in scope until;
+  - a resource is _forced owned_, with a `Reason`, where ownership is required
+    whatever the uses are.
+
+**Points.** A point in the body is a `Compiler.GlobalOpt.Borrow.Lifetime`
+`Path`. Each expression that sequences or chooses between subexpressions takes a
+fresh node id `n` from `Gen`, and a child's path is `Seq n i` or `Arm n i`
+consed onto the expression's own path. The head of a path built here is
+therefore its innermost step, not the step leaving the root. The empty path is
+the end of the whole body.
+
+**Calls.** At a call the walk uses what is known about the callee. A saturated
+direct call to a global applies the callee's `BorrowSig` from `Env.sigs`. A
+kernel call applies the kernel's entry in `KernelSigs`. Any other callee is
+looked up with `LssFacts.query` when `Env.lssFacts` is present, and a `Routed`
+answer is applied like a direct signature. Where none of these gives a
+signature, and for every call to a global that is not a saturated direct call,
+the arguments are _poisoned_: each of their resources is forced owned and
+marked as escaping, because the callee may keep them. A call's result takes its
+modes from an applied `BorrowSig`; in every other case, including a kernel call
+with a `KernelSigs` entry, the result is owned.
+
+**Census data.** `Gen` also carries data that `Solve` never reads, for a driver
+to read off the final `Gen`: counts of each kind of poisoning and of signature
+hits and misses, and inputs to an escape analysis. Those inputs are escape
+seeds (resources that escape, for example because they are consumed by a
+callee, captured, or held by a global value), escape edges (alias links used
+by that analysis alone), the resources of tail-call arguments, the head
+resources of strings, and _fresh sites_ (allocation sites in the definition,
+each with a class name and a weight).
 
 
 # Environment
@@ -49,45 +88,72 @@ import Set exposing (Set)
 
 
 
--- CONSTRAINTS (design §7.5)
+-- CONSTRAINTS
 
 
-{-| The constraints generated for one definition, consumed by
-`Compiler.GlobalOpt.Borrow.Solve`: flows from bindings to uses, container
-reads, storage equalities, binding scopes, lifetime seeds, resources forced
-owned (with the reason), use records, parameter seeds and escape edges.
+{-| The constraints generated for one definition.
+
+`Solve` reads every field except `occs` and `escEdges`. `scopes` is keyed by a
+binding's head resource; a binding whose value has no head resource is entered
+under -1. `paramSeeds` tags every resource of a parameter with the parameter's
+index, counting the parameters of the definition and also those of every
+closure and local tail-recursive function inside it from 0.
+
 -}
 type alias Constraints =
-    { flows : List ( ResVar, ResVar ) -- bind → use (lateral; I-Use)
-    , gets : List Get -- container reads (I-Get)
-    , storageEq : List ( ResVar, ResVar ) -- nested/heap-storage equalities (§3.3)
-    , scopes : Dict ResVar Path -- binding resource → scope path (I-Let)
-    , seeds : List ( ResVar, Path ) -- ltA/ltP ≥ p (reads, borrowed args)
+    { flows : List ( ResVar, ResVar )
+    , gets : List Get
+    , storageEq : List ( ResVar, ResVar )
+    , scopes : Dict ResVar Path
+    , seeds : List ( ResVar, Path )
     , forcedOwned : List ( ResVar, Reason )
-    , occs : List Occ -- reification records
-    , paramSeeds : List ( ResVar, Int ) -- α-seeds: param resource → param position (LParams {i})
-    , escEdges : List ( ResVar, ResVar ) -- U-T1.1 escape-only containment/alias edges (record-update stores, destructure reads); consumed ONLY by the escape closure, never by Solve
+    , occs : List Occ
+    , paramSeeds : List ( ResVar, Int )
+    , escEdges : List ( ResVar, ResVar ) -- record-update stores and destructure reads, for escape analysis only
     }
 
 
-{-| A read out of a container at a point: the container's resource, pairs of a
-resource inside the container and the fresh resource of the value read out,
-and the path of the read.
+{-| A read out of a container: the container's head resource, the pairs of a
+resource on the container side and the resource of the value read out, and the
+point of the read.
+
+A get built here has at most one pair, the container's head and the head of
+the value read out; it has none when the value read out has no head resource.
+`container` is -1 when the container expression has no head resource.
+
 -}
 type alias Get =
     { container : ResVar, out : List ( ResVar, ResVar ), path : Path }
 
 
-{-| A record of one variable use: the fresh resources of the value at that use.
+{-| One use of a local variable: the fresh resources of the value at that use,
+head first.
 -}
 type alias Occ =
     { res : List ResVar }
 
 
-{-| Why a resource is forced owned: it is stored into a constructed value
-(`RConstruct`), passed to a kernel (`RKernel`), crosses a closure-call boundary
-(`RClosureBoundary`), is an erased value the analysis cannot see into
-(`RErased`), or is captured by a closure (`RCapture`).
+{-| Why a resource is forced owned.
+
+`RConstruct` covers ownership the walk imposes itself: the head of a list,
+tuple or record literal, a record update or closure value, a referenced global
+value, a call result that is owned by default or by its signature, an argument
+at an `Owned` position of a signature or a `POwned` kernel parameter, an
+argument beyond the parameters a signature or kernel signature lists, and an
+argument of a saturated direct call whose callee has no signature.
+
+`RKernel` marks an argument of a kernel call that has no `KernelSigs` entry.
+
+`RClosureBoundary` marks an argument of a call to a global that is not a
+saturated direct call, an argument of any other non-kernel call that is not
+routed to a signature, and a kernel or accessor function used as a value.
+
+`RErased` marks the resource of an erased value, whose contents the analysis
+cannot see. Every such resource in a skeleton built from a type is forced
+owned.
+
+`RCapture` marks a value captured by a closure.
+
 -}
 type Reason
     = RConstruct
@@ -97,6 +163,8 @@ type Reason
     | RCapture
 
 
+{-| A set of constraints with nothing in it.
+-}
 emptyConstraints : Constraints
 emptyConstraints =
     { flows = []
@@ -112,12 +180,16 @@ emptyConstraints =
 
 
 
--- GEN (per-def analysis state + walk-time census counters)
+-- GEN
 
 
 {-| The state of constraint generation for one definition: the next fresh
-resource, the constraints so far, a node-id counter for the skeleton, and the
-census counters and lists the driver reads off when the walk ends.
+resource, the constraints so far, the next node id for path steps, and census
+counters and lists. `immortalLiterals` counts string literals,
+`updateCopiedHeapFields` the heap fields a record update copies from its base
+without naming them, and `nonVarOwnedFresh` and `nonVarBorrowedProducer` the
+heap call arguments that are not variables, as `countNonVarOperands` splits
+them.
 -}
 type alias Gen =
     { next : ResVar
@@ -131,16 +203,16 @@ type alias Gen =
     , updateCopiedHeapFields : Int
     , nonVarOwnedFresh : Int
     , nonVarBorrowedProducer : Int
-    , stringRes : List ResVar -- RString heads (rcManaged v1 target; for wouldFree)
-    , sigMissReads : Int -- B3: direct call whose callee sig is Nothing
-    , kernelSigHits : Int -- B3: kernel call matched an allowlisted sig
-    , kernelDefaultedHeapCalls : Int -- B3: kernel call defaulted all-owned with heap args
-    , kernelDefaultedNames : Dict ( Name, Name ) Int -- audit histogram: per-kernel heap-defaulting call count
-    , poisoningCallSites : Int -- B3: direct/kernel sites that forced ≥1 heap arg owned
-    , tailArgRes : List ResVar -- BORROW_005: resources of MonoTailCall args (escape-seeded)
-    , closureRouted : Int -- B3.5: closure calls routed to a real lambda sig (recovered)
-    , escSeeds : List ResVar -- U-T1.1: resources that escape by consumption (poisoned/owned call args, captures, global-resident values)
-    , freshSites : List ( ResVar, String, Int ) -- U-T1.1: (top resvar, class, weight) per in-def allocation site — the stack-promotion candidate universe
+    , stringRes : List ResVar -- string head resources
+    , sigMissReads : Int -- saturated direct calls whose callee has no signature
+    , kernelSigHits : Int -- kernel calls with a KernelSigs entry
+    , kernelDefaultedHeapCalls : Int -- kernel calls with no entry and at least one heap argument
+    , kernelDefaultedNames : Dict ( Name, Name ) Int -- those calls, counted per (home, name)
+    , poisoningCallSites : Int -- heap arguments with an Owned position in an applied BorrowSig
+    , tailArgRes : List ResVar -- resources of tail-call arguments
+    , closureRouted : Int -- calls routed to a signature by the LSS facts
+    , escSeeds : List ResVar
+    , freshSites : List ( ResVar, String, Int ) -- (head resource, class, weight) per allocation site
     }
 
 
@@ -172,11 +244,19 @@ emptyGen =
     }
 
 
+{-| Returns a fresh resource.
+-}
 fresh : Gen -> ( ResVar, Gen )
 fresh g =
     ( g.next, { g | next = g.next + 1 } )
 
 
+{-| Builds a fresh resource skeleton for a type.
+
+Every string head in it is recorded in `stringRes`, and every erased resource in
+it is forced owned with `RErased` and counted in `poisonedByErased`.
+
+-}
 freshR : Mono.MonoType -> Gen -> ( RTy, Gen )
 freshR t g =
     let
@@ -186,13 +266,9 @@ freshR t g =
     ( rty, harvestFresh rty { g | next = n } )
 
 
-{-| item 19: one walk over a fresh RTy doing BOTH jobs that used to be separate
-passes over it — (a) collect `RString` head resvars into `stringRes` (rcManaged v1
-target), consed directly (no `collectStringRes ++` intermediate/`concatMap`), and
-(b) boundary-poison each erased `ROpaque` resource Owned (RErased) + bump the
-census (§7.3). `stringRes` is only ever membership-tested, so its order is
-irrelevant; `forcedOwned` folds into the order-independent DSU — so this is
-behavior-preserving.
+{-| Records the string heads of a freshly built skeleton in `stringRes`, and
+forces each of its erased resources owned with `RErased`, counting each in
+`poisonedByErased`.
 -}
 harvestFresh : RTy -> Gen -> Gen
 harvestFresh rty g =
@@ -222,6 +298,8 @@ harvestFresh rty g =
             List.foldl harvestFresh g args
 
 
+{-| Returns a fresh node id for path steps.
+-}
 freshNode : Gen -> ( Int, Gen )
 freshNode g =
     ( g.nodeCounter, { g | nodeCounter = g.nodeCounter + 1 } )
@@ -231,40 +309,42 @@ freshNode g =
 -- CONSTRAINT EMITTERS
 
 
+{-| Applies an update to the constraints held in the state.
+-}
 emit : (Constraints -> Constraints) -> Gen -> Gen
 emit f g =
     { g | cs = f g.cs }
 
 
+{-| Adds flows, each from the first resource of a pair to the second.
+-}
 addFlows : List ( ResVar, ResVar ) -> Gen -> Gen
 addFlows ps =
     emit (\c -> { c | flows = ps ++ c.flows })
 
 
-{-| Add each pair in BOTH directions (item 26: `unifyArms` needs bidirectional
-flow between arm results). Conses both directions straight onto `c.flows` in one
-fold, avoiding the `pairs ++ List.map reverse pairs` intermediate list + concat.
-Flow order does not affect the (confluent) fixpoints or the DSU partition.
+{-| Adds a flow in each direction for every pair.
 -}
 addFlowsBidir : List ( ResVar, ResVar ) -> Gen -> Gen
 addFlowsBidir ps =
     emit (\c -> { c | flows = List.foldl (\( a, b ) acc -> ( a, b ) :: ( b, a ) :: acc) c.flows ps })
 
 
+{-| Adds storage equalities.
+-}
 addStorageEqs : List ( ResVar, ResVar ) -> Gen -> Gen
 addStorageEqs ps =
     emit (\c -> { c | storageEq = ps ++ c.storageEq })
 
 
+{-| Seeds every resource in the list as live until `path`.
+-}
 addSeeds : List ResVar -> Path -> Gen -> Gen
 addSeeds rs path =
     emit (\c -> { c | seeds = List.map (\r -> ( r, path )) rs ++ c.seeds })
 
 
-{-| item 19c: cons `(r, tag)` for every resvar in an RTy directly onto an
-accumulator in one walk — replaces `List.map (\r -> (r, tag)) (Rty.allRes rty)`
-(an `allRes` concatMap list + a map list). Order within the RTy is irrelevant to
-`seeds`/`paramSeeds` (both fold into resvar-keyed commutative joins).
+{-| Conses every resource of a skeleton, paired with `tag`, onto `acc`.
 -}
 resPairsInto : b -> RTy -> List ( ResVar, b ) -> List ( ResVar, b )
 resPairsInto tag rty acc =
@@ -294,26 +374,37 @@ resPairsInto tag rty acc =
             List.foldl (\e a -> resPairsInto tag e a) (( r, tag ) :: acc) args
 
 
+{-| Seeds every resource of a skeleton as live until `path`.
+-}
 addSeedsOfRTy : RTy -> Path -> Gen -> Gen
 addSeedsOfRTy rty path =
     emit (\c -> { c | seeds = resPairsInto path rty c.seeds })
 
 
+{-| Records that the binding with head resource `r` is in scope until `path`,
+replacing any earlier scope for `r`.
+-}
 addScope : ResVar -> Path -> Gen -> Gen
 addScope r path =
     emit (\c -> { c | scopes = Dict.insert r path c.scopes })
 
 
+{-| Forces a resource owned, for the given reason.
+-}
 addForced : ResVar -> Reason -> Gen -> Gen
 addForced r reason =
     emit (\c -> { c | forcedOwned = ( r, reason ) :: c.forcedOwned })
 
 
+{-| Adds a container read.
+-}
 addGet : Get -> Gen -> Gen
 addGet get =
     emit (\c -> { c | gets = get :: c.gets })
 
 
+{-| Records one use of a local variable with the given resources.
+-}
 addOcc : List ResVar -> Gen -> Gen
 addOcc res g =
     emit
@@ -323,13 +414,14 @@ addOcc res g =
         g
 
 
+{-| Adds escape edges.
+-}
 addEscEdges : List ( ResVar, ResVar ) -> Gen -> Gen
 addEscEdges ps =
     emit (\c -> { c | escEdges = ps ++ c.escEdges })
 
 
-{-| U-T1.1: cons every resvar of an RTy onto an accumulator (one walk, no
-`allRes` concatMap intermediate) — the escape-seed collector.
+{-| Conses every resource of a skeleton onto `acc`.
 -}
 resInto : RTy -> List ResVar -> List ResVar
 resInto rty acc =
@@ -359,16 +451,19 @@ resInto rty acc =
             List.foldl resInto (r :: acc) args
 
 
-{-| U-T1.1: mark every resource of an RTy as escaping-by-consumption.
+{-| Marks every resource of a skeleton as an escape seed.
 -}
 escSeedAll : RTy -> Gen -> Gen
 escSeedAll rty g =
     { g | escSeeds = resInto rty g.escSeeds }
 
 
-{-| U-T1.1: record an in-def allocation site (top resvar, class, weight) —
-the stack-promotion candidate universe, bucketed for the D-T1 weighting.
-No-op for scalars (no top) and zero weights (empty list literals).
+{-| Records an allocation site whose value has the skeleton `rty`, with class
+`prefix` followed by the skeleton's shape class, and weight `w`.
+
+Nothing is recorded for a skeleton with no head resource or a weight of zero or
+less, such as an empty list literal.
+
 -}
 addFreshSite : String -> Int -> RTy -> Gen -> Gen
 addFreshSite prefix w rty g =
@@ -384,6 +479,9 @@ addFreshSite prefix w rty g =
             g
 
 
+{-| Returns a short name for the outermost shape of a skeleton, with a tuple's
+arity appended.
+-}
 shapeClass : RTy -> String
 shapeClass rty =
     case rty of
@@ -416,16 +514,21 @@ shapeClass rty =
 -- ENV
 
 
-{-| The environment of the walk: the resource skeleton of each variable in
-scope, the borrow signature of each specialization (`Nothing` when unsolved,
-treated as all-owned), and the LSS facts used to route closure calls, if any.
+{-| The environment of the walk: the skeleton of each variable in scope, the
+borrow signature of each specialization, and the LSS facts used to route closure
+calls.
+
+`sigs` gives `Nothing` for a specialization with no known signature, and a
+saturated call to it is then poisoned. With `lssFacts` at `Nothing`, every call
+to a callee that is not a global or a kernel is poisoned.
+
 -}
 type alias Env =
     { vars : Dict Name RTy
     , sigs :
         Mono.SpecId
-        -> Maybe BorrowSig -- B3: interprocedural signatures (Nothing = unsolved/poison)
-    , lssFacts : Maybe LssFacts.Facts -- B3.5: LSS singleton-set routing (Nothing = no routing)
+        -> Maybe BorrowSig
+    , lssFacts : Maybe LssFacts.Facts
     }
 
 
@@ -436,6 +539,8 @@ emptyEnv =
     { vars = Dict.empty, sigs = \_ -> Nothing, lssFacts = Nothing }
 
 
+{-| Binds a variable to its skeleton.
+-}
 bindVar : Name -> RTy -> Env -> Env
 bindVar name rty env =
     { env | vars = Dict.insert name rty env.vars }
@@ -445,8 +550,13 @@ bindVar name rty env =
 -- NODE ENTRY
 
 
-{-| Result of analyzing one def node — carries the param/result shapes AND
-their RTys so the driver can read back an interprocedural `BorrowSig`.
+{-| What the walk of one definition produced: the types and skeletons of its
+parameters and result, and the final generation state.
+
+For a node that is neither a tail-recursive function nor a define, both
+parameter lists are empty and `resultRty` is `RScalar`, whatever the node's
+type.
+
 -}
 type alias DefAnalysis =
     { paramTys : List Mono.MonoType
@@ -457,9 +567,15 @@ type alias DefAnalysis =
     }
 
 
-{-| Analyze a def node, returning its param/result shapes+RTys + the final Gen.
-Post-P1 every top-level callable is closure-wrapped, so a `MonoDefine` whose
-body is a `MonoClosure` is a function whose params live on the closure.
+{-| Generates the constraints of one definition, starting from the given state.
+
+A tail-recursive function, and a define whose body is a closure, are analysed
+as functions: their parameters are bound to fresh skeletons with parameter
+seeds, and the body is walked. Only the parameters and body of such a closure
+are walked, not its captures. Any other define is walked as a value with no
+parameters. Other nodes, such as constructors, externs and ports, are not
+walked, and the state is returned unchanged.
+
 -}
 constrainDef : Env -> Mono.MonoNode -> Gen -> DefAnalysis
 constrainDef env node g =
@@ -478,18 +594,25 @@ constrainDef env node g =
             { paramTys = [], paramRtys = [], resultTy = Mono.typeOf body, resultRty = rty, gen = g1 }
 
         _ ->
-            -- ctor/enum/extern/manager/port: no walk (construct-only / RPort poison).
             { paramTys = [], paramRtys = [], resultTy = Mono.nodeType node, resultRty = Rty.RScalar, gen = g }
 
 
-{-| Analyze a closure (its params + body) as a def, for its lambda signature
-(B3.5). Mirrors `constrainDef`'s function path.
+{-| Generates the constraints of a closure's parameters and body as if the
+closure were a definition, so that a signature can be read back for it. Its
+captures are not walked.
 -}
 constrainClosureForSig : Env -> Mono.ClosureInfo -> Mono.MonoExpr -> Gen -> DefAnalysis
 constrainClosureForSig env info body g =
     analyzeFn env info.params body g
 
 
+{-| Generates the constraints of a function with the given parameters and body.
+
+The result is not forced owned: it is owned where it is built fresh, and a
+result that flows from a parameter is coupled to that parameter through the
+parameter seeds.
+
+-}
 analyzeFn : Env -> List ( Name, Mono.MonoType ) -> Mono.MonoExpr -> Gen -> DefAnalysis
 analyzeFn env params body g =
     let
@@ -503,13 +626,14 @@ analyzeFn env params body g =
     , paramRtys = paramRtys
     , resultTy = Mono.typeOf body
     , resultRty = rty
-
-    -- Result ownership comes from the construct rule (fresh values owned) +
-    -- α-coupling (pass-through params borrow through) — NOT force-owned.
     , gen = g2
     }
 
 
+{-| Binds each parameter to a fresh skeleton, tags every resource of the
+parameter at index `i` with `i` in `paramSeeds`, and returns the skeletons in
+parameter order.
+-}
 bindParamsRtys : List ( Name, Mono.MonoType ) -> Env -> Gen -> ( Env, List RTy, Gen )
 bindParamsRtys params env g =
     let
@@ -520,8 +644,6 @@ bindParamsRtys params env g =
                         ( rty, accG1 ) =
                             freshR t accG
 
-                        -- α-seed: every resource of param position i carries LParams {i}
-                        -- so a result resource that flows from it reads back its coupling.
                         accG2 =
                             emit (\c -> { c | paramSeeds = resPairsInto i rty c.paramSeeds }) accG1
                     in
@@ -533,6 +655,8 @@ bindParamsRtys params env g =
     ( env1, List.reverse revRtys, g1 )
 
 
+{-| Binds parameters as `bindParamsRtys` does, dropping the skeletons.
+-}
 bindParams : List ( Name, Mono.MonoType ) -> Env -> Gen -> ( Env, Gen )
 bindParams params env g =
     let
@@ -543,9 +667,21 @@ bindParams params env g =
 
 
 
--- EXPRESSION WALKER (total; all 18 constructors)
+-- EXPRESSION WALKER
 
 
+{-| Generates the constraints of an expression evaluated at `path`, and returns
+the skeleton of its value.
+
+An unbound local variable gives `RScalar`. A local tail-recursive function's
+name is bound to a fresh skeleton of the `let` expression's type, and its body is
+walked with its parameters bound but its result skeleton discarded. An `if`'s
+conditions are all walked at `Seq n 0` of its node and its branches at
+`Arm n i` of the same node, so a resource used in a condition and in a branch
+has its lifetimes joined across a sequence step and an alternatives step, which
+`Compiler.GlobalOpt.Borrow.Lifetime` resolves conservatively.
+
+-}
 constrainExpr : Env -> Path -> Mono.MonoExpr -> Gen -> ( RTy, Gen )
 constrainExpr env path expr g =
     case expr of
@@ -556,8 +692,7 @@ constrainExpr env path expr g =
                         ( rty, g1 ) =
                             freshR t g
                     in
-                    -- interned/immortal (S5): permanent-resident, never a
-                    -- stack-promotion candidate — escape-seed it (U-T1.1).
+                    -- A string literal is never freed, so it is an escape seed.
                     ( rty, escSeedAll rty { g1 | immortalLiterals = g1.immortalLiterals + 1 } )
 
                 _ ->
@@ -569,7 +704,6 @@ constrainExpr env path expr g =
         Mono.MonoVarLocal x _ ->
             case Dict.get x env.vars of
                 Nothing ->
-                    -- Unbound (shouldn't happen for well-formed graphs); treat as fresh scalar.
                     ( Rty.RScalar, g )
 
                 Just bindRty ->
@@ -584,16 +718,12 @@ constrainExpr env path expr g =
                             addStorageEqs (List.drop 1 pairs) g2
 
                         g4 =
-                            -- allRes useRty ≡ the new-resvar (second) components of
-                            -- the pre-order pairs — reuse them, no extra RTy walk.
                             addOcc (List.map Tuple.second pairs) g3
                     in
                     ( useRty, g4 )
 
         Mono.MonoVarGlobal _ _ t ->
-            -- value reference; Phase 2: sigs = Nothing ⇒ all-owned fresh.
-            -- U-T1.1: the referenced value is global/CAF-resident — it escapes
-            -- by residence (never a stack-promotion candidate).
+            -- A global value lives outside the function, so it is owned and escapes.
             let
                 ( rty, g1 ) =
                     freshR t g
@@ -601,7 +731,6 @@ constrainExpr env path expr g =
             ( rty, ownEverything rty (escSeedAll rty g1) )
 
         Mono.MonoVarKernel _ _ _ _ t ->
-            -- kernel value (not a call): boundary-poisoned closure.
             let
                 ( rty, g1 ) =
                     freshR t g
@@ -659,16 +788,14 @@ constrainExpr env path expr g =
                 g5 =
                     ownEverything resultRty g4
 
-                -- copied-over heap fields: no occurrence to attach a dup to.
                 mentioned =
                     List.map Tuple.first fes
 
                 copiedHeap =
                     countCopiedHeapFields baseRty mentioned
 
-                -- U-T1.1: the update result STORES the explicit-field values
-                -- and the base's copied heap fields — escape-link them so an
-                -- escaping result marks them escaping (escape-only edges).
+                -- The result stores the new field values and the base's copied
+                -- fields; escape edges link them to it.
                 g5b =
                     case Rty.topRes resultRty of
                         Just resTop ->
@@ -709,10 +836,7 @@ constrainExpr env path expr g =
                 ( xRty, g2 ) =
                     freshR (Mono.getMonoPathType dpath) g1
 
-                -- U-T1.1: a destructured binding is a read/alias of the root
-                -- value — escape-link it so an escaping `x` marks the root's
-                -- class (and the values stored in it) escaping. Escape-only:
-                -- Solve never reads escEdges, so census counters are unchanged.
+                -- `x` is read out of the root value; an escape edge links them.
                 g2b =
                     case ( rootTopFor dpath env, Rty.topRes xRty ) of
                         ( Just rootTop, Just xTop ) ->
@@ -827,7 +951,6 @@ constrainExpr env path expr g =
                 ( n, g0 ) =
                     freshNode g
 
-                -- captured heap resources are boundary-poisoned (§8.4).
                 g1 =
                     List.foldl
                         (\( _, capE, _ ) acc ->
@@ -849,7 +972,6 @@ constrainExpr env path expr g =
                 ( rty, g4 ) =
                     freshR t g3
             in
-            -- U-T1.1: a closure env is an in-def allocation site.
             ( rty, ownEverything rty (addFreshSite "lit:" 1 rty g4) )
 
         Mono.MonoAccessorValue _ _ t ->
@@ -861,9 +983,18 @@ constrainExpr env path expr g =
 
 
 
--- CALL DISPATCH (§8.3; Phase 2 coarse — every branch lands all-owned)
+-- CALL DISPATCH
 
 
+{-| Generates the constraints of a call of `f` on `args`, with result type `t`,
+and returns the skeleton of the result.
+
+The arguments are walked first, the result is recorded as a fresh site whose
+class starts with `call:`, and the callee is then handled as the module
+documentation's section on calls describes. A global or kernel callee is not
+itself walked; any other callee is.
+
+-}
 constrainCall : Env -> Path -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> Gen -> ( RTy, Gen )
 constrainCall env path f args t callInfo g =
     let
@@ -877,20 +1008,14 @@ constrainCall env path f args t callInfo g =
             freshR t g1
 
         gNV =
-            -- U-T1.1: a call result is an allocation attributable to this def's
-            -- dynamic extent (ctor calls = ADT construction; general calls =
-            -- callee-fresh values) — bucketed separately under "call:".
             countNonVarOperands args argRtys (addFreshSite "call:" 1 resultRty g2)
 
-        -- A poisoned (unknown-callee) call result is conservatively owned; a
-        -- routed/sig'd call gets its result ownership from the callee sig.
         poisoned gg =
             ownEverything resultRty gg
     in
     case f of
         Mono.MonoVarGlobal _ specId _ ->
             if isDirectSaturated callInfo then
-                -- §8.3 direct call: consult the callee signature.
                 case env.sigs specId of
                     Just sig ->
                         ( resultRty, applyDirectSig sig path argRtys resultRty gNV )
@@ -899,7 +1024,7 @@ constrainCall env path f args t callInfo g =
                         ( resultRty, poisoned (ownArgsEsc argRtys { gNV | sigMissReads = gNV.sigMissReads + 1 }) )
 
             else
-                -- under/over-application (PAP): boundary-poisoned.
+                -- Not a single-stage saturated call with a direct call kind.
                 ( resultRty, poisoned (poisonArgs argRtys RClosureBoundary bumpClosure gNV) )
 
         Mono.MonoVarKernel _ prefix home name _ ->
@@ -930,9 +1055,6 @@ constrainCall env path f args t callInfo g =
                     ( resultRty, poisoned g5 )
 
         _ ->
-            -- closure / generic / PAP / non-var callee. B3.5: if LSS knows a
-            -- singleton lambda set, route through the member's real signature;
-            -- else boundary-poison (Phase-2 behavior).
             let
                 ( _, gf ) =
                     constrainExpr env (Seq n 0 :: path) f gNV
@@ -950,11 +1072,16 @@ constrainCall env path f args t callInfo g =
                     ( resultRty, poisoned (poisonArgs argRtys RClosureBoundary bumpClosure gf) )
 
 
+{-| Tells whether a call passes exactly the callee's first stage of arguments
+with a direct call kind.
+-}
 isDirectSaturated : Mono.CallInfo -> Bool
 isDirectSaturated ci =
     ci.isSingleStageSaturated && isDirectKind ci.callKind
 
 
+{-| Tells whether a call kind is a direct call.
+-}
 isDirectKind : Mono.CallKind -> Bool
 isDirectKind k =
     case k of
@@ -968,11 +1095,16 @@ isDirectKind k =
             False
 
 
-{-| Apply a callee `BorrowSig`: per param ResPos, Owned forces the arg resource
-owned / Borrowed seeds only liveness; the result's modes are applied to the
-call result; and `resultLts` couples each result resource to its source args
-(paper §5.1 — so a returned arg's ownership tracks how the caller uses the
-result).
+{-| Applies a callee's borrow signature at a call.
+
+An argument resource at an `Owned` position is forced owned and marked as an
+escape seed; one at any other position is seeded as live until the call. Result
+resources at an `Owned` position are forced owned. For each result position that
+`resultLts` says may alias a parameter, a flow is added from the head of that
+argument to the result resource, so the argument's ownership follows how the
+result is used. Positions are matched by index, and a list that is too short for
+its type is not reported: the extra resources are left alone.
+
 -}
 applyDirectSig : BorrowSig -> Path -> List RTy -> RTy -> Gen -> Gen
 applyDirectSig sig path argRtys resultRty g =
@@ -981,11 +1113,11 @@ applyDirectSig sig path argRtys resultRty g =
         |> applyResultLts sig.resultLts argRtys resultRty
 
 
+{-| Forces owned each resource of the result at an `Owned` position of the
+signature's result modes. Resources beyond the last mode are left alone.
+-}
 applyResultModes : RTy -> Sig.SigTy -> Gen -> Gen
 applyResultModes resultRty sigTy g =
-    -- item 12: index `sigTy.modes` positionally instead of allocating
-    -- `Array.toList modes` + a `map2` pair list. The `idx >= modesLen` stop
-    -- reproduces `List.map2`'s truncation to the shorter of the two.
     let
         modesLen =
             Array.length sigTy.modes
@@ -1010,6 +1142,9 @@ applyResultModes resultRty sigTy g =
     go 0 (Rty.allRes resultRty) g
 
 
+{-| Adds a flow from the head of each argument a result position may alias to
+that result resource. Positions and argument indices out of range are skipped.
+-}
 applyResultLts : List ( Int, Set Int ) -> List RTy -> RTy -> Gen -> Gen
 applyResultLts resultLts argRtys resultRty g =
     let
@@ -1039,11 +1174,17 @@ applyResultLts resultLts argRtys resultRty g =
         resultLts
 
 
+{-| Returns the element at index `k`, counting from 0.
+-}
 nthOf : Int -> List a -> Maybe a
 nthOf k list =
     List.head (List.drop k list)
 
 
+{-| Applies parameter modes to arguments in order. An argument beyond the
+signature's parameters is forced owned and marked as an escape seed; parameters
+beyond the arguments are ignored.
+-}
 applyParamList : Path -> List RTy -> List Sig.SigTy -> Gen -> Gen
 applyParamList path argRtys sigTys g =
     case ( argRtys, sigTys ) of
@@ -1051,19 +1192,18 @@ applyParamList path argRtys sigTys g =
             applyParamList path restA restS (applyParamModes argRty sigTy path g)
 
         ( argRty :: restA, [] ) ->
-            -- extra arg beyond the sig (arity mismatch): default owned.
             applyParamList path restA [] (ownEverything argRty (escSeedAll argRty g))
 
         ( [], _ ) ->
             g
 
 
+{-| Applies one parameter's modes to one argument, as `applyDirectSig`
+describes, and counts the argument in `poisoningCallSites` when it is a heap
+value with at least one resource forced owned.
+-}
 applyParamModes : RTy -> Sig.SigTy -> Path -> Gen -> Gen
 applyParamModes argRty sigTy path g =
-    -- item 12: one indexed pass over allRes reading `sigTy.modes` via `Array.get`
-    -- — computes both the fold (`g1`) and `anyOwned` (for `forcedHeapOwned`) in a
-    -- single traversal, no `Array.toList` + `map2` pair list. The `idx >= modesLen`
-    -- stop reproduces `List.map2`'s truncation to the shorter list.
     let
         modesLen =
             Array.length sigTy.modes
@@ -1080,8 +1220,6 @@ applyParamModes argRty sigTy path g =
                     else
                         case Array.get idx sigTy.modes of
                             Just Owned ->
-                                -- U-T1.1: an Owned param position is consumed by
-                                -- the callee (may be stored) — escape-seed it.
                                 go (idx + 1) rest (addForced r RConstruct { acc | escSeeds = r :: acc.escSeeds }) True
 
                             _ ->
@@ -1097,16 +1235,20 @@ applyParamModes argRty sigTy path g =
         g1
 
 
+{-| Applies a kernel's signature at a call.
+
+A `PBorrowed` argument is seeded as live until the call, and a `POwned` one is
+forced owned and marked as an escape seed. The result is owned. For each index
+in `resultAliases`, a get from that argument's head to the result's head is
+added, so the result is treated as read out of that argument.
+
+-}
 applyKernelSig : KernelSigs.KernelSig -> Path -> List RTy -> RTy -> Gen -> Gen
 applyKernelSig ksig path argRtys resultRty g =
     let
-        -- kernels produce owned results (fresh value or aliased element).
         g1 =
             ownEverything resultRty (applyKernelParams path argRtys ksig.params g)
     in
-    -- resultAliases is a LIST of param indices (U-T1.2): HOF kernels can
-    -- return closure outputs aliasing several inputs' interiors, so every
-    -- possibly-aliased param gets a Get edge (lifetime + escape coupling).
     List.foldl
         (\k acc ->
             case ( nthTop k argRtys, Rty.topRes resultRty ) of
@@ -1120,6 +1262,9 @@ applyKernelSig ksig path argRtys resultRty g =
         ksig.resultAliases
 
 
+{-| Applies kernel parameter modes to arguments in order. An argument beyond the
+listed modes is treated as `POwned`.
+-}
 applyKernelParams : Path -> List RTy -> List KernelSigs.ParamMode -> Gen -> Gen
 applyKernelParams path argRtys pmodes g =
     case ( argRtys, pmodes ) of
@@ -1131,19 +1276,19 @@ applyKernelParams path argRtys pmodes g =
                             addSeedsOfRTy argRty path g
 
                         KernelSigs.POwned ->
-                            -- U-T1.1: consumed by the kernel — may be retained.
                             ownEverything argRty (escSeedAll argRty g)
             in
             applyKernelParams path restA restP g1
 
         ( argRty :: restA, [] ) ->
-            -- missing tail: default POwned (defensive).
             applyKernelParams path restA [] (ownEverything argRty (escSeedAll argRty g))
 
         ( [], _ ) ->
             g
 
 
+{-| Returns the head resource of the skeleton at index `k`, if there is one.
+-}
 nthTop : Int -> List RTy -> Maybe ResVar
 nthTop k rtys =
     case List.head (List.drop k rtys) of
@@ -1158,6 +1303,9 @@ nthTop k rtys =
 -- WALKER HELPERS
 
 
+{-| Walks a list of expressions as children `i`, `i + 1`, ... of sequence node
+`n`, and returns their skeletons.
+-}
 constrainArgs : Env -> Int -> Path -> Int -> List Mono.MonoExpr -> Gen -> ( List RTy, Gen )
 constrainArgs env n path i args g =
     case args of
@@ -1175,15 +1323,19 @@ constrainArgs env n path i args g =
             ( aRty :: rtys, g2 )
 
 
+{-| Walks the conditions of an `if`, all at child 0 of sequence node `n`.
+-}
 constrainConds : Env -> Int -> Path -> List Mono.MonoExpr -> Gen -> Gen
 constrainConds env n path conds g =
     List.foldl (\c acc -> Tuple.second (constrainExpr env (Seq n 0 :: path) c acc)) g conds
 
 
+{-| Walks the arguments of a tail call as children of sequence node `n`, seeds
+every resource of each as live until the empty path, the end of the whole body,
+and records the resources in `tailArgRes`.
+-}
 constrainTailArgs : Env -> Int -> Path -> List Mono.MonoExpr -> Gen -> Gen
 constrainTailArgs env n path args g =
-    -- Each arg seeds ESCAPE (a path ordered after the whole body — RTailArg)
-    -- so reification never drops after the tail call (BORROW_005).
     Tuple.second
         (List.foldl
             (\a ( i, acc ) ->
@@ -1204,6 +1356,9 @@ constrainTailArgs env n path args g =
         )
 
 
+{-| Walks the field values of a record update as children `i`, `i + 1`, ...
+of sequence node `n`, and returns their skeletons.
+-}
 constrainFields : Env -> Int -> Path -> Int -> List ( Name, Mono.MonoExpr ) -> Gen -> ( List RTy, Gen )
 constrainFields env n path i fes g =
     case fes of
@@ -1221,6 +1376,14 @@ constrainFields env n path i fes g =
             ( rty :: rtys, g2 )
 
 
+{-| Generates the constraints of a list, tuple or record literal with elements
+`es` and type `t`, and returns its skeleton.
+
+The literal's head is forced owned with `RConstruct`, and the head of each
+element is storage-equal to it. The literal is a fresh site of class `lit:`,
+weighted by its number of elements for a list and 1 otherwise.
+
+-}
 constrainContainer : Env -> Path -> List Mono.MonoExpr -> Mono.MonoType -> Gen -> ( RTy, Gen )
 constrainContainer env path es t g =
     let
@@ -1233,8 +1396,7 @@ constrainContainer env path es t g =
         ( resultRty, g2a ) =
             freshR t g1
 
-        -- U-T1.1: allocation site. A literal list of k elements allocates k
-        -- cons cells (weight k); tuples/records allocate one object.
+        -- A list literal of k elements allocates k cons cells.
         g2 =
             addFreshSite "lit:"
                 (case resultRty of
@@ -1247,8 +1409,6 @@ constrainContainer env path es t g =
                 resultRty
                 g2a
 
-        -- container top forced owned (RConstruct); each element storageEq with a
-        -- container slot resource (heap-store position).
         g3 =
             case Rty.topRes resultRty of
                 Just top ->
@@ -1278,6 +1438,9 @@ constrainContainer env path es t g =
     ( resultRty, g4 )
 
 
+{-| Walks each arm at `Arm n i` and adds flows in both directions between each
+arm's skeleton and the shared result skeleton.
+-}
 unifyArms : Env -> Int -> Path -> List Mono.MonoExpr -> RTy -> Gen -> Gen
 unifyArms env n path arms resultRty g =
     Tuple.second
@@ -1300,7 +1463,8 @@ unifyArms env n path arms resultRty g =
         )
 
 
-{-| Clone an RTy's shape with fresh ResVars (a use instance of a binding).
+{-| Returns a copy of a skeleton with fresh resources, recording string heads in
+`stringRes`. Nothing in this module calls it.
 -}
 cloneRTy : RTy -> Gen -> ( RTy, Gen )
 cloneRTy rty g =
@@ -1370,11 +1534,9 @@ cloneRTy rty g =
             ( Rty.RCustom r args2, g2 )
 
 
-{-| item 11: like `cloneRTy` but also returns the pre-order `(oldRes, newRes)`
-pairs — i.e. `zipRTy bindRty useRty` — computed during the single clone walk, so
-the `MonoVarLocal` hot path drops the separate `zipRTy` and `allRes` traversals
-(and the `++`/`concatMap` intermediates those build). Pairs are root-first
-pre-order, matching `zipRTy`, so `List.drop 1 pairs` still drops the root pair.
+{-| Returns a copy of a skeleton with fresh resources, together with the pairs of
+each original resource and its copy, head first in pre-order. String heads of
+the copy are recorded in `stringRes`; erased resources are not forced owned.
 -}
 cloneRTyF : RTy -> Gen -> ( RTy, List ( ResVar, ResVar ), Gen )
 cloneRTyF rty g =
@@ -1444,6 +1606,8 @@ cloneRTyF rty g =
             ( Rty.RCustom r args2, ( old, r ) :: argPairs, g2 )
 
 
+{-| Copies a list of skeletons as `cloneRTyF` does, concatenating the pairs.
+-}
 cloneListF : List RTy -> Gen -> ( List RTy, List ( ResVar, ResVar ), Gen )
 cloneListF rtys g =
     case rtys of
@@ -1461,6 +1625,9 @@ cloneListF rtys g =
             ( x2 :: rest2, xp ++ rp, g2 )
 
 
+{-| Copies the field skeletons of a record as `cloneRTyF` does, concatenating
+the pairs.
+-}
 cloneFieldsF : List ( Name, RTy ) -> Gen -> ( List ( Name, RTy ), List ( ResVar, ResVar ), Gen )
 cloneFieldsF fields g =
     case fields of
@@ -1478,6 +1645,8 @@ cloneFieldsF fields g =
             ( ( name, x2 ) :: rest2, xp ++ rp, g2 )
 
 
+{-| Copies a list of skeletons as `cloneRTy` does. Only `cloneRTy` calls it.
+-}
 cloneList : List RTy -> Gen -> ( List RTy, Gen )
 cloneList rtys g =
     case rtys of
@@ -1495,6 +1664,9 @@ cloneList rtys g =
             ( x2 :: rest2, g2 )
 
 
+{-| Copies the field skeletons of a record as `cloneRTy` does. Only `cloneRTy`
+calls it.
+-}
 cloneFields : List ( Name, RTy ) -> Gen -> ( List ( Name, RTy ), Gen )
 cloneFields fields g =
     case fields of
@@ -1512,6 +1684,9 @@ cloneFields fields g =
             ( ( name, x2 ) :: rest2, g2 )
 
 
+{-| Pairs the head of the container with the head of the value read out, or
+returns no pair when either has no head.
+-}
 zipTop : RTy -> RTy -> List ( ResVar, ResVar )
 zipTop container out =
     case ( Rty.topRes container, Rty.topRes out ) of
@@ -1522,6 +1697,9 @@ zipTop container out =
             []
 
 
+{-| Returns every resource of the variable a destructuring path starts from, or
+none when the variable is unbound.
+-}
 rootResFor : Mono.MonoPath -> Env -> List ResVar
 rootResFor dpath env =
     case rootName dpath of
@@ -1537,6 +1715,8 @@ rootResFor dpath env =
             []
 
 
+{-| Returns the head resource of the variable a destructuring path starts from.
+-}
 rootTopFor : Mono.MonoPath -> Env -> Maybe ResVar
 rootTopFor dpath env =
     rootName dpath
@@ -1544,6 +1724,8 @@ rootTopFor dpath env =
         |> Maybe.andThen Rty.topRes
 
 
+{-| Returns the variable a destructuring path starts from.
+-}
 rootName : Mono.MonoPath -> Maybe Name
 rootName dpath =
     case dpath of
@@ -1560,6 +1742,9 @@ rootName dpath =
             rootName sub
 
 
+{-| Returns the arm bodies held inline in a decision tree, leaving out jumps to
+shared branches.
+-}
 collectInlines : Mono.Decider Mono.MonoChoice -> List Mono.MonoExpr
 collectInlines decider =
     case decider of
@@ -1576,6 +1761,10 @@ collectInlines decider =
             List.concatMap (\( _, d ) -> collectInlines d) edges ++ collectInlines fallback
 
 
+{-| Returns the head resources of the fields of a record skeleton that a record
+update does not name, and so copies from the base. A base that is not a record
+skeleton gives none.
+-}
 copiedHeapFieldTops : RTy -> List Name -> List ResVar
 copiedHeapFieldTops baseRty mentioned =
     case baseRty of
@@ -1594,6 +1783,9 @@ copiedHeapFieldTops baseRty mentioned =
             []
 
 
+{-| Counts the heap fields of a record skeleton that a record update does not
+name.
+-}
 countCopiedHeapFields : RTy -> List Name -> Int
 countCopiedHeapFields baseRty mentioned =
     case baseRty of
@@ -1610,6 +1802,10 @@ countCopiedHeapFields baseRty mentioned =
             0
 
 
+{-| Counts the heap arguments of a call that are not variables, as
+`nonVarOwnedFresh` when `isOwnedProducer` counts it as producing a new value
+and as `nonVarBorrowedProducer` otherwise.
+-}
 countNonVarOperands : List Mono.MonoExpr -> List RTy -> Gen -> Gen
 countNonVarOperands args argRtys g =
     List.foldl
@@ -1628,6 +1824,8 @@ countNonVarOperands args argRtys g =
         (List.map2 Tuple.pair args argRtys)
 
 
+{-| Tells whether an expression is a local or global variable.
+-}
 isVar : Mono.MonoExpr -> Bool
 isVar e =
     case e of
@@ -1641,6 +1839,9 @@ isVar e =
             False
 
 
+{-| Tells whether the census counts an expression as producing a new value: a
+literal, a list, tuple or record literal, a record update, or any call.
+-}
 isOwnedProducer : Mono.MonoExpr -> Bool
 isOwnedProducer e =
     case e of
@@ -1666,6 +1867,8 @@ isOwnedProducer e =
             False
 
 
+{-| Tells whether a skeleton has any resource.
+-}
 isHeapRty : RTy -> Bool
 isHeapRty rty =
     case rty of
@@ -1680,15 +1883,14 @@ isHeapRty rty =
 -- OWN / POISON HELPERS
 
 
+{-| Forces every resource of a skeleton owned with `RConstruct`.
+-}
 ownEverything : RTy -> Gen -> Gen
 ownEverything =
     forceAllOf RConstruct
 
 
-{-| item 19 (extension): force every resvar in an RTy to Owned with `reason`, by
-walking the RTy directly instead of `addForcedAll (Rty.allRes rty)` which
-materialises an `allRes` list (concatMap). Used on the ~8 `ownEverything` sites
-plus `ownArgs`/`poison`. `forcedOwned` is order-independent.
+{-| Forces every resource of a skeleton owned with `reason`.
 -}
 forceAllOf : Reason -> RTy -> Gen -> Gen
 forceAllOf reason rty g =
@@ -1718,40 +1920,50 @@ forceAllOf reason rty g =
             List.foldl (forceAllOf reason) (addForced r reason g) args
 
 
-{-| U-T1.1: like `ownArgs` but also escape-seeds — an owned arg handed to an
-unknown callee is consumed and may be stored (sigMiss boundary).
+{-| Forces every resource of each argument owned with `RConstruct` and marks it
+as an escape seed.
 -}
 ownArgsEsc : List RTy -> Gen -> Gen
 ownArgsEsc rtys g =
     List.foldl (\rty acc -> ownEverything rty (escSeedAll rty acc)) g rtys
 
 
+{-| Poisons a heap value: forces every resource owned with `reason`, marks each
+as an escape seed, and applies `bump` to count it. A skeleton with no resource is
+left alone and not counted.
+-}
 poison : RTy -> Reason -> (Gen -> Gen) -> Gen -> Gen
 poison rty reason bump g =
     if isHeapRty rty then
-        -- U-T1.1: every boundary-poisoned value escapes by consumption
-        -- (unknown callee may store it; a capture lives in the closure env).
         bump (forceAllOf reason rty (escSeedAll rty g))
 
     else
         g
 
 
+{-| Poisons each argument as `poison` does, counting each heap argument once.
+-}
 poisonArgs : List RTy -> Reason -> (Gen -> Gen) -> Gen -> Gen
 poisonArgs rtys reason bump g =
     List.foldl (\rty acc -> poison rty reason bump acc) g rtys
 
 
+{-| Counts one value poisoned at a closure boundary.
+-}
 bumpClosure : Gen -> Gen
 bumpClosure g =
     { g | poisonedByClosure = g.poisonedByClosure + 1 }
 
 
+{-| Counts one value poisoned at a kernel call with no signature.
+-}
 bumpKernel : Gen -> Gen
 bumpKernel g =
     { g | poisonedByKernel = g.poisonedByKernel + 1 }
 
 
+{-| Counts one captured value forced owned.
+-}
 bumpCaptures : Gen -> Gen
 bumpCaptures g =
     { g | capturesForcedOwned = g.capturesForcedOwned + 1 }

@@ -12,16 +12,48 @@ module Compiler.AST.TypedOptimized exposing
     , globalHash
     )
 
-{-| TypedOptimized AST - like Optimized but preserves type information.
+{-| The native back end specializes each polymorphic definition at the concrete
+types it is used at, and for that it needs the type of every expression after
+local optimization. This module is that program representation: the optimized
+program of `Compiler.AST.Optimized` with a type on every node, together with
+the binary format in which it is kept between builds.
 
-This IR is used for backends that need type information for code generation,
-such as the MLIR backend which performs monomorphization.
+Every expression carries a _meta_ as the last argument of its constructor: its
+canonical type and, where one was recorded, the solver variable the type
+checker gave it. The parameter `id` of `Expr id` and the other types is how
+type variables are named inside `Can.Type id`. The optimizer produces them
+named by `Name`; `Compiler.Monomorphize.AssignMVarIds` renumbers them. Only
+the `Name` form can be encoded.
 
-The key difference from Optimized:
+The definitions of one module form a `LocalGraph`, and the graphs of many
+modules merged together form a `GlobalGraph`. Both map a `Global`, a module and
+a name, to a `Node`. Alongside the nodes they keep each definition's type
+scheme, its _scheme roots_, which give each quantified type variable of the
+scheme the solver root it had and the super constraint recorded there, and
+_varSupers_, a map from names to the super constraint their prefix denotes
+(`number`, `comparable`, `appendable`, `compappend`; see
+`Compiler.Data.Name`).
 
-  - Every Expr carries a type annotation (Can.Type)
-  - Nodes carry type information for definitions
-  - LocalGraph includes the full annotations dictionary
+Most of the file is the binary format. An encoding of either graph is a
+format-version byte, a string table, a type table and then the body, in which
+every string is an index into the string table and every type an id in the
+type table (see `Compiler.AST.StringTable` and `Compiler.AST.TypeTable`). A
+version byte other than the current one fails the whole decode. Both tables are
+filled before encoding by a pre-pass over the graph: the `internTypesFrom*`
+walkers must reach every type the encoders write, and the `collectStringsFrom*`
+walkers every string. A missed type makes encoding crash; a missed string is
+written as the index of another string, without error.
+
+Decoding does not give back everything that was encoded from. A decoded graph
+has no `main`, empty field counts, empty dependency sets on its nodes, no
+solver variable in any meta and no lambda id on any `Function` or
+`TrackedFunction`. A `Manager` node decodes with effects type `Cmd`, a `Kernel`
+node with no chunks, and a `VarDebug` with home `Debug` of `elm/core` and no
+unhandled-value name. The solver variable of a `TailDef` is kept.
+
+The string walkers serve one more purpose. `computeVarSupers` runs them with a
+collector that keeps only names with a super-constraint prefix, so it sees
+every name the encoding would write.
 
 
 # Core Types
@@ -106,22 +138,26 @@ import Utils.Bytes.Encode as BE
 -- ====== TYPE ALIASES ======
 
 
-{-| Annotations dictionary - maps definition names to their type schemes.
-Used in LocalGraph where bare names are unique (per-module).
+{-| The type schemes of one module's top-level definitions, keyed by the
+definition's bare name.
 -}
 type alias Annotations id =
     Dict Name (Can.Annotation id)
 
 
-{-| Annotations keyed by fully-qualified Global identity.
-Used in GlobalGraph to avoid cross-module name collisions.
+{-| The type schemes of the definitions of many modules, keyed by `Global` so
+that equal names in different modules stay apart.
 -}
 type alias AnnotationsByGlobal id =
     Data.Map.Dict String Global (Can.Annotation id)
 
 
-{-| Scheme roots keyed by fully-qualified Global identity.
-Used in GlobalGraph to avoid cross-module name collisions.
+{-| The scheme roots of the definitions of many modules, keyed by `Global`.
+
+For each definition, the inner map takes a type-variable name of its scheme to
+the solver root and super constraint recorded for it. A root is a point of its
+home module's solver store and means nothing outside it.
+
 -}
 type alias SchemeRootsByGlobal =
     Data.Map.Dict String Global (Dict Name Vars.RootedVar)
@@ -131,8 +167,13 @@ type alias SchemeRootsByGlobal =
 -- ====== META ======
 
 
-{-| Metadata carried with each expression: the canonical type and an optional solver variable.
-The `tvar` field preserves the solver's union-find variable for MonoDirect monomorphization.
+{-| The type information on one expression: its canonical type, and the solver
+variable the type checker recorded for it.
+
+`tvar` is a point of the home module's solver store and means nothing outside
+it. It is `Nothing` where none was recorded, and on every expression of a
+decoded graph.
+
 -}
 type alias Meta id =
     { tipe : Can.Type id
@@ -142,10 +183,41 @@ type alias Meta id =
 
 
 -- ====== EXPRESSIONS ======
--- Every expression variant carries its Meta as the LAST argument
 
 
-{-| Typed optimized expression. Each variant carries its Meta (type + solver var) as the last argument.
+{-| An expression after local optimization, with its `Meta` as the last
+argument of every constructor.
+
+Several constructors come in a plain and a tracked form, the tracked one
+keeping source regions the plain one drops: `VarLocal` and `TrackedVarLocal`,
+`Function` and `TrackedFunction` (whose parameter names are located), and
+`Record` and `TrackedRecord` (whose field names are located).
+
+`Chr` holds its character as a `String`; `Chr` and `Str` keep the escaped
+source text of the literal. A constructor of a type whose constructors all take
+no arguments is `VarEnum`, carrying its index, and the constructor of a type
+with one constructor of one argument is `VarBox`.
+
+`VarCycle` refers to a zero-argument definition of the recursive group it is
+used in. `VarDebug` is a use of a `Debug` function: its name, the module it is
+used in, and an optional name. `VarKernel` names a kernel value by its prefix,
+its kernel module and its name.
+
+`Function` carries an optional lambda id, the parameters with their types, and
+the body; the lambda id is not encoded, so it is `Nothing` after decoding.
+
+`TailCall` is a call of the enclosing `TailDef` from tail position, pairing each
+parameter name with its new argument. `If` is a list of condition and branch
+pairs followed by the final `else` branch.
+
+`Case` is a compiled `case`: a label name, the name of the variable inspected,
+the decision tree, and the jump list, the branch bodies the tree reaches through
+`Jump`, each with the index a `Jump` names. A branch body can also sit in the
+tree itself, as `Inline`.
+
+`Update` keys its fields by located name. `Shader` carries the GLSL source and
+the names of its attributes and uniforms.
+
 -}
 type Expr id
     = Bool A.Region Bool (Meta id)
@@ -162,7 +234,7 @@ type Expr id
     | VarDebug A.Region Name ModuleName.Canonical (Maybe Name) (Meta id)
     | VarKernel A.Region Name Name Name (Meta id)
     | List A.Region (List (Expr id)) (Meta id)
-    | Function (Maybe TypeIds.SrcLambdaId) (List ( Name, Can.Type id )) (Expr id) (Meta id) -- source-lambda id (LSS member identity; NOT persisted), params with types, body, function type
+    | Function (Maybe TypeIds.SrcLambdaId) (List ( Name, Can.Type id )) (Expr id) (Meta id)
     | TrackedFunction (Maybe TypeIds.SrcLambdaId) (List ( A.Located Name, Can.Type id )) (Expr id) (Meta id)
     | Call A.Region (Expr id) (List (Expr id)) (Meta id)
     | TailCall Name (List ( Name, Expr id )) (Meta id)
@@ -180,14 +252,14 @@ type Expr id
     | Shader Shader.Source (EverySet String Name) (EverySet String Name) (Meta id)
 
 
-{-| Extract the type annotation from any expression.
+{-| Returns the canonical type of an expression.
 -}
 typeOf : Expr id -> Can.Type id
 typeOf expr =
     (metaOf expr).tipe
 
 
-{-| Extract the Meta (type + solver var) from any expression.
+{-| Returns the `Meta` of an expression.
 -}
 metaOf : Expr id -> Meta id
 metaOf expr =
@@ -283,20 +355,25 @@ metaOf expr =
             meta
 
 
-{-| Extract the solver variable from any expression (if available).
+{-| Returns the solver variable recorded for an expression, if any.
 -}
 tvarOf : Expr id -> Maybe Vars.Variable
 tvarOf expr =
     (metaOf expr).tvar
 
 
-{-| A reference to a top-level definition in a module.
+{-| The name of a top-level definition: its home module and its name.
 -}
 type Global
     = Global ModuleName.Canonical Name
 
 
-{-| Compare two global references for ordering.
+{-| Returns the order of two globals: by name, and where the names are equal by
+home module, as `ModuleName.compareCanonical` orders them.
+
+This is not the order of the strings `toComparableGlobal` makes, which begin
+with the home module.
+
 -}
 compareGlobal : Global -> Global -> Order
 compareGlobal (Global home1 name1) (Global home2 name2) =
@@ -311,34 +388,33 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
             GT
 
 
-{-| Convert a global reference to a comparable key for use in dictionaries.
+{-| Returns a global as one string, the home module as
+`ModuleName.toComparableCanonical` writes it, a dot, and the name. The decoders
+key their dictionaries by it.
 -}
 toComparableGlobal : Global -> String
 toComparableGlobal (Global home name) =
     ModuleName.toComparableCanonical home ++ "." ++ name
 
 
-{-| A cheap structural hash of a `Global`, for `Data.HashMap` keys.
+{-| Returns a hash of a global for use as a `Data.HashMap` key.
 
-Mechanical twin of `Monomorphized.globalHash` (deliberately duplicated —
-`Monomorphized` imports this module, so the hash cannot be shared from there).
-Like that one it hashes the NAME char-by-char but takes only the LENGTHS of the
-canonical's parts: the module path is what makes `toComparableGlobal` expensive
-to build, and reading three lengths keeps this far cheaper than the ~25-50-char
-comparable string it replaces. Collisions are resolved by `Data.HashMap`'s
-per-bucket `eq`, so a coarse hash costs performance, never correctness.
+Only the lengths of the package author, the package project and the module
+name enter it, followed by every character of the name, so two globals with
+the same name whose home modules differ only in spelling, not in the lengths
+of their parts, collide. `Data.HashMap` confirms
+every key with an equality, so a collision costs time, not correctness.
+
+The lengths are mixed as `Compiler.AST.Monomorphized.globalHash` mixes them,
+but the name is then hashed with `Eco.Hash.string64`, seeded with the mixed
+lengths, so the two functions give different values. The result is not kept
+within any range and must not be packed with another hash.
 
 -}
 globalHash : Global -> Int
 globalHash g =
     case g of
         Global (ModuleName.Canonical ( author, project ) modName) name ->
-            -- WIDE. This value is only ever a `Data.HashMap` bucket key, and
-            -- that map keys its buckets in a `Dict Int` on the RAW hash — no
-            -- mask, no `modBy`, no `Bitwise` — so the full i64 range is legal
-            -- and the extra width simply shortens buckets. Nothing packs this
-            -- hash with another (contrast `Monomorphized.stringHash`, which
-            -- feeds `packHashes` and must stay inside `[0, 2^26)`).
             Eco.Hash.string64
                 (globalMixHash
                     (globalMixHash (globalMixHash 21 (String.length author)) (String.length project))
@@ -347,14 +423,16 @@ globalHash g =
                 name
 
 
+{-| Returns the hash `h` with `x` mixed in, reduced modulo 2^26 so that the
+arithmetic stays exact in both builds.
+-}
 globalMixHash : Int -> Int -> Int
 globalMixHash h x =
-    -- 2^26, matching Monomorphized.hashBase: two of these pack into 2^52,
-    -- inside the exact-integer range of both the native i64 and the JS double.
     modBy 67108864 (h * 33 + modBy 67108864 x + 7)
 
 
-{-| Create a global reference to a kernel function.
+{-| Returns the global standing for the kernel module `shortName`: that module
+of the `elm/kernel` package, with the name `$`.
 -}
 toKernelGlobal : Name.Name -> Global
 toKernelGlobal shortName =
@@ -365,35 +443,47 @@ toKernelGlobal shortName =
 -- ====== DEFINITIONS ======
 
 
-{-| A local definition, either a simple value or a tail-recursive function.
+{-| A definition bound by a `let`, or a function of a top-level recursive group.
+
+`Def` carries its region, name, body and the type of the definition.
+
+`TailDef` is a function that calls itself from tail position. It carries its
+region, name, its parameters with their types, its body, the type of the whole
+definition (not its result type), and the solver variable recorded for it,
+which, unlike every other solver variable here, is encoded.
+
 -}
 type Def id
-    = Def A.Region Name (Expr id) (Can.Type id) -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type id )) (Expr id) (Can.Type id) (Maybe Vars.Variable) -- name, typed args, body, type of the definition, tvar
+    = Def A.Region Name (Expr id) (Can.Type id)
+    | TailDef A.Region Name (List ( A.Located Name, Can.Type id )) (Expr id) (Can.Type id) (Maybe Vars.Variable)
 
 
-{-| Destructuring pattern that extracts a value from a data structure.
+{-| One binding made by a destructuring pattern: the name bound, the path to the
+part of the value it is bound to, and the meta of that part.
 -}
 type Destructor id
-    = Destructor Name Path (Meta id) -- name, path, meta (type + optional tvar)
+    = Destructor Name Path (Meta id)
 
 
-
--- Note: Path includes container hints for type-specific projection operations
-
-
-{-| Indicates what type of container an Index navigates into.
-This is used to generate type-specific projection operations in MLIR codegen.
+{-| The kind of container an `Index` path step projects from, which tells code
+generation how the container is laid out: a list cell, a 2-tuple, a 3-tuple,
+or a value built by a constructor, named by `HintCustom`.
 -}
 type ContainerHint
     = HintList
     | HintTuple2
     | HintTuple3
-    | HintCustom Name -- Constructor name for layout lookup
+    | HintCustom Name
 
 
-{-| A path describing how to navigate into a data structure for destructuring.
-Index includes a ContainerHint to enable type-specific projection operations.
+{-| Where a destructured part sits inside the value being destructured.
+
+A path is read inside out: `Root` names the variable holding the whole value,
+and each other step takes a part of the value its inner path reaches. `Index`
+takes the element at an index of a container of the kind its hint names,
+`ArrayIndex` an element by position, `Field` a record field, and `Unbox` the
+argument of a constructor of a type with one constructor of one argument.
+
 -}
 type Path
     = Index Index.ZeroBased ContainerHint Path
@@ -407,7 +497,15 @@ type Path
 -- ====== BRANCHING ======
 
 
-{-| A decision tree for pattern matching, optimized from the canonical AST.
+{-| The decision tree of a compiled `case`, with a value of type `a` at each
+leaf.
+
+`Chain` runs a list of tests, each at a path into the inspected value, and
+continues with its first tree if all pass and its second otherwise. `FanOut`
+picks the edge whose test the value at one path passes, or the fallback tree.
+The paths and tests are those of `Compiler.AST.DecisionTree.TypedPath` and
+`Compiler.AST.DecisionTree.Test`.
+
 -}
 type Decider a
     = Leaf a
@@ -415,7 +513,8 @@ type Decider a
     | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
-{-| Represents the action taken when a pattern match succeeds.
+{-| What a leaf of a decision tree leads to: a branch body placed in the tree
+itself, or a jump to the body of the `Case`'s jump list with the given index.
 -}
 type Choice id
     = Inline (Expr id)
@@ -426,17 +525,22 @@ type Choice id
 -- ====== OBJECT GRAPH ======
 
 
-{-| A graph of all top-level definitions across multiple modules.
+{-| The merged graph of many modules: their nodes, their record field counts,
+their type schemes, their scheme roots, and their varSupers.
+
+The field counts are not encoded, so a decoded graph has none.
+
 -}
 type GlobalGraph id
     = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal (Dict Name Vars.SuperType)
 
 
+{-| The contents of one module's graph.
 
--- Include annotations for the whole graph
+`main` is `Nothing` for a module with no `main` and in every decoded graph.
+`fields` counts the uses of each record field name and is empty in every
+decoded graph. `schemeRoots` is keyed by definition name.
 
-
-{-| Data structure for a single module's dependency graph.
 -}
 type alias LocalGraphData id =
     { main : Maybe (Main id)
@@ -448,40 +552,62 @@ type alias LocalGraphData id =
     }
 
 
-{-| A graph of top-level definitions for a single module.
+{-| The graph of one module's top-level definitions.
 -}
 type LocalGraph id
     = LocalGraph (LocalGraphData id)
 
 
-
--- Include annotations for this module
-
-
-{-| Information about the main entry point of an Elm program.
+{-| The kind of `main` a module defines. `Static` is a `main` whose type is a
+`VirtualDom` node; `Dynamic` is a program, carrying its message type and the
+decoder of its flags.
 -}
 type Main id
     = Static
     | Dynamic (Can.Type id) (Expr id)
 
 
-{-| A node in the dependency graph representing a top-level definition.
+{-| What a graph holds under one global.
+
+`Define` and `TrackedDefine` are a top-level definition: its body, the globals
+it depends on, and its meta. `TrackedDefine` also keeps the definition's
+region.
+
+`Ctor` is a constructor, carrying its index in its type's declaration, its
+number of arguments and its type. `Enum` is a constructor of a type whose
+constructors all take no arguments, and `Box` the constructor of a type with
+one constructor of one argument.
+
+`Cycle` is a recursive group of top-level definitions, held under a name
+combined from its members' names. It carries those names, the zero-argument
+definitions as name and body, the functions as `Def`s, and the group's
+dependencies. Each member's own name holds a `Link` to it. `Link` also points
+an effect module's `command` and `subscription` at its `Manager` node.
+
+`Kernel` carries a kernel module's chunks and dependencies. `PortIncoming` and
+`PortOutgoing` carry a port's decoder or encoder, its dependencies, and the
+port's meta.
+
+Dependency sets, `Manager`'s effects type and `Kernel`'s chunks are not encoded,
+so they are empty or `Cmd` in a decoded graph.
+
 -}
 type Node id
-    = Define (Expr id) (EverySet String Global) (Meta id) -- body, deps, meta
+    = Define (Expr id) (EverySet String Global) (Meta id)
     | TrackedDefine A.Region (Expr id) (EverySet String Global) (Meta id)
-    | Ctor Index.ZeroBased Int (Can.Type id) -- index, arity, constructor type
+    | Ctor Index.ZeroBased Int (Can.Type id)
     | Enum Index.ZeroBased (Can.Type id)
     | Box (Can.Type id)
     | Link Global
     | Cycle (List Name) (List ( Name, Expr id )) (List (Def id)) (EverySet String Global)
     | Manager EffectsType
     | Kernel (List K.Chunk) (EverySet String Global)
-    | PortIncoming (Expr id) (EverySet String Global) (Meta id) -- decoder expr, deps, port meta
-    | PortOutgoing (Expr id) (EverySet String Global) (Meta id) -- encoder expr, deps, port meta
+    | PortIncoming (Expr id) (EverySet String Global) (Meta id)
+    | PortOutgoing (Expr id) (EverySet String Global) (Meta id)
 
 
-{-| The type of effects manager (commands, subscriptions, or both).
+{-| Which effects an effect module manages: commands, subscriptions, or both
+(`Fx`).
 -}
 type EffectsType
     = Cmd
@@ -493,7 +619,7 @@ type EffectsType
 -- ====== GRAPHS ======
 
 
-{-| Create an empty global graph (alias for `empty`).
+{-| A global graph with no modules in it.
 -}
 emptyGlobalGraph : GlobalGraph id
 emptyGlobalGraph =
@@ -504,16 +630,9 @@ emptyGlobalGraph =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a global graph to binary format.
-
-The `fields` slot is omitted from the wire format (see ECOT\_001 in
-design\_docs/invariants.csv); it is reconstructed as `Dict.empty` on decode.
-
-This encoder emits a per-call string-table preamble (ECOT\_002): every string
-field in the body is encoded as an index into the table. The table dominates
-the body for any non-trivial graph, so the strict subset of strings actually
-emitted determines the savings.
-
+{-| Produces an encoder for a global graph: the format-version byte, the string
+table, the type table, then the nodes, type schemes, scheme roots and
+varSupers. The field counts are not written.
 -}
 globalGraphEncoder : GlobalGraph Name -> Bytes.Encode.Encoder
 globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots varSupers) as graph) =
@@ -540,7 +659,9 @@ globalGraphEncoder ((GlobalGraph nodes _ annotations allSchemeRoots varSupers) a
         ]
 
 
-{-| Decode a global graph from binary format.
+{-| A decoder for a global graph as `globalGraphEncoder` writes it. It fails on
+any format-version byte but the current one, and gives a graph with no field
+counts and with the other parts the module docstring lists as not encoded.
 -}
 globalGraphDecoder : Bytes.Decode.Decoder (GlobalGraph Name)
 globalGraphDecoder =
@@ -566,14 +687,9 @@ globalGraphDecoder =
             )
 
 
-{-| Encode a local graph to binary format.
-
-The `main` and `fields` slots are omitted from the wire format (see ECOT\_001
-in design\_docs/invariants.csv); they are reconstructed as `Nothing` and
-`Dict.empty` on decode.
-
-This encoder emits a per-call string-table preamble (ECOT\_002).
-
+{-| Produces an encoder for a local graph: the format-version byte, the string
+table, the type table, then the nodes, type schemes, scheme roots and
+varSupers. `main` and the field counts are not written.
 -}
 localGraphEncoder : LocalGraph Name -> Bytes.Encode.Encoder
 localGraphEncoder ((LocalGraph data) as graph) =
@@ -600,7 +716,10 @@ localGraphEncoder ((LocalGraph data) as graph) =
         ]
 
 
-{-| Decode a local graph from binary format.
+{-| A decoder for a local graph as `localGraphEncoder` writes it. It fails on
+any format-version byte but the current one, and gives a graph with no `main`,
+no field counts, and with the other parts the module docstring lists as not
+encoded.
 -}
 localGraphDecoder : Bytes.Decode.Decoder (LocalGraph Name)
 localGraphDecoder =
@@ -633,6 +752,8 @@ localGraphDecoder =
             )
 
 
+{-| Produces an encoder for a global: its home module, then its name.
+-}
 globalEncoderS : StringTable -> Global -> Bytes.Encode.Encoder
 globalEncoderS st (Global home name) =
     Bytes.Encode.sequence
@@ -641,6 +762,8 @@ globalEncoderS st (Global home name) =
         ]
 
 
+{-| Produces a decoder for a global as `globalEncoderS` writes it.
+-}
 globalDecoderS : StringTable -> Bytes.Decode.Decoder Global
 globalDecoderS st =
     Bytes.Decode.map2 Global
@@ -648,12 +771,16 @@ globalDecoderS st =
         (StringTable.stringDec st)
 
 
+{-| Produces an encoder for a meta, which writes only its type; the solver
+variable is dropped.
+-}
 metaEncoderS : TypeTable -> Meta Name -> Bytes.Encode.Encoder
 metaEncoderS tt meta =
     TypeTable.ref tt meta.tipe
 
 
-{-| An annotation in the v2 body: its free variables, then a type reference.
+{-| Produces an encoder for a type scheme: its free variables, then its type as a
+type-table reference.
 -}
 annotationEncoderT : StringTable -> TypeTable -> Can.Annotation Name -> Bytes.Encode.Encoder
 annotationEncoderT st tt (Can.Forall freeVars tipe) =
@@ -663,6 +790,8 @@ annotationEncoderT st tt (Can.Forall freeVars tipe) =
         ]
 
 
+{-| Produces a decoder for a type scheme as `annotationEncoderT` writes it.
+-}
 annotationDecoderT : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Can.Annotation Name)
 annotationDecoderT st tdt =
     Bytes.Decode.map2 Can.Forall
@@ -670,15 +799,17 @@ annotationDecoderT st tdt =
         (TypeTable.refDecoder tdt)
 
 
+{-| Produces a decoder for a meta, which reads its type and sets no solver
+variable.
+-}
 metaDecoderS : TypeTable.Decoded -> Bytes.Decode.Decoder (Meta Name)
 metaDecoderS tdt =
     Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) (TypeTable.refDecoder tdt)
 
 
-{-| Encode a Node. Per ECOT\_001 in design\_docs/invariants.csv, the per-Node
-deps sets (Define, TrackedDefine, Cycle, Kernel, PortIncoming, PortOutgoing),
-Manager's EffectsType byte, and Kernel's chunks list are NOT serialized; they
-are reconstructed as `EverySet.empty` / `Cmd` / `[]` on decode.
+{-| Produces an encoder for a node: a tag byte, then its fields. Dependency
+sets, `Manager`'s effects type and `Kernel`'s chunks are not written, so a
+`Manager` or `Kernel` node is its tag alone. Tag 2 is not used.
 -}
 nodeEncoderS : StringTable -> TypeTable -> Node Name -> Bytes.Encode.Encoder
 nodeEncoderS st tt node =
@@ -754,6 +885,10 @@ nodeEncoderS st tt node =
                 ]
 
 
+{-| Produces a decoder for a node as `nodeEncoderS` writes it, filling what was
+not written with empty dependency sets, effects type `Cmd` and no kernel
+chunks. An unknown tag fails.
+-}
 nodeDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Node Name)
 nodeDecoderS st tdt =
     Bytes.Decode.unsignedInt8
@@ -815,6 +950,10 @@ nodeDecoderS st tdt =
             )
 
 
+{-| Produces an encoder for a located name with its type. The region is written
+in the fixed-width form of `A.locatedEncoder`, not the varint form used for the
+other regions of the body.
+-}
 typedLocatedNameEncoderS : StringTable -> TypeTable -> ( A.Located Name, Can.Type Name ) -> Bytes.Encode.Encoder
 typedLocatedNameEncoderS st tt ( locName, tipe ) =
     Bytes.Encode.sequence
@@ -823,6 +962,9 @@ typedLocatedNameEncoderS st tt ( locName, tipe ) =
         ]
 
 
+{-| Produces a decoder for a located name with its type, as
+`typedLocatedNameEncoderS` writes it.
+-}
 typedLocatedNameDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder ( A.Located Name, Can.Type Name )
 typedLocatedNameDecoderS st tdt =
     Bytes.Decode.map2 Tuple.pair
@@ -830,6 +972,8 @@ typedLocatedNameDecoderS st tdt =
         (TypeTable.refDecoder tdt)
 
 
+{-| Produces an encoder for a name with its type.
+-}
 typedNameEncoderS : StringTable -> TypeTable -> ( Name, Can.Type Name ) -> Bytes.Encode.Encoder
 typedNameEncoderS st tt ( name, tipe ) =
     Bytes.Encode.sequence
@@ -838,6 +982,8 @@ typedNameEncoderS st tt ( name, tipe ) =
         ]
 
 
+{-| Produces a decoder for a name with its type, as `typedNameEncoderS` writes it.
+-}
 typedNameDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder ( Name, Can.Type Name )
 typedNameDecoderS st tdt =
     Bytes.Decode.map2 Tuple.pair
@@ -845,6 +991,11 @@ typedNameDecoderS st tdt =
         (TypeTable.refDecoder tdt)
 
 
+{-| Produces an encoder for an expression: a tag byte, its fields, and its type
+last. A solver variable and a lambda id are not written. An `Int` is written as
+an exact 64-bit integer, not as a float. A `VarDebug`'s home and
+unhandled-value name are not written.
+-}
 exprEncoderS : StringTable -> TypeTable -> Expr Name -> Bytes.Encode.Encoder
 exprEncoderS st tt expr =
     case expr of
@@ -876,7 +1027,7 @@ exprEncoderS st tt expr =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoderV region
-                , BE.int64 value -- exact i64 (v3); BE.int is a float64
+                , BE.int64 value
                 , TypeTable.ref tt meta.tipe
                 ]
 
@@ -938,9 +1089,6 @@ exprEncoderS st tt expr =
                 ]
 
         VarDebug region name _ _ meta ->
-            -- Per ECOT_001: home and unhandledValueName are NOT serialized.
-            -- They are reconstructed on decode as (ModuleName.Canonical Pkg.core Name.debug)
-            -- and Nothing respectively; Specialize hardcodes "Elm" "Debug" anyway.
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
                 , A.regionEncoderV region
@@ -967,9 +1115,6 @@ exprEncoderS st tt expr =
                 ]
 
         Function _ args body meta ->
-            -- srcLambda is NOT persisted (the Meta.tvar precedent): the wire
-            -- format is unchanged, the decoder fills Nothing, and ids are
-            -- re-stamped per run by AssignMVarIds (LSS_003).
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 14
                 , BE.list (typedNameEncoderS st tt) args
@@ -1103,6 +1248,10 @@ exprEncoderS st tt expr =
                 ]
 
 
+{-| Produces a decoder for an expression as `exprEncoderS` writes it. A
+`VarDebug` gets home `Debug` of `elm/core` and no unhandled-value name, and a
+`Function` or `TrackedFunction` no lambda id. An unknown tag fails.
+-}
 exprDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Expr Name)
 exprDecoderS st tdt =
     Bytes.Decode.unsignedInt8
@@ -1177,7 +1326,6 @@ exprDecoderS st tdt =
                             (metaDecoderS tdt)
 
                     11 ->
-                        -- Per ECOT_001: reconstruct home and unhandledValueName locally.
                         Bytes.Decode.map3
                             (\region name meta ->
                                 VarDebug region name (ModuleName.Canonical Pkg.core Name.debug) Nothing meta
@@ -1305,6 +1453,9 @@ exprDecoderS st tdt =
             )
 
 
+{-| Produces an encoder for a definition. A `TailDef`'s solver variable is
+written as a byte, 0 for none and 1 for one, followed by the point's index.
+-}
 defEncoderS : StringTable -> TypeTable -> Def Name -> Bytes.Encode.Encoder
 defEncoderS st tt def =
     case def of
@@ -1337,6 +1488,9 @@ defEncoderS st tt def =
                 ]
 
 
+{-| Produces a decoder for a definition as `defEncoderS` writes it. Any non-zero
+byte before a `TailDef`'s solver variable is read as present.
+-}
 defDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Def Name)
 defDecoderS st tdt =
     Bytes.Decode.unsignedInt8
@@ -1377,6 +1531,8 @@ defDecoderS st tdt =
             )
 
 
+{-| Produces an encoder for a destructor: its name, its path and its type.
+-}
 destructorEncoderS : StringTable -> TypeTable -> Destructor Name -> Bytes.Encode.Encoder
 destructorEncoderS st tt (Destructor name path meta) =
     Bytes.Encode.sequence
@@ -1386,6 +1542,8 @@ destructorEncoderS st tt (Destructor name path meta) =
         ]
 
 
+{-| Produces a decoder for a destructor as `destructorEncoderS` writes it.
+-}
 destructorDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Destructor Name)
 destructorDecoderS st tdt =
     Bytes.Decode.map3 Destructor
@@ -1394,6 +1552,8 @@ destructorDecoderS st tdt =
         (metaDecoderS tdt)
 
 
+{-| Produces an encoder for a decision tree, writing each leaf with `encoder`.
+-}
 deciderEncoderS : StringTable -> (a -> Bytes.Encode.Encoder) -> Decider a -> Bytes.Encode.Encoder
 deciderEncoderS st encoder decider =
     case decider of
@@ -1420,6 +1580,9 @@ deciderEncoderS st encoder decider =
                 ]
 
 
+{-| Produces a decoder for a decision tree as `deciderEncoderS` writes it,
+reading each leaf with `decoder`.
+-}
 deciderDecoderS : StringTable -> Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Decider a)
 deciderDecoderS st decoder =
     Bytes.Decode.unsignedInt8
@@ -1446,6 +1609,8 @@ deciderDecoderS st decoder =
             )
 
 
+{-| Produces an encoder for the choice at a decision-tree leaf.
+-}
 choiceEncoderS : StringTable -> TypeTable -> Choice Name -> Bytes.Encode.Encoder
 choiceEncoderS st tt choice =
     case choice of
@@ -1462,6 +1627,8 @@ choiceEncoderS st tt choice =
                 ]
 
 
+{-| Produces a decoder for a choice as `choiceEncoderS` writes it.
+-}
 choiceDecoderS : StringTable -> TypeTable.Decoded -> Bytes.Decode.Decoder (Choice Name)
 choiceDecoderS st tdt =
     Bytes.Decode.unsignedInt8
@@ -1479,6 +1646,9 @@ choiceDecoderS st tdt =
             )
 
 
+{-| Produces an encoder for a container hint: tags 0 to 2 for list, 2-tuple and
+3-tuple, and tag 3 followed by the constructor name for `HintCustom`.
+-}
 containerHintEncoderS : StringTable -> ContainerHint -> Bytes.Encode.Encoder
 containerHintEncoderS st hint =
     case hint of
@@ -1498,6 +1668,9 @@ containerHintEncoderS st hint =
                 ]
 
 
+{-| Produces a decoder for a container hint as `containerHintEncoderS` writes
+it. Any tag above 2, not only 3, is read as `HintCustom` followed by a name.
+-}
 containerHintDecoderS : StringTable -> Bytes.Decode.Decoder ContainerHint
 containerHintDecoderS st =
     Bytes.Decode.unsignedInt8
@@ -1514,11 +1687,12 @@ containerHintDecoderS st =
                         Bytes.Decode.succeed HintTuple3
 
                     _ ->
-                        -- Tag 3 = HintCustom with constructor name
                         Bytes.Decode.map HintCustom (StringTable.stringDec st)
             )
 
 
+{-| Produces an encoder for a destructuring path, outermost step first.
+-}
 pathEncoderS : StringTable -> Path -> Bytes.Encode.Encoder
 pathEncoderS st path =
     case path of
@@ -1557,6 +1731,8 @@ pathEncoderS st path =
                 ]
 
 
+{-| Produces a decoder for a destructuring path as `pathEncoderS` writes it.
+-}
 pathDecoderS : StringTable -> Bytes.Decode.Decoder Path
 pathDecoderS st =
     Bytes.Decode.unsignedInt8
@@ -1594,18 +1770,17 @@ pathDecoderS st =
 -- ====== FORMAT VERSION ======
 
 
-{-| Wire-format version for the typed graph binary encoders (LocalGraph /
-GlobalGraph, hence `.ecot` and `typed-artifacts.dat`). Bump on any change to
-the persisted layout so stale artifacts fail decode deterministically rather
-than misparsing.
+{-| The version of the binary format of both graphs, written as their first
+byte. It must change with any change to the layout, so that an artifact in an
+older layout fails to decode rather than decoding into the wrong values.
 -}
 typedGraphFormatVersion : Int
 typedGraphFormatVersion =
     3
 
 
-{-| Read and check the leading format-version byte; fail the whole decode on
-mismatch (stale artifact).
+{-| A decoder that reads the format-version byte and fails unless it is
+`typedGraphFormatVersion`.
 -}
 formatVersionDecoder : Bytes.Decode.Decoder ()
 formatVersionDecoder =
@@ -1624,17 +1799,23 @@ formatVersionDecoder =
 -- ====== SCHEME ROOTS ENCODERS/DECODERS ======
 
 
+{-| Produces an encoder for a solver variable: its point index as a signed 32-bit
+integer.
+-}
 variableEncoder : Vars.Variable -> Bytes.Encode.Encoder
 variableEncoder (Vars.Pt idx) =
     Bytes.Encode.signedInt32 Bytes.BE idx
 
 
+{-| A decoder for a solver variable as `variableEncoder` writes it.
+-}
 variableDecoder : Bytes.Decode.Decoder Vars.Variable
 variableDecoder =
     Bytes.Decode.map Vars.Pt (Bytes.Decode.signedInt32 Bytes.BE)
 
 
-{-| Encode an optional super constraint as one byte (0 = none).
+{-| Returns the byte that stands for an optional super constraint: 0 for none,
+then 1 to 4 for `Number`, `Comparable`, `Appendable` and `CompAppend`.
 -}
 maybeSuperToByte : Maybe Vars.SuperType -> Int
 maybeSuperToByte ms =
@@ -1655,6 +1836,9 @@ maybeSuperToByte ms =
             4
 
 
+{-| Returns the optional super constraint a byte stands for, as
+`maybeSuperToByte` assigns them. Any byte outside 1 to 4 means none.
+-}
 byteToMaybeSuper : Int -> Maybe Vars.SuperType
 byteToMaybeSuper b =
     case b of
@@ -1674,6 +1858,8 @@ byteToMaybeSuper b =
             Nothing
 
 
+{-| Produces an encoder for a solver root and its optional super constraint.
+-}
 rootedVarEncoder : Vars.RootedVar -> Bytes.Encode.Encoder
 rootedVarEncoder rv =
     Bytes.Encode.sequence
@@ -1682,6 +1868,8 @@ rootedVarEncoder rv =
         ]
 
 
+{-| A decoder for a solver root as `rootedVarEncoder` writes it.
+-}
 rootedVarDecoder : Bytes.Decode.Decoder Vars.RootedVar
 rootedVarDecoder =
     Bytes.Decode.map2 (\v b -> { var = v, super = byteToMaybeSuper b })
@@ -1689,21 +1877,30 @@ rootedVarDecoder =
         Bytes.Decode.unsignedInt8
 
 
+{-| Produces an encoder for the scheme roots of one definition.
+-}
 schemeRootsForDefEncoderS : StringTable -> Dict Name Vars.RootedVar -> Bytes.Encode.Encoder
 schemeRootsForDefEncoderS st roots =
     BE.stdDict (StringTable.string st) rootedVarEncoder roots
 
 
+{-| Produces a decoder for the scheme roots of one definition.
+-}
 schemeRootsForDefDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name Vars.RootedVar)
 schemeRootsForDefDecoderS st =
     BD.stdDict (StringTable.stringDec st) rootedVarDecoder
 
 
+{-| Produces an encoder for a local graph's scheme roots, keyed by definition
+name.
+-}
 schemeRootsEncoderS : StringTable -> Dict Name (Dict Name Vars.RootedVar) -> Bytes.Encode.Encoder
 schemeRootsEncoderS st allRoots =
     BE.stdDict (StringTable.string st) (schemeRootsForDefEncoderS st) allRoots
 
 
+{-| Produces a decoder for a local graph's scheme roots.
+-}
 schemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name (Dict Name Vars.RootedVar))
 schemeRootsDecoderS st =
     BD.stdDict (StringTable.stringDec st) (schemeRootsForDefDecoderS st)
@@ -1713,41 +1910,57 @@ schemeRootsDecoderS st =
 -- ====== VAR SUPERS ENCODERS/DECODERS ======
 
 
+{-| Produces an encoder for a super constraint, as the byte `maybeSuperToByte`
+gives it.
+-}
 superValueEncoder : Vars.SuperType -> Bytes.Encode.Encoder
 superValueEncoder s =
     Bytes.Encode.unsignedInt8 (maybeSuperToByte (Just s))
 
 
+{-| A decoder for a super constraint. A byte that names none, including 0, is
+read as `Number`.
+-}
 superValueDecoder : Bytes.Decode.Decoder Vars.SuperType
 superValueDecoder =
     Bytes.Decode.map (\b -> Maybe.withDefault Vars.Number (byteToMaybeSuper b)) Bytes.Decode.unsignedInt8
 
 
+{-| Produces an encoder for a varSupers map.
+-}
 varSupersEncoderS : StringTable -> Dict Name Vars.SuperType -> Bytes.Encode.Encoder
 varSupersEncoderS st vs =
     BE.stdDict (StringTable.string st) superValueEncoder vs
 
 
+{-| Produces a decoder for a varSupers map.
+-}
 varSupersDecoderS : StringTable -> Bytes.Decode.Decoder (Dict Name Vars.SuperType)
 varSupersDecoderS st =
     BD.stdDict (StringTable.stringDec st) superValueDecoder
 
 
+{-| Produces an encoder for a global graph's scheme roots, keyed by global.
+-}
 globalSchemeRootsEncoderS : StringTable -> SchemeRootsByGlobal -> Bytes.Encode.Encoder
 globalSchemeRootsEncoderS st allRoots =
     BE.assocListDict (globalEncoderS st) (schemeRootsForDefEncoderS st) allRoots
 
 
+{-| Produces a decoder for a global graph's scheme roots.
+-}
 globalSchemeRootsDecoderS : StringTable -> Bytes.Decode.Decoder SchemeRootsByGlobal
 globalSchemeRootsDecoderS st =
     BD.assocListDict toComparableGlobal (globalDecoderS st) (schemeRootsForDefDecoderS st)
 
 
 
--- ====== STRING COLLECTORS (ECOT_002) ======
+-- ====== STRING COLLECTORS ======
 
 
-{-| Collect strings emitted by `localGraphEncoder`'s body into a set.
+{-| Returns the collector after giving it every string the body of
+`localGraphEncoder` writes, apart from those inside types, which the type
+table's rows write.
 -}
 collectStringsFromLocalGraph : LocalGraph Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromLocalGraph (LocalGraph data) acc =
@@ -1758,7 +1971,8 @@ collectStringsFromLocalGraph (LocalGraph data) acc =
         |> (\a -> Dict.foldl (\k _ a2 -> StringTable.add k a2) a data.varSupers)
 
 
-{-| Collect strings emitted by `globalGraphEncoder`'s body into a set.
+{-| Returns the collector after giving it every string the body of
+`globalGraphEncoder` writes, apart from those inside types.
 -}
 collectStringsFromGlobalGraph : GlobalGraph Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalGraph (GlobalGraph nodes _ annotations allSchemeRoots varSupers) acc =
@@ -1769,6 +1983,9 @@ collectStringsFromGlobalGraph (GlobalGraph nodes _ annotations allSchemeRoots va
         |> (\a -> Dict.foldl (\k _ a2 -> StringTable.add k a2) a varSupers)
 
 
+{-| Returns the collector after giving it the strings of a node's key and of
+the node.
+-}
 collectStringsFromGlobalNodePair : Global -> Node Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalNodePair g node acc =
     acc
@@ -1776,6 +1993,9 @@ collectStringsFromGlobalNodePair g node acc =
         |> collectStringsFromNode node
 
 
+{-| Returns the collector after giving it a definition's name and the free
+variables of its type scheme.
+-}
 collectStringsFromAnnotationPair : Name -> Can.Annotation Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromAnnotationPair name (Can.Forall freeVars _) acc =
     acc
@@ -1783,6 +2003,9 @@ collectStringsFromAnnotationPair name (Can.Forall freeVars _) acc =
         |> collectStringsFromFreeVars freeVars
 
 
+{-| Returns the collector after giving it a global and the free variables of its
+type scheme.
+-}
 collectStringsFromGlobalAnnotationPair : Global -> Can.Annotation Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalAnnotationPair g (Can.Forall freeVars _) acc =
     acc
@@ -1790,13 +2013,18 @@ collectStringsFromGlobalAnnotationPair g (Can.Forall freeVars _) acc =
         |> collectStringsFromFreeVars freeVars
 
 
-{-| Annotation types live in the type table; only the free-var keys are body strings.
+{-| Returns the collector after giving it the names of a scheme's free
+variables. The scheme's type is written through the type table, so its strings
+are not collected here.
 -}
 collectStringsFromFreeVars : Can.FreeVars -> StringTable.Collector -> StringTable.Collector
 collectStringsFromFreeVars freeVars acc =
     Dict.foldl (\k _ a -> StringTable.add k a) acc freeVars
 
 
+{-| Returns the collector after giving it the definition names and variable
+names of a local graph's scheme roots.
+-}
 collectStringsFromSchemeRoots : Dict Name (Dict Name Vars.RootedVar) -> StringTable.Collector -> StringTable.Collector
 collectStringsFromSchemeRoots roots acc =
     Dict.foldl
@@ -1807,6 +2035,9 @@ collectStringsFromSchemeRoots roots acc =
         roots
 
 
+{-| Returns the collector after giving it the globals and variable names of a
+global graph's scheme roots.
+-}
 collectStringsFromGlobalSchemeRoots : SchemeRootsByGlobal -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobalSchemeRoots roots acc =
     Data.Map.foldl
@@ -1818,14 +2049,16 @@ collectStringsFromGlobalSchemeRoots roots acc =
 
 
 
--- ====== TYPE-TABLE PRE-PASS (ECOT_003) ======
+-- ====== TYPE-TABLE PRE-PASS ======
 
 
-{-| One walk feeding both tables of a local graph: intern every type the
-encoder references (`TypeTable.ref`), then collect the body strings plus the
-strings of the DISTINCT table entries. The `internTypesFrom*` walkers MUST
-visit exactly the type positions the encoders emit; a missed one crashes in
-`TypeTable.ref`.
+{-| Returns what encoding a local graph needs before it starts: the type table
+builder holding every type the encoding refers to, and every string the
+encoding writes, from the body and from the rows of the type table.
+
+The `internTypesFrom*` walkers must reach every type the encoders write; a
+type they miss makes `TypeTable.ref` crash during encoding.
+
 -}
 prePassLocal : LocalGraph Name -> ( Set String, TypeTable.Builder )
 prePassLocal graph =
@@ -1839,7 +2072,8 @@ prePassLocal graph =
     )
 
 
-{-| Global-graph twin of `prePassLocal`.
+{-| Returns the type table builder and the strings that encoding a global graph
+needs, as `prePassLocal` does for a local graph.
 -}
 prePassGlobal : GlobalGraph Name -> ( Set String, TypeTable.Builder )
 prePassGlobal graph =
@@ -1853,6 +2087,9 @@ prePassGlobal graph =
     )
 
 
+{-| Returns the builder with every type of a local graph's nodes and type
+schemes interned.
+-}
 internTypesFromLocalGraph : LocalGraph Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromLocalGraph (LocalGraph data) tb =
     tb
@@ -1860,6 +2097,9 @@ internTypesFromLocalGraph (LocalGraph data) tb =
         |> (\b -> Dict.foldl (\_ (Can.Forall _ t) b2 -> TypeTable.add t b2) b data.annotations)
 
 
+{-| Returns the builder with every type of a global graph's nodes and type
+schemes interned.
+-}
 internTypesFromGlobalGraph : GlobalGraph Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromGlobalGraph (GlobalGraph nodes _ annotations _ _) tb =
     tb
@@ -1867,6 +2107,8 @@ internTypesFromGlobalGraph (GlobalGraph nodes _ annotations _ _) tb =
         |> (\b -> Data.Map.foldl (\_ (Can.Forall _ t) b2 -> TypeTable.add t b2) b annotations)
 
 
+{-| Returns the builder with every type a node's encoding writes interned.
+-}
 internTypesFromNode : Node Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromNode node tb =
     case node of
@@ -1906,6 +2148,8 @@ internTypesFromNode node tb =
             tb |> internTypesFromExpr expr |> TypeTable.add meta.tipe
 
 
+{-| Returns the builder with every type a definition's encoding writes interned.
+-}
 internTypesFromDef : Def Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromDef def tb =
     case def of
@@ -1918,6 +2162,10 @@ internTypesFromDef def tb =
                 |> TypeTable.add tipe
 
 
+{-| Returns the builder with every type an expression's encoding writes interned:
+its own, those of its subexpressions, of its parameters and of its
+destructors.
+-}
 internTypesFromExpr : Expr Name -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromExpr expr tb =
     case expr of
@@ -1987,6 +2235,9 @@ internTypesFromExpr expr tb =
             TypeTable.add (typeOf expr) tb
 
 
+{-| Returns the builder with the types of every branch body placed in a decision
+tree interned. Paths and tests carry no types.
+-}
 internTypesFromDecider : Decider (Choice Name) -> TypeTable.Builder -> TypeTable.Builder
 internTypesFromDecider decider tb =
     case decider of
@@ -2008,22 +2259,14 @@ internTypesFromDecider decider tb =
 -- ====== VAR SUPERS COMPUTATION ======
 
 
-{-| The single name→super ingestion point for persisted typed graphs.
+{-| Returns the super constraint a name's prefix denotes, by the rule
+`Compiler.Data.Name` states, or `Nothing`.
 
-Maps the surface-syntax type-variable naming convention (`number*`,
-`comparable*`, `appendable*`, `compappend*`) to a structured super constraint.
-This is the ONLY place the name convention is read into the persisted-graph
-channel; monomorphization consumes the resulting `varSupers` / `RootedVar.super`
-data, never the names themselves. Mirrors `Compiler.Type.Type.toSuper`.
+This decides the varSupers map. `StringTable.isSuperName`, which the
+`collectSupers` collector uses to pick the names this sees, must be true
+exactly where this returns `Just`.
 
 -}
-
-
-
--- `StringTable.isSuperName` MUST stay the exact disjunction of the `Just`
--- cases below: the varSupers sweep runs the collectors in `collectSupers` mode.
-
-
 superOfName : Name -> Maybe Vars.SuperType
 superOfName name =
     if Name.isNumberType name then
@@ -2042,6 +2285,8 @@ superOfName name =
         Nothing
 
 
+{-| Returns `acc` with `name` mapped to its super constraint, if it has one.
+-}
 insertSuperOfName : Name -> Dict Name Vars.SuperType -> Dict Name Vars.SuperType
 insertSuperOfName name acc =
     case superOfName name of
@@ -2052,11 +2297,14 @@ insertSuperOfName name acc =
             acc
 
 
-{-| Compute the `varSupers` map for a finished local graph by sweeping every
-name it emits and keeping those that carry a super constraint. Complete by
-construction: it reuses the encoder's pre-pass (body collector plus the type
-table's distinct entries, ECOT\_003), so every type variable in the graph is
-covered.
+{-| Returns the varSupers map of a local graph: every string its encoding would
+write, from the body or from a type, that has a super-constraint prefix,
+mapped to that constraint.
+
+Because it walks what the encoders write, it sees every type variable in the
+graph. It also takes any other string with such a prefix, such as a local
+variable named `numbers` or a record field named `comparableKey`.
+
 -}
 computeVarSupers : LocalGraph Name -> Dict Name Vars.SuperType
 computeVarSupers graph =
@@ -2072,8 +2320,10 @@ computeVarSupers graph =
         )
 
 
-{-| Compute a `varSupers` map for a single standalone canonical type (used by
-`AssignMVarIds.assignIdsToType`, the test-only single-type entry point).
+{-| Returns a varSupers map for one canonical type: each string the type writes
+that has a super-constraint prefix, mapped to that constraint. Like
+`computeVarSupers`, it takes alias argument and record field names as well as
+type variables.
 -}
 varSupersOfType : Can.Type Name -> Dict Name Vars.SuperType
 varSupersOfType tipe =
@@ -2082,6 +2332,8 @@ varSupersOfType tipe =
         (StringTable.collected (Can.collectStringsFromType tipe StringTable.collectSupers))
 
 
+{-| Returns the collector after giving it a global's home module and name.
+-}
 collectStringsFromGlobal : Global -> StringTable.Collector -> StringTable.Collector
 collectStringsFromGlobal (Global home name) acc =
     acc
@@ -2089,6 +2341,9 @@ collectStringsFromGlobal (Global home name) acc =
         |> StringTable.add name
 
 
+{-| Returns the collector after giving it every string a node's encoding writes,
+apart from those inside types.
+-}
 collectStringsFromNode : Node Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromNode node acc =
     case node of
@@ -2138,6 +2393,9 @@ collectStringsFromNode node acc =
             acc |> collectStringsFromExpr expr
 
 
+{-| Returns the collector after giving it every string a definition's encoding
+writes, apart from those inside types.
+-}
 collectStringsFromDef : Def Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromDef def acc =
     case def of
@@ -2160,6 +2418,9 @@ collectStringsFromDef def acc =
             withArgs |> collectStringsFromExpr expr
 
 
+{-| Returns the collector after giving it every string an expression's encoding
+writes, apart from those inside types.
+-}
 collectStringsFromExpr : Expr Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromExpr expr acc =
     case expr of
@@ -2332,6 +2593,9 @@ collectStringsFromExpr expr acc =
             Data.Set.foldr StringTable.add withAttrs uniforms
 
 
+{-| Returns the collector after giving it a destructor's name and the strings of
+its path.
+-}
 collectStringsFromDestructor : Destructor Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromDestructor (Destructor name path _) acc =
     acc
@@ -2339,6 +2603,9 @@ collectStringsFromDestructor (Destructor name path _) acc =
         |> collectStringsFromPath path
 
 
+{-| Returns the collector after giving it the field, constructor and root names
+of a destructuring path.
+-}
 collectStringsFromPath : Path -> StringTable.Collector -> StringTable.Collector
 collectStringsFromPath path acc =
     case path of
@@ -2358,6 +2625,9 @@ collectStringsFromPath path acc =
             StringTable.add name acc
 
 
+{-| Returns the collector after giving it the constructor name of a
+`HintCustom` hint; the other hints write no string.
+-}
 collectStringsFromContainerHint : ContainerHint -> StringTable.Collector -> StringTable.Collector
 collectStringsFromContainerHint hint acc =
     case hint of
@@ -2368,6 +2638,9 @@ collectStringsFromContainerHint hint acc =
             acc
 
 
+{-| Returns the collector after giving it the strings of a decision tree's paths
+and tests, and those `collectInner` gives it for each leaf.
+-}
 collectStringsFromDecider : (a -> StringTable.Collector -> StringTable.Collector) -> Decider a -> StringTable.Collector -> StringTable.Collector
 collectStringsFromDecider collectInner decider acc =
     case decider of
@@ -2407,6 +2680,9 @@ collectStringsFromDecider collectInner decider acc =
             collectStringsFromDecider collectInner fallback withEdges
 
 
+{-| Returns the collector after giving it the strings of a branch body placed in
+a decision tree; a jump writes none.
+-}
 collectStringsFromChoice : Choice Name -> StringTable.Collector -> StringTable.Collector
 collectStringsFromChoice choice acc =
     case choice of

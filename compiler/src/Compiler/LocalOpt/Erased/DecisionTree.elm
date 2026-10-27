@@ -3,42 +3,39 @@ module Compiler.LocalOpt.Erased.DecisionTree exposing
     , compile
     )
 
-{-| Compiles pattern matching into efficient decision trees.
+{-| A `case` expression has to be turned into a sequence of runtime checks, and
+this module decides which checks to make and in what order, for the erased
+(JavaScript) path.
 
-This module implements the algorithm described in "When Do Match-Compilation
-Heuristics Matter?" by Kevin Scott and Norman Ramsey. It converts a simple list
-of patterns into an optimized decision tree that minimizes the number of runtime
-tests needed to determine which branch to execute.
+The value a `case` examines is the _scrutinee_. A _path_ names one part of it,
+such as the second field of a tuple or the argument of a constructor, as
+`Compiler.AST.DecisionTree.Path` describes. A _test_ is a question about the
+value at a path, such as whether it was built with a particular constructor or
+equals a particular literal, as `Compiler.AST.DecisionTree.Test` describes.
+`compile` takes the patterns of one `case`, each paired with the index of its
+branch, and returns a `DecisionTree`: a tree of tests whose leaves name the
+branch to take.
 
-The algorithm uses heuristics similar to SML/NJ:
+The algorithm follows "When Do Match-Compilation Heuristics Matter?" by Kevin
+Scott and Norman Ramsey. Each branch is kept as a list of the patterns still to
+be checked, one per path. While the first remaining branch still has a pattern
+that needs a test, the compiler picks a path, asks every branch what it needs
+there, and splits the branches by the answer. Branch order is what gives a
+`case` its first-match meaning: a leaf goes to the first branch whose remaining
+patterns need no test.
 
-  - Minimize the number of branches with default behavior
-  - Minimize the branching factor at each decision point
+Two heuristics choose the path. The first prefers the path that the fewest
+branches do not care about, since those branches have to be copied into every
+subtree. Among the paths that tie, the second prefers the one that splits the
+branches into the fewest subtrees.
 
-
-# Core Types
+Before each step, patterns that need no test are flattened away: a constructor
+of a type with only one constructor, a tuple and unit are replaced by their
+parts, and an alias pattern `p as x` by `p` and the variable `x`.
 
 @docs DecisionTree, Test, Path
-
-
-# Compilation
-
 @docs compile
 
-
-# Binary Encoding
-
--}
-
-{- To learn more about how this works, definitely read through:
-
-       "When Do Match-Compilation Heuristics Matter?"
-
-   by Kevin Scott and Norman Ramsey. The rough idea is that we start with a simple
-   list of patterns and expressions, and then turn that into a "decision tree"
-   that requires as few tests as possible to make it to a leaf. Read the paper, it
-   explains this extraordinarily well! We are currently using the same heuristics
-   as SML/NJ to get nice trees.
 -}
 
 import Compiler.AST.Canonical as Can
@@ -56,14 +53,12 @@ import Utils.Main as Utils
 -- ====== COMPILE CASES ======
 
 
-{-| Users of this module will mainly interact with this function. It takes
-some normal branches and gives out a decision tree that has "labels" at all
-the leafs and a dictionary that maps these "labels" to the code that should
-run.
+{-| Builds the decision tree for one `case`, given each branch's pattern
+paired with the index of that branch, in source order.
 
-If 2 or more leaves point to the same label, we need to do some tricks in JS to
-make that work nicely. When is JS getting goto?! ;) That is outside the scope
-of this module though.
+Each `Match` in the result carries one of the given indices. A branch can be
+reached by more than one leaf, and a branch that an earlier one shadows is
+reached by none.
 
 -}
 compile : List ( Can.Pattern, Int ) -> DecisionTree
@@ -80,10 +75,18 @@ compile rawBranches =
 -- ====== DECISION TREES ======
 
 
-{-| A decision tree representation for efficient pattern matching.
+{-| A tree of runtime tests that chooses the branch of a `case` to take.
 
-  - `Match Int`: A leaf node indicating successful match with the branch index
-  - `Decision Path (List (Test, DecisionTree)) (Maybe DecisionTree)`: A decision node that tests a value at the given path, with edges for each test outcome and an optional fallback for unmatched cases
+`Match` is a leaf, and carries the index of the branch to take, as given to
+`compile`.
+
+`Decision` examines the value at its path. Each edge pairs a test with the
+subtree to follow when the value passes it, and the last part is the
+_fallback_, the subtree for a value that passes none of the tests. The fallback
+is `Nothing` exactly when the tests cover every possible value: every
+constructor of the type, both `Bool` values, both empty and non-empty lists, or
+a tuple. Tests on an `Int`, a `Char` or a `String` never cover every value, so
+a decision on one always has a fallback.
 
 -}
 type DecisionTree
@@ -91,15 +94,15 @@ type DecisionTree
     | Decision Path (List ( Test, DecisionTree )) (Maybe DecisionTree)
 
 
-{-| A runtime test to determine which branch to take in a decision tree.
-Re-exported from Compiler.AST.DecisionTree.Test for backward compatibility.
+{-| A question about the value at one path, as `Compiler.AST.DecisionTree.Test`
+describes. This is another name for that type, not a new one.
 -}
 type alias Test =
     Test.Test
 
 
-{-| A path describing how to access a value within a matched pattern.
-Re-exported from Compiler.AST.DecisionTree.Path for backward compatibility.
+{-| How to reach one part of the scrutinee, as `Compiler.AST.DecisionTree.Path`
+describes. This is another name for that type, not a new one.
 -}
 type alias Path =
     Path.Path
@@ -109,10 +112,20 @@ type alias Path =
 -- ====== ACTUALLY BUILD DECISION TREES ======
 
 
+{-| One branch of the `case` part-way through compilation: its index, and the
+patterns it still needs to match, each paired with the path of the value it
+applies to.
+-}
 type Branch
     = Branch Int (List ( Path, Can.Pattern ))
 
 
+{-| Builds the decision tree for `rawBranches`, which are in source order.
+
+A decision with one edge and no fallback is replaced by that edge's subtree,
+since its test cannot fail.
+
+-}
 toDecisionTree : List Branch -> DecisionTree
 toDecisionTree rawBranches =
     let
@@ -151,6 +164,11 @@ toDecisionTree rawBranches =
                     Decision path decisionEdges (Just (toDecisionTree fallback))
 
 
+{-| Tells whether `tests`, the distinct tests found at one path, cover every
+value that can be there, judging by the kind of the first test: all of a type's
+constructors, both `Bool` values, cons and nil, or a tuple. Tests on an `Int`,
+a `Char` or a `String` are never complete. Crashes on an empty list.
+-}
 isComplete : List Test -> Bool
 isComplete tests =
     case Prelude.head tests of
@@ -183,14 +201,24 @@ isComplete tests =
 -- ====== FLATTEN PATTERNS ======
 
 
-{-| Flatten type aliases and use the VariantDict to figure out when a tag is
-the only variant so we can skip doing any tests on it.
+{-| Replaces each of a branch's patterns that needs no test by its parts, as
+`flatten` does.
 -}
 flattenPatterns : Branch -> Branch
 flattenPatterns (Branch goal pathPatterns) =
     Branch goal (List.foldr flatten [] pathPatterns)
 
 
+{-| Adds a path and its pattern to the front of `otherPathPatterns`, first
+taking apart any pattern that needs no test of its own.
+
+A constructor of a type whose `numAlts` is 1 is replaced by its argument at
+`Path.Unbox`, by its arguments at `Path.Index` positions when it has several,
+and dropped when it has none. A tuple is replaced by its fields at `Path.Index`
+positions, unit is dropped, and an alias `p as x` becomes `p` and the variable
+`x` at the same path. The parts are flattened in turn. Any other pattern is kept as it is.
+
+-}
 flatten : ( Path, Can.Pattern ) -> List ( Path, Can.Pattern ) -> List ( Path, Can.Pattern )
 flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
     case patternInfo.node of
@@ -259,11 +287,15 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
             pathPattern :: otherPathPatterns
 
 
+{-| Pairs each pattern with the path to the field at its position below `path`.
+-}
 subPositions : Path -> List Can.Pattern -> List ( Path, Can.Pattern )
 subPositions path patterns =
     Index.indexedMap (\index pattern -> ( Path.Index index path, pattern )) patterns
 
 
+{-| Returns the pattern of a constructor argument.
+-}
 dearg : Can.PatternCtorArg -> Can.Pattern
 dearg (Can.PatternCtorArg _ _ pattern) =
     pattern
@@ -273,10 +305,8 @@ dearg (Can.PatternCtorArg _ _ pattern) =
 -- ====== SUCCESSFULLY MATCH ======
 
 
-{-| If the first branch has no more "decision points" we can finally take that
-path. If that is the case we give the resulting label and a mapping from free
-variables to "how to get their value". So a pattern like (Just (x,\_)) will give
-us something like ("x" => value.0.0)
+{-| Returns the index of the first branch if none of its remaining patterns
+needs a test, and `Nothing` otherwise or when there are no branches.
 -}
 checkForMatch : List Branch -> Maybe Int
 checkForMatch branches =
@@ -296,6 +326,14 @@ checkForMatch branches =
 -- ====== GATHER OUTGOING EDGES ======
 
 
+{-| Splits `branches` by the tests found at `path`.
+
+Each edge pairs one of the distinct tests at `path` with the branches that can
+still match a value passing it. The second part is the fallback branches, those
+that do not test `path`, and is empty when the tests are complete, as
+`isComplete` decides.
+
+-}
 gatherEdges : List Branch -> Path -> ( List ( Test, List Branch ), List Branch )
 gatherEdges branches path =
     let
@@ -322,6 +360,8 @@ gatherEdges branches path =
 -- ====== FIND RELEVANT TESTS ======
 
 
+{-| Returns the distinct tests that `branches` make at `selectedPath`.
+-}
 testsAtPath : Path -> List Branch -> List Test
 testsAtPath selectedPath branches =
     let
@@ -342,6 +382,10 @@ testsAtPath selectedPath branches =
     Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)
 
 
+{-| Returns the test a branch makes at `selectedPath`, or `Nothing` when it has
+no pattern there or its pattern there needs no test. Crashes on an alias
+pattern, which flattening has removed.
+-}
 testAtPath : Path -> Branch -> Maybe Test
 testAtPath selectedPath (Branch _ pathPatterns) =
     Utils.listLookup selectedPath pathPatterns
@@ -404,6 +448,9 @@ testAtPath selectedPath (Branch _ pathPatterns) =
 -- ====== BUILD EDGES ======
 
 
+{-| Pairs `test` with the branches that can still match a value at `path` that
+passes it.
+-}
 edgesFor : Path -> List Branch -> Test -> ( Test, List Branch )
 edgesFor path branches test =
     ( test
@@ -411,6 +458,14 @@ edgesFor path branches test =
     )
 
 
+{-| Returns what remains of a branch once the value at `path` has passed `test`,
+or `Nothing` when the branch's pattern there cannot match such a value.
+
+A pattern that passes is replaced by the patterns for its parts, at the paths
+below `path`. A branch with no pattern at `path`, or one that needs no test,
+is returned unchanged.
+
+-}
 toRelevantBranch : Test -> Path -> Branch -> Maybe Branch
 toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
     case extract path pathPatterns of
@@ -550,11 +605,17 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
             Just branch
 
 
+{-| The result of looking for one path among a branch's patterns: `Found`
+carries the patterns before it, its pattern, and the patterns after it.
+-}
 type Extract
     = NotFound
     | Found (List ( Path, Can.Pattern )) Can.Pattern (List ( Path, Can.Pattern ))
 
 
+{-| Finds the first pattern at `selectedPath`, keeping the patterns either side
+of it.
+-}
 extract : Path -> List ( Path, Can.Pattern ) -> Extract
 extract selectedPath pathPatterns =
     case pathPatterns of
@@ -578,6 +639,9 @@ extract selectedPath pathPatterns =
 -- ====== FIND IRRELEVANT BRANCHES ======
 
 
+{-| Tells whether a branch does not care about the value at `selectedPath`: it
+has no pattern there, or its pattern there needs no test.
+-}
 isIrrelevantTo : Path -> Branch -> Bool
 isIrrelevantTo selectedPath (Branch _ pathPatterns) =
     case Utils.listLookup selectedPath pathPatterns of
@@ -588,6 +652,10 @@ isIrrelevantTo selectedPath (Branch _ pathPatterns) =
             not (needsTests pattern)
 
 
+{-| Tells whether matching a pattern requires a runtime test. Variables,
+wildcards and record patterns need none. Crashes on an alias pattern, which
+flattening has removed.
+-}
 needsTests : Can.Pattern -> Bool
 needsTests (A.At _ patternInfo) =
     case patternInfo.node of
@@ -635,6 +703,13 @@ needsTests (A.At _ patternInfo) =
 -- ====== PICK A PATH ======
 
 
+{-| Chooses the path to test next among those where some branch needs a test.
+
+It keeps the paths that the fewest branches do not care about, and among those
+the paths that give the fewest subtrees, counting the fallback as one. A tie
+that remains is broken by position in the branches' pattern lists.
+
+-}
 pickPath : List Branch -> Path
 pickPath branches =
     let
@@ -650,6 +725,8 @@ pickPath branches =
             Prelude.head (bests (addWeights (smallBranchingFactor branches) tiedPaths))
 
 
+{-| Returns the path of a pattern that needs a test.
+-}
 isChoicePath : ( Path, Can.Pattern ) -> Maybe Path
 isChoicePath ( path, pattern ) =
     if needsTests pattern then
@@ -659,11 +736,15 @@ isChoicePath ( path, pattern ) =
         Nothing
 
 
+{-| Pairs each path with its weight.
+-}
 addWeights : (Path -> Int) -> List Path -> List ( Path, Int )
 addWeights toWeight paths =
     List.map (\path -> ( path, toWeight path )) paths
 
 
+{-| Returns the paths of least weight. Crashes on an empty list.
+-}
 bests : List ( Path, Int ) -> List Path
 bests allPaths =
     case allPaths of
@@ -690,11 +771,16 @@ bests allPaths =
 -- ====== PATH PICKING HEURISTICS ======
 
 
+{-| Counts the branches that do not care about the value at `path`.
+-}
 smallDefaults : List Branch -> Path -> Int
 smallDefaults branches path =
     List.length (List.filter (isIrrelevantTo path) branches)
 
 
+{-| Counts the subtrees a decision at `path` would have: one per edge, plus one
+for a fallback.
+-}
 smallBranchingFactor : List Branch -> Path -> Int
 smallBranchingFactor branches path =
     let
@@ -708,7 +794,3 @@ smallBranchingFactor branches path =
            else
             1
           )
-
-
-
--- ====== ENCODERS and DECODERS ======

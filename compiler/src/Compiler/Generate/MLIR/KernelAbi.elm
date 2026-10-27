@@ -4,21 +4,38 @@ module Compiler.Generate.MLIR.KernelAbi exposing
     , deriveKernelInstanceAbi
     )
 
-{-| Per-instance kernel ABI lowering for the MLIR backend.
+{-| A kernel function is implemented in C++, and the MLIR backend must declare
+and call it with exactly the C symbol and argument types the C++ side exports.
+This module decides both, for one use of a kernel at one set of types.
 
-This is the MLIR-facing half of kernel ABI handling. It maps a
-`KernelInstanceKey` (the `(prefix, home, name)` plus monomorphized argument
-and result types of one kernel instantiation) to the concrete C symbol name
-and the `MlirType` ABI that the kernel's declaration and call sites must use.
+A _kernel instance_ is one kernel, named by `(prefix, home, name)`, used at one
+list of monomorphized argument types and one result type. The same kernel used
+at different types is a different instance, and may need a different symbol or
+different ABI types. `KernelInstanceKey` names an instance, and
+`deriveKernelInstanceAbi` turns it into a `KernelInstanceAbi`.
 
-It deliberately lives in the generate/MLIR layer rather than in
-`Compiler.Monomorphize.KernelAbi`: the result type `KernelInstanceAbi` carries
-`MlirType` values, so the derivation is backend-specific. The monomorphize-layer
-`KernelAbi` keeps only the backend-neutral ABI-mode decisions (which type
-variables stay boxed), which is all that `Compiler.Monomorphize.Specialize`
-needs.
+Two independent decisions are made for an instance.
 
-See plans/per-instance-kernel-abi.md for the rollout phases.
+The symbol is `<prefix>_Kernel_<home>_<name>`. For a fixed list of
+`(home, name)` pairs, a primitive argument type selects a C++ variant whose
+symbol carries a `_Int`, `_Float` or `_Char` suffix: `Utils.compare`, `equal`,
+`notEqual`, `lt`, `le`, `gt` and `ge` on two arguments of the same primitive
+type; `String.fromNumber` and `Json.wrap` by their argument; `Basics.add`,
+`sub`, `mul` and `pow` on two Ints or two Floats; `List.cons` by its head;
+`JsArray.singleton`, `push` and `unsafeSet` by the element; `MVar.put` by the
+value; and `JsArray.unsafeGet`, `slice`, `appendN`, `initialize`,
+`initializeFromList` and `indexedMap`, which take `_Int` from an Int
+parameter. Every other instance keeps the unsuffixed symbol. The match is on
+`home`, `name` and the argument types only; `prefix` is not consulted.
+
+The ABI types are `Types.monoTypeToAbi` of each argument type and of the
+result type, whatever the symbol. An unsuffixed symbol therefore does not mean
+boxed arguments: an Int argument of an unsuffixed kernel is still an `i64`.
+
+This module is distinct from `Compiler.Monomorphize.KernelAbi`, which decides,
+independently of the backend, which type variables of a kernel's type stay
+boxed. The types chosen here are MLIR types, so this half belongs to the
+backend.
 
 
 # Backend ABI Policy
@@ -40,64 +57,38 @@ import Utils.Crash exposing (crash)
 
 
 
--- ============================================================================
 -- KERNEL BACKEND ABI POLICY
--- ============================================================================
---
--- Every kernel derives its ABI from the call-site monomorphized type (KERN_006).
--- The policy type has a single constructor; it is kept so that code which
--- cases on it must be revisited if a second policy is ever introduced.
--- ============================================================================
 
 
-{-| Backend ABI policy for kernel function calls.
+{-| The rule by which a kernel instance's ABI types are chosen.
 
-    ElmDerived -> ABI is derived from the Elm wrapper's funcType via
-                  monoTypeToAbi: Int -> i64, Float -> f64, Char -> i16, every
-                  other type (including type variables) -> !eco.value. Kernels
-                  that take only boxed values therefore get an all-!eco.value
-                  ABI without a separate policy.
+There is one rule, `ElmDerived`: each argument and the result take the ABI type
+`Types.monoTypeToAbi` gives for its monomorphized type, so Int is `i64`, Float
+`f64`, Char `i16`, a `number` type variable `i64`, and every other type
+`!eco.value`. A kernel with no Int, Float or Char argument or result type
+therefore gets an all-`!eco.value` ABI under the same rule.
 
 -}
 type KernelBackendAbiPolicy
     = ElmDerived
 
 
-{-| The backend ABI policy for a kernel call. It is `ElmDerived` for every
-kernel.
+{-| The ABI policy applied to every kernel instance, which is `ElmDerived`.
 -}
 kernelBackendAbiPolicy : KernelBackendAbiPolicy
 kernelBackendAbiPolicy =
-    -- Phase F step 3 + step 5: every kernel now derives its ABI from the
-    -- call-site monomorphized type via `monoTypeToAbi`. Kernels with no
-    -- primitive-capable parameters (List.fromArray/toArray/map2-5/
-    -- sortBy/sortWith, Utils.append, JsArray.empty/length/map/foldl/
-    -- foldr) get an all-!eco.value ABI from `monoTypeToAbi` anyway, so no
-    -- all-boxed policy is needed. Debug.* is handled separately via
-    -- `alwaysPolymorphicModules`.
     ElmDerived
 
 
 
--- ============================================================================
 -- PER-INSTANCE KERNEL ABI
--- ============================================================================
---
--- A KernelInstanceKey identifies one specific monomorphic instantiation of a
--- kernel. deriveKernelInstanceAbi maps a key to the C symbol name and MLIR
--- ABI types that its declaration and call sites must use.
---
--- Phase A behaviour: every kernel returns its today's symbol (no suffix).
--- Phase B onwards: per-instance suffixes (e.g. "_Int", "_Float", "_Char")
--- are introduced kernel-by-kernel.
--- ============================================================================
 
 
-{-| Identifies a logical instantiation of a kernel: same `(prefix, home, name)`
-with different MonoTypes maps to different instances. `prefix` is the package
-namespace prefix (`"Elm"` for elm-core kernels, `"Eco"` for user-package
-kernels via `Eco.Kernel.*`); the resulting C symbol begins with
-`<prefix>_Kernel_`.
+{-| One kernel at one set of monomorphized types: a kernel instance.
+
+`prefix`, `home` and `name` are the three parts of the unsuffixed C symbol,
+`<prefix>_Kernel_<home>_<name>`, as in `Elm_Kernel_List_cons`.
+
 -}
 type alias KernelInstanceKey =
     { prefix : String
@@ -108,8 +99,8 @@ type alias KernelInstanceKey =
     }
 
 
-{-| The C symbol name and MLIR ABI types that a kernel call site must use for
-a given `KernelInstanceKey`.
+{-| The C symbol and the MLIR ABI types with which one kernel instance is
+declared and called.
 -}
 type alias KernelInstanceAbi =
     { symbolName : String
@@ -118,15 +109,15 @@ type alias KernelInstanceAbi =
     }
 
 
-{-| Compute the C symbol name plus MLIR ABI types for a per-instance kernel
-call.
+{-| Returns the C symbol and MLIR ABI types for a kernel instance.
 
-The base symbol is `<prefix>_Kernel_<home>_<name>`, and the ABI types are
-`monoTypeToAbi` of each argument and the result (`kernelBackendAbiPolicy` is
-`ElmDerived` for every kernel).
+The symbol is `<prefix>_Kernel_<home>_<name>`, with a `_Int`, `_Float` or
+`_Char` suffix for the `(home, name)` pairs and argument types listed in this
+module's docstring. The ABI types are `Types.monoTypeToAbi` of each argument
+type and of the result type, chosen independently of the symbol.
 
-Phase B onwards adds suffix branches for primitive instantiations (see
-Appendix A of `plans/per-instance-kernel-abi.md`).
+Crashes the compiler if an Int, Float or Char argument or result would be given
+an ABI type other than its own primitive MLIR type.
 
 -}
 deriveKernelInstanceAbi : KernelInstanceKey -> KernelInstanceAbi
@@ -159,13 +150,10 @@ deriveKernelInstanceAbi key =
             ensurePrimitiveAbi key abi
 
 
-{-| Compute the C symbol name for a per-instance kernel call.
-
-Phase B onwards adds suffixes for kernels that have been migrated to
-per-primitive C++ variants. For unmigrated kernels and for kernel
-instantiations that don't match a known primitive specialization (e.g.
-`compare "a" "b"`), the legacy `Elm_Kernel_<home>_<name>` is returned.
-
+{-| Returns the C symbol for a kernel instance:
+`<prefix>_Kernel_<home>_<name>`, followed by `_Int`, `_Float` or `_Char` when
+`home`, `name` and the argument types match one of the cases below. Any other
+instance, such as `Utils.compare` on two Strings, gets the unsuffixed symbol.
 -}
 kernelInstanceSymbol : KernelInstanceKey -> String
 kernelInstanceSymbol key =
@@ -179,11 +167,6 @@ kernelInstanceSymbol key =
             rootSymbol ++ s
     in
     case ( key.home, key.name, key.argTypes ) of
-        --
-        -- Phase B (Utils.compare): primitive comparables get a typed
-        -- monomorphic C++ entry point. All other comparables (String,
-        -- List, Tuple, ...) keep the boxed root symbol.
-        --
         ( "Utils", "compare", [ Mono.MInt, Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -193,10 +176,6 @@ kernelInstanceSymbol key =
         ( "Utils", "compare", [ Mono.MChar, Mono.MChar ] ) ->
             suffixed "_Char"
 
-        --
-        -- Phase C (Utils.equal/notEqual/lt/le/gt/ge): equality and ordering
-        -- on primitive values. Result type is `Bool` (boxed at ABI).
-        --
         ( "Utils", "equal", [ Mono.MInt, Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -251,22 +230,12 @@ kernelInstanceSymbol key =
         ( "Utils", "ge", [ Mono.MChar, Mono.MChar ] ) ->
             suffixed "_Char"
 
-        --
-        -- Phase C (String.fromNumber): number → String specialised by Int / Float.
-        --
         ( "String", "fromNumber", [ Mono.MInt ] ) ->
             suffixed "_Int"
 
         ( "String", "fromNumber", [ Mono.MFloat ] ) ->
             suffixed "_Float"
 
-        --
-        -- Phase E.2 (Basics.add/sub/mul/pow): per-instance Int / Float
-        -- variants for the arithmetic operators. Direct uses are
-        -- intrinsic-lowered before reaching here; these arms are reached
-        -- by indirect uses (e.g. `(+)` captured into a PAP by
-        -- `List.foldl`) so the unboxed primitive ABI is used end-to-end.
-        --
         ( "Basics", "add", [ Mono.MInt, Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -291,10 +260,6 @@ kernelInstanceSymbol key =
         ( "Basics", "pow", [ Mono.MFloat, Mono.MFloat ] ) ->
             suffixed "_Float"
 
-        --
-        -- Phase C (List.cons): primitive head element drives a typed C++
-        -- variant; non-primitive heads keep the boxed root.
-        --
         ( "List", "cons", [ Mono.MInt, _ ] ) ->
             suffixed "_Int"
 
@@ -304,10 +269,6 @@ kernelInstanceSymbol key =
         ( "List", "cons", [ Mono.MChar, _ ] ) ->
             suffixed "_Char"
 
-        --
-        -- Phase C (Json.wrap): element axis. Polymorphic uses (String, Bool,
-        -- Object) keep the boxed root.
-        --
         ( "Json", "wrap", [ Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -317,12 +278,6 @@ kernelInstanceSymbol key =
         ( "Json", "wrap", [ Mono.MChar ] ) ->
             suffixed "_Char"
 
-        --
-        -- Phase C (JsArray element-axis kernels): singleton, push, unsafeSet.
-        -- The element type drives suffix selection. JsArray.unsafeSet's
-        -- index parameter (Int) is always typed via ElmDerived; the suffix
-        -- only encodes the element axis.
-        --
         ( "JsArray", "singleton", [ Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -341,6 +296,7 @@ kernelInstanceSymbol key =
         ( "JsArray", "push", [ Mono.MChar, _ ] ) ->
             suffixed "_Char"
 
+        -- The first argument is the Int index; the suffix names the element.
         ( "JsArray", "unsafeSet", [ Mono.MInt, Mono.MInt, _ ] ) ->
             suffixed "_Int"
 
@@ -350,15 +306,7 @@ kernelInstanceSymbol key =
         ( "JsArray", "unsafeSet", [ Mono.MInt, Mono.MChar, _ ] ) ->
             suffixed "_Char"
 
-        --
-        -- Phase C (JsArray Int-axis kernels): unsafeGet, slice, appendN,
-        -- initialize, initializeFromList, indexedMap. Each has at least one
-        -- `Int` parameter that becomes typed `int64_t` at the C boundary.
-        -- The suffix is `_Int` because the discriminator is the Int axis.
-        -- These kernels' signatures always have concrete `Int` parameters,
-        -- so the suffix always fires; the boxed root is unreachable for
-        -- these names.
-        --
+        -- These take `_Int` for an Int parameter, whatever the element type.
         ( "JsArray", "unsafeGet", [ Mono.MInt, _ ] ) ->
             suffixed "_Int"
 
@@ -377,11 +325,7 @@ kernelInstanceSymbol key =
         ( "JsArray", "indexedMap", [ _, Mono.MInt, _ ] ) ->
             suffixed "_Int"
 
-        --
-        -- Eco kernels (key.prefix = "Eco"). MVar.put specialises on the
-        -- value-type axis; the Int id parameter is always concrete and only
-        -- the second argument drives suffix selection.
-        --
+        -- The first argument is the Int id; the suffix names the value.
         ( "MVar", "put", [ Mono.MInt, Mono.MInt ] ) ->
             suffixed "_Int"
 
@@ -395,10 +339,12 @@ kernelInstanceSymbol key =
             rootSymbol
 
 
-{-| Self-check (REP\_ABI\_001 / KERN\_006): an `MInt`/`MFloat`/`MChar` parameter
-or result must be paired with the corresponding primitive MLIR type, and a
-non-primitive Mono type must not be paired with a primitive MLIR type. Crashes
-if the invariant is violated; otherwise returns the abi unchanged.
+{-| Returns `abi` unchanged if every Int, Float and Char argument or result of
+`key` has its own primitive MLIR type in `abi`, and crashes the compiler with a
+message naming each mismatched slot otherwise.
+
+Slots of any other type are not checked.
+
 -}
 ensurePrimitiveAbi : KernelInstanceKey -> KernelInstanceAbi -> KernelInstanceAbi
 ensurePrimitiveAbi key abi =
@@ -441,9 +387,7 @@ ensurePrimitiveAbi key abi =
                         Just (slotErr where_ monoTy mlirTy)
 
                 _ ->
-                    -- Non-primitive Mono types: ABI may be either !eco.value
-                    -- (the common case) or any other MLIR type allowed by
-                    -- monoTypeToAbi. Nothing further to check here.
+                    -- A `number` type variable is legitimately `i64` here.
                     Nothing
 
         argErrors : List String
@@ -473,8 +417,8 @@ ensurePrimitiveAbi key abi =
             crash ("ensurePrimitiveAbi: " ++ String.join "; " errors)
 
 
-{-| Short tag string for a MonoType, used in error messages produced by
-`ensurePrimitiveAbi`.
+{-| Returns a short name for the outermost constructor of a type, for the
+error message of `ensurePrimitiveAbi`.
 -}
 monoTypeTag : Mono.MonoType -> String
 monoTypeTag monoType =

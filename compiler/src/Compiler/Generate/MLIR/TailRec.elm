@@ -1,23 +1,47 @@
 module Compiler.Generate.MLIR.TailRec exposing (compileTailFuncToWhile)
 
-{-| SCF-based tail-recursion compilation.
+{-| Compiles the body of a self-tail-recursive function into one `scf.while`
+loop, so that each tail call becomes another iteration of the loop instead of a
+call.
 
-This module compiles self-tail-recursive functions to scf.while loops.
-It replaces the joinpoint+eco.jump pattern with direct loop emission.
+The body of such a function is a tree of `case`, `if`, `let` and destructuring
+expressions whose leaves are either a tail call back to the function or a value
+to return. The loop evaluates that tree once per iteration. Its state is the
+function's parameters, then a _done flag_ of type `i1`, then the _result slots_
+that hold the value to return. There is one result slot, or, when the caller
+passes a `Ctx.SretInfo`, one per element of the tuple the function returns.
 
-The key insight is that a tail-recursive function can be compiled to:
-
-    scf.while (%params..., %done, %result) : (...) -> (...) {
-        // before-region: check if done
-        %continue = arith.xori %done, true
-        scf.condition(%continue) %params..., %done, %result
+    scf.while (%params..., %done, %results...) {
+        // before-region: continue while %done is false
+        scf.condition(%continue) %params..., %done, %results...
     } do {
-        // after-region: compute next state via eco.case
-        %next_params..., %next_done, %next_result = eco.case ... { eco.yield ... }
-        scf.yield %next_params..., %next_done, %next_result
+        // after-region: one step
+        scf.yield %next_params..., %next_done, %next_results...
     }
 
-@docs compileTailFuncToWhile
+The state starts as the function's arguments, `done = false` and placeholder
+results, and when the loop ends its result slots are returned with
+`eco.return`.
+
+Most of the module compiles a _step_: the after-region's computation of the
+next state from the current one. A tail call is a step that sets new parameter
+values and `done = false`. Any other leaf sets `done = true` and puts its value
+in the result slots. A `case` or an `if` becomes an `eco.case` with one result
+per state slot, each of its alternatives compiled as a step of its own, and a
+`let` or a destructuring binds its names and then steps into its body. These
+forms are compiled here rather than by `Compiler.Generate.MLIR.Expr` because
+`Expr.generateExpr` crashes on a tail call.
+
+A _scalar-split parameter_ is one carried as one state slot per field instead
+of as one boxed value, so that a tail call that builds a fresh value for it
+allocates nothing. Only when `aggPromote` is on is a parameter considered, and
+only a boxed tuple of two or three elements, or a value of a custom type with a
+single constructor of two to six fields. It is split only when every use of it
+in the body reads a field (`Expr.paramSplitAdmissible`), and every tail-call
+argument for it is the parameter itself, a let-bound fresh construct of the
+same shape, or such a construct written inline, with at least one construct.
+Inside the loop a split parameter has no ordinary variable mapping: it is found
+through the context's `splitAggParams`, which is emptied after the loop.
 
 -}
 
@@ -45,48 +69,55 @@ import Utils.Crash exposing (crash)
 -- ============================================================================
 
 
-{-| Specification of the loop being compiled.
-Contains information needed to compile step expressions.
+{-| The shape of the loop being compiled, which every step needs.
+
+`paramVars` are the parameter slots of the loop state, in order, so a split
+parameter contributes several. `groups` has one entry per parameter of the
+function. `resultSlots` are the types of the result slots, `[ retType ]` unless
+`resultPlan` is `Just`, in which case they are the tuple's element types.
+
 -}
 type alias LoopSpec =
     { funcName : String
-    , paramVars : List ( String, MlirType ) -- FLAT state slot vars (scf.while after-region block args; a split param contributes several)
-    , groups : List ParamGroup -- one per ORIGINAL param, in order (U-T1.3.3L)
+    , paramVars : List ( String, MlirType )
+    , groups : List ParamGroup
     , retType : MlirType
-    , resultSlots : List MlirType -- U-T1.3.6: [ retType ] unpromoted; the N slot types for an sret tail func
-    , resultPlan : Maybe Ctx.SretInfo -- U-T1.3.6: Just = the loop result is carried DECOMPOSED (base steps project the make-form into slots)
+    , resultSlots : List MlirType
+    , resultPlan : Maybe Ctx.SretInfo
     }
 
 
-{-| U-T1.3.3L scalar-split loop variables: one group per ORIGINAL function
-param. An unsplit param contributes exactly one state slot (its ABI type);
-a split param (tuple2/3 or single-ctor custom, boxed at the ABI) is carried
-as its per-field slots instead — each boxed field its own `!eco.value`,
-each unboxed field its raw primitive. No aggregate crosses an iteration
-boundary, so RS4GC never sees a first-class struct live across an in-loop
-statepoint, and the per-iteration heap re-allocation of the carried value
-disappears wherever tail-call args can be slot-fed.
+{-| How one parameter of the function is carried in the loop state.
+
+An unsplit parameter has one slot of its own ABI type and `split` is
+`Nothing`. A scalar-split parameter has one slot per field, `!eco.value` for a
+boxed field and the primitive type for an unboxed one, and `split` says how
+the fields are laid out.
+
 -}
 type alias ParamGroup =
-    { origSsaName : String -- e.g. "%p" (the incoming function argument)
-    , elmName : String -- e.g. "p"
-    , slotTypes : List MlirType -- singleton for unsplit params
-    , split : Maybe Ctx.SplitSpec -- Just for split params
+    { origSsaName : String -- the incoming argument, e.g. "%p"
+    , elmName : String
+    , slotTypes : List MlirType
+    , split : Maybe Ctx.SplitSpec
     }
 
 
-{-| Result of compiling a single step of the loop body.
+{-| The compiled form of one step: its ops, and the state it yields.
 
-Invariant: resultType must always equal loopSpec.retType for the enclosing
-compileStep/LoopSpec. All step forms (tail calls, base returns, cases, ifs)
-are responsible for producing a resultVar of this type.
+`nextParams`, `doneVar` and `results` are the values of the parameter slots,
+the done flag and the result slots at the end of the step. Their types are
+those of the loop state: building the `eco.case` for a `case` or an `if`
+crashes the compile when an alternative yields a value whose type differs
+from the loop-state slot at its position. `results` holds
+placeholders in a step that continues the loop.
 
 -}
 type alias StepResult =
     { ops : List MlirOp
-    , nextParams : List ( String, MlirType ) -- SSA vars for next iteration
-    , doneVar : String -- i1: true = done, false = continue
-    , results : List ( String, MlirType ) -- result columns when done (singleton unless U-T1.3.6 promoted; types == loopSpec.resultSlots)
+    , nextParams : List ( String, MlirType )
+    , doneVar : String
+    , results : List ( String, MlirType )
     , ctx : Ctx.Context
     }
 
@@ -97,30 +128,29 @@ type alias StepResult =
 -- ============================================================================
 
 
-{-| Compile a tail-recursive function body to an scf.while loop.
+{-| Builds the ops of a function body that runs `body` as a loop: the
+initial state, the `scf.while`, and an `eco.return` of the result slots.
 
-Returns the ops for the function body (init-ops + scf.while + eco.return).
+`paramPairs` are the function's arguments, already mapped in `ctx`, and
+`paramMonoTypes` their types, in the same order. With `Just` an `SretInfo` the
+result is returned as the tuple's elements, one operand each, rather than as
+`retTy`.
 
 -}
 compileTailFuncToWhile :
     Ctx.Context
-    -> String -- func name
-    -> List ( String, MlirType ) -- function args (already in context)
-    -> List Mono.MonoType -- Mono types of the function args (parallel list)
-    -> Mono.MonoExpr -- body expression
-    -> MlirType -- return type
-    -> Maybe Ctx.SretInfo -- U-T1.3.6: Just = emit the loop with DECOMPOSED result columns (the $sret worker form)
+    -> String
+    -> List ( String, MlirType )
+    -> List Mono.MonoType
+    -> Mono.MonoExpr
+    -> MlirType
+    -> Maybe Ctx.SretInfo
     -> ( List MlirOp, Ctx.Context )
 compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultPlan =
     let
-        -- U-T1.3.3L: plan the loop-state layout — which params carry as
-        -- scalar slots instead of one boxed aggregate.
         groups =
             planParamGroups ctx paramPairs paramMonoTypes body
 
-        -- Step 1: Define initial state
-        -- Loop state = (slots..., done, result) where done starts as false
-        -- and result starts as a dummy value
         ( doneInitVar, ctx1 ) =
             Ctx.freshVar ctx
 
@@ -153,9 +183,6 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
         resInitVars =
             List.reverse resInitVarsRev
 
-        -- Step 2: Collect initial values for loop state.
-        -- Unsplit params enter as-is; split params enter as heap
-        -- projections of the incoming boxed argument (one per slot).
         ( entryProjOpsRev, paramInitVarsRev, ctx3e ) =
             List.foldl
                 (\g ( opsAcc, varsAcc, ctxAcc ) ->
@@ -177,30 +204,24 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
         flatParamTypes =
             List.concatMap .slotTypes groups
 
-        -- State types: (flat slot types..., i1, result slots...)
         stateTypes =
             flatParamTypes ++ [ I1 ] ++ resultSlots
 
         initVars =
             paramInitVars ++ [ doneInitVar ] ++ resInitVars
 
-        -- Step 3: Allocate fresh SSA names for scf.while results
         ( resultVars, ctx4 ) =
             allocateFreshVars ctx3e (List.length stateTypes)
 
-        -- Build triples for scf.while: (resultVar, initVar, type)
         triples =
             List.map3 (\r i t -> ( r, i, t )) resultVars initVars stateTypes
 
-        -- Step 4: Build before-region (condition check)
         ( beforeRegion, beforeArgs, ctx5 ) =
             buildBeforeRegion ctx4 stateTypes (List.length resultSlots)
 
-        -- Step 5: Build after-region (loop body)
         loopSpec =
             { funcName = funcName
             , paramVars =
-                -- The after-region block args for the flat param slots
                 List.take (List.length flatParamTypes) (zip beforeArgs stateTypes)
             , groups = groups
             , retType = retTy
@@ -211,12 +232,9 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
         ( afterRegion, ctx6 ) =
             buildAfterRegion ctx5 stateTypes loopSpec body
 
-        -- Step 6: Emit scf.while
         ( ctx7, whileOp ) =
             Ops.scfWhile ctx6 triples beforeRegion afterRegion
 
-        -- Step 7: Return the result column(s) — the last N scf.while results
-        -- (N = 1 unpromoted; the byte-identical historical path).
         resFinalPairs =
             List.drop (List.length stateTypes - List.length resultSlots) resultVars
                 |> (\vs -> List.map2 Tuple.pair vs resultSlots)
@@ -238,37 +256,35 @@ compileTailFuncToWhile ctx funcName paramPairs paramMonoTypes body retTy resultP
 -- ============================================================================
 
 
-{-| Build the before-region for scf.while.
+{-| Builds the before-region of the loop, which continues the loop while the
+done flag is false and passes the whole state on, and returns its block
+arguments.
 
-The before-region checks if we should continue looping:
-%continue = arith.xori %done, true : i1
-scf.condition(%continue) %params..., %done, %result
+`stateTypes` are the types of the whole loop state, of which the last
+`numResultSlots` are result slots and the one before them the done flag.
 
 -}
 buildBeforeRegion :
     Ctx.Context
     -> List MlirType
-    -> Int -- U-T1.3.6: number of trailing RESULT columns (1 unpromoted)
+    -> Int
     -> ( MlirRegion, List String, Ctx.Context )
 buildBeforeRegion ctx stateTypes numResultSlots =
     let
         numParams =
             List.length stateTypes - 1 - numResultSlots
 
-        -- Allocate block args
         ( blockArgs, ctx1 ) =
             allocateFreshVars ctx (List.length stateTypes)
 
         blockArgPairs =
             zip blockArgs stateTypes
 
-        -- done is at index numParams (second-to-last)
         doneArg =
             List.drop numParams blockArgs
                 |> List.head
                 |> Maybe.withDefault "%error_no_done"
 
-        -- Compute continue = xor(done, true)
         ( continueVar, ctx2 ) =
             Ctx.freshVar ctx1
 
@@ -281,7 +297,6 @@ buildBeforeRegion ctx stateTypes numResultSlots =
         ( ctx5, xorOp ) =
             Ops.ecoBinaryOp ctx4 "arith.xori" continueVar ( doneArg, I1 ) ( trueVar, I1 ) I1
 
-        -- scf.condition
         ( ctx6, conditionOp ) =
             Ops.scfCondition ctx5 continueVar blockArgPairs
 
@@ -297,9 +312,11 @@ buildBeforeRegion ctx stateTypes numResultSlots =
 -- ============================================================================
 
 
-{-| Build the after-region for scf.while.
+{-| Builds the after-region of the loop, which runs `body` as one step and
+yields the state it produces.
 
-The after-region computes the next loop state by compiling the body expression.
+The returned context has an empty `splitAggParams`, so no split parameter of
+this loop can be found through it after the loop.
 
 -}
 buildAfterRegion :
@@ -310,36 +327,27 @@ buildAfterRegion :
     -> ( MlirRegion, Ctx.Context )
 buildAfterRegion ctx stateTypes loopSpec body =
     let
-        -- Allocate block args
         ( blockArgs, ctx1 ) =
             allocateFreshVars ctx (List.length stateTypes)
 
         blockArgPairs =
             zip blockArgs stateTypes
 
-        -- Set up context with block args as variables
         numParams =
             List.length loopSpec.paramVars
 
-        -- The new block args for the flat param slots (first numParams items)
         newParamBlockArgs =
             List.take numParams blockArgPairs
 
-        -- Update loopSpec to use actual after-region block args
         updatedLoopSpec =
             { loopSpec | paramVars = newParamBlockArgs }
 
-        -- Set up variable mappings for the block args
-        -- Map original Elm names to new block argument SSA names
         ctxWithArgs =
             setupVarMappings ctx1 loopSpec.groups newParamBlockArgs
 
-        -- Compile the step
         stepResult =
             compileStep ctxWithArgs updatedLoopSpec body
 
-        -- Build scf.yield with (nextParams..., done, result)
-        -- Use actual types from stepResult
         yieldOperands =
             stepResult.nextParams ++ [ ( stepResult.doneVar, I1 ) ] ++ stepResult.results
 
@@ -349,20 +357,18 @@ buildAfterRegion ctx stateTypes loopSpec body =
         region =
             mkSingleBlockRegion blockArgPairs stepResult.ops yieldOp
     in
-    -- The split-param table is loop-scoped: nothing outside the after-region
-    -- may resolve a param through it (the incoming boxed argument mapping is
-    -- restored by the caller's context discipline).
     ( region, { ctx2 | splitAggParams = Dict.empty } )
 
 
-{-| Set up variable mappings so that parameter names in the body can be resolved.
+{-| Returns `ctx` with each parameter in `groups` bound to its slots among
+`newBlockArgPairs`, which are in the same order.
 
-Walks the param GROUPS against the flat after-region block args. An unsplit
-param maps its Elm name to its single block arg. A split param instead (a)
-REMOVES its normal varMapping — any bypass read would silently see the
-pre-loop value, so `lookupVar` must crash loudly — and (b) registers its
-slot block-args in `ctx.splitAggParams`, which the emission layer
-(Patterns/Expr) consults FIRST for projections and whole-value uses.
+An unsplit parameter is mapped to its one slot as an ordinary variable. A split
+parameter is entered in `splitAggParams` with its slots, and its ordinary
+mapping is removed, so that any read of it that does not go through
+`splitAggParams` crashes in `Ctx.lookupVar` instead of reading the value from
+before the loop. `splitAggParams` is replaced by the split parameters of these
+groups.
 
 -}
 setupVarMappings : Ctx.Context -> List ParamGroup -> List ( String, MlirType ) -> Ctx.Context
@@ -404,16 +410,20 @@ setupVarMappings ctx groups newBlockArgPairs =
 
 
 -- ============================================================================
--- ====== SCALAR-SPLIT PLANNING (U-T1.3.3L) ======
+-- ====== SCALAR-SPLIT PLANNING ======
 -- ============================================================================
 
 
-{-| Decide, per original param, whether to carry it as scalar slots.
+{-| Returns one `ParamGroup` per argument in `paramPairs`, deciding which
+parameters are carried as scalar slots.
 
-Split iff the flag is on, the param is boxed (`!eco.value`) at the ABI, and
-its Mono type is a tuple2/3 or a SINGLE-constructor custom with 2..6 fields
-(single-FIELD customs are excluded: Can.Unbox types have no container to
-project — the value IS the field). Everything else carries unchanged.
+A parameter is split only when `aggPromote` is on, its ABI type is
+`!eco.value`, and its type is a tuple of two or three elements or a custom type
+whose one constructor has two to six fields, and then only when every use of it
+in `body` is admissible and its tail-call arguments pass `splitArgPolicy`. Both
+conditions are needed for the split to save work: a use of the whole value
+would rebuild it, and a tail-call argument that is not a construct or the
+parameter itself would have to be taken apart into slots on every iteration.
 
 -}
 planParamGroups : Ctx.Context -> List ( String, MlirType ) -> List Mono.MonoType -> Mono.MonoExpr -> List ParamGroup
@@ -431,19 +441,6 @@ planParamGroups ctx paramPairs paramMonoTypes body =
                     , split = Nothing
                     }
 
-                -- WIN GATE (both must hold, or the split is a pessimization):
-                --   (a) admissibility — every body use of the param is a
-                --       projection (or the param at its own tail position);
-                --       a whole-value use would REMATERIALIZE (an added
-                --       allocation) each occurrence;
-                --   (b) argument policy — every tail-call arg at this
-                --       position is slot-feedable for free (pass-through,
-                --       a fresh matching local construct, or an inline
-                --       construct), and at least one is a fresh construct
-                --       (the allocation the split removes). A call-result
-                --       or projected-subtree arg would force EAGER per-slot
-                --       heap projections each iteration (e.g. Dict.get's
-                --       descent) — a loss, so it vetoes.
                 gated kind spec slotTys =
                     if
                         Expr.paramSplitAdmissible ctx.psplitPromoted kind elmName body
@@ -526,8 +523,9 @@ planParamGroups ctx paramPairs paramMonoTypes body =
         paramMonoTypes
 
 
-{-| Does an expression construct a FRESH value of the split shape? (A tuple
-literal of the right arity, or a saturated call of the single ctor.)
+{-| Tells whether `e` builds a new value of the split shape: a tuple literal of
+its arity, or a call of its constructor with one argument per field.
+`inlineConstructSlots` recognises the same expressions.
 -}
 isFreshConstruct : Ctx.Context -> Ctx.SplitSpec -> Mono.MonoExpr -> Bool
 isFreshConstruct ctx spec e =
@@ -547,10 +545,14 @@ isFreshConstruct ctx spec e =
             False
 
 
-{-| The tail-call argument policy of the win gate. Scans the loop body
-(excluding nested function bodies — their tail calls target inner loops)
-collecting (1) let binders whose RHS is a fresh matching construct and
-(2) every tail-call argument at this param position, then classifies.
+{-| Tells whether the tail-call arguments for parameter `pName` in `body`
+allow it to be split: there is at least one, each is `pName` itself, a name
+bound by a `let` to a fresh construct of the shape, or such a construct
+written inline, and at least one is a construct.
+
+Tail calls inside a closure or a local tail-recursive function are not
+counted, because they belong to another function.
+
 -}
 splitArgPolicy : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.MonoExpr -> Bool
 splitArgPolicy ctx spec pName body =
@@ -585,6 +587,11 @@ splitArgPolicy ctx spec pName body =
         && List.member (Just True) classes
 
 
+{-| Adds to `acc` the names bound by a `let` to a fresh construct of the split
+shape, and the argument named `pName` of every tail call in `expr`, looking
+through `let`, destructuring, `if` and `case` but not into closures or the
+definitions of local tail-recursive functions.
+-}
 scanSplitPolicy : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.MonoExpr -> ( Set.Set String, List Mono.MonoExpr ) -> ( Set.Set String, List Mono.MonoExpr )
 scanSplitPolicy ctx spec pName expr (( binders, argsAcc ) as acc) =
     case expr of
@@ -600,11 +607,9 @@ scanSplitPolicy ctx spec pName expr (( binders, argsAcc ) as acc) =
             scanSplitPolicy ctx spec pName inner acc1
 
         Mono.MonoLet (Mono.MonoTailDef _ _ _) inner _ ->
-            -- nested tail func: its rhs's tail calls target the INNER loop
             scanSplitPolicy ctx spec pName inner acc
 
         Mono.MonoClosure _ _ _ ->
-            -- different function; no outer tail calls inside
             acc
 
         Mono.MonoTailCall _ args _ ->
@@ -635,6 +640,9 @@ scanSplitPolicy ctx spec pName expr (( binders, argsAcc ) as acc) =
             acc
 
 
+{-| Does what `scanSplitPolicy` does for every inline branch of a decision
+tree. A jump branch is skipped here, because the caller scans the jump targets.
+-}
 scanSplitPolicyDecider : Ctx.Context -> Ctx.SplitSpec -> String -> Mono.Decider Mono.MonoChoice -> ( Set.Set String, List Mono.MonoExpr ) -> ( Set.Set String, List Mono.MonoExpr )
 scanSplitPolicyDecider ctx spec pName decider acc =
     case decider of
@@ -659,10 +667,9 @@ scanSplitPolicyDecider ctx spec pName decider acc =
                 (List.foldl (\( _, d ) a -> scanSplitPolicyDecider ctx spec pName d a) acc edges)
 
 
-{-| Entry values for one param group. Unsplit: the incoming argument var
-itself, no ops. Split: heap-project each field of the incoming boxed
-argument at its STORED slot type (the same per-slot projections the body
-would have emitted; one-time cost at loop entry).
+{-| Returns the initial values of one parameter's slots: the incoming
+argument itself when it is not split, or each of its fields read from the
+heap, once, before the loop.
 -}
 emitEntrySlotProjections : Ctx.Context -> ParamGroup -> ( List MlirOp, List String, Ctx.Context )
 emitEntrySlotProjections ctx g =
@@ -674,7 +681,8 @@ emitEntrySlotProjections ctx g =
             projectSlotsFromHeap ctx spec g.slotTypes g.origSsaName
 
 
-{-| Heap-project all slots of a split shape out of a boxed container var.
+{-| Returns ops reading every field of the boxed value `containerVar`, at the
+types in `slotTypes`, and the values read.
 -}
 projectSlotsFromHeap : Ctx.Context -> Ctx.SplitSpec -> List MlirType -> String -> ( List MlirOp, List String, Ctx.Context )
 projectSlotsFromHeap ctx spec slotTypes containerVar =
@@ -709,9 +717,9 @@ projectSlotsFromHeap ctx spec slotTypes containerVar =
     ( List.reverse opsRev, List.reverse varsRev, ctxOut )
 
 
-{-| Aggregate-project all slots of a split shape out of an SSA value
-aggregate (`!eco.tuple2/3<...>` / `!eco.custom<...>`) — folded to nothing
-by SROA/FoldExtractValue when the aggregate came from an `eco.make.*`.
+{-| Returns ops reading every field of the value aggregate `aggOperand` (an
+SSA tuple or custom value, not a heap object), at the types in `slotTypes`,
+and the values read.
 -}
 projectSlotsFromAgg : Ctx.Context -> Ctx.SplitSpec -> List MlirType -> ( String, MlirType ) -> ( List MlirOp, List String, Ctx.Context )
 projectSlotsFromAgg ctx spec slotTypes aggOperand =
@@ -752,43 +760,29 @@ projectSlotsFromAgg ctx spec slotTypes aggOperand =
 -- ============================================================================
 
 
-{-| Compile a single step of the loop body.
-
-This is the main dispatcher that handles different expression types:
-
-  - MonoTailCall -> continue looping with new args
-  - MonoCase -> multi-result eco.case for step computation
-  - MonoIf -> treat as 2-way case
-  - Other -> base case return (done=true)
-
+{-| Compiles `expr` as one step of the loop: a tail call continues the loop,
+a `case`, `if`, `let` or destructuring is compiled by the matching step
+function, and any other expression ends the loop with its value.
 -}
 compileStep : Ctx.Context -> LoopSpec -> Mono.MonoExpr -> StepResult
 compileStep ctx loopSpec expr =
     case expr of
         Mono.MonoTailCall _ args _ ->
-            -- Inside a MonoTailFunc, MonoTailCall is always a self-recursive call
-            -- (the IR structure guarantees this - MonoTailCall only appears in
-            -- MonoTailFunc bodies and always refers back to the enclosing function)
             compileTailCallStep ctx loopSpec args
 
         Mono.MonoCase _ _ decider jumps _ ->
-            -- Case expression -> multi-result eco.case
             compileCaseStep ctx loopSpec decider jumps
 
         Mono.MonoIf branches final _ ->
-            -- If expression -> treat as multi-way case
             compileIfStep ctx loopSpec branches final
 
         Mono.MonoLet def body _ ->
-            -- Let expression -> compile def, then recurse on body
             compileLetStep ctx loopSpec def body
 
         Mono.MonoDestruct destructor body _ ->
-            -- Destruct expression -> generate path + binding, then recurse on body
             compileDestructStep ctx loopSpec destructor body
 
         _ ->
-            -- All other expressions -> base return (done=true)
             compileBaseReturnStep ctx loopSpec expr
 
 
@@ -798,9 +792,12 @@ compileStep ctx loopSpec expr =
 -- ============================================================================
 
 
-{-| Compile a MonoTailCall as a "continue" step.
+{-| Compiles a tail call as a step that continues the loop with the values of
+`args` as the new parameters, with placeholder results.
 
-Sets done=false and evaluates new argument values.
+The arguments are matched to the parameters by position, not by the names
+they carry. An unsplit parameter's argument is converted to the slot's type.
+A split parameter's slots are filled as `compileSplitTailArg` describes.
 
 -}
 compileTailCallStep :
@@ -810,15 +807,6 @@ compileTailCallStep :
     -> StepResult
 compileTailCallStep ctx loopSpec args =
     let
-        -- U-T1.3.3L: args come per ORIGINAL param; each group expands to its
-        -- state slots. Unsplit groups keep the historical generate+coerce
-        -- path. Split groups feed their slots directly:
-        --   1. the SAME split param passed through -> reuse its current slot
-        --      vars, zero ops;
-        --   2. an SSA value-aggregate result (a promoted let-bound construct)
-        --      -> aggregate projections (folded away by SROA);
-        --   3. anything else -> coerce to a boxed value and heap-project
-        --      (never worse than the pre-split code).
         ( argOpsRev, argVarsRev, ctx1 ) =
             List.foldl
                 (\( g, ( _, argExpr ) ) ( opsAcc, varsAcc, ctxAcc ) ->
@@ -877,14 +865,12 @@ compileTailCallStep ctx loopSpec args =
         argVars =
             List.reverse argVarsRev
 
-        -- done = false (continue looping)
         ( doneVar, ctx2 ) =
             Ctx.freshVar ctx1
 
         ( ctx3, doneOp ) =
             Ops.arithConstantBool ctx2 doneVar False
 
-        -- result = dummies (not used when continuing); one per result slot
         ( dummyOpsRev, dummyPairsRev, ctx4 ) =
             List.foldl
                 (\slotTy ( oAcc, pAcc, cAcc ) ->
@@ -905,7 +891,15 @@ compileTailCallStep ctx loopSpec args =
     }
 
 
-{-| Produce the next-iteration slot vars for one SPLIT param position.
+{-| Returns the next values of the slots of split parameter `g` from its
+tail-call argument `argExpr`.
+
+A split parameter of the same slot types passed on as it is reuses its slots
+with no ops. A construct written inline has its elements compiled straight
+into the slots, so it is never built. Any other argument is compiled, and its
+fields are read from it: from the value aggregate when it compiles to one, and
+otherwise from the heap after boxing it.
+
 -}
 compileSplitTailArg : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> ( List MlirOp, List String, Ctx.Context )
 compileSplitTailArg ctx spec g argExpr =
@@ -915,9 +909,6 @@ compileSplitTailArg ctx spec g argExpr =
                 Mono.MonoVarLocal v _ ->
                     case Dict.get v ctx.splitAggParams of
                         Just info ->
-                            -- Same-shape pass-through only (slot types must
-                            -- agree exactly); otherwise fall to the generic
-                            -- explode below.
                             if List.map Tuple.second info.slots == g.slotTypes then
                                 Just (List.map Tuple.first info.slots)
 
@@ -937,9 +928,6 @@ compileSplitTailArg ctx spec g argExpr =
         Nothing ->
             case inlineConstructSlots ctx spec g argExpr of
                 Just result ->
-                    -- Fresh INLINE construct in tail position: compile the
-                    -- elements straight into the slots — the construction
-                    -- itself vanishes.
                     result
 
                 Nothing ->
@@ -962,8 +950,10 @@ compileSplitTailArg ctx spec g argExpr =
                         ( argResult.ops ++ coerceOps ++ pOps, pVars, pCtx )
 
 
-{-| Compile a fresh inline construct's elements directly to this group's
-slot types (the mirror of `isFreshConstruct` — keep the two in sync).
+{-| Returns the ops and values of the elements of `argExpr`, each converted to
+its slot's type, when `argExpr` is a construct that `isFreshConstruct`
+accepts, and `Nothing` otherwise. The two functions must recognise the same
+expressions.
 -}
 inlineConstructSlots : Ctx.Context -> Ctx.SplitSpec -> ParamGroup -> Mono.MonoExpr -> Maybe ( List MlirOp, List String, Ctx.Context )
 inlineConstructSlots ctx spec g argExpr =
@@ -1021,9 +1011,14 @@ inlineConstructSlots ctx spec g argExpr =
 -- ============================================================================
 
 
-{-| Compile a non-tail expression as a "done" step.
+{-| Compiles `expr` as a step that ends the loop with `expr` as the result,
+leaving the parameters as they are.
 
-Sets done=true and evaluates the expression as the result.
+With a `resultPlan`, `expr` is generated with `sretTailLayout` set, converted
+to a value tuple and split into the result slots, and `sretTailLayout` is put
+back as it was in the returned context so that it does not reach code compiled
+later. An `expr` whose generated code ends in a terminator crashes the
+compile.
 
 -}
 compileBaseReturnStep :
@@ -1034,12 +1029,6 @@ compileBaseReturnStep :
 compileBaseReturnStep ctx loopSpec expr =
     let
         exprResult =
-            -- U-T1.3.6: base exprs of a promoted tail func are RESULT-spine
-            -- positions — the T1.3.3 machinery (make-form tail literals,
-            -- decomposed case yields) applies via the same flag. The flag is
-            -- RESTORED on the result ctx: it would otherwise thread out of
-            -- the step machinery, across the node boundary, and poison the
-            -- NEXT function's emission (the postSolveDef incident).
             case loopSpec.resultPlan of
                 Just info ->
                     let
@@ -1060,10 +1049,6 @@ compileBaseReturnStep ctx loopSpec expr =
 
     else
         let
-            -- U-T1.3.6: for a promoted (sret) tail func the base value is
-            -- carried DECOMPOSED — coerce to the aggregate (make-form spine
-            -- results are already there; boxed fallbacks bridge via
-            -- eco.from_heap) and project the N slots block-locally.
             ( coerceOps, resultPairs, ctx1 ) =
                 case loopSpec.resultPlan of
                     Just info ->
@@ -1110,7 +1095,6 @@ compileBaseReturnStep ctx loopSpec expr =
                         in
                         ( cOps, [ ( finalVar, loopSpec.retType ) ], cCtx )
 
-            -- done = true (base case)
             ( doneVar, ctx2 ) =
                 Ctx.freshVar ctx1
 
@@ -1128,12 +1112,11 @@ compileBaseReturnStep ctx loopSpec expr =
         }
 
 
-{-| Invariant guard (kept from the 2026-07 solver self-compile bug hunt):
-crash with function/branch context when an alternative's yield operand
-types disagree with the loop state types the eco.case will declare. A
-mismatch here is always a miscompile-in-progress (the backend verifier
-rejects it later, but with no source location); a loud, located crash at
-emission is strictly better. Cost: a few type compares per yield.
+{-| Returns `operands` unchanged, but crashes the compile when an operand's
+type differs from the loop-state slot at the same position, naming the
+function, `label` and the first operand that differs. A difference in the
+number of operands is not checked.
+
 -}
 checkedYieldOperands : LoopSpec -> String -> List ( String, MlirType ) -> List ( String, MlirType )
 checkedYieldOperands loopSpec label operands =
@@ -1171,12 +1154,8 @@ checkedYieldOperands loopSpec label operands =
 -- ============================================================================
 
 
-{-| Compile a MonoCase as a multi-result eco.case step.
-
-Each case alternative recursively calls compileStep, and the results
-are yielded via eco.yieldMany. This mirrors Expr.generateCase but produces
-StepResult instead of ExprResult.
-
+{-| Compiles a `case`, given its decision tree and its shared branches
+`jumps`, as one step.
 -}
 compileCaseStep :
     Ctx.Context
@@ -1193,12 +1172,9 @@ compileCaseStep ctx loopSpec decider jumps =
     compileCaseDeciderStep ctx loopSpec decider jumpLookup
 
 
-{-| Compile a decision tree for a case expression as a single loop step.
-
-This mirrors Expr.generateDeciderWithJumps, but instead of producing
-an ExprResult for the case _value_, it produces a StepResult for the
-loop state (nextParams..., done, result).
-
+{-| Compiles a decision tree as one step. It follows
+`Expr.generateDeciderWithJumps`, but every branch is compiled as a step and
+yields the whole loop state.
 -}
 compileCaseDeciderStep :
     Ctx.Context
@@ -1218,12 +1194,8 @@ compileCaseDeciderStep ctx loopSpec decider jumpLookup =
             compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup
 
 
-{-| Leaf node in the decision tree.
-
-Inline the branch expression and treat it as the step body.
-This lets compileStep see any MonoTailCall and compile it into a continue
-state, instead of reaching Expr.generateExpr, which crashes on one.
-
+{-| Compiles the branch a decision-tree leaf chooses as a step, looking a
+jump up in `jumpLookup`. A jump with no entry crashes the compile.
 -}
 compileCaseLeafStep :
     Ctx.Context
@@ -1249,14 +1221,14 @@ compileCaseLeafStep ctx loopSpec choice jumpLookup =
                         )
 
 
-{-| Chain node: sequence of tests culminating in success/failure subtrees.
+{-| Compiles a chain of tests, leading to `success` if all pass and to
+`failure` otherwise, as one step.
 
-Tests in the chain must be evaluated with short-circuit semantics: the path
-navigations inside a later test are only valid after earlier guards pass (e.g.
-projecting a field from an RBNode is undefined if the scrutinee is actually an
-RBEmpty embedded constant). We achieve this by nesting each remaining test
-inside the preceding test's "then" region, so a failing guard skips all
-subsequent projections. This mirrors `Expr.generateChainGeneralWithJumps`.
+Each test is placed inside the region where the previous one passed, so a test
+runs only after the earlier ones have passed. This matters because a later
+test may read a field that exists only when an earlier test passed, such as a
+field of a constructor the earlier test checked for. Each test becomes an
+`eco.case` on `i1` of kind `"bool"`, as in `Expr.generateChainGeneralWithJumps`.
 
 -}
 compileCaseChainStep :
@@ -1277,7 +1249,6 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                 ( firstOps, firstVar, ctx1 ) =
                     Patterns.generateMonoTest ctx firstTest
 
-                -- Then: evaluate remaining tests (or success if none remain)
                 thenStep =
                     compileCaseChainStep ctx1 loopSpec restTests success failure jumpLookup
 
@@ -1298,7 +1269,6 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
                 ctxForElse =
                     Ctx.ctxForSiblingRegion ctx1 thenYieldCtx
 
-                -- Else: first test failed, go to failure subtree
                 elseStep =
                     compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
 
@@ -1357,11 +1327,12 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
             }
 
 
-{-| FanOut node: multi-way branching on constructor tags, ints, chars, or strings.
+{-| Compiles a multi-way branch on the value at `path` as one step: an
+`eco.case` with one alternative per edge and a last one for `fallback`. For
+strings its kind is `"str"` and it carries the edge strings as patterns.
 
-We generate an eco.case/eco.case\_string whose result tuple is
-(nextParams..., done, result). Each alternative region yields this tuple
-via eco.yieldMany.
+The kind of case is taken from the first edge's test, and is `"ctor"` when
+there are no edges. A string case numbers its alternatives in order.
 
 -}
 compileCaseFanOutStep :
@@ -1391,7 +1362,6 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
         ( pathOps, scrutineeVar, ctx1 ) =
             Patterns.generateMonoDtPath ctx path scrutineeType
 
-        -- Tags and (optional) string patterns
         ( tags, stringPatterns ) =
             if caseKind == "str" then
                 let
@@ -1421,7 +1391,6 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
                 in
                 ( edgeTags ++ [ fallbackTag ], Nothing )
 
-        -- Compile edge regions
         ( edgeRegionsRev, ctx2 ) =
             List.foldl
                 (\( _, subTree ) ( accRegions, accCtx ) ->
@@ -1454,7 +1423,6 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
         edgeRegions =
             List.reverse edgeRegionsRev
 
-        -- Fallback region
         fallbackStep =
             compileCaseDeciderStep (Ctx.ctxForSiblingRegion ctx1 ctx2) loopSpec fallback jumpLookup
 
@@ -1475,7 +1443,6 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
         allRegions =
             edgeRegions ++ [ fallbackRegion ]
 
-        -- Step tuple result types
         numParams =
             List.length loopSpec.paramVars
 
@@ -1488,7 +1455,6 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
         caseResultPairs =
             zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
-        -- Build eco.case / eco.case_string
         ( ctx3, caseOp ) =
             case stringPatterns of
                 Just patterns ->
@@ -1530,7 +1496,8 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
     }
 
 
-{-| Extract string pattern from a DT.Test, crash if not a string test.
+{-| Returns the string a string test compares with, and crashes the compile
+for any other test.
 -}
 extractStringPatternForStep : DT.Test -> String
 extractStringPatternForStep test =
@@ -1548,10 +1515,11 @@ extractStringPatternForStep test =
 -- ============================================================================
 
 
-{-| Compile a MonoIf as a step.
+{-| Compiles an `if` with its `branches` and `final` else-branch as one step.
 
-Generates a multi-result eco.case where each branch recursively calls compileStep.
-The result is the step tuple (nextParams..., done, result).
+Each condition becomes an `eco.case` on `i1` of kind `"bool"`, whose
+then-region is that branch's step and whose else-region is the rest of the
+`if`. A boxed condition is unboxed first.
 
 -}
 compileIfStep :
@@ -1563,29 +1531,23 @@ compileIfStep :
 compileIfStep ctx loopSpec branches final =
     case branches of
         [] ->
-            -- No more branches, compile the final expression
             compileStep ctx loopSpec final
 
         ( condExpr, thenExpr ) :: restBranches ->
-            -- Compile the condition
             let
                 condRes =
                     Expr.generateExpr ctx condExpr
 
-                -- Ensure condition is i1 for eco.case
                 ( condUnboxOps, condVar, condCtx ) =
                     if Types.isEcoValueType condRes.resultType then
-                        -- Unbox Bool to i1 using eco.unbox
                         Intrinsics.unboxToType condRes.ctx condRes.resultVar I1
 
                     else
                         ( [], condRes.resultVar, condRes.ctx )
 
-                -- Compile then branch with compileStep
                 thenStep =
                     compileStep condCtx loopSpec thenExpr
 
-                -- Build then region that yields the step tuple
                 thenYieldOperands =
                     checkedYieldOperands loopSpec "if-then" (thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ) ] ++ thenStep.results)
 
@@ -1595,11 +1557,9 @@ compileIfStep ctx loopSpec branches final =
                 thenRegion =
                     mkSingleBlockRegion [] thenStep.ops thenYieldOp
 
-                -- Compile else branch recursively (handles nested if-else chains)
                 elseStep =
                     compileIfStep (Ctx.ctxForSiblingRegion condCtx thenYieldCtx) loopSpec restBranches final
 
-                -- Build else region that yields the step tuple
                 elseYieldOperands =
                     checkedYieldOperands loopSpec "if-else" (elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ) ] ++ elseStep.results)
 
@@ -1609,26 +1569,22 @@ compileIfStep ctx loopSpec branches final =
                 elseRegion =
                     mkSingleBlockRegion [] elseStep.ops elseYieldOp
 
-                -- Build multi-result eco.case
-                -- Step tuple types: (paramTypes..., i1, retTy)
                 numParams =
                     List.length loopSpec.paramVars
 
                 paramTypes =
                     List.map Tuple.second loopSpec.paramVars
 
-                -- Allocate fresh names for the case results
                 ( caseResultNames, ctxWithResults ) =
                     allocateFreshVars elseYieldCtx (numParams + 1 + List.length loopSpec.resultSlots)
 
                 caseResultPairs =
                     zip caseResultNames (paramTypes ++ [ I1 ] ++ loopSpec.resultSlots)
 
-                -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+                -- tag 1 is True (then), tag 0 is False (else)
                 ( ctxAfterCase, caseOp ) =
                     Ops.ecoCaseMany ctxWithResults condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] caseResultPairs
 
-                -- Extract the step results from the case
                 nextParamVars =
                     List.take numParams caseResultPairs
 
@@ -1654,19 +1610,21 @@ compileIfStep ctx loopSpec branches final =
 -- ============================================================================
 
 
-{-| Compile a MonoLet step.
+{-| Compiles a `let` as a step: the definition is generated by
+`Expr.generateExpr`, as a `let` with an empty body, and `body` is then compiled
+as a step, so that a tail call in it still continues the loop.
 
-Delegates to Expr.generateLet (via a synthetic MonoLet wrapping) for each
-definition, so that the full let-chain sibling context (placeholder
-mappings, currentLetSiblings) is properly set up. This is critical for
-self-recursive closures defined in let bindings — without sibling context
-their PendingLambda gets empty siblingMappings and lookupVar fails for
-the self-reference.
+Before the definition is generated, every name bound from here to the end of
+the chain of `let`s is given a placeholder mapping and made the current
+siblings, as `Expr.generateLet` does, so that closures defined in the chain can
+refer to themselves and to each other. Only those names are siblings, not every
+variable in scope. The outer siblings are restored for the body.
 
-For MonoTailDef, we also delegate to Expr.generateExpr (which routes to
-generateLet) for the definition setup, then use compileStep for the body
-so that MonoTailCall for the outer function still generates correct loop
-continuation.
+For an ordinary definition, `tailRecLetBody` is set to `body` while it is
+generated, so that the analysis of where a promoted binding is used sees its
+real uses rather than the empty body. With `aggPromote` on, the names of the
+chain referred to before they are defined are added to `fwdRefdLetNames` too,
+and `fwdRefdLetNames` is put back afterwards.
 
 -}
 compileLetStep :
@@ -1677,23 +1635,17 @@ compileLetStep :
     -> StepResult
 compileLetStep ctx loopSpec def body =
     let
-        -- Collect ALL let-bound names from this point in the chain, including
-        -- the current def and any subsequent MonoLet nodes in body. This mirrors
-        -- Expr.collectLetBoundNames so that sibling closures can see each other.
         boundNames =
             Expr.collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
 
-        -- Save outer siblings for restoration on exit (lexical scoping)
         outerSiblings =
             ctx.currentLetSiblings
 
-        -- Build placeholder mappings for the whole let-group
         ctxWithPlaceholders =
             Expr.addPlaceholderMappings boundNames ctx
 
-        -- Only include the let-bound names in currentLetSiblings (not all varMappings).
-        -- This prevents outer-scope variables from leaking into lambda siblingMappings,
-        -- which would cause cross-function SSA references (CGEN_CLOSURE_003).
+        -- Outer variables in the siblings would let a closure refer to an SSA
+        -- value of another function.
         letBoundSiblings =
             List.foldl
                 (\name acc ->
@@ -1716,12 +1668,7 @@ compileLetStep ctx loopSpec def body =
                 defSetupExpr =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
-                -- U-T1.3.2t: hand the promotion hook the REAL loop-body
-                -- suffix (the synthetic MonoUnit wrapper would otherwise show
-                -- the escape walk zero uses — the T1.3.2 incident), plus the
-                -- forward-ref scan over this chain suffix (unioned: earlier
-                -- positions' scans already flowed down via ctxForBody, so
-                -- position k sees refs from links 1..k-1 as well).
+                -- Unioned: earlier links' scans reach here through ctxForBody.
                 fwdScanned =
                     if ctxReady.ecoConfig.aggPromote then
                         Set.union ctxReady.fwdRefdLetNames (Expr.scanChainForwardRefs ctxReady def body)
@@ -1755,30 +1702,19 @@ compileLetStep ctx loopSpec def body =
             }
 
         Mono.MonoTailDef _ _ _ ->
-            -- Compile the MonoTailDef binding (pending lambda, papCreate) using
-            -- Expr.generateExpr with a dummy body. This sets up the var mapping
-            -- for the defined name without compiling the actual body.
-            -- Then compile the actual body via compileStep to maintain the
-            -- TailRec context (so MonoTailCall for the outer function generates
-            -- correct loop continuation instead of crashing in mkCaseRegionFromDecider).
             let
-                -- Compile just the def setup: pending lambda + papCreate + var mapping.
-                -- Use MonoUnit as a dummy body since we only need the side effects
-                -- on the context (var mappings, pending lambdas).
                 defSetupExpr =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
                 defSetupResult =
                     Expr.generateExpr ctxReady defSetupExpr
 
-                -- Restore outer siblings before compiling the body
                 ctxAfterDef =
                     defSetupResult.ctx
 
                 ctxForBody =
                     { ctxAfterDef | currentLetSiblings = outerSiblings }
 
-                -- Now compile the actual body with compileStep (maintains TailRec context)
                 bodyStep =
                     compileStep ctxForBody loopSpec body
             in
@@ -1790,16 +1726,13 @@ compileLetStep ctx loopSpec def body =
             }
 
 
-{-| Compile a MonoDestruct step.
+{-| Compiles a destructuring as a step: the value at the destructor's path is
+bound to its name, and `body` is compiled as a step, as
+`Expr.generateDestruct` does for an expression.
 
-This mirrors Expr.generateDestruct but returns a StepResult instead of ExprResult:
-
-  - Generate path ops to navigate the MonoPath and extract the value.
-  - Bind the destructured name to the extracted SSA value in the context.
-  - Recursively compile the body as a step.
-
-This ensures that any MonoTailCall inside the body is still seen by compileStep
-and treated as a "continue" step, instead of reaching Expr.generateExpr, which crashes on one.
+The bound value's type is the type the path resolves to. When that type still
+has a type variable and the destructor's own type has none, the destructor's
+type is used.
 
 -}
 compileDestructStep :
@@ -1810,15 +1743,6 @@ compileDestructStep :
     -> StepResult
 compileDestructStep ctx loopSpec (Mono.MonoDestructor name path destructorMonoType) body =
     let
-        -- Use the path's actual result type, as in Expr.generateDestruct.
-        -- The destructor's monoType may still contain unsubstituted vars;
-        -- the path carries the correctly-specialized concrete type. If the
-        -- path's own top-level annotation is itself a stale MVar (polymorphic
-        -- ctor partially specialized — e.g. `Done a` at `a = Int`), fall back
-        -- to the ctor shape registry so we agree with the heap layout. If
-        -- that also yields a free MVar (multiple disagreeing specializations
-        -- in the registry), prefer the destructor's own monoType when the
-        -- outer subst pinned it concretely.
         pathResultRaw : Mono.MonoType
         pathResultRaw =
             Patterns.resolvePathResultType ctx path
@@ -1835,16 +1759,13 @@ compileDestructStep ctx loopSpec (Mono.MonoDestructor name path destructorMonoTy
         destructorMlirType =
             Types.monoTypeToAbi pathResultType
 
-        -- Navigate the path to produce the destructured value.
         ( pathOps, pathVar, ctx1 ) =
             Patterns.generateMonoPath ctx path destructorMlirType
 
-        -- Bind the destructured name to the extracted SSA value.
         ctx2 : Ctx.Context
         ctx2 =
             Ctx.addVarMapping name pathVar destructorMlirType ctx1
 
-        -- Recursively compile the body as a loop step.
         bodyStep : StepResult
         bodyStep =
             compileStep ctx2 loopSpec body
@@ -1863,7 +1784,8 @@ compileDestructStep ctx loopSpec (Mono.MonoDestructor name path destructorMonoTy
 -- ============================================================================
 
 
-{-| Create a single-block region with the given args, body ops, and terminator.
+{-| Builds a region of one block with block arguments `args`, the ops `body`
+and the op `terminator`.
 -}
 mkSingleBlockRegion :
     List ( String, MlirType )
@@ -1881,7 +1803,7 @@ mkSingleBlockRegion args body terminator =
         }
 
 
-{-| Allocate N fresh variable names.
+{-| Returns `n` fresh SSA names, in order.
 -}
 allocateFreshVars : Ctx.Context -> Int -> ( List String, Ctx.Context )
 allocateFreshVars ctx n =
@@ -1901,6 +1823,10 @@ allocateFreshVars ctx n =
     ( List.reverse varsRev, ctxFinal )
 
 
+{-| Builds an array indexed by the numbers in `pairs`, holding `Just` the
+paired value at each index given and `Nothing` elsewhere. A later pair wins
+over an earlier one with the same index.
+-}
 pairsToSparseArray : List ( Int, a ) -> Array (Maybe a)
 pairsToSparseArray pairs =
     let
@@ -1910,7 +1836,8 @@ pairsToSparseArray pairs =
     List.foldl (\( i, v ) arr -> Array.set i (Just v) arr) (Array.repeat (maxIdx + 1) Nothing) pairs
 
 
-{-| Zip two lists together.
+{-| Pairs the elements of two lists in order, stopping at the end of the
+shorter one.
 -}
 zip : List a -> List b -> List ( a, b )
 zip xs ys =

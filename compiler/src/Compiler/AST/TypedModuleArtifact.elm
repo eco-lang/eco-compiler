@@ -3,30 +3,21 @@ module Compiler.AST.TypedModuleArtifact exposing
     , typedModuleArtifactEncoder, typedModuleArtifactDecoder
     )
 
-{-| TypedModuleArtifact represents the data stored in `.ecot` files.
+{-| Monomorphization needs, for each module, both its typed optimized code and
+the definitions of the custom types that code names, and this module bundles
+the two into the one value that a module's `.ecot` file holds. An `.ecot` file
+is the per-module typed artifact, written when the module is compiled and read
+back when code is generated.
 
-This combines the typed optimization IR (LocalGraph) with the module's
-type environment, allowing the monomorphization phase to access both
-the optimized code and the type definitions it needs.
+The file is the local graph, as `Compiler.AST.TypedOptimized.localGraphEncoder`
+writes it, followed by the module type environment, as
+`Compiler.AST.TypeEnv.moduleTypeEnvEncoder` writes it. Each carries its own
+string-table preamble.
 
-
-## Wire-format skip list (ECOT\_001)
-
-The following fields are present in the in-memory `LocalGraph` /
-`ModuleTypeEnv` types but are NOT serialized to `.ecot`. They are
-reconstructed as inert defaults on decode because no consumer
-downstream of deserialization reads them. Do not add a reader without
-first re-adding the corresponding wire slot.
-
-  - `LocalGraph.main` → `Nothing` on decode
-  - `LocalGraph.fields` → `Dict.empty` on decode
-  - `ModuleTypeEnv.aliases` → `Dict.empty` on decode
-  - Per-`Node` deps sets on Define, TrackedDefine, Cycle, Kernel,
-    PortIncoming, PortOutgoing → `EverySet.empty` on decode
-  - `Manager`'s `EffectsType` → `Cmd` placeholder on decode
-  - `Kernel`'s `chunks` and `deps` → `[]` and `EverySet.empty` on decode
-  - `Expr.VarDebug`'s `home` and `unhandledValueName`
-    → `IO.Canonical Pkg.core Name.debug` and `Nothing` on decode
+Decoding is not a round trip. Some parts of the graph and the type environment
+are not written and come back as empty or placeholder values; the docstrings of
+`Compiler.AST.TypedOptimized` and `Compiler.AST.TypeEnv` list them. Code that
+reads one of those parts from a decoded artifact needs it to be written first.
 
 
 # Types
@@ -51,7 +42,7 @@ import Compiler.Data.Name exposing (Name)
 -- TYPES
 
 
-{-| Combined artifact for a single module containing typed IR and type definitions.
+{-| One module's typed artifact: its typed local graph and its type environment.
 -}
 type alias TypedModuleArtifact =
     { typedGraph : TOpt.LocalGraph Name
@@ -63,7 +54,8 @@ type alias TypedModuleArtifact =
 -- SERIALIZATION
 
 
-{-| Encode a typed module artifact.
+{-| Produces an encoder writing `artifact` in the `.ecot` layout: the graph,
+then the type environment.
 -}
 typedModuleArtifactEncoder : TypedModuleArtifact -> Bytes.Encode.Encoder
 typedModuleArtifactEncoder artifact =
@@ -73,7 +65,8 @@ typedModuleArtifactEncoder artifact =
         ]
 
 
-{-| Decode a typed module artifact.
+{-| A decoder for an artifact as `typedModuleArtifactEncoder` writes it. It
+fails when the graph's format-version byte is not the current one.
 -}
 typedModuleArtifactDecoder : Bytes.Decode.Decoder TypedModuleArtifact
 typedModuleArtifactDecoder =

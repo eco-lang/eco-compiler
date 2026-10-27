@@ -7,17 +7,26 @@ module Compiler.LocalOpt.Erased.Names exposing
     , pure, map, andThen, traverse, mapTraverse
     )
 
-{-| Tracks names and dependencies during optimization.
+{-| Lowering a definition to the erased optimized form has to record, alongside
+the expression it builds, what that expression refers to, and this module is
+the bookkeeping that does so.
 
-This module provides a state monad (Tracker) that threads through the optimization
-process, collecting information about:
+A `Tracker` is a computation that produces a value while carrying three pieces
+of state from one step to the next:
 
-  - Global dependencies (functions, constructors, kernels used)
-  - Field names accessed across the module
-  - Fresh variable names for generated temporaries
+  - The _dependency set_: every global, constructor, kernel module and `Debug`
+    function the expression refers to.
+  - The _field counts_: for each record field name, how many times it was
+    registered.
+  - A counter from which fresh temporary names are made.
 
-The collected dependency information is used by the code generator to determine
-which imports and definitions are actually needed in the final output.
+`run` starts a computation with all three empty and returns the first two with
+the result. The counter starts at 0 on every `run`, so a generated name is
+unique only within one `run`.
+
+The `register*` functions are where state is added; `pure`, `map`, `andThen`,
+`traverse` and `mapTraverse` combine computations, each passing the state on
+in order.
 
 
 # Core Type
@@ -63,14 +72,10 @@ import Dict exposing (Dict)
 -- ====== CORE TYPE ======
 
 
-{-| State monad that tracks name generation and dependencies during optimization.
-
-Threads through three pieces of state:
-
-  - A unique ID counter for generating fresh variable names
-  - A set of global dependencies (functions, constructors, kernels)
-  - A dictionary tracking field name usage counts
-
+{-| A computation that produces an `a` while adding to a dependency set and
+field counts and drawing fresh names, as the module docstring describes.
+Outside this module, a value is made by the functions here and only taken apart
+by `run`.
 -}
 type Tracker a
     = Tracker
@@ -81,10 +86,15 @@ type Tracker a
         )
 
 
+{-| The state left by a computation, together with the value it produced.
+-}
 type TResult a
     = TResult TResultProps a
 
 
+{-| The three pieces of state: the next name index, the dependency set and the
+field counts.
+-}
 type alias TResultProps =
     { uid : Int
     , deps : EverySet String Opt.Global
@@ -92,7 +102,7 @@ type alias TResultProps =
     }
 
 
-{-| Helper to construct TResult with positional args
+{-| Builds a `TResult` from the three pieces of state and the value.
 -}
 tResult : Int -> EverySet String Opt.Global -> Dict Name Int -> a -> TResult a
 tResult uid deps fields value =
@@ -103,14 +113,9 @@ tResult uid deps fields value =
 -- ====== RUNNING ======
 
 
-{-| Execute a Tracker computation, returning collected dependencies, fields, and the result value.
-
-Returns a tuple of:
-
-  - Global dependencies (functions, constructors, kernels used)
-  - Field names and their usage counts
-  - The computed result value
-
+{-| Runs a computation from an empty dependency set, empty field counts and a
+name counter of 0, and returns the dependency set, the field counts and the
+value it produced.
 -}
 run : Tracker a -> ( EverySet String Opt.Global, Dict Name Int, a )
 run (Tracker k) =
@@ -123,10 +128,10 @@ run (Tracker k) =
 -- ====== NAME GENERATION ======
 
 
-{-| Generate a fresh, unique variable name.
+{-| A fresh temporary name: `_v0`, `_v1` and so on, in order, within one `run`.
 
-The generated name is guaranteed to not conflict with any other names in the module.
-Names are generated sequentially as _v0, _v1, \_v2, etc.
+The counter restarts with every `run`, so the same name can be produced in two
+runs. None can clash with a name from source, as `Name.fromVarIndex` describes.
 
 -}
 generate : Tracker Name
@@ -140,12 +145,10 @@ generate =
 -- ====== DEPENDENCY REGISTRATION ======
 
 
-{-| Register a dependency on a kernel function and return the given value.
+{-| Adds a dependency on a kernel module and returns `value` unchanged.
 
-Kernel functions are JavaScript primitives exposed to Elm code.
-Registering them ensures they are included in the final output. The kernel
-module is given by its kernel prefix (`Elm` or `Eco`) and home, as
-`Opt.toKernelGlobal` takes them.
+The module is given by its kernel prefix (`Elm` or `Eco`) and home, and the
+dependency is the global `Opt.toKernelGlobal` makes from them.
 
 -}
 registerKernel : Name -> Name -> a -> Tracker a
@@ -155,11 +158,8 @@ registerKernel kernelPrefix home value =
             tResult uid (EverySet.insert Opt.toComparableGlobal (Opt.toKernelGlobal kernelPrefix home) deps) fields value
 
 
-{-| Register a dependency on a global function or value and return a reference to it.
-
-Creates a VarGlobal expression referencing the function/value and adds it to the
-dependency set so the code generator knows to import it.
-
+{-| Adds a dependency on the global `name` of module `home` and returns a
+`VarGlobal` reference to it.
 -}
 registerGlobal : A.Region -> ModuleName.Canonical -> Name -> Tracker Opt.Expr
 registerGlobal region home name =
@@ -173,10 +173,10 @@ registerGlobal region home name =
             tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarGlobal region global)
 
 
-{-| Register a dependency on a Debug module function and return a debug variable reference.
+{-| Adds a dependency on `Debug.name` and returns a `VarDebug` reference to it.
 
-Debug functions are special-cased to support conditional compilation and removal
-in production builds. The home module is tracked for context.
+`home` is the module the reference appears in, not `Debug`, and is carried in
+the `VarDebug`. The `VarDebug` is built with no unhandled-value name.
 
 -}
 registerDebug : Name -> ModuleName.Canonical -> A.Region -> Tracker Opt.Expr
@@ -191,13 +191,13 @@ registerDebug name home region =
             tResult uid (EverySet.insert Opt.toComparableGlobal global deps) fields (Opt.VarDebug region name home Nothing)
 
 
-{-| Register a dependency on a type constructor and return an optimized expression.
+{-| Adds a dependency on the constructor `name` of module `home` and returns a
+reference to it, shaped by the constructor options of its type.
 
-Handles three cases based on constructor options:
-
-  - Normal: Regular constructor, returns VarGlobal
-  - Enum: Zero-argument constructor, returns VarEnum (or Bool for True/False in Basics)
-  - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
+For `Normal`, the reference is a `VarGlobal`. For `Enum`, it is a `VarEnum`
+carrying `index`, except that `True` and `False` of `Basics` become `Bool`
+literals; the dependency is added for them too. For `Unbox`, it is a `VarBox`,
+and a dependency on `Basics.identity` is added as well.
 
 -}
 registerCtor : A.Region -> ModuleName.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Tracker Opt.Expr
@@ -241,16 +241,14 @@ registerCtor region home (A.At _ name) index opts =
                     tResult uid (EverySet.insert Opt.toComparableGlobal identity newDeps) fields (Opt.VarBox region global)
 
 
+{-| The global `Basics.identity`.
+-}
 identity : Opt.Global
 identity =
     Opt.Global ModuleName.basics Name.identity_
 
 
-{-| Register usage of a record field name and return the given value.
-
-Increments the usage count for the field name, which is used by the code generator
-to determine optimal field name mangling strategies.
-
+{-| Adds 1 to the count of field `name` and returns `value` unchanged.
 -}
 registerField : Name -> a -> Tracker a
 registerField name value =
@@ -259,11 +257,8 @@ registerField name value =
             tResult uid d (insertWith (+) name 1 fields) value
 
 
-{-| Register usage of multiple record fields from a dictionary and return the given value.
-
-Takes a dictionary where keys are field names and increments the usage count for each.
-The dictionary values are ignored - only the keys (field names) matter.
-
+{-| Adds 1 to the count of each field named by a key of `newFields`, whose
+values are ignored, and returns `value` unchanged.
 -}
 registerFieldDict : Dict Name v -> a -> Tracker a
 registerFieldDict newFields value =
@@ -275,11 +270,8 @@ registerFieldDict newFields value =
                 value
 
 
-{-| Register usage of multiple record fields from a list and return the given value.
-
-Increments the usage count for each field name in the list. Useful when processing
-field accesses or record patterns.
-
+{-| Adds 1 to the count of each field in `names`, once per occurrence, and
+returns `value` unchanged.
 -}
 registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
@@ -288,16 +280,24 @@ registerFieldList names value =
             tResult uid deps (List.foldr addOne fields names) value
 
 
+{-| Adds 1 to the count of field `name`.
+-}
 addOne : Name -> Dict Name Int -> Dict Name Int
 addOne name fields =
     insertWith (+) name 1 fields
 
 
+{-| Inserts `v` at `k`, or, where `k` already holds a value, replaces it with
+`f v` applied to that value.
+-}
 insertWith : (a -> a -> a) -> comparable -> a -> Dict comparable a -> Dict comparable a
 insertWith f k v =
     Dict.update k (Maybe.map (f v) >> Maybe.withDefault v >> Just)
 
 
+{-| Returns every entry of `a` and `b`, combining the two values with `f` where
+both hold a key.
+-}
 unionWith : (a -> a -> a) -> Dict comparable a -> Dict comparable a -> Dict comparable a
 unionWith f a b =
     Dict.merge Dict.insert (\k va vb acc -> Dict.insert k (f va vb) acc) Dict.insert a b Dict.empty
@@ -307,10 +307,7 @@ unionWith f a b =
 -- ====== MONAD OPERATIONS ======
 
 
-{-| Transform the result value of a Tracker computation using the given function.
-
-Preserves all tracked dependencies and state while applying the function to the result.
-
+{-| Returns the computation that runs the given one and applies `func` to its value.
 -}
 map : (a -> b) -> Tracker a -> Tracker b
 map func (Tracker kv) =
@@ -321,23 +318,16 @@ map func (Tracker kv) =
                     tResult props.uid props.deps props.fields (func value)
 
 
-{-| Lift a pure value into a Tracker computation without tracking any dependencies.
-
-Equivalent to `return` in Haskell's monad notation. The value is wrapped in a Tracker
-that doesn't modify the state or add any dependencies.
-
+{-| Returns a computation that produces `value` and leaves the state unchanged.
 -}
 pure : a -> Tracker a
 pure value =
     Tracker (\n d f -> tResult n d f value)
 
 
-{-| Chain two Tracker computations together, threading state from first to second.
-
-Equivalent to `>>=` (bind) in Haskell. The callback receives the result of the first
-computation and can use it to produce a second computation. Dependencies and state
-accumulate across both computations.
-
+{-| Returns the computation that runs the given one, passes its value to
+`callback`, and runs the computation `callback` returns on the state the first
+left.
 -}
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
 andThen callback (Tracker k) =
@@ -350,7 +340,8 @@ andThen callback (Tracker k) =
                             kb props.uid props.deps props.fields
 
 
-{-| Execute a tail-recursive loop in the Tracker monad.
+{-| Returns a computation that runs `callback` from `loopState`, again on each
+`Loop` state it produces, until it produces `Done`, whose value is the result.
 -}
 loop : (state -> Tracker (Step state a)) -> state -> Tracker a
 loop callback loopState =
@@ -360,6 +351,9 @@ loop callback loopState =
         )
 
 
+{-| Runs the loop of `loop` on the given state. It calls itself in tail
+position, so a long loop does not grow the stack.
+-}
 loopHelper :
     (state -> Tracker (Step state a))
     -> state
@@ -378,11 +372,8 @@ loopHelper callback loopState n d f =
                     TResult props a
 
 
-{-| Apply a Tracker-producing function to each element of a list, accumulating results.
-
-Sequences the Tracker computations from left to right, threading state through each step.
-Returns a Tracker containing the list of all results with all dependencies accumulated.
-
+{-| Returns a computation that runs `func` on each element of `list`, first to
+last, and produces the list of their values in the same order.
 -}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func list =
@@ -398,12 +389,8 @@ traverse func list =
         ( list, [] )
 
 
-{-| Apply a Tracker-producing function to each value in a dictionary, accumulating results.
-
-Like traverse but for dictionaries. Sequences computations across all dictionary entries,
-threading state through each step. Returns a Tracker containing a dictionary with
-transformed values and all accumulated dependencies.
-
+{-| Returns a computation that runs `func` on each value of `dict`, in ascending
+key order, and produces a dictionary of their values under the same keys.
 -}
 mapTraverse : (k -> comparable) -> (a -> Tracker b) -> DataMap.Dict comparable k a -> Tracker (DataMap.Dict comparable k b)
 mapTraverse toComparable func dict =

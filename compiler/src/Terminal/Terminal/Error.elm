@@ -1,9 +1,27 @@
 module Terminal.Terminal.Error exposing (exitWithError, exitWithHelp, exitWithOverview, exitWithUnknown)
 
-{-| Error handling and help message generation for terminal commands.
+{-| The messages the command-line framework ends a run with when it shows help
+or reports a bad command line, and the exit that follows each.
 
-This module provides functions to display error messages, help text, and command
-overviews with proper formatting and exit codes.
+A run of the framework ends in one of four ways that this module handles: the
+user asked for help with one command, asked for the overview of all commands,
+named a command that does not exist, or gave a command arguments or flags that
+do not fit it. Each `exitWith...` function builds the message for one of these
+from the descriptions in `Terminal.Terminal.Internal`, writes it, and exits the
+process, so none of them returns. Help and the overview exit with code 0; the
+two errors exit with code 1.
+
+Every message goes to stderr, the successful help and overview included. A
+message is a list of documents, printed one after another with a blank line
+after each and laid out for a width of 80 columns. Colour is stripped when
+`System.IO.isTerminal` reports that output is not a terminal.
+
+The executable name shown in usage lines is the file-name part of
+`Utils.Main.envGetProgName`.
+
+Where a word in a message is a placeholder for a value, it is written as a
+token: the name in angle brackets, with each space turned into a hyphen, as in
+`<zero-or-more-files>`.
 
 
 # Exit Functions
@@ -43,16 +61,30 @@ import Utils.Main as Utils
 -- ====== EXIT ======
 
 
+{-| Prints the given documents as every message of this module is printed, then
+exits with code 0.
+-}
 exitSuccess : List P.Doc -> Task Never a
 exitSuccess =
     exitWith Exit.ExitSuccess
 
 
+{-| Prints the given documents as every message of this module is printed, then
+exits with code 1.
+-}
 exitFailure : List P.Doc -> Task Never a
 exitFailure =
     exitWith (Exit.ExitFailure 1)
 
 
+{-| Prints `docs` to stderr and exits the process with `code`.
+
+The documents are printed one after another, each followed by a blank line, at
+a width of 80 columns, and with their colour stripped when
+`System.IO.isTerminal` reports that output is not a terminal. One more newline
+ends the output.
+
+-}
 exitWith : Exit.ExitCode -> List P.Doc -> Task Never a
 exitWith code docs =
     IO.isTerminal
@@ -77,16 +109,22 @@ exitWith code docs =
             )
 
 
+{-| The executable name shown in messages: the file-name part of `Utils.Main.envGetProgName`.
+-}
 getExeName : Task Never String
 getExeName =
     Task.map Utils.fpTakeFileName Utils.envGetProgName
 
 
+{-| Returns `docs` one above another with a blank line between each two.
+-}
 stack : List P.Doc -> P.Doc
 stack docs =
     List.intersperse (P.text "") docs |> P.vcat
 
 
+{-| Returns `string` as words that are filled onto lines and wrapped at the layout width.
+-}
 reflow : String -> P.Doc
 reflow string =
     String.words string |> List.map P.text |> P.fillSep
@@ -96,10 +134,15 @@ reflow string =
 -- ====== HELP ======
 
 
-{-| Display help text for a command and exit successfully.
+{-| Prints the help for one command and exits with code 0.
 
-Shows detailed help including the command description, argument patterns,
-usage examples, and available flags.
+The help is `details`, then one usage line per argument alternative in `Args`,
+then `example`, then, when the command has any flags, each flag with its
+description, in the order the flags were added. A usage line is the executable
+name, then `maybeCommand` when it is given, then a token for each argument; an
+alternative that takes any number of trailing arguments ends in
+`<zero-or-more-...>` with the plural name. A flag that takes a value is shown as
+`--name=<value>`, and an on/off flag as `--name`.
 
 -}
 exitWithHelp : Maybe String -> String -> P.Doc -> Args -> Flags -> Task Never a
@@ -124,6 +167,8 @@ exitWithHelp maybeCommand details example (Args args) flags =
             )
 
 
+{-| Returns the executable name followed by the command name when `maybeCommand` gives one.
+-}
 toCommand : Maybe String -> Task Never String
 toCommand maybeCommand =
     getExeName
@@ -138,6 +183,8 @@ toCommand maybeCommand =
             )
 
 
+{-| Returns the usage line for one argument alternative, starting with `command`.
+-}
 argsToDoc : String -> CompleteArgs -> P.Doc
 argsToDoc command args =
     case args of
@@ -148,6 +195,13 @@ argsToDoc command args =
             argsToDocHelp command required [ "zero or more " ++ plural ]
 
 
+{-| Returns the usage line `command`, then a token for each argument of `args`,
+then the tokens of `names`.
+
+The outermost `Required` holds the last argument, so each argument is put in
+front of the names already gathered.
+
+-}
 argsToDocHelp : String -> RequiredArgs -> List String -> P.Doc
 argsToDocHelp command args names =
     case args of
@@ -158,6 +212,8 @@ argsToDocHelp command args names =
             argsToDocHelp command others (singular :: names)
 
 
+{-| Returns `string` as a placeholder token: in angle brackets, with each space turned into a hyphen.
+-}
 toToken : String -> String
 toToken string =
     "<"
@@ -173,6 +229,13 @@ toToken string =
         ++ ">"
 
 
+{-| Returns one document per flag in `flags`, each its usage and its reflowed
+description, followed by `docs`.
+
+The outermost `FMore` holds the flag added last, so prepending while walking
+inwards gives the flags in the order they were added.
+
+-}
 flagsToDocs : Flags -> List P.Doc -> List P.Doc
 flagsToDocs flags docs =
     case flags of
@@ -202,10 +265,15 @@ flagsToDocs flags docs =
 -- ====== OVERVIEW ======
 
 
-{-| Display an overview of all available commands and exit successfully.
+{-| Prints the overview of `commands` and exits with code 0.
 
-Shows the intro message, lists common commands with descriptions, shows all
-commands, and displays the outro message.
+The overview is `intro`, then the usage line and summary of every `Common`
+command, then a `--help` line for every command with the names padded to one
+width, then `outro`. Each `Common` command's usage line is that of its first
+argument alternative.
+
+`commands` must not be empty, and every `Common` command must have at least one
+argument alternative; otherwise this crashes.
 
 -}
 exitWithOverview : P.Doc -> P.Doc -> List Command -> Task Never a
@@ -225,6 +293,13 @@ exitWithOverview intro outro commands =
             )
 
 
+{-| Returns the usage line and summary of a `Common` command, or `Nothing` for an
+`Uncommon` one.
+
+The usage line is that of the command's first argument alternative; a command
+with no alternatives crashes here.
+
+-}
 toSummary : String -> Command -> Maybe P.Doc
 toSummary exeName (Command cmdData) =
     case cmdData.summary of
@@ -243,6 +318,13 @@ toSummary exeName (Command cmdData) =
                     ]
 
 
+{-| Returns one line per command, the executable name, the command name and
+`--help`, with the names padded so that the `--help` column lines up.
+
+The list of commands must not be empty: its widest name is found with
+`Utils.Main.listMaximum`, which crashes on an empty list.
+
+-}
 toCommandList : String -> List Command -> P.Doc
 toCommandList exeName commands =
     let
@@ -271,10 +353,11 @@ toCommandList exeName commands =
 -- ====== UNKNOWN ======
 
 
-{-| Display an error for an unknown command and exit with failure.
+{-| Prints that there is no command called `unknown` and exits with code 1.
 
-Shows an error message indicating the command wasn't recognized, suggests
-similar command names if any exist, and exits with a non-zero code.
+The message suggests every name in `knowns` whose distance from `unknown`, as
+`Compiler.Reporting.Suggest.rank` measures it, is at most 3, closest first, and
+tells the user to run the executable with no arguments for more hints.
 
 -}
 exitWithUnknown : String -> List String -> Task Never a
@@ -322,10 +405,15 @@ exitWithUnknown unknown knowns =
 -- ====== ERROR TO DOC ======
 
 
-{-| Display a parsing error and exit with failure.
+{-| Prints the message for `err` and exits with code 1.
 
-Takes an error from argument or flag parsing, formats it into a human-readable
-message with suggestions, and exits with a non-zero code.
+`BadArgs` holds one error per alternative that was tried, and only one of them
+is shown: a bad argument in preference to a missing one, and a missing one in
+preference to extra ones. An empty `BadArgs` is reported as arguments given to
+a command that takes none.
+
+A flag that is not recognised is shown with the flags whose edit distance from
+its name is under 3, or every flag when none is that close, nearest first.
 
 -}
 exitWithError : Error -> Task Never a
@@ -351,6 +439,9 @@ exitWithError err =
         |> Task.andThen exitFailure
 
 
+{-| Returns an argument error's rank for showing, where lower is shown first: a
+bad argument, then a missing one, then extra ones.
+-}
 toArgErrorRank :
     ArgError
     -> Int -- lower is better
@@ -366,16 +457,22 @@ toArgErrorRank err =
             2
 
 
+{-| Returns `str` as green text.
+-}
 toGreen : String -> P.Doc
 toGreen str =
     P.green (P.text str)
 
 
+{-| Returns `str` as yellow text.
+-}
 toYellow : String -> P.Doc
 toYellow str =
     P.yellow (P.text str)
 
 
+{-| Returns `str` as red text.
+-}
 toRed : String -> P.Doc
 toRed str =
     P.red (P.text str)
@@ -385,6 +482,12 @@ toRed str =
 -- ====== ARG ERROR TO DOC ======
 
 
+{-| Produces the message for one argument error.
+
+For a missing or bad argument it runs the expectation's task for example
+values and shows all of them.
+
+-}
 argErrorToDocs : ArgError -> Task Never (List P.Doc)
 argErrorToDocs argError =
     case argError of
@@ -466,6 +569,8 @@ argErrorToDocs argError =
 -- ====== FLAG ERROR TO DOC ======
 
 
+{-| Returns a flag error message: `summary`, then the flag as given, `original`, in red, then `explanation`.
+-}
 flagErrorHelp : String -> String -> List P.Doc -> Task Never (List P.Doc)
 flagErrorHelp summary original explanation =
     Task.succeed <|
@@ -475,6 +580,13 @@ flagErrorHelp summary original explanation =
             ++ explanation
 
 
+{-| Produces the message for one flag error.
+
+For a flag missing its value or given a bad one, it runs the expectation's task
+for example values and shows each as `--name=example`, or `--name=<value>` when
+there are none. Every example is shown.
+
+-}
 flagErrorToDocs : FlagError -> Task Never (List P.Doc)
 flagErrorToDocs flagError =
     case flagError of
@@ -582,6 +694,14 @@ flagErrorToDocs flagError =
                 )
 
 
+{-| Returns the flags of `flags` to suggest for the flag name `unknown`, as text,
+nearest first.
+
+`unsortedFlags` gathers each flag's edit distance from `unknown` and its usage.
+The suggestions are those at a distance under 3, or all of them when none is
+that close. The distance is case-sensitive.
+
+-}
 getNearbyFlags : String -> Flags -> List ( Int, String ) -> List P.Doc
 getNearbyFlags unknown flags unsortedFlags =
     case flags of
@@ -601,6 +721,8 @@ getNearbyFlags unknown flags unsortedFlags =
             getNearbyFlags unknown more (getNearbyFlagsHelp unknown flag :: unsortedFlags)
 
 
+{-| Returns the edit distance from `unknown` to the flag's name, paired with the flag's usage.
+-}
 getNearbyFlagsHelp : String -> Flag -> ( Int, String )
 getNearbyFlagsHelp unknown flag =
     case flag of

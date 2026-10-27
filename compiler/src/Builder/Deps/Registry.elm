@@ -6,10 +6,25 @@ module Builder.Deps.Registry exposing
     , RegistryPolicy(..)
     )
 
-{-| Manages the package registry, which tracks all available Elm packages and their versions.
+{-| Choosing package versions needs to know which versions of every package
+exist, and this module keeps that list, the _registry_, on disk and up to date.
 
-The registry is cached locally and synchronized with the package server at package.elm-lang.org.
-This module handles fetching, updating, and querying the registry for dependency resolution.
+The registry is a map from each package name to its known versions, newest
+first, together with a count of the (package, version) entries it holds. It is
+cached as `registry.dat` in the package cache (`Builder.Stuff.registry`), and
+refreshed from the package server that `Builder.Deps.Website` names.
+
+The count is what makes refreshing cheap. The server's `/all-packages/since/<n>`
+endpoint lists the entries published after the first `n`, so a cached registry
+asks only for what it lacks and adds it. With no cache, `/all-packages` gives
+the whole list instead.
+
+A refresh is lazy. Under the `Normal` policy, a `registry.dat` modified less than
+thirty minutes ago is used without asking the server, and a refresh that finds
+nothing new touches the file, so the thirty minutes start again. `ForceRefresh`
+always asks.
+
+Every request prints a line saying how long it took to stdout.
 
 
 # Registry Types
@@ -63,23 +78,38 @@ import Utils.Bytes.Encode as BE
 -- ====== REGISTRY ======
 
 
-{-| The package registry maps package names to their available versions.
-Contains a count of entries for incremental updates and a dictionary of packages.
+{-| The known versions of every package, together with the number of (package,
+version) entries the registry holds, which is the offset `update` asks the
+server to continue from.
+
+Nothing checks that the count matches the map; `fetch` computes it and `update`
+adds the number of new entries to it.
+
 -}
 type Registry
     = Registry Int (Dict Pkg.Name KnownVersions)
 
 
-{-| Available versions of a package, with the latest version first followed by older versions.
+{-| The versions of one package that the registry knows: the newest, then the
+older ones.
+
+`fetch` sorts each package's versions newest first. `update` puts each new
+version in front of those already known, so the order holds only if the server
+lists each package's new versions newest first, and they are all newer than
+those already known.
+
 -}
 type KnownVersions
     = KnownVersions V.Version (List V.Version)
 
 
-{-| Controls whether the registry update checks the 30-minute TTL on registry.dat.
+{-| Whether a refresh of a cached registry may be skipped because the cache is
+recent.
 
-Normal: skip the network call if registry.dat was checked less than 30 minutes ago.
-ForceRefresh: always check the endpoint regardless of the file timestamp.
+Under `Normal`, a `registry.dat` whose modification time is less than thirty
+minutes before now is used as it is, without asking the server.
+
+Under `ForceRefresh`, the server is always asked.
 
 -}
 type RegistryPolicy
@@ -87,7 +117,8 @@ type RegistryPolicy
     | ForceRefresh
 
 
-{-| TTL in milliseconds (30 minutes).
+{-| How long, in milliseconds, a cached registry is used without asking the
+server under the `Normal` policy: thirty minutes.
 -}
 registryTtlMs : Int
 registryTtlMs =
@@ -98,7 +129,8 @@ registryTtlMs =
 -- ====== READ ======
 
 
-{-| Read the cached registry from disk. Returns Nothing if the cache doesn't exist or is invalid.
+{-| Reads the cached registry, giving `Nothing` when there is no
+`registry.dat` or it cannot be read or decoded.
 -}
 read : Stuff.PackageCache -> Task Never (Maybe Registry)
 read cache =
@@ -109,8 +141,13 @@ read cache =
 -- ====== FETCH ======
 
 
-{-| Fetch the complete registry from the package server and cache it locally.
-Use this for initial registry download or when the cache is missing.
+{-| Downloads the whole registry from the package server, writes it to
+`registry.dat`, and returns it.
+
+A failed request gives `RP_Http`, and a response that does not decode gives
+`RP_Data`; neither writes the file. A response listing a package with no
+versions does not decode.
+
 -}
 fetch : Http.Manager -> Stuff.PackageCache -> Task Never (Result Exit.RegistryProblem Registry)
 fetch manager cache =
@@ -133,11 +170,18 @@ fetch manager cache =
                 |> Task.map (\_ -> registry)
 
 
+{-| Returns `count` increased by the number of versions in a package's known
+versions.
+-}
 addEntry : KnownVersions -> Int -> Int
 addEntry (KnownVersions _ vs) count =
     count + 1 + List.length vs
 
 
+{-| A decoder for the server's whole package list: an object from package name
+to a list of versions. Each package's versions are sorted newest first, and a
+package with an empty list fails the whole decode.
+-}
 allPkgsDecoder : D.Decoder () (Dict Pkg.Name KnownVersions)
 allPkgsDecoder =
     let
@@ -165,10 +209,18 @@ allPkgsDecoder =
 -- ====== UPDATE ======
 
 
-{-| Update an existing registry by fetching only new package versions since the last sync.
-Returns the updated registry, or the original if no updates are available.
-Respects the RegistryPolicy TTL: under Normal policy, skips the network call if
-registry.dat was checked less than 30 minutes ago.
+{-| Brings a cached registry up to date by asking the server for the entries
+after the registry's count, and returns the result.
+
+Under `Normal`, a `registry.dat` modified less than thirty minutes ago returns
+the registry unchanged without asking. Otherwise the new entries are added and
+the file rewritten; when there are none, the file is only touched, which resets
+the thirty minutes.
+
+A failed request or a response that does not decode gives a `RegistryProblem`
+and leaves the file alone. A failure to read the file's modification time or to
+touch it crashes the program instead.
+
 -}
 update : Http.Manager -> Stuff.PackageCache -> RegistryPolicy -> Registry -> Task Never (Result Exit.RegistryProblem Registry)
 update manager cache policy ((Registry size packages) as oldRegistry) =
@@ -221,6 +273,9 @@ update manager cache policy ((Registry size packages) as oldRegistry) =
                     )
 
 
+{-| Puts `version` in front of the known versions of `name`, adding the
+package when it is not yet known.
+-}
 addNew : ( Pkg.Name, V.Version ) -> Dict Pkg.Name KnownVersions -> Dict Pkg.Name KnownVersions
 addNew ( name, version ) versions =
     let
@@ -240,11 +295,16 @@ addNew ( name, version ) versions =
 -- ====== NEW PACKAGE DECODER ======
 
 
+{-| A decoder for one entry of the server's list of new entries, a string of the
+form `author/project@version`.
+-}
 newPkgDecoder : D.Decoder () ( Pkg.Name, V.Version )
 newPkgDecoder =
     D.customString newPkgParser bail
 
 
+{-| A parser for a package name, an `@`, and a version.
+-}
 newPkgParser : P.Parser () ( Pkg.Name, V.Version )
 newPkgParser =
     P.specialize (\_ _ _ -> ()) Pkg.parser
@@ -256,6 +316,9 @@ newPkgParser =
             )
 
 
+{-| Returns the unit error, whatever position it is given; the decoders here
+keep no detail of what failed.
+-}
 bail : a -> b -> ()
 bail _ _ =
     ()
@@ -265,8 +328,12 @@ bail _ _ =
 -- ====== LATEST ======
 
 
-{-| Get the latest registry, either by reading the cache and updating it, or fetching it fresh.
-This is the primary entry point for obtaining an up-to-date registry.
+{-| Returns an up-to-date registry: the cached one brought up to date by
+`update` under `policy`, or, when there is no usable cache, a whole one from
+`fetch`.
+
+A failed refresh is an error here, even when a cached registry exists.
+
 -}
 latest : Http.Manager -> Stuff.PackageCache -> RegistryPolicy -> Task Never (Result Exit.RegistryProblem Registry)
 latest manager cache policy =
@@ -286,15 +353,17 @@ latest manager cache policy =
 -- ====== GET VERSIONS ======
 
 
-{-| Look up available versions for a package name. Returns Nothing if the package isn't in the registry.
+{-| Returns the known versions of `name`, or `Nothing` when the registry does
+not list it.
 -}
 getVersions : Pkg.Name -> Registry -> Maybe KnownVersions
 getVersions name (Registry _ versions) =
     Dict.get name versions
 
 
-{-| Look up available versions for a package name, providing suggested alternatives if not found.
-Returns nearby package names (by edit distance) when the package doesn't exist.
+{-| Returns the known versions of `name`, or, when the registry does not list
+it, the registry's names closest to it as `Compiler.Elm.Package.nearbyNames`
+chooses them.
 -}
 getVersions_ : Pkg.Name -> Registry -> Result (List Pkg.Name) KnownVersions
 getVersions_ name (Registry _ versions) =
@@ -310,6 +379,14 @@ getVersions_ name (Registry _ versions) =
 -- ====== POST ======
 
 
+{-| Sends a POST with no body to `path` on the package server, decodes the
+response with `decoder`, and runs `callback` on the result.
+
+A failed request gives `RP_Http`, and a response `decoder` rejects gives
+`RP_Data` with the URL and the body. Whatever the outcome, a line with the URL
+and the time taken, which includes `callback`, is then printed to stdout.
+
+-}
 post : Http.Manager -> String -> D.Decoder x a -> (a -> Task Never b) -> Task Never (Result Exit.RegistryProblem b)
 post manager path decoder callback =
     Website.route path []
@@ -352,7 +429,8 @@ post manager path decoder callback =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Binary decoder for reading a registry from disk cache.
+{-| A decoder for the registry as `registryEncoder` writes it to
+`registry.dat`.
 -}
 registryDecoder : Bytes.Decode.Decoder Registry
 registryDecoder =
@@ -361,7 +439,7 @@ registryDecoder =
         (BD.stdDict Pkg.nameDecoder knownVersionsDecoder)
 
 
-{-| Binary encoder for writing a registry to disk cache.
+{-| Produces the binary encoding of a registry that `registry.dat` holds.
 -}
 registryEncoder : Registry -> Bytes.Encode.Encoder
 registryEncoder (Registry size versions) =
@@ -371,6 +449,9 @@ registryEncoder (Registry size versions) =
         ]
 
 
+{-| A decoder for one package's known versions as `knownVersionsEncoder`
+writes them.
+-}
 knownVersionsDecoder : Bytes.Decode.Decoder KnownVersions
 knownVersionsDecoder =
     Bytes.Decode.map2 KnownVersions
@@ -378,6 +459,9 @@ knownVersionsDecoder =
         (BD.list V.versionDecoder)
 
 
+{-| Produces the binary encoding of one package's known versions: the newest,
+then the list of older ones.
+-}
 knownVersionsEncoder : KnownVersions -> Bytes.Encode.Encoder
 knownVersionsEncoder (KnownVersions version versions) =
     Bytes.Encode.sequence

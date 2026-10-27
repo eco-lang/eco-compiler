@@ -7,11 +7,18 @@ module Builder.File exposing
     , withStreamingWriter
     )
 
-{-| File system operations and utilities for the Elm compiler build system.
+{-| The builder keeps caches on disk and decides what to rebuild by comparing
+files, and this module is the small set of file operations it does that with.
 
-This module provides a high-level interface for file I/O operations used throughout
-the build process, including binary and UTF-8 file reading/writing, modification time
-tracking, and package extraction.
+Three facts shape the module. A cache file may be missing or damaged, and either
+way the builder should rebuild rather than stop, so `readBinary` treats both as
+absent. Every other read or write here is expected to succeed, and an IO error
+crashes the program instead of being returned. And a package's source is text,
+so it is copied as UTF-8 strings, and only the files a build needs are kept:
+`src/`, `elm.json`, `LICENSE` and `README.md`.
+
+A modification time (`Time`) is what staleness is judged by. It is stored in
+cache files as a count of milliseconds since the epoch.
 
 
 # File Modification Time
@@ -62,20 +69,22 @@ import Utils.Main as Utils
 -- ====== TIME ======
 
 
-{-| Represents a file modification time.
+{-| The time a file was last modified, to the millisecond.
 -}
 type Time
     = Time Time.Posix
 
 
-{-| Gets the modification time of a file.
+{-| Reads when the file at `path` was last modified. The program crashes if
+that cannot be read, including when the file does not exist.
 -}
 getTime : FilePath -> Task Never Time
 getTime path =
     Task.map Time (Utils.dirGetModificationTime path)
 
 
-{-| Returns a zero timestamp, used to indicate a file has never been modified.
+{-| The modification time at the epoch, 0 milliseconds. It stands in where
+there is no file to take a time from.
 -}
 zeroTime : Time
 zeroTime =
@@ -86,7 +95,8 @@ zeroTime =
 -- ====== BINARY ======
 
 
-{-| Writes binary data to a file, creating parent directories if needed.
+{-| Writes `value` to `path` with the encoder `toEncoder` builds, creating the
+parent directories first. The program crashes on an IO error.
 -}
 writeBinary : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 writeBinary toEncoder path value =
@@ -99,7 +109,14 @@ writeBinary toEncoder path value =
         |> Task.andThen (\_ -> Utils.binaryEncodeFile toEncoder path value)
 
 
-{-| Reads binary data from a file, returning Nothing if the file doesn't exist or is corrupt.
+{-| Reads and decodes the file at `path`, giving `Nothing` when there is no
+file there, when it cannot be read, or when `decoder` fails on it.
+
+In the last two cases a "Corrupt File" box naming the path and the error is
+printed to stderr first. Its byte offset is always 0, because
+`Utils.Main.binaryDecodeFileOrFail` reports no position. A caller cannot tell a
+damaged file from a missing one.
+
 -}
 readBinary : Bytes.Decode.Decoder a -> FilePath -> Task Never (Maybe a)
 readBinary decoder path =
@@ -139,15 +156,13 @@ readBinary decoder path =
 -- ====== WRITE UTF-8 ======
 
 
-{-| Writes a UTF-8 encoded string to a file, creating parent directories
-if needed. Mirrors `writeBinary`'s parent-dir creation so callers don't have
-to pre-create the destination directory (in particular `writePackage`, where
-the per-entry iteration order can put a file write ahead of its containing
-directory entry).
+{-| Writes `content` to `path` as UTF-8, creating the parent directories
+first. The program crashes on an IO error.
 
-For a path with no directory component (e.g. a bare "hello.js"),
-`fpDropFileName` returns the empty string; skip the mkdir in that case so
-the kernel doesn't see `mkdir("")` and reject it with EINVAL.
+Creating the parents means a caller need not, which matters for
+`writePackage`: an archive can list a file before the entry for its directory.
+A path with no directory part, such as a bare `hello.js`, has an empty parent,
+and the file is written with no directory created.
 
 -}
 writeUtf8 : FilePath -> String -> Task Never ()
@@ -173,7 +188,8 @@ writeUtf8 path content =
 -- ====== READ UTF-8 ======
 
 
-{-| Reads a UTF-8 encoded file as a string.
+{-| Reads the file at `path` as a UTF-8 string. The program crashes on an IO
+error, including when the file does not exist.
 -}
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
@@ -185,7 +201,13 @@ readUtf8 path =
 -- ====== WRITE PACKAGE ======
 
 
-{-| Extracts a package archive to a destination directory, filtering for relevant files.
+{-| Unpacks a package archive into `destination`, keeping only `src/`,
+`elm.json`, `LICENSE` and `README.md`.
+
+The first entry of the archive is taken to be its root directory, and its path
+is cut from the front of every other entry's path. The files are written as
+UTF-8 text. An empty archive writes nothing.
+
 -}
 writePackage : FilePath -> Zip.Archive -> Task Never ()
 writePackage destination archive =
@@ -202,6 +224,11 @@ writePackage destination archive =
             Utils.mapM_ (writeEntry destination root) entries
 
 
+{-| Writes one archive entry under `destination`, after cutting the first `root`
+characters from its path, if what remains is one of the kept files or under
+`src/`. A path ending in `/` is a directory and is created; anything else is
+written as a file. Other entries are skipped.
+-}
 writeEntry : FilePath -> Int -> Zip.Entry -> Task Never ()
 writeEntry destination root entry =
     let
@@ -229,11 +256,16 @@ writeEntry destination root entry =
 -- ====== COPY PACKAGE SOURCE ======
 
 
-{-| Copies a package's source from a read-only seed directory into a writable
-cache directory. Mirrors the `writePackage` whitelist (`src/`, `elm.json`,
-`LICENSE`, `README.md`); pre-built `.dat` artifacts and `docs.json` are
-deliberately not copied so the package is rebuilt in the cache. Used to seed a
-`--local-package` whose source path may be read-only (e.g. an installed kernel).
+{-| Copies a package's source from the directory `source` into
+`destination`, keeping the same files as `writePackage`: `elm.json`, `LICENSE`,
+`README.md` and everything under `src/`. Nothing else is copied, so build
+artifacts in `source` are left behind and the package is built afresh from the
+copy. This lets a package whose source may be read-only, such as an installed
+kernel, be built in a writable cache.
+
+Any of the four that does not exist is skipped. Files are copied as UTF-8 text,
+and the program crashes on an IO error.
+
 -}
 copyPackageSource : FilePath -> FilePath -> Task Never ()
 copyPackageSource source destination =
@@ -244,15 +276,20 @@ copyPackageSource source destination =
         [ "elm.json", "LICENSE", "README.md", "src" ]
 
 
-{-| Computes a fingerprint of a package seed directory: the sorted list of
-`(relative path, size, modification time)` for `elm.json` and for every file
-under `src/`, hashed into a short string. Any edit, addition, removal or rename
-of one of those files changes it (up to a hash collision).
+{-| Computes a short string that changes when the package source in `source`
+changes. It is built from the relative path, size and modification time of
+`elm.json` and of every file under `src/`, sorted by path, and records how many
+files there were and two hashes of that list. An edit that changes a file's size
+or modification time, an addition, a removal or a rename changes it, barring a
+hash collision. `LICENSE` and `README.md` are not part of it.
 
-Paths that do not exist are skipped, so a seed with no `src/` still gets a
-fingerprint (the caller decides whether that seed is valid). The hash uses only
-the narrow `Eco.Hash.stringWithSeed`, which every build of the compiler computes
-alike, so a fingerprint written by one build is understood by another.
+A missing `elm.json` or `src/` is skipped rather than reported, so a directory
+with neither still gets a fingerprint.
+
+The hashes are the narrow `Eco.Hash.stringWithSeed`, whose results the
+`Eco.Hash` docstring says agree between the compiler's builds for strings with
+no character above U+FFFF, so for such paths a fingerprint written by one build
+matches the one another computes.
 
 -}
 fingerprintPackageSource : FilePath -> Task Never String
@@ -279,9 +316,10 @@ fingerprintPackageSource source =
 
 
 {-| Adds the fingerprint entries of `relPath` (relative to `root`) to `acc`: one
-entry for a file, the entries of everything below it for a directory, and none
-when nothing is there. Existence is checked first because reading the size or
-modification time of a missing file crashes.
+entry of path, size in bytes and modification time in milliseconds for a file,
+the entries of everything below it for a directory, and none when nothing is
+there. Existence is checked first because reading the size or modification time
+of a missing file crashes.
 -}
 fingerprintPath : FilePath -> FilePath -> List ( FilePath, Int, Int ) -> Task Never (List ( FilePath, Int, Int ))
 fingerprintPath root relPath acc =
@@ -321,8 +359,9 @@ fingerprintPath root relPath acc =
             )
 
 
-{-| Recursively copies a file or directory tree. Paths that do not exist are
-skipped, so optional top-level entries (e.g. `LICENSE`) may be absent.
+{-| Copies the file or directory tree at `source` to `destination`, reading
+and writing each file as UTF-8 text. Nothing is done when `source` does not
+exist, so an optional entry such as `LICENSE` may be absent.
 -}
 copyPath : FilePath -> FilePath -> Task Never ()
 copyPath source destination =
@@ -357,7 +396,7 @@ copyPath source destination =
 -- ====== EXISTS ======
 
 
-{-| Checks if a file exists at the given path.
+{-| Tells whether a file exists at `path`.
 -}
 exists : FilePath -> Task Never Bool
 exists path =
@@ -368,7 +407,7 @@ exists path =
 -- ====== REMOVE FILES ======
 
 
-{-| Removes a file if it exists, silently succeeding if it doesn't.
+{-| Removes the file at `path`, doing nothing when there is no file there.
 -}
 remove : FilePath -> Task Never ()
 remove path =
@@ -387,8 +426,12 @@ remove path =
 -- ====== STREAMING ======
 
 
-{-| Opens a file for writing, passes a write-chunk function to the callback,
-and ensures the handle is closed after.
+{-| Opens `path` for writing, runs `callback` with a function that appends a
+string to the file, closes the file, and gives the callback's result.
+
+The program crashes on an IO error, and a crash inside `callback` leaves the
+file unclosed.
+
 -}
 withStreamingWriter :
     FilePath
@@ -411,14 +454,14 @@ withStreamingWriter path callback =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes a file modification time to bytes.
+{-| Encodes a modification time as its count of milliseconds since the epoch.
 -}
 timeEncoder : Time -> Bytes.Encode.Encoder
 timeEncoder (Time posix) =
     BE.int (Time.posixToMillis posix)
 
 
-{-| Decodes a file modification time from bytes.
+{-| A decoder for a modification time written by `timeEncoder`.
 -}
 timeDecoder : Bytes.Decode.Decoder Time
 timeDecoder =

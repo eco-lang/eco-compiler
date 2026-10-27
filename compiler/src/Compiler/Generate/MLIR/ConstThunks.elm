@@ -1,26 +1,38 @@
 module Compiler.Generate.MLIR.ConstThunks exposing (build, report)
 
-{-| Constant-thunk folding (plans/mlir-split-backend-04-constant-thunks.md
-Part II T2, CGEN\_082): the arity-0 top-level values whose body codegen can
-emit at every reference instead of an `eco.call` to the thunk.
+{-| A top-level value with no arguments is compiled as a _thunk_: a function
+of no parameters that every reference calls. A call hides the value from LLVM,
+so a reference to a constant such as `pi` or `2 * 1024` is not folded. This
+module decides which thunks are simple and pure enough that the back end may
+emit the thunk's own body at each reference instead of the call. Such a thunk
+is a _constant thunk_.
 
-A codegen-time map, like `nullConsBySpec` / `constCtorBySpec`: the graph is not
-changed and the thunk's `func.func` still exists and still returns the same
-value for any path not routed through the map. `Expr.generateVarGlobal` emits
-the thunk's OWN body at the reference (under a fresh lexical scope), so the
-ops, values, poison and guard semantics are exactly those of calling the
-thunk; LLVM then folds the constants the IPSCCP prologue used to propagate,
-and the call disappears.
+`build` returns the bodies of the admitted thunks by SpecId, for
+`Compiler.Generate.MLIR.Context`'s `constThunkBySpec`. The graph is not
+changed, and the thunk's own function is still emitted, as `Context` describes
+for its three constant maps. Because the body emitted at a reference is the
+thunk's own body, the reference computes what a call would.
 
-Phase 1 (`constThunks >= 1`): literal (not String), Unit, kernel float
-constant (`pi`, `e`), or an alias chain ending at one of those or at a
-null-cons / `Nothing` constant.
+A _candidate_ is a `MonoDefine` whose signature has no parameters, other than
+the program's static `main`. Which candidates are admitted depends on the
+_phase_, an integer that turns the analysis on in steps.
 
-Phase 2A (`constThunks >= 2`): additionally a CLOSED body of those plus
-`let`s and saturated calls that codegen lowers to a pure arithmetic intrinsic
-(both the `MonoVarKernel` and the elm/core global routes, plus kernel
-`logBase`, which codegen special-cases into two logs and a divide), within
-24 nodes.
+At phase 1 or above, a candidate is admitted when its body is a literal other
+than a String, `()`, a kernel float constant (`pi` or `e`), or a reference to
+another nullary spec that is a null-cons constant, a well-known constant such
+as `Nothing` (the `nullCons` and `constCtor` maps `build` is given), or itself
+an admitted thunk. A chain of such references is an _alias chain_; a chain
+that leads back to a thunk already being classified is refused.
+
+At phase 2 or above, a candidate is also admitted when its body is _closed_:
+built from those phase-1 shapes, references to locals its own `let`s bind,
+`let`s that bind with a plain definition, and saturated calls that lower to
+pure arithmetic, with at most `maxNodes` nodes in all. A call qualifies when
+its callee is a kernel function, or an elm/core global given all its
+arguments, that `Compiler.GlobalOpt.KernelIntrinsics` maps to a pure
+intrinsic, or kernel `Basics.logBase` with two arguments.
+
+`report` runs the same analysis to produce a census of it.
 
 @docs build, report
 
@@ -37,6 +49,13 @@ import Dict
 import Set
 
 
+{-| What the analysis needs about the program, and the phase it runs at.
+
+`mainSpec` is the static `main`, which is never a candidate. `nullCons` and
+`constCtor` are the null-cons and well-known-constant maps, consulted only for
+whether they contain a spec.
+
+-}
 type alias Env =
     { phase : Int
     , registry : Mono.SpecializationRegistry
@@ -48,19 +67,30 @@ type alias Env =
     }
 
 
-{-| Why a candidate was refused (census only).
+{-| The outcome of classifying one spec: admitted as a constant thunk or not.
+
+`Admit` carries the shape that admitted it: `"literal"`, `"unit"`, `"kconst"`
+(a kernel float constant), `"alias"` or `"closed"`.
+
+`Refuse` carries the reason, a short word the census counts, such as `"str"`,
+`"size"`, `"cycle"` or `"notThunk"`.
+
 -}
 type Verdict
-    = Admit String -- class: literal | unit | kconst | alias | closed
-    | Refuse String -- reason
+    = Admit String
+    | Refuse String
 
 
+{-| The largest number of nodes a closed body may have and still be admitted.
+-}
 maxNodes : Int
 maxNodes =
     24
 
 
-{-| SpecId -> the thunk body to emit at each reference.
+{-| Returns the body of every admitted constant thunk, keyed by its SpecId,
+given the phase, the program's specs, the static main, and the null-cons and
+well-known-constant maps. At phase 0 or below the result is empty.
 -}
 build :
     Int
@@ -101,6 +131,8 @@ build phase registry signatures nodes main nullCons constCtor =
             verdicts
 
 
+{-| Builds the analysis environment from `build`'s arguments.
+-}
 mkEnv :
     Int
     -> Mono.SpecializationRegistry
@@ -127,8 +159,11 @@ mkEnv phase registry signatures nodes main nullCons constCtor =
     }
 
 
-{-| Verdict for every candidate, in SpecId order (deterministic). Memoized:
-an alias or closed body consults the verdicts of the thunks it references.
+{-| Returns the verdict for every candidate, classifying them in SpecId order.
+
+The verdicts are memoised as they are found, because an alias or a closed body
+needs the verdict of each thunk it references.
+
 -}
 classifyAll : Env -> Dict.Dict Int Verdict
 classifyAll env =
@@ -148,6 +183,9 @@ classifyAll env =
         )
 
 
+{-| Tells whether a spec is a candidate: a `MonoDefine` with no parameters
+that is not the static `main`.
+-}
 isCandidate : Env -> Int -> Bool
 isCandidate env specId =
     if env.mainSpec == Just specId then
@@ -162,6 +200,13 @@ isCandidate env specId =
                 False
 
 
+{-| Returns the verdict for a spec, and the memo extended with it.
+
+A spec in `inProgress` is already being classified further up, so reaching it
+again is a cycle and is refused. A spec that is not a candidate is refused.
+Neither refusal is memoised.
+
+-}
 verdictOf : Env -> Set.Set Int -> Int -> Dict.Dict Int Verdict -> ( Verdict, Dict.Dict Int Verdict )
 verdictOf env inProgress specId memo =
     case Dict.get specId memo of
@@ -188,6 +233,9 @@ verdictOf env inProgress specId memo =
                         ( Refuse "notThunk", memo )
 
 
+{-| Returns the verdict for a candidate's body: a phase-1 shape first, then,
+at phase 2 or above, a closed body within `maxNodes`.
+-}
 classifyBody : Env -> Set.Set Int -> Mono.MonoExpr -> Dict.Dict Int Verdict -> ( Verdict, Dict.Dict Int Verdict )
 classifyBody env inProgress body memo =
     case phase1Class env inProgress body memo of
@@ -213,7 +261,11 @@ classifyBody env inProgress body memo =
                     ( Refuse (refuseReason body), memo2 )
 
 
-{-| Phase-1 shapes; `Just class` when the body is one.
+{-| Returns the class of a body that is a phase-1 shape, or `Nothing`.
+
+A reference to another spec is an alias when that spec has no parameters and
+is in the null-cons or well-known-constant map, or is itself admitted.
+
 -}
 phase1Class : Env -> Set.Set Int -> Mono.MonoExpr -> Dict.Dict Int Verdict -> ( Maybe String, Dict.Dict Int Verdict )
 phase1Class env inProgress body memo =
@@ -256,6 +308,8 @@ phase1Class env inProgress body memo =
             ( Nothing, memo )
 
 
+{-| Tells whether a spec's signature has no parameters.
+-}
 isNullaryTarget : Env -> Int -> Bool
 isNullaryTarget env target =
     case Array.get target env.signatures of
@@ -266,8 +320,12 @@ isNullaryTarget env target =
             False
 
 
-{-| Phase 2A: is `e` closed (built only from admissible pieces), and how
-many nodes does it have? `locals` are the let names bound so far.
+{-| Tells whether `e` is closed, and how many nodes it has; `locals` are the
+names the enclosing `let`s bind.
+
+A `let` counts one node, and so does a call; a call's callee is not counted.
+When `e` is not closed, the size is not meaningful.
+
 -}
 closed : Env -> Set.Set Int -> Set.Set String -> Mono.MonoExpr -> Dict.Dict Int Verdict -> ( Bool, Int, Dict.Dict Int Verdict )
 closed env inProgress locals e memo =
@@ -319,6 +377,14 @@ closed env inProgress locals e memo =
                     ( False, 0, memo1 )
 
 
+{-| Tells whether a call to `callee` with `args` lowers to pure arithmetic.
+
+A kernel callee qualifies through `pureIntrinsic`. A global callee qualifies
+when it is an elm/core function given exactly as many arguments as it has
+parameters, and its home and name select a pure intrinsic. Kernel
+`Basics.logBase` qualifies with two arguments of any type.
+
+-}
 pureCallee : Env -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Bool
 pureCallee env callee args resultType =
     let
@@ -348,8 +414,14 @@ pureCallee env callee args resultType =
             False
 
 
-{-| Intrinsics that lower to pure, non-allocating, LLVM-foldable arithmetic
-(no runtime call: `eco.int.pow` is `getOrCreateIntPow`).
+{-| Tells whether an intrinsic is one of the numeric, Bool, Char, conversion
+and Int, Float and Char comparison intrinsics this module treats as pure
+arithmetic.
+
+Integer power (`eco.int.pow`) is excluded because it lowers to a call to a
+runtime function. Array, String and List intrinsics, generic equality, generic
+`compare` and String ordering are excluded.
+
 -}
 pureIntrinsic : Maybe KernelIntrinsics.Intrinsic -> Bool
 pureIntrinsic mi =
@@ -408,6 +480,8 @@ pureIntrinsic mi =
             False
 
 
+{-| Returns the census's refusal reason for a body, from its outermost form.
+-}
 refuseReason : Mono.MonoExpr -> String
 refuseReason body =
     case body of
@@ -431,12 +505,23 @@ refuseReason body =
 
 
 
--- ====== CENSUS (ECO_CONST_THUNK_REPORT=1) ======
+-- ====== CENSUS ======
 
 
-{-| One stderr report: class and refusal counts, static reference sites of
-the admitted thunks, and the bodies of the four hot elm/core / compiler
-thunks the plan names.
+{-| Returns a census of the analysis, as lines of text.
+
+The first line gives the phase, the number of candidates and of admitted
+thunks, and the count of each class and refusal reason, with the cycle and
+not-a-thunk refusals counted under `other`. It ends with a count of the static
+references to admitted thunks that are found in define, tail-function and port
+bodies. Each further line shows a candidate whose name is one of `hashBase`,
+`branchFactor`, `shiftStep`, `bitMask` or `wordSize`, with its verdict and its
+body.
+
+The verdicts are computed at phase 2 or above whatever `phase` is; below phase
+2, closed thunks are left out of the admitted count and the reference sites,
+but are still counted as `closed`.
+
 -}
 report :
     Int
@@ -556,6 +641,8 @@ report phase registry signatures nodes main nullCons constCtor =
         )
 
 
+{-| Returns the census key of a verdict: the class, or the reason after a `!`.
+-}
 verdictKey : Verdict -> String
 verdictKey v =
     case v of
@@ -566,6 +653,8 @@ verdictKey v =
             "!" ++ r
 
 
+{-| Returns the expressions of a node that the census searches for references.
+-}
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs node =
     case node of
@@ -585,14 +674,19 @@ nodeExprs node =
             []
 
 
-{-| Static `MonoVarGlobal` references to admitted thunks (value position or
-not; an approximation of the folded reference sites).
+{-| Counts the static references to admitted thunks in `exprs`.
+
+This approximates the references that are folded: it counts every reference,
+whatever position it is in, and does not look inside every kind of expression.
+
 -}
 countRefs : Dict.Dict Int Verdict -> List Mono.MonoExpr -> Int
 countRefs admitted exprs =
     List.foldl (\e n -> n + countRefsExpr admitted e) 0 exprs
 
 
+{-| Counts the static references to admitted thunks in one expression.
+-}
 countRefsExpr : Dict.Dict Int Verdict -> Mono.MonoExpr -> Int
 countRefsExpr admitted e =
     case e of
@@ -648,7 +742,8 @@ countRefsExpr admitted e =
             0
 
 
-{-| Compact S-expression of a (small) body, for the census.
+{-| Returns a short S-expression for an expression, down to `depth` levels,
+with `…` below that.
 -}
 showExpr : Mono.SpecializationRegistry -> Int -> Mono.MonoExpr -> String
 showExpr registry depth e =

@@ -3,43 +3,46 @@ module Compiler.GlobalOpt.PreMono.LiftClosedArgs exposing
     , census
     )
 
-{-| PRE-MONOMORPHIZATION lambda-lifting of CLOSED lambda arguments — CENSUS ONLY
-(`plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md` §5 layer C).
+{-| Counts the lambdas that a not-yet-built transform, lifting closed lambda
+arguments to top-level globals, would rewrite, so that whether to build it can be
+decided on numbers. Nothing here changes the graph: `census` only reports.
 
-The plan is CENSUS-GATED and this module is the census. Nothing here rewrites
-anything: `census` runs the §3.1 scope predicate over the graph and reports what
-the pass WOULD touch, so the §5 build gate (≥ 100 closed sites, and ≥ 1 % of
-generic dispatch at them) can be decided before any transform exists.
+**The transform being measured.** A lambda literal passed as an argument to a
+global or a kernel would become a top-level `Define` under a fresh global name,
+and the argument would become a reference to that global. The point of doing
+so is that the lambda-set analysis in `Compiler.MonoSolver.Translate` records a
+global passed as an argument under the global's own name. Lifting is only
+straightforward for a _closed_ lambda, one with no free local names: a
+capturing lambda would need its captures turned into parameters, which changes
+what the callee is passed, so capturing lambdas are counted but never
+considered liftable.
 
-**What the transform would do.** A closed `Function` literal in ARGUMENT
-position of a call to a global or kernel becomes a top-level `Define` under a
-fresh global, and the argument becomes a reference to it. LSS resolves globals
-completely — `injectArgLambdaMemberGo`'s `VarGlobal` arm mints a `g|` member at
-the callee's parameter arrow — where an `l|` member whose closure the post-mono
-passes reshaped resolves to nothing (`g1absentl`).
+**What is counted.** A _candidate_ is a `Function` or `TrackedFunction` literal
+appearing directly as an argument of a call whose callee is a `VarGlobal` or a
+`VarKernel`. Candidates split into `capturing` and `closed`. A closed candidate
+is declined first by where it sits: inside a `TailDef` body, even one within a
+`Cycle` node; otherwise in a `Cycle` node; otherwise in a port. A closed
+candidate in none of these is declined when its body names a `VarCycle`, and
+then when the callee is _loopifiable_. Whatever is left is `liftable`.
+`Metrics` states the arithmetic.
 
-**Why the census exists at all.** §1.2's probe says the premise may not survive
-it: on the shape the item was designed for, the `g1absentl` was manufactured by
-`tryLoopify` in the POST-mono inliner, not by a missing member, and the lift's
-mechanism there is loopify DEFEAT rather than member repair. Site counts have
-mispredicted dynamic weight four times in this arc, so nothing is built until
-the closed population and its dispatch weight are both measured.
+**Loopifiable callees.** After monomorphization, `MonoInlineSimplify` turns
+calls to some recursive higher-order functions into local loops, and a lifted
+global argument would stop that happening. Before monomorphization the same
+callees can only be approximated: a global counts as loopifiable when it is
+recursive and declares a function-typed parameter. Recursion is judged by
+membership of a cyclic strongly connected component of the dependency graph,
+membership of a `Cycle` node, a reference to itself in its body, or any
+`TailCall` in its body. The last test is needed because a self-tail-recursive
+definition has already become a `TailDef` loop whose body names neither itself
+nor anything in its component, so without it folds such as `List.foldl` would
+not count as recursive.
 
-**The four numbers.** `candidates` is every lambda literal in argument position
-of a global/kernel callee — the denominator whose zero is impossible.
-`closed`/`capturing` split it on the free-local test, because capturing lambdas
-are OUT of v1 by construction (lifting them turns captures into parameters and
-changes the callee's interface). `declinedLoopifiable` is R1's exclusion: a
-recursive callee with a function-typed parameter is loopify's own territory, and
-a lifted `VarGlobal` argument would simply stop `tryLoopify` firing. `liftable`
-is what is left.
-
-**Free locals.** `TOpt` has no `freeVars` (`Monomorphize/Closure.findFreeLocals`
-is `MonoExpr`-only), so §3.1 specifies one: a binders-vs-uses walk where binders
-are `Function`/`TrackedFunction` params, `Let` def names, `TailDef` labels and
-args, and `Destruct` destructor names, and uses are
-`VarLocal`/`TrackedVarLocal`, a `Path`'s `Root`, a `TailCall` label and a
-`Case`'s root (its LABEL is neither).
+**Free locals.** `TOpt` has no free-variable function, so this module has its
+own: a walk that tracks bound names, where the binders are lambda parameters,
+`let` definition names, a `TailDef`'s label and arguments, and `Destruct`
+names, and the uses are local variables, a path's root, a `TailCall`'s label and
+a `Case`'s root.
 
 @docs Metrics
 @docs census
@@ -63,11 +66,18 @@ import Dict as CoreDict
 -- ============================================================================
 
 
-{-| §5 layer C. `candidates` is the denominator; everything else partitions it.
+{-| The census's counts of lambda arguments, each candidate counted once.
 
 `candidates = closed + capturing`, and
 `closed = liftable + declinedCycle + declinedPort + declinedTailDef +
 declinedVarCycle + declinedLoopifiable`.
+
+`byCallee` and `byCalleeLoopifiable` break `liftable` and
+`declinedLoopifiable` down by callee, keyed by the global's comparable name or,
+for a kernel, `home.name`. `lambdasSeen` and `callsSeen` count every lambda and
+every call walked, whatever its position. `recursiveGlobals` and
+`loopifiableGlobals` are the sizes of the two indexes the loopifiable test reads,
+so that a zero `declinedLoopifiable` can be told apart from an empty index.
 
 -}
 type alias Metrics =
@@ -75,36 +85,30 @@ type alias Metrics =
     , closed : Int
     , capturing : Int
 
-    -- §3.1 scope exclusions, counted over the CLOSED population only.
+    -- How the closed candidates were classified
     , declinedCycle : Int
     , declinedPort : Int
     , declinedTailDef : Int
     , declinedVarCycle : Int
-
-    -- R1: the callee is recursive AND takes a function-typed parameter, i.e.
-    -- `buildLoopifiables` is likely to admit it post-mono. Lifting there trades
-    -- a local loop for a keyed spec and is a dispatch question, not a stamping
-    -- one — so v1 skips it and the census sizes what that costs.
     , declinedLoopifiable : Int
     , liftable : Int
 
-    -- attribution: which HOFs the population sits at.
+    -- Per-callee breakdowns
     , byCallee : CoreDict.Dict String Int
     , byCalleeLoopifiable : CoreDict.Dict String Int
 
-    -- denominators that cannot be zero if the walk ran at all.
+    -- Totals over the whole walk
     , lambdasSeen : Int
     , callsSeen : Int
 
-    -- index sizes, so a zero in `declinedLoopifiable` can be read: it is the
-    -- R1 predicate finding nothing, or the population simply not sitting at
-    -- those callees.
+    -- Index sizes
     , recursiveGlobals : Int
     , loopifiableGlobals : Int
     }
 
 
-{-| All-zero metrics.
+{-| The metrics before anything has been counted: every count zero and both
+breakdowns empty.
 -}
 emptyMetrics : Metrics
 emptyMetrics =
@@ -126,8 +130,16 @@ emptyMetrics =
     }
 
 
-{-| Where the walk currently is. A lambda's eligibility depends on its ENCLOSING
-node, not on itself, so the scope travels with the walk.
+{-| The kind of code the walk is currently inside, which decides whether a closed
+lambda found there could be lifted at all.
+
+`InDefine` is the body of an ordinary `Define` or `TrackedDefine`, the only
+scope in which a closed lambda can be liftable. `InCycle` is a member of a
+`Cycle` node, `InPort` the body of an incoming or outgoing port, and
+`InTailDef` the body of a `TailDef`, whether a `let`-bound tail loop or a
+`Cycle` member that is one; a nested `TailDef` body inside any scope is
+`InTailDef` too.
+
 -}
 type Scope
     = InDefine
@@ -136,13 +148,12 @@ type Scope
     | InTailDef
 
 
+{-| The state threaded through the walk: the counts so far, the current scope,
+and the set of loopifiable callees, keyed as `byCallee` is.
+-}
 type alias Ctx =
     { metrics : Metrics
     , scope : Scope
-
-    -- callee name -> True when the callee is recursive and takes a
-    -- function-typed parameter (R1's pre-mono approximation of
-    -- `buildLoopifiables`).
     , loopifiable : CoreDict.Dict String ()
     }
 
@@ -153,9 +164,13 @@ type alias Ctx =
 -- ============================================================================
 
 
-{-| Classify every lambda literal in argument position. Returns metrics only —
-the graph is never touched, so this is safe to run unconditionally behind
-`inline.report`.
+{-| Returns the counts for every lambda literal passed as an argument to a global
+or a kernel in `graph`, classified as the module docstring describes. The
+graph is only read.
+
+Only `Define`, `TrackedDefine`, port and `Cycle` nodes are walked; other nodes
+hold no expressions to classify.
+
 -}
 census : TOpt.GlobalGraph TypeIds.MVarId -> Metrics
 census ((TOpt.GlobalGraph nodes _ _ _ _) as graph) =
@@ -180,6 +195,10 @@ census ((TOpt.GlobalGraph nodes _ _ _ _) as graph) =
     (Dict.foldl (\_ node c -> walkNode c node) ctx0 nodes).metrics
 
 
+{-| Returns `ctx` with every expression in `node` walked under the node's scope.
+A `Cycle`'s values and functions are walked as `InCycle`, except that a
+function which is a `TailDef` is walked as `InTailDef`.
+-}
 walkNode : Ctx -> TOpt.Node TypeIds.MVarId -> Ctx
 walkNode ctx node =
     case node of
@@ -212,9 +231,13 @@ walkNode ctx node =
 -- ============================================================================
 
 
-{-| Every call whose callee names a global or a kernel has its ARGUMENTS
-classified; everything is then walked normally, so a lambda nested inside
-another lambda's body is reached too.
+{-| Returns `ctx` with every call and lambda in `expr` counted, and the lambda
+arguments of every call to a global or a kernel classified.
+
+The whole expression is walked, callee and arguments included, so a call
+nested inside a lambda argument is classified too. A `let`-bound `TailDef`'s
+body is walked as `InTailDef`, and the scope is restored for the `let` body.
+
 -}
 walk : Ctx -> TOpt.Expr TypeIds.MVarId -> Ctx
 walk ctx expr =
@@ -235,9 +258,6 @@ walk ctx expr =
             List.foldl (\e c -> walk c e) (walk ctx2 callee) args
 
         TOpt.Let (TOpt.TailDef _ _ _ tailBody _ _) body _ ->
-            -- A `TailDef` body's jump labels are local to it, so a lambda
-            -- lifted out of one would reference a label that does not exist
-            -- in the lifted global (§3.1).
             let
                 ctxT =
                     walk { ctx | scope = InTailDef } tailBody
@@ -254,7 +274,8 @@ walk ctx expr =
             List.foldl (\e c -> walk c e) ctx (children expr)
 
 
-{-| One argument of a call to a named callee.
+{-| Returns `ctx` with `arg` classified if it is a lambda literal, and unchanged
+otherwise. `calleeKey` names the callee for the per-callee breakdowns.
 -}
 classifyArg : String -> Ctx -> TOpt.Expr TypeIds.MVarId -> Ctx
 classifyArg calleeKey ctx arg =
@@ -269,6 +290,11 @@ classifyArg calleeKey ctx arg =
             ctx
 
 
+{-| Returns `ctx` with the lambda `lam`, whose body is `body`, counted as a
+candidate and as exactly one of capturing, declined for one reason, or
+liftable. Where the lambda sits decides first, then `VarCycle`, then the
+callee, as the module docstring describes.
+-}
 classifyLambda : String -> Ctx -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Ctx
 classifyLambda calleeKey ctx lam body =
     let
@@ -319,6 +345,9 @@ classifyLambda calleeKey ctx lam body =
                     }
 
 
+{-| Returns `ctx` with the body of the definition `def` walked, as `InTailDef`
+when it is a `TailDef` and in the current scope otherwise.
+-}
 walkDef : Ctx -> TOpt.Def TypeIds.MVarId -> Ctx
 walkDef ctx def =
     case def of
@@ -329,6 +358,8 @@ walkDef ctx def =
             walk { ctx | scope = InTailDef } body
 
 
+{-| Returns `ctx` with one more lambda seen.
+-}
 bumpLambdas : Ctx -> Ctx
 bumpLambdas ctx =
     let
@@ -338,6 +369,8 @@ bumpLambdas ctx =
     { ctx | metrics = { m | lambdasSeen = m.lambdasSeen + 1 } }
 
 
+{-| Returns `ctx` with one more call seen.
+-}
 bumpCalls : Ctx -> Ctx
 bumpCalls ctx =
     let
@@ -347,13 +380,18 @@ bumpCalls ctx =
     { ctx | metrics = { m | callsSeen = m.callsSeen + 1 } }
 
 
+{-| Returns `d` with the count at `k` raised by one, starting from zero.
+-}
 bump : String -> CoreDict.Dict String Int -> CoreDict.Dict String Int
 bump k d =
     CoreDict.update k (\v -> Just (Maybe.withDefault 0 v + 1)) d
 
 
-{-| A `VarCycle` anywhere in the body: referencing a cycle member from a lifted
-global would need the cycle's placeholder machinery (§3.1).
+{-| Returns whether `expr` contains a `VarCycle` anywhere.
+
+A `VarCycle` refers to a value defined in a `Cycle` node; a reference to a
+recursive function in a cycle is a `VarGlobal` and does not count here.
+
 -}
 namesCycle : TOpt.Expr TypeIds.MVarId -> Bool
 namesCycle expr =
@@ -365,6 +403,10 @@ namesCycle expr =
             List.any namesCycle (children expr)
 
 
+{-| Returns the key a callee is counted under: the comparable name of a
+`VarGlobal`, or `home.name` for a `VarKernel`. Any other callee gives
+`Nothing`, and its arguments are not classified.
+-}
 calleeName : TOpt.Expr TypeIds.MVarId -> Maybe String
 calleeName func =
     case func of
@@ -380,26 +422,17 @@ calleeName func =
 
 
 -- ============================================================================
--- ====== R1: WHICH CALLEES LOOPIFY WOULD CLAIM ======
+-- ====== LOOPIFIABLE CALLEES ======
 -- ============================================================================
 
 
-{-| The pre-mono approximation of `MonoInlineSimplify.buildLoopifiables`: a
-global that is RECURSIVE and declares a function-typed parameter. Post-mono the
-real test is a `MonoTailFunc` spec with a `paramLoopifiable` function param;
-neither the spec nor the tail shape exists yet here, and recursion plus a
-function parameter is what produces both.
+{-| Returns the keys of the globals in the graph that are loopifiable: those in
+`rec`, the recursive globals, that declare a function-typed parameter.
 
-Recursion is decided as `InlineSimplify.recursiveGlobals` decides it — an SCC
-over the dependency sets, membership of a `Cycle`, and a structural scan of the
-body for a self-reference, because a self-recursive definition's `deps` need not
-contain itself — PLUS one test that pass does not need: a `TailCall` anywhere in
-the body. A self-tail-recursive definition is rewritten into a `TailDef` loop
-before this point, so `List.foldl`'s body names neither itself nor anything in
-its own SCC, and the first three tests all say "not recursive" for precisely the
-folds loopify exists to claim (MEASURED: without this, `declinedLoopifiable` is
-0 and `List.foldl`/`Dict.foldr` appear as liftable). A `TailCall` is also the
-shape that becomes the `MonoTailFunc` spec `buildLoopifiables` reads.
+This approximates, before monomorphization, the callees that
+`MonoInlineSimplify.buildLoopifiables` admits afterwards, because the
+specializations and tail-call shapes it reads do not exist yet. A `Cycle`
+contributes one entry per member.
 
 -}
 buildLoopifiable : CoreDict.Dict String () -> TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String ()
@@ -421,9 +454,14 @@ buildLoopifiable rec (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
-{-| Every global this node defines, with whether it declares a function-typed
-parameter. A `Cycle` defines one global PER MEMBER, which is what call sites
-name; its own key names nothing callable.
+{-| Returns the key of every global `node` defines, stored under `g`, each paired
+with whether it declares a function-typed parameter.
+
+A `Cycle` gives one entry per function member, keyed by the member's own global,
+because that is what call sites name. A `TailDef` member is tested on its
+argument types. Nodes other than `Define`, `TrackedDefine` and `Cycle` give
+nothing.
+
 -}
 nodeFunctionParams : TOpt.Global -> TOpt.Node TypeIds.MVarId -> List ( String, Bool )
 nodeFunctionParams g node =
@@ -452,9 +490,13 @@ nodeFunctionParams g node =
             []
 
 
-{-| The declared type is peeled to the parameter count the BODY writes — the
-graph's arity, never the type's full arrow spine, which counts a curried
-result's arrows too (`EtaExpand.calleeArity`'s recorded miscompile).
+{-| Returns whether any of the parameters `body` declares has a function type in
+`tipe`.
+
+Only as many arrows of `tipe` are examined as `body` has parameters, so an arrow
+in the result of a function returning a function does not count. A body that
+is not a lambda has no parameters and gives `False`.
+
 -}
 bodyHasFunctionParam : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Bool
 bodyHasFunctionParam body tipe =
@@ -473,6 +515,9 @@ bodyHasFunctionParam body tipe =
     anyParamIsArrow arity tipe
 
 
+{-| Returns whether any of the first `n` parameter types of `tipe` is a function
+type. Only `Filled` aliases are looked through; any other type ends the search.
+-}
 anyParamIsArrow : Int -> Can.Type TypeIds.MVarId -> Bool
 anyParamIsArrow n tipe =
     if n <= 0 then
@@ -490,6 +535,9 @@ anyParamIsArrow n tipe =
                 False
 
 
+{-| Returns whether `tipe` is a function type, looking through `Filled` aliases
+but not `Holey` ones.
+-}
 isArrow : Can.Type TypeIds.MVarId -> Bool
 isArrow tipe =
     case tipe of
@@ -503,6 +551,15 @@ isArrow tipe =
             False
 
 
+{-| Returns the keys of the recursive globals in the graph.
+
+A global is recursive when it is in a cyclic strongly connected component of
+the dependency graph, when it is a `Cycle` node or one of its function
+members, or when it is a `Define` or `TrackedDefine` whose body `loops`. The
+structural tests are needed because a definition's dependency set need not
+contain the definition itself.
+
+-}
 recursiveNames : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String ()
 recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
     let
@@ -560,10 +617,7 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
                 (\g node acc ->
                     case node of
                         TOpt.Cycle _ _ funcDefs _ ->
-                            -- A cycle's MEMBERS are what call sites name, and
-                            -- they are recursive by construction; the cycle's
-                            -- own key is never a callee. `EtaExpand.buildIndex`
-                            -- keys them the same way.
+                            -- Call sites name the members, not the cycle's own key.
                             List.foldl
                                 (\d a -> CoreDict.insert (TOpt.toComparableGlobal (memberGlobal g d)) () a)
                                 (CoreDict.insert (TOpt.toComparableGlobal g) () acc)
@@ -592,13 +646,20 @@ recursiveNames (TOpt.GlobalGraph nodes _ _ _ _) =
     CoreDict.union inCycle structural
 
 
-{-| Self-reference by name, or a tail loop. See `buildLoopifiable`.
+{-| Returns whether `body` refers to the global `g` or contains a `TailCall`.
+
+A self-tail-recursive definition has already become a `TailDef` loop whose body
+names neither itself nor anything in its component, so the `TailCall` test is
+what makes folds such as `List.foldl` count as recursive.
+
 -}
 loops : TOpt.Global -> TOpt.Expr TypeIds.MVarId -> Bool
 loops g body =
     namesGlobal g body || hasTailCall body
 
 
+{-| Returns whether `expr` contains a `TailCall` anywhere.
+-}
 hasTailCall : TOpt.Expr TypeIds.MVarId -> Bool
 hasTailCall expr =
     case expr of
@@ -609,7 +670,8 @@ hasTailCall expr =
             List.any hasTailCall (children expr)
 
 
-{-| A cycle member's own global: the cycle node's home plus the def's name.
+{-| Returns the global of the `Cycle` member `def`: the cycle node's home
+module with the definition's name.
 -}
 memberGlobal : TOpt.Global -> TOpt.Def TypeIds.MVarId -> TOpt.Global
 memberGlobal (TOpt.Global home _) def =
@@ -621,6 +683,9 @@ memberGlobal (TOpt.Global home _) def =
             TOpt.Global home name
 
 
+{-| Returns whether `expr` refers to the global `g`, as a `VarGlobal`,
+`VarEnum`, `VarBox` or `VarCycle`.
+-}
 namesGlobal : TOpt.Global -> TOpt.Expr TypeIds.MVarId -> Bool
 namesGlobal ((TOpt.Global home name) as g) expr =
     case expr of
@@ -646,14 +711,24 @@ namesGlobal ((TOpt.Global home name) as g) expr =
 -- ============================================================================
 
 
-{-| The free LOCAL names of an expression (§3.1). Globals, kernels, cycle
-members and constructors are not locals and never appear.
+{-| Returns the local names `expr` uses without binding them. References to
+globals, kernels, cycle values and constructors are not local and never
+appear.
 -}
 freeLocals : TOpt.Expr TypeIds.MVarId -> CoreDict.Dict String ()
 freeLocals expr =
     freeGo CoreDict.empty expr CoreDict.empty
 
 
+{-| Returns `acc` with every local name used in `expr` and bound neither in
+`expr` nor in `bound` added.
+
+A `let` definition's name is bound in the `let` body only, not in its own
+definition. A `TailDef`'s label is bound in its loop body and in the `let`
+body, its arguments only in the loop body. A `Case`'s root is a use; its label
+is neither a use nor a binder.
+
+-}
 freeGo : CoreDict.Dict String () -> TOpt.Expr TypeIds.MVarId -> CoreDict.Dict String () -> CoreDict.Dict String ()
 freeGo bound expr acc =
     case expr of
@@ -672,8 +747,6 @@ freeGo bound expr acc =
         TOpt.Let def body _ ->
             case def of
                 TOpt.Def _ n bound1 _ ->
-                    -- Elm's non-recursive `let`: the name is in scope in the
-                    -- BODY only (recursion travels through `Cycle`/`TailDef`).
                     freeGo (CoreDict.insert n () bound) body (freeGo bound bound1 acc)
 
                 TOpt.TailDef _ n args tailBody _ _ ->
@@ -689,7 +762,6 @@ freeGo bound expr acc =
             freeGo (CoreDict.insert n () bound) body (use bound (pathRoot path) acc)
 
         TOpt.Case _ root decider jumps _ ->
-            -- The LABEL binds nothing and is not a use; the ROOT is a use.
             List.foldl (\( _, e ) a -> freeGo bound e a)
                 (freeDecider bound decider (use bound root acc))
                 jumps
@@ -701,6 +773,9 @@ freeGo bound expr acc =
             List.foldl (\e a -> freeGo bound e a) acc (children expr)
 
 
+{-| Returns `acc` with the free locals of every `Inline` choice in `decider` added.
+`Jump` choices add nothing here; their bodies are the `Case`'s jumps.
+-}
 freeDecider : CoreDict.Dict String () -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> CoreDict.Dict String () -> CoreDict.Dict String ()
 freeDecider bound decider acc =
     case decider of
@@ -717,6 +792,8 @@ freeDecider bound decider acc =
             freeDecider bound fallback (List.foldl (\( _, d ) a -> freeDecider bound d a) acc branches)
 
 
+{-| Returns `acc` with `n` added, unless `n` is in `bound`.
+-}
 use : CoreDict.Dict String () -> Name -> CoreDict.Dict String () -> CoreDict.Dict String ()
 use bound n acc =
     if CoreDict.member n bound then
@@ -726,6 +803,8 @@ use bound n acc =
         CoreDict.insert n () acc
 
 
+{-| Returns the local name a destructuring path starts from.
+-}
 pathRoot : TOpt.Path -> Name
 pathRoot path =
     case path of
@@ -751,8 +830,8 @@ pathRoot path =
 -- ============================================================================
 
 
-{-| Immediate sub-expressions, including the decider's `Inline` choices. Mirrors
-`InlineSimplify.children`; the two walks want the same constructor set.
+{-| Returns the immediate sub-expressions of `expr`, including a `Case`'s
+`Inline` choices and jump bodies and a `let` definition's body.
 -}
 children : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 children expr =
@@ -803,6 +882,8 @@ children expr =
             []
 
 
+{-| Returns the expression a `let` definition binds, or a `TailDef`'s loop body.
+-}
 defChildren : TOpt.Def TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 defChildren def =
     case def of
@@ -813,6 +894,8 @@ defChildren def =
             [ body ]
 
 
+{-| Returns the expressions of every `Inline` choice in `decider`.
+-}
 deciderChildren : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId)
 deciderChildren decider =
     case decider of

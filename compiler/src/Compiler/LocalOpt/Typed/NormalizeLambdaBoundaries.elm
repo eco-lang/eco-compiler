@@ -4,19 +4,35 @@ module Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries exposing
     , normalizeLocalGraph
     )
 
-{-| Lambda Boundary Normalization Pass
+{-| A function written as a lambda whose body computes something and then
+returns another lambda is, to everything downstream, a function of fewer
+parameters that returns a closure. This module merges such lambdas into one
+wider lambda where that is safe, so that later staging sees fewer curried stages
+and the native back end builds fewer intermediate closures.
 
-This pass rewrites TypedOptimized (TOpt) lambdas to reduce spurious staging
-boundaries. By pulling lambda parameters across `let` and `case` boundaries
-when semantically safe, staged currying sees flatter lambdas, resulting in
-fewer intermediate closures and simpler ABIs.
+A _lambda boundary_ is a `let` or a `case` sitting between two layers of
+lambda. The pass removes two kinds:
 
-Transformations:
+1.  A let boundary. `\x -> let t = e in \y -> body` becomes
+    `\x y -> let t = e in body`. Any chain of nested `let`s may sit between the
+    two lambdas.
+2.  A case boundary. `\x -> case s of A -> \a -> e1; B -> \b -> e2` becomes
+    `\x a_hl_0 -> case s of A -> e1[a := a_hl_0]; B -> e2[b := a_hl_0]`. This
+    happens only when every branch of the `case` is a lambda, all with the same
+    number of parameters and equal parameter types. The new parameters are named
+    after the first branch's, with `_hl_` and a counter appended, and every
+    branch body is renamed to use them. The `case`'s result type loses that
+    many argument types; its type variable is left as it was.
 
-1.  `\x -> let t = e in \y -> body` becomes `\x y -> let t = e in body`
-2.  `\x -> case s of A -> \a -> e1; B -> \b -> e2` becomes
-    `\x _a_hl_0 -> case s of A -> e1[a↦_a_hl_0]; B -> e2[b↦_a_hl_0]`
-    (when all branches have same arity and param types; names are alpha-renamed)
+Both rewrites move the `let` bindings and the `case` test under the merged
+lambda, so they run once per full application instead of once per partial
+application. Elm is pure, so only the cost changes, not the result.
+
+The pass runs bottom-up over every expression in a module's local graph: the
+body of a lambda is normalized first, then both rewrites are retried on the
+lambda until neither applies. A merged lambda keeps the outer lambda's metadata,
+whose type is unchanged, and has no lambda id. A merged `TrackedFunction` gives
+every parameter the region of the outer lambda's first parameter.
 
 
 # Lambda Kind
@@ -47,17 +63,20 @@ import Dict exposing (Dict)
 -- LAMBDA KIND
 
 
-{-| Which variant of lambda to use when rebuilding merged lambdas.
-PlainLambda = TOpt.Function
-TrackedLambda = TOpt.TrackedFunction (carries region for Located names)
+{-| The form a merged lambda is rebuilt in, matching the outer lambda it
+replaces.
+
+`PlainLambda` rebuilds a `TOpt.Function`. `TrackedLambda` rebuilds a
+`TOpt.TrackedFunction`, and its region is given to every parameter.
+
 -}
 type LambdaKind
     = PlainLambda
     | TrackedLambda A.Region
 
 
-{-| Rebuild a lambda from flat (Name, Can.Type Name) params using the outer kind.
-This ensures we always preserve the outer lambda's variant.
+{-| Builds a lambda of the given kind over `params` and `body`, carrying
+`funcMeta` and no lambda id.
 -}
 rebuildLambda :
     LambdaKind
@@ -68,8 +87,7 @@ rebuildLambda :
 rebuildLambda kind params body funcMeta =
     case kind of
         PlainLambda ->
-            -- LocalOpt runs before AssignMVarIds stamps lambda ids, so
-            -- constructions here carry Nothing (stamped later, per run).
+            -- Lambda ids are stamped by a later pass, so none is given here.
             TOpt.Function Nothing params body funcMeta
 
         TrackedLambda region ->
@@ -87,28 +105,33 @@ rebuildLambda kind params body funcMeta =
 -- FRESH NAME GENERATOR
 
 
-{-| Mapping from original variable name to renamed variable name.
+{-| A renaming of local variables, from each original name to its replacement.
 -}
 type alias RenameEnv =
     Dict Name.Name Name.Name
 
 
-{-| Local state for alpha-renaming (unique suffix counter).
+{-| The state of fresh-name generation: the number the next fresh name will
+end in.
 -}
 type alias RenameCtx =
     { nextId : Int
     }
 
 
-{-| Create an empty renaming context with initial ID counter.
+{-| A renaming context whose first fresh name ends in 0.
 -}
 emptyRenameCtx : RenameCtx
 emptyRenameCtx =
     { nextId = 0 }
 
 
-{-| Generate a fresh name from a base name plus unique suffix.
-Pattern: base ++ "\_hl\_" ++ id (hl = heapless lambda)
+{-| Returns `base` followed by `_hl_` and the context's counter, such as
+`a_hl_0`, and the context with the counter advanced.
+
+The name is unique only among names made from the same context. Nothing checks
+it against the names already in scope.
+
 -}
 freshName : Name.Name -> RenameCtx -> ( Name.Name, RenameCtx )
 freshName base ctx =
@@ -122,14 +145,15 @@ freshName base ctx =
     ( newName, { ctx | nextId = ctx.nextId + 1 } )
 
 
-{-| Insert a rename mapping into the environment.
+{-| Adds a renaming of `oldName` to `newName`, replacing any earlier renaming
+of `oldName`.
 -}
 insertRename : Name.Name -> Name.Name -> RenameEnv -> RenameEnv
 insertRename oldName newName env =
     Dict.insert oldName newName env
 
 
-{-| Look up a name in the rename environment, returning original if not found.
+{-| Returns the replacement for `name`, or `name` itself when it is not renamed.
 -}
 lookupRename : RenameEnv -> Name.Name -> Name.Name
 lookupRename env name =
@@ -145,9 +169,15 @@ lookupRename env name =
 -- RENAME EXPR
 
 
-{-| Rename variable occurrences in an expression according to the given environment.
-This function applies a closed rename environment: it renames occurrences of
-variables but does NOT introduce new bindings or generate fresh names.
+{-| Returns `expr` with names renamed by `env`.
+
+Renamed are local variable uses, the names in `VarCycle` and `VarDebug` nodes, a
+`case`'s label and inspected variable, and the names bound by `let` value
+definitions and destructurings. Lambda parameters, tail-definition names and
+parameters, and `TailCall` names are left alone, and a binder does not stop the
+renaming: a use inside a lambda whose parameter has a renamed name is renamed
+too.
+
 -}
 renameExpr : RenameEnv -> TOpt.Expr Name -> TOpt.Expr Name
 renameExpr env expr =
@@ -156,7 +186,6 @@ renameExpr env expr =
             renameExpr env
     in
     case expr of
-        -- Literals: unchanged
         TOpt.Bool region value meta ->
             TOpt.Bool region value meta
 
@@ -172,14 +201,12 @@ renameExpr env expr =
         TOpt.Float region value meta ->
             TOpt.Float region value meta
 
-        -- Local variables: apply rename
         TOpt.VarLocal name meta ->
             TOpt.VarLocal (lookupRename env name) meta
 
         TOpt.TrackedVarLocal region name meta ->
             TOpt.TrackedVarLocal region (lookupRename env name) meta
 
-        -- Global/external variables: unchanged
         TOpt.VarGlobal region global meta ->
             TOpt.VarGlobal region global meta
 
@@ -190,7 +217,6 @@ renameExpr env expr =
             TOpt.VarBox region global meta
 
         TOpt.VarCycle region home name meta ->
-            -- Local name refers to a binding; apply rename
             TOpt.VarCycle region home (lookupRename env name) meta
 
         TOpt.VarDebug region name home maybeUnhandled meta ->
@@ -199,19 +225,15 @@ renameExpr env expr =
         TOpt.VarKernel region kernelPrefix home name meta ->
             TOpt.VarKernel region kernelPrefix home name meta
 
-        -- Collections: recurse
         TOpt.List region entries meta ->
             TOpt.List region (List.map ren entries) meta
 
-        -- Lambdas: rename body only (params not touched here;
-        -- alpha-renaming of params handled by normalization code via rebuildLambda)
         TOpt.Function srcLam args body meta ->
             TOpt.Function srcLam args (ren body) meta
 
         TOpt.TrackedFunction srcLam args body meta ->
             TOpt.TrackedFunction srcLam args (ren body) meta
 
-        -- Calls
         TOpt.Call region func args meta ->
             TOpt.Call region (ren func) (List.map ren args) meta
 
@@ -222,7 +244,6 @@ renameExpr env expr =
             in
             TOpt.TailCall name (List.map renPair namedArgs) meta
 
-        -- Control flow
         TOpt.If branches final meta ->
             let
                 renBranch ( cond, br ) =
@@ -252,7 +273,6 @@ renameExpr env expr =
             in
             TOpt.Case newLabel newRoot newDecider newJumps meta
 
-        -- Records
         TOpt.Accessor region fieldName meta ->
             TOpt.Accessor region fieldName meta
 
@@ -268,7 +288,6 @@ renameExpr env expr =
         TOpt.TrackedRecord region fields meta ->
             TOpt.TrackedRecord region (Data.Map.map (\_ e -> ren e) fields) meta
 
-        -- Other
         TOpt.Unit meta ->
             TOpt.Unit meta
 
@@ -279,6 +298,9 @@ renameExpr env expr =
             TOpt.Shader src attrs uniforms meta
 
 
+{-| Returns `def` with its body renamed by `env`; a plain definition's own name
+is renamed too, a tail definition's name and parameters are not.
+-}
 renameDef : RenameEnv -> TOpt.Def Name -> TOpt.Def Name
 renameDef env def =
     case def of
@@ -286,16 +308,19 @@ renameDef env def =
             TOpt.Def region (lookupRename env name) (renameExpr env bound) tipe
 
         TOpt.TailDef region name args body tipe tvar ->
-            -- Do not alpha-rename TailDef params here;
-            -- that should be done by a higher-level transformation.
             TOpt.TailDef region name args (renameExpr env body) tipe tvar
 
 
+{-| Returns the destructuring with its bound name and the root of its path
+renamed by `env`.
+-}
 renameDestructor : RenameEnv -> TOpt.Destructor Name -> TOpt.Destructor Name
 renameDestructor env (TOpt.Destructor name path meta) =
     TOpt.Destructor (lookupRename env name) (renamePath env path) meta
 
 
+{-| Returns `path` with the variable at its root renamed by `env`.
+-}
 renamePath : RenameEnv -> TOpt.Path -> TOpt.Path
 renamePath env path =
     case path of
@@ -315,7 +340,8 @@ renamePath env path =
             TOpt.Root (lookupRename env name)
 
 
-{-| Apply renaming to a pattern match decider tree.
+{-| Returns the decision tree with the branch bodies held inline in its leaves
+renamed by `env`.
 -}
 renameDecider : RenameEnv -> TOpt.Decider (TOpt.Choice Name) -> TOpt.Decider (TOpt.Choice Name)
 renameDecider env decider =
@@ -336,6 +362,9 @@ renameDecider env decider =
             TOpt.FanOut path (List.map renEdge edges) (renameDecider env fallback)
 
 
+{-| Returns `choice` with an inline branch body renamed by `env`; a jump is
+unchanged.
+-}
 renameChoice : RenameEnv -> TOpt.Choice Name -> TOpt.Choice Name
 renameChoice env choice =
     case choice of
@@ -350,7 +379,8 @@ renameChoice env choice =
 -- NORMALIZE LOCAL GRAPH
 
 
-{-| Normalize a LocalGraph by applying lambda boundary normalization to all nodes.
+{-| Returns the graph with lambda boundaries removed from the expressions of
+every definition, cycle and port node.
 -}
 normalizeLocalGraph : TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 normalizeLocalGraph (TOpt.LocalGraph data) =
@@ -360,6 +390,9 @@ normalizeLocalGraph (TOpt.LocalGraph data) =
         }
 
 
+{-| Returns `node` with its expressions normalized. Nodes holding no
+expression are returned unchanged.
+-}
 normalizeNode : TOpt.Node Name -> TOpt.Node Name
 normalizeNode node =
     case node of
@@ -381,11 +414,12 @@ normalizeNode node =
         TOpt.PortOutgoing expr deps meta ->
             TOpt.PortOutgoing (normalizeExpr expr) deps meta
 
-        -- Ctor, Enum, Box, Link, Kernel, Manager: no expressions to normalize
         _ ->
             node
 
 
+{-| Returns `def` with its body normalized.
+-}
 normalizeDef : TOpt.Def Name -> TOpt.Def Name
 normalizeDef def =
     case def of
@@ -400,6 +434,13 @@ normalizeDef def =
 -- NORMALIZE EXPR
 
 
+{-| Returns `expr` with every lambda in it normalized, innermost first.
+
+Each lambda's body is normalized before the lambda itself has its boundaries
+removed. A `TrackedFunction` with no parameters is rebuilt as a plain
+`Function`.
+
+-}
 normalizeExpr : TOpt.Expr Name -> TOpt.Expr Name
 normalizeExpr expr =
     case expr of
@@ -418,7 +459,6 @@ normalizeExpr expr =
                 normalizedBody =
                     normalizeExpr body
 
-                -- Extract kind from first param's region
                 kind =
                     case params of
                         ( A.At region _, _ ) :: _ ->
@@ -427,7 +467,6 @@ normalizeExpr expr =
                         [] ->
                             PlainLambda
 
-                -- Convert to flat params for normalization
                 flatParams =
                     List.map (\( A.At _ n, t ) -> ( n, t )) params
 
@@ -436,7 +475,6 @@ normalizeExpr expr =
             in
             rebuildLambda kind finalParams finalBody lambdaMeta
 
-        -- Other cases: recurse on children
         TOpt.Let def body letMeta ->
             TOpt.Let (normalizeDef def) (normalizeExpr body) letMeta
 
@@ -484,11 +522,14 @@ normalizeExpr expr =
         TOpt.Destruct destructor body destMeta ->
             TOpt.Destruct destructor (normalizeExpr body) destMeta
 
-        -- Leaf expressions: no recursion needed
+        -- Var*, literals, Accessor, TailCall and Shader hold no lambda.
         _ ->
             expr
 
 
+{-| Returns the decision tree with the branch bodies held inline in its leaves
+normalized.
+-}
 normalizeDeciderExpr : TOpt.Decider (TOpt.Choice Name) -> TOpt.Decider (TOpt.Choice Name)
 normalizeDeciderExpr decider =
     case decider of
@@ -506,6 +547,8 @@ normalizeDeciderExpr decider =
                 (normalizeDeciderExpr fallback)
 
 
+{-| Returns `choice` with an inline branch body normalized; a jump is unchanged.
+-}
 normalizeChoiceExpr : TOpt.Choice Name -> TOpt.Choice Name
 normalizeChoiceExpr choice =
     case choice of
@@ -520,7 +563,11 @@ normalizeChoiceExpr choice =
 -- FIXPOINT ITERATION
 
 
-{-| Iterate let/case boundary lifting until no more changes.
+{-| Returns the parameters and body of the lambda `\params -> body` after
+removing let and case boundaries until neither rewrite applies.
+
+A let boundary is tried before a case boundary at each step.
+
 -}
 normalizeLambdaBodyFixpoint :
     List ( Name.Name, Can.Type Name )
@@ -529,7 +576,6 @@ normalizeLambdaBodyFixpoint :
 normalizeLambdaBodyFixpoint params body =
     case tryNormalizeLetBoundary params body of
         Just ( newParams, newBody ) ->
-            -- Keep iterating
             normalizeLambdaBodyFixpoint newParams newBody
 
         Nothing ->
@@ -545,8 +591,12 @@ normalizeLambdaBodyFixpoint params body =
 -- LET-BOUNDARY NORMALIZATION
 
 
-{-| Peel off nested Lets, collecting their defs in order.
-Returns (defs in order, innermost non-Let body).
+{-| Returns the definitions of the chain of `let`s at the top of `expr`,
+outermost first and after those already in `acc`, and the first expression in
+the chain that is not a `let`.
+
+`acc` holds definitions in reverse order.
+
 -}
 peelLets : TOpt.Expr Name -> List (TOpt.Def Name) -> ( List (TOpt.Def Name), TOpt.Expr Name )
 peelLets expr acc =
@@ -558,7 +608,8 @@ peelLets expr acc =
             ( List.reverse acc, expr )
 
 
-{-| Rebuild nested Lets from a list of defs around a body.
+{-| Wraps `innerBody` in one `let` per definition, the first definition
+outermost. Every `let` carries the metadata of the expression directly inside it.
 -}
 rebuildLets : List (TOpt.Def Name) -> TOpt.Expr Name -> TOpt.Expr Name
 rebuildLets defs innerBody =
@@ -568,12 +619,18 @@ rebuildLets defs innerBody =
         defs
 
 
+{-| Removes one let boundary from `\outerParams -> body`.
+
+Returns `Nothing` unless `body` is one or more `let`s around a lambda. Otherwise
+returns the outer parameters followed by the inner lambda's, and the `let`s
+around the inner lambda's body.
+
+-}
 tryNormalizeLetBoundary :
     List ( Name.Name, Can.Type Name )
     -> TOpt.Expr Name
     -> Maybe ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
 tryNormalizeLetBoundary outerParams body =
-    -- Handle nested Lets: collect defs, find innermost lambda, rebuild
     case peelLets body [] of
         ( defs, TOpt.Function _ innerParams innerBody _ ) ->
             if List.isEmpty defs then
@@ -607,21 +664,12 @@ tryNormalizeLetBoundary outerParams body =
 -- CASE-BOUNDARY NORMALIZATION
 
 
-{-| Hoist inline lambda leaves in the Decider into the jump table.
+{-| Moves every lambda held inline in a leaf of the decision tree into the jump
+list, and returns the new tree and jump list.
 
-We transform:
-
-    Leaf (Inline (\params -> body))
-
-into:
-
-    Leaf (Jump idx)
-
-and append (idx, \\params -> body) to the jumps list, choosing fresh
-indices above any existing ones.
-
-Non-lambda Inline leaves are left as Inline; they will NOT be
-considered for case-boundary normalization.
+Each such leaf becomes a `Jump` to a new index, numbered upwards from one above
+the largest existing index, and the lambda is appended to `jumps0` under that
+index. Inline leaves that are not lambdas are left in place.
 
 -}
 hoistInlineLambdaChoicesToJumps :
@@ -630,7 +678,6 @@ hoistInlineLambdaChoicesToJumps :
     -> ( TOpt.Decider (TOpt.Choice Name), List ( Int, TOpt.Expr Name ) )
 hoistInlineLambdaChoicesToJumps decider jumps0 =
     let
-        -- Determine the starting index for new jumps.
         maxIndex : Int
         maxIndex =
             jumps0
@@ -642,7 +689,6 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
         startIndex =
             maxIndex + 1
 
-        -- Walk the Decider, hoisting lambda Inlines.
         step :
             TOpt.Decider (TOpt.Choice Name)
             -> Int
@@ -666,12 +712,10 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
                                     , ( nextIdx, expr ) :: accJumps
                                     )
 
-                                -- Non-lambda Inline: leave as-is.
                                 _ ->
                                     ( TOpt.Leaf (TOpt.Inline expr), nextIdx, accJumps )
 
                         TOpt.Jump idx ->
-                            -- Already a jump; do nothing.
                             ( TOpt.Leaf (TOpt.Jump idx), nextIdx, accJumps )
 
                 TOpt.Chain tests success failure ->
@@ -707,8 +751,7 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
     ( newDecider, jumps0 ++ List.reverse newJumpsRev )
 
 
-{-| Check if a decider contains any Inline choices.
-If true, the decider has non-lambda branches that weren't hoisted.
+{-| Returns whether any leaf of the decision tree holds its branch body inline.
 -}
 hasAnyInline : TOpt.Decider (TOpt.Choice Name) -> Bool
 hasAnyInline decider =
@@ -728,6 +771,16 @@ hasAnyInline decider =
             List.any (\( _, d ) -> hasAnyInline d) edges || hasAnyInline fallback
 
 
+{-| Removes one case boundary from `\outerParams -> body`.
+
+Returns `Nothing` unless `body` is a `case` whose every branch, inline or in the
+jump list, is a lambda, all with the same parameter count and equal parameter
+types, and whose result type has at least that many argument types. Otherwise
+returns the outer parameters followed by fresh ones, and the `case` with every
+branch moved to the jump list and replaced by its body, renamed to the fresh
+parameters, and with that many argument types removed from the result type.
+
+-}
 tryNormalizeCaseBoundary :
     List ( Name.Name, Can.Type Name )
     -> TOpt.Expr Name
@@ -736,44 +789,43 @@ tryNormalizeCaseBoundary outerParams body =
     case body of
         TOpt.Case label scrut decider jumps caseMeta ->
             let
-                -- Step 1: expose all lambda branches in the jump table.
                 ( deciderWithJumps, allJumps ) =
                     hoistInlineLambdaChoicesToJumps decider jumps
             in
-            -- Guard: If any Inlines remain (non-lambda branches), abort.
-            -- This prevents changing the case type while leaving Inline branches
-            -- with the wrong type (would cause TOPT_004/GOPT_003 violations).
+            -- An inline branch left here is not a lambda; changing the case's
+            -- type would leave it with a type that no longer matches.
             if hasAnyInline deciderWithJumps then
                 Nothing
 
             else
                 case extractAndUnifyBranchParams allJumps of
                     Nothing ->
-                        -- Either some branch is not a lambda, or arities/types mismatch;
-                        -- do not normalize this case boundary.
                         Nothing
 
                     Just ( canonicalParams, renamedJumps, arityPeeled ) ->
-                        -- Step 2: peel arityPeeled argument types off the case result type.
                         case peelLambdaTypes arityPeeled caseMeta.tipe of
                             Just newCaseTipe ->
-                                -- Step 3: extend outer params and rebuild Case with:
-                                --   - deciderWithJumps (now using Jump choices),
-                                --   - renamed jump branch bodies,
-                                --   - peeled case result type.
                                 Just
                                     ( outerParams ++ canonicalParams
                                     , TOpt.Case label scrut deciderWithJumps renamedJumps { caseMeta | tipe = newCaseTipe }
                                     )
 
                             Nothing ->
-                                -- Case result type is not sufficiently-curried; abort.
                                 Nothing
 
         _ ->
             Nothing
 
 
+{-| Returns fresh parameters shared by all the branches in `jumps`, the
+branches' bodies renamed to use them, and the parameter count.
+
+Returns `Nothing` when `jumps` is empty, or when any branch is not a lambda or
+differs from the first in parameter count or parameter types. The fresh
+parameters are the first branch's names with `_hl_` and their position
+appended, and keep its types.
+
+-}
 extractAndUnifyBranchParams :
     List ( Int, TOpt.Expr Name )
     -> Maybe ( List ( Name.Name, Can.Type Name ), List ( Int, TOpt.Expr Name ), Int )
@@ -821,7 +873,6 @@ extractAndUnifyBranchParams jumps =
 
                 else
                     let
-                        -- Generate fresh canonical names
                         ( revCanonicalParams, _ ) =
                             List.foldl
                                 (\( name, tipe ) ( acc, ctx ) ->
@@ -840,7 +891,6 @@ extractAndUnifyBranchParams jumps =
                         canonicalNames =
                             List.map Tuple.first canonicalParams
 
-                        -- Rename each branch body
                         renamedJumps =
                             List.map
                                 (\( idx, branchParams, branchBody ) ->
@@ -864,6 +914,12 @@ extractAndUnifyBranchParams jumps =
                     Just ( canonicalParams, renamedJumps, arity )
 
 
+{-| Returns what remains of `tipe` after removing its first `count` argument
+types, or `Nothing` if it has fewer.
+
+An alias of a function type is not expanded, so it counts as having none.
+
+-}
 peelLambdaTypes : Int -> Can.Type Name -> Maybe (Can.Type Name)
 peelLambdaTypes count tipe =
     if count <= 0 then

@@ -1,14 +1,56 @@
 module Compiler.Monomorphize.Specialize exposing (specializeNode)
 
-{-| Expression and node specialization for monomorphization.
+{-| Monomorphization makes one copy of each polymorphic global for every
+concrete type it is used at, and this module makes one such copy: it turns one
+node of the typed optimized graph, requested at one MonoType, into a
+monomorphized node.
 
-This module handles converting typed optimized expressions and nodes
-into monomorphized form by applying type substitutions.
+To specialize a node is to walk its body under a _substitution_, a map from the
+type variables of its canonical types to MonoTypes (`Compiler.Monomorphize.TypeSubst`
+owns the unification and application rules), starting from the node's type
+unified with the requested type. Canonical types in the body are replaced by
+their MonoTypes under the substitution. Every global the body refers to, at the
+type it is used at there, is put on the worklist as a specialization of its own
+(`Compiler.Monomorphize.State` describes the worklist) rather than specialized
+here. The exception is a recursive group: all its members are specialized
+together, under one shared substitution. A number variable left open stays open;
+this module never defaults it to `Int`.
 
+Most of the file follows from one fact: a type is often known only from how a
+value is used, not from the value itself. A _demand_ is the MonoType a consumer
+requires of an expression, such as a callee's parameter type, the type of the
+conditional a branch belongs to, or a record field's type. Three mechanisms
+carry demands back to the expressions that need them.
 
-# Specialization
+Some call arguments (field accessors, references to copied `let` definitions,
+and global references or calls whose type is still open) are held back until
+unifying the callee with all the arguments gives each parameter's type, and are
+then specialized against it. A conditional's type, when it has no variables,
+is pushed onto each branch before the branch is specialized.
 
-@docs specializeNode
+Local definitions can be polymorphic too, and are copied per demand. A
+let-bound function is copied once per type its body uses it at, and a let-bound
+value that is not a function, but whose type contains a function and a free
+type variable, once per type it is demanded at. In both cases the body is
+specialized first, with the definition on a stack in the state (`localMulti` or
+`valueMulti`); each use records the copy it needs, and one definition per
+recorded copy is emitted afterwards. A copied value whose type has a number
+variable is a _number-multi target_: each numeric demand on it records its own
+copy. A value whose type is numbers in tuples, records, lists or custom types
+becomes one even when it holds no function; it is
+specialized eagerly with the number left open, and every other numeric demand
+adds a copy. Destructuring a copied value chooses a copy through a _partial
+container_, a type for the whole value that is known only at the destructured
+position.
+
+Types stay curried: a lambda `\x y -> e` becomes a closure of two parameters
+whose type is a function returning a function. Nothing here makes the two
+agree. A reference to a kernel gets its ABI type, the type that decides which
+of its arguments are boxed (`Compiler.Monomorphize.KernelAbi`), which can
+differ from the type it is used at.
+
+`specializeNode` is the only export. It reads the global being specialized
+from the state's current global, which the caller sets.
 
 -}
 
@@ -47,15 +89,31 @@ import Utils.Crash
 -- ========== INTERNAL TYPES ==========
 
 
-{-| A processed argument that might be pending specialization.
+{-| An argument of a call, either already specialized or held back until the
+callee's parameter types are known.
 
-Accessors need special handling because they must be specialized AFTER
-call-site type unification to receive the fully-resolved record type.
+Some arguments cannot be specialized from their own types: those types are
+still open, and only unifying the callee with all the arguments says what the
+argument must be. Such an argument is held back, and the type it contributes
+to that unification is its own type under the caller's substitution. Once the
+callee's parameter type at this position is known, the argument is specialized
+against it.
 
-Number-boxed kernels (like Basics.add) need special handling because they
-must be specialized AFTER call-site type unification to determine if they
-can use the monomorphic numeric type (enabling intrinsics) or must fall
-back to the boxed ABI.
+`ResolvedArg` is an argument specialized straight away.
+
+`PendingAccessor` is a field accessor (`.name`). It becomes the accessor global
+at the record type taken from the parameter type, not from its own type.
+
+`PendingExpr` is a reference to a global or a nested call whose type under the
+caller's substitution still has variables. It carries that substitution and
+its canonical type; the parameter type is unified into the substitution before
+the expression is specialized.
+
+`LocalFunArg` is a reference to a let-bound function being copied once per use
+type. When the parameter type is a function, the copy at that type is used.
+
+`PendingNumberValue` is a reference to a number-multi binding. The parameter
+type is the demand, and the copy at that type is recorded and used.
 
 -}
 type ProcessedArg
@@ -70,10 +128,14 @@ type ProcessedArg
 -- ========== SCHEME INFO ==========
 
 
-{-| Get or build SchemeInfo for a callee, using the cache in MonoState.
+{-| Returns the scheme of a callee whose type is `funcCanType`, with every
+variable given a fresh id, so that bindings made at this call site reach no
+other.
 
-buildSchemeInfo freshens the callee's MVarIds using the global MVarEnv,
-so cached schemes never share MVarIds with callers and can be reused safely.
+For a global the scheme is built once from the global's annotation, cached in
+`accum.schemeCache`, and refreshed with fresh ids on every later use; a global
+with no annotation entry crashes. For `Nothing` (a local or anonymous callee)
+the scheme is built from `funcCanType` and not cached.
 
 -}
 getOrBuildSchemeInfo : Can.Type MVarId -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
@@ -86,10 +148,8 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
             in
             case Data.Map.get TOpt.toComparableGlobal global accum.schemeCache of
                 Just cachedInfo ->
-                    -- Cached scheme exists. Re-freshen its MVarIds to avoid stale
-                    -- bindings from previous unifications leaking into this call.
-                    -- Without this, e.g. Just(Float) from one call site would leak
-                    -- into Just(Bool) inside Maybe.map.
+                    -- Without fresh ids, Just Float from one call site of Maybe.map
+                    -- would leak into Just Bool at another.
                     let
                         ( info, mvarEnv1 ) =
                             TypeSubst.refreshSchemeInfo state.ctx.mvarEnv cachedInfo
@@ -104,7 +164,6 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                     ( info, { state | ctx = ctx1 } )
 
                 Nothing ->
-                    -- Build SchemeInfo from the global's canonical annotation type if available.
                     let
                         canonicalCanTypeForScheme : Can.Type MVarId
                         canonicalCanTypeForScheme =
@@ -131,7 +190,6 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                     ( info, { state | accum = { accum | schemeCache = newCache }, ctx = ctx1 } )
 
         Nothing ->
-            -- Local/anonymous callee: build on demand, don't cache
             let
                 ( info, mvarEnv1 ) =
                     TypeSubst.buildSchemeInfo state.ctx.mvarEnv funcCanType
@@ -150,13 +208,9 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
 -- ========== FREEVARS HELPERS ==========
 
 
-{-| Return True if a top-level global function has an explicit annotation with
-no generalized type variables (i.e. freeVars = {} in Can.Forall freeVars annType).
-
-Only returns True when we have a confirmed Can.Forall entry with empty freeVars.
-Returns False for globals with no annotation entry (Nothing case) — those must
-go through the SchemeInfo path since funcMeta.tipe may contain unresolved TVars.
-
+{-| Returns whether `global` has an annotation entry whose `Can.Forall`
+generalizes no type variable. A global with no annotation entry is not
+monomorphic by this test.
 -}
 isMonomorphicGlobal : TOpt.Global -> MonoState -> Bool
 isMonomorphicGlobal global state =
@@ -168,14 +222,11 @@ isMonomorphicGlobal global state =
             False
 
 
-{-| Apply substitution with FreeVars scoping from the current global's annotation.
-Only substitutes MVarIds that actually appear in canType, preventing cross-scheme
-contamination. Uses cached currentFreeVars from SpecContext (set in processOneWorkItem).
+{-| Returns the MonoType `canType` becomes under `subst`, as
+`TypeSubst.applySubstFiltered` describes, reading the state's `MVarEnv`.
 
-Returns an UPDATED state: the hash-consing table this traversal fills (K6 of
-`plans/mono-comparable-key-optimization.md`) lives in `accum.intern`, so the
-result state must be threaded onward. Dropping it is silently sound and silently
-slower — it only loses sharing — so every call site below binds the new state.
+The returned state carries the grown hash-consing table (`accum.intern`).
+Dropping it loses only sharing, not correctness.
 
 -}
 applySubstFV : MonoState -> Substitution -> Can.Type MVarId -> ( Mono.MonoType, MonoState )
@@ -183,14 +234,8 @@ applySubstFV state subst canType =
     applySubstFVWithEnv state.ctx.mvarEnv state subst canType
 
 
-{-| `applySubstFV` reading an EXPLICIT `MVarEnv` rather than the threaded state's.
-
-A handful of sites deliberately substitute under an env captured earlier (e.g. a
-fold that resolves every instance against `stateAfterBody`'s env while threading
-its accumulator forward). Those sites still want their `Intern` table threaded,
-so they name the two independently here. Everywhere else, `applySubstFV` takes
-both from the same state.
-
+{-| Returns what `applySubstFV` returns, but reads `mvarEnv` instead of the
+state's own `MVarEnv`, while still threading the state's hash-consing table.
 -}
 applySubstFVWithEnv : MVarEnv -> MonoState -> Substitution -> Can.Type MVarId -> ( Mono.MonoType, MonoState )
 applySubstFVWithEnv mvarEnv state subst canType =
@@ -204,19 +249,8 @@ applySubstFVWithEnv mvarEnv state subst canType =
     ( monoType, { state | accum = { accum | intern = intern1 } } )
 
 
-{-| Returns `True` if `to` is strictly more concrete than `from`.
-
-Mirrors the row-polymorphic narrowing scenarios that can arise from
-`applySubst` dropping unresolved row-extension MVars:
-
-  - `from = MVar _`, `to` = anything non-MVar → True
-  - `from = Mono.mRecord narrow`, `to = Mono.mRecord wider` (strict superset) → True
-  - Function/tuple shapes propagate componentwise.
-
-Used both at the let-binding (compare `defMonoType0` vs rhs's expr type)
-and at `MonoRecordAccess` (compare canonical access type vs the field
-type from the record's mono shape).
-
+{-| Returns whether `to` is a more concrete version of `from`: `from` is a
+variable and `to` is not, or `recordWidened` holds.
 -}
 isMoreConcrete : Mono.MonoType -> Mono.MonoType -> Bool
 isMoreConcrete from to =
@@ -231,6 +265,11 @@ isMoreConcrete from to =
             recordWidened from to
 
 
+{-| Returns whether `to` has a record with strictly more fields than the
+record at the same position in `from`, including all of `from`'s field names.
+Function and tuple types are compared position by position when their arities
+match; any one position widening is enough.
+-}
 recordWidened : Mono.MonoType -> Mono.MonoType -> Bool
 recordWidened from to =
     case ( from, to ) of
@@ -261,7 +300,14 @@ recordWidened from to =
             False
 
 
-{-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
+{-| Returns the `SpecId` of `global` at `rawMonoType`, creating the registry
+entry if needed, and pushes it on the worklist unless the `scheduled` set already
+holds it, so no id is queued twice.
+
+The type is refreshed with `TypeSubst.refreshConstraints` before keying, so a
+variable tainted as a number keys as `Int` and shares the explicit-`Int`
+specialization.
+
 -}
 enqueueSpec :
     Mono.Global
@@ -271,10 +317,6 @@ enqueueSpec :
 enqueueSpec global rawMonoType state =
     let
         monoType =
-            -- Refresh embedded constraints from the shared side table before keying
-            -- (J3): a boxed var that Join-R tainted Number is re-stamped CNumber, so
-            -- toComparableMonoType (D4) keys it as Int — the same specialization as an
-            -- explicit-Int instantiation — rather than the boxed-erased sentinel.
             TypeSubst.refreshConstraints state.ctx.mvarEnv rawMonoType
 
         accum =
@@ -299,17 +341,20 @@ enqueueSpec global rawMonoType state =
         )
 
 
-{-| Check if the given name matches any active localMulti context in the stack.
+{-| Returns whether `name` is a let-bound function currently being copied once
+per use type (an entry on the `localMulti` stack).
 -}
 isLocalMultiTarget : Name -> MonoState -> Bool
 isLocalMultiTarget name state =
     List.any (\ls -> ls.defName == name) state.ctx.localMulti
 
 
-{-| Allocate or reuse a local function instance for a let-bound function.
+{-| Returns the name of the copy of the let-bound function `defName` at
+`funcMonoType0`, recording a new copy made under `callSubst` if none exists for
+that type yet.
 
-    Searches the localMulti stack for the entry matching `defName`, and
-    either returns an existing instance or creates a new one.
+The type is refreshed with `TypeSubst.refreshConstraints` before it is used as
+the key. Naming is as `updateLocalMultiStack` describes.
 
 -}
 getOrCreateLocalInstance :
@@ -321,8 +366,6 @@ getOrCreateLocalInstance :
 getOrCreateLocalInstance defName funcMonoType0 callSubst state =
     let
         funcMonoType =
-            -- Refresh constraints from the side table before keying (J3), so a
-            -- Join-R-tainted number var keys and re-specializes as Int.
             TypeSubst.refreshConstraints state.ctx.mvarEnv funcMonoType0
 
         ( updatedStack, freshName ) =
@@ -340,7 +383,11 @@ getOrCreateLocalInstance defName funcMonoType0 callSubst state =
     )
 
 
-{-| Walk the localMulti stack, find the entry for defName, and update it.
+{-| Returns the `localMulti` stack with a copy of `defName` at `funcMonoType`
+recorded on the innermost entry for `defName`, and that copy's name. An existing
+copy for the type is returned unchanged. A new copy is named `defName` if it is
+the first, and `defName$N` when N copies exist already. Crashes when no entry
+is for `defName`.
 -}
 updateLocalMultiStack :
     Name
@@ -398,7 +445,8 @@ updateLocalMultiStack defName funcMonoType callSubst stack =
 -- ========== VALUE-MULTI SPECIALIZATION ==========
 
 
-{-| Check if a Can.Type MVarId contains any TLambda anywhere in its structure.
+{-| Returns whether a function type occurs anywhere in `canType`, looking
+through aliases. Type variables count as not containing one.
 -}
 typeContainsLambda : Can.Type MVarId -> Bool
 typeContainsLambda canType =
@@ -428,9 +476,8 @@ typeContainsLambda canType =
             False
 
 
-{-| Does the type contain any free type variable that is NOT number-classed —
-i.e. a boxed/CEcoValue-class var? (The old name `hasCEcoTVar` read as "has a
-CEcoValue-stamped var"; it actually tests `not isNumberVar` per free var.)
+{-| Returns whether `canType` has a free type variable that `mvarEnv` does not
+record as a number.
 -}
 hasNonNumberVar : MVarEnv -> Can.Type MVarId -> Bool
 hasNonNumberVar mvarEnv canType =
@@ -445,8 +492,13 @@ hasNonNumberVar mvarEnv canType =
         varIds
 
 
-{-| Should this non-function let binding use value-multi specialization?
-True when the type contains lambdas AND unconstrained CEco type variables.
+{-| Returns whether a let binding of type `defCanType` should be copied once per
+use type (value-multi specialization): its type contains a function and has a
+free type variable of any kind.
+
+The `let` case of `specializeExpr` asks this only for a binding whose own type
+is not a function.
+
 -}
 shouldUseValueMulti : MVarEnv -> Can.Type MVarId -> Bool
 shouldUseValueMulti mvarEnv defCanType =
@@ -454,12 +506,8 @@ shouldUseValueMulti mvarEnv defCanType =
         && (hasNonNumberVar mvarEnv defCanType || hasUnresolvedNumberVar mvarEnv defCanType)
 
 
-{-| Does this type contain an unresolved CNumber type variable (a bare `number`
-or a `number` nested in a container/record/tuple)? Such non-function `let`
-bindings are eagerly defaulted to `Int` by the standard path, which mis-types
-them when a use site demands `Float`. Routing them through the demand-driven
-value-multi machinery lets the consumer's resolved numeric type (carried in the
-call-site `paramType`) flow back onto the binding before it is emitted.
+{-| Returns whether `defCanType` has a free type variable that `mvarEnv`
+records as a number, at any depth.
 -}
 hasUnresolvedNumberVar : MVarEnv -> Can.Type MVarId -> Bool
 hasUnresolvedNumberVar mvarEnv defCanType =
@@ -468,14 +516,17 @@ hasUnresolvedNumberVar mvarEnv defCanType =
         (KernelAbi.freeVarIds defCanType [])
 
 
-{-| Conservative gate on the eager MonoType of a number-carrying let: fire the
-number specialization only for shapes where an unboxed Int-vs-Float slot is
-actually at stake and the recording machinery handles it — a scalar number, or a
-SHALLOW tuple/record/list/`Maybe`/`Result`/`Array` of numbers. Boxed user custom
-types (`Box (Maybe number)`), deeply nested lists (`List (List …)`), and
-aggregates carrying non-numeric components (`{ x : number, y : String }`) are
-left on the eager path, where they were already correct — seeding the value-multi
-machinery over them corrupts their boxed representation.
+{-| Returns whether `mt`, the eagerly specialized type of a number-carrying
+let, is a shape whose numeric instances this module records: a shape of `Int`,
+`Float` and open number variables in tuples, non-empty records, lists and
+custom types.
+
+A tuple, record or list qualifies only when every component does, so
+`{ x : number, y : String }` does not. A custom type qualifies when at least
+one argument qualifies and every other argument mentions no number at all
+(`Result e Int` qualifies). Functions, other primitives and boxed variables do
+not qualify.
+
 -}
 isNumericFixableShape : Mono.MonoType -> Bool
 isNumericFixableShape mt =
@@ -496,31 +547,19 @@ isNumericFixableShape mt =
             isNumericFixableShape t
 
         Mono.MCustom _ _ _ args ->
-            -- Any custom type (incl. user types like `NumBox number`, and partially-
-            -- numeric ones like `Result e Int` where the error arg is a phantom
-            -- non-numeric) with at least one numeric-fixable arg and no arg that is
-            -- itself a non-numeric *aggregate the recording would have to re-type*
-            -- (a function, or a number-bearing shape we can't fix). Under quiescence-
-            -- before-defaulting (MONO_028) a boxed/phantom custom that flows here stays
-            -- an OPEN number and closes to Int correctly, so admitting it is safe — the
-            -- former `isNumericDataRhs` provenance gate that excluded case/poly-call RHS
-            -- was a prediction the eager-Int-commit made necessary and is now removed.
             List.any isNumericFixableShape args
                 && List.all (\a -> isNumericFixableShape a || not (monoTypeMentionsNumeric a)) args
 
         Mono.MVar _ Mono.CNumber ->
-            -- Quiescence-before-defaulting: an open number var is a residual that
-            -- closes to Int, so it is a numeric-fixable scalar here (it used to
-            -- arrive already defaulted to MInt before applySubst stopped defaulting).
             True
 
         _ ->
             False
 
 
-{-| Is `name` a deferred number-carrying value-multi target on the stack? Used
-at call-argument and record-access sites to decide whether to record a numeric
-use-site instance for the binding rather than resolving the reference eagerly.
+{-| Returns whether `name` is a number-multi target: an entry on the
+`valueMulti` stack whose type has a free number variable, so each numeric
+demand on it records its own instance.
 -}
 isNumberMultiTarget : Name -> MonoState -> Bool
 isNumberMultiTarget name state =
@@ -532,10 +571,8 @@ isNumberMultiTarget name state =
             False
 
 
-{-| Does this MonoType mention any numeric content (a concrete `Int`/`Float` or an
-unresolved `CNumber` var) anywhere? Used by the shape gate to admit partially-
-numeric customs (`Result e Int`) only when the non-numeric args are inert — i.e.
-contain no numeric content the recording would have to re-type.
+{-| Returns whether `Int`, `Float` or an open number variable occurs anywhere in
+`mt`, including inside function types.
 -}
 monoTypeMentionsNumeric : Mono.MonoType -> Bool
 monoTypeMentionsNumeric mt =
@@ -568,18 +605,13 @@ monoTypeMentionsNumeric mt =
             False
 
 
-{-| Record a numeric use-site instance for the deferred binding `name`, given the
-`resolvedShape` MonoType demanded by a consumer (a scalar `MFloat`/`MInt`, or a
-container like `Mono.mTuple [MFloat, MInt]` / `Mono.mList MFloat`).
+{-| Records an instance of the value-multi binding `name` at the type a
+consumer demands, `resolvedShape`, and returns the instance's name and type.
 
-The shape is unified against the binding's own `defCanType` (looked up on the
-value-multi stack), so the resulting `enrichedSubst` binds the binding's number
-vars directly. Emission (`applySubstFV info.subst defCanType`) then yields the
-concrete numeric type without depending on use-site/binding MVarId sharing.
-
-Returns the instance's fresh name, its concrete MonoType, and the updated state;
-`Nothing` if `name` is not a value-multi target (defensive — callers gate on
-`isNumberMultiTarget`).
+The binding's own canonical type is unified with `resolvedShape` on top of
+`subst`, so the instance's substitution binds the binding's own variables, and
+the instance type is that canonical type under it. Returns `Nothing` when
+`name` is not on the `valueMulti` stack.
 
 -}
 recordNumberInstanceAgainstShape : Name -> Mono.MonoType -> Substitution -> MonoState -> Maybe ( Name, Mono.MonoType, MonoState )
@@ -605,13 +637,15 @@ recordNumberInstanceAgainstShape name resolvedShape subst state =
             Nothing
 
 
-{-| Resolve a reference to a number-multi binding that appears in a non-call-arg,
-non-projection position (an `if`/`case` branch result, a record-construction
-field, a `let m = n` alias, …). The reference's own resolved `meta.tipe` is the
-consumer's demand at this site (e.g. `Float` for the `then`-branch of an
-`if … * 1.5`). Record an instance for that shape and point the reference at it.
-Falls back to the prelim `varEnv` type if the binding is not (or no longer) on
-the stack.
+{-| Returns a reference to the instance of the number-multi binding `name` at
+the type this reference has, `canType` under `subst`, recording that instance
+if it is new.
+
+The reference's own type is the demand at this site, for example `Float` for a
+branch of an `if` whose type is `Float`. When `name` is not on the
+`valueMulti` stack, the reference keeps `name` and takes its type from the
+variable environment, or failing that from `canType`.
+
 -}
 resolveNumberMultiVarRef : Name -> Can.Type MVarId -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 resolveNumberMultiVarRef name canType subst state =
@@ -619,10 +653,6 @@ resolveNumberMultiVarRef name canType subst state =
         ( resolvedShape, stateI ) =
             applySubstFV state subst canType
 
-        -- Record a fresh instance for every reference. (The earlier Float-only
-        -- guard — record only when `monoTypeContainsFloat resolvedShape` — was
-        -- retired: the J5 deletion loop proved recording Int-typed uses too is
-        -- inert, since they dedup to the eager instance.)
         recorded =
             recordNumberInstanceAgainstShape name resolvedShape subst stateI
     in
@@ -639,15 +669,16 @@ resolveNumberMultiVarRef name canType subst state =
                     ( Mono.MonoVarLocal name resolvedShape, stateI )
 
 
-{-| Check if the given name matches any active valueMulti context in the stack.
+{-| Returns whether `name` is a let-bound value currently being copied once per
+use type (an entry on the `valueMulti` stack).
 -}
 isValueMultiTarget : Name -> MonoState -> Bool
 isValueMultiTarget name state =
     List.any (\entry -> entry.defName == name) state.ctx.valueMulti
 
 
-{-| Check if an expression is a VarLocal/TrackedVarLocal that is a value-multi target.
-Returns the variable name and its canonical type if so.
+{-| Returns the name and the reference's canonical type when `expr` is a local
+variable reference to a value-multi binding.
 -}
 getValueMultiVar : TOpt.Expr MVarId -> MonoState -> Maybe ( Name, Can.Type MVarId )
 getValueMultiVar expr state =
@@ -670,9 +701,8 @@ getValueMultiVar expr state =
             Nothing
 
 
-{-| Walk a TOpt.Path to its Root, then check whether the Root name is a valueMulti
-target. Returns the root name and its canonical type (as recorded on the
-valueMulti stack) when it is; otherwise Nothing.
+{-| Returns the root name of `path` and the binding's canonical type, as the
+`valueMulti` stack records it, when that root is a value-multi binding.
 -}
 getValueMultiRootFromPath : TOpt.Path -> MonoState -> Maybe ( Name, Can.Type MVarId )
 getValueMultiRootFromPath path state =
@@ -693,6 +723,9 @@ getValueMultiRootFromPath path state =
             getValueMultiRootFromPath subPath state
 
 
+{-| Returns the name and canonical type of the innermost `valueMulti` entry for
+`name`.
+-}
 findValueMultiEntry : Name -> List ValueMultiState -> Maybe ( Name, Can.Type MVarId )
 findValueMultiEntry name stack =
     case stack of
@@ -707,9 +740,8 @@ findValueMultiEntry name stack =
                 findValueMultiEntry name rest
 
 
-{-| Rewrite the Root name inside a TOpt.Path, preserving the surrounding
-Index/ArrayIndex/Field/Unbox chain. Used when a destructor is re-targeted at a
-fresh value-multi instance.
+{-| Returns `path` with its root renamed from `oldName` to `newName`; a root
+with another name is left alone.
 -}
 rewriteRootInPath : Name -> Name -> TOpt.Path -> TOpt.Path
 rewriteRootInPath oldName newName path =
@@ -734,14 +766,16 @@ rewriteRootInPath oldName newName path =
             TOpt.Unbox (rewriteRootInPath oldName newName subPath)
 
 
-{-| For a custom-type field destructure (`Index idx (HintCustom ctorName)`),
-synthesize the partial custom container `MCustom home name args` with the field's
-type-arg set to `leafMono` and the rest fresh, by unifying the constructor
-scheme's field arg with `leafMono` and reading off the (freshened) result type.
-The scheme maps the field index to its type-arg position, so e.g. both fields of
-`Pair number number` pin the single shared param. `rootCanType` supplies the
-type's home; returns `Nothing` for non-`TType` roots (nested customs) or an
-unknown ctor, and the caller falls back to the eager path.
+{-| Returns the custom type that constructor `ctorName` builds when its field
+number `fieldIdx` has type `leafMono`, with every type argument that field does
+not determine left as a fresh variable.
+
+The constructor's scheme is unified with `leafMono` at that field, so both
+fields of `Pair number number` pin the one shared argument. The constructor is
+looked up in the home module of `rootCanType`. Returns `Nothing` when
+`rootCanType` is not a named type, the constructor is not a `Ctor` or `Box`
+node, or it has no such field.
+
 -}
 customContainerForField : Can.Type MVarId -> Name -> Int -> Mono.MonoType -> MonoState -> Maybe ( Mono.MonoType, MonoState )
 customContainerForField rootCanType ctorName fieldIdx leafMono state =
@@ -751,8 +785,6 @@ customContainerForField rootCanType ctorName fieldIdx leafMono state =
                 ctorGlobal =
                     TOpt.Global home ctorName
 
-                -- @unbox single-field types are `TOpt.Box`; multi-field/multi-ctor
-                -- are `TOpt.Ctor`. Both carry the constructor's canonical type.
                 maybeCtorCanType =
                     case Data.Map.get TOpt.toComparableGlobal ctorGlobal state.ctx.toptNodes of
                         Just (TOpt.Ctor _ _ ct) ->
@@ -794,17 +826,16 @@ customContainerForField rootCanType ctorName fieldIdx leafMono state =
             Nothing
 
 
-{-| Build a partial MonoType container by walking a TOpt.Path outward from the
-Root, placing `leafMonoType` at the Root position and fresh MVars for sibling
-positions. Returns Nothing for shapes we don't yet know how to synthesize
-(Index + HintList, ArrayIndex); callers should fall back
-to the non-valueMulti code path.
+{-| Returns a type for the root of `path` that has `leafMonoType` at the place
+the path leads to and fresh boxed variables (or, for a custom type, fresh type
+arguments) everywhere else: a _partial container_.
 
-Examples:
-Index 0 HintTuple2 (Root n) -> Mono.mTuple [leaf, MVar fresh]
-Index 1 HintTuple3 (Root n) -> Mono.mTuple [MVar, leaf, MVar]
-Field "a" (Root n) -> Mono.mRecord (Dict.singleton "a" leaf)
-Unbox (Root n) -> leaf (wrapper's payload is the leaf)
+The steps are taken from the one nearest the leaf back to the root. A tuple step puts
+the leaf at its index among fresh variables, a field step makes a one-field
+record, and a custom-type step goes through `customContainerForField`. An unbox
+step builds the custom type when `rootCanType` names a union with exactly one
+constructor, and otherwise passes the leaf through unchanged. Returns `Nothing`
+for a list or array index step, or when a custom-type step cannot be built.
 
 -}
 buildPartialContainer : Can.Type MVarId -> TOpt.Path -> Mono.MonoType -> MonoState -> Maybe ( Mono.MonoType, MonoState )
@@ -867,9 +898,6 @@ buildPartialContainer rootCanType path leafMonoType state =
                     buildPartialContainer rootCanType subPath (Mono.mTuple elems) state1
 
                 TOpt.HintCustom ctorName ->
-                    -- Custom-type field (e.g. `case v of NumBox k -> k`). Synthesize
-                    -- the custom container `MCustom home name [.. leaf ..]` by setting
-                    -- the field's type-arg via the constructor scheme, then recurse.
                     case customContainerForField rootCanType ctorName (Index.toMachine idx) leafMonoType state of
                         Just ( customMono, stateC ) ->
                             buildPartialContainer rootCanType subPath customMono stateC
@@ -887,10 +915,7 @@ buildPartialContainer rootCanType path leafMonoType state =
                 state
 
         TOpt.Unbox subPath ->
-            -- A single-field `@unbox` wrapper. Look up the type's *actual* single
-            -- constructor in the type environment (no assumption that the ctor is
-            -- named like the type), then synthesize `MCustom home name [.. leaf ..]`
-            -- via its scheme; the field is index 0. Otherwise pass the leaf through.
+            -- The constructor is looked up, not assumed to share the type's name.
             let
                 customAttempt =
                     case rootCanType of
@@ -921,18 +946,19 @@ buildPartialContainer rootCanType path leafMonoType state =
             Nothing
 
 
-{-| Body-first specialization of a `Destruct` whose root is a number-multi target
-(quiescence-before-defaulting, MONO\_028). REPLACES the eager
-`demandedNumericUseType` look-ahead (demand replay): instead of PREDICTING which
-uses of the destructor-bound variable demand `Float`, seed `dname` as a
-number-multi target and specialize the body FIRST, so its uses record one instance
-per demanded numeric shape via `resolveNumberMultiVarRef` (the state-threaded
-valueMulti channel). Then emit one `MonoDestruct` per recorded instance, each
-projecting its slot from a root instance materialised (via
-`buildPartialContainer`/`getOrCreateValueInstance`) at the demanded Int/Float type.
-The eager Int instance's destructor is emitted only if `dname` is actually
-referenced by a non-Float use (otherwise it would create a spurious dead root
-instance). This inverts the historical "specialize destructor, then body" order.
+{-| Returns the specialized form of a destructuring `dname = <destructorPath
+into rootName>` followed by `body`, where `rootName` is a number-multi target.
+
+The body is specialized first, with `dname` itself pushed as a number-multi
+target whose one instance is its eagerly specialized type (with any number
+variable left open). Each use of `dname` in the body then records an instance
+at the numeric type it demands. Afterwards one `MonoDestruct` is emitted per
+recorded instance: a partial container with that instance's type at the path
+(`buildPartialContainer`) selects an instance of the root, and the destructor
+projects from it. The eager instance's destructor is emitted only when the body
+refers to `dname` under its own name. An instance whose partial container
+cannot be built gets no destructor.
+
 -}
 specializeNumberDestruct :
     Name
@@ -955,10 +981,8 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
         intKey =
             TypeSubst.refreshConstraints state.ctx.mvarEnv eagerLeaf
 
-        -- The `dname` valueMulti entry only needs defName/defCanType/instances for
-        -- use-site recording; its `def` is never specialized (this handler owns the
-        -- pop and emits MonoDestructs, not MonoLets), so a self-referential stub def
-        -- suffices as a placeholder.
+        -- Never specialized: this function pops the entry itself and emits
+        -- destructors, not lets.
         placeholderDef =
             TOpt.Def A.zero dname (TOpt.VarLocal dname destructorMeta) fieldCanType
 
@@ -1012,8 +1036,7 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
         dnameUsed =
             exprReferencesLocal dname monoBody
 
-        -- Drain the eager Int instance (freshName == dname) only if a non-Float use
-        -- of `dname` actually referenced it in the body; drain all Float instances.
+        -- The eager instance (freshName == dname) only if the body refers to it.
         instancesToEmit =
             Mono.specMapValues dnameEntry.instances
                 |> List.filter (\info -> info.freshName /= dname || dnameUsed)
@@ -1036,10 +1059,8 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
                                 ( freshRootName, stateI ) =
                                     getOrCreateValueInstance rootName rootInstanceMonoType refinedSubst stateR
 
-                                -- Must match getOrCreateValueInstance's internal key
-                                -- EXACTLY: it applies refreshConstraints before keying
-                                -- (J3), so the tag lookup must too, or it misses the
-                                -- instance and crashes.
+                                -- Must be keyed as getOrCreateValueInstance keys, or the
+                                -- tag lookup misses and crashes.
                                 instanceKey =
                                     TypeSubst.refreshConstraints stateR.ctx.mvarEnv rootInstanceMonoType
 
@@ -1103,7 +1124,8 @@ specializeNumberDestruct dname destructorPath destructorMeta rootName rootCanTyp
     ( finalExpr, stateFinal )
 
 
-{-| Does `expr` contain a `MonoVarLocal name` reference anywhere?
+{-| Returns whether `expr` contains a local variable reference to `name`, as
+`MonoTraverse.foldExpr` visits it.
 -}
 exprReferencesLocal : Name -> Mono.MonoExpr -> Bool
 exprReferencesLocal name expr =
@@ -1122,6 +1144,8 @@ exprReferencesLocal name expr =
         expr
 
 
+{-| Returns `state` with its `MVarEnv` replaced by `env`.
+-}
 setMVarEnv : MVarEnv -> MonoState -> MonoState
 setMVarEnv env state =
     { state
@@ -1134,11 +1158,10 @@ setMVarEnv env state =
     }
 
 
-{-| Strip exactly `numArgs` parameter layers from a curried `MonoType`. Used at
-kernel call sites to compute the call's result type from the kernel's ABI
-function type (which, after `applySubstLambdaChain`, is a chain of single-param
-`Mono.mFunction`s). `Mono.resultTypeOf` is unsafe here because it drills through all
-layers, giving the wrong type for partial applications.
+{-| Returns the type of applying a function of type `monoType` to `numArgs`
+arguments: exactly that many parameters are removed, across as many nested
+function types as it takes, so a partial application keeps the rest. A
+non-function type is returned as it is.
 -}
 peelCallResult : Int -> Mono.MonoType -> Mono.MonoType
 peelCallResult numArgs monoType =
@@ -1165,7 +1188,15 @@ peelCallResult numArgs monoType =
                 monoType
 
 
-{-| Allocate or reuse a value instance for a let-bound value with lambdas.
+{-| Returns the name of the copy of the value-multi binding `defName` at
+`monoType0`, recording a new copy made under `currentSubst` if none exists for
+that type yet.
+
+The type is refreshed with `TypeSubst.refreshConstraints` before it is used as
+the key, so a lookup of the instance by key must refresh too. Naming, and the
+merging of substitutions on an existing copy, are as `updateValueMultiStack`
+describes.
+
 -}
 getOrCreateValueInstance :
     Name
@@ -1176,7 +1207,6 @@ getOrCreateValueInstance :
 getOrCreateValueInstance defName monoType0 currentSubst state =
     let
         monoType =
-            -- Refresh constraints from the side table before keying (J3).
             TypeSubst.refreshConstraints state.ctx.mvarEnv monoType0
 
         ( updatedStack, freshName_ ) =
@@ -1194,7 +1224,14 @@ getOrCreateValueInstance defName monoType0 currentSubst state =
     )
 
 
-{-| Walk the valueMulti stack, find the entry for defName, and update it.
+{-| Returns the `valueMulti` stack with a copy of `defName` at `monoType`
+recorded on the innermost entry for `defName`, and that copy's name.
+
+A new copy is named `defName` if it is the first, and `defName$vN` when N
+copies exist already. When a copy for the type exists, bindings of
+`currentSubst` for variables its substitution does not yet bind are added to
+it; existing bindings win. Crashes when no entry is for `defName`.
+
 -}
 updateValueMultiStack :
     Name
@@ -1212,21 +1249,9 @@ updateValueMultiStack defName monoType currentSubst stack =
             if entry.defName == defName then
                 case Mono.specMapGet monoType entry.instances of
                     Just info ->
-                        -- Instance exists but this call supplies a new
-                        -- `currentSubst` derived from a different destructor
-                        -- path on the same root. That path may expose type
-                        -- vars for slots the earlier destructor never touched
-                        -- (e.g. the second destructor in `( getter, setter )`
-                        -- binds the setter's own MVarIds which the getter's
-                        -- partial container never mentioned).
-                        --
-                        -- Merge new-only bindings from `currentSubst` into
-                        -- `info.subst` via Dict.union (left-biased): existing
-                        -- entries — potentially strengthened by later call-
-                        -- site refinement — are preserved, while fresh
-                        -- destructor-path bindings get picked up. Both sides
-                        -- derive from the same outer `subst`, so any key
-                        -- common to both already agrees.
+                        -- A second destructor on the same root (the setter of
+                        -- `( getter, setter )`) can bind variables the first never
+                        -- mentioned; existing bindings may have been refined since.
                         let
                             newInfo =
                                 { info | subst = Dict.union info.subst currentSubst }
@@ -1274,13 +1299,13 @@ updateValueMultiStack defName monoType currentSubst stack =
                 ( entry :: updatedRest, freshName_ )
 
 
-{-| Record that a destructor-introduced local `destructorName` belongs to the
-instance keyed by `instanceKey` on the `valueMulti` entry for `defName`.
+{-| Returns the `valueMulti` stack with `destructorName`, a local bound by
+destructuring, recorded as derived from the instance of `defName` keyed by
+`instanceKey`, so that a later call of that local can find the instance to
+refine (`refineValueMultiForDestructorCall`).
 
-Used at `TOpt.Destruct` creation time so later call sites of the destructor can
-find which value-multi instance to refine. Crashes on missing keys per design
-decision D7: silently skipping would reintroduce exactly the class of bugs this
-tagging fixes.
+Crashes when there is no entry for `defName` or no instance under `instanceKey`;
+the key must be refreshed as `getOrCreateValueInstance` refreshes it.
 
 -}
 tagValueInstanceWithDestructor :
@@ -1323,16 +1348,14 @@ tagValueInstanceWithDestructor defName instanceKey destructorName stack =
                 entry :: tagValueInstanceWithDestructor defName instanceKey destructorName rest
 
 
-{-| If `funcName` is a destructor registered on some value-multi instance,
-refine that instance's `subst` using `unifyArgsOnly` against the destructor's
-canonical function type and the call-site argument MonoTypes, then return the
-refined substitution, updated `MVarEnv`, and stack with the instance updated.
+{-| Refines the value-multi instance from which the local `funcName` was
+destructured, by unifying the parameters of `funcCanType` with the call's
+argument types `argTypes` on top of the instance's substitution
+(`TypeSubst.unifyArgsOnly`). Returns the refined substitution, the `MVarEnv`
+after, and the stack with the instance updated.
 
-Walks the stack head-to-tail (innermost-first) and stops at the first match
-(D3). Returns `Nothing` if no stack entry has an instance claiming `funcName`.
-
-`unifyArgsOnly` is monotone: bindings only become more concrete, so repeatedly
-extending `info.subst` this way cannot regress a `MInt` back into an alias.
+The innermost entry with an instance tagged with `funcName` is used. Returns
+`Nothing` when no instance is tagged with it.
 
 -}
 refineValueMultiForDestructorCall :
@@ -1374,10 +1397,8 @@ refineValueMultiForDestructorCall funcName funcCanType argTypes mvarEnv stack =
                             Nothing
 
 
-{-| Linear scan of a single valueMulti entry's instances for one whose
-`derivedDestructorNames` contains `funcName`. Returns the (key, info) on the
-first match; only one match can exist because a destructor local belongs to
-exactly one instance.
+{-| Returns the first of `pairs` (key and instance) whose instance is tagged
+with the destructured local `funcName`.
 -}
 findInstanceByDestructor :
     Name
@@ -1396,34 +1417,21 @@ findInstanceByDestructor funcName pairs =
                 findInstanceByDestructor funcName rest
 
 
-{-| Specialize a lambda expression (Function or TrackedFunction).
+{-| Returns the closure that the lambda `lambdaExpr`, of type `canType`,
+becomes under `subst`.
 
-This is a staging-agnostic specialization that:
+The closure has one parameter per syntactic parameter of this one lambda node,
+so `\x y -> body` gives one closure of two parameters while `\x -> \y -> body`
+gives a closure of one whose body is another closure. Its type is `canType`
+under `subst` unchanged, which is curried, one parameter per arrow: `\x y ->
+body` at `Int -> Int -> Int` has two parameters and the type
+`Int -> (Int -> Int)`. Nothing here makes the two agree.
 
-1.  Specializes exactly one lambda node at a time (no peelFunctionChain)
-2.  Preserves the syntactic structure: `\x y -> body` vs `\x -> \y -> body`
-3.  Does NOT enforce staging invariants (that's GlobalOpt's job as GOPT\_016)
-
-After this pass:
-
-  - `\x y -> body` (one TOpt.Function [x,y] body) → one MonoClosure with 2 params
-  - `\x -> \y -> body` (nested TOpt.Function) → outer closure with 1 param,
-    body contains inner closure
-
-IMPORTANT: The closure may have more params than the type's stage arity.
-This is INTENTIONAL. Example:
-
-    \x y -> body
-    produces: params=[(x,Int),(y,Int)], type=Mono.mFunction [Int] (Mono.mFunction [Int] Int)
-
-The flat param list comes from TOpt.Function syntax.
-The curried type comes from TypeSubst.applySubst preserving TLambda structure.
-
-GlobalOpt (GOPT\_016) will canonicalize by flattening the type:
-Mono.mFunction [Int] (Mono.mFunction [Int] Int) → Mono.mFunction [Int, Int] Int
-
-Invariant relied upon: TOPT\_005 - the Can.Type MVarId on the TOpt node is the
-authoritative TLambda encoding of this function's params and result.
+The function type is unified back into `subst` before the parameters and body
+are specialized, so what the context fixes about the whole function reaches the
+lambda's own variables. Captures are the free locals of the specialized body
+(`Closure.computeClosureCaptures`), and the closure gets the next anonymous
+lambda id of the current module. Crashes if `lambdaExpr` is not a lambda.
 
 -}
 specializeLambda :
@@ -1434,24 +1442,13 @@ specializeLambda :
     -> ( Mono.MonoExpr, MonoState )
 specializeLambda lambdaExpr canType subst state =
     let
-        -- 1. Specialize the whole function type once (no flattening).
-        -- Invariant: `canType` is the TLambda encoding of this function (TOPT_005).
-        -- Monomorphize preserves the curried structure from TypeSubst.applySubst.
-        -- The closure will have N params (from TOpt syntax) but type with stage arity < N.
-        -- Example: \x y -> body has params=2, type=MFunction [a] (MFunction [b] c) (stage arity 1).
-        -- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
         ( monoType0, stateI ) =
             applySubstFV state subst canType
 
-        -- 1b. Feed the concrete function type back into the substitution.
-        -- This propagates constraints from the enclosing specialization context
-        -- (e.g. compose identity identity 1) into the lambda's internal type variables.
-        -- unifyExtend only adds bindings already implied by monoType0, so this is safe.
-        -- J5: keep the returned env (Join-R taints) and thread it via stateWithLambda.
+        -- The returned env carries number taints and must be threaded on.
         ( refinedSubst, refinedEnv ) =
             TypeSubst.unifyExtend state.ctx.mvarEnv canType monoType0 subst
 
-        -- 2. Extract params and body directly (no peelFunctionChain).
         ( params, bodyExpr ) =
             case lambdaExpr of
                 TOpt.Function _ ps body _ ->
@@ -1464,11 +1461,6 @@ specializeLambda lambdaExpr canType subst state =
                     Utils.Crash.crash
                         "specializeLambda: called with non-lambda expression"
 
-        -- Guard: paramCount == 0 is a bug
-        -- 3. Specialize each parameter's declared Can.Type MVarId under refinedSubst.
-        -- Threaded fold rather than `List.map`: each application also grows the
-        -- Intern table. Every `st` here has `state`'s `mvarEnv` (applySubstFV only
-        -- touches `accum.intern`), so this reads the same env the map did.
         ( monoParams, stateP ) =
             List.foldr
                 (\( name, paramCanType ) ( acc, st ) ->
@@ -1505,7 +1497,6 @@ specializeLambda lambdaExpr canType subst state =
                     }
             }
 
-        -- 4. Specialize the body under refinedSubst.
         ( monoBody, stateAfter0 ) =
             specializeExpr bodyExpr refinedSubst stateWithLambda
 
@@ -1519,7 +1510,6 @@ specializeLambda lambdaExpr canType subst state =
                     { ctx0 | varEnv = State.popFrame ctx0.varEnv }
             }
 
-        -- 5. Compute captures.
         captures =
             Closure.computeClosureCaptures monoParams monoBody
 
@@ -1533,9 +1523,6 @@ specializeLambda lambdaExpr canType subst state =
             , captureAbi = Nothing
             }
 
-        -- 6. Use the monomorphic function type from TypeSubst.applySubst unchanged.
-        -- Under staging-agnostic Monomorphize, we must NOT change the type's staging.
-        -- GlobalOpt (GOPT_001) will canonicalize by flattening to match param count.
         monoTypeFixed : Mono.MonoType
         monoTypeFixed =
             monoType0
@@ -1547,8 +1534,14 @@ specializeLambda lambdaExpr canType subst state =
 -- ========== NODE SPECIALIZATION ==========
 
 
-{-| Specialize a constructor via getOrBuildSchemeInfo so that MVarIds are freshened
-per specialization, preventing stale bindings from leaking across call sites.
+{-| Returns the `MonoCtor` node for the constructor `ctorName` of the current
+global, with tag `tag` and `arity` fields, at `requestedMonoType`.
+
+The layout's field types come from the constructor's scheme, with fresh ids
+(`getOrBuildSchemeInfo`), unified with the requested type; the node's type is
+what the requested type returns after `arity` arguments. Crashes when the
+current global is not a `Global`.
+
 -}
 specializeCtorViaScheme : Name.Name -> Int -> Int -> Can.Type MVarId -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
@@ -1586,8 +1579,47 @@ specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
     ( Mono.MonoCtor shape ctorResultType, { state1 | ctx = ctx2 } )
 
 
-{-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
-The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
+{-| Returns the node that the global `ctorName`, defined by `node`, becomes when
+specialized at `requestedMonoType`, with every specialization its body needs
+enqueued on the worklist.
+
+`ctorName` is the global's own name. It names a constructor's layout, it goes
+into the tag of a constructor or enumeration value, and when `node` is a link
+it is replaced by the linked global's name. The state's current global must be
+the global being specialized.
+
+A definition unifies both its declared type and its body's type with the
+request, since the declared type can be concrete while the body's inner types
+still have variables. The node's type is the specialized body's type, which
+need not be the requested type; a definition whose body is not a closure is
+left that way here.
+
+A constructor (`Ctor`, or `Box` with tag 0 and one field) becomes a `MonoCtor`
+whose field types come from the constructor's type, with fresh variables,
+unified with the request, and whose type is what the requested type returns
+after all the fields are applied. An enumeration value becomes a `MonoEnum`. A
+link is followed to the linked node, keeping the current global; a link to a
+missing node, and a kernel, become a `MonoExtern` of the requested type. An
+effect manager becomes a `MonoManagerLeaf` naming the current global's module.
+
+A member of a recursive group is specialized together with every other member,
+under one substitution obtained from the requested member, and the other
+members' nodes are stored in the state at their own `SpecId`s rather than
+enqueued. A group whose current global is missing becomes a `MonoExtern`.
+
+A port, requested at a function type of one parameter, becomes a closure with
+no captures that calls the kernel `Platform.leaf` with the port's name: an
+incoming port passes its argument on, and an outgoing port passes its argument
+through the port's encoder first. An incoming port also enqueues its decoder as
+another specialization of the same global, at the decoder's type, which is not
+a function; that request is specialized as a plain value definition of the
+decoder. Each port is recorded once in the state's port registrations, an
+incoming one with its decoder's `SpecId`.
+
+The constructor and enumeration cases, and the port cases requested at a
+function type, crash when the current global is not a `Global`, and a
+recursive group crashes when the current global is an accessor.
+
 -}
 specializeNode : Name.Name -> TOpt.Node MVarId -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode ctorName node requestedMonoType state =
@@ -1600,26 +1632,18 @@ specializeNode ctorName node requestedMonoType state =
                 ( subst0, env0 ) =
                     TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType
 
-                -- Also unify the body expression's canonical type with requestedMonoType.
-                -- The annotation canType may be fully resolved (no TVars) while internal
-                -- expressions retain unresolved TVars. This enriches the substitution
-                -- with bindings for those internal TVars.
                 ( subst, env1 ) =
                     TypeSubst.unifyExtend env0 (TOpt.typeOf expr) requestedMonoType subst0
 
-                -- J5: thread the (Join-R-tainted) env from both unifications into the
-                -- state so `taintNumber` marks persist to the final superVars.
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst (setMVarEnv env1 state)
 
-                -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
                     Mono.typeOf monoExpr
             in
             ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.TrackedDefine _ expr deps meta ->
-            -- Tracking region is unused here; delegate to the untracked arm.
             specializeNode ctorName (TOpt.Define expr deps meta) requestedMonoType state
 
         TOpt.Ctor index arity canType ->
@@ -1650,16 +1674,12 @@ specializeNode ctorName node requestedMonoType state =
                         _ ->
                             Utils.Crash.crash "specializeNode TOpt.Enum: currentGlobal must be a Global"
             in
-            -- J5: thread the unify env into the returned state.
             ( Mono.MonoEnum (CtorTag.effective enumHome ctorName tag) monoType, setMVarEnv envU state )
 
         TOpt.Box canType ->
-            -- @unbox types have a single constructor (tag=0) with one field (arity=1).
-            -- Treat them as regular constructors so eco.construct.custom is emitted.
             specializeCtorViaScheme ctorName 0 1 canType requestedMonoType state
 
         TOpt.Link linkedGlobal ->
-            -- Link to another global - follow the link
             case Data.Map.get TOpt.toComparableGlobal linkedGlobal state.ctx.toptNodes of
                 Nothing ->
                     ( Mono.MonoExtern requestedMonoType, state )
@@ -1674,11 +1694,9 @@ specializeNode ctorName node requestedMonoType state =
                     specializeNode linkedName linkedNode requestedMonoType state
 
         TOpt.Kernel _ _ ->
-            -- Inline kernel code - treat as extern
             ( Mono.MonoExtern requestedMonoType, state )
 
         TOpt.Manager _ ->
-            -- Effect manager leaf: generate a function that calls Elm_Kernel_Platform_leaf
             let
                 homeModuleName =
                     case state.ctx.currentGlobal of
@@ -1696,17 +1714,11 @@ specializeNode ctorName node requestedMonoType state =
         TOpt.PortIncoming expr _ meta ->
             case requestedMonoType of
                 Mono.MFunction _ _ _ _ ->
-                    -- The port itself, used as `(payload -> msg) -> Sub msg`:
-                    -- lower to the Fx_Leaf wrapper closure and enqueue the
-                    -- payload Decoder as a separate specialization.
                     specializePortNode True expr meta.tipe requestedMonoType state
 
                 _ ->
-                    -- Decoder-value specialization (enqueued by the wrapper
-                    -- case via enqueueSpec at the Decoder type): compile the
-                    -- payload Decoder as a plain value node. The generated
-                    -- @__eco_register_ports preamble calls its thunk and
-                    -- hands the decoder to the runtime port registry.
+                    -- The decoder specialization that the port's own
+                    -- specialization enqueued.
                     let
                         decoderCanType =
                             TOpt.typeOf expr
@@ -1723,30 +1735,27 @@ specializeNode ctorName node requestedMonoType state =
             specializePortNode False expr meta.tipe requestedMonoType state
 
 
-{-| Lower a port node to its Fx\_Leaf wrapper closure (PORT\_002).
+{-| Returns the node for the current global, a port, at `requestedMonoType`,
+which must be a function of one parameter; `incoming` says which way the port
+goes and `expr` is its decoder or encoder, of type `canType`.
 
-Incoming `port bar : (payload -> msg) -> Sub msg` becomes
+The node is a closure with no captures. An incoming port
+`port bar : (payload -> msg) -> Sub msg` becomes
 
     \tagger -> Elm_Kernel_Platform_leaf "bar" tagger
 
-and the payload decoder is enqueued as a separate specialization of the
-same Global at its (non-function) `Decoder payload` type — the worklist
-driver routes that request back through the PortIncoming arm, which
-compiles it as a plain `MonoDefine` value node. Prune keeps the decoder
-spec alive via `MonoGraph.ports` and the MLIR backend registers it with
-the runtime at startup (PORT\_003).
-
-Outgoing `port foo : payload -> Cmd msg` becomes
+and its decoder is enqueued as another specialization of the same global, at
+the decoder's own type. An outgoing port `port foo : payload -> Cmd msg`
+becomes
 
     \p -> Elm_Kernel_Platform_leaf "foo" (encoder p)
 
-The encoder runs eagerly at the call site, so an outgoing Fx\_Leaf value
-is always an already-encoded Json value by the time the port's effect
-manager sees it.
+so the payload is encoded before it reaches the leaf. Either way the port is
+recorded in the state's port registrations, an incoming one with its
+decoder's `SpecId`.
 
-Both wrappers are proper zero-capture `MonoClosure`s, so every downstream
-GlobalOpt invariant (arity tracking, staging canonicalization, GOPT\_001)
-holds without port-specific handling.
+Crashes when the current global is not a `Global` or the requested type is not
+a one-parameter function.
 
 -}
 specializePortNode :
@@ -1890,11 +1899,9 @@ specializePortNode incoming expr canType requestedMonoType state =
         ( Mono.MonoPortOutgoing wrapper requestedMonoType, state2 )
 
 
-{-| Record a port registration once per port Global (multiple monomorphic
-instantiations of the same port share one registration). Two DIFFERENT
-ports with the same bare name are both kept — the runtime's registration
-preamble then crashes at startup with a duplicate-name message
-(PORT\_001, JS \_Platform\_checkPortName parity).
+{-| Adds `reg` to the state's port registrations unless one with the same
+global key is already there, so several specializations of one port share one
+registration. Two different ports with the same bare name are both kept.
 -}
 recordPortRegistration : Mono.PortRegistration -> MonoState -> MonoState
 recordPortRegistration reg state =
@@ -1909,7 +1916,13 @@ recordPortRegistration reg state =
         { state | accum = { accum | ports = reg :: accum.ports } }
 
 
-{-| Specialize a mutually recursive cycle, handling both value and function definitions.
+{-| Returns the node for the current global, a member of the mutually recursive
+group with values `valueDefs` and functions `funcDefs`, at `requestedMonoType`,
+as `specializeFunctionCycle` builds it.
+
+Returns a `MonoExtern` when there is no current global, and crashes when it is
+an accessor.
+
 -}
 specializeCycle :
     List ( Name, TOpt.Expr MVarId )
@@ -1920,9 +1933,6 @@ specializeCycle :
 specializeCycle valueDefs funcDefs requestedMonoType state =
     case ( List.isEmpty funcDefs, state.ctx.currentGlobal ) of
         ( True, Just (Mono.Global requestedCanonical requestedName) ) ->
-            -- Pure-value SCC: specializeFunctionCycle with an empty funcDefs reduces
-            -- exactly to the old specializeValueCycle (its extra unifyExtend on an empty
-            -- func-subst is a no-op: `unify e t m` ≡ `unifyExtend e t m Dict.empty`).
             specializeFunctionCycle
                 requestedCanonical
                 requestedName
@@ -1947,11 +1957,17 @@ specializeCycle valueDefs funcDefs requestedMonoType state =
                 state
 
         ( _, Just (Mono.Accessor _) ) ->
-            -- Accessors are virtual globals and don't participate in cycles
             Utils.Crash.crash "Specialize.specializeCycle: Accessor should not appear in cycles"
 
 
-{-| Specialize a single (Name, Expr) pair inside a value-only cycle.
+{-| Adds to `accNodes` the `MonoDefine` node for the value `name` of a cycle in
+module `requestedCanonical`, specialized under the cycle's shared substitution.
+
+The node is stored at its registry `SpecId`, which is keyed by
+`requestedMonoType` for the requested member and by its type under the shared
+substitution otherwise. A member whose `SpecId` already has a node is skipped.
+The node's type is the specialized expression's type.
+
 -}
 specializeValueInCycle :
     ModuleName.Canonical
@@ -2005,24 +2021,17 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
         ( nextNodes, accState2 )
 
 
-{-| Specialize a cycle that contains at least one function definition, by
-creating separate nodes for each function in `funcDefs` AND each zero-arg value
-in `valueDefs`.
+{-| Returns the node for `requestedName`, a member of a mutually recursive group
+in module `requestedCanonical`, at `requestedMonoType`, after specializing every
+member of the group under one shared substitution.
 
-This handles ALL SCCs — mixed value+function and (with `funcDefs = []`) pure-value —
-so it is the sole cycle specializer (`specializeCycle` routes every case here).
-
-  - `sharedSubst` is derived from the requested member, which may be either
-    a function (in `funcDefs`) or a value (in `valueDefs`). The two sources
-    are combined via `TypeSubst.unifyExtend` so neither overrides the other.
-    In practice only one ever applies because a given top-level name is
-    either a `Define` (value) or a `Def`/`TailDef` (function), never both
-    (see specialize-cycle disjointness invariant).
-  - All `funcDefs` are specialized via `specializeFunc`.
-  - All `valueDefs` are specialized via `specializeValueInCycle`.
-
-This guarantees that any requested global in the SCC (function or value) gets
-a real MonoNode instead of falling back to MonoExtern.
+The shared substitution comes from unifying the requested member's type, as a
+function in `funcDefs` or a value in `valueDefs`, with the requested type. Every
+function (`specializeFunc`) and then every value (`specializeValueInCycle`) gets
+a node in the state's node array at its own `SpecId`, unless one is there
+already, so the other members are specialized here at the types the shared
+substitution gives them, not through the worklist. Returns a `MonoExtern` if no
+node was made for the requested member.
 
 -}
 specializeFunctionCycle :
@@ -2043,10 +2052,6 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
             List.filter (\( n, _ ) -> n == requestedName) valueDefs
                 |> List.head
 
-        -- Seed with the function-derived subst if the requested name is a
-        -- function. If not, this stays empty and unifyExtend below will build
-        -- the subst from the value expression alone.
-        -- J5: keep each unify's env, chain them, and thread into the fold's state.
         ( substFromFunc, envFromFunc ) =
             case maybeRequestedDef of
                 Just def ->
@@ -2058,9 +2063,6 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
                 Nothing ->
                     ( Dict.empty, state.ctx.mvarEnv )
 
-        -- Extend with value-derived bindings if the requested name is a value.
-        -- Using unifyExtend mirrors how `specializeNode`'s TOpt.Define /
-        -- TrackedDefine cases enrich substitutions.
         ( sharedSubst, sharedEnv ) =
             case maybeRequestedExpr of
                 Just ( _, expr ) ->
@@ -2073,14 +2075,12 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
                 Nothing ->
                     ( substFromFunc, envFromFunc )
 
-        -- Specialize all functions in the cycle under sharedSubst.
         ( nodesAfterFuncs, stateAfterFuncs ) =
             List.foldl
                 (specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst)
                 ( state.accum.nodes, setMVarEnv sharedEnv state )
                 funcDefs
 
-        -- Specialize all values in the cycle under the same sharedSubst.
         ( newNodes, stateAfter ) =
             List.foldl
                 (specializeValueInCycle requestedCanonical requestedName requestedMonoType sharedSubst)
@@ -2107,9 +2107,6 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
             )
 
         Nothing ->
-            -- Should not occur once mixed cycles populate values: the
-            -- requested name is guaranteed to be in `names` of the Cycle.
-            -- Retain the MonoExtern fallback as a belt-and-braces guard.
             ( Mono.MonoExtern requestedMonoType
             , { stateAfter
                 | accum =
@@ -2122,6 +2119,16 @@ specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requ
             )
 
 
+{-| Adds to `accNodes` the node for the function `def` of a cycle in module
+`requestedCanonical`, specialized under the cycle's shared substitution
+(`specializeFuncDefInCycle`).
+
+The node is stored at its registry `SpecId`, keyed by `requestedMonoType` for
+the requested member, so that it matches what callers asked for, and by the
+definition's type under the shared substitution otherwise. A member whose
+`SpecId` already has a node is skipped.
+
+-}
 specializeFunc :
     ModuleName.Canonical
     -> Name
@@ -2144,9 +2151,6 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
         monoTypeFromDef =
             TypeSubst.applySubstPureRO accState.accum.intern accState.ctx.mvarEnv sharedSubst canType
 
-        -- For the requested function in this cycle, use the exact MonoType
-        -- from the worklist (requestedMonoType) as the specialization key.
-        -- This ensures the SpecId matches what call sites expect.
         monoTypeForSpecId =
             if name == requestedName then
                 requestedMonoType
@@ -2177,6 +2181,16 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
         ( nextNodes, accState2 )
 
 
+{-| Returns the node for one function of a cycle under `subst`.
+
+A plain definition becomes a `MonoDefine` of its specialized body, typed by
+that body. A tail-recursive definition becomes a `MonoTailFunc` whose
+parameters are typed under `subst` and then unified back into it before the
+body is specialized; its type is the whole function type, not the result type,
+because the `TailDef` field it is made from holds the type of the whole
+definition.
+
+-}
 specializeFuncDefInCycle :
     Substitution
     -> TOpt.Def MVarId
@@ -2189,7 +2203,6 @@ specializeFuncDefInCycle subst def state =
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
 
-                -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
                     Mono.typeOf monoExpr
             in
@@ -2212,7 +2225,6 @@ specializeFuncDefInCycle subst def state =
                 stateWithParams =
                     { state | ctx = { ctx | varEnv = newVarEnv, mvarEnv = augmentedEnv } }
 
-                -- J5: fold both the subst AND the env so per-param taints survive.
                 ( augmentedSubstRaw, augmentedEnv ) =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) ( s, e ) ->
@@ -2234,10 +2246,8 @@ specializeFuncDefInCycle subst def state =
                             { ctx1 | varEnv = State.popFrame ctx1.varEnv }
                     }
 
-                -- Note: `returnType` is misleadingly named - it's actually the FULL function
-                -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
-                -- Context.extractNodeSignature expects this full function type and extracts
-                -- the actual return type from it.
+                -- `returnType` holds the whole definition's type, so this is the
+                -- function type, not the result type.
                 monoFuncType =
                     TypeSubst.applySubstPureRO state.accum.intern state.ctx.mvarEnv augmentedSubstRaw returnType
             in
@@ -2245,11 +2255,25 @@ specializeFuncDefInCycle subst def state =
 
 
 
--- ========== VALUE DEFINITIONS ==========
 -- ========== EXPRESSION SPECIALIZATION ==========
 
 
-{-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
+{-| Returns the specialized form of `destructor` (one variable bound by a path
+into a root variable) followed by `body`, under `subst`, where the root is not
+handled body-first by `specializeNumberDestruct`.
+
+When the root is a value-multi binding whose type under `subst` still has
+variables, a partial container with the destructor's own type at the path
+(`buildPartialContainer`) is unified into the root's type. That picks, or
+records, the root's instance at the refined type; the destructor is tagged on
+that instance and projects from it, and the body is specialized under the
+refined substitution. A root whose type has no variables, or whose partial
+container cannot be built, is used as it is.
+
+The bound variable enters the environment at its own type under the (possibly
+refined) substitution before the body is specialized. The result's type is
+`meta`'s type under `subst`, or the body's type when that still has variables.
+
 -}
 specializeGeneralDestruct : TOpt.Destructor MVarId -> TOpt.Expr MVarId -> TOpt.Meta MVarId -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeGeneralDestruct destructor body meta subst state =
@@ -2271,30 +2295,10 @@ specializeGeneralDestruct destructor body meta subst state =
                             applySubstFV stateI0 subst rootCanType
                     in
                     if not (Mono.containsAnyMVar rootResolved) then
-                        -- The root is already fully concrete (no remaining type
-                        -- variables): there is nothing for the destructor to narrow, and
-                        -- the existing value instance keyed by the resolved type already
-                        -- matches. Fall through to the non-refining path (`Nothing`).
-                        --
-                        -- Running buildPartialContainer/unifyExtend on an
-                        -- already-concrete root is not merely redundant but
-                        -- actively wrong when the same canonical type variable
-                        -- appears in multiple container slots (e.g. a tuple whose
-                        -- elements share one solver var, `(v, v, v)`): the partial
-                        -- container fills the non-leaf slots with fresh distinct
-                        -- CEcoValue fillers, and unifying that against the repeated
-                        -- var rebinds it once per slot, aliasing it to the last
-                        -- (unbound) filler. The root instance would then collapse
-                        -- to all-boxed and a spurious second instance (`_v0$v1`)
-                        -- would be created, desyncing the projection layout from
-                        -- the scrutinee's actual unboxed layout (CGEN_040
-                        -- operand-type violation).
-                        --
-                        -- The number-multi-root-with-a-Float-demand case (formerly the
-                        -- `floatDemand /= Nothing` carve-out here) no longer reaches this
-                        -- path: it is diverted to `specializeNumberDestruct` (body-first,
-                        -- MONO_028), which discovers the Float demand from the body's uses
-                        -- instead of the deleted `demandedNumericUseType` look-ahead.
+                        -- Refining a concrete root is harmful, not just redundant: in
+                        -- `(v, v, v)` the fillers of the other slots rebind the shared
+                        -- variable to a fresh boxed one, so the root's instance would no
+                        -- longer match the unboxed layout of the value.
                         Nothing
 
                     else
@@ -2302,10 +2306,6 @@ specializeGeneralDestruct destructor body meta subst state =
                             ( eagerLeaf, stateRE ) =
                                 applySubstFV stateRR subst destructorMeta.tipe
 
-                            -- The slot's open (closes-to-Int) leaf. A number-multi root
-                            -- whose slot genuinely demands Float is handled by the
-                            -- body-first `specializeNumberDestruct` divert, so here the
-                            -- leaf is materialised as-is.
                             destrMonoType0 =
                                 eagerLeaf
                         in
@@ -2330,10 +2330,8 @@ specializeGeneralDestruct destructor body meta subst state =
                                             refinedSubst
                                             stateR
 
-                                    -- Record `dname` on the owning instance so later
-                                    -- call sites of this destructor can refine `info.subst`
-                                    -- via refineValueMultiForDestructorCall. Uses the same
-                                    -- comparable-MonoType key as getOrCreateValueInstance.
+                                    -- Not refreshed as getOrCreateValueInstance refreshes its
+                                    -- key; the tag lookup crashes if the two differ.
                                     instanceKey =
                                         rootInstanceMonoType
 
@@ -2427,18 +2425,19 @@ specializeGeneralDestruct destructor body meta subst state =
     ( Mono.MonoDestruct monoDestructor monoBody monoType, stateAfter )
 
 
-{-| Shared tail of the four eager-let fallbacks in the `TOpt.Let` arm (localMulti
-empty/underflow, valueMulti empty, plain non-function let). Given the def already
-specialized (`monoDef`/`state1`) and — for the multi paths — the body already
-specialized under the multi-stack entry (`probeBody`), decide the binding's mono type
-(preferring the RHS type when `applySubst` narrowed a row-poly record, per `recordWidened`),
-enrich the subst if needed, and build the `MonoLet`.
+{-| Returns the `MonoLet` of the single, already specialized definition
+`monoDef` of `defName`, for a let that is not copied per use type, together
+with its body.
 
-`state` is the OUTER pre-def state used only for `applySubstFV defCanType`. When
-`probeBody` is `Just` and no enrichment is needed the probe body is reused (no re-spec);
-otherwise the body is specialized once under the (possibly enriched) subst and
-`stateWithVar`. The plain-let path (D) passes `probeBody = Nothing`, so it always specializes
-the body here — it had no earlier multi-stack probe.
+The binding's type is `defCanType` under `subst`, read with the `MVarEnv` of
+`state` (the state before the definition was specialized). The type of the
+specialized definition is used instead when that type has variables, or when
+the definition has a record with more fields at some position (`recordWidened`);
+it is then also unified back into the substitution. `probeBody` is a body
+already specialized in an earlier attempt: it is kept when the type was not
+replaced, and otherwise, or when it is `Nothing`, the body is specialized here
+with `defName` in scope. The let's type is `monoType0`, or the body's type when
+`monoType0` has variables.
 
 -}
 finishEagerLet :
@@ -2454,8 +2453,6 @@ finishEagerLet :
     -> ( Mono.MonoExpr, MonoState )
 finishEagerLet state body probeBody defName defCanType monoType0 subst monoDef state1 =
     let
-        -- Reads the OUTER state's env (see the docstring) but threads the Intern
-        -- table on `state1`, which is the state that continues from here.
         ( defMonoType0, state1I ) =
             applySubstFVWithEnv state.ctx.mvarEnv state1 subst defCanType
 
@@ -2472,8 +2469,6 @@ finishEagerLet state body probeBody defName defCanType monoType0 subst monoDef s
             else
                 defMonoType0
 
-        -- J5: unify from state1's env (superset of state's; env is monotonic) and
-        -- thread the result into stateWithVar.
         ( enrichedSubst, enrichedEnv ) =
             if useExprType then
                 TypeSubst.unifyExtend state1I.ctx.mvarEnv defCanType defMonoType subst
@@ -2514,12 +2509,15 @@ finishEagerLet state body probeBody defName defCanType monoType0 subst monoDef s
     )
 
 
-{-| Shared per-field body of the `Record`/`TrackedRecord` arms: refine the subst with
-the field's expected mono type (so lambdas inside records get concrete types), specialize
-the field expr, and cons it onto the accumulator. Each arm keeps its own fold so the
-field-specialization ORDER (and thus enqueue/instance side effects) is preserved exactly:
-`Record` folds a `Dict Name` (name order), `TrackedRecord` a located-key map
-(`A.compareLocated` order).
+{-| Adds the field `fieldName` of a record literal, specialized, to the front of
+the accumulated fields.
+
+When `monoFieldTypes` (the record's type under the substitution) has the field,
+the field expression's type is first unified with it, so that a lambda stored
+in a field gets the type the record says it has. The order in which fields are
+visited is the caller's fold order, and it decides the order of enqueued
+specializations.
+
 -}
 specializeRecordField :
     Substitution
@@ -2530,7 +2528,6 @@ specializeRecordField :
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeRecordField subst monoFieldTypes fieldName fieldExpr ( acc, st ) =
     let
-        -- J5: unify from the fold state's env and thread it forward.
         ( refinedSubst, refinedEnv ) =
             case Dict.get fieldName monoFieldTypes of
                 Just fieldMonoType ->
@@ -2545,9 +2542,13 @@ specializeRecordField subst monoFieldTypes fieldName fieldExpr ( acc, st ) =
     ( ( fieldName, monoExpr ) :: acc, newSt )
 
 
-{-| Build a record's MonoType (Fix A) from its already-specialized field exprs, rather
-than from the substituted canonical type — avoids the unboxed-first / declaration-order
-slot-index disagreement between construction and projection sites.
+{-| Returns the record type whose fields have the types of the specialized
+field expressions `monoFields`.
+
+A record literal takes its type from its fields rather than from its canonical
+type under the substitution, so that each slot's type matches the value stored
+in it.
+
 -}
 recordMonoTypeFromFields : List ( Name, Mono.MonoExpr ) -> Mono.MonoType
 recordMonoTypeFromFields monoFields =
@@ -2559,6 +2560,50 @@ recordMonoTypeFromFields monoFields =
         )
 
 
+{-| Returns `expr` specialized under `subst`, with every global specialization it
+refers to enqueued and every let-bound copy it demands recorded.
+
+Types are `expr`'s canonical types under `subst`. Where that still leaves a
+variable, many cases take the type from what was specialized instead: a list
+from its first element, a conditional or case from a branch, a let from its
+body, a tail call from the called function's type in scope. Tuples and record
+literals always take their type from their parts, and a record update's type is
+the result fields over the input record's fields. A record access takes the
+field's type from the record's own type when that is more concrete
+(`isMoreConcrete`).
+
+A reference to a global, an enumeration value, a boxed constructor, a member
+of the current recursive group or an accessor whose type is known is enqueued
+(`enqueueSpec`). An accessor whose record type is still open becomes a
+`MonoAccessorValue`, which `Compiler.Monomorphize.ResolveAccessorValues`
+resolves later. A kernel reference gets the type `deriveKernelAbiType` gives it.
+
+A call specializes its arguments as `processCallArgs` describes and unifies
+them with the callee. A global with a monomorphic annotation is applied
+directly; any other global goes through its freshened scheme, unified also with
+the call's own result type; a kernel's type is its ABI type, and a concrete ABI
+result type is preferred over the call's own. A local function destructured
+from a value-multi copy refines that copy; a let-bound function being copied
+per use type unifies only the arguments, because it shares its variables with
+the enclosing scope; anything else goes through a scheme built for it.
+
+A `let` of a function is copied once per type its body uses it at (named
+`name`, `name$1`, ...), or specialized once when the body never uses it. A
+`let` of a non-function value whose type contains a function and a free
+variable is copied once per demanded type (`name`, `name$v1`, ...). A `let`
+whose type has a number variable and a shape `isNumericFixableShape` accepts is
+specialized eagerly and copied again for each other numeric demand. Any other
+`let` is specialized once (`finishEagerLet`). A destructuring whose root is a
+number-multi binding, whose bound value is a single number and whose path
+`buildPartialContainer` accepts, is specialized body-first
+(`specializeNumberDestruct`); other destructurings go through
+`specializeGeneralDestruct`.
+
+Every branch of an `if` or `case` is specialized with the conditional's type
+pushed onto it when that type is concrete (`pushExpectedType`). A shader
+becomes unit.
+
+-}
 specializeExpr : TOpt.Expr MVarId -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
@@ -2623,7 +2668,6 @@ specializeExpr expr subst state =
                         ( Mono.MonoVarLocal name monoTypeFromMeta, stateI )
 
         TOpt.TrackedVarLocal _ name meta ->
-            -- Tracking region is unused here; delegate to the untracked arm.
             specializeExpr (TOpt.VarLocal name meta) subst state
 
         TOpt.VarGlobal region global meta ->
@@ -2711,8 +2755,7 @@ specializeExpr expr subst state =
 
         TOpt.VarCycle region canonical name meta ->
             let
-                -- Prefer the canonical scheme type from the TypedOptimized graph
-                -- so we do not depend on the potentially fragmented meta.tipe TVars.
+                -- The member's own definition type, not the reference's.
                 schemeType =
                     case Data.Map.get TOpt.toComparableGlobal (TOpt.Global canonical name) state.ctx.toptNodes of
                         Just (TOpt.Define _ _ defMeta) ->
@@ -2722,8 +2765,6 @@ specializeExpr expr subst state =
                             defMeta.tipe
 
                         Just (TOpt.Cycle _ _ funcDefs _) ->
-                            -- For functions in a recursive cycle, find the matching Def/TailDef
-                            -- and use its canonical function type.
                             let
                                 maybeDef =
                                     List.filter (\d -> getDefName d == name) funcDefs |> List.head
@@ -2736,8 +2777,6 @@ specializeExpr expr subst state =
                                     meta.tipe
 
                         _ ->
-                            -- Fallback: use the VarCycle's own meta.tipe if we cannot
-                            -- find a node or matching def. This should not normally happen.
                             meta.tipe
 
                 monoType =
@@ -2782,7 +2821,6 @@ specializeExpr expr subst state =
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst stateI
 
-                -- If the element type has unresolved TVars, infer from first element.
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         case monoExprs of
@@ -2790,8 +2828,6 @@ specializeExpr expr subst state =
                                 Mono.mList (Mono.typeOf first)
 
                             [] ->
-                                -- Empty list: element type is unconstrained, leave as-is.
-                                -- MVar _ CEcoValue compiles identically to eco.value.
                                 monoType0
 
                     else
@@ -2814,8 +2850,6 @@ specializeExpr expr subst state =
             specializeLambda (TOpt.TrackedFunction srcLam params body meta) canType subst state
 
         TOpt.Call region func args meta ->
-            -- Two-phase argument processing: defer accessor specialization until after
-            -- call-site type unification, so accessors receive fully-resolved record types.
             let
                 canType =
                     meta.tipe
@@ -2823,10 +2857,8 @@ specializeExpr expr subst state =
                 ( processedArgs, argTypes, state1 ) =
                     processCallArgs args subst state
 
-                -- Refine caller substitution with container element types from arg exprs.
-                -- This pushes bindings like a=MInt from List Int args back into subst,
-                -- so helpers like foldrHelper get distinct specializations per element type.
-                -- Skipped for local multi-target calls (they share MVarIds, no freshening).
+                -- Not used for a let-bound function copied per use type, which
+                -- starts again from `subst`.
                 ( substForCall, mvarEnv1 ) =
                     refineSubstFromArgExprs state1.ctx.mvarEnv args argTypes subst
 
@@ -2853,14 +2885,11 @@ specializeExpr expr subst state =
                                     funcMeta.tipe
                     in
                     if isMonoGlobal then
-                        -- MONOMORPHIC FAST PATH: no SchemeInfo, no unifyCallSiteDirect.
-                        -- The annotation has zero generalized vars, so applySubstPure with
-                        -- substForCall is sufficient to derive the single funcMonoType.
+                        -- The annotation generalizes nothing, so no scheme is needed.
                         let
                             funcMonoType =
                                 TypeSubst.applySubstPureRO state1r.accum.intern state1r.ctx.mvarEnv substForCall funcCanType
 
-                            -- applySubstPure is env-pure (J5), so no mvarEnv update.
                             state1m =
                                 state1r
 
@@ -2891,12 +2920,10 @@ specializeExpr expr subst state =
                         )
 
                     else
-                        -- EXISTING POLYMORPHIC PATH (unchanged)
                         let
                             ( schemeInfo, state1a ) =
                                 getOrBuildSchemeInfo funcCanType (Just global) state1r
 
-                            -- J5: keep the call-site unify env and thread it downstream.
                             ( callSubst, funcMonoTypeRaw, callEnv ) =
                                 TypeSubst.unifyCallSiteDirectWithExpected
                                     state1a.accum.intern
@@ -2941,13 +2968,11 @@ specializeExpr expr subst state =
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanType Nothing state1r
 
-                        -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
-                        -- J5: keep the call-site unify env and thread it downstream.
                         ( callSubst, _, callEnv ) =
                             TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
-                        -- Kernel ABI derivation uses funcCanType directly (no renaming);
-                        -- a Debug kernel's variables get fresh ids (MONO_009).
+                        -- The ABI type is derived from the kernel's own type, not the
+                        -- freshened scheme.
                         ( funcMonoType, state1e ) =
                             freshenDebugAbi home
                                 (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( home, name ) funcCanType callSubst)
@@ -2959,15 +2984,9 @@ specializeExpr expr subst state =
                         ( monoArgs, state2 ) =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1e
 
-                        -- Prefer the kernel ABI's result type when it is already
-                        -- fully concrete (no free MVars). The enclosing canType
-                        -- may still carry MVars from a polymorphic wrapper, so
-                        -- re-deriving from it would lose the ABI's concreteness
-                        -- (root cause of heap-layout mismatches for kernels like
-                        -- Parser.findSubString returning (Int, Int, Int)).
-                        -- Peel exactly as many layers as arguments applied —
-                        -- kernels may be partially applied, so Mono.resultTypeOf
-                        -- (which drills to the leaf) is unsafe.
+                        -- A concrete ABI result type wins over the call's own type,
+                        -- which may still have variables from a polymorphic wrapper
+                        -- (Parser.findSubString returning (Int, Int, Int)).
                         abiResultType =
                             peelCallResult (List.length argTypes) funcMonoType
 
@@ -2991,13 +3010,9 @@ specializeExpr expr subst state =
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanType Nothing state1r
 
-                        -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
-                        -- J5: keep the call-site unify env and thread it downstream.
                         ( callSubst, _, callEnv ) =
                             TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
-                        -- Kernel ABI derivation uses funcCanType directly (no renaming);
-                        -- its variables get fresh, taint-proof ids (MONO_009).
                         ( funcMonoType, state1e ) =
                             freshenDebugAbi "Debug"
                                 (deriveKernelAbiType state.accum.intern state.ctx.mvarEnv ( "Debug", name ) funcCanType callSubst)
@@ -3009,11 +3024,6 @@ specializeExpr expr subst state =
                         ( monoArgs, state2 ) =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1e
 
-                        -- Same invariant as VarKernel: trust the ABI-derived result
-                        -- type when it is fully concrete; otherwise fall back to
-                        -- the enclosing canType so MVar IDs stay aligned with the
-                        -- enclosing spec key. Peel exactly the applied-arg count
-                        -- to handle partial applications correctly.
                         abiResultType =
                             peelCallResult (List.length argTypes) funcMonoType
 
@@ -3030,15 +3040,6 @@ specializeExpr expr subst state =
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state2I )
 
                 _ ->
-                    -- Fallback: locally-bound or non-global function.
-                    -- Checked in order:
-                    --   1. Destructor-call branch: `func` is a local whose name is
-                    --      registered on some enclosing value-multi instance. Refine
-                    --      that instance's `subst` with call-site unification so the
-                    --      eventual emit sees concrete field/lambda types.
-                    --   2. LocalMulti branch: `func` names a let-bound function being
-                    --      multi-specialized.
-                    --   3. Non-local scheme branch: everything else.
                     let
                         funcCanType =
                             TOpt.typeOf func
@@ -3080,10 +3081,6 @@ specializeExpr expr subst state =
                     in
                     case maybeDestructorRefinement of
                         Just ( callSubst, newEnv, newStack ) ->
-                            -- Destructor call on a value-multi instance: the refined
-                            -- `callSubst` has already been written back onto that
-                            -- instance inside refineValueMultiForDestructorCall; here we
-                            -- just use it for this call's own specialization.
                             let
                                 state1d0 =
                                     let
@@ -3120,11 +3117,9 @@ specializeExpr expr subst state =
                         Nothing ->
                             case localMultiName of
                                 Just name ->
-                                    -- Local multi target: type variables are shared with enclosing
-                                    -- scope, so we must NOT rename them (no unifyFuncCall).
-                                    -- Use unifyArgsOnly to extend the caller's subst with arg bindings.
+                                    -- A let-bound function shares its variables with the
+                                    -- enclosing scope, so they are not freshened.
                                     let
-                                        -- J5: keep the args-only unify env and thread it downstream.
                                         ( callSubst, callEnv ) =
                                             TypeSubst.unifyArgsOnly state1.ctx.mvarEnv funcCanType argTypes subst
 
@@ -3154,12 +3149,10 @@ specializeExpr expr subst state =
                                     )
 
                                 Nothing ->
-                                    -- Non-local function: direct unification (no renaming needed with global MVarIds)
                                     let
                                         ( schemeInfo, state1a ) =
                                             getOrBuildSchemeInfo funcCanType Nothing state1r
 
-                                        -- J5: keep the call-site unify env and thread it downstream.
                                         ( callSubst, funcMonoTypeRaw, callEnv ) =
                                             TypeSubst.unifyCallSiteDirect state1a.accum.intern state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
@@ -3196,8 +3189,6 @@ specializeExpr expr subst state =
                 ( monoArgs, stateAfter ) =
                     specializeNamedExprs args subst stateI
 
-                -- If the canonical type had unresolved TVars (producing CEcoValue),
-                -- look up the result type from the tail-called function's registered type.
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         case State.lookupVar name stateAfter.ctx.varEnv of
@@ -3220,24 +3211,18 @@ specializeExpr expr subst state =
                 ( monoType0, stateI ) =
                     applySubstFV state subst canType
 
-                -- Fix 2: the resolved if-result type is the consumer demand on every
-                -- branch. Push it onto each branch's own type so a generalized
-                -- `number` branch (e.g. the `then`-branch reference `n` in
-                -- `(if c then n else 0) * 1.5`, whose node still says `number`) is
-                -- specialized at the result type rather than defaulting to Int.
+                -- The `if`'s type is the demand on every branch: in
+                -- `(if c then n else 0) * 1.5` the branch `n` must become a Float.
                 ( monoBranches, state1 ) =
                     specializeBranches monoType0 branches subst stateI
 
                 ( monoFinal, state2 ) =
-                    -- J5: thread the pushed-type unify env into the branch specialization.
                     let
                         ( pushedSubst, pushedEnv ) =
                             pushExpectedType state1.ctx.mvarEnv monoType0 (TOpt.typeOf final) subst
                     in
                     specializeExpr final pushedSubst (setMVarEnv pushedEnv state1)
 
-                -- If the canonical type had unresolved TVars (producing CEcoValue),
-                -- infer the concrete type from the specialized final branch instead.
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoFinal
@@ -3263,8 +3248,6 @@ specializeExpr expr subst state =
             in
             case defCanType of
                 Can.TLambda _ _ _ ->
-                    -- Function def: demand-driven local multi-specialization.
-                    -- Push a fresh entry onto the localMulti stack for this defName.
                     let
                         newEntry =
                             { defName = defName
@@ -3281,19 +3264,13 @@ specializeExpr expr subst state =
                                     { c | localMulti = newEntry :: c.localMulti }
                             }
 
-                        -- Specialize the body under the outer substitution,
-                        -- with the new localMulti stack entry for this defName.
                         ( monoBody, stateAfterBody ) =
                             specializeExpr body subst stateForBody
                     in
-                    -- Pop our entry from the stack and extract discovered instances.
                     case stateAfterBody.ctx.localMulti of
                         topEntry :: restOfStack ->
                             if Mono.specMapIsEmpty topEntry.instances then
-                                -- No calls to this def were recorded in the body:
-                                -- fall back to single-instance behavior using the original name.
                                 let
-                                    -- Keep restOfStack so outer contexts are visible during specializeDef
                                     ( monoDef, state1 ) =
                                         specializeDef def
                                             subst
@@ -3309,21 +3286,14 @@ specializeExpr expr subst state =
                                 finishEagerLet stateL body (Just monoBody) defName defCanType monoType0 subst monoDef state1
 
                             else
-                                -- We have one or more concrete instances discovered from call sites.
                                 let
                                     instancesList =
                                         Mono.specMapValues topEntry.instances
 
-                                    -- Build MonoDefs for each instance, bridging call-site types
-                                    -- to the def's own type variables via unifyExtend.
-                                    -- info.subst uses renamed call-site variable names which
-                                    -- don't match the def's canonical type variables; unifyExtend
-                                    -- properly maps the def's variables to the call-site mono types.
                                     ( instanceDefs, stateWithDefs ) =
                                         List.foldl
                                             (\info ( defsAcc, stAcc ) ->
                                                 let
-                                                    -- J5: unify from the accumulator's env and thread it forward.
                                                     ( mergedSubst, mergedEnv ) =
                                                         TypeSubst.unifyExtend stAcc.ctx.mvarEnv defCanType info.monoType subst
 
@@ -3347,7 +3317,6 @@ specializeExpr expr subst state =
                                             )
                                             instancesList
 
-                                    -- Register varEnv for all instances
                                     stateWithVars =
                                         List.foldl
                                             (\info st ->
@@ -3366,7 +3335,6 @@ specializeExpr expr subst state =
                                             stateWithDefs
                                             instancesList
 
-                                    -- Build nested MonoLet chain
                                     finalExpr =
                                         List.foldl
                                             (\def_ accBody -> Mono.MonoLet def_ accBody (Mono.typeOf accBody))
@@ -3376,8 +3344,6 @@ specializeExpr expr subst state =
                                 ( finalExpr, stateWithVars )
 
                         [] ->
-                            -- Should not happen: we pushed an entry above.
-                            -- Fall back to single-instance behavior.
                             let
                                 ( monoDef, state1 ) =
                                     specializeDef def subst stateAfterBody
@@ -3386,7 +3352,6 @@ specializeExpr expr subst state =
 
                 _ ->
                     if shouldUseValueMulti stateL.ctx.mvarEnv defCanType then
-                        -- Value-multi path: defer specialization until uses are known.
                         let
                             newEntry =
                                 { defName = defName
@@ -3395,10 +3360,8 @@ specializeExpr expr subst state =
                                 , instances = Mono.specMapEmpty
                                 }
 
-                            -- Add defName to VarEnv with a preliminary type so that
-                            -- Destruct nodes from LetDestruct can find their root variable.
-                            -- (LetDestruct compiles to Let + Destruct chain where Destructs
-                            -- reference Root defName.)
+                            -- A destructuring let is a let followed by destructs whose root
+                            -- is defName, and they look the root up in the environment.
                             ( prelimDefMonoType, stateI ) =
                                 applySubstFV stateL subst defCanType
 
@@ -3421,7 +3384,6 @@ specializeExpr expr subst state =
                         case stateAfterBody.ctx.valueMulti of
                             topEntry :: restOfStack ->
                                 if Mono.specMapIsEmpty topEntry.instances then
-                                    -- Value never used: fall back to eager single-instance behavior.
                                     let
                                         ( monoDef, state1 ) =
                                             specializeDef def
@@ -3438,15 +3400,9 @@ specializeExpr expr subst state =
                                     finishEagerLet stateL body (Just monoBody) defName defCanType monoType0 subst monoDef state1
 
                                 else
-                                    -- We have instances: specialize def once per requested type.
-                                    --
-                                    -- Per D6, `info.monoType` is only the coarse container shape
-                                    -- used as the instance key; `info.subst` carries the fine-
-                                    -- grained bindings accumulated from destructor-path refinement
-                                    -- AND from call-site unification threaded back by the
-                                    -- destructor-call branch (refineValueMultiForDestructorCall).
-                                    -- Re-derive the instance MonoType from `info.subst` + defCanType
-                                    -- so the varEnv and unifyExtend both see the refined type.
+                                    -- `info.monoType` is only the instance key; `info.subst` has
+                                    -- since been refined by destructors and their calls, so the
+                                    -- instance type is derived again from it.
                                     let
                                         instancesList =
                                             Mono.specMapValues topEntry.instances
@@ -3458,7 +3414,6 @@ specializeExpr expr subst state =
                                                         ( instanceDefMonoType0, stAcc1 ) =
                                                             applySubstFVWithEnv stateAfterBody.ctx.mvarEnv stAcc info.subst defCanType
 
-                                                        -- J5: unify from the accumulator's env and thread it forward.
                                                         ( mergedSubst, mergedEnv ) =
                                                             TypeSubst.unifyExtend
                                                                 stAcc1.ctx.mvarEnv
@@ -3517,44 +3472,15 @@ specializeExpr expr subst state =
                                     ( finalExpr, stateWithVars )
 
                             [] ->
-                                -- Stack underflow: should not happen.
                                 Utils.Crash.crash "Specialize: valueMulti stack underflow in Let"
 
                     else if hasUnresolvedNumberVar stateL.ctx.mvarEnv defCanType && isNumericFixableShape (Tuple.first (applySubstFV stateL subst defCanType)) then
-                        -- D7 uniform number-let gate (MONO_028). The former gate had a
-                        -- third, provenance/prediction conjunct —
-                        --   (isNumericDataRhs || (isScalarNumberShape && demandedNumericUseType /= Nothing))
-                        -- — that decided, from RHS provenance and a demand-replay Float
-                        -- prediction, whether deferral was WORTH THE RISK given that NOT
-                        -- deferring meant a possibly-wrong eager Int commit. Under
-                        -- quiescence-before-defaulting the eager seed emits OPEN types
-                        -- (closed to Int only at the end, never Int-committed), so every
-                        -- number-fixable binding can be admitted unconditionally and the
-                        -- use-site machinery (resolveNumberMultiVarRef) detects any Float
-                        -- use — no up-front prediction needed. The two remaining conjuncts
-                        -- are STRUCTURAL guards, not predictions, and are kept:
-                        -- `hasUnresolvedNumberVar` restricts to number-carrying bindings,
-                        -- and `isNumericFixableShape` excludes shapes the seed-and-emit
-                        -- machinery cannot re-type (e.g. a record with a boxed `List a`
-                        -- field — RecordNarrow08 — which must NOT enter this branch).
-                        --
-                        -- Number-carrying non-function let. We cannot simply DEFER the
-                        -- whole binding (as the value-multi path does): re-specializing
-                        -- the RHS after the body scrambles the instance recording of any
-                        -- `localMulti` function it calls. Instead: specialize the def
-                        -- EAGERLY (preserving that order), seed the value-multi stack with
-                        -- this eager (open, closes-to-Int) instance, then specialize the
-                        -- body. Float-demanding uses record additional instances (extra
-                        -- specialized copies of the RHS); Int/boxed uses resolve to the
-                        -- eager instance via varEnv.
-                        -- rhsUsesLocalMulti bailout retired (J5 deletion loop proved it
-                        -- inert): the eager-seed number-multi path below handles all cases,
-                        -- including when the RHS itself drives localMulti specialization.
+                        -- The definition is specialized before the body, not deferred:
+                        -- specializing it after the body would scramble the instance
+                        -- recording of any let-bound function it calls. The eager copy
+                        -- (number variables left open) seeds the value-multi entry, and
+                        -- each other numeric demand in the body adds a copy.
                         let
-                            -- The Intern table is threaded through first, then into
-                            -- specializeDef. `applySubstFV` is the identity on stateL
-                            -- apart from `accum.intern`, so this reorder is behaviour-
-                            -- preserving; `stateI.ctx.mvarEnv == stateL.ctx.mvarEnv`.
                             ( eagerMonoType0, stateI ) =
                                 applySubstFV stateL subst defCanType
 
@@ -3606,8 +3532,8 @@ specializeExpr expr subst state =
                         case stateAfterBody.ctx.valueMulti of
                             topEntry :: restOfStack ->
                                 let
-                                    -- All instances except the seeded eager (Int) one are
-                                    -- Float-demanding copies discovered in the body.
+                                    -- Every instance but the eager one, whatever numeric
+                                    -- type the body demanded.
                                     floatInstances =
                                         Mono.specMapValues (Mono.specMapRemove intKey topEntry.instances)
 
@@ -3625,16 +3551,9 @@ specializeExpr expr subst state =
                                         List.foldl
                                             (\info ( defsAcc, stAcc ) ->
                                                 let
-                                                    -- Step A: re-derive the instance type from the
-                                                    -- (possibly refined) info.subst, mirroring the
-                                                    -- value-multi path (D6). Destructor- and use-site
-                                                    -- refinements threaded into info.subst then flow
-                                                    -- into emission, instead of the static
-                                                    -- info.monoType recorded at instance creation.
                                                     ( instanceDefMonoType0, stAcc1 ) =
                                                         applySubstFVWithEnv stateAfterBody.ctx.mvarEnv stAcc info.subst defCanType
 
-                                                    -- J5: unify from the accumulator's env and thread it forward.
                                                     ( mergedSubst, mergedEnv ) =
                                                         TypeSubst.unifyExtend stAcc1.ctx.mvarEnv defCanType instanceDefMonoType0 info.subst
 
@@ -3689,13 +3608,10 @@ specializeExpr expr subst state =
                                 Utils.Crash.crash "Specialize: number-multi stack underflow in Let"
 
                     else
-                        -- Non-function let: original eager behavior
                         let
                             ( monoDef, state1 ) =
                                 specializeDef def subst stateL
                         in
-                        -- probeBody Nothing: the plain-let path has no multi-stack probe, so
-                        -- finishEagerLet specializes the body once under the enriched subst.
                         finishEagerLet stateL body Nothing defName defCanType monoType0 subst monoDef state1
 
         TOpt.Destruct destructor body meta ->
@@ -3705,18 +3621,8 @@ specializeExpr expr subst state =
             in
             case getValueMultiRootFromPath destructorPath state of
                 Just ( rootName, rootCanType ) ->
-                    -- Body-first divert (MONO_028) applies ONLY to a SCALAR-number
-                    -- destructor slot projected from a number-multi ROOT whose path
-                    -- buildPartialContainer can refine. Checks are ordered
-                    -- cheap→expensive and gated lazily: `isNumberMultiTarget` is a
-                    -- cheap stack scan; only inside it do we pay the O(type)
-                    -- `applySubstFV` (eagerLeaf), and only when the slot is a scalar
-                    -- number do we run the `buildPartialContainer` probe. The common
-                    -- (non-number-root) Destruct computes none of this. A
-                    -- tuple/record/nested slot is not a scalar number and stays on the
-                    -- general path; list-index (`ArrayIndex`) paths are rejected by the
-                    -- probe (Nothing) — diverting them would drop the destructor and
-                    -- leave the bound var unbound (`lookupVar: unbound`).
+                    -- A path buildPartialContainer rejects must not go body-first:
+                    -- the destructor would be dropped and its variable left unbound.
                     if isNumberMultiTarget rootName state then
                         let
                             ( eagerLeaf, stateI ) =
@@ -3758,8 +3664,6 @@ specializeExpr expr subst state =
                     specializeGeneralDestruct destructor body meta subst state
 
         TOpt.Case label root decider jumps meta ->
-            -- ABI normalization for case expressions has been moved to MonoGlobalOptimize.
-            -- Here we simply specialize the branches and use the type from the substitution.
             let
                 canType =
                     meta.tipe
@@ -3791,7 +3695,6 @@ specializeExpr expr subst state =
                 monoDecider0
                 monoJumps0
                 (if Mono.containsAnyMVar monoTypeFromCan then
-                    -- Infer from first jump or decider leaf
                     inferCaseType monoDecider0 monoJumps0 monoTypeFromCan
 
                  else
@@ -3801,10 +3704,6 @@ specializeExpr expr subst state =
             )
 
         TOpt.Accessor region fieldName meta ->
-            -- Standalone accessor expression (not passed as argument to a call).
-            -- If the MonoType still has MVars (incomplete record layout from unresolved
-            -- row variables), defer to ResolveAccessorValues pass via MonoAccessorValue.
-            -- Otherwise, create the virtual global immediately.
             let
                 canType =
                     meta.tipe
@@ -3836,9 +3735,6 @@ specializeExpr expr subst state =
             case getValueMultiVar record stateA of
                 Just ( varName, recordCanType ) ->
                     if isNumberMultiTarget varName stateA then
-                        -- Number-multi target: record an instance against the binding's
-                        -- own defCanType using this field's resolved type as the demanded
-                        -- shape (`{ field : fieldMonoType }`).
                         case recordNumberInstanceAgainstShape varName (Mono.mRecord (Dict.singleton fieldName monoType)) subst stateA of
                             Just ( freshName, instMonoType, state1 ) ->
                                 ( Mono.MonoRecordAccess (Mono.MonoVarLocal freshName instMonoType) fieldName monoType, state1 )
@@ -3847,15 +3743,10 @@ specializeExpr expr subst state =
                                 ( Mono.MonoRecordAccess (Mono.MonoVarLocal varName monoType) fieldName monoType, stateA )
 
                     else
-                        -- Value-multi target: derive the concrete record type from the
-                        -- access field type. The field's monoType is concrete (type inference
-                        -- resolved it), but the record's canonical type has free type vars.
-                        -- Unify to learn the concrete bindings.
                         let
                             partialRecordMono =
                                 Mono.mRecord (Dict.singleton fieldName monoType)
 
-                            -- J5: keep the unify env and thread it via stateE.
                             ( enrichedSubst, enrichedEnv ) =
                                 TypeSubst.unifyExtend stateA.ctx.mvarEnv recordCanType partialRecordMono subst
 
@@ -3875,16 +3766,8 @@ specializeExpr expr subst state =
                         ( monoRecord, stateAfter ) =
                             specializeExpr record subst stateA
 
-                        -- If the specialized record's mono type carries a more concrete
-                        -- type for this field than what applySubst produced from the
-                        -- field's canonical type, prefer it. This handles nested
-                        -- row-polymorphic records where the field's canonical type
-                        -- references a row-extension MVar that is not in `subst` —
-                        -- in that case applySubst yields a narrow MRecord (or an
-                        -- MVar/MCustom-with-MVar-args) even though the actual heap
-                        -- value carries the full record. The record's own mono type
-                        -- has the authoritative concrete field type. (Companion fix
-                        -- to `recordWidened`-based let-binding fix in this module.)
+                        -- A field whose canonical type has an unbound row variable
+                        -- substitutes to a narrower record than the value carries.
                         refinedMonoType =
                             case Mono.typeOf monoRecord of
                                 Mono.MRecord _ fields ->
@@ -3915,9 +3798,6 @@ specializeExpr expr subst state =
                 ( monoRecord, state1 ) =
                     specializeExpr record subst stateI
 
-                -- Use the already-specialized record's MonoType for field type lookup.
-                -- This is more concrete than re-applying subst to the canonical type,
-                -- because monoRecord already encodes constraints from its own specialization.
                 recordMonoType =
                     Mono.typeOf monoRecord
 
@@ -3936,7 +3816,6 @@ specializeExpr expr subst state =
                                 fieldName =
                                     A.toValue locName
 
-                                -- J5: unify from the fold state's env and thread it forward.
                                 ( refinedSubst, refinedEnv ) =
                                     case getFieldMonoType fieldName of
                                         Just fieldMonoType ->
@@ -3971,10 +3850,8 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                -- Refinement hint only — may contain MVar _ CEcoValue for any
-                -- field whose upstream constraint flow gapped. Used solely to
-                -- guide per-field substitution refinement; NOT used as the
-                -- record's final MonoType (see Fix A below).
+                -- Guides each field's substitution only; the record's type comes
+                -- from the specialized fields.
                 ( refinementMonoType, stateI ) =
                     applySubstFV state subst canType
 
@@ -3999,7 +3876,6 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                -- Refinement hint only — see Fix A note on TOpt.Record above.
                 ( refinementMonoType, stateI ) =
                     applySubstFV state subst canType
 
@@ -4038,14 +3914,8 @@ specializeExpr expr subst state =
                 allExprs =
                     monoA :: monoB :: monoRest
 
-                -- Fix A (wrong-unboxed-bitmap-upstream): build the tuple's
-                -- MonoType from the already-specialised element expressions
-                -- rather than from meta.tipe. This guarantees the container's
-                -- declared element types match the actual SSA slot types,
-                -- even when an upstream constraint-flow gap leaves a slot's
-                -- canonical TVar unbound (which would otherwise fall through
-                -- applySubst's Nothing/CEcoValue branch and produce a buggy
-                -- MVar _ CEcoValue in the MonoType).
+                -- From the elements, not meta.tipe, so the slot types match the
+                -- values stored even where a canonical variable is unbound.
                 monoType =
                     Mono.mTuple (List.map Mono.typeOf allExprs)
             in
@@ -4055,22 +3925,24 @@ specializeExpr expr subst state =
             ( Mono.MonoUnit, state )
 
 
-{-| Infer the result type of a case expression from its branches.
-When the canonical type has unresolved TVars, we look at the first
-concrete branch type instead.
+{-| Returns the type of the first shared branch in `jumps` or, when there is
+none, the type `inferFromDecider` finds in `decider`, with `fallback` as the
+last resort. The first branch's type is taken whether or not it has variables.
 -}
 inferCaseType : Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> Mono.MonoType
 inferCaseType decider jumps fallback =
-    -- Try to extract type from first jump
     case jumps of
         ( _, expr ) :: _ ->
             Mono.typeOf expr
 
         [] ->
-            -- No jumps, try decider leaf
             inferFromDecider decider fallback
 
 
+{-| Returns the type of the inline branch reached by following the success
+edge of every test chain and the first edge of every fan-out in `decider`, or
+`fallback` when that leaf is a jump.
+-}
 inferFromDecider : Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType
 inferFromDecider decider fallback =
     case decider of
@@ -4096,8 +3968,8 @@ inferFromDecider decider fallback =
 -- ========== EXPRESSION LIST HELPERS ==========
 
 
-{-| Specialize a list of expressions.
-Uses foldl + reverse instead of foldr for stack safety (foldl is tail-call optimized).
+{-| Returns each of `exprs` specialized under `subst`, in order, with the state
+threaded from first to last.
 -}
 specializeExprs : List (TOpt.Expr MVarId) -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
@@ -4117,12 +3989,12 @@ specializeExprs exprs subst state =
     ( List.reverse revAcc, finalState )
 
 
-{-| Refine a substitution using the canonical types of call-site arguments.
+{-| Returns `subst` extended by unifying each argument's canonical type with
+its MonoType in `argTypes`, paired by position.
 
-For each arg expression, unify its canonical type (TOpt.typeOf) with its
-computed MonoType via unifyExtend. This pushes container element bindings
-(e.g. a = MInt from List Int) back into the substitution, even when the
-callee's callback types are too generic to provide them.
+This brings what the arguments' types reveal, such as `a = Int` from an
+argument of type `List Int`, into the caller's substitution, where the callee's
+own types might not provide it.
 
 -}
 refineSubstFromArgExprs :
@@ -4140,14 +4012,9 @@ refineSubstFromArgExprs mvarEnv args argTypes subst =
         (List.map2 Tuple.pair args argTypes)
 
 
-{-| Process call arguments, deferring accessor specialization.
-
-Returns:
-
-  - processed args (some are PendingAccessor),
-  - the monomorphic arg types for call-site unification,
-  - updated MonoState.
-
+{-| Returns each of `args` as a `ProcessedArg`, in order, together with the
+MonoType each contributes to the call's unification, as `processCallArg`
+decides.
 -}
 processCallArgs :
     List (TOpt.Expr MVarId)
@@ -4162,6 +4029,15 @@ processCallArgs args subst state =
     ( List.reverse revArgs, List.reverse revTypes, finalState )
 
 
+{-| Adds `arg` to the front of the accumulated arguments and their types.
+
+An accessor is always held back. A reference to a let-bound function being
+copied per use type, or to a number-multi binding, is held back. A global
+reference or a call whose type under `subst` still has variables is held back.
+Everything else, kernels included, is specialized at once and contributes its
+specialized type.
+
+-}
 processCallArg : Substitution -> TOpt.Expr MVarId -> ( List ProcessedArg, List Mono.MonoType, MonoState ) -> ( List ProcessedArg, List Mono.MonoType, MonoState )
 processCallArg subst arg ( accArgs, accTypes, st ) =
     case arg of
@@ -4204,10 +4080,8 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 )
 
             else if isNumberMultiTarget name st then
-                -- Deferred number binding used as a call argument. Keep its type as
-                -- an unresolved CNumber var so a numeric operator resolves it via the
-                -- concrete sibling arg / expected result; the Float instance is then
-                -- recorded against the callee's paramType in resolveProcessedArg.
+                -- Its open number type lets a sibling argument or the expected
+                -- result decide the number.
                 ( PendingNumberValue name localCanType :: accArgs
                 , TypeSubst.applySubstPureRO st.accum.intern st.ctx.mvarEnv subst localCanType :: accTypes
                 , st
@@ -4224,9 +4098,6 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 )
 
         TOpt.TrackedVarLocal _ name trackedLocalMeta ->
-            -- Tracking region is unused here; delegate to the untracked arm. (The
-            -- else-branch's `specializeExpr` on the untracked VarLocal is equivalent —
-            -- specializeExpr's TrackedVarLocal arm itself delegates to VarLocal.)
             processCallArg subst (TOpt.VarLocal name trackedLocalMeta) ( accArgs, accTypes, st )
 
         TOpt.Call _ _ _ meta ->
@@ -4238,17 +4109,12 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                     applySubstFV st subst canType
             in
             if Mono.containsAnyMVar monoType then
-                -- Inner call result is still polymorphic (a CEcoValue var, or —
-                -- since applySubst no longer eagerly defaults — an open number
-                -- residual). Defer specialization until we know the outer callee's
-                -- expected parameter type, which may bind the number to Float.
                 ( PendingExpr arg subst canType :: accArgs
                 , monoType :: accTypes
                 , stI
                 )
 
             else
-                -- Fully monomorphic result — specialize immediately.
                 let
                     ( monoExpr, st1 ) =
                         specializeExpr arg subst stI
@@ -4265,13 +4131,8 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                         canType =
                             meta.tipe
 
-                        -- Preserve unresolved CNumber as MVar so that later call-site
-                        -- unification (unifyCallSiteDirect) can transitively bind
-                        -- `number = Float` via concrete-typed sibling args (e.g.
-                        -- `Array Float` for `Array.foldl (+) 0.0 arr`). applySubst now
-                        -- preserves CNumber by construction (quiescence-before-
-                        -- defaulting, MONO_028), so the former applySubstKeepNumber
-                        -- fork is redundant.
+                        -- An open number stays open, so a sibling argument can make it
+                        -- Float (`Array Float` in `Array.foldl (+) 0.0 arr`).
                         monoType =
                             TypeSubst.applySubstPureRO st.accum.intern st.ctx.mvarEnv subst canType
                     in
@@ -4302,10 +4163,18 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                     )
 
 
-{-| Resolve a single processed argument.
+{-| Returns the specialized expression for `processedArg`, given the callee's
+parameter type at its position (`Nothing` when the callee has fewer parameters
+than the call has arguments) and the call's substitution `subst`.
 
-For PendingAccessor, derives the accessor's MonoType from the expected
-parameter type (which must be a record), NOT from the accessor's canonical type.
+An accessor becomes the accessor global at `{record} -> field`, with the record
+taken from the parameter type: either a function from that record, or the
+record itself. It crashes when the parameter type is neither or the record
+lacks the field. A held-back expression is specialized under its saved
+substitution, extended with the parameter type. A let-bound function or a
+number-multi binding uses its copy at the parameter type, as `ProcessedArg`
+describes; without a usable parameter type the reference keeps its name and is
+typed under `subst`.
 
 -}
 resolveProcessedArg :
@@ -4322,8 +4191,6 @@ resolveProcessedArg processedArg maybeParamType subst state =
         PendingAccessor region fieldName _ ->
             case maybeParamType of
                 Just (Mono.MFunction _ _ [ Mono.MRecord _ fields ] _) ->
-                    -- The parameter type is a function from record to something.
-                    -- Derive accessor's MonoType from the full record layout.
                     let
                         fieldType =
                             case Dict.get fieldName fields of
@@ -4348,8 +4215,6 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
 
                 Just (Mono.MRecord _ fields) ->
-                    -- The parameter type is directly a record (accessor applied to record).
-                    -- This case handles when the accessor IS the function being called.
                     let
                         fieldType =
                             case Dict.get fieldName fields of
@@ -4377,11 +4242,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     Utils.Crash.crash "Specialize.resolveProcessedArg: Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
 
         PendingExpr savedExpr savedSubst canType ->
-            -- Deferred polymorphic argument — a VarGlobal or a nested Call that
-            -- needed the callee's parameter type. Refine the substitution with that
-            -- paramType, then specialize.
             let
-                -- J5: keep the refine env (Join-R taints) and thread it into specialize.
                 ( refinedSubst, refinedEnv ) =
                     case maybeParamType of
                         Just paramType ->
@@ -4393,14 +4254,11 @@ resolveProcessedArg processedArg maybeParamType subst state =
             specializeExpr savedExpr refinedSubst (setMVarEnv refinedEnv state)
 
         LocalFunArg name canType ->
-            -- Let-bound function passed as argument. Use the callee's parameter type
-            -- to refine the local's type and create a monomorphic instance.
             case maybeParamType of
                 Just paramType ->
                     case paramType of
                         Mono.MFunction _ _ _ _ ->
                             let
-                                -- J5: keep the refine env and thread it via stateU.
                                 ( refinedSubst, refinedEnv ) =
                                     TypeSubst.unifyExtend state.ctx.mvarEnv canType paramType subst
 
@@ -4439,10 +4297,6 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     ( Mono.MonoVarLocal name monoType, state1 )
 
         PendingNumberValue name canType ->
-            -- Deferred number binding passed as an argument. The callee's resolved
-            -- paramType is the consumer's demand (e.g. MFloat for `1.4 * n`, or
-            -- MTuple [MFloat, MInt] for `Tuple.first p`). Record an instance keyed
-            -- on that shape; the binding emits one specialized def per instance.
             case maybeParamType of
                 Just paramType ->
                     case recordNumberInstanceAgainstShape name paramType subst state of
@@ -4464,7 +4318,8 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     ( Mono.MonoVarLocal name monoType, state1 )
 
 
-{-| Resolve a list of processed arguments using the callee's parameter types.
+{-| Returns each of `processedArgs` resolved by `resolveProcessedArg` against
+the parameter type at the same position in `paramTypes`, in order.
 -}
 resolveProcessedArgs :
     List ProcessedArg
@@ -4495,7 +4350,8 @@ resolveProcessedArgs processedArgs paramTypes subst state =
     ( List.reverse revArgs, finalState )
 
 
-{-| Specialize a list of named expressions.
+{-| Returns each named expression specialized under `subst`, in order, keeping
+its name.
 -}
 specializeNamedExprs :
     List ( Name, TOpt.Expr MVarId )
@@ -4519,13 +4375,13 @@ specializeNamedExprs namedExprs subst state =
     ( List.reverse revAcc, finalState )
 
 
-{-| If `expectedMono` is a concrete (MVar-free) type, push it onto `bodyCanType`
-by unification, so an `if`/`case` branch (or other operand) whose own node type is
-a generalized `number` is specialized at the demanded type (e.g. `Float`) instead
-of defaulting to `Int`. The resolved branch-result type is the consumer demand on
-each branch, but the branch's own reference node (a let-generalized `number`) may
-still say `number` — this threads the result type onto it. (When the expected type
-is still polymorphic we leave the branch untouched and infer post hoc, as before.)
+{-| Returns `subst` extended by unifying a branch's canonical type `bodyCanType`
+with `expectedMono`, the type of the whole conditional, when `expectedMono` has
+no variables; otherwise `subst` unchanged.
+
+A branch whose own type still says `number` is thereby specialized at the type
+the conditional has, such as `Float`.
+
 -}
 pushExpectedType : MVarEnv -> Mono.MonoType -> Can.Type MVarId -> Substitution -> ( Substitution, MVarEnv )
 pushExpectedType mvarEnv expectedMono bodyCanType subst =
@@ -4536,7 +4392,13 @@ pushExpectedType mvarEnv expectedMono bodyCanType subst =
         TypeSubst.unifyExtend mvarEnv bodyCanType expectedMono subst
 
 
-{-| Specialize if-expression branches (condition-body pairs).
+{-| Returns the condition and body of each `if` branch specialized, in order,
+each body after `pushExpectedType` with `expectedMono`.
+
+Every body is specialized in the variable environment the branches started
+with. Conditions are not reset that way, and the environment left at the end
+is whatever the last body left.
+
 -}
 specializeBranches :
     Mono.MonoType
@@ -4567,7 +4429,6 @@ specializeBranches expectedMono branches subst state =
                             }
 
                         ( mBody, st2 ) =
-                            -- J5: thread the pushed-type unify env into the branch specialization.
                             let
                                 ( pushedSubst, pushedEnv ) =
                                     pushExpectedType st1.ctx.mvarEnv expectedMono (TOpt.typeOf body) subst
@@ -4586,7 +4447,9 @@ specializeBranches expectedMono branches subst state =
 -- ========== CONSTRUCTOR HELPERS ==========
 
 
-{-| Extract the result type of a constructor after peeling off function arguments.
+{-| Returns what a function of type `monoType` returns once `n` arguments are
+applied, removing whole parameter lists, so that a parameter list of several
+arguments counts for all of them.
 -}
 extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
 extractCtorResultType n monoType =
@@ -4606,7 +4469,7 @@ extractCtorResultType n monoType =
 -- ========== CYCLE SPECIALIZATION HELPERS ==========
 
 
-{-| Check if a definition has the given name.
+{-| Returns whether `def` defines `targetName`.
 -}
 defHasName : Name -> TOpt.Def MVarId -> Bool
 defHasName targetName def =
@@ -4618,7 +4481,7 @@ defHasName targetName def =
             name == targetName
 
 
-{-| Get the name from a definition.
+{-| Returns the name `def` defines.
 -}
 getDefName : TOpt.Def MVarId -> Name
 getDefName def =
@@ -4630,7 +4493,10 @@ getDefName def =
             name
 
 
-{-| Get the canonical type from a definition.
+{-| Returns the canonical type of `def`. For a plain definition it is the stored
+type. For a tail-recursive one it is the parameter types put in front of the
+stored type (`buildFuncType`); that stored type is already the whole
+definition's type, so the parameters appear twice.
 -}
 getDefCanonicalType : TOpt.Def MVarId -> Can.Type MVarId
 getDefCanonicalType def =
@@ -4646,7 +4512,9 @@ getDefCanonicalType def =
 -- ========== DEFINITION SPECIALIZATION HELPERS ==========
 
 
-{-| Specialize a local definition.
+{-| Returns the local definition `def` specialized under `subst`, keeping its
+name. A tail-recursive definition's parameters are typed under `subst`, put in
+scope, and unified back into the substitution before its body is specialized.
 -}
 specializeDef : TOpt.Def MVarId -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
@@ -4677,7 +4545,6 @@ specializeDef def subst state =
                 stateWithParams =
                     { state | ctx = { ctx | varEnv = newVarEnv, mvarEnv = augmentedEnv } }
 
-                -- J5: fold both the subst AND the env so per-param taints survive.
                 ( augmentedSubstRaw, augmentedEnv ) =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) ( s, e ) ->
@@ -4702,6 +4569,10 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
+{-| Returns the destructor binding `name`, with its path typed step by step
+from the root's type in `varEnv` (`specializePath`) and its own type under
+`subst`.
+-}
 specializeDestructor : Intern -> TOpt.Destructor MVarId -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
 specializeDestructor intern (TOpt.Destructor name path meta) subst mvarEnv varEnv globalTypeEnv currentGlobal =
     let
@@ -4714,12 +4585,12 @@ specializeDestructor intern (TOpt.Destructor name path meta) subst mvarEnv varEn
     Mono.MonoDestructor name monoPath monoType
 
 
-{-| Specialize a path, computing the result type at each step.
+{-| Returns `path` with a type at every step, each computed from the type of
+the step before it, starting from the root variable's type in `varEnv`.
 
-The path is structured from leaf (root variable) outward, so we:
-
-1.  Find the root and look up its type in VarTypes
-2.  Walk back out through the path, computing types at each step
+The step types never come from the destructor's canonical type. Crashes when
+the root is not in `varEnv` (naming `destructorName` and `currentGlobal`) or a
+step does not fit its container type.
 
 -}
 specializePath : Intern -> MVarEnv -> TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
@@ -4746,7 +4617,6 @@ specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal destructor
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
-                -- ArrayIndex is used for array access, element type comes from the array's element type
                 resultType =
                     computeArrayElementType containerType
             in
@@ -4790,7 +4660,6 @@ specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal destructor
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
-                -- Compute the result type by looking up the single field type of the container
                 resultType =
                     computeUnboxResultType intern mvarEnv globalTypeEnv containerType
             in
@@ -4809,6 +4678,8 @@ specializePath intern mvarEnv path varEnv globalTypeEnv currentGlobal destructor
             Mono.MonoRoot name rootType
 
 
+{-| Returns a readable name for `mg`, for crash messages.
+-}
 debugGlobal : Maybe Mono.Global -> String
 debugGlobal mg =
     case mg of
@@ -4822,7 +4693,14 @@ debugGlobal mg =
             "Accessor(" ++ name ++ ")"
 
 
-{-| Compute the result type of projecting at an index from a container.
+{-| Returns the type of the element at `index` of a container of type
+`containerType`, as `hint` says the container is.
+
+For a list, index 0 is the head and has the element type, and any other index
+is the tail and has the list's type. Tuples and custom types are handled by
+`computeTupleElementType` and `computeCustomFieldType`. Crashes when the
+container type does not fit the hint.
+
 -}
 computeIndexProjectionType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
 computeIndexProjectionType intern mvarEnv globalTypeEnv hint index containerType =
@@ -4831,11 +4709,9 @@ computeIndexProjectionType intern mvarEnv globalTypeEnv hint index containerType
             case containerType of
                 Mono.MList _ elemType ->
                     if index == 0 then
-                        -- Index 0 is head: returns the element type
                         elemType
 
                     else
-                        -- Index 1 is tail: returns the list type itself
                         containerType
 
                 _ ->
@@ -4851,7 +4727,8 @@ computeIndexProjectionType intern mvarEnv globalTypeEnv hint index containerType
             computeCustomFieldType intern mvarEnv globalTypeEnv ctorName index containerType
 
 
-{-| Compute element type from a tuple at the given index.
+{-| Returns the type of element `index` of the tuple type `containerType`.
+Crashes when it is not a tuple or the index is out of range.
 -}
 computeTupleElementType : Int -> Mono.MonoType -> Mono.MonoType
 computeTupleElementType index containerType =
@@ -4868,10 +4745,14 @@ computeTupleElementType index containerType =
             Utils.Crash.crash ("Specialize.computeTupleElementType: Expected Mono.mTuple but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
-{-| Compute field type from a custom type constructor at the given index.
+{-| Returns the type of field `index` of constructor `ctorName`, in the custom
+type `containerType`: the field's declared type with the union's type
+parameters replaced by the container's type arguments.
 
-This looks up the union definition to find the constructor's argument types,
-then applies the type variable substitution based on the monomorphized type arguments.
+The union is looked up in `globalTypeEnv` and its parameters are given fresh
+ids for the substitution (`Analysis.convertCanTypeNameToMVarId`). Crashes when
+the container is not a custom type, or the union, constructor or field is
+missing.
 
 -}
 computeCustomFieldType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
@@ -4890,7 +4771,6 @@ computeCustomFieldType intern mvarEnv globalTypeEnv ctorName index containerType
                         Just (Can.Ctor ctorData) ->
                             case List.drop index ctorData.args of
                                 canArgType :: _ ->
-                                    -- Build name-to-MVarId mapping and Int-keyed substitution
                                     let
                                         ( nameToId, mvarEnv1 ) =
                                             List.foldl
@@ -4929,7 +4809,7 @@ computeCustomFieldType intern mvarEnv globalTypeEnv ctorName index containerType
             Utils.Crash.crash ("Specialize.computeCustomFieldType: Expected Mono.mCustom for ctor '" ++ ctorName ++ "' index " ++ String.fromInt index ++ " but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
-{-| Find a constructor by name in a list of alternatives.
+{-| Returns the first constructor in `alts` named `targetName`.
 -}
 findCtorByName : Name -> List Can.Ctor -> Maybe Can.Ctor
 findCtorByName targetName alts =
@@ -4937,11 +4817,10 @@ findCtorByName targetName alts =
         |> List.head
 
 
-{-| Compute the result type of unwrapping a single-constructor type.
-
-For Unbox paths, we need to find the single field type of the container.
-The container must be a single-constructor type (Can.Unbox option).
-
+{-| Returns the type of the one field of the custom type `containerType`, which
+must have exactly one constructor with exactly one field, with the union's
+type parameters replaced as `computeCustomFieldType` replaces them. Crashes
+otherwise.
 -}
 computeUnboxResultType : Intern -> MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
 computeUnboxResultType intern mvarEnv globalTypeEnv containerType =
@@ -4952,12 +4831,10 @@ computeUnboxResultType intern mvarEnv globalTypeEnv containerType =
                     Utils.Crash.crash ("Specialize.computeUnboxResultType: Union not found: " ++ typeName)
 
                 Just (Can.Union unionData) ->
-                    -- Unbox is used for single-constructor types with a single field
                     case unionData.alts of
                         [ Can.Ctor ctorData ] ->
                             case ctorData.args of
                                 [ canArgType ] ->
-                                    -- Build name-to-MVarId mapping and Int-keyed substitution
                                     let
                                         ( nameToId, mvarEnv1 ) =
                                             List.foldl
@@ -4999,7 +4876,9 @@ computeUnboxResultType intern mvarEnv globalTypeEnv containerType =
             Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected Mono.mCustom but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
-{-| Compute element type from an array access.
+{-| Returns the element type of `containerType`, which must be a custom type
+named `Array` with one argument; crashes otherwise. The type's module is not
+checked.
 -}
 computeArrayElementType : Mono.MonoType -> Mono.MonoType
 computeArrayElementType containerType =
@@ -5011,7 +4890,7 @@ computeArrayElementType containerType =
             Utils.Crash.crash ("Specialize.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
-{-| Convert ContainerHint to ContainerKind for monomorphized paths.
+{-| Returns the container kind of a destructuring path step for `hint`.
 -}
 hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
 hintToKind hint =
@@ -5029,7 +4908,8 @@ hintToKind hint =
             Mono.CustomContainer ctorName
 
 
-{-| Convert a TypedPath.ContainerHint to a ContainerKind for MonoDtPath.
+{-| Returns the container kind of a decision-tree path step for `hint`. An
+unknown hint becomes a custom container with an empty constructor name.
 -}
 dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
 dtHintToKind hint =
@@ -5050,7 +4930,9 @@ dtHintToKind hint =
             Mono.CustomContainer ""
 
 
-{-| Convert TypedPath.ContainerHint to TOpt.ContainerHint for reuse of computeIndexProjectionType.
+{-| Returns the destructuring hint that matches the decision-tree hint `hint`,
+so that `computeIndexProjectionType` can type decision-tree steps. An unknown
+hint becomes a custom hint with an empty constructor name.
 -}
 dtHintToTOptHint : TypedPath.ContainerHint -> TOpt.ContainerHint
 dtHintToTOptHint hint =
@@ -5071,7 +4953,9 @@ dtHintToTOptHint hint =
             TOpt.HintCustom ""
 
 
-{-| Convert a DT.Path (TypedPath) to a MonoDtPath by resolving types from VarEnv.
+{-| Returns the decision-tree path `dtPath` from the case root `rootName`, with a
+type at every step computed from the step before it, starting from the root's
+type in `varEnv`. Crashes when the root is not in `varEnv`.
 -}
 specializeDtPath : Intern -> MVarEnv -> Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
 specializeDtPath intern mvarEnv rootName dtPath varEnv globalTypeEnv =
@@ -5119,7 +5003,13 @@ specializeDtPath intern mvarEnv rootName dtPath varEnv globalTypeEnv =
     go dtPath
 
 
-{-| Specialize a pattern match decider tree.
+{-| Returns the decision tree `decider` of a case on `rootName`, with its paths
+typed and its inline branches specialized, each branch with `expectedMono`, the
+case's type, pushed onto it (`pushExpectedType`).
+
+The success and failure subtrees of a test chain, and the edges and fallback of
+a fan-out, each start from the variable environment the node started with.
+
 -}
 specializeDecider : Mono.MonoType -> Name -> TOpt.Decider (TOpt.Choice MVarId) -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
 specializeDecider expectedMono rootName decider subst state =
@@ -5188,12 +5078,14 @@ specializeDecider expectedMono rootName decider subst state =
             ( Mono.FanOut monoPath monoEdges monoFallback, state2 )
 
 
+{-| Returns a decision-tree leaf specialized: an inline branch with
+`expectedMono` pushed onto it, or a jump unchanged.
+-}
 specializeChoice : Mono.MonoType -> TOpt.Choice MVarId -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
 specializeChoice expectedMono choice subst state =
     case choice of
         TOpt.Inline expr ->
             let
-                -- J5: thread the pushed-type unify env into the choice specialization.
                 ( pushedSubst, pushedEnv ) =
                     pushExpectedType state.ctx.mvarEnv expectedMono (TOpt.typeOf expr) subst
 
@@ -5206,6 +5098,10 @@ specializeChoice expectedMono choice subst state =
             ( Mono.Jump index, state )
 
 
+{-| Returns each fan-out edge with its subtree specialized by
+`specializeDecider`, in order, each starting from the variable environment the
+fan-out started with.
+-}
 specializeEdges : Mono.MonoType -> Name -> List ( DT.Test, TOpt.Decider (TOpt.Choice MVarId) ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges expectedMono rootName edges subst state =
     let
@@ -5237,6 +5133,10 @@ specializeEdges expectedMono rootName edges subst state =
     ( List.reverse revAcc, finalState )
 
 
+{-| Returns the shared branches of a case, each specialized with `expectedMono`
+pushed onto it and starting from the variable environment the branches started
+with, in order.
+-}
 specializeJumps : Mono.MonoType -> List ( Int, TOpt.Expr MVarId ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeJumps expectedMono jumps subst state =
     let
@@ -5257,7 +5157,6 @@ specializeJumps expectedMono jumps subst state =
                                     { c | varEnv = savedVarEnv }
                             }
 
-                        -- J5: thread the pushed-type unify env into the branch specialization.
                         ( pushedSubst, pushedEnv ) =
                             pushExpectedType st.ctx.mvarEnv expectedMono (TOpt.typeOf expr) subst
 
@@ -5272,7 +5171,9 @@ specializeJumps expectedMono jumps subst state =
     ( List.reverse revAcc, finalState )
 
 
-{-| Extract the expression type from a MonoDef.
+{-| Returns the type of a specialized local definition: its body's type, or for
+a tail-recursive one a curried function from its parameter types to its body's
+type.
 -}
 monoDefExprType : Mono.MonoDef -> Mono.MonoType
 monoDefExprType monoDef =
@@ -5281,27 +5182,21 @@ monoDefExprType monoDef =
             Mono.typeOf monoExpr
 
         Mono.MonoTailDef _ monoArgs monoExpr ->
-            -- For TailDef, construct the function type from args and body return type.
             List.foldr
                 (\( _, argType ) acc -> Mono.mFunction Mono.topDeclOther [ argType ] acc)
                 (Mono.typeOf monoExpr)
                 monoArgs
 
 
-{-| Compute the result MonoType for a Call expression.
-
-Interpret the call expression's canonical result type using only the callee's
-call-site substitution from unifyCallSiteDirect. The caller's substitution is
-not applied here — with globally unique MVarIds per scheme, the old
-caller-first heuristic is no longer needed and can produce wrong results.
-
+{-| Returns the type of a call whose canonical type is `canType`, under the
+substitution the call was specialized with, `callSubst`, read with `mvarEnv`.
 -}
 callResultMonoType : MVarEnv -> MonoState -> Substitution -> Can.Type MVarId -> ( Mono.MonoType, MonoState )
 callResultMonoType mvarEnv state callSubst canType =
     applySubstFVWithEnv mvarEnv state callSubst canType
 
 
-{-| Specialize a function argument by applying type substitution.
+{-| Returns a parameter's name and its type under `subst`.
 -}
 specializeArg : Intern -> MVarEnv -> Substitution -> ( A.Located Name, Can.Type MVarId ) -> ( Name, Mono.MonoType )
 specializeArg intern mvarEnv subst ( locName, canType ) =
@@ -5315,10 +5210,8 @@ specializeArg intern mvarEnv subst ( locName, canType ) =
     ( name, monoType )
 
 
-{-| Build a function type from a list of arguments and a return type.
-
-Phase 2a §4.7: `NoArrow` on every arrow — a NEW spine, subst engine only.
-
+{-| Returns the curried function type from the parameter types of `args` to
+`returnType`, built with `Can.tLambda`.
 -}
 buildFuncType : List ( A.Located Name, Can.Type MVarId ) -> Can.Type MVarId -> Can.Type MVarId
 buildFuncType args returnType =
@@ -5330,7 +5223,9 @@ buildFuncType args returnType =
         args
 
 
-{-| Build a constructor shape from name, tag, arity, and monomorphic type information.
+{-| Returns the layout of a constructor named `ctorName` with tag `tag`: the
+parameter types `extractFieldTypes` takes from `ctorMonoType` for `arity`
+fields (whole parameter lists, so possibly more than `arity`).
 -}
 buildCtorShapeFromArity : Name.Name -> Int -> Int -> Mono.MonoType -> Mono.CtorShape
 buildCtorShapeFromArity ctorName tag arity ctorMonoType =
@@ -5344,7 +5239,10 @@ buildCtorShapeFromArity ctorName tag arity ctorMonoType =
     }
 
 
-{-| Extract a specific number of argument types from a function type.
+{-| Returns the parameter types of the function type `monoType` across nested
+function types, taking whole parameter lists until at least `n` have been
+taken, so it can return more than `n`. Stops early at a type that is not a
+function.
 -}
 extractFieldTypes : Int -> Mono.MonoType -> List Mono.MonoType
 extractFieldTypes n monoType =
@@ -5360,21 +5258,14 @@ extractFieldTypes n monoType =
                 []
 
 
-{-| Return True if a MonoType contains no remaining type variables.
-
-Used to detect when a kernel use has been fully specialized at a call site
-(e.g. Basics.add : number -> number -> number instantiated as
-Int -> Int -> Int or Float -> Float -> Float).
-
+{-| Returns whether `monoType` has no boxed type variable. An open number
+variable counts as monomorphic, since it is closed to `Int` before code
+generation.
 -}
 isFullyMonomorphicType : Mono.MonoType -> Bool
 isFullyMonomorphicType monoType =
     case monoType of
         Mono.MVar _ Mono.CNumber ->
-            -- An open number var is a residual that closes to Int before codegen
-            -- (the residual-number close in Prune), so for kernel-ABI suffix selection it is a
-            -- monomorphic Int: keep the `_Int` fast path. The stored type is
-            -- rewritten to MInt by the closing pass before the backend sees it.
             True
 
         Mono.MVar _ Mono.CEcoValue ->
@@ -5399,7 +5290,6 @@ isFullyMonomorphicType monoType =
         Mono.MCustom _ _ _ args ->
             List.all isFullyMonomorphicType args
 
-        -- Primitive / unit types are trivially monomorphic
         Mono.MInt ->
             True
 
@@ -5423,9 +5313,9 @@ isFullyMonomorphicType monoType =
 -- ========== KERNEL ABI TYPE DERIVATION ==========
 
 
-{-| For a kernel of an always-polymorphic home module (`Debug`), gives the
-`CEcoValue` variables of its ABI type fresh ids from the state's `MVarEnv`
-(MONO\_009); any other kernel's ABI type is returned unchanged. Kept at their
+{-| Gives the `CEcoValue` variables of a kernel's ABI type fresh ids from the
+state's `MVarEnv` when the kernel's home module is always polymorphic
+(`Debug`); any other kernel's ABI type is returned unchanged. Kept at their
 source ids the variables may be number variables of the enclosing definition
 (`bump n = Debug.log "n" (n + 1)`), which `Compiler.Monomorphize.Prune` would
 close to `MInt` even in a `Float` specialization, giving the kernel an unboxed
@@ -5441,6 +5331,10 @@ freshenDebugAbi home abiType state =
         freshenKernelAbiVars abiType state
 
 
+{-| Returns `abiType` with its boxed variables renumbered from the state's next
+free id (`KernelAbi.remapEcoVarsFresh`), and the state with that counter
+advanced.
+-}
 freshenKernelAbiVars : Mono.MonoType -> MonoState -> ( Mono.MonoType, MonoState )
 freshenKernelAbiVars abiType state =
     let
@@ -5453,27 +5347,20 @@ freshenKernelAbiVars abiType state =
     ( freshAbi, setMVarEnv { env | nextId = nextId } state )
 
 
-{-| Derive the MonoType for a kernel function's ABI.
+{-| Returns the kernel ABI type for a reference to the kernel `kernelId` of
+canonical type `canFuncType`, under the call's substitution `callSubst`.
 
-This is _call-site aware_:
-
-  - For monomorphic uses (no remaining MVar in the instantiated function type),
-    we prefer the fully specialized MonoType obtained by applying the call-site
-    substitution.
-
-  - For genuinely polymorphic uses, we fall back to the KernelAbiMode-driven
-    behavior:
-
-        - UseSubstitution  -> applySubst
-        - PreserveVars     -> all CEcoValue (boxed) vars (or concrete type
-          when the kernel is in `suffixSelectingKernels` and the call site
-          is fully monomorphic)
+Under `KernelAbi.UseSubstitution` it is the canonical type under the
+substitution. Under `PreserveVars` it is the type under the substitution only
+when the kernel is in `KernelAbi.suffixSelectingKernels` and that type is
+monomorphic by `isFullyMonomorphicType`, which counts an open number variable
+as monomorphic; otherwise every type variable is boxed
+(`KernelAbi.canTypeToMonoType_preserveVars`), a number variable included.
 
 -}
 deriveKernelAbiType : Intern -> MVarEnv -> ( String, String ) -> Can.Type MVarId -> Substitution -> Mono.MonoType
 deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
     let
-        -- Monomorphic function type at this use-site, after substitution.
         monoAfterSubst : Mono.MonoType
         monoAfterSubst =
             TypeSubst.applySubstPureRO intern mvarEnv callSubst canFuncType
@@ -5484,25 +5371,16 @@ deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
     in
     case mode of
         KernelAbi.UseSubstitution ->
-            -- Monomorphic kernel type from the outset (no type variables).
             monoAfterSubst
 
         KernelAbi.PreserveVars ->
-            -- Concrete-type-aware kernels keep the monomorphic call-site type
-            -- so it can drive Elm-level wrapper specialization (e.g. List.cons
-            -- per element type) and per-instance kernel symbol selection (e.g.
-            -- Utils.compare → _Int / _Float / _Char). The C++ kernel ABI is
-            -- determined separately by kernelBackendAbiPolicy in MLIR codegen,
-            -- which may override this type with all-boxed !eco.value arguments.
             if
                 EverySet.member KernelAbi.comparePair kernelId KernelAbi.suffixSelectingKernels
                     && isFullyMonomorphicType monoAfterSubst
             then
-                -- e.g. List.cons : Int -> List Int -> List Int at this site
                 monoAfterSubst
 
             else
-                -- default: all vars become CEcoValue (fully boxed ABI)
                 Tuple.first (KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType)
 
 
@@ -5510,7 +5388,7 @@ deriveKernelAbiType intern mvarEnv kernelId canFuncType callSubst =
 -- ========== GLOBAL CONVERSIONS ==========
 
 
-{-| Convert a typed optimized global reference to a monomorphized global reference.
+{-| Returns the monomorphized global for the same module and name.
 -}
 toptGlobalToMono : TOpt.Global -> Mono.Global
 toptGlobalToMono (TOpt.Global canonical name) =
@@ -5521,7 +5399,8 @@ toptGlobalToMono (TOpt.Global canonical name) =
 -- ========== LOCAL FUNCTION CLONE HELPERS ==========
 
 
-{-| Rename a MonoDef to use a fresh name (for multi-specialization clones).
+{-| Returns `def` bound under `newName`. A tail-recursive definition also has
+its self tail calls renamed (`renameTailCalls`).
 -}
 renameMonoDef : Name -> Mono.MonoDef -> Mono.MonoDef
 renameMonoDef newName def =
@@ -5533,11 +5412,9 @@ renameMonoDef newName def =
             Mono.MonoTailDef newName args (renameTailCalls oldName newName expr)
 
 
-{-| Rename self tail-calls from oldName to newName in a MonoExpr.
-
-Used when cloning MonoTailDef for local multi-specialization so that
-each cloned definition's internal MonoTailCall refers to its own name.
-
+{-| Returns `expr` with every tail call of `oldName` made a tail call of
+`newName`, at any depth, and every tail-recursive local definition named
+`oldName` renamed too; no other reference is renamed.
 -}
 renameTailCalls : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
 renameTailCalls oldName newName expr =
@@ -5619,7 +5496,6 @@ renameTailCalls oldName newName expr =
                 (List.map (\( i, e ) -> ( i, renameTailCalls oldName newName e )) jumps)
                 t
 
-        -- Leaf nodes: unchanged
         Mono.MonoLiteral _ _ ->
             expr
 
@@ -5639,6 +5515,9 @@ renameTailCalls oldName newName expr =
             expr
 
 
+{-| Returns `decider` with tail calls renamed in every inline branch, as
+`renameTailCalls` renames them.
+-}
 renameTailCallsDecider : Name -> Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 renameTailCallsDecider oldName newName decider =
     case decider of
@@ -5656,6 +5535,9 @@ renameTailCallsDecider oldName newName decider =
                 (renameTailCallsDecider oldName newName fallback)
 
 
+{-| Returns a decision-tree leaf with tail calls renamed in an inline branch; a
+jump is unchanged.
+-}
 renameTailCallsChoice : Name -> Name -> Mono.MonoChoice -> Mono.MonoChoice
 renameTailCallsChoice oldName newName choice =
     case choice of
@@ -5670,7 +5552,7 @@ renameTailCallsChoice oldName newName choice =
 -- ========== ARRAY HELPERS ==========
 
 
-{-| Check if the array has a non-Nothing node at the given index.
+{-| Returns whether `arr` holds a `Just` at `index`.
 -}
 arrayHasNode : Int -> Array.Array (Maybe a) -> Bool
 arrayHasNode index arr =
@@ -5682,7 +5564,8 @@ arrayHasNode index arr =
             False
 
 
-{-| Set an element in an array, growing it with Nothing values if necessary.
+{-| Returns `arr` with `value` at `index`, first padding the array with
+`Nothing` up to that index when it is too short.
 -}
 arraySetGrowing : Int -> Maybe a -> Array.Array (Maybe a) -> Array.Array (Maybe a)
 arraySetGrowing index value arr =

@@ -4,17 +4,28 @@ module Compiler.Type.Constrain.Common exposing
     , Args, makeArgs, TypedArgs(..)
     , RigidTypeVar, Info(..)
     , getName, getAccessName, toShaderRecord
-    -- Pattern state
-    -- Def info
-    -- Expression helpers
-    -- Args types
-    -- Pattern helpers
     )
 
-{-| Shared types and helpers for constraint generation.
+{-| The state records and small classifiers that the expression and pattern
+constraint generators share, kept here so that the pattern generator need not
+depend on the expression generator.
 
-This module contains types and functions that are used by both the Erased
-and Typed constraint generation pathways.
+Constraint generation walks the canonical AST and produces the `Constraint`s
+that the solver later solves. Walking a pattern yields a _header_: the names the
+pattern binds, each with its type and the region where it is bound. It also
+yields the flexible type variables it created and the constraints it emitted,
+and `State` carries all three. Walking a function's arguments wraps that state
+together with the function's type (`Args` for an unannotated definition,
+`TypedArgs` for an annotated one).
+
+An annotation's type variables are _rigid_: inside the annotated definition
+they stand for one unknown type and are never unified with anything else.
+`RigidTypeVar` maps each such name to its type and is passed down into nested
+definitions, so that a nested annotation naming the same variable means the
+same type.
+
+The remaining functions classify canonical nodes for constraints and error
+messages, and build the record type of a GLSL shader's inputs.
 
 
 # Pattern State
@@ -58,38 +69,35 @@ import Dict exposing (Dict)
 -- ===== PATTERN STATE =====
 
 
-{-| State accumulated during pattern constraint generation.
+{-| What constraint generation has gathered so far from the patterns it has
+walked: the header, the flexible type variables it created, and the constraints
+it emitted.
 
-Contains the header (variables introduced by the pattern with their types),
-a list of flexible type variables created during constraint generation,
-and constraints stored in reverse order for efficient appending.
+The constraints are held newest first, so a consumer reverses them to get
+emission order.
 
 -}
 type State
     = State Header (List Vars.Variable) (List Constraint)
 
 
-{-| Header maps variable names to their types with source locations.
-
-Records all variables introduced by a pattern, associating each name
-with its inferred type and the region where it was bound.
-
+{-| The names bound by a pattern, each with its type and the region where it
+is bound.
 -}
 type alias Header =
     Dict Name (A.Located Type)
 
 
-{-| Initial empty state for pattern constraint generation.
-
-Contains no variable bindings, no type variables, and no constraints.
-
+{-| The pattern state before any pattern has been walked: no names, no
+variables and no constraints.
 -}
 emptyState : State
 emptyState =
     State Dict.empty [] []
 
 
-{-| Add a variable to the pattern headers.
+{-| Returns `state` with `name` bound in its header to the type `expectation`
+carries, located at `region`. An existing binding of `name` is replaced.
 -}
 addToHeaders : A.Region -> Name -> E.PExpected Type -> State -> State
 addToHeaders region name expectation (State headers vars revCons) =
@@ -105,7 +113,7 @@ addToHeaders region name expectation (State headers vars revCons) =
     State newHeaders vars revCons
 
 
-{-| Extract the type from a pattern expectation.
+{-| Returns the type a pattern expectation carries, whatever its context.
 -}
 getType : E.PExpected Type -> Type
 getType expectation =
@@ -121,22 +129,23 @@ getType expectation =
 -- ===== PATTERN HELPERS =====
 
 
-{-| Determine the appropriate PCategory for a pattern node.
-This matches the categories used in the constraint generation.
+{-| Returns the category a pattern node is reported under when its `CPattern`
+constraint fails.
+
+`PAnything`, `PVar` and `PAlias` have no category of their own and get
+`PRecord`. A `PCons` is categorised as a list.
+
 -}
 patternToCategory : Can.Pattern_ -> E.PCategory
 patternToCategory node =
     case node of
         Can.PAnything ->
-            -- PAnything doesn't generate a CPattern constraint, use PRecord as fallback
             E.PRecord
 
         Can.PVar _ ->
-            -- PVar doesn't generate a CPattern constraint, use PRecord as fallback
             E.PRecord
 
         Can.PAlias _ _ ->
-            -- PAlias delegates to inner pattern, use PRecord as fallback
             E.PRecord
 
         Can.PUnit ->
@@ -170,16 +179,9 @@ patternToCategory node =
             E.PBool
 
 
-{-| Determine if a pattern needs a CPattern constraint.
-
-Patterns that DON'T need constraints (matching `add` behavior):
-
-  - PAnything: just returns state unchanged
-  - PVar: just updates headers, no structural constraint
-  - PAlias: delegates to inner pattern, no constraint for the alias itself
-
-All other patterns need CPattern constraints to enforce their structure.
-
+{-| Returns whether a pattern node constrains the shape of the value it
+matches. It is `False` exactly for `PAnything`, `PVar` and `PAlias`, which accept
+any value of the expected type.
 -}
 patternNeedsConstraint : Can.Pattern_ -> Bool
 patternNeedsConstraint node =
@@ -197,8 +199,8 @@ patternNeedsConstraint node =
             True
 
 
-{-| Try to extract a variable from a type.
-Returns Just var if the type is VarN var, Nothing otherwise.
+{-| Returns the variable a type consists of when the type is a bare `VarN`,
+and `Nothing` for any other type.
 -}
 extractVarFromType : Type -> Maybe Vars.Variable
 extractVarFromType tipe =
@@ -214,13 +216,11 @@ extractVarFromType tipe =
 -- ===== ARGS TYPES =====
 
 
-{-| Argument constraint information, containing type variables, the overall
-function type, result type, and pattern state from argument patterns.
+{-| What walking the arguments of an unannotated function produces.
 
-  - vars: Type variables introduced for arguments and result
-  - tipe: The full function type (arg1 -> arg2 -> ... -> result)
-  - result: The result type of the function
-  - state: Pattern matching state from argument patterns
+`vars` holds the fresh variables made for each argument's type and for the
+result. `tipe` is the whole function type and `result` the type after every
+argument has been applied. `state` is what the argument patterns gathered.
 
 -}
 type alias Args =
@@ -231,16 +231,17 @@ type alias Args =
     }
 
 
-{-| Construct an Args value from its components: type variables, function type,
-result type, and pattern state.
+{-| Builds an `Args` from its variables, function type, result type and
+pattern state, in that order.
 -}
 makeArgs : List Vars.Variable -> Type -> Type -> State -> Args
 makeArgs vars tipe result state =
     { vars = vars, tipe = tipe, result = result, state = state }
 
 
-{-| Information about typed function arguments including the full function type,
-the result type, and the pattern state from argument patterns.
+{-| What walking the arguments of an annotated function produces: the whole
+function type, the result type, and what the argument patterns gathered, in that
+order. No variables are carried, because the types come from the annotation.
 -}
 type TypedArgs
     = TypedArgs Type Type State
@@ -250,21 +251,23 @@ type TypedArgs
 -- ===== DEF INFO =====
 
 
-{-| As we step past type annotations, the free type variables are added to
-the "rigid type variables" dict. Allowing sharing of rigid variables
-between nested type annotations.
+{-| The rigid type variables in scope, by name, each with its type.
 
-So if you have a top-level type annotation like (func : a -> b) the RTV
-dictionary will hold variables for `a` and `b`
+Inside a definition annotated `func : a -> b`, it holds `a` and `b`. A nested
+annotation that names `a` gets the same type, rather than a new variable.
 
 -}
 type alias RigidTypeVar =
     Dict Name Type
 
 
-{-| Internal type for accumulating information about recursive definitions.
-Tracks type variables, constraints, and type headers for both rigid (typed)
-and flexible (untyped) definitions.
+{-| What constraint generation gathers from one kind of definition in a
+recursive group: its type variables, its constraints, and the header naming
+each definition with its type, in that order.
+
+The group is walked with two of these, one for the annotated definitions and
+one for the unannotated ones.
+
 -}
 type Info
     = Info (List Vars.Variable) (List Constraint) (Dict Name (A.Located Type))
@@ -274,8 +277,12 @@ type Info
 -- ===== EXPRESSION HELPERS =====
 
 
-{-| Extract the name from an expression for better error messages. Returns
-FuncName, CtorName, OpName, or NoName depending on the expression form.
+{-| Returns how an expression in function position is named in a type error.
+
+A variable of any kind, kernel references included, is a `FuncName`, a
+constructor a `CtorName` and an operator an `OpName`. Any other expression is
+`NoName`.
+
 -}
 getName : Can.Expr -> E.MaybeName
 getName (A.At _ exprInfo) =
@@ -302,8 +309,9 @@ getName (A.At _ exprInfo) =
             E.NoName
 
 
-{-| Extract the variable name from an expression being accessed (e.g., in record
-access). Returns Nothing if the expression is not a simple variable reference.
+{-| Returns the name of a local, top-level or imported variable, and
+`Nothing` for any other expression. Kernel references and constructors are
+`Nothing`.
 -}
 getAccessName : Can.Expr -> Maybe Name
 getAccessName (A.At _ exprInfo) =
@@ -321,9 +329,9 @@ getAccessName (A.At _ exprInfo) =
             Nothing
 
 
-{-| Convert a dictionary of shader types to a record type. If the dictionary
-is empty, returns the base record type; otherwise constructs a record with
-the shader types mapped to Elm types.
+{-| Returns the record type whose fields are the names in `types`, each with
+the Elm type of its GLSL type, extending `baseRecType`. When `types` is empty
+the result is `baseRecType` itself.
 -}
 toShaderRecord : DataMap.Dict String Name Shader.Type -> Type -> Type
 toShaderRecord types baseRecType =
@@ -334,8 +342,9 @@ toShaderRecord types baseRecType =
         RecordN (Dict.fromList (DataMap.toList (DataMap.map (\_ -> glToType) types))) baseRecType
 
 
-{-| Convert a GLSL/WebGL type to the corresponding Elm type (e.g., V2 becomes
-vec2, Float becomes float).
+{-| Returns the Elm type a GLSL type is seen as: a vector or matrix becomes
+the corresponding type of `Compiler.Type.Type` (`vec2` and so on), a sampler
+becomes `texture`, and `Int`, `Float` and `Bool` become themselves.
 -}
 glToType : Shader.Type -> Type
 glToType glType =

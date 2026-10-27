@@ -1,14 +1,26 @@
 module Compiler.Canonicalize.Effects exposing (canonicalize, checkPayload)
 
-{-| Canonicalization of effect managers, ports, and their type constraints.
+{-| A module's `port` declarations and its `effect module` header follow rules
+that ordinary values do not, and this module checks those rules while turning
+a module's `Src.Effects` into `Can.Effects`.
 
-This module handles the canonicalization of Elm's effects system, including:
+A module has no effects, a list of ports, or an effect manager.
 
-  - Port declarations and their payload validation
-  - Effect manager declarations (Cmd, Sub, and Fx managers)
-  - Verification that effect types are valid and properly declared
+A _port_ is a value whose annotation, once every alias is expanded, has one of
+two shapes. An outgoing port is `payload -> Cmd msg`, where `msg` is a type
+variable. An incoming port is `(payload -> msg) -> Sub msg`, where the
+callback's result and the `Sub`'s argument are the same type variable. The
+_payload_ is the type of the value the port carries, and only some types may
+be one; `checkPayload` decides which.
 
-@docs canonicalize, checkPayload
+An _effect manager_ is the module named by an `effect module` header. It must
+define `init`, `onEffects` and `onSelfMsg`; `cmdMap` too if it manages commands,
+and `subMap` if it manages subscriptions. The header names the type that
+represents its commands, its subscriptions, or both, and each named type must
+be one of the custom types passed in.
+
+Problems are reported as `Compiler.Reporting.Error.Canonicalize` errors, with
+the error-collecting behaviour of the `Compiler.Reporting.Result` combinators.
 
 -}
 
@@ -29,6 +41,8 @@ import Dict exposing (Dict)
 -- ====== RESULT ======
 
 
+{-| A canonicalization computation that fails with `Error.Error`s.
+-}
 type alias EResult i w a =
     ReportingResult.RResult i w Error.Error a
 
@@ -37,13 +51,19 @@ type alias EResult i w a =
 -- ====== CANONICALIZE ======
 
 
-{-| Canonicalize effect declarations, including ports and effect managers.
+{-| Returns the canonical form of `effects`, checking it against the module's
+top-level `values` and the custom types in `unions`.
 
-Validates that:
+Each port's annotation is canonicalized in `env` and classified as `Incoming`
+or `Outgoing`; the ports are returned keyed by name.
 
-  - Port types are either `Cmd msg` or `Sub msg` with valid payloads
-  - Effect managers declare all required functions (init, onEffects, onSelfMsg, cmdMap/subMap)
-  - Effect types reference declared union types
+For an effect manager, the result carries the regions of the names of the
+`init`, `onEffects` and `onSelfMsg` definitions, in that order, and the names
+of the effect types, each of which must be a key of `unions`. A missing function is
+reported at the region of the effect module header. `cmdMap` and `subMap` are
+looked for only after every effect type has been found, so a header naming an
+unknown type reports that and not a missing `cmdMap` or `subMap`; for a manager
+of both, `subMap` is looked for only once `cmdMap` has been found.
 
 -}
 canonicalize :
@@ -108,6 +128,16 @@ canonicalize env values unions effects =
 -- ====== CANONICALIZE PORT ======
 
 
+{-| Returns a port's name and its canonical `Can.Port`, or the error saying why
+its annotation is not an allowed port type.
+
+The shape is read from the annotation with every alias expanded, while the
+stored `func` is the canonical annotation as written. An outgoing port with no
+payload argument, more than one argument, or a `Cmd` argument that is not a
+type variable is rejected, as is an incoming port of any shape other than
+`(payload -> msg) -> Sub msg` with the same variable `msg` in both places.
+
+-}
 canonicalizePort : Env.Env -> Src.Port -> EResult i w ( Name.Name, Can.Port )
 canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
     Type.toAnnotation env tipe
@@ -184,6 +214,9 @@ canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
 -- ====== VERIFY MANAGER ======
 
 
+{-| Returns `name` if it is a key of `unions`, and otherwise an
+`EffectNotFound` error at `region`.
+-}
 verifyEffectType : A.Located Name.Name -> Dict Name.Name a -> EResult i w Name.Name
 verifyEffectType (A.At region name) unions =
     if Dict.member name unions then
@@ -193,6 +226,8 @@ verifyEffectType (A.At region name) unions =
         ReportingResult.throw (Error.EffectNotFound region name)
 
 
+{-| Returns a value's name with the region of that name.
+-}
 toNameRegion : A.Located Src.Value -> ( Name.Name, A.Region )
 toNameRegion (A.At _ (Src.Value v)) =
     let
@@ -202,6 +237,10 @@ toNameRegion (A.At _ (Src.Value v)) =
     ( name, region )
 
 
+{-| Returns the region of the name of the definition of `name` in `values`,
+and otherwise an `EffectFunctionNotFound` error at `tagRegion`, the region of
+the effect module header.
+-}
 verifyManager : A.Region -> Dict Name.Name A.Region -> Name.Name -> EResult i w A.Region
 verifyManager tagRegion values name =
     case Dict.get name values of
@@ -216,17 +255,17 @@ verifyManager tagRegion values name =
 -- ====== CHECK PAYLOAD TYPES ======
 
 
-{-| Verify that a type can be used as a port payload.
+{-| Checks whether a type can be carried by a port.
 
-Valid port payloads include:
+The allowed types are `Int`, `Float`, `Bool`, `String`, `Json.Encode.Value`,
+`Bytes.Bytes`, the unit type, a `List`, `Maybe` or `Array` of an allowed type,
+and tuples and closed records whose parts are all allowed. Aliases are
+expanded before checking. Every other type is rejected, including `Char`, type
+variables, functions, extensible records and any other named type.
 
-  - Primitive types (Int, Float, Bool, String)
-  - Json.Encode.Value
-  - Lists, Arrays, and Maybes containing valid payloads
-  - Tuples and records containing valid payloads
-  - Bytes.Bytes
-
-Invalid payloads include functions, type variables, and extensible records.
+An `Err` carries the first offending part, not the whole type, and why it is
+rejected. Tuple parts are checked left to right and record fields in the order
+of their names.
 
 -}
 checkPayload : Can.Type Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
@@ -278,6 +317,9 @@ checkPayload tipe =
                 fields
 
 
+{-| Checks the third and later parts of a tuple, left to right, as
+`checkPayload` does.
+-}
 checkPayloadTupleCs : List (Can.Type Name) -> Result ( Can.Type Name, Error.InvalidPayload ) ()
 checkPayloadTupleCs types =
     case types of
@@ -289,11 +331,16 @@ checkPayloadTupleCs types =
                 |> Result.andThen (\_ -> checkPayloadTupleCs rest)
 
 
+{-| Checks the type of a record field as `checkPayload` does.
+-}
 checkFieldPayload : Can.FieldType Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
 checkFieldPayload (Can.FieldType _ tipe) =
     checkPayload tipe
 
 
+{-| Tells whether the type named `name` in module `home` is
+`Basics.Int`, `Basics.Float` or `Basics.Bool`.
+-}
 isIntFloatBool : ModuleName.Canonical -> Name.Name -> Bool
 isIntFloatBool home name =
     home
@@ -301,6 +348,8 @@ isIntFloatBool home name =
         && (name == Name.int || name == Name.float || name == Name.bool)
 
 
+{-| Tells whether the type named `name` in module `home` is `String.String`.
+-}
 isString : ModuleName.Canonical -> Name.Name -> Bool
 isString home name =
     home
@@ -309,12 +358,16 @@ isString home name =
         == Name.string
 
 
+{-| Tells whether the type named `name` in module `home` is `Json.Encode.Value`.
+-}
 isJson : ModuleName.Canonical -> Name.Name -> Bool
 isJson home name =
     (home == ModuleName.jsonEncode)
         && (name == Name.value)
 
 
+{-| Tells whether the type named `name` in module `home` is `List.List`.
+-}
 isList : ModuleName.Canonical -> Name.Name -> Bool
 isList home name =
     home
@@ -323,6 +376,8 @@ isList home name =
         == Name.list
 
 
+{-| Tells whether the type named `name` in module `home` is `Maybe.Maybe`.
+-}
 isMaybe : ModuleName.Canonical -> Name.Name -> Bool
 isMaybe home name =
     home
@@ -331,6 +386,8 @@ isMaybe home name =
         == Name.maybe
 
 
+{-| Tells whether the type named `name` in module `home` is `Array.Array`.
+-}
 isArray : ModuleName.Canonical -> Name.Name -> Bool
 isArray home name =
     home
@@ -339,6 +396,8 @@ isArray home name =
         == Name.array
 
 
+{-| Tells whether the type named `name` in module `home` is `Bytes.Bytes`.
+-}
 isBytes : ModuleName.Canonical -> Name.Name -> Bool
 isBytes home name =
     home

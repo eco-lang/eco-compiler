@@ -1,9 +1,19 @@
 module Compiler.Reporting.Error.Pattern exposing (toReport)
 
-{-| Error reporting for pattern matching problems.
+{-| The pattern checker's findings have to reach the programmer as readable
+reports, and this module writes them.
 
-This module converts pattern match analysis results into user-friendly error
-reports, including errors for redundant patterns and incomplete case coverage.
+`Compiler.Nitpick.PatternMatches` finds two kinds of fault, as its `Error`
+docstring describes: a pattern that can never match, and a match that misses
+some values. This module turns the first into a "REDUNDANT PATTERN" report and
+the second into an "UNSAFE PATTERN" or "MISSING PATTERNS" report, depending on
+the kind of match.
+
+Most of the file prints the checker's example patterns of missed values back
+as Elm pattern syntax. The checker reduces unit, tuples and lists to
+constructors with built-in names (`#0`, `#2`, `#3`, `[]` and `::`), so printing
+means recognising those names again and adding parentheses where a pattern sits
+in a position that needs them.
 
 
 # Reporting
@@ -22,8 +32,14 @@ import Compiler.Reporting.Report as Report
 -- ====== TO REPORT ======
 
 
-{-| Convert a pattern matching error (redundant patterns or incomplete coverage)
-into a user-friendly error report with examples of unhandled cases.
+{-| Builds the report for one pattern match fault, with a snippet of `source`.
+
+A `Redundant` fault becomes "REDUNDANT PATTERN", showing the whole match with
+the redundant pattern highlighted and naming its position as an ordinal. An
+`Incomplete` fault lists the example missing patterns, one per line: a
+function argument or a `let` destructuring gives "UNSAFE PATTERN", and a `case`
+gives "MISSING PATTERNS".
+
 -}
 toReport : Code.Source -> P.Error -> Report.Report
 toReport source err =
@@ -95,17 +111,39 @@ toReport source err =
 -- ====== PATTERN TO DOC ======
 
 
+{-| Prints each pattern on its own line, coloured and indented four spaces.
+-}
 unhandledPatternsToDocBlock : List P.Pattern -> D.Doc
 unhandledPatternsToDocBlock unhandledPatterns =
     List.map (patternToDoc Unambiguous) unhandledPatterns |> D.vcat |> D.dullyellow |> D.indent 4
 
 
+{-| Where a pattern being printed sits, which decides whether it needs
+parentheses.
+
+`Arg` is an argument of a constructor: a constructor with arguments, or a cons
+chain, is parenthesised there. `Head` is the head of a cons chain: a cons chain
+is parenthesised there, but a constructor with arguments is not. `Unambiguous`
+is a position needing no parentheses, such as a whole pattern or a tuple entry.
+
+-}
 type Context
     = Arg
     | Head
     | Unambiguous
 
 
+{-| Prints `pattern` as Elm pattern syntax, parenthesised as `context` requires.
+
+A wildcard prints as `_`, and characters and strings are quoted. A constructor
+named `#N` (a tuple of four or more) has no special case and prints as a
+constructor.
+
+A finite list's entries are joined with `D.hcat`, which keeps only the last
+document it is given (see `Compiler.Reporting.Doc.hcat`), so a list of two or
+more entries does not print in full.
+
+-}
 patternToDoc : Context -> P.Pattern -> D.Doc
 patternToDoc context pattern =
     case delist pattern [] of
@@ -191,12 +229,22 @@ patternToDoc context pattern =
                     |> D.a (D.fromChars ")")
 
 
+{-| A pattern seen as a list, if it is one.
+
+`FiniteList` is a list ending in `[]`. Its entries are in reverse order, as
+`delist` collects them. `Conses` is a chain of heads, in order, ending in a
+tail that is not a list constructor. `NonList` is any other pattern.
+
+-}
 type Structure
     = FiniteList (List P.Pattern)
     | Conses (List P.Pattern) P.Pattern
     | NonList P.Pattern
 
 
+{-| Returns the `Structure` of `pattern`, given the heads already taken from
+the front of the list, most recent first, in `revEntries`.
+-}
 delist : P.Pattern -> List P.Pattern -> Structure
 delist pattern revEntries =
     case pattern of

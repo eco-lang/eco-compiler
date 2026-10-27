@@ -8,15 +8,29 @@ module Compiler.AST.Optimized exposing
     , localGraphEncoder, localGraphDecoder
     )
 
-{-| Optimized AST for code generation.
+{-| The erased intermediate representation that the JavaScript back end
+generates from.
 
-This module defines the AST produced by the optimization phase and consumed
-by code generators. Key transformations from Canonical AST:
+"Erased" means that no expression carries a type. The erased optimizer
+(`Compiler.LocalOpt.Erased`) produces it from canonical code, and three changes
+separate it from that code: every `case` is compiled to a decision tree, a
+saturated self-call in tail position of a function definition becomes a
+`TailCall`, and a destructuring pattern in a `let` or a parameter becomes
+`Destructor`s whose `Path`s reach into the matched value.
 
-  - Pattern matching compiled to decision trees (`Decider`, `Choice`)
-  - Tail-recursive functions identified and marked (`TailCall`, `TailDef`)
-  - Global references resolved to `Global` identifiers
-  - Destructuring patterns converted to `Path` navigation
+A _global_ is a top-level definition named by its home module and its name.
+Each module's definitions become the nodes of a _local graph_, keyed by global,
+and a definition's node lists the globals it depends on. The local graphs of a program and
+its dependencies are merged into a _global graph_, which code generation walks
+from the program's `main` so that only what is reached is emitted. Both graphs
+also count how often each record field name is used.
+
+The rest of the module is the binary codec for the two graphs, which is how a
+module's graph is stored in its `.eco` file and a package's in
+`artifacts.dat`.
+
+On the typed compile path the erased optimizer does not run. What stands in for
+the erased graph there is `typedPathStub`.
 
 
 # Expressions
@@ -31,7 +45,7 @@ by code generators. Key transformations from Canonical AST:
 
 # Pattern Matching
 
-Decision trees compile pattern matches into efficient branching:
+The decision tree a compiled `case` is made of:
 
 @docs Decider, Choice
 
@@ -74,7 +88,35 @@ import Utils.Bytes.Encode as BE
 -- ====== EXPRESSIONS ======
 
 
-{-| Optimized expression representation after optimization passes.
+{-| An erased expression.
+
+Several constructors come in two forms, a plain one and a `Tracked` one that
+also carries source regions, which the JavaScript back end uses for source maps:
+`VarLocal` and `TrackedVarLocal`, `Function` and `TrackedFunction` (whose
+parameters are located), and `Record` and `TrackedRecord`.
+
+`Bool` is used for `True` and `False` of `Basics`. A constructor of a type with
+no constructor arguments anywhere is `VarEnum`, carrying its index, and a
+reference to the single constructor of a type with one constructor of one
+argument is `VarBox`. `Chr` holds its character as a `String`.
+
+`VarCycle` refers to another definition of the same recursive group from inside
+that group. `VarDebug` is a use of a `Debug` function: its name, the module it
+is used in, and an optional name. `VarKernel` names a kernel value by its
+prefix (`Elm` or `Eco`), its kernel module and its name.
+
+`TailCall` is a call of the enclosing `TailDef` from tail position, pairing each
+parameter name with its new argument. `If` is a list of condition and branch
+pairs followed by the final `else` branch.
+
+`Case` is a compiled `case`. It carries a label name, the name of the variable
+being inspected, the decision tree, and the jump list: the branch bodies that
+the tree reaches through `Jump`, each with the index that a `Jump` uses.
+
+`Update` and `TrackedRecord` key their fields by located name, so each field
+keeps the region where it was written. `Shader` carries the GLSL source and the
+names of its attributes and uniforms.
+
 -}
 type Expr
     = Bool A.Region Bool
@@ -109,13 +151,19 @@ type Expr
     | Shader Shader.Source (EverySet String Name) (EverySet String Name)
 
 
-{-| A reference to a top-level definition in a module.
+{-| A top-level definition, named by its home module and its name.
+
+Globals have two orders, and they differ. `compareGlobal` compares names first
+and home modules second. `toComparableGlobal` makes the key that every
+dictionary and set of globals in this module is keyed by, and that key orders by
+home module first.
+
 -}
 type Global
     = Global ModuleName.Canonical Name
 
 
-{-| Compare two globals for ordering.
+{-| Compares two globals by name, and by home module when the names are equal.
 -}
 compareGlobal : Global -> Global -> Order
 compareGlobal (Global home1 name1) (Global home2 name2) =
@@ -130,7 +178,8 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
             GT
 
 
-{-| Convert a global to a comparable key for use in dictionaries.
+{-| Returns the key a global is stored under in a dictionary or set: the home
+module's comparable name, a dot, and the definition's name.
 -}
 toComparableGlobal : Global -> String
 toComparableGlobal (Global home name) =
@@ -141,20 +190,36 @@ toComparableGlobal (Global home name) =
 -- ====== DEFINITIONS ======
 
 
-{-| A local definition binding a name to an expression.
+{-| A definition inside a `let`, or a function of a recursive group.
+
+`TailDef` is a function that calls itself in tail position through `TailCall`.
+It carries its located parameters, where `Def` holds a function as a
+`Function` expression.
+
 -}
 type Def
     = Def A.Region Name Expr
     | TailDef A.Region Name (List (A.Located Name)) Expr
 
 
-{-| Destructuring binding that extracts a value via a path.
+{-| A variable bound by a pattern, and the path to the part of the matched value
+it is bound to.
 -}
 type Destructor
     = Destructor Name Path
 
 
-{-| Path for navigating into a value structure to extract a subvalue.
+{-| A way to reach a part of a value. Each step wraps the path to the value it
+is applied to, so the innermost path is the `Root` variable that holds the
+whole value.
+
+`Index` takes a numbered field of a tuple or a constructor. `Field` takes a
+record field by name. `ArrayIndex` takes an element of an array-valued field;
+the erased optimizer uses it with the field `cs` for the third and later
+elements of a tuple. `Unbox` takes the argument of a constructor whose type has
+one constructor of one argument. `Root` names the variable the path starts
+from.
+
 -}
 type Path
     = Index Index.ZeroBased Path
@@ -168,7 +233,16 @@ type Path
 -- ====== BRANCHING ======
 
 
-{-| Decision tree for compiled pattern matches.
+{-| A decision tree for a compiled `case`, whose leaves hold `a`.
+
+The paths and tests come from `Compiler.AST.DecisionTree.Path` and
+`Compiler.AST.DecisionTree.Test`.
+
+`Chain` runs a list of tests, each on the part of the value its path reaches,
+and goes to the first subtree if all of them pass and to the second otherwise.
+`FanOut` looks at one part of the value and goes to the subtree whose test
+matches it, or to the fallback when none does.
+
 -}
 type Decider a
     = Leaf a
@@ -176,7 +250,13 @@ type Decider a
     | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
 
 
-{-| Result of a decision tree branch, either inline code or a jump to a shared expression.
+{-| What a leaf of a `Case` decision tree does: run a branch body written in
+place, or jump to one in the `Case`'s jump list.
+
+The erased optimizer writes a branch in place when exactly one leaf reaches it.
+Any other branch goes in the jump list, and `Jump` carries the index it is
+listed under there.
+
 -}
 type Choice
     = Inline Expr
@@ -187,30 +267,53 @@ type Choice
 -- ====== OBJECT GRAPH ======
 
 
-{-| Graph of all global definitions in a package for dependency analysis.
+{-| The nodes of many modules merged into one graph, keyed by global, with the
+count of uses of each record field name.
 -}
 type GlobalGraph
     = GlobalGraph (Data.Map.Dict String Global Node) (Dict Name Int)
 
 
-{-| Graph of definitions within a single module, including optional main entry point.
+{-| One module's nodes, keyed by global, with the module's `main` if it has one
+and the count of uses of each record field name.
 -}
 type LocalGraph
     = LocalGraph
         (Maybe Main)
-        -- PERF profile switching Global to Name
         (Data.Map.Dict String Global Node)
         (Dict Name Int)
 
 
-{-| Type of main entry point for an Elm program.
+{-| What a module's `main` is.
+
+`Static` is a `main` that is a virtual DOM node. `Dynamic` is a `main` that is
+a `Platform.Program`: it carries the program's message type and an expression
+that decodes the program's flags.
+
 -}
 type Main
     = Static
     | Dynamic (Can.Type Name) Expr
 
 
-{-| A node in the dependency graph representing a definition and its dependencies.
+{-| One node of a graph: what the global it is stored under stands for.
+Where a node carries a set of globals, those are the globals it depends on.
+
+`Define` and `TrackedDefine` are an ordinary definition; the tracked form also
+carries the definition's region. `Ctor` is a constructor of a custom type with
+its index and its number of arguments. `Enum` is a constructor of a type whose
+constructors take no arguments, and `Box` is the constructor of a type with one
+constructor of one argument.
+
+`Cycle` is a group of mutually recursive definitions: the names of all of them,
+the ones that are values, and the ones that are functions. Each name of the
+group is a `Link` to the global the `Cycle` is stored under. `Link` is also how
+an effect module's `command` and `subscription` reach its `Manager`, which
+records whether the module has commands, subscriptions or both (`Fx`).
+
+`Kernel` is a kernel module's code, as chunks. `PortIncoming` and
+`PortOutgoing` are ports, carrying the decoder or encoder of their values.
+
 -}
 type Node
     = Define Expr (EverySet String Global)
@@ -226,7 +329,8 @@ type Node
     | PortOutgoing Expr (EverySet String Global)
 
 
-{-| Type of effects managed by an effect manager.
+{-| Which kinds of effect an effect module manages: commands, subscriptions, or
+both (`Fx`).
 -}
 type EffectsType
     = Cmd
@@ -238,28 +342,29 @@ type EffectsType
 -- ====== GRAPHS ======
 
 
-{-| Create an empty global graph.
+{-| A global graph with no nodes and no field counts.
 -}
 empty : GlobalGraph
 empty =
     GlobalGraph Data.Map.empty Dict.empty
 
 
-{-| An empty local graph: no main, no nodes, no fields. The typed path stores
-`typedPathStub` (which is this graph for a module without `main`) in place of
-the erased graph it no longer computes (cache-serialization plan S5).
+{-| A local graph with no `main`, no nodes and no field counts.
 -}
 emptyLocalGraph : LocalGraph
 emptyLocalGraph =
     LocalGraph Nothing Data.Map.empty Dict.empty
 
 
-{-| The erased-graph stub of the typed path (plan S5): empty, except for a
-presence-only `main` marker (`Static`). Main detection must not depend on the
-TYPED graph's `main`, because the JS build moves modules through MVars by
-SERIALIZING them and `TOpt.localGraphEncoder` drops `main` (ECOT\_001); this
-graph's codec keeps it. Nothing reads the marker's content: the typed path never
-generates from the erased graph.
+{-| Returns the local graph that the typed compile path stores in place of an
+erased graph, given whether the module has a `main`.
+
+The graph has no nodes and no field counts. When `hasMain` is true its `main`
+is `Static`, which here only records that a `main` exists and says nothing
+about what it is. The marker is needed because this graph's codec keeps `main`,
+while `Compiler.AST.TypedOptimized`'s local graph codec does not, so a `main`
+can be detected after the graph has been written and read back.
+
 -}
 typedPathStub : Bool -> LocalGraph
 typedPathStub hasMain =
@@ -275,10 +380,10 @@ kernel prefix `kernelPrefix` (`Elm` or `Eco`) and home `home`, as
 `Name.getKernel` splits a kernel module name.
 
 An `Elm` kernel is keyed by its home alone, `elm/kernel:File.$` for
-`Elm.Kernel.File`, as in stock Elm. An `Eco` kernel is keyed by its whole module
+`Elm.Kernel.File`. An `Eco` kernel is keyed by its whole module
 name, `elm/kernel:Eco.Kernel.File.$`, so that `Elm.Kernel.File` (elm/file) and
 `Eco.Kernel.File` (eco/kernel) are two nodes rather than one replacing the other
-when package graphs are merged (SD-16).
+when package graphs are merged.
 
 -}
 toKernelGlobal : Name.Name -> Name.Name -> Global
@@ -302,6 +407,9 @@ ecoKernelHome (Global (ModuleName.Canonical pkg moduleName) name) =
         Nothing
 
 
+{-| The start of the module name under which `toKernelGlobal` keys an `Eco`
+kernel.
+-}
 ecoKernelModulePrefix : String
 ecoKernelModulePrefix =
     "Eco.Kernel."
@@ -311,7 +419,7 @@ ecoKernelModulePrefix =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a global graph to bytes for serialization.
+{-| Encodes a global graph: its nodes, then its field counts.
 -}
 globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields) =
@@ -321,7 +429,7 @@ globalGraphEncoder (GlobalGraph nodes fields) =
         ]
 
 
-{-| Decode a global graph from bytes.
+{-| A decoder for a global graph as `globalGraphEncoder` writes it.
 -}
 globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
@@ -330,7 +438,7 @@ globalGraphDecoder =
         (BD.stdDict BD.string BD.int)
 
 
-{-| Encode a local graph to bytes for serialization.
+{-| Encodes a local graph: its `main`, its nodes, then its field counts.
 -}
 localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph main nodes fields) =
@@ -341,7 +449,7 @@ localGraphEncoder (LocalGraph main nodes fields) =
         ]
 
 
-{-| Decode a local graph from bytes.
+{-| A decoder for a local graph as `localGraphEncoder` writes it.
 -}
 localGraphDecoder : Bytes.Decode.Decoder LocalGraph
 localGraphDecoder =
@@ -351,6 +459,8 @@ localGraphDecoder =
         (BD.stdDict BD.string BD.int)
 
 
+{-| Encodes a `main` as a tag byte, followed for `Dynamic` by its message type and flags decoder.
+-}
 mainEncoder : Main -> Bytes.Encode.Encoder
 mainEncoder main_ =
     case main_ of
@@ -365,6 +475,8 @@ mainEncoder main_ =
                 ]
 
 
+{-| A decoder for a `main` as `mainEncoder` writes it.
+-}
 mainDecoder : Bytes.Decode.Decoder Main
 mainDecoder =
     Bytes.Decode.unsignedInt8
@@ -384,6 +496,8 @@ mainDecoder =
             )
 
 
+{-| Encodes a global as its home module followed by its name.
+-}
 globalEncoder : Global -> Bytes.Encode.Encoder
 globalEncoder (Global home name) =
     Bytes.Encode.sequence
@@ -392,6 +506,8 @@ globalEncoder (Global home name) =
         ]
 
 
+{-| A decoder for a global as `globalEncoder` writes it.
+-}
 globalDecoder : Bytes.Decode.Decoder Global
 globalDecoder =
     Bytes.Decode.map2 Global
@@ -399,6 +515,8 @@ globalDecoder =
         BD.string
 
 
+{-| Encodes a node as a tag byte followed by its contents. No node is written with the tag 2.
+-}
 nodeEncoder : Node -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of
@@ -476,6 +594,8 @@ nodeEncoder node =
                 ]
 
 
+{-| A decoder for a node as `nodeEncoder` writes it. It fails on the tag 2.
+-}
 nodeDecoder : Bytes.Decode.Decoder Node
 nodeDecoder =
     Bytes.Decode.unsignedInt8
@@ -538,6 +658,8 @@ nodeDecoder =
             )
 
 
+{-| Encodes an expression as a tag byte followed by its contents.
+-}
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
@@ -760,6 +882,8 @@ exprEncoder expr =
                 ]
 
 
+{-| A decoder for an expression as `exprEncoder` writes it.
+-}
 exprDecoder : Bytes.Decode.Decoder Expr
 exprDecoder =
     Bytes.Decode.unsignedInt8
@@ -930,6 +1054,8 @@ exprDecoder =
             )
 
 
+{-| Encodes a definition as a tag byte followed by its contents.
+-}
 defEncoder : Def -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
@@ -951,6 +1077,8 @@ defEncoder def =
                 ]
 
 
+{-| A decoder for a definition as `defEncoder` writes it.
+-}
 defDecoder : Bytes.Decode.Decoder Def
 defDecoder =
     Bytes.Decode.unsignedInt8
@@ -975,6 +1103,8 @@ defDecoder =
             )
 
 
+{-| Encodes a destructor as its variable name followed by its path.
+-}
 destructorEncoder : Destructor -> Bytes.Encode.Encoder
 destructorEncoder (Destructor name path) =
     Bytes.Encode.sequence
@@ -983,6 +1113,8 @@ destructorEncoder (Destructor name path) =
         ]
 
 
+{-| A decoder for a destructor as `destructorEncoder` writes it.
+-}
 destructorDecoder : Bytes.Decode.Decoder Destructor
 destructorDecoder =
     Bytes.Decode.map2 Destructor
@@ -990,6 +1122,8 @@ destructorDecoder =
         pathDecoder
 
 
+{-| Encodes a decision tree, using `encoder` for its leaves.
+-}
 deciderEncoder : (a -> Bytes.Encode.Encoder) -> Decider a -> Bytes.Encode.Encoder
 deciderEncoder encoder decider =
     case decider of
@@ -1016,6 +1150,8 @@ deciderEncoder encoder decider =
                 ]
 
 
+{-| Produces a decoder for a decision tree as `deciderEncoder` writes it, using `decoder` for its leaves.
+-}
 deciderDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (Decider a)
 deciderDecoder decoder =
     Bytes.Decode.unsignedInt8
@@ -1042,6 +1178,8 @@ deciderDecoder decoder =
             )
 
 
+{-| Encodes a choice as a tag byte followed by its expression or jump index.
+-}
 choiceEncoder : Choice -> Bytes.Encode.Encoder
 choiceEncoder choice =
     case choice of
@@ -1058,6 +1196,8 @@ choiceEncoder choice =
                 ]
 
 
+{-| A decoder for a choice as `choiceEncoder` writes it.
+-}
 choiceDecoder : Bytes.Decode.Decoder Choice
 choiceDecoder =
     Bytes.Decode.unsignedInt8
@@ -1075,6 +1215,9 @@ choiceDecoder =
             )
 
 
+{-| Encodes a path as a tag byte followed by its contents, from its last step
+down to its `Root`.
+-}
 pathEncoder : Path -> Bytes.Encode.Encoder
 pathEncoder path =
     case path of
@@ -1112,6 +1255,8 @@ pathEncoder path =
                 ]
 
 
+{-| A decoder for a path as `pathEncoder` writes it.
+-}
 pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
     Bytes.Decode.unsignedInt8
@@ -1144,6 +1289,8 @@ pathDecoder =
             )
 
 
+{-| Encodes an effects type as one byte.
+-}
 effectsTypeEncoder : EffectsType -> Bytes.Encode.Encoder
 effectsTypeEncoder effectsType =
     Bytes.Encode.unsignedInt8
@@ -1159,6 +1306,8 @@ effectsTypeEncoder effectsType =
         )
 
 
+{-| A decoder for an effects type as `effectsTypeEncoder` writes it.
+-}
 effectsTypeDecoder : Bytes.Decode.Decoder EffectsType
 effectsTypeDecoder =
     Bytes.Decode.unsignedInt8

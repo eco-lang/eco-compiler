@@ -1,9 +1,39 @@
 module Compiler.Generate.MLIR.TypeTable exposing (generateTypeTable, TypeKind, PrimKind)
 
-{-| Type table generation for debug printing support.
+{-| A program's runtime can print an Elm value only if it knows the value's type,
+and this module writes down every type the generated code refers to, in a form
+the runtime can read.
 
-This module generates the eco.type\_table op containing the global type graph
-for runtime debug printing with arg\_type\_ids.
+During code generation each `MonoType` that needs describing is given a _type
+id_, a small integer, in the type registry of `Compiler.Generate.MLIR.Context`.
+Debug printing names a value's type by that id. The _type table_ is one
+module-level `eco.type_table` op that says what each id means. `generateTypeTable`
+builds it from the registry as it stands when called, so a type registered
+afterwards is missing from it.
+
+The table is five flat array attributes, and an entry refers to entries of
+the other arrays by position:
+
+  - `types` holds one descriptor per registered type, in type-id order. Each
+    begins `[id, kind]`, where kind is the tag of a `TypeKind`, and the rest
+    depends on the kind: a primitive adds its `PrimKind` tag; a list adds its
+    element's type id; a tuple adds its arity, its first field and its field
+    count; a record its first field and field count; a custom type its first
+    constructor and constructor count; a function its first argument, its
+    argument count and its result's type id; a type variable adds 0 for a
+    `number` variable and 1 for any other.
+  - `fields` holds `[name_index, type_id]` pairs, shared by tuples, records and
+    constructors. A tuple field's name index is always 0 and means nothing.
+  - `ctors` holds `[tag, name_index, first_field, field_count]` per constructor.
+  - `func_args` holds the type ids of function arguments.
+  - `strings` holds the field and constructor names, each once; a name index is
+    a position here.
+
+Record fields appear in the order of `Types.computeRecordLayout` (unboxed
+fields first, each group by name), not source order. Constructor fields carry
+the names `Types.computeCtorLayout` gives them, `field0`, `field1` and so on, and
+a custom type's constructors are listed by tag. A type that is not in the
+registry where an entry needs its id is written as type id 0.
 
 @docs generateTypeTable, TypeKind, PrimKind
 
@@ -22,8 +52,15 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp)
 -- ====== TYPE KIND ENUMS ======
 
 
-{-| Kind of type in the global type graph.
-These values must match the C++ EcoTypeKind enum in TypeInfo.hpp.
+{-| The kind of a type-table descriptor, which decides how the rest of the
+descriptor is read.
+
+Each kind is written as its tag from `typeKindToTag`, `TKPrimitive` 0 through
+`TKPolymorphic` 6 in declaration order. The runtime reads these numbers, so they
+must agree with its own numbering of type kinds.
+
+`TKPolymorphic` is a type variable left open by monomorphization.
+
 -}
 type TypeKind
     = TKPrimitive
@@ -35,8 +72,12 @@ type TypeKind
     | TKPolymorphic
 
 
-{-| Kind of primitive type.
-These values must match the C++ EcoPrimKind enum in TypeInfo.hpp.
+{-| The primitive type a `TKPrimitive` descriptor stands for.
+
+Each is written as its tag from `primKindToTag`, `PKInt` 0 through `PKUnit` 5 in
+declaration order, and the runtime must number them the same way. `PKUnit` is
+the unit type `()`.
+
 -}
 type PrimKind
     = PKInt
@@ -47,7 +88,7 @@ type PrimKind
     | PKUnit
 
 
-{-| Convert a TypeKind to its integer tag for MLIR emission.
+{-| Returns the integer written into a descriptor for `kind`.
 -}
 typeKindToTag : TypeKind -> Int
 typeKindToTag kind =
@@ -74,7 +115,7 @@ typeKindToTag kind =
             6
 
 
-{-| Convert a PrimKind to its integer tag for MLIR emission.
+{-| Returns the integer written into a primitive descriptor for `primKind`.
 -}
 primKindToTag : PrimKind -> Int
 primKindToTag primKind =
@@ -102,7 +143,13 @@ primKindToTag primKind =
 -- ====== TYPE TABLE GENERATION ======
 
 
-{-| Accumulator for building the type graph arrays.
+{-| The type table part-built: the arrays so far, each held newest first, and
+the position the next entry of each will take.
+
+`strings` maps each name to its index in the string array. `ctorShapes` is the
+registry's constructor table, carried so that a custom type can find its
+constructors.
+
 -}
 type alias TypeTableAccum =
     { strings : Dict.Dict String Int
@@ -114,45 +161,40 @@ type alias TypeTableAccum =
     , funcArgs : List Int
     , nextFuncArgIndex : Int
     , typeAttrs : List MlirAttr
-    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape) -- K4: hash-keyed by the type itself
+    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
     }
 
 
-{-| Generate the eco.type\_table op containing the global type graph.
-This op holds all type descriptors for debug printing with arg\_type\_ids.
+{-| Builds the `eco.type_table` op describing every type in the context's type
+registry, as the module docstring lays it out.
 -}
 generateTypeTable : Ctx.Context -> MlirOp
 generateTypeTable ctx =
     let
-        -- Sort typeInfos by typeId for deterministic output
         sortedTypes : List ( Int, Mono.MonoType )
         sortedTypes =
             ctx.typeRegistry.typeInfos
                 |> List.sortBy Tuple.first
 
-        -- Build accumulators for strings, fields, ctors, and func_args
-        -- as we traverse the types
         typeIds =
             ctx.typeRegistry.typeIds
 
         emptyAccum =
-            { strings = Dict.empty -- string -> index
+            { strings = Dict.empty
             , nextStringIndex = 0
-            , fields = [] -- List of field entries (reversed)
+            , fields = []
             , nextFieldIndex = 0
-            , ctors = [] -- List of ctor entries (reversed)
+            , ctors = []
             , nextCtorIndex = 0
-            , funcArgs = [] -- List of arg type_ids (reversed)
+            , funcArgs = []
             , nextFuncArgIndex = 0
-            , typeAttrs = [] -- List of type descriptor attrs (reversed)
-            , ctorShapes = ctx.typeRegistry.ctorShapes -- For custom type constructors
+            , typeAttrs = []
+            , ctorShapes = ctx.typeRegistry.ctorShapes
             }
 
-        -- Process each type and build all arrays
         finalAccum =
             List.foldl (processType typeIds) emptyAccum sortedTypes
 
-        -- Build the eco.type_table op
         typesAttr =
             ArrayAttr Nothing (List.reverse finalAccum.typeAttrs)
 
@@ -190,7 +232,8 @@ generateTypeTable ctx =
     }
 
 
-{-| Get or create a string index in the string table.
+{-| Returns the index of `str` in the string table, adding it at the next
+index if it is not there yet.
 -}
 getOrCreateStringIndex : String -> TypeTableAccum -> ( Int, TypeTableAccum )
 getOrCreateStringIndex str accum =
@@ -207,7 +250,8 @@ getOrCreateStringIndex str accum =
             )
 
 
-{-| Process a single type entry and add it to the accumulator.
+{-| Adds the descriptor for one registered type, with any fields, constructors
+and argument entries it needs, to the table.
 -}
 processType : Mono.LayoutMap Int -> ( Int, Mono.MonoType ) -> TypeTableAccum -> TypeTableAccum
 processType typeIds ( typeId, monoType ) accum =
@@ -228,7 +272,6 @@ processType typeIds ( typeId, monoType ) accum =
             addPrimitiveType typeId PKString accum
 
         Mono.MUnit ->
-            -- Unit is treated as a primitive for printing
             addPrimitiveType typeId PKUnit accum
 
         Mono.MList _ elemType ->
@@ -247,12 +290,10 @@ processType typeIds ( typeId, monoType ) accum =
             addFunctionType typeIds typeId argTypes resultType accum
 
         Mono.MVar _ constraint ->
-            -- Polymorphic type variable - can leak through monomorphization
-            -- The runtime will determine the actual type from the boxed value's tag
             addPolymorphicType typeId constraint accum
 
 
-{-| Add a primitive type descriptor.
+{-| Adds the descriptor `[typeId, 0, primKind]`.
 -}
 addPrimitiveType : Int -> PrimKind -> TypeTableAccum -> TypeTableAccum
 addPrimitiveType typeId primKind accum =
@@ -267,9 +308,8 @@ addPrimitiveType typeId primKind accum =
     { accum | typeAttrs = typeAttr :: accum.typeAttrs }
 
 
-{-| Add a polymorphic type descriptor for a type variable with constraint.
-Type kind 6 = Polymorphic
-Constraint values: 0=number, 1=eco\_value (unconstrained)
+{-| Adds the descriptor of a type variable: `[typeId, 6, c]`, where `c` is 0 for
+a `number` variable and 1 for any other.
 -}
 addPolymorphicType : Int -> Mono.Constraint -> TypeTableAccum -> TypeTableAccum
 addPolymorphicType typeId constraint accum =
@@ -292,15 +332,19 @@ addPolymorphicType typeId constraint accum =
     { accum | typeAttrs = typeAttr :: accum.typeAttrs }
 
 
-{-| Look up a TypeId for a MonoType in the typeIds dict.
-Returns 0 if not found (should not happen for properly registered types).
+{-| Returns the type id registered for `monoType`, or 0 if it has none.
+
+The lookup uses the layout key (see `Mono.LayoutMap`), under which types that
+differ only in lambda sets, a `number` variable and `Int`, or any two
+unconstrained variables share an id. The 0 is indistinguishable from the real id 0.
+
 -}
 lookupTypeId : Mono.LayoutMap Int -> Mono.MonoType -> Int
 lookupTypeId typeIds monoType =
     Mono.layoutMapGet monoType typeIds |> Maybe.withDefault 0
 
 
-{-| Add a list type descriptor.
+{-| Adds the descriptor `[typeId, 1, element type id]`.
 -}
 addListType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addListType typeIds typeId elemType accum =
@@ -318,7 +362,11 @@ addListType typeIds typeId elemType accum =
     { accum | typeAttrs = typeAttr :: accum.typeAttrs }
 
 
-{-| Add a tuple type descriptor.
+{-| Adds a tuple's descriptor and one field entry per element, in element
+order, each with name index 0.
+
+Arity and field count are written as two separate numbers and are always equal.
+
 -}
 addTupleType : Mono.LayoutMap Int -> Int -> Types.TupleLayout -> TypeTableAccum -> TypeTableAccum
 addTupleType typeIds typeId layout accum =
@@ -329,7 +377,6 @@ addTupleType typeIds typeId layout accum =
         fieldCount =
             layout.arity
 
-        -- Add fields with actual type IDs
         accumWithFields =
             List.foldl
                 (\( elemType, _ ) acc ->
@@ -339,7 +386,7 @@ addTupleType typeIds typeId layout accum =
 
                         fieldAttr =
                             ArrayAttr Nothing
-                                [ IntAttr Nothing 0 -- name_index: not used for tuples
+                                [ IntAttr Nothing 0
                                 , IntAttr Nothing elemTypeId
                                 ]
                     in
@@ -363,7 +410,8 @@ addTupleType typeIds typeId layout accum =
     { accumWithFields | typeAttrs = typeAttr :: accumWithFields.typeAttrs }
 
 
-{-| Add a record type descriptor.
+{-| Adds a record's descriptor and one named field entry per field, in the
+order of `layout`.
 -}
 addRecordType : Mono.LayoutMap Int -> Int -> Types.RecordLayout -> TypeTableAccum -> TypeTableAccum
 addRecordType typeIds typeId layout accum =
@@ -374,7 +422,6 @@ addRecordType typeIds typeId layout accum =
         fieldCount =
             layout.fieldCount
 
-        -- Add fields with names and actual type IDs
         accumWithFields =
             List.foldl
                 (\fieldInfo acc ->
@@ -410,12 +457,17 @@ addRecordType typeIds typeId layout accum =
     { accumWithFields | typeAttrs = typeAttr :: accumWithFields.typeAttrs }
 
 
-{-| Add a custom type descriptor with constructor information.
+{-| Adds a custom type's descriptor and an entry for each of its constructors,
+in tag order.
+
+The constructors are those the registry's `ctorShapes` holds for `monoType`
+under the layout key. A type with no entry there is described with no
+constructors.
+
 -}
 addCustomType : Mono.LayoutMap Int -> Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addCustomType typeIds typeId monoType accum =
     let
-        -- Look up constructor shapes and compute layouts
         ctorShapes =
             Mono.layoutMapGet monoType accum.ctorShapes
                 |> Maybe.withDefault []
@@ -427,7 +479,6 @@ addCustomType typeIds typeId monoType accum =
         ctorCount =
             List.length ctorShapes
 
-        -- Add each constructor and its fields
         accumWithCtors =
             List.foldl (addCtorInfo typeIds) accum ctorShapes
 
@@ -442,16 +493,15 @@ addCustomType typeIds typeId monoType accum =
     { accumWithCtors | typeAttrs = typeAttr :: accumWithCtors.typeAttrs }
 
 
-{-| Add constructor info for a single constructor.
+{-| Adds one constructor's entry and its field entries, named `field0`,
+`field1` and so on in declaration order.
 -}
 addCtorInfo : Mono.LayoutMap Int -> Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
 addCtorInfo typeIds ctorShape accum =
     let
-        -- Compute layout from shape
         ctorLayout =
             Types.computeCtorLayout ctorShape
 
-        -- Add constructor name to string table
         ( nameIndex, accWithName ) =
             getOrCreateStringIndex (Name.toElmString ctorLayout.name) accum
 
@@ -461,7 +511,6 @@ addCtorInfo typeIds ctorShape accum =
         fieldCount =
             List.length ctorLayout.fields
 
-        -- Add fields for this constructor
         accumWithFields =
             List.foldl
                 (\fieldInfo acc ->
@@ -469,9 +518,6 @@ addCtorInfo typeIds ctorShape accum =
                         fieldTypeId =
                             lookupTypeId typeIds fieldInfo.monoType
 
-                        -- Field attr: [name_index, type_id]
-                        -- For constructor fields, name is typically not used,
-                        -- but we include it for completeness
                         ( fieldNameIndex, accWithFieldName ) =
                             getOrCreateStringIndex (Name.toElmString fieldInfo.name) acc
 
@@ -489,8 +535,6 @@ addCtorInfo typeIds ctorShape accum =
                 accWithName
                 ctorLayout.fields
 
-        -- Constructor attr: [ctor_id, name_index, first_field, field_count]
-        -- Note: ctor_id comes from ctorLayout.tag (the constructor's index within its type)
         ctorAttr =
             ArrayAttr Nothing
                 [ IntAttr Nothing ctorLayout.tag
@@ -505,7 +549,12 @@ addCtorInfo typeIds ctorShape accum =
     }
 
 
-{-| Add a function type descriptor.
+{-| Adds a function's descriptor and one `func_args` entry per argument.
+
+The arguments are those of this `MFunction` node only, so a curried function
+type whose result is another function is described with that function as its
+result.
+
 -}
 addFunctionType : Mono.LayoutMap Int -> Int -> List Mono.MonoType -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addFunctionType typeIds typeId argTypes resultType accum =
@@ -516,7 +565,6 @@ addFunctionType typeIds typeId argTypes resultType accum =
         argCount =
             List.length argTypes
 
-        -- Add arg type_ids with actual type IDs
         accumWithArgs =
             List.foldl
                 (\argType acc ->

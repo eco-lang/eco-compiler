@@ -1,22 +1,20 @@
 module Compiler.LocalOpt.Typed.Case exposing (optimize)
 
-{-| Optimizes typed case expressions using decision trees.
+{-| A `case` expression is compiled into a decision tree, and the tree can reach
+the same branch along more than one path. This module turns that tree into the
+`Case` node of the typed optimized program, deciding for each branch whether
+its body is copied into the tree or shared.
 
-This module bridges the gap between decision tree compilation and the typed optimized
-AST. It takes pattern-matched branches and converts them into an efficient
-case expression with:
+The tree comes from `Compiler.LocalOpt.Typed.DecisionTree.compile`, whose
+leaves carry branch numbers: the position of the branch in the `case`. It is
+first rewritten into a `TOpt.Decider` with the same leaves. Then the leaves
+naming each branch are counted. A _choice_ is what a leaf leads to: a branch
+named by exactly one leaf is placed in the tree there (`Inline`), and any other
+branch is placed once in the `Case`'s jump list and every leaf naming it holds
+a `Jump` to it. So no branch body is duplicated.
 
-  - A decision tree that determines which branch to execute
-  - Inline choices for branches that are only reached from one path
-  - Jump labels for branches that can be reached from multiple paths
-
-The optimization reduces code duplication by sharing branch implementations
-when the same code would be reached through different pattern match paths.
-
-
-# Optimization
-
-@docs optimize
+The `TOpt.Decider` and `TOpt.Choice` types, and what the parts of a `Case`
+node are, are described in `Compiler.AST.TypedOptimized`.
 
 -}
 
@@ -34,9 +32,14 @@ import Utils.Crash exposing (crash)
 -- ====== OPTIMIZE A CASE EXPRESSION ======
 
 
-{-| Optimize a typed case expression into a decision tree.
-Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
-and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
+{-| Builds the `Case` node for a `case` whose branches are `optBranches`, each a
+pattern and its already optimized body, in source order.
+
+`temp` is the node's label name and `root` the variable whose value is
+inspected. `resultType` and `tvar` are the type and solver variable of the
+whole `case` expression, and become the node's own type; the branch bodies keep
+theirs.
+
 -}
 optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr Name ) -> Can.Type Name -> Maybe Vars.Variable -> TOpt.Expr Name
 optimize temp root optBranches resultType tvar =
@@ -66,6 +69,8 @@ optimize temp root optBranches resultType tvar =
         { tipe = resultType, tvar = tvar }
 
 
+{-| Pairs a branch's pattern and its body each with the branch number `index`.
+-}
 indexify : Int -> ( a, b ) -> ( ( a, Int ), ( Int, b ) )
 indexify index ( pattern, branch ) =
     ( ( pattern, index )
@@ -75,36 +80,40 @@ indexify index ( pattern, branch ) =
 
 
 -- ====== TREE TO DECIDER ======
---
--- Decision trees may have some redundancies, so we convert them to a Decider
--- which has special constructs to avoid code duplication when possible.
 
 
+{-| Converts a decision tree into a `TOpt.Decider` with the same leaves.
+
+A node with no fallback is one where, for any value that reaches it, some
+edge's test passes, so its last edge becomes the fallback and that edge's test
+is not made. A node with a single path forward (one edge and no fallback, or no
+edge and a fallback) is replaced by that path. A node with one test and a
+fallback, or two edges and no fallback, becomes a `Chain` (see `toChain`); any
+other node becomes a `FanOut`. Crashes on a node with neither edges nor a
+fallback.
+
+-}
 treeToDecider : DT.DecisionTree -> TOpt.Decider Int
 treeToDecider tree =
     case tree of
         DT.Match target ->
             TOpt.Leaf target
 
-        -- zero options
         DT.Decision _ [] Nothing ->
             crash "compiler bug, somehow created an empty decision tree"
 
-        -- one option
         DT.Decision _ [ ( _, subTree ) ] Nothing ->
             treeToDecider subTree
 
         DT.Decision _ [] (Just subTree) ->
             treeToDecider subTree
 
-        -- two options
         DT.Decision path [ ( test, successTree ) ] (Just failureTree) ->
             toChain path test successTree failureTree
 
         DT.Decision path [ ( test, successTree ), ( _, failureTree ) ] Nothing ->
             toChain path test successTree failureTree
 
-        -- many options
         DT.Decision path edges Nothing ->
             let
                 ( necessaryTests, fallback ) =
@@ -119,6 +128,13 @@ treeToDecider tree =
             TOpt.FanOut path (List.map (Tuple.mapSecond treeToDecider) edges) (treeToDecider fallback)
 
 
+{-| Builds a `Chain` that makes `test` at `path`, continuing with
+`successTree` if it passes and `failureTree` otherwise.
+
+When the success side is itself a `Chain` with the same failure side, the two
+are merged into one `Chain` whose test list starts with `test`.
+
+-}
 toChain : DT.Path -> DT.Test -> DT.DecisionTree -> DT.DecisionTree -> TOpt.Decider Int
 toChain path test successTree failureTree =
     let
@@ -140,16 +156,18 @@ toChain path test successTree failureTree =
 
 
 -- ====== INSERT CHOICES ======
---
--- If a target appears exactly once in a Decider, the corresponding expression
--- can be inlined. Whether things are inlined or jumps is called a "choice".
 
 
+{-| Returns, for each of the `numBranches` branch numbers, how many leaves of
+`decider` name it.
+-}
 countTargets : Int -> TOpt.Decider Int -> Array Int
 countTargets numBranches decider =
     countTargetsHelp (Array.repeat numBranches 0) decider
 
 
+{-| Adds to `counts` one for each leaf of `decider` naming a branch number.
+-}
 countTargetsHelp : Array Int -> TOpt.Decider Int -> Array Int
 countTargetsHelp counts decider =
     case decider of
@@ -165,11 +183,21 @@ countTargetsHelp counts decider =
                 tests
 
 
+{-| Returns the element of `arr` at `idx`, or `default` when there is none.
+-}
 arrayGetOr : a -> Int -> Array a -> a
 arrayGetOr default idx arr =
     Array.get idx arr |> Maybe.withDefault default
 
 
+{-| Returns the choice for one numbered branch, and the jump list entry it
+needs, if any.
+
+A branch named by exactly one leaf is inlined and needs no entry. Any other
+count gives a `Jump` and an entry holding the body; that includes a branch no
+leaf names, whose body is then in the jump list but never jumped to.
+
+-}
 createChoices : Array Int -> ( Int, TOpt.Expr Name ) -> ( ( Int, TOpt.Choice Name ), Maybe ( Int, TOpt.Expr Name ) )
 createChoices targetCounts ( target, branch ) =
     if arrayGetOr 0 target targetCounts == 1 then
@@ -183,6 +211,10 @@ createChoices targetCounts ( target, branch ) =
         )
 
 
+{-| Replaces each branch number at a leaf of `decider` with that branch's
+choice from `choiceArray`, indexed by branch number. Crashes on a number with
+no entry.
+-}
 insertChoices : Array (TOpt.Choice Name) -> TOpt.Decider Int -> TOpt.Decider (TOpt.Choice Name)
 insertChoices choiceArray decider =
     let

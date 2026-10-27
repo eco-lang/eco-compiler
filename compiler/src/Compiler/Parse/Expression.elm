@@ -1,21 +1,41 @@
 module Compiler.Parse.Expression exposing (expression)
 
-{-| Expression parser for Elm source code.
+{-| Parses Elm expressions into the source AST of `Compiler.AST.Source`, keeping
+the comments found between their parts.
 
-This module parses Elm expressions into the Source AST, handling:
+`expression` is the one entry point. An expression is a `let`, `if` or `case`
+expression, a lambda, or a _chain_: a possibly negated term followed by
+arguments and binary operators. A _term_ is an expression that stands alone
+without any operator or argument: a variable, a literal, a list, a record or
+record update, a parenthesised expression, a tuple, `()`, an operator in
+parentheses such as `(+)`, an accessor such as `.name`, or a GLSL shader block.
+A variable, or a term that starts with `(` or `{`, may be followed directly by
+field accesses, as in `point.x`.
 
-  - Literals (strings, numbers, characters)
-  - Variables and qualified names
-  - Operators and operator sections
-  - Function application and lambdas
-  - Control flow (if/then/else, case/of, let/in)
-  - Data structures (lists, tuples, records)
-  - Record access and update syntax
+Three facts shape the module.
 
+Operators are not grouped here. `a + b * c` becomes one `Src.Binops` holding
+each operand paired with the operator after it, then the last operand, in
+source order; precedence and associativity are applied later, when the module
+is canonicalized. A `let`, `case`, `if` or lambda may be the last operand only,
+since its own body extends as far as it can.
 
-# Parsing
+A `-` is either subtraction or negation, and spacing decides which. At the start
+of an expression or of an operand it negates the term after it. After a term, a
+`-` with whitespace before it and none after (`f -x`) negates the next term,
+which becomes an argument; any other `-` there is the subtraction operator.
+Negation applies to one term only, so `-f x` calls `-f` with `x`.
 
-@docs expression
+Layout decides where things end. An argument or operator must be indented
+further than the current indent, as `Compiler.Parse.Space` checks it. The
+branches of a `case` start in the column of its first pattern, and the
+definitions of a `let` in the column of its first definition; a line that starts
+in that column begins the next branch or definition.
+
+`expression` returns, with the expression, the comments it consumed after it
+and the position where the expression ended, before those comments. A caller
+attaches the comments where they belong and checks the indentation of the next
+token against that position.
 
 -}
 
@@ -39,6 +59,9 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== TERMS ======
 
 
+{-| A parser for one term, followed by any field accesses when the term is a
+variable or starts with `(` or `{`.
+-}
 term : P.Parser E.Expr Src.Expr
 term =
     P.getPosition
@@ -58,18 +81,26 @@ term =
             )
 
 
+{-| Produces a parser for a single-line or multi-line string literal starting at
+`start`, kept in its escaped source form as `Compiler.Parse.String` describes.
+-}
 string : A.Position -> P.Parser E.Expr Src.Expr
 string start =
     String.string E.Start E.String_
         |> P.andThen (\( str, representation ) -> P.addEnd start (Src.Str str representation))
 
 
+{-| Produces a parser for a character literal starting at `start`.
+-}
 character : A.Position -> P.Parser E.Expr Src.Expr
 character start =
     String.character E.Start E.Char
         |> P.andThen (\chr -> P.addEnd start (Src.Chr chr))
 
 
+{-| Produces a parser for an integer or float literal starting at `start`, keeping
+the source text of the number alongside its value.
+-}
 number : A.Position -> P.Parser E.Expr Src.Expr
 number start =
     Number.number E.Start E.Number
@@ -85,6 +116,9 @@ number start =
             )
 
 
+{-| Produces a parser for a field accessor function such as `.name`, starting at
+`start`.
+-}
 accessor : A.Position -> P.Parser E.Expr Src.Expr
 accessor start =
     P.word1 '.' E.Dot
@@ -92,12 +126,23 @@ accessor start =
         |> P.andThen (\field -> P.addEnd start (Src.Accessor field))
 
 
+{-| Produces a parser for a variable or constructor, qualified or not, starting at
+`start`.
+-}
 variable : A.Position -> P.Parser E.Expr Src.Expr
 variable start =
     Var.foreignAlpha E.Start
         |> P.andThen (\var -> P.addEnd start var)
 
 
+{-| Produces a parser that reads any `.field` accesses directly after `expr`,
+with no whitespace before a dot, and returns `expr` wrapped in one `Src.Access`
+per field. With no dot it returns `expr` unchanged, consuming nothing.
+
+Each access's region runs from `start`, the start of `expr`, to the end of the
+field name.
+
+-}
 accessible : A.Position -> Src.Expr -> P.Parser E.Expr Src.Expr
 accessible start expr =
     P.oneOfWithFallback
@@ -108,6 +153,9 @@ accessible start expr =
         expr
 
 
+{-| Produces a parser for the field name after a dot at `pos`, wrapping `expr` in
+an access of that field and then reading any further accesses.
+-}
 chompAccessField : A.Position -> Src.Expr -> A.Position -> P.Parser E.Expr Src.Expr
 chompAccessField start expr pos =
     Var.lower E.Access
@@ -122,6 +170,14 @@ chompAccessField start expr pos =
 -- ====== LISTS ======
 
 
+{-| Produces a parser for a list expression starting at the `[` at `start`.
+
+Each entry, and the `,` or `]` after it, must be indented past the current
+indent. The first entry's comments are the ones after the `[`; each
+later entry carries the comments either side of the comma before it, and the
+comments after the last entry are stored with the list.
+
+-}
 list : A.Position -> P.Parser E.Expr Src.Expr
 list start =
     P.inContext E.List (P.word1 '[' E.Start) <|
@@ -142,6 +198,13 @@ list start =
         )
 
 
+{-| Produces one step of the loop that reads the rest of a list: another entry
+after a comma, or the closing `]`.
+
+`entries` is in reverse order and is reversed when the list is closed;
+`trailingComments` are the comments after the latest entry.
+
+-}
 chompListEnd : A.Position -> Src.C1 (List (Src.C2Eol Src.Expr)) -> P.Parser E.List_ (P.Step (Src.C1 (List (Src.C2Eol Src.Expr))) Src.Expr)
 chompListEnd start ( trailingComments, entries ) =
     P.oneOf E.ListEnd
@@ -166,6 +229,17 @@ chompListEnd start ( trailingComments, entries ) =
 -- ====== TUPLES ======
 
 
+{-| Produces a parser for everything that starts with `(` at `start`: `()`, an
+operator in parentheses such as `(+)`, a parenthesised expression, or a tuple.
+
+When the `(` is followed directly by `-`, the `-` is read as the operator `(-)`
+if `)` follows at once, and, if a term follows at once, negates that term, which
+then begins the expression inside the parentheses. The region of that negation,
+and of any chain it starts, begins two columns after the `(`, at the negated
+term rather than at the `-`. Any other operator must be followed at once by
+`)`.
+
+-}
 tuple : A.Position -> P.Parser E.Expr Src.Expr
 tuple ((A.Position row col) as start) =
     P.inContext E.Tuple (P.word1 '(' E.Start) <|
@@ -250,6 +324,13 @@ tuple ((A.Position row col) as start) =
         )
 
 
+{-| Produces a parser for the rest of a parenthesised expression or tuple after
+its first entry `firstExpr`: more entries after commas, then the `)`.
+
+One entry gives a `Src.Parens` and two or more a `Src.Tuple`. `revExprs` holds
+the entries after the first, in reverse order.
+
+-}
 chompTupleEnd : A.Position -> Src.C2 Src.Expr -> List (Src.C2 Src.Expr) -> P.Parser E.Tuple Src.Expr
 chompTupleEnd start firstExpr revExprs =
     P.oneOf E.TupleEnd
@@ -284,8 +365,14 @@ chompTupleEnd start firstExpr revExprs =
 -- ====== RECORDS ======
 
 
-{-| Parse record expressions including record literals and record update syntax.
-Handles both empty records and records with fields.
+{-| Produces a parser for an expression that starts with `{` at `start`: an empty
+record, a record literal, or a record update such as `{ point | x = 1 }`.
+
+The record being updated must be a plain lower-case variable. Anything after
+the `{` other than `}` or a lower-case name, such as an upper-case name,
+fails with `E.RecordOpen`; a lower-case name followed by anything but `|` or `=`
+fails with `E.RecordEquals`.
+
 -}
 record : A.Position -> P.Parser E.Expr Src.Expr
 record start =
@@ -346,6 +433,9 @@ record start =
         )
 
 
+{-| Produces a parser that reads `.field` accesses after `expr` and reports a
+failed field name as a record error. Nothing in this module calls it.
+-}
 accessibleRecord : A.Position -> Src.Expr -> P.Parser E.Record Src.Expr
 accessibleRecord start expr =
     P.oneOfWithFallback
@@ -356,6 +446,10 @@ accessibleRecord start expr =
         expr
 
 
+{-| Produces a parser for the field name after a dot at `pos`, wrapping `expr` in
+that access and then reading any further accesses through `accessibleRecord`.
+Nothing in this module calls it, except `accessibleRecord`.
+-}
 chompRecordAccessField : A.Position -> Src.Expr -> A.Position -> P.Parser E.Record Src.Expr
 chompRecordAccessField start expr pos =
     Var.lower E.RecordOpen
@@ -367,13 +461,29 @@ chompRecordAccessField start expr pos =
 
 
 
--- ====== FOREIGN ALPHA ======
+-- ====== RECORD FIELDS ======
 
 
+{-| One `name = value` field of a record literal or record update, with the
+comments around it.
+
+The outer comment groups are the comments either side of the comma before the
+field (for the first field, nothing and the comments after the `{` or `|`).
+Then come the comments before the `=` with the name, and the comments after the
+`=` with the value.
+
+-}
 type alias Field =
     Src.C2Eol ( Src.C1 (A.Located Name.Name), Src.C1 Src.Expr )
 
 
+{-| Produces a parser for the fields of a record after the first, each preceded
+by a comma, up to and including the `}`.
+
+`fields` holds the fields read so far in reverse order, and the result has them
+in source order, paired with the comments after the last field.
+
+-}
 chompFields : Src.FComments -> List Field -> P.Parser E.Record (Src.C1 (List Field))
 chompFields trailingComments fields =
     P.oneOf E.RecordEnd
@@ -386,6 +496,11 @@ chompFields trailingComments fields =
         ]
 
 
+{-| Produces a parser for one `name = value` field, given the comments before
+and after the comma that precedes it (for an update's first field, nothing and
+the comments after the `|`). The result is paired with the comments
+after the value.
+-}
 chompField : Src.FComments -> Src.FComments -> P.Parser E.Record (Src.C1 Field)
 chompField preCommaComents postCommaComments =
     P.addLocation (Var.lower E.RecordField)
@@ -418,9 +533,14 @@ chompField preCommaComents postCommaComments =
 -- ====== EXPRESSIONS ======
 
 
-{-| Parse a complete Elm expression including operators, function application,
-and special forms like if/case/let/lambda. Returns the parsed expression with
-associated comments and position information.
+{-| A parser for a complete expression: a `let`, `if` or `case` expression, a
+lambda, or a chain of a possibly negated term, its arguments, and binary
+operators with their operands.
+
+The expression is returned with the comments that follow it, and with the
+position where it ends, which is before those comments. Operators are left
+ungrouped in a `Src.Binops`, in source order.
+
 -}
 expression : Space.Parser E.Expr (Src.C1 Src.Expr)
 expression =
@@ -458,6 +578,17 @@ expression =
             )
 
 
+{-| The progress of a chain being read by `chompExprEnd`.
+
+`expr` and `args` are the current operand, a possibly negated term and the
+arguments applied to it so far, with `args` in reverse order and each argument carrying the comments
+before it, except a negated argument (`f -x`), which carries the comments after
+it. `ops` holds every earlier operand, already turned into a call, paired
+with the operator after it and the comments either side of that operator, latest
+first. `end` is where the last term read ends, the position the next token's
+indentation is checked against.
+
+-}
 type State
     = State
         { ops : List ( Src.Expr, Src.C2 (A.Located Name.Name) )
@@ -467,6 +598,18 @@ type State
         }
 
 
+{-| Produces a parser that finishes the chain described by the state, where
+`comments` are the comments after its last term (empty after a negated
+argument, which carries its trailing comments) and `start` is where the chain
+began.
+
+It reads, in order of preference, another argument term, or an operator and the
+operand after it, and stops when neither an argument nor an operator can be
+read. A `let`, `case`, `if` or lambda after an operator ends the chain. With no
+operator read, the result is the current operand alone; otherwise it is a
+`Src.Binops` spanning from `start`.
+
+-}
 chompExprEnd : A.Position -> State -> Src.FComments -> Space.Parser E.Expr (Src.C1 Src.Expr)
 chompExprEnd start (State { ops, expr, args, end }) comments =
     P.oneOfWithFallback
@@ -609,6 +752,9 @@ chompExprEnd start (State { ops, expr, args, end }) comments =
         )
 
 
+{-| Produces a parser for a term starting at `start`, negated if a `-` comes
+directly before it.
+-}
 possiblyNegativeTerm : A.Position -> P.Parser E.Expr Src.Expr
 possiblyNegativeTerm start =
     P.oneOf E.Start
@@ -625,6 +771,10 @@ possiblyNegativeTerm start =
         ]
 
 
+{-| Returns `func` applied to the arguments in `revArgs`, which are in reverse
+order, or `func` alone when there are none. The call's region runs from `func`
+to the last argument.
+-}
 toCall : Src.Expr -> List (Src.C1 Src.Expr) -> Src.Expr
 toCall func revArgs =
     case revArgs of
@@ -639,17 +789,31 @@ toCall func revArgs =
 -- ====== IF EXPRESSION ======
 
 
+{-| Produces a parser for an `if` expression starting at `start`, including any
+`else if` branches.
+-}
 if_ : A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 if_ start =
     chompIfEnd start [] [] |> P.inContext E.If (Keyword.if_ E.Start)
 
 
+{-| Produces a parser for the rest of an `if` after the `if` keyword: a condition,
+a `then` branch and an `else` branch.
+
+`branches` holds the condition and `then` pairs already read, latest first, and
+`comments` are the comments between the `else` and this `if`, empty for the
+first `if`.
+
+-}
 chompIfEnd : A.Position -> Src.FComments -> List (Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )) -> Space.Parser E.If (Src.C1 Src.Expr)
 chompIfEnd start comments branches =
     Space.chompAndCheckIndent E.IfSpace E.IfIndentCondition
         |> P.andThen (\preConditionComments -> chompIfCondition start comments branches preConditionComments)
 
 
+{-| Produces a parser for an `if` condition followed by the `then` keyword and
+its branch, and what follows.
+-}
 chompIfCondition :
     A.Position
     -> Src.FComments
@@ -667,6 +831,9 @@ chompIfCondition start comments branches preConditionComments =
             )
 
 
+{-| Produces a parser for the `then` branch of an `if`, followed by the `else`
+keyword and what follows it.
+-}
 chompIfThen :
     A.Position
     -> Src.FComments
@@ -700,6 +867,13 @@ chompIfThen start comments branches preConditionComments postConditionComments c
             )
 
 
+{-| Produces a parser for what follows an `else`: either another `if`, which
+adds a condition and branch to the same `Src.If`, or the final `else` branch.
+
+So `else if` does not nest; a chain of them is one `Src.If` with several
+condition and branch pairs.
+
+-}
 chompIfElse :
     A.Position
     -> Src.FComments
@@ -738,6 +912,14 @@ chompIfElse start comments branches preConditionComments postConditionComments c
         ]
 
 
+{-| Returns the `Src.If` built from the branches read, with `newBranches` latest
+first, and the final `else` branch, spanning from `start` to the end of the
+`else` branch.
+
+`newBranch` is a stand-in for the first branch should the list be empty, which
+it never is here.
+
+-}
 buildIfExpr :
     A.Position
     -> Src.C1 ( Src.C2 Src.Expr, Src.C2 Src.Expr )
@@ -770,6 +952,9 @@ buildIfExpr start newBranch newBranches trailingComments ( ( postElseBranch, els
 -- ====== LAMBDA EXPRESSION ======
 
 
+{-| Produces a parser for a lambda such as `\x y -> x`, starting at the
+backslash at `start`.
+-}
 function : A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 function start =
     P.inContext E.Func (P.word1 '\\' E.Start) <|
@@ -778,12 +963,18 @@ function start =
         )
 
 
+{-| Produces a parser for a lambda's first argument and the rest of the lambda.
+Arguments are pattern terms, as `Compiler.Parse.Pattern` defines them.
+-}
 chompFunctionFirstArg : A.Position -> Src.FComments -> Space.Parser E.Func (Src.C1 Src.Expr)
 chompFunctionFirstArg start preArgComments =
     P.specialize E.FuncArg Pattern.term
         |> P.andThen (\arg -> chompFunctionArgs start preArgComments arg)
 
 
+{-| Produces a parser for the rest of a lambda after its first argument `arg`:
+any further arguments, the `->` and the body.
+-}
 chompFunctionArgs : A.Position -> Src.FComments -> Src.Pattern -> Space.Parser E.Func (Src.C1 Src.Expr)
 chompFunctionArgs start preArgComments arg =
     Space.chompAndCheckIndent E.FuncSpace E.FuncIndentArrow
@@ -791,6 +982,9 @@ chompFunctionArgs start preArgComments arg =
         |> P.andThen (\( trailingComments, revArgs ) -> chompFunctionBody start trailingComments revArgs)
 
 
+{-| Produces a parser for a lambda's body after the `->`, building the lambda
+from the arguments in `revArgs`, which are in reverse order.
+-}
 chompFunctionBody : A.Position -> Src.FComments -> List (Src.C1 Src.Pattern) -> Space.Parser E.Func (Src.C1 Src.Expr)
 chompFunctionBody start trailingComments revArgs =
     Space.chompAndCheckIndent E.FuncSpace E.FuncIndentBody
@@ -802,6 +996,9 @@ chompFunctionBody start trailingComments revArgs =
         |> P.map (\( afterBodyComments, body, end ) -> buildFunctionExpr start trailingComments revArgs afterBodyComments body end)
 
 
+{-| Returns the `Src.Lambda` with the arguments in `revArgs` put back into source
+order, spanning from `start` to `end`, the end of its body.
+-}
 buildFunctionExpr : A.Position -> Src.FComments -> List (Src.C1 Src.Pattern) -> Src.FComments -> Src.C1 Src.Expr -> A.Position -> ( Src.C1 Src.Expr, A.Position )
 buildFunctionExpr start trailingComments revArgs afterBodyComments body end =
     let
@@ -812,6 +1009,13 @@ buildFunctionExpr start trailingComments revArgs afterBodyComments body end =
     ( ( afterBodyComments, A.at start end funcExpr ), end )
 
 
+{-| Produces a parser for further lambda arguments up to and including the `->`.
+
+Each argument carries the comments before it, and the result is paired with
+the comments before the `->`. `revArgs` and the returned list are in reverse
+order.
+
+-}
 chompArgs : Src.FComments -> List (Src.C1 Src.Pattern) -> P.Parser E.Func (Src.C1 (List (Src.C1 Src.Pattern)))
 chompArgs trailingComments revArgs =
     P.oneOf E.FuncArrow
@@ -830,6 +1034,8 @@ chompArgs trailingComments revArgs =
 -- ====== CASE EXPRESSIONS ======
 
 
+{-| Produces a parser for a `case` expression starting at `start`.
+-}
 case_ : A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 case_ start =
     P.inContext E.Case (Keyword.case_ E.Start) <|
@@ -838,6 +1044,9 @@ case_ start =
         )
 
 
+{-| Produces a parser for the expression a `case` examines, and the rest of the
+`case` after it.
+-}
 chompCaseExpr : A.Position -> Src.FComments -> Space.Parser E.Case (Src.C1 Src.Expr)
 chompCaseExpr start preExprComments =
     P.specialize E.CaseExpr expression
@@ -847,6 +1056,9 @@ chompCaseExpr start preExprComments =
             )
 
 
+{-| Produces a parser for the `of` keyword after the examined expression and the
+branches after it.
+-}
 chompCaseOf : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> A.Position -> Space.Parser E.Case (Src.C1 Src.Expr)
 chompCaseOf start preExprComments postExprComments expr exprEnd =
     Space.checkIndent exprEnd E.CaseIndentOf
@@ -855,6 +1067,10 @@ chompCaseOf start preExprComments postExprComments expr exprEnd =
         |> P.andThen (\comments -> chompCaseBranches start preExprComments postExprComments expr comments)
 
 
+{-| Produces a parser for the branches of a `case`, with the indent set to the
+column of the first branch's pattern, so that every later branch must start in
+that column.
+-}
 chompCaseBranches : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> Src.FComments -> Space.Parser E.Case (Src.C1 Src.Expr)
 chompCaseBranches start preExprComments postExprComments expr comments =
     P.withIndent
@@ -867,6 +1083,9 @@ chompCaseBranches start preExprComments postExprComments expr comments =
         )
 
 
+{-| Returns the `Src.Case` built from the examined `expr` and its branches,
+spanning from `start` to the end of the last branch.
+-}
 buildCaseExpr : A.Position -> Src.FComments -> Src.FComments -> Src.Expr -> ( Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )), A.Position ) -> ( Src.C1 Src.Expr, A.Position )
 buildCaseExpr start preExprComments postExprComments expr ( ( branchesTrailingComments, branches ), end ) =
     ( ( branchesTrailingComments, A.at start end (Src.Case ( ( preExprComments, postExprComments ), expr ) branches) )
@@ -874,12 +1093,19 @@ buildCaseExpr start preExprComments postExprComments expr ( ( branchesTrailingCo
     )
 
 
+{-| Produces a parser for one `case` branch: a pattern, the `->` and an
+expression. Unlike function arguments, the pattern may be any pattern, not only
+a term.
+-}
 chompBranch : Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
 chompBranch prePatternComments =
     P.specialize E.CasePattern Pattern.expression
         |> P.andThen (\( ( postPatternComments, pattern ), patternEnd ) -> chompBranchArrow prePatternComments postPatternComments pattern patternEnd)
 
 
+{-| Produces a parser for the `->` after a branch's pattern and the expression
+after it.
+-}
 chompBranchArrow : Src.FComments -> Src.FComments -> Src.Pattern -> A.Position -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
 chompBranchArrow prePatternComments postPatternComments pattern patternEnd =
     Space.checkIndent patternEnd E.CaseIndentArrow
@@ -888,12 +1114,18 @@ chompBranchArrow prePatternComments postPatternComments pattern patternEnd =
         |> P.andThen (\preBranchExprComments -> chompBranchExpr prePatternComments postPatternComments pattern preBranchExprComments)
 
 
+{-| Produces a parser for the expression of a `case` branch.
+-}
 chompBranchExpr : Src.FComments -> Src.FComments -> Src.Pattern -> Src.FComments -> Space.Parser E.Case (Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ))
 chompBranchExpr prePatternComments postPatternComments pattern preBranchExprComments =
     P.specialize E.CaseBranch expression
         |> P.map (buildBranchResult prePatternComments postPatternComments pattern preBranchExprComments)
 
 
+{-| Returns one `case` branch built from its pattern, its expression and the
+comments around them, paired with the comments after the expression and the
+position where it ends.
+-}
 buildBranchResult : Src.FComments -> Src.FComments -> Src.Pattern -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 ( Src.C2 Src.Pattern, Src.C1 Src.Expr ), A.Position )
 buildBranchResult prePatternComments postPatternComments pattern preBranchExprComments ( ( trailingComments, branchExpr ), end ) =
     ( ( trailingComments
@@ -905,6 +1137,15 @@ buildBranchResult prePatternComments postPatternComments pattern preBranchExprCo
     )
 
 
+{-| Produces a parser for further `case` branches, each starting in the column
+of the first one, and returns all the branches in source order once no more
+line starts there.
+
+`branches` is in reverse order; `prePatternComments` are the comments after the
+latest branch, which go with the next branch if there is one and with the
+whole list otherwise.
+
+-}
 chompCaseEnd : Src.FComments -> List ( Src.C2 Src.Pattern, Src.C1 Src.Expr ) -> A.Position -> Space.Parser E.Case (Src.C1 (List ( Src.C2 Src.Pattern, Src.C1 Src.Expr )))
 chompCaseEnd prePatternComments branches end =
     P.oneOfWithFallback
@@ -919,6 +1160,13 @@ chompCaseEnd prePatternComments branches end =
 -- ====== LET EXPRESSION ======
 
 
+{-| Produces a parser for a `let` expression starting at `start`.
+
+The first definition must start in a column to the right of the column where
+`let` begins. The outer indent is restored before the `in`, which only needs to
+be indented past it.
+
+-}
 let_ : A.Position -> Space.Parser E.Expr (Src.C1 Src.Expr)
 let_ start =
     P.inContext E.Let (Keyword.let_ E.Start) <|
@@ -931,6 +1179,10 @@ let_ start =
         )
 
 
+{-| Produces a parser for the definitions of a `let`, with the indent set to the
+column of the first one, so that every later definition must start in that
+column. `preDefComments` are the comments before the first definition.
+-}
 chompLetFirstDef : Src.FComments -> Space.Parser E.Let (List (Src.C2 (A.Located Src.Def)))
 chompLetFirstDef preDefComments =
     P.withIndent <|
@@ -939,6 +1191,9 @@ chompLetFirstDef preDefComments =
         )
 
 
+{-| Produces a parser for the `in` keyword after the definitions, which end at
+`defsEnd`, and the body after it.
+-}
 chompLetIn : A.Position -> List (Src.C2 (A.Located Src.Def)) -> A.Position -> Space.Parser E.Let (Src.C1 Src.Expr)
 chompLetIn start defs defsEnd =
     Space.checkIndent defsEnd E.LetIndentIn
@@ -947,17 +1202,31 @@ chompLetIn start defs defsEnd =
         |> P.andThen (\bodyComments -> chompLetBody start defs bodyComments)
 
 
+{-| Produces a parser for the body of a `let` after the `in`.
+-}
 chompLetBody : A.Position -> List (Src.C2 (A.Located Src.Def)) -> Src.FComments -> Space.Parser E.Let (Src.C1 Src.Expr)
 chompLetBody start defs bodyComments =
     P.specialize E.LetBody expression
         |> P.map (buildLetExpr start defs bodyComments)
 
 
+{-| Returns the `Src.Let` built from `defs` and the body, spanning from `start`
+to the end of the body.
+-}
 buildLetExpr : A.Position -> List (Src.C2 (A.Located Src.Def)) -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 Src.Expr, A.Position )
 buildLetExpr start defs bodyComments ( ( trailingComments, body ), end ) =
     ( ( trailingComments, A.at start end (Src.Let defs bodyComments body) ), end )
 
 
+{-| Produces a parser for further `let` definitions, each starting in the column
+of the first one, and returns them all in source order once no more line starts
+there.
+
+Each definition carries the comments after it. Only the first also carries
+comments before it; between two definitions the comments go with the earlier
+one.
+
+-}
 chompLetDefs : List (Src.C2 (A.Located Src.Def)) -> A.Position -> Space.Parser E.Let (List (Src.C2 (A.Located Src.Def)))
 chompLetDefs revDefs end =
     P.oneOfWithFallback
@@ -972,6 +1241,9 @@ chompLetDefs revDefs end =
 -- ====== LET DEFINITIONS ======
 
 
+{-| A parser for one `let` definition: a named definition, possibly with a type
+annotation, or a destructuring `pattern = value`.
+-}
 chompLetDef : Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 chompLetDef =
     P.oneOf E.LetDefName
@@ -984,12 +1256,18 @@ chompLetDef =
 -- ====== DEFINITION ======
 
 
+{-| A parser for a named `let` definition, with or without a type annotation,
+starting at its name.
+-}
 definition : Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 definition =
     P.addLocation (Var.lower E.LetDefName)
         |> P.andThen (\aname -> chompDefinitionBody aname)
 
 
+{-| Produces a parser for what follows the name `aname` in a `let` definition: a
+type annotation and the definition it annotates, or arguments and a body.
+-}
 chompDefinitionBody : A.Located Name.Name -> Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 chompDefinitionBody ((A.At (A.Region start _) name) as aname) =
     P.specialize (E.LetDef name) <|
@@ -998,6 +1276,10 @@ chompDefinitionBody ((A.At (A.Region start _) name) as aname) =
         )
 
 
+{-| Produces a parser that reads a type annotation after `:` and then the
+definition it annotates, or otherwise the arguments and body of an unannotated
+definition.
+-}
 chompDefinitionEqualsOrType : A.Position -> Name.Name -> A.Located Name.Name -> Src.FComments -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
 chompDefinitionEqualsOrType start name aname postNameComments =
     P.oneOf E.DefEquals
@@ -1009,6 +1291,13 @@ chompDefinitionEqualsOrType start name aname postNameComments =
         ]
 
 
+{-| Produces a parser for the definition that follows a type annotation for
+`name`.
+
+The definition must start in the same column as the annotation and repeat the
+name; a different name fails with `E.DefNameMatch`.
+
+-}
 chompDefinitionAfterType : A.Position -> Name.Name -> Src.FComments -> Src.FComments -> Src.FComments -> Src.Type -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
 chompDefinitionAfterType start name postNameComments preTipeComments postTipeComments tipe =
     Space.checkAligned E.DefAlignment
@@ -1016,6 +1305,9 @@ chompDefinitionAfterType start name postNameComments preTipeComments postTipeCom
         |> P.andThen (\defName -> chompDefinitionWithType start defName postNameComments preTipeComments postTipeComments tipe)
 
 
+{-| Produces a parser for the arguments and body of a definition whose name
+`defName` has been read after its annotation, attaching the annotation to it.
+-}
 chompDefinitionWithType : A.Position -> A.Located Name.Name -> Src.FComments -> Src.FComments -> Src.FComments -> Src.Type -> Space.Parser E.Def (Src.C1 (A.Located Src.Def))
 chompDefinitionWithType start defName postNameComments preTipeComments postTipeComments tipe =
     Space.chompAndCheckIndent E.DefSpace E.DefIndentEquals
@@ -1030,6 +1322,15 @@ chompDefinitionWithType start defName postNameComments preTipeComments postTipeC
             )
 
 
+{-| Produces a parser for a definition's argument patterns up to the `=`, and its
+body.
+
+The arguments are pattern terms. Each carries the comments before it, and the
+body carries the comments between the last argument (or the name) and the `=`
+followed by those after the `=`. The definition's region runs from `start`,
+the start of its first name, to the end of the body.
+
+-}
 chompDefArgsAndBody :
     A.Position
     -> A.Located Name.Name
@@ -1060,6 +1361,14 @@ chompDefArgsAndBody start name tipe trailingComments revArgs =
         ]
 
 
+{-| Produces a parser for a lower-case name that must equal `expectedName`, as
+the name repeated after a type annotation must.
+
+A different name fails with `E.DefNameMatch` at the start of the name, with the
+outcome marked consumed when the name was. The name's region is where it was
+read.
+
+-}
 chompMatchingName : Name.Name -> P.Parser E.Def (A.Located Name.Name)
 chompMatchingName expectedName =
     let
@@ -1094,6 +1403,9 @@ chompMatchingName expectedName =
 -- ====== DESTRUCTURE ======
 
 
+{-| A parser for a destructuring `let` definition such as `( x, y ) = point`. The
+pattern must be a pattern term.
+-}
 destructure : Space.Parser E.Let (Src.C1 (A.Located Src.Def))
 destructure =
     P.specialize E.LetDestruct <|
@@ -1102,18 +1414,27 @@ destructure =
         )
 
 
+{-| Produces a parser for a destructuring definition from its pattern at `start`
+onward.
+-}
 chompDestructPattern : A.Position -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
 chompDestructPattern start =
     P.specialize E.DestructPattern Pattern.term
         |> P.andThen (\pattern -> chompDestructEquals start pattern)
 
 
+{-| Produces a parser for what follows a destructuring pattern: the `=` and the
+value.
+-}
 chompDestructEquals : A.Position -> Src.Pattern -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
 chompDestructEquals start pattern =
     Space.chompAndCheckIndent E.DestructSpace E.DestructIndentEquals
         |> P.andThen (\preEqualSignComments -> chompDestructBody start pattern preEqualSignComments)
 
 
+{-| Produces a parser for the `=` of a destructuring definition and the value
+after it.
+-}
 chompDestructBody : A.Position -> Src.Pattern -> Src.FComments -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
 chompDestructBody start pattern preEqualSignComments =
     P.word1 '=' E.DestructEquals
@@ -1121,12 +1442,18 @@ chompDestructBody start pattern preEqualSignComments =
         |> P.andThen (\preExpressionComments -> chompDestructExpr start pattern preEqualSignComments preExpressionComments)
 
 
+{-| Produces a parser for the value of a destructuring definition.
+-}
 chompDestructExpr : A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> Space.Parser E.Destruct (Src.C1 (A.Located Src.Def))
 chompDestructExpr start pattern preEqualSignComments preExpressionComments =
     P.specialize E.DestructBody expression
         |> P.map (buildDestructDef start pattern preEqualSignComments preExpressionComments)
 
 
+{-| Returns the `Src.Destruct` definition of `pattern`, whose value carries the
+comments before and after the `=` together, spanning from `start` to the end of
+the value.
+-}
 buildDestructDef : A.Position -> Src.Pattern -> Src.FComments -> Src.FComments -> ( Src.C1 Src.Expr, A.Position ) -> ( Src.C1 (A.Located Src.Def), A.Position )
 buildDestructDef start pattern preEqualSignComments preExpressionComments ( ( comments, expr ), end ) =
     ( ( comments, A.at start end (Src.Destruct pattern ( preEqualSignComments ++ preExpressionComments, expr )) )

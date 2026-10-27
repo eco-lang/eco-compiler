@@ -3,36 +3,34 @@ module Compiler.GlobalOpt.CafDedupe exposing
     , Stats, emptyStats, renderStats
     )
 
-{-| Top-level CAF spec dedupe (`ECO_CAF_DEDUPE=1`,
-design\_docs/caf-memoization-design.md §12 follow-on; measured as Run Y).
+{-| Monomorphization can produce several top-level constant specs whose
+definitions are identical, and each one is then evaluated and cached
+separately. This module merges them so that each distinct constant exists once.
 
-Monomorphization and LSS keying can mint multiple specs whose `MonoDefine`
-bodies and types are STRUCTURALLY IDENTICAL — each currently gets its own
-slot, guard, first evaluation, and cached copy. FORBID\_OPT\_003 forbids
-sharing across DIFFERENT layouts; identical `(body, type)` pairs have
-identical layouts by construction, so aliasing every reference to one
-canonical spec is sound.
+A CAF (constant applicative form) here is a `MonoDefine` node: a top-level
+definition with no parameters. Two of them are _equal_ when their bodies are
+equal under `==` once every source region is zeroed (`CafHoist.zeroRegions`),
+and their types are equal under `==`. Closure `lambdaId`s and lambda-set
+annotations in types take part in that comparison, so bodies holding
+different closures, or types differing only in their lambda sets, do not
+merge. Equal definitions have equal layouts, so one can stand for the other.
 
-Equality is EXACT: region-zeroed structural equality on bodies
-(`CafHoist.zeroRegions` — collision-impossible) plus `==` on the define
-type. Bodies containing `MonoClosure` never merge in practice (lambdaIds
-are minted fresh per clone and participate in `==` — which is exactly the
-LSS\_009/017-safe behavior; no special-casing needed). Lambda-set
-annotation differences in types also block merging (conservative: anno
-mismatches are reported nowhere near worth the LSS-soundness analysis).
+Each class of equal specs keeps its smallest SpecId as the _canonical_ spec;
+the others are _victims_. A victim's node becomes `Nothing` rather than being
+removed, so no SpecId moves and the node array, registry and `nextId` keep
+their sizes. Every `MonoVarGlobal` naming a victim, in any node body including
+closure captures and decision-tree leaves, is pointed at the canonical spec,
+as are port decoders, `flagsDecoder` and `main`. Nothing else is rewritten: a
+`CallInfo`'s `fastEvaluatorSpec`, `callEdges`, `specHasEffects` and
+`specValueUsed` are left as they were.
 
-Victims' node entries become `Nothing` (the Prune gap convention — every
-emission path skips gaps), so dead duplicates vanish from the output.
-`registry`/`nextId`/array lengths are UNTOUCHED (CafHoist's drift
-assertion still holds). References are remapped everywhere they can live:
-node expressions (including closure bodies/captures and decider leaves),
-`ports[].decoderSpecId`, `flagsDecoder`, and `main`.
+Merging can make further specs equal, because two bodies that named different
+victims now name the same canonical spec. So `run` repeats the round until one
+removes nothing, up to five rounds.
 
-Runs to a FIXPOINT (capped): merging group A can make two other bodies
-equal (they referenced different-but-now-merged specs), so the pass
-iterates until a round removes nothing.
-
-Deterministic: ascending-specId grouping, canonical = smallest specId.
+Merging is done with no purity check. It merges whole definitions, so it does
+not change how many times either definition is evaluated; merging repeated
+expressions inside bodies would need one.
 
 @docs run
 @docs Stats, emptyStats, renderStats
@@ -45,25 +43,29 @@ import Compiler.GlobalOpt.CafHoist as CafHoist
 import Dict exposing (Dict)
 
 
-{-| Counters for one run: rounds executed, equal groups with more than one
-member, victim specs removed, and `MonoVarGlobal` references redirected.
+{-| Counters for one `run`, summed over its rounds.
+
+`rounds` includes the last round, which removed nothing unless the five-round
+limit was reached, so a graph with nothing to merge gives 1. `refsRewritten`
+counts only `MonoVarGlobal` references, not the port, flags and `main` entries.
+
 -}
 type alias Stats =
     { rounds : Int
-    , groups : Int -- equal-classes with >1 member (across all rounds)
-    , removed : Int -- victim specs nulled out
-    , refsRewritten : Int -- MonoVarGlobal references redirected
+    , groups : Int -- classes of equal specs with more than one member
+    , removed : Int
+    , refsRewritten : Int
     }
 
 
-{-| All counters at zero.
+{-| Counters with every field at zero.
 -}
 emptyStats : Stats
 emptyStats =
     { rounds = 0, groups = 0, removed = 0, refsRewritten = 0 }
 
 
-{-| Render the counters as a single `caf-dedupe:` report line.
+{-| Renders the counters as a single `caf-dedupe:` report line.
 -}
 renderStats : Stats -> String
 renderStats s =
@@ -77,15 +79,18 @@ renderStats s =
         ++ String.fromInt s.refsRewritten
 
 
-{-| Merge structurally identical top-level CAF specs into the smallest-SpecId
-canonical spec, repeating up to five rounds or until a round removes nothing.
-Returns the rewritten graph and the accumulated counters.
+{-| Returns `graph` with equal CAF specs merged into their canonical spec,
+repeating rounds until one removes nothing or five have run, together with the
+counters summed over those rounds.
 -}
 run : Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run graph =
     fixpoint 5 graph emptyStats
 
 
+{-| Runs rounds on `graph` while each removes something and `fuel` lasts,
+adding each round's counters to `stats`. At least one round always runs.
+-}
 fixpoint : Int -> Mono.MonoGraph -> Stats -> ( Mono.MonoGraph, Stats )
 fixpoint fuel graph stats =
     let
@@ -106,24 +111,15 @@ fixpoint fuel graph stats =
         fixpoint (fuel - 1) graph1 merged
 
 
-{-| kernel-opt-11 Phase 4 note (no behaviour change). This round merges
-structurally equal `MonoDefine` specs with **no purity check at all** -- the
-justification is not that kernel calls are pure, but that merging two identical
-whole-spec DEFINITIONS does not change how many times either is EVALUATED, so
-design\_docs/debug-log-ordering-policy.md D-2 (which forbids merging two
-occurrences of a logging EXPRESSION) is not engaged. If this pass is ever
-widened from spec-level to expression-level merging, D-2 applies immediately and
-a `KernelFacts.hoistable` test becomes mandatory.
+{-| Runs one round of merging over `graph`: finds every class of equal
+`MonoDefine` specs and rewrites the graph as `applyRemap` does. Returns `graph`
+unchanged with zero counters when no class has more than one member.
 -}
 oneRound : Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 oneRound ((Mono.MonoGraph g) as graph) =
     let
-        -- Pass A: group MonoDefine specs by exact (zeroed body, type).
-        -- Bucketed by a cheap kind tag then structurally by the demanded
-        -- type (`Mono.SpecMap`; no type is rendered to a String — speckey plan
-        -- §10.9); equality within a bucket is `==`. The across-bucket fold
-        -- order does not reach the result: `remap` is keyed by victim specId
-        -- and `groupCount` is a total.
+        -- Bucketed by kind tag, then by type; only members of one bucket
+        -- are compared with `==`.
         ( buckets, _ ) =
             Array.foldl
                 (\maybeNode ( acc, sid ) ->
@@ -154,9 +150,7 @@ oneRound ((Mono.MonoGraph g) as graph) =
                 ( Dict.empty, 0 )
                 g.nodes
 
-        -- Equal-classes per bucket; members are in DESCENDING specId order
-        -- (cons-prepended during the ascending fold), so the class
-        -- representative (canonical) is the LAST member = smallest specId.
+        -- Each bucket's members are in descending SpecId order.
         ( remap, groupCount ) =
             Dict.foldl
                 (\_ inner acc ->
@@ -172,8 +166,9 @@ oneRound ((Mono.MonoGraph g) as graph) =
         applyRemap remap groupCount graph
 
 
-{-| Partition one bucket into equal-classes and record victim→canonical
-edges. `members` is descending by specId.
+{-| Adds one bucket's victims to the accumulated map from victim SpecId to
+canonical SpecId, and adds one to the group count for each class of equal
+members that has more than one member. A member equal to no other is left out.
 -}
 classify :
     List ( Mono.MonoExpr, Mono.MonoType, Int )
@@ -198,8 +193,6 @@ classify members acc =
 
                 _ ->
                     let
-                        -- descending order ⇒ the smallest specId in this
-                        -- class is the LAST of (sid :: same-sids).
                         classIds =
                             sid :: List.map (\( _, _, s ) -> s) same
 
@@ -221,6 +214,11 @@ classify members acc =
                     classify different ( remap1, groups0 + 1 )
 
 
+{-| Returns the graph with every victim in `remap` set to `Nothing` and every
+reference to one pointed at its canonical spec, in node bodies, port decoders,
+`flagsDecoder` and `main`, together with that round's counters. `groupCount`
+is passed through to the counters.
+-}
 applyRemap : Dict Int Int -> Int -> Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 applyRemap remap groupCount (Mono.MonoGraph g) =
     let
@@ -273,6 +271,9 @@ applyRemap remap groupCount (Mono.MonoGraph g) =
     )
 
 
+{-| Returns `node` with its body's references remapped, and the number
+rewritten. Nodes without a body are returned unchanged.
+-}
 remapNode : Dict Int Int -> Mono.MonoNode -> ( Mono.MonoNode, Int )
 remapNode remap node =
     case node of
@@ -308,6 +309,8 @@ remapNode remap node =
             ( node, 0 )
 
 
+{-| Returns each expression remapped, in order, and the total rewritten.
+-}
 remapList : Dict Int Int -> List Mono.MonoExpr -> ( List Mono.MonoExpr, Int )
 remapList remap exprs =
     let
@@ -326,6 +329,10 @@ remapList remap exprs =
     ( List.reverse rev, n )
 
 
+{-| Returns `expr` with every `MonoVarGlobal` naming a victim pointed at its
+canonical spec, and the number of such references. Region, type and
+`CallInfo` are kept as they are.
+-}
 remapExpr : Dict Int Int -> Mono.MonoExpr -> ( Mono.MonoExpr, Int )
 remapExpr remap expr =
     case expr of
@@ -527,6 +534,9 @@ remapExpr remap expr =
             ( Mono.MonoTupleCreate region items1 ty, n )
 
 
+{-| Returns the decision tree with the expressions in its `Inline` leaves
+remapped, and the number rewritten. `Jump` leaves hold no expression.
+-}
 remapDecider : Dict Int Int -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, Int )
 remapDecider remap decider =
     case decider of

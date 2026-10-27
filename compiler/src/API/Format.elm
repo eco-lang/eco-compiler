@@ -1,8 +1,12 @@
 module API.Format exposing (run)
 
-{-| Format Elm source code according to the standard style guide. This module
-provides a programmatic interface to the Elm formatter, parsing source code and
-pretty-printing it with consistent indentation, spacing, and line breaks.
+{-| The `format` command of the JSON API, reduced to one call from a source
+string to formatted text or a message.
+
+`run` hands the source to `Common.Format.format`, which owns the parsing and
+layout rules. Every source is read as a module of the package `elm/core`, never
+as an application module. The parser's error is not passed on: any failure
+becomes the same fixed message, so a caller cannot say where formatting failed.
 
 
 # Formatting
@@ -20,14 +24,13 @@ import Compiler.Parse.Module as M
 -- ====== RUN ======
 
 
-{-| Format Elm source code according to the standard style guide.
-Parses the source and returns formatted code, or an error message if parsing fails.
+{-| Returns `src` reformatted, read as a module of the package `elm/core`, or
+`"Something went wrong..."` if it does not parse. The parser's error is dropped.
 -}
 run : String -> Result String String
 run src =
     Common.Format.format (M.Package Pkg.core) src
         |> Result.mapError
             (\_ ->
-                -- FIXME missings errs
                 "Something went wrong..."
             )

@@ -1,10 +1,24 @@
 module Compiler.Parse.Pattern exposing (term, expression)
 
-{-| Parser for pattern matching constructs in Elm.
+{-| Parses Elm patterns, the left-hand sides that take values apart, into the
+source AST of `Compiler.AST.Source`, keeping the comments written among them.
 
-This module handles parsing of patterns used in case expressions, function
-arguments, and let bindings. It supports wildcards, variables, literals,
-constructors with arguments, tuples, lists, records, and cons patterns.
+Patterns come in two sizes, and the module exposes one parser for each. A
+_term_ is atomic, so a term can sit next to other terms without parentheses. Records, tuples and
+parenthesised patterns, lists, the wildcard `_`, a lower-case variable, a
+constructor with no arguments, and an Int, string or character literal are
+terms. A _pattern expression_ is a term or a constructor applied to argument
+terms, followed by any number of `::` and an optional trailing `as name`. The
+caller chooses which size it accepts. Each element of a tuple, of a list, or
+of a parenthesised pattern is a full pattern expression again.
+
+Two forms are refused with their own errors: a float (`E.PFloat`), and an
+underscore followed by name characters (`E.PWildcardNotVar`), since a wildcard
+cannot carry a name.
+
+Comments are kept in the `C1` and `C2` wrappers that `Compiler.AST.Source`
+defines; which side of a pattern each group lies on is noted at each parser.
+The comments between a constructor's arguments are not kept.
 
 
 # Parsing Patterns
@@ -29,19 +43,14 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== TERM ======
 
 
-{-| Parse a single pattern term without considering operators like cons (::) or aliases.
+{-| A parser for one pattern term: a record, a tuple or parenthesised
+pattern, a list, the wildcard, a variable, a constructor with no arguments
+(such as `Nothing` or `Maybe.Nothing`), or an Int, string or character literal.
 
-This parses atomic patterns such as:
-
-  - Records: { x, y }
-  - Tuples: (a, b) or parenthesized patterns (x)
-  - Lists: [a, b, c]
-  - Wildcards: \_
-  - Variables: x
-  - Constructors: Nothing, Just x, List.map
-  - Literals: 42, "hello", 'a'
-
-This is the entry point for parsing simple patterns that don't involve infix operators.
+A constructor applied to arguments, `::` and `as` are not terms; they are
+accepted here only inside the parentheses or brackets of a tuple, a
+parenthesised pattern or a list. A float literal, or `_` followed by name
+characters, fails with its own error.
 
 -}
 term : P.Parser E.Pattern Src.Pattern
@@ -58,6 +67,15 @@ term =
             )
 
 
+{-| Produces a parser for the terms that are a single token: the wildcard, a
+variable, a constructor with no arguments, or a literal, with `start` as the
+start of the resulting pattern's region.
+
+A float literal is parsed and then rejected with a consumed `E.PFloat` error
+whose width is the length of `String.fromFloat` of its value, placed that many
+columns before the end of the literal.
+
+-}
 termHelp : A.Position -> P.Parser E.Pattern Src.Pattern
 termHelp start =
     P.oneOf E.PStart
@@ -118,6 +136,12 @@ termHelp start =
 -- ====== WILDCARD ======
 
 
+{-| A parser for the wildcard `_`, giving the empty name.
+
+When `_` is followed by name characters it fails, having consumed, with
+`E.PWildcardNotVar` carrying the whole word and its width.
+
+-}
 wildcard : P.Parser E.Pattern Name.Name
 wildcard =
     P.Parser <|
@@ -155,6 +179,13 @@ wildcard =
 -- ====== RECORDS ======
 
 
+{-| Produces a parser for a record pattern `{ a, b }` or `{}`, which names
+fields and binds each to a variable of the same name.
+
+For `{}` the comments inside the braces are the `PRecord`'s own; otherwise the
+comments before and after each field name are kept with that field.
+
+-}
 record : A.Position -> P.Parser E.Pattern Src.Pattern
 record start =
     P.inContext E.PRecord (P.word1 '{' E.PStart) <|
@@ -178,6 +209,11 @@ record start =
         )
 
 
+{-| Produces a parser for the rest of a record pattern after its fields `vars`,
+which are held most recent first. Further fields are added to the front, and at
+the closing brace the `PRecord` is built with `vars` still in that order, so its
+fields are in reverse source order.
+-}
 recordHelp : A.Position -> List (Src.C2 (A.Located Name.Name)) -> P.Parser E.PRecord Src.Pattern
 recordHelp start vars =
     P.oneOf E.PRecordEnd
@@ -204,6 +240,11 @@ recordHelp start vars =
 -- ====== TUPLES ======
 
 
+{-| Produces a parser for `()`, a parenthesised pattern, or a tuple pattern.
+Each element is a full pattern expression, kept with the comments before and
+after it. The comments inside `()` are discarded: the `PUnit` gets an empty
+list.
+-}
 tuple : A.Position -> P.Parser E.Pattern Src.Pattern
 tuple start =
     P.inContext E.PTuple (P.word1 '(' E.PStart) <|
@@ -224,6 +265,13 @@ tuple start =
         )
 
 
+{-| Produces a parser for the rest of a parenthesised group after its first
+pattern, with `revPatterns` holding the later elements most recent first.
+
+At the closing parenthesis a single pattern becomes a `PParens` and two or more
+become a `PTuple`, in source order.
+
+-}
 tupleHelp : A.Position -> Src.C2 Src.Pattern -> List (Src.C2 Src.Pattern) -> P.Parser E.PTuple Src.Pattern
 tupleHelp start firstPattern revPatterns =
     P.oneOf E.PTupleEnd
@@ -255,6 +303,10 @@ tupleHelp start firstPattern revPatterns =
 -- ====== LIST ======
 
 
+{-| Produces a parser for a list pattern `[ ... ]`, whose entries are full
+pattern expressions. For `[]` the comments inside the brackets are the
+`PList`'s own; otherwise each entry keeps the comments before and after it.
+-}
 list : A.Position -> P.Parser E.Pattern Src.Pattern
 list start =
     P.inContext E.PList (P.word1 '[' E.PStart) <|
@@ -275,6 +327,10 @@ list start =
         )
 
 
+{-| Produces a parser for the rest of a list pattern after the entries
+`patterns`, held most recent first. At the closing bracket they are reversed, so
+the `PList` holds them in source order.
+-}
 listHelp : A.Position -> List (Src.C2 Src.Pattern) -> P.Parser E.PList Src.Pattern
 listHelp start patterns =
     P.oneOf E.PListEnd
@@ -298,18 +354,16 @@ listHelp start patterns =
 -- ====== EXPRESSION ======
 
 
-{-| Parse a complete pattern expression including cons (::) operators and aliases.
+{-| A parser for a whole pattern: a term or a constructor applied to argument
+terms, then any number of `:: part`, then optionally `as name`.
 
-This handles complex patterns like:
+`::` associates to the right, so `x :: y :: rest` is `x :: (y :: rest)`. An
+`as` applies to everything before it, so `x :: xs as list` names the whole
+list, and nothing more is parsed after the alias name.
 
-  - Cons patterns: x :: xs
-  - Chained cons: x :: y :: rest
-  - Aliased patterns: (x :: xs) as list
-  - Constructor applications: Just x, Nothing
-  - Nested patterns with all operators
-
-Returns a pattern with surrounding comments and the ending position.
-This is the main entry point for parsing patterns in case expressions and function arguments.
+Each `::` and the `as` must be indented further than the current indentation.
+The result carries the comments that follow the pattern and the position where
+the pattern ends, before those comments.
 
 -}
 expression : Space.Parser E.Pattern (Src.C1 Src.Pattern)
@@ -325,6 +379,16 @@ expression =
             )
 
 
+{-| Produces a parser that continues a pattern expression starting at `start`
+from its latest part, the `C1` and end position given last, whose comments are
+those after it.
+
+`revPatterns` holds the parts already followed by `::`, most recent first, each
+with the comments before and after its `::`. When neither `::` nor `as` follows,
+the result is the parts folded into `PCons` with `cons`, ending in the latest
+part.
+
+-}
 exprHelp : A.Position -> List (Src.C2 Src.Pattern) -> ( Src.C1 Src.Pattern, A.Position ) -> Space.Parser E.Pattern (Src.C1 Src.Pattern)
 exprHelp start revPatterns ( ( prePatternComments, pattern ), end ) =
     P.oneOfWithFallback
@@ -378,6 +442,9 @@ exprHelp start revPatterns ( ( prePatternComments, pattern ), end ) =
         )
 
 
+{-| Returns the pattern `hd :: tl`, keeping the comments on either side of the
+`::`, with a region covering both.
+-}
 cons : Src.C2 Src.Pattern -> Src.Pattern -> Src.Pattern
 cons ( ( preComments, postComments ), hd ) tl =
     A.merge hd tl (Src.PCons ( Nothing, hd ) ( ( preComments, postComments, Nothing ), tl ))
@@ -387,6 +454,9 @@ cons ( ( preComments, postComments ), hd ) tl =
 -- ====== EXPRESSION PART ======
 
 
+{-| A parser for one operand of `::`: a constructor with its argument terms, or
+any other term, with the comments after it and its end position.
+-}
 exprPart : Space.Parser E.Pattern (Src.C1 Src.Pattern)
 exprPart =
     P.oneOf E.PStart
@@ -409,6 +479,15 @@ exprPart =
         ]
 
 
+{-| Produces a parser that collects the argument terms of the constructor
+`upper`, whose name occupies `region`, and builds the `PCtor` or `PCtorQual`.
+
+`revArgs` holds the arguments so far, most recent first. An argument must be
+indented further than the current indentation. The comments before each
+argument are discarded; only those after the last argument (or after the name,
+when there are none) are kept, as the result's trailing comments.
+
+-}
 exprTermHelp : A.Region -> Var.Upper -> A.Position -> List (Src.C1 Src.Pattern) -> Space.Parser E.Pattern (Src.C1 Src.Pattern)
 exprTermHelp region upper start revArgs =
     P.getPosition

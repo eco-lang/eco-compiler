@@ -1,15 +1,16 @@
 module API.Make exposing (run, Flags(..))
 
-{-| Build Elm projects into JavaScript or HTML. This module handles the complete
-build pipeline including dependency resolution, compilation, and code generation.
+{-| Compiles one Elm file for a caller that wants the result back as a value
+rather than as a file on disk.
 
-Supports debug mode for enhanced development experience, optimized production builds,
-and optional source map generation.
+`run` builds the file in the project around the current directory and returns
+a single HTML page as a string: the generated JavaScript, wrapped by
+`Compiler.Generate.Html.sandwich` so that the page starts the program in the
+one module that defines `main`. The JavaScript back end is the only one used
+here, and HTML is the only output.
 
-
-# Build Pipeline
-
-@docs run, Flags
+Not every failure comes back as an `Exit.Make` error. A build in which no
+module defines `main`, or more than one does, crashes the process instead.
 
 -}
 
@@ -38,7 +39,12 @@ import Utils.Task.Extra as Task
 -- ====== FLAGS ======
 
 
-{-| Compilation flags controlling debug mode, optimization, and source map generation.
+{-| The options of one build, in the order debug, optimize, source maps.
+
+Debug and optimize may not both be `True`; `run` reports that combination as
+`Exit.MakeCannotOptimizeAndDebug`. Neither set gives the development mode.
+The source maps flag is passed through to the code generator.
+
 -}
 type Flags
     = Flags Bool Bool Bool
@@ -48,8 +54,13 @@ type Flags
 -- ====== RUN ======
 
 
-{-| Build an Elm project from a source file path with the specified flags.
-Returns the compiled output as a string or an error describing what went wrong.
+{-| Builds the Elm file at `path` with `flags` and returns the HTML page that
+runs it.
+
+The project root is the nearest directory at or above the current directory
+holding an `elm.json`; with none the result is `Err Exit.MakeNoOutline`. A build
+with no `main`, or with more than one, crashes rather than returning `Err`.
+
 -}
 run : String -> Flags -> Task Never (Result Exit.Make String)
 run path flags =
@@ -65,6 +76,11 @@ run path flags =
             )
 
 
+{-| Builds `path` in the project at `root` while holding the project's lock,
+loading the project details with JSON-style reporting and then generating the
+page for the single module that defines `main`. It crashes when there is no
+such module or several.
+-}
 runHelp : String -> String -> Flags -> Task Never (Result Exit.Make String)
 runHelp root path (Flags debug optimize withSourceMaps) =
     BW.withScope
@@ -87,7 +103,6 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                                     (\artifacts ->
                                                         case getMains artifacts of
                                                             [] ->
-                                                                -- Task.succeed ()
                                                                 crash "No main!"
 
                                                             [ name ] ->
@@ -107,6 +122,9 @@ runHelp root path (Flags debug optimize withSourceMaps) =
 -- ====== GET INFORMATION ======
 
 
+{-| Returns the generation mode for the debug and optimize flags, failing with
+`Exit.MakeCannotOptimizeAndDebug` when both are set.
+-}
 getMode : Bool -> Bool -> Task Exit.Make DesiredMode
 getMode debug optimize =
     case ( debug, optimize ) of
@@ -127,6 +145,9 @@ getMode debug optimize =
 -- ====== BUILD PROJECTS ======
 
 
+{-| Compiles `paths` in the project at `root`, with no build dir, untyped and
+with statistics disabled.
+-}
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details paths =
     Build.fromPaths style root Nothing Nothing details False FEStats.disabled paths |> Task.eio Exit.MakeCannotBuild
@@ -136,11 +157,16 @@ buildPaths style root details paths =
 -- ====== GET MAINS ======
 
 
+{-| Returns the names of the root modules of `artifacts` that define `main`.
+-}
 getMains : Build.Artifacts -> List ModuleName.Raw
 getMains (Build.Artifacts artifactsData) =
     List.filterMap (getMain artifactsData.modules) (NE.toList artifactsData.roots)
 
 
+{-| Returns the name of `root` if it defines `main`. A root inside the project
+is looked up in `modules`; a root outside it is judged by its own graph.
+-}
 getMain : List Build.Module -> Build.Root -> Maybe ModuleName.Raw
 getMain modules root =
     case root of
@@ -156,6 +182,8 @@ getMain modules root =
                 |> Maybe.map (\_ -> name)
 
 
+{-| Tells whether `modul` is the module named `targetName` and defines `main`.
+-}
 isMain : ModuleName.Raw -> Build.Module -> Bool
 isMain targetName modul =
     case modul of
@@ -170,12 +198,20 @@ isMain targetName modul =
 -- ====== TO BUILDER ======
 
 
+{-| The kind of JavaScript to generate. `Debug`, `Dev` and `Prod` select
+`Builder.Generate.debug`, `dev` and `prod`, whose docstrings say what each
+produces.
+-}
 type DesiredMode
     = Debug
     | Dev
     | Prod
 
 
+{-| Generates the JavaScript for `artifacts` in `desiredMode` and returns it as
+a string. `leadingLines` is the number of lines that will precede the
+JavaScript in its output, which the source maps account for.
+-}
 toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
 toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
     (case desiredMode of

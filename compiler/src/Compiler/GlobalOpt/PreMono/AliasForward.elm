@@ -3,70 +3,46 @@ module Compiler.GlobalOpt.PreMono.AliasForward exposing
     , Target(..), aliasMap
     )
 
-{-| PRE-MONOMORPHIZATION alias forwarding
-(`plans/pre-mono-lss-transforms-04-alias-forwarding.md`).
+{-| Calls through one-line wrapper definitions hide the function that is really
+called, so this pass, which runs before monomorphization, points each
+reference at the real target instead.
 
-**The problem.** 53 % of the post-mono inliner's self-compile inlines land in
-callers of parameter-less ALIAS definitions — `Basics.add = Elm.Kernel.Basics.add`,
-`List.cons = Elm.Kernel.List.cons`, `Doc.fromChars = P.text`. The pre-mono
-inliner never sees them (`InlineSimplify.bodyOf` admits `Function` bodies only),
-so in the EARLY arm every `Basics.add x y` stays a call to a one-line wrapper,
-and LSS keys the wrapper's `g|` member instead of the target's.
+An _alias definition_ is a top-level value with no parameters whose whole body
+is a bare reference to another global or to a kernel, such as
+`add = Elm.Kernel.Basics.add` or `fromChars = P.text`. Without this pass a call
+`add x y` stays a call to the wrapper, and later analysis sees the wrapper
+rather than the kernel or function behind it.
 
-**Forwarding is not inlining.** It is reference substitution: a reference to an
-admitted alias `f` becomes the same reference to `f`'s target, carrying the
-CALLER's meta unchanged (plan §3.2 — `translateCall` looks the callee's scheme
-up BY GLOBAL, and `translateVarRef` reads the reference's own instantiation,
-which is the same for `f` and its target up to alias names that `Store.loadType`
-expands). No node is minted, no arrow is created, so `Fresh.assertMinted` is
-unaffected by construction (R7).
+_Forwarding_ is reference substitution, not inlining. A reference to an alias
+`f` is replaced by a reference to `f`'s target, carrying the caller's own
+reference metadata (its type) unchanged. No node, type variable, lambda id or
+arrow id is created, so the `GlobalMVarState` passes through `run` untouched.
 
-**The rewrite, by position (§3.2):**
+`aliasMap` finds the alias definitions and follows chains (`f = g`, `g = h`)
+to their final target. A target is either another global (`ToGlobal`) or a
+kernel (`ToKernel`).
 
-  - CALL of a `ToGlobal` alias: forwarded.
-  - CALL of a `ToKernel` alias: forwarded ONLY when exactly saturated
-    (`argCount == kernel arrow spine`) AND the kernel's ABI is FIXED by its own
-    declared type — `KernelAbi.deriveKernelAbiMode`'s rule, read off the alias
-    body's kernel meta: no free type variable, or a suffix-selecting kernel
-    (`_Int`/`_Float` variants), never a `Debug` kernel. A polymorphic kernel
-    (`Task.succeed : a -> Task x a`, `String.foldl`) derives its ABI from the
-    OCCURRENCE type, so a call carrying the caller's concrete instantiation
-    would register `i64 -> …` against the one boxed `eco.value -> …` symbol —
-    "Kernel signature mismatch", or a SIGSEGV where the register does not
-    catch it. MEASURED 2026-09-14 on the flag-on E2E arm: 44 failures (every
-    Task/Process/Http fixture) before this rule, the same lesson
-    `InlineSimplify.polyKernel` records. Kept calls are counted
-    `callsKeptKernelPoly`. AND the caller's reference meta is an arrow of the
-    kernel's spine: synthesized references carry PLACEHOLDER metas
-    (`Port.elm`'s `encode` registers `Json.Encode.string` at `Can.TVar
-    "string"`), harmless through `translateGlobalCallSlow` — which looks the
-    scheme up BY GLOBAL — but the ABI source of a kernel call: `OutgoingPortTuple3Test`
-    registered `Elm_Kernel_Json_wrap` with ZERO parameters. Kept calls are
-    counted `callsKeptKernelMeta`. An under-applied call keeps the alias,
-    because the `p|` PRODUCER write (`Translate.injectPapMember`) runs only in
-    `translateGlobalCallSlow`; `translateKernelCall` injects nothing, so
-    forwarding a partial would delete the residual's only member write (§3.2
-    amendment, 2026-09-14). An over-applied call also keeps the alias: a
-    written-out kernel call is never over-applied, and `translateKernelCall`
-    peels exactly the argument count.
-  - VALUE reference to a `ToGlobal` alias: forwarded.
-  - VALUE reference to a `ToKernel` alias: KEPT in v1 (§4 R6; v2 is §10) and
-    counted (`argRefsKeptKernel`). `LssInfer.kernelAliasOf` folds it to the
-    kernel's `k|` identity exactly as today.
-  - The alias definition itself: untouched (§3.5 — demand-driven mono never
-    specializes an unreferenced global, and a `ToKernel` alias is still
-    referenced as a value).
+`run` then rewrites every expression in the graph, by position:
 
-**The one hard rule (§3.3):** every reference to an admitted alias is forwarded
-or none is, per position class — so the walk covers EVERY expression-bearing
-node kind, `Cycle` bodies included. `InlineSimplify.rewriteNode` skips `Cycle`
-because inlining INTO a recursive family is refused; that reason does not
-apply to reference substitution and this pass must not inherit the skip (R8).
+  - A call or value reference to a `ToGlobal` alias is forwarded.
+  - A call of a `ToKernel` alias is forwarded, as a direct kernel call, only
+    when three things hold. The target's `abiFixed` flag must be true (see
+    `Target`). The caller's reference type must have the same outer arrow spine as
+    the kernel's own type, because synthesized references can carry
+    placeholder types that are not function types at all. And the call must
+    supply exactly as many arguments as that spine has; an under-applied or
+    over-applied call keeps the alias. Each kept call is counted by reason.
+  - A value reference to a `ToKernel` alias, one not in call position, is
+    always kept, and counted.
+  - The alias definitions themselves are not rewritten.
 
-**`deps` (§3.4):** a node whose body gained a reference to `g` gets `g` inserted
-into its `deps` (`toKernelGlobal home` for a kernel target, the way
-`Names.registerKernel` records kernel deps); the alias stays in `deps` — a
-harmless over-approximation.
+The walk covers every node kind that holds an expression, `Cycle` bodies
+included, so a reference is treated the same way wherever it occurs. A node
+whose body gained a reference to a target gets that target added to its
+`deps` (`TOpt.toKernelGlobal home` for a kernel target); the alias it no
+longer references is left in `deps`.
+
+Most of the file is the expression walk and the `Metrics` counters it keeps.
 
 @docs run, Metrics, emptyMetrics
 @docs Target, aliasMap
@@ -93,9 +69,16 @@ import Dict as CoreDict
 -- ============================================================================
 
 
-{-| Census counters (plan §7). `bodiesSeen` is the denominator whose zero is
-impossible — the pre-mono inliner's lesson: a rewrite count of zero reads
-identically whether the pass refused everything or matched no node shape.
+{-| The counts one run of the pass reports: what `aliasMap` found, and what the
+walk forwarded and kept.
+
+`chainsMax` is the longest chain followed, in hops from an alias to its final
+target (`f = g` is 1). `cycles` counts aliases whose chain revisits an alias,
+not distinct cycles. `bodiesSeen` counts the node bodies walked, so a zero
+rewrite count can be told apart from a walk that saw nothing. `depsExtended`
+counts walked nodes in which at least one reference was forwarded, not the
+entries added; those targets may already have been in `deps`.
+
 -}
 type alias Metrics =
     { aliases : Int
@@ -105,22 +88,22 @@ type alias Metrics =
     , cycles : Int
     , callsRewritten : Int
     , callsRewrittenKernel : Int -- the subset of `callsRewritten` whose target is a kernel
-    , callsKeptKernelPartial : Int -- §3.2 amendment: under-applied kernel-alias calls, kept
+    , callsKeptKernelPartial : Int -- under-applied kernel-alias calls, kept
     , callsKeptKernelOver : Int -- over-applied kernel-alias calls, kept
-    , callsKeptKernelPoly : Int -- calls of a kernel alias whose ABI is not fixed by its declared type, kept
-    , callsKeptKernelMeta : Int -- calls whose reference meta is not an arrow of the kernel's spine (synthesized placeholder), kept
-    , argRefsRewritten : Int
-    , argRefsKeptKernel : Int -- R6: kernel-alias VALUES, kept in v1
+    , callsKeptKernelPoly : Int -- kernel-alias calls kept because `abiFixed` is false
+    , callsKeptKernelMeta : Int -- kernel-alias calls kept because the reference's spine differs from the kernel's
+    , argRefsRewritten : Int -- value references (not in call position) forwarded
+    , argRefsKeptKernel : Int -- value references to kernel aliases, kept
     , depsExtended : Int
     , bodiesSeen : Int
 
-    -- forwarded references attributed by TARGET (`inlinedByCallee`'s rendering).
+    -- forwarded references per target, keyed by comparable global or `k|Home.name`
     , byTarget : CoreDict.Dict String Int
     }
 
 
-{-| All-zero metrics — what `run` reports when the pass is off and the report
-is off too.
+{-| Metrics with every count zero and no targets, the starting point `run`
+fills in.
 -}
 emptyMetrics : Metrics
 emptyMetrics =
@@ -145,42 +128,40 @@ emptyMetrics =
 
 
 -- ============================================================================
--- ====== THE ALIAS MAP (§3.1) ======
+-- ====== THE ALIAS MAP ======
 -- ============================================================================
 
 
-{-| Where an admitted alias resolves to, after chains are chased.
+{-| The final target of an alias definition, once chains are followed.
 
-`ToKernel` carries the kernel's declared arrow spine — the length of the alias
-definition's kernel meta type once aliases are expanded, the same count
-`LssInfer.declaredArityGo`'s kernel-alias arm reads — because the saturation
-test at call sites is made against it; and `abiFixed`, whether the kernel's
-ABI is decided by its DECLARED type rather than by each occurrence
-(`KernelAbi.deriveKernelAbiMode`: `UseSubstitution` for a variable-free type;
-suffix-selecting kernels select a per-instance symbol either way; `Debug`
-kernels are always boxed). Only an `abiFixed` kernel can take a forwarded
-call: the kernel symbol is registered by NAME with one ABI.
+`ToGlobal` names another global, one that is not itself an alias definition.
+
+`ToKernel` carries the kernel's prefix, home and name, then its spine and
+`abiFixed`. The spine is the number of arguments along the outer arrow spine
+of the kernel's type as the alias body records it, aliases followed; a call is
+forwarded only when it supplies exactly that many. `abiFixed` is the condition
+under which such a call may be forwarded at all: the kernel's home is not
+`Debug` (a module in `KernelAbi.alwaysPolymorphicModules`), and either its type
+has no free type variable or it is in `KernelAbi.suffixSelectingKernels`, whose
+call sites select a type-specific variant by name. Otherwise the kernel's
+signature is derived from each use's type, as `KernelAbi` describes, and
+forwarding the caller's concrete type to it would be unsafe.
 
 -}
 type Target
     = ToGlobal TOpt.Global
-    | ToKernel Name Name Name Int Bool -- kernelPrefix home name spine abiFixed
+    | ToKernel Name Name Name Int Bool
 
 
-{-| The admitted aliases, resolved to a fixpoint.
+{-| Returns the alias definitions of a graph, keyed by comparable global and
+each resolved to its final target, together with the longest chain followed
+and the number of aliases dropped because their chain revisits an alias.
 
-Admitted SOURCES: a `Define`/`TrackedDefine` whose body is EXACTLY a bare
-`VarGlobal` or `VarKernel`. Not admitted (§3.1): `VarCycle` (a recursive family
-behind a `Link`), `VarEnum`/`VarBox` (a constructor node is its own identity),
-`VarDebug`, ports, `Manager`/`Kernel`/`Cycle` nodes, the synthesized flags
-decoder, and anything whose body is not a bare reference.
-
-Chains (`f = g, g = h`) resolve to their end with a visited set. An alias cycle
-cannot appear as two `Define`s — the front end emits a `Cycle` node — but the
-visited set refuses it anyway and counts it.
-
-Returns the map with the chain depth maximum (hops from the alias to its
-resolved target: `f = inc` is 1, `f = g, g = h` is 2) and the cycle count.
+An alias definition is a `Define` or `TrackedDefine` whose body is exactly a
+bare `VarGlobal` or `VarKernel`, other than the synthesized flags decoder
+(`EntryPrep.flagsDecoderName`). Any other body, and any other node kind, is not
+an alias. Chain length is counted in hops: `f = inc` is 1, and `f = g`,
+`g = h` is 2.
 
 -}
 aliasMap : TOpt.GlobalGraph TypeIds.MVarId -> ( CoreDict.Dict String Target, Int, Int )
@@ -213,6 +194,10 @@ aliasMap (TOpt.GlobalGraph nodes _ _ _ _) =
         raw
 
 
+{-| Returns the unresolved target of a node if it is an alias definition:
+a `Define` or `TrackedDefine` with a bare-reference body, excluding the
+synthesized flags decoder.
+-}
 rawTarget : TOpt.Global -> TOpt.Node TypeIds.MVarId -> Maybe Target
 rawTarget (TOpt.Global _ nodeName) node =
     if nodeName == EntryPrep.flagsDecoderName then
@@ -230,6 +215,9 @@ rawTarget (TOpt.Global _ nodeName) node =
                 Nothing
 
 
+{-| Returns the target a body names when the body is exactly a `VarGlobal` or
+`VarKernel`, and `Nothing` for any other expression.
+-}
 bareReference : TOpt.Expr TypeIds.MVarId -> Maybe Target
 bareReference body =
     case body of
@@ -243,9 +231,10 @@ bareReference body =
             Nothing
 
 
-{-| `KernelAbi.deriveKernelAbiMode`'s decision, read off the kernel's own
-occurrence type in the alias body, plus the suffix-selecting exemption that
-`Translate.deriveKernelAbiTypeWith` applies on top of it.
+{-| Returns whether a saturated call of kernel `home.name`, whose reference in
+the alias body has type `tipe`, may be forwarded: false for a module in
+`KernelAbi.alwaysPolymorphicModules`, and otherwise true when `tipe` has no
+free type variable or the kernel is in `KernelAbi.suffixSelectingKernels`.
 -}
 abiFixedBy : Name -> Name -> Can.Type TypeIds.MVarId -> Bool
 abiFixedBy home name tipe =
@@ -255,7 +244,9 @@ abiFixedBy home name tipe =
            )
 
 
-{-| Follow `ToGlobal` links through the raw map. `Nothing` on a cycle.
+{-| Returns the final target reached from `t` by following `ToGlobal` links
+through the unresolved map, with the hop count, starting from `depth`.
+Returns `Nothing` when the chain reaches a key already in `visited`.
 -}
 chase : CoreDict.Dict String Target -> CoreDict.Dict String () -> Int -> Target -> Maybe ( Target, Int )
 chase raw visited depth t =
@@ -280,10 +271,9 @@ chase raw visited depth t =
                         Just ( t, depth )
 
 
-{-| The length of a canonical type's outer arrow spine, aliases followed —
-`LssInfer.canTypeArrowSpine`'s twin (that module is not importable from here).
-A kernel is uncurried at its declared C++ ABI arity, so the spine IS its
-arity.
+{-| Returns the number of arrows along a type's outer spine, following type
+aliases; arrows inside an argument type are not counted, so
+`(a -> b) -> List a -> List b` gives 2.
 -}
 arrowSpine : Can.Type TypeIds.MVarId -> Int
 arrowSpine t =
@@ -307,21 +297,25 @@ arrowSpine t =
 -- ============================================================================
 
 
+{-| The state threaded through the walk: the resolved alias map, the metrics so
+far, and the targets the current node's rewrites have referenced.
+
+`depsAdd` holds targets for the node being walked only; `extendDeps` empties it
+when the node is finished.
+
+-}
 type alias Ctx =
     { aliases : CoreDict.Dict String Target
     , metrics : Metrics
-
-    -- targets referenced by rewrites in the node being walked, for `deps`.
     , depsAdd : List TOpt.Global
     }
 
 
-{-| Forward references to alias definitions.
+{-| Returns the graph with references to alias definitions forwarded to their
+targets, the id state unchanged, and the metrics of the run.
 
-Returns the ORIGINAL graph when `inline.aliasForward` is off, with the census
-still computed — so `inline.report` alone reports what the pass WOULD do
-(`pre-afwd-census:`). The `GlobalMVarState` passes through untouched: this pass
-mints nothing (R7).
+When `aliasForward` is off in the config, the walk still runs and its metrics
+are returned, but the graph comes back unchanged.
 
 -}
 run :
@@ -371,6 +365,9 @@ run cfg state graph =
         ( graph, state, ctx1.metrics )
 
 
+{-| Returns the graph with every node rewritten by `rewriteNode`, and the
+context after the last node.
+-}
 rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, Ctx )
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
@@ -389,9 +386,10 @@ rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSuper
     ( TOpt.GlobalGraph newNodes fields annotations schemeRoots varSupers, ctx1 )
 
 
-{-| Every expression-bearing node kind (§3.3): `Define`, `TrackedDefine`,
-`Cycle` (value AND function defs), both port kinds. The alias definitions
-themselves are left untouched (§3.5).
+{-| Returns node `g` with its expressions rewritten and its `deps` extended.
+`Define`, `TrackedDefine`, both port kinds and every value and function
+definition of a `Cycle` are walked; each walked body counts in `bodiesSeen`.
+An alias definition, and a node kind with no expression, is returned as it is.
 -}
 rewriteNode : Ctx -> TOpt.Global -> TOpt.Node TypeIds.MVarId -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx g node =
@@ -472,12 +470,12 @@ rewriteNode ctx g node =
                 ( TOpt.Cycle names (List.reverse newValues) (List.reverse newFuncs) deps1, ctxD )
 
             _ ->
-                -- Ctor/Enum/Box/Link/Manager/Kernel: no expression to walk.
                 ( node, ctx )
 
 
-{-| §3.4: insert every target the node's rewrites now reference, then clear the
-per-node accumulator.
+{-| Returns `deps` with every target in the context's `depsAdd` inserted, and
+the context with `depsAdd` emptied and, if `depsAdd` was
+non-empty, `depsExtended` raised by one.
 -}
 extendDeps : Ctx -> EverySet String TOpt.Global -> ( EverySet String TOpt.Global, Ctx )
 extendDeps ctx deps =
@@ -496,13 +494,18 @@ extendDeps ctx deps =
 
 
 -- ============================================================================
--- ====== THE WALK (§3.2) ======
+-- ====== THE WALK ======
 -- ============================================================================
 
 
-{-| `InlineSimplify.rewriteExpr`'s shape minus the inlining arm. Two arms do
-the work: `Call` with an alias in callee position, and a bare `VarGlobal`
-anywhere else.
+{-| Returns the expression with every alias reference in it forwarded under the
+rules in the module docstring, recording each forward or kept reference in
+the context.
+
+Only two arms change anything: a `Call` whose callee is a `VarGlobal` naming an
+alias, and a `VarGlobal` naming an alias anywhere else. Every other arm only
+walks its sub-expressions. Arguments are walked before the callee is examined.
+
 -}
 rewriteExpr : Ctx -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 rewriteExpr ctx expr =
@@ -704,11 +707,11 @@ rewriteExpr ctx expr =
             ( TOpt.Update region record1 fields1 meta, c1 )
 
         _ ->
-            -- Literals, locals, ctors, cycle/kernel/debug refs, accessors,
-            -- shaders: nothing to forward and no sub-expressions.
             ( expr, ctx )
 
 
+{-| Returns record fields keyed by located name with each value rewritten.
+-}
 rewriteLocatedFields :
     Ctx
     -> Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
@@ -726,6 +729,9 @@ rewriteLocatedFields ctx fields =
         fields
 
 
+{-| Returns a decision tree with the expressions inlined at its leaves
+rewritten; jump leaves and tests are unchanged.
+-}
 rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 rewriteDecider ctx decider =
     case decider of
@@ -769,6 +775,9 @@ rewriteDecider ctx decider =
             ( TOpt.FanOut path (List.reverse branches1) fallback1, cf )
 
 
+{-| Returns a `let` or `Cycle` definition with its bound expression or body
+rewritten.
+-}
 rewriteDef : Ctx -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteDef ctx def =
     case def of
@@ -787,6 +796,9 @@ rewriteDef ctx def =
             ( TOpt.TailDef region name args b1 tipe tvar, c1 )
 
 
+{-| Rewrites one sub-expression and rebuilds the enclosing expression around it
+with `rebuild`.
+-}
 mapBody : Ctx -> TOpt.Expr TypeIds.MVarId -> (TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId) -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 mapBody ctx body rebuild =
     let
@@ -796,6 +808,9 @@ mapBody ctx body rebuild =
     ( rebuild body1, c1 )
 
 
+{-| Returns the expressions rewritten in order, threading the context through
+them.
+-}
 rewriteList : Ctx -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteList ctx items =
     let
@@ -820,6 +835,9 @@ rewriteList ctx items =
 -- ============================================================================
 
 
+{-| Records a call forwarded to global `g`: adds `g` to the node's pending deps,
+counts it in `callsRewritten` and tallies it under `g`.
+-}
 forwardedCall : TOpt.Global -> Ctx -> Ctx
 forwardedCall g ctx =
     { ctx
@@ -835,6 +853,10 @@ forwardedCall g ctx =
     }
 
 
+{-| Records a call forwarded to kernel `home.name`: adds the kernel's global to
+the node's pending deps, counts it in `callsRewritten` and
+`callsRewrittenKernel`, and tallies it under `k|home.name`.
+-}
 forwardedKernelCall : Name -> Name -> Ctx -> Ctx
 forwardedKernelCall home name ctx =
     { ctx
@@ -851,6 +873,9 @@ forwardedKernelCall home name ctx =
     }
 
 
+{-| Records a value reference forwarded to global `g`: adds `g` to the node's
+pending deps, counts it in `argRefsRewritten` and tallies it under `g`.
+-}
 forwardedValue : TOpt.Global -> Ctx -> Ctx
 forwardedValue g ctx =
     { ctx
@@ -866,16 +891,22 @@ forwardedValue g ctx =
     }
 
 
+{-| Applies `f` to the context's metrics.
+-}
 bump : (Metrics -> Metrics) -> Ctx -> Ctx
 bump f ctx =
     { ctx | metrics = f ctx.metrics }
 
 
+{-| Counts one more walked body in `bodiesSeen`.
+-}
 seeBody : Ctx -> Ctx
 seeBody =
     bump (\m -> { m | bodiesSeen = m.bodiesSeen + 1 })
 
 
+{-| Adds one to the count under `key`, starting from zero.
+-}
 tally : String -> CoreDict.Dict String Int -> CoreDict.Dict String Int
 tally key d =
     CoreDict.update key (\v -> Just (Maybe.withDefault 0 v + 1)) d

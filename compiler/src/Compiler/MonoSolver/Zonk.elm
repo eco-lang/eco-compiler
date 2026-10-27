@@ -1,29 +1,38 @@
 module Compiler.MonoSolver.Zonk exposing (canTypeToMono, canTypeToMonoI, canTypeToMonoWithI)
 
-{-| Convert a `Can.Type MVarId` to a `Mono.MonoType`.
+{-| Some types reach the solver engine already closed, needing no demand from
+the union-find store, and this module turns those into monomorphized types
+without consulting the store.
 
-For M1 (monomorphic globals) the original engine's substitution is empty, so a
-node's monomorphized type is exactly this pure classification of its
-`meta.tipe` — a faithful reimplementation of `TypeSubst.applySubstPure` with an
-empty substitution, which the A/B gate verifies against the original engine.
+The input is a canonical type whose variables are MVarIds, and the output is a
+`Mono.MonoType`. The conversion is a structural walk:
 
-Number/comparable residuals are stamped from the `superVars` table (solver
-truth exported by `AssignMVarIds`), never eagerly defaulted — the shared Prune
-close discharges `MVar _ CNumber → MInt` at the end (MONO\_028). The internal
-`subst` accumulator carries only alias parameters (the `Holey` case), matching
-`applySubstPure`'s alias handling.
+  - An elm/core type named `Int`, `Float`, `Bool`, `Char` or `String` becomes
+    the matching primitive. The test is the package and the type name; the
+    module is not looked at. An elm/core `List` becomes a list type, and one
+    with other than one argument becomes a list of unit. Every other named type
+    becomes a custom type of its converted arguments.
+  - A chain of arrows becomes nested one-argument function types, each carrying
+    the lambda-set annotation `Mono.topDeclZonk`, which says nothing is known
+    about which lambdas the function may be.
+  - A type variable is replaced by its binding in a substitution if it has one.
+    Otherwise it stays a _residual_, an `MVar` left in the result: a `CNumber`
+    one when the `superVars` table marks it `Number`, a `CEcoValue` one
+    otherwise. A number variable is never defaulted to `Int` here.
+  - A `Filled` alias is replaced by its body. A `Holey` alias binds each of its
+    parameter ids to the converted argument before converting its body.
+  - A record's extension variable contributes the fields of the record it is
+    bound to in the substitution; bound to anything else, or unbound, it is
+    dropped and the record is closed.
 
-In M2 this gains a store-based `zonkToMono` sibling for polymorphic demand
-propagation; M1 needs only the store-free classification.
+Both tables are keyed by `Id.toComparable` of an MVarId. The substitution is
+empty except where a caller of `canTypeToMonoWithI` supplies one or a `Holey`
+alias extends it.
 
-**K6 (plan §15).** The `…I` forms thread an `Intern` table so every composite is
-hash-consed at construction, exactly as `TypeSubst.applySubstPureI` is on the
-subst side. The bare forms are wrappers over `Intern.disabled`, for callers with
-no state to thread — sound (sharing is never required for correctness), and
-cheaper than handing them a throwaway table that would allocate an insert per
-node.
-
-@docs canTypeToMono, canTypeToMonoI, canTypeToMonoWithI
+The forms ending in `I` thread an `Intern` table, so each composite is
+hash-consed as it is built; `canTypeToMono` uses `Intern.disabled`. What a
+table shares, and why sharing never affects correctness, is stated in
+`Compiler.AST.Intern`.
 
 -}
 
@@ -37,24 +46,30 @@ import Compiler.Elm.ModuleName as ModuleName
 import Dict exposing (Dict)
 
 
-{-| Classify a canonical type into a monomorphized type. `superVars` maps an
-MVarId (by `Id.toComparable`) to its super constraint; a var with `Number`
-becomes a `CNumber` residual, anything else a `CEcoValue` residual.
+{-| Converts a canonical type to a monomorphized type with an empty
+substitution and no intern table.
 -}
 canTypeToMono : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMono superVars canType =
     Tuple.first (canTypeToMonoWithI superVars Dict.empty canType Intern.disabled)
 
 
-{-| `canTypeToMono` threading the K6 hash-cons table.
+{-| Converts a canonical type to a monomorphized type with an empty
+substitution, hash-consing each composite in the given table.
 -}
 canTypeToMonoI : Dict Int Vars.SuperType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoI superVars canType intern =
     canTypeToMonoWithI superVars Dict.empty canType intern
 
 
-{-| `canTypeToMonoI` with a substitution: a type variable whose MVarId (by
-`Id.toComparable`) is in `subst` becomes the mapped mono type.
+{-| Converts a canonical type to a monomorphized type, replacing each type
+variable bound in `subst` by its binding and hash-consing each composite in the
+given table.
+
+A binding is used as it stands; it is not converted again. A field written in
+the record type replaces a field of the same name taken from the extension
+variable's binding.
+
 -}
 canTypeToMonoWithI : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 canTypeToMonoWithI superVars subst canType intern0 =
@@ -178,8 +193,8 @@ canTypeToMonoWithI superVars subst canType intern0 =
             canTypeToMonoWithI superVars newSubst inner intern1
 
 
-{-| `List.map (canTypeToMonoWith …)` threading the table — same element order,
-same left-to-right conversion order.
+{-| Converts each type in a list, in order, threading the intern table from
+left to right.
 -}
 listToMono : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Intern -> ( List Mono.MonoType, Intern )
 listToMono superVars subst types intern0 =
@@ -198,9 +213,14 @@ listToMono superVars subst types intern0 =
             ( mt :: mRest, intern2 )
 
 
-{-| Collect a run of `TLambda`s into a nested one-arg-per-arrow `Mono.mFunction`,
-exactly as `TypeSubst.applySubstLambdaChain` does (a -> b -> c becomes
-`Mono.mFunction [a] (Mono.mFunction [b] c)`; GlobalOpt flattens later per GOPT\_016).
+{-| Returns the function type for a chain of arrows whose argument types so far
+are `argsAcc`, newest first, and whose remainder is `to`.
+
+The result is nested one-argument functions, so `a -> b -> c` becomes a
+function from `a` to a function from `b` to `c`, each arrow annotated
+`Mono.topDeclZonk`. The result type is converted first, then the arguments
+from last to first.
+
 -}
 lambdaChain : Dict Int Vars.SuperType -> Dict Int Mono.MonoType -> List (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Intern -> ( Mono.MonoType, Intern )
 lambdaChain superVars subst argsAcc to intern0 =
@@ -215,7 +235,6 @@ lambdaChain superVars subst argsAcc to intern0 =
             in
             List.foldl
                 (\argType ( acc, i0 ) ->
-                    -- Pure classification path: stamps LTop (design §6.2).
                     let
                         ( mArg, i1 ) =
                             canTypeToMonoWithI superVars subst argType i0

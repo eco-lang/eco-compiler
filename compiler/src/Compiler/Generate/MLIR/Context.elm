@@ -10,10 +10,43 @@ module Compiler.Generate.MLIR.Context exposing
     , PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec(..), SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
     )
 
-{-| MLIR code generation context.
+{-| MLIR code generation is a pure fold over each function's expression
+tree, so every piece of state it needs travels in one record, the `Context`,
+threaded through every generator. This module defines that record and the
+operations that read and update it.
 
-This module provides the Context type and related utilities for tracking
-state during MLIR code generation.
+The state falls into four kinds.
+
+  - Counters. `freshVar` and `freshOpId` hand out the next SSA variable name
+    (`%N`) and operation id (`opN`) from a counter.
+  - Lexical scope. `varMappings` maps an Elm name to the SSA variable that
+    holds its value and that variable's MLIR type, and `definedSsaVars` is the
+    set of SSA variables visible at the current point. MLIR regions scope SSA
+    values: a value defined in one alternative of a branch is not visible in
+    a sibling alternative, nor after the branch op. `ctxForSiblingRegion` and
+    `ctxAfterBranchOp` carry the counters and accumulators forward across a
+    branch while putting the scope back.
+  - Accumulators. Lambdas and functions to emit later, the kernel
+    declarations the module will need, the eco/system effect managers
+    reached, and the debug type graph, all collected as code is generated.
+  - Tables installed once at codegen entry and only read afterwards: the
+    function signatures, the inlinable bodies, the constructor shapes, the
+    three constant maps, the `$sret` and `$psplit` promotions, the project
+    configuration and the `List.map` templates. The signature table is
+    passed to `initContext`; the others start empty (or at their default)
+    and a `with*` function installs each.
+
+A _signature table_ is an `Array` indexed by SpecId, holding the parameter and
+result types of each callable node; `buildSignatures` makes it.
+
+A _kernel declaration_ is the `func.func private` that the emitted module
+needs for every kernel symbol it calls. Each symbol has exactly one ABI: a
+second registration with different argument or result types crashes the
+compile.
+
+The debug type graph gives every `MonoType` printed by `eco.dbg` a numeric
+TypeId; `getOrCreateTypeIdForMonoType` registers the types reached from a
+type before the type itself.
 
 
 # Types
@@ -21,39 +54,43 @@ state during MLIR code generation.
 @docs Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
 
 
-# Context Management
+# Building a context
 
 @docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates
 
 
-# Variable Management
+# Names and scope
 
 @docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
 
 
-# Type Registration
+# Type graph and kernel calls
 
 @docs getOrCreateTypeIdForMonoType, registerKernelCall
 
 
-# Signature Utilities
+# Signatures
 
 @docs buildSignatures, kernelFuncSignatureFromType
 
 
-# Type Inspection
+# Kernel fallback
 
 @docs hasKernelImplementation
 
 
-# Kernel Declaration Info
+# Kernel declarations
 
 @docs KernelDeclInfo
 
 
-# Kernel Instance Registration
+# Kernel instances
 
 @docs registerKernelInstance
+
+
+# Promotions and constant tables
+
 @docs PsplitInfo, SlotPlan, SplitParamInfo, SplitSpec, SretInfo, residualResultType, withConstCtorBySpec, withConstThunkBySpec, withNullConsBySpec, withPsplitPromoted, withSretPromoted
 
 -}
@@ -77,25 +114,31 @@ import Utils.Crash exposing (crash)
 -- ====== CONTEXT ======
 
 
-{-| Function signature for type lookup: param types and return type.
+{-| The parameter and result types of one callable node, as code generation
+sees it.
 
-Used for invariant checking and kernel declaration generation.
-All staging/call-model decisions are now made in GlobalOpt and stored in Mono.CallInfo.
+`returnType` is what a call that supplies all of `paramTypes` returns, which
+for a staged definition is itself a function type (see `residualResultType`).
+A definition or port whose body is not a closure or tail-recursive
+function, and an enum, has no parameters. `evaluatorBoxesAll` is `True`
+only for externs and effect-manager leaves, whose closure evaluator takes
+every parameter as `!eco.value`.
 
 -}
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
-    , evaluatorBoxesAll : Bool -- True for MonoExtern/MonoManagerLeaf: evaluator wrapper always has !eco.value params
+    , evaluatorBoxesAll : Bool
     }
 
 
-{-| U-T1.3.3L: a tail-loop parameter carried as scalar slots. `slots` are
-the CURRENT-iteration slot SSA vars in layout order (each the stored form:
-unboxed primitive or boxed `!eco.value` per the layout); `split` carries
-what projection/materialization need. No aggregate type ever crosses an
-iteration boundary — each boxed slot is its own `!eco.value` loop var, so
-RS4GC relocates normally (no struct-across-statepoint hazard).
+{-| A tuple or constructor value held as one SSA variable per field rather
+than as one boxed value, a _scalar-split_ value.
+
+`slots` are the SSA variables holding the fields in layout order, each with
+its MLIR type: an unboxed primitive or an `!eco.value`, as the layout stores
+that field. `split` says how the fields map back onto the boxed value.
+
 -}
 type alias SplitParamInfo =
     { slots : List ( String, MlirType )
@@ -103,18 +146,23 @@ type alias SplitParamInfo =
     }
 
 
-{-| How a boxed value is split into scalar slots: as the fields of a tuple, or
-of a constructor, with the layout that places them.
+{-| How a boxed value is split into scalar slots.
+
+`SplitTuple` splits a tuple and `SplitCtor` a constructor; each carries the
+layout that places the fields.
+
 -}
 type SplitSpec
     = SplitTuple Types.TupleLayout
     | SplitCtor Types.CtorLayout
 
 
-{-| U-T1.3.3 result promotion: a function whose result is a locally
-constructed tuple2/3 on every return path (and with at least one direct
-destructuring call site) gets a `$sret` worker with one result PER FIELD;
-the original becomes a thin re-boxing shim.
+{-| The result promotion of one function that has a `$sret` worker: a
+version of the function that returns each field of its tuple result as a
+separate result instead of one boxed tuple.
+
+`slotTypes` are the MLIR types of those results, in the order of `layout`.
+
 -}
 type alias SretInfo =
     { layout : Types.TupleLayout
@@ -122,17 +170,20 @@ type alias SretInfo =
     }
 
 
-{-| Returns the context with the `$sret` result promotions set, keyed by
-function.
+{-| Returns the context with the `$sret` result promotions installed, keyed
+by SpecId.
 -}
 withSretPromoted : Dict.Dict Int SretInfo -> Context -> Context
 withSretPromoted d ctx =
     { ctx | sretPromoted = d }
 
 
-{-| U-T1.3.5 param-side promotion: one plan per ORIGINAL param position
-(`Nothing` = unpromoted). A promoted position's boxed param is replaced
-by its per-field scalar slots on the `$psplit` worker's signature.
+{-| The parameter promotion of one function that has a `$psplit` worker: a
+version of the function that takes some boxed parameters as their fields.
+
+`paramPlans` has one entry per parameter of the original function, in order;
+`Nothing` means that parameter is passed as it is.
+
 -}
 type alias PsplitInfo =
     { paramPlans : List (Maybe SlotPlan)
@@ -148,16 +199,16 @@ type alias SlotPlan =
     }
 
 
-{-| Returns the context with the `$psplit` parameter promotions set, keyed by
-function.
+{-| Returns the context with the `$psplit` parameter promotions installed,
+keyed by SpecId.
 -}
 withPsplitPromoted : Dict.Dict Int PsplitInfo -> Context -> Context
 withPsplitPromoted d ctx =
     { ctx | psplitPromoted = d }
 
 
-{-| Derive a FuncSignature from a monomorphic function type.
-Used for kernel functions where we derive the ABI from the Elm type.
+{-| Returns the signature of a kernel function of type `funcType`: every
+arrow flattened into one parameter list, and the final result type.
 -}
 kernelFuncSignatureFromType : Mono.MonoType -> FuncSignature
 kernelFuncSignatureFromType funcType =
@@ -171,25 +222,16 @@ kernelFuncSignatureFromType funcType =
     }
 
 
-
--- The KernelBackendAbiPolicy type and kernelBackendAbiPolicy live in
--- Compiler.Generate.MLIR.KernelAbi. Its only policy is ElmDerived (KERN_006).
-
-
-{-| Check if a core module function has a kernel implementation to fall back to
-when intrinsics don't match (e.g., due to type mismatches with boxed values).
-
-With relaxed intrinsic matching (matching on argument types only, not result types),
-we no longer need kernel fallbacks for negate and not. The intrinsics should always
-match for concrete Int, Float, or Bool argument types.
-
+{-| Whether a core function whose intrinsic did not match may fall back to
+calling its kernel implementation. It is `False`: no such fallback is taken.
 -}
 hasKernelImplementation : Bool
 hasKernelImplementation =
     False
 
 
-{-| Variable info for tracking SSA variables with their types.
+{-| The SSA variable that holds a name's value, and that variable's MLIR
+type.
 -}
 type alias VarInfo =
     { ssaVar : String
@@ -197,7 +239,32 @@ type alias VarInfo =
     }
 
 
-{-| MLIR code generation context holding state during code generation.
+{-| The state threaded through code generation; the module docstring
+describes its four kinds of field.
+
+Several fields mean more than their names say. `signatures` is the signature
+table. `currentLetSiblings` maps the names bound by the let chain being
+generated to their placeholder SSA variables, so that its bindings can refer
+to one another. `fwdRefdLetNames` holds the names of that chain referred to
+by an earlier binding of it; it is computed only when the chain holds a tuple
+or constructor that could be promoted, and is empty otherwise.
+`tailRecLetBody` is the real loop body while the lets of a tail-recursive
+step are generated, and `Nothing` otherwise. `splitAggParams` holds the
+scalar-split values in scope, by name: tail-loop parameters, `$psplit`
+worker parameters and promoted let bindings. `sretTailLayout` is set only
+while the result of a `$sret` worker's body is generated.
+
+The three constant maps, `nullConsBySpec`, `constCtorBySpec` and
+`constThunkBySpec`, let a reference to an arity-0 spec emit its constant
+value, or the thunk's body, in place of a call; the spec's own function is
+still emitted. `nullConsBySpec` gives the tag of a nullary constructor or
+enum that is a null-cons constant, and `constCtorBySpec` the name of a
+nullary constructor that is a well-known constant such as `Nothing`.
+
+An absent entry in `mapTemplates` means the `List.map` spec has no licence
+for the template; the table is empty when the `list.mapTemplate` setting is
+off.
+
 -}
 type alias Context =
     { nextVar : Int
@@ -205,87 +272,72 @@ type alias Context =
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
-    , pendingFuncOps : List MlirOp -- Pre-generated func.func ops (e.g. from local tail-rec functions)
-    , signatures : Array (Maybe FuncSignature) -- SpecId -> signature for invariant checking
-    , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
-    , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
-    , kernelDecls : Dict.Dict String KernelDeclInfo -- Kernel symbol -> ABI declaration info
-    , ecoSystemManagers : Set.Set String -- Home modules (e.g. "System") of eco/system effect-manager leaves reached in codegen; the `__eco_register_ports` preamble calls `Eco_System_registerManager_<Home>` once per element (plans/eco-system-library.md §3.6)
-    , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
-    , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
-    , currentFuncName : String -- diagnostics only: the func being generated (crash context)
-    , localEvaluatorParams : Dict.Dict String (List MlirType) -- Let-bound locals aliasing a known global/kernel function: the ABI param types of the evaluator its closure runs (CGEN_003 closure-boundary boxing)
-    , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope
+    , pendingFuncOps : List MlirOp
+    , signatures : Array (Maybe FuncSignature)
+    , varMappings : Dict.Dict String VarInfo
+    , currentLetSiblings : Dict.Dict String VarInfo
+    , kernelDecls : Dict.Dict String KernelDeclInfo -- by symbol name
+    , ecoSystemManagers : Set.Set String -- home modules of the eco/system effect-manager leaves reached
+    , typeRegistry : TypeRegistry
+    , decoderExprs : Dict.Dict String Mono.MonoExpr -- let-bound expressions, by name, for decoder fusion
+    , currentFuncName : String -- for crash messages only
+    , localEvaluatorParams : Dict.Dict String (List MlirType) -- a local naming a known function -> its evaluator\'s parameter types
+    , definedSsaVars : Set.Set String
     , inlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr )
-    , ctorBySpec : Dict.Dict Int Mono.CtorShape -- U-T1.3.2: SpecId -> ctor shape for saturated-ctor-call promotion (make.custom)
-    , nullConsBySpec : Dict.Dict Int Int -- HEAP_044/CGEN_079: SpecId -> effective tag for nullary-ctor/enum specs that embed as null-cons constants; generateVarGlobal emits the constant instead of the arity-0 call (a perf layer — the specs' func.funcs still return the same constant)
-    , constThunkBySpec : Dict.Dict Int Mono.MonoExpr -- CGEN_082 (plans/mlir-split-backend-04-constant-thunks.md): SpecId -> body of an arity-0 constant thunk (ConstThunks.build); generateVarGlobal emits the body at the reference under a fresh lexical scope instead of the eco.call. Same perf layer as the two maps around it: the thunk's func.func still returns the same value
-    , constCtorBySpec : Dict.Dict Int String -- REP_CONSTANT_001/CGEN_019: SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant (`Nothing` = the merged Empty), which `CtorTag.embedsAsNullCons` excludes from `nullConsBySpec` because they carry no null-cons tag. Same perf layer: generateVarGlobal emits `eco.constant` instead of the arity-0 call.
-    , fwdRefdLetNames : Set.Set String -- U-T1.3.2 precise sibling recovery: names of the CURRENT let chain referenced by an EARLIER sibling's RHS (closure-mediated forward refs); computed once per chain head in generateLet, restored on chain exit
-    , tailRecLetBody : Maybe Mono.MonoExpr -- U-T1.3.2t: TailRec.compileLetStep emits lets through a synthetic MonoUnit-body wrapper; this carries the REAL loop-body suffix so the promotion hook's escape walk can vet actual uses (Nothing everywhere else; cleared before nested emission)
+    , ctorBySpec : Dict.Dict Int Mono.CtorShape
+    , nullConsBySpec : Dict.Dict Int Int
+    , constThunkBySpec : Dict.Dict Int Mono.MonoExpr
+    , constCtorBySpec : Dict.Dict Int String
+    , fwdRefdLetNames : Set.Set String
+    , tailRecLetBody : Maybe Mono.MonoExpr
     , splitAggParams : Dict.Dict String SplitParamInfo
-    , sretPromoted : Dict.Dict Int SretInfo -- U-T1.3.3: SpecId -> promoted-result info (worker exists; call sites may migrate)
-    , psplitPromoted : Dict.Dict Int PsplitInfo -- U-T1.3.5: SpecId -> promoted-PARAM info ($psplit worker exists; free-slot sites may migrate)
-    , sretTailLayout : Maybe Types.TupleLayout -- U-T1.3.3: set ONLY while compiling an sret worker body's result spine -- U-T1.3.3L scalar-split loop variables: tail-loop params of promotable shape carried as N scalar slot vars instead of one boxed value; keyed by param name, installed for the scf.while after-region only
-
-    -- ^ SpecId -> (params, body) of inlinable, non-recursive functions in
-    -- the final MonoGraph. Used by the bytes-fusion reifier's
-    -- `reifyMapBody` to beta-reduce per-element encoder functions
-    -- (closure-converted inline lambdas, `Utils.Bytes.Encode.string`,
-    -- etc.) against a synthetic iteration variable so their bodies can
-    -- be reified into `ELoop` body nodes. Built once at codegen entry
-    -- from `MonoInlineSimplify.buildBodyLookup`.
+    , sretPromoted : Dict.Dict Int SretInfo
+    , psplitPromoted : Dict.Dict Int PsplitInfo
+    , sretTailLayout : Maybe Types.TupleLayout
     , ecoConfig : Config.EcoConfig
-
-    -- ^ Effective project config from eco-config.json. Gates the
-    -- bytes-fusion entry (`bytesFusion.enabled`) and tunes logical-type
-    -- codegen (`logicalTypes.customMaxFields`). Installed via
-    -- `withEcoConfig` at codegen entry; defaults reproduce prior behaviour.
     , mapTemplates : MapTemplate.Templates
-
-    -- ^ plans/list-map-mlir-template.md Phase 1.2: SpecId -> licence +
-    -- devirtualization facts for `List.map` specs whose callback is provably
-    -- transitively Debug-free (policy D-4a). Derived from the FINAL graph via
-    -- `MapTemplate.derive` and installed at codegen entry; `MapTemplate.empty`
-    -- when `list.mapTemplate` is off, which is what makes a flag-off compile
-    -- byte-identical. A missing entry means "no licence" — never a proof.
     }
 
 
-{-| Registry for mapping MonoTypes to TypeIds for the global type graph.
-Used by eco.dbg with arg\_type\_ids for typed debug printing.
+{-| The debug type graph built so far: a TypeId for every registered
+`MonoType`, as `eco.dbg` uses for typed printing.
+
+`typeInfos` lists the registered types newest first. `ctorShapes` gives the
+constructors of each custom type, so that their field types are registered
+too.
+
 -}
 type alias TypeRegistry =
     { nextTypeId : Int
-    , typeIds : Mono.LayoutMap Int -- K4: keyed by the type's stored layout hash, not a rebuilt string
-    , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape) -- type -> ctor shapes for custom types
+    , typeIds : Mono.LayoutMap Int
+    , typeInfos : List ( Int, Mono.MonoType )
+    , ctorShapes : Mono.LayoutMap (List Mono.CtorShape)
     }
 
 
-{-| A pending lambda to be generated as a separate function.
+{-| A lambda whose body is to be generated later as a function of its own.
+
+`siblingMappings` are the let-bound names of the enclosing let chain the body
+may refer to. `selfBindingName` is the Elm name by which a local
+tail-recursive function refers to itself.
+
 -}
 type alias PendingLambda =
     { name : String
     , captures : List ( Name.Name, Mono.MonoType )
     , params : List ( Name.Name, Mono.MonoType )
     , body : Mono.MonoExpr
-    , returnType : Mono.MonoType -- Explicit return type for typed ABI
-    , siblingMappings : Dict.Dict String VarInfo -- For mutually recursive let bindings
-    , isTailRecursive : Bool -- True for local tail-recursive functions (MonoTailDef)
-    , selfBindingName : Maybe String -- Elm-level binding name for tail-rec self-reference
+    , returnType : Mono.MonoType
+    , siblingMappings : Dict.Dict String VarInfo
+    , isTailRecursive : Bool
+    , selfBindingName : Maybe String
     }
 
 
-{-| Initialize a code generation context.
-
-Callers that want the bytes-fusion reifier to fire on higher-order
-encoder patterns must install the `inlineBodies` table after creation
-via `withInlineBodies` (built from `MonoInlineSimplify.buildBodyLookup`).
-Without it, the reifier's `MonoVarGlobal` mapFn case in `reifyMapBody`
-falls back to `Nothing` and ELoop fusion is suppressed for closure-converted
-inline lambdas.
-
+{-| Creates a context with zeroed counters, empty scope and accumulators, the
+given signature table, and the given constructor shapes in its type graph.
+Every other table is empty, `ecoConfig` is `Config.default` and
+`mapTemplates` is `MapTemplate.empty`, until a `with*` function installs it.
 -}
 initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Mono.LayoutMap (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
@@ -324,65 +376,62 @@ initContext mode registry signatures initialCtorShapes =
     }
 
 
-{-| Install a body-lookup table on a freshly-initialised Context.
-Typically called immediately after `initContext` with the result of
-`MonoInlineSimplify.buildBodyLookup`.
+{-| Returns the context with the table of inlinable function bodies
+installed: for each SpecId, the parameters and body of the function. Bytes
+encoder fusion reads it to see into the functions an encoder calls.
 -}
 withInlineBodies : Dict.Dict Int ( List ( Name.Name, Mono.MonoType ), Mono.MonoExpr ) -> Context -> Context
 withInlineBodies bodies ctx =
     { ctx | inlineBodies = bodies }
 
 
-{-| U-T1.3.2: install the SpecId → CtorShape index (built from the graph's
-`MonoCtor` nodes) used by aggregate promotion to recognise saturated
-constructor calls at let bindings.
+{-| Returns the context with the constructor shape of each constructor spec
+installed, keyed by SpecId.
 -}
 withCtorBySpec : Dict.Dict Int Mono.CtorShape -> Context -> Context
 withCtorBySpec d ctx =
     { ctx | ctorBySpec = d }
 
 
-{-| HEAP\_044/CGEN\_079: install the SpecId → effective-tag index for nullary
-ctor/enum specs that embed as null-cons constants (built from the graph's
-`MonoCtor`/`MonoEnum` nodes, excluding the legacy True/False/Nothing set).
+{-| Returns the context with the null-cons constant map installed: for each
+nullary constructor or enum spec that is a null-cons constant, its tag.
 -}
 withNullConsBySpec : Dict.Dict Int Int -> Context -> Context
 withNullConsBySpec d ctx =
     { ctx | nullConsBySpec = d }
 
 
-{-| Install the well-known-constant nullary ctor map (see `constCtorBySpec`).
+{-| Returns the context with the well-known constant map installed: for each
+nullary constructor spec that is a well-known constant, its constructor name.
 -}
 withConstCtorBySpec : Dict.Dict Int String -> Context -> Context
 withConstCtorBySpec d ctx =
     { ctx | constCtorBySpec = d }
 
 
-{-| Install the constant-thunk map (see `constThunkBySpec`, CGEN\_082).
+{-| Returns the context with the constant-thunk map installed: for each
+arity-0 spec admitted as a constant thunk, its body.
 -}
 withConstThunkBySpec : Dict.Dict Int Mono.MonoExpr -> Context -> Context
 withConstThunkBySpec d ctx =
     { ctx | constThunkBySpec = d }
 
 
-{-| Install the effective eco-config on a freshly-initialised Context.
-Defaults to `Config.default` when not called.
+{-| Returns the context with the project configuration installed.
 -}
 withEcoConfig : Config.EcoConfig -> Context -> Context
 withEcoConfig cfg ctx =
     { ctx | ecoConfig = cfg }
 
 
-{-| plans/list-map-mlir-template.md: install the `List.map` licence table at
-codegen entry. Call with `MapTemplate.derive` output; defaults to
-`MapTemplate.empty` (no licences, so no op is ever emitted) when not called.
+{-| Returns the context with the `List.map` template table installed.
 -}
 withMapTemplates : MapTemplate.Templates -> Context -> Context
 withMapTemplates t ctx =
     { ctx | mapTemplates = t }
 
 
-{-| Empty type registry for initialization.
+{-| The type graph with no types registered and TypeIds starting at 0.
 -}
 emptyTypeRegistry : TypeRegistry
 emptyTypeRegistry =
@@ -393,15 +442,19 @@ emptyTypeRegistry =
     }
 
 
-{-| Get or create a TypeId for a MonoType.
-If the type already exists in the registry, returns the existing TypeId.
-Otherwise, creates a new TypeId and registers the type.
+{-| Returns the TypeId of `monoType`, registering it first if it is new.
+
+Registering a type registers the new types reached from it first, so they
+get smaller TypeIds than it does. The nested types of a custom
+type are its type arguments and its constructors' field types, leaving out a
+field of the custom type itself. The types are explored with an explicit
+worklist rather than by recursion, so a deeply nested type does not
+overflow the stack.
+
 -}
 getOrCreateTypeIdForMonoType : Mono.MonoType -> Context -> ( Int, Context )
 getOrCreateTypeIdForMonoType monoType ctx =
-    -- Use an iterative worklist approach to avoid stack overflow on deeply nested types
     let
-        -- Helper: get all immediate nested types for a MonoType
         getNestedTypes : Mono.MonoType -> Context -> List Mono.MonoType
         getNestedTypes mt c =
             case mt of
@@ -415,7 +468,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     Dict.values fields
 
                 Mono.MCustom _ _ _ args ->
-                    -- Include type args and constructor field types
                     let
                         ctorShapesForType =
                             Mono.layoutMapGet mt c.typeRegistry.ctorShapes
@@ -425,7 +477,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
                             List.concatMap .fieldTypes ctorShapesForType
                                 |> List.filter
                                     (\ft ->
-                                        -- Exclude direct self-references to avoid infinite work
                                         not (Mono.eqKeyLayout ft mt)
                                     )
                     in
@@ -455,7 +506,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 Mono.MVar _ _ ->
                     []
 
-        -- Register a single type (assuming all nested types are already registered)
         registerSingleType : Mono.MonoType -> Context -> Context
         registerSingleType mt c =
             let
@@ -464,7 +514,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
             in
             case Mono.layoutMapGet mt reg.typeIds of
                 Just _ ->
-                    -- Already registered
                     c
 
                 Nothing ->
@@ -481,33 +530,22 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     in
                     { c | typeRegistry = newReg }
 
-        -- Process the worklist iteratively.
-        -- 'pending' holds types to explore; 'toRegister' holds them in reverse
-        -- topological order; 'queued' mirrors 'toRegister' for an O(log n)
-        -- already-queued test. That test was once a `List.any` REBUILDING a full
-        -- comparable string for every element of 'toRegister' on every step —
-        -- quadratic key construction over a list that grows with the program's
-        -- whole type set (K1.1). Under K4 no key is built here at all: every
-        -- probe reads the hash the type already carries.
+        -- toRegister is in reverse discovery order, so a fold registers the
+        -- starting type last; queued is the set of types already in it.
         processWorklist : List Mono.MonoType -> List Mono.MonoType -> Mono.LayoutMap () -> Context -> Context
         processWorklist pending toRegister queued c =
             case pending of
                 [] ->
-                    -- All types collected, now register them in order (deepest first)
                     List.foldl registerSingleType c toRegister
 
                 current :: rest ->
                     if Mono.layoutMapMember current c.typeRegistry.typeIds then
-                        -- Already registered, skip
                         processWorklist rest toRegister queued c
 
                     else if Mono.layoutMapMember current queued then
-                        -- Already in toRegister list, skip
                         processWorklist rest toRegister queued c
 
                     else
-                        -- Add nested types to pending (they need to be processed first)
-                        -- Add current to toRegister (it will be registered after its nested types)
                         let
                             nested =
                                 getNestedTypes current c
@@ -519,8 +557,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
     in
     case Mono.layoutMapGet monoType ctx.typeRegistry.typeIds of
         Just typeId ->
-            -- Already registered. The worklist would pop this type, find it in
-            -- typeIds and hand back an unchanged context, so skip it outright.
             ( typeId, ctx )
 
         Nothing ->
@@ -533,22 +569,14 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     ( typeId, finalCtx )
 
                 Nothing ->
-                    -- This shouldn't happen, but provide a fallback
+                    -- Unreachable: processWorklist registers monoType.
                     ( 0, finalCtx )
 
 
-{-| Construct context for a sibling region in branching constructs.
-
-When generating code for alternative regions (e.g., then/else of scf.if,
-alternatives of eco.case), each sibling must forward counters and accumulations
-from the previous sibling, but must NOT carry varMappings or definedSsaVars
-(since SSA vars defined in one region are not visible in a sibling region
-per MLIR scoping rules).
-
-  - `base`: the context BEFORE the branching construct (has correct varMappings
-    and definedSsaVars)
-  - `afterPrevious`: the context AFTER the previous sibling region (has updated counters)
-
+{-| Returns the context in which to generate the next alternative region of
+a branch op: `afterPrevious`, the context after the previous alternative,
+with `varMappings`, `localEvaluatorParams` and `definedSsaVars` taken from
+`base`, the context before the branch op.
 -}
 ctxForSiblingRegion : Context -> Context -> Context
 ctxForSiblingRegion base afterPrevious =
@@ -559,15 +587,11 @@ ctxForSiblingRegion base afterPrevious =
     }
 
 
-{-| Restore definedSsaVars and varMappings after a branching construct
-(eco.case, scf.if, etc.) completes. The returned context keeps counters
-and other accumulations from the post-branch context but scopes
-definedSsaVars back to the pre-branch state plus any new result variables.
-
-  - `base`: the context BEFORE the branching construct
-  - `afterBranch`: the context AFTER all branches have been generated
-  - `resultVars`: SSA variable names for the branch op's results
-
+{-| Returns the context in which to continue after a branch op: `afterBranch`,
+the context after its last alternative, with `varMappings` taken from `base`,
+the context before the op, and `definedSsaVars` set to that of `base` plus
+`resultVars`, the op's results. `localEvaluatorParams` is left as
+`afterBranch` has it.
 -}
 ctxAfterBranchOp : Context -> Context -> List String -> Context
 ctxAfterBranchOp base afterBranch resultVars =
@@ -577,7 +601,8 @@ ctxAfterBranchOp base afterBranch resultVars =
     }
 
 
-{-| Generate a fresh SSA variable name.
+{-| Returns a new SSA variable name, and the context with it counted and
+recorded in `definedSsaVars`.
 -}
 freshVar : Context -> ( String, Context )
 freshVar ctx =
@@ -590,7 +615,7 @@ freshVar ctx =
     )
 
 
-{-| Generate a fresh operation ID for MLIR operations.
+{-| Returns a new operation id, and the context with it counted.
 -}
 freshOpId : Context -> ( String, Context )
 freshOpId ctx =
@@ -599,10 +624,9 @@ freshOpId ctx =
     )
 
 
-{-| Look up a variable name, checking varMappings first for let-bound aliases.
-This allows let bindings to directly reference the SSA variable from the expression
-rather than going through an eco.construct wrapper.
-Returns both the SSA variable name and its MLIR type.
+{-| Returns the SSA variable bound to `name` in `varMappings`, and its MLIR
+type. Crashes the compile if `name` is not bound, naming the function being
+generated.
 -}
 lookupVar : Context -> String -> ( String, MlirType )
 lookupVar ctx name =
@@ -622,7 +646,8 @@ lookupVar ctx name =
                 )
 
 
-{-| Add a variable mapping from a let-bound name to its SSA variable and type.
+{-| Returns the context with `name` bound to `ssaVar` of type `mlirTy`, and
+`ssaVar` recorded in `definedSsaVars`.
 -}
 addVarMapping : String -> String -> MlirType -> Context -> Context
 addVarMapping name ssaVar mlirTy ctx =
@@ -636,17 +661,17 @@ addVarMapping name ssaVar mlirTy ctx =
     { ctx | varMappings = Dict.insert name info ctx.varMappings, definedSsaVars = Set.insert ssaVar ctx.definedSsaVars }
 
 
-{-| Reset definedSsaVars for a new function scope, optionally seeding with
-initial SSA variable names (e.g. function parameters and captures).
+{-| Returns the context with `definedSsaVars` set to exactly `initialVars`, as
+at the start of a new function.
 -}
 resetDefinedSsaVars : List String -> Context -> Context
 resetDefinedSsaVars initialVars ctx =
     { ctx | definedSsaVars = Set.fromList initialVars }
 
 
-{-| Cache a let-bound expression for BytesFusion decoder resolution.
-When a let-binding is compiled, store its original MonoExpr so that
-inner decoder fusion can resolve variables defined in outer scopes.
+{-| Returns the context with `expr` recorded as the expression bound to
+`name`, so that bytes decoder fusion can see through a variable to the
+decoder it names.
 -}
 addDecoderExpr : String -> Mono.MonoExpr -> Context -> Context
 addDecoderExpr name expr ctx =
@@ -657,35 +682,30 @@ addDecoderExpr name expr ctx =
 -- ======= KERNEL DECLARATION TRACKING
 
 
-{-| Recorded ABI for one kernel symbol. Populated by `registerKernelCall`
-(legacy MLIR-types-only path) and `registerKernelInstance` (per-instance path
-introduced in Phase A of the per-instance kernel ABI rollout). Backend
-iteration uses these fields to emit the matching `func.func private` decl.
+{-| The declaration recorded for one kernel symbol: its ABI argument and
+result types, and whether it is a gc-leaf.
+
+`gcLeaf` is `True` only when some registration through
+`registerKernelInstance` found the kernel's row in `KernelFacts` and the row
+is `gcLeafEligible`; it is `False` for a kernel with no row and for one
+registered only through `registerKernelCall`. Some instance symbols carry an
+`_Int`, `_Float` or `_Char` suffix, so the row is looked up from the instance
+key, not the symbol name.
+
 -}
 type alias KernelDeclInfo =
     { symbolName : String
     , abiArgTypes : List MlirType
     , abiResultType : MlirType
     , gcLeaf : Bool
-
-    -- kernel-opt-08: `KernelFacts.gcLeafEligible` of the (home, name) row, and
-    -- False when there is no row. Also False on the legacy name-only path --
-    -- whitelist discipline: an unlisted kernel keeps today's poison-seed
-    -- behaviour. NEVER reverse-parse the symbol name to recover the key;
-    -- kernelInstanceSymbol appends _Int/_Float/_Char suffixes, so parsing would
-    -- be wrong for exactly the migrated kernels.
     }
 
 
-{-| Register a kernel function call, tracking it for declaration generation.
+{-| Returns the context with kernel symbol `name` recorded as a declaration
+whose ABI is the call site's own MLIR types, and with `gcLeaf` false.
 
-The canonical signature for a kernel is taken directly from the call site.
-Subsequent calls to the same kernel name must use exactly the same argument
-and result MLIR types, or we crash with a mismatch error (CGEN\_038).
-
-This shim keeps the legacy MLIR-types-only entry point working for callers
-that have not yet been ported to `registerKernelInstance`. It populates the
-same `KernelDeclInfo` records.
+Crashes the compile if `name` is already recorded with different argument or
+result types.
 
 -}
 registerKernelCall : Context -> String -> List MlirType -> MlirType -> Context
@@ -698,11 +718,13 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
         }
 
 
-{-| Register a per-instance kernel call, returning the resolved ABI for the
-caller to use when emitting boxing/unboxing and the `eco.call` operands.
+{-| Returns the ABI that `KernelAbi.deriveKernelInstanceAbi` gives the kernel
+instance `key`, and the context with its declaration recorded. The
+declaration is a gc-leaf when the kernel's `KernelFacts` row is
+`gcLeafEligible`.
 
-Crashes if a previous call registered a different ABI for the same symbol
-(CGEN\_038).
+Crashes the compile if the symbol is already recorded with different
+argument or result types.
 
 -}
 registerKernelInstance : KernelAbi.KernelInstanceKey -> Context -> ( KernelAbi.KernelInstanceAbi, Context )
@@ -726,8 +748,9 @@ registerKernelInstance key ctx =
     ( abi, insertKernelDecl ctx info )
 
 
-{-| Insert (or verify) a `KernelDeclInfo` for the given symbol. Crashes on
-ABI mismatch with an existing entry (CGEN\_038).
+{-| Returns the context with `info` recorded for its symbol. When the symbol is
+already recorded with the same types, the entry is kept and becomes a
+gc-leaf if `info` is one; with different types, the compile crashes.
 -}
 insertKernelDecl : Context -> KernelDeclInfo -> Context
 insertKernelDecl ctx info =
@@ -737,10 +760,6 @@ insertKernelDecl ctx info =
 
         Just existing ->
             if existing.abiArgTypes == info.abiArgTypes && existing.abiResultType == info.abiResultType then
-                -- OR-merge rather than dropping the new record. Only
-                -- registerKernelInstance ever supplies evidence (the legacy
-                -- name-only path always says False), so this can never
-                -- overwrite an audited False with a lie.
                 if info.gcLeaf && not existing.gcLeaf then
                     { ctx | kernelDecls = Dict.insert info.symbolName { existing | gcLeaf = True } ctx.kernelDecls }
 
@@ -770,18 +789,17 @@ insertKernelDecl ctx info =
 
 
 
--- ====== SIGNATURE EXTRACTION (for invariant checking)
+-- ====== SIGNATURE EXTRACTION
 
 
-{-| Extract a spec's actual return type given how many VALUE parameters it has.
+{-| Returns what a function of type `monoType` returns once given its first
+`numParams` arguments.
 
-A staged-result definition carries more arrow layers in its (flattened) MonoType
-than it has value params — e.g. `mk : Int -> (Int -> Int)` defined as
-`mk a = \b -> ...` has ONE param but TWO flattened arrow args. Peeling the whole
-`Mono.mFunction` (dropping every arg in one node) would collapse to the leaf type
-(`Int`), mistyping the spec as returning `Int` when it actually returns the closure
-`Int -> Int`. Drop exactly the consumed params so any residual arrows survive as a
-function-typed result. When params == args this is the ordinary leaf return type.
+A _staged_ definition takes fewer parameters than its type has arrows:
+`mk : Int -> Int -> Int` defined as `mk a = \b -> ...` has one parameter, and
+returns `Int -> Int`. The arguments beyond `numParams` therefore stay in the
+result as a function type. With `numParams` at least the number of arguments,
+or a `monoType` that is not a function, the result is the final result type.
 
 -}
 residualResultType : Int -> Mono.MonoType -> Mono.MonoType
@@ -791,9 +809,7 @@ residualResultType numParams monoType =
             Mono.decomposeFunctionType monoType
     in
     if List.length allArgTypes > numParams then
-        -- Staged result: the un-consumed args re-curry into a function-typed
-        -- result. Decompose normalises flat vs nested MFunction forms; keep the
-        -- outer arrow's annotation.
+        -- The rebuilt function type keeps the outer arrow's annotation.
         case monoType of
             Mono.MFunction _ anno _ _ ->
                 Mono.mFunction anno (List.drop numParams allArgTypes) finalLeaf
@@ -805,10 +821,13 @@ residualResultType numParams monoType =
         finalLeaf
 
 
-{-| Extract the function signature (param types, return type) from a MonoNode.
-Returns Nothing for nodes that aren't callable functions.
+{-| Returns the signature of `node`, or `Nothing` for an extern or
+effect-manager leaf whose type is not a function.
 
-This is a pure type extractor. All staging/call-model decisions are made in GlobalOpt.
+A closure or tail-recursive function takes its own parameters, and its
+result is the residual result type. Any other definition or port, and an
+enum, has no parameters; a constructor's parameters are its field types; an
+extern or manager leaf of function type takes all its arrows as parameters.
 
 -}
 extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
@@ -920,8 +939,8 @@ extractNodeSignature node =
                         }
 
 
-{-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
-Used for invariant checking at call sites.
+{-| Returns the signature table for `nodes`, indexed like it: `Nothing` for
+an absent node and for a node with no signature.
 -}
 buildSignatures : Array (Maybe Mono.MonoNode) -> Array (Maybe FuncSignature)
 buildSignatures nodes =

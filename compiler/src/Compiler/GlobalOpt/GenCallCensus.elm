@@ -1,22 +1,26 @@
 module Compiler.GlobalOpt.GenCallCensus exposing (census, render, calleeTag)
 
-{-| Why a call goes through the generic apply path
-(plans/staging-honesty-and-production-test-pipeline.md P0.3).
+{-| Counts the calls the compiler could not make directly, by what kind of
+expression supplies the function being called, so that a report can show where
+generic calls come from.
 
-After GlobalOpt every staged-curried call has a `CallKind`. The two generic
-kinds, `CallSegmentationUnknown` and `CallGenericApply`, are applied by the
-runtime reading the closure header, because the compiler could not prove the
-callee's staging. This census tags each such call by the shape of its callee:
+After GlobalOpt every staged-curried call (`Mono.StageCurried`) carries a
+`CallKind`. Two of the kinds are generic: `CallSegmentationUnknown` and
+`CallGenericApply`, both described by `Compiler.AST.Monomorphized`. In both the
+runtime, not the compiler, decides when the closure has all its arguments.
+`census` counts each such call under its kind and a tag for its callee, the
+expression in function position:
 
-  - `param`: a parameter of a function in the same specialization;
-  - `local`: any other local variable (let-bound or destructured);
-  - `callResult`: the result of another call, applied again;
+  - `param`: a local variable whose name is bound as a parameter somewhere in
+    the same top-level node;
+  - `local`: any other local variable;
+  - `callResult`: the result of another call;
   - `field`: a record field read;
   - `join`: a `case` or `if` expression;
   - `global`: a global reference;
   - `other`: anything else.
 
-It is a pure count over the graph, run only when the census is on.
+The count reads the graph and changes nothing.
 
 @docs census, render, calleeTag
 
@@ -30,8 +34,9 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| The tag of a callee expression, given the parameter names bound in its
-specialization.
+{-| Returns the tag for `callee`, one of those listed in the module docstring.
+A local variable is tagged `param` when its name is in `params`, and `local`
+otherwise.
 -}
 calleeTag : Set Name -> Mono.MonoExpr -> String
 calleeTag params callee =
@@ -62,8 +67,17 @@ calleeTag params callee =
             "other"
 
 
-{-| Counts generic calls by `<kind>:<tag>`, where kind is `segunk` or
-`generic`.
+{-| Counts the generic staged-curried calls in the graph, keyed
+`<kind>:<tag>`, where the kind is `segunk` for `CallSegmentationUnknown` and
+`generic` for `CallGenericApply`. A key that no call produced is absent rather
+than zero.
+
+Only nodes with a body are walked: definitions, tail functions and ports. The
+parameter names used for the `param` tag are collected once per node, from its
+own parameters if it is a tail function and from every closure and local
+tail-recursive definition inside it, so they are not scoped to the function
+that contains the call.
+
 -}
 census : Mono.MonoGraph -> Dict String Int
 census (Mono.MonoGraph mono) =
@@ -127,7 +141,8 @@ census (Mono.MonoGraph mono) =
         mono.nodes
 
 
-{-| `k=v` pairs, sorted by key, space-separated.
+{-| Renders the counts as `key=count` pairs in key order, separated by single
+spaces. An empty census renders as the empty string.
 -}
 render : Dict String Int -> String
 render d =

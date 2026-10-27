@@ -3,10 +3,49 @@ module Compiler.LocalOpt.Typed.Module exposing
     , optimizeTyped
     )
 
-{-| Typed module optimization.
+{-| Builds the typed local graph of one module, the form in which a module's
+code goes on to monomorphization and native code generation.
 
-Converts a canonical module to a TypedOptimized.LocalGraph, preserving full
-type information on every expression.
+A local graph (`TOpt.LocalGraph`) is a table of nodes keyed by global name,
+together with the module's `main`, a count of how often each record field name
+is used, and the type annotations of its top-level names. Definition and port
+nodes, and every expression, carry a meta: a canonical type (`tipe`) and, where
+one is known, the type checker's solver variable for it (`tvar`).
+
+`optimizeTyped` fills the graph from a type-checked module, one kind of
+declaration at a time:
+
+  - A record type alias whose record is closed becomes a function definition
+    that builds the record. Other aliases add nothing.
+  - Each constructor of a custom type becomes a `Ctor`, `Box` or `Enum` node,
+    as the type's constructor options say, holding the constructor's function
+    type.
+  - An effect manager adds a `Manager` node named `$fx$`, and `Link` nodes to
+    it named `command`, `subscription` or both.
+  - A port becomes a `PortIncoming` or `PortOutgoing` node holding its decoder
+    or encoder.
+  - An ordinary top-level definition becomes a `TrackedDefine`. A recursive
+    group becomes one `Cycle` node under a combined name, plus a `Link` to it
+    under each member's own name.
+
+Constructors and record alias constructors have no annotation from the type
+checker, so one is built for each and added to the graph's `annotations`.
+
+The node's `tipe` is the definition's annotation, its generic type rather than
+any instance. A value's `tvar` is its body's solver variable; a function's is
+the solver variable of its whole type, taken from the `annotationVars`
+argument, and the body's when the function has none there.
+
+`main` is checked here: it must be a `VirtualDom.Node` or a `Platform.Program`
+whose flags can be decoded. A `Node` main is recorded as static; a `Program`'s
+flags decoder becomes the graph's `main`.
+
+Once every node is built, lambda boundaries are normalized as
+`Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries` describes, and the graph's
+`varSupers` map is computed as `TOpt.computeVarSupers` describes.
+
+A missing annotation for a definition or port is treated as impossible and
+crashes the compiler.
 
 
 # Types
@@ -49,7 +88,12 @@ import Utils.Crash
 -- ====== TYPE HELPERS ======
 
 
-{-| Peel n argument types from a function type to get the result type.
+{-| Returns what is left of `tipe` after removing `n` argument types from the
+front of it.
+
+It stops early at anything that is not a `Can.TLambda`, including an alias
+standing for a function type, and returns that.
+
 -}
 peelFunctionType : Int -> Can.Type Name -> Can.Type Name
 peelFunctionType n tipe =
@@ -69,25 +113,37 @@ peelFunctionType n tipe =
 -- ====== OPTIMIZE ======
 
 
-{-| Result type for module optimization operations that can produce errors or warnings.
+{-| A result of building a module's graph: a value, or the module errors that
+stopped it, with any warnings and info gathered along the way.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w E.Error a
 
 
-{-| Type annotations for top-level definitions, mapping names to their canonical type annotations.
+{-| The type annotation of each top-level name of a module, keyed by name.
+
+Inferred types are included alongside written ones: an annotation here does not
+mean the source had one.
+
 -}
 type alias Annotations =
     Dict Name.Name (Can.Annotation Name)
 
 
-{-| Optimize a TypedCanonical module to a typed optimized local graph.
+{-| Builds the typed local graph of a type-checked module, as the module
+docstring describes, or fails with the module's errors.
 
-This is the main entry point for typed optimization. It takes a TypedCanonical
-module (where every expression already has its type), the expression type map
-for converting subexpressions, and produces a TypedOptimized.LocalGraph.
+`annotations` must hold an annotation for every top-level definition and port;
+it becomes the graph's `annotations`, with constructor and record alias
+constructor annotations added. `exprTypes` and `exprVars` give the type and
+solver variable of each expression. `kernelEnv` gives the types of kernel
+functions. `annotationVars` gives the solver variable of each top-level
+function's type. `allSchemeRoots` is stored in the graph unchanged.
 
-The kernelEnv is computed by the PostSolve phase and passed in from the caller.
+Fails with `BadCycle` when `main` is in a recursive group, `BadType` when
+`main` has a type it cannot be, and `BadFlags` when a program's flags cannot be
+decoded. Warns `MissingTypeAnnotation` for each top-level definition outside a
+recursive group that was written without an annotation.
 
 -}
 optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
@@ -112,10 +168,8 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeR
 -- ====== Var Supers ======
 
 
-{-| Compute and attach the per-module `varSupers` map (type-variable name →
-super constraint) over the finished graph. This is the name→super ingestion
-boundary for the non-rooted type variables; monomorphization reads the data,
-not the names.
+{-| Returns `graph` with its `varSupers` map computed from the graph itself, as
+`TOpt.computeVarSupers` describes.
 -}
 withComputedVarSupers : TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 withComputedVarSupers ((TOpt.LocalGraph data) as graph) =
@@ -126,10 +180,15 @@ withComputedVarSupers ((TOpt.LocalGraph data) as graph) =
 -- ====== Union Types ======
 
 
+{-| A local graph's node table, keyed by global name.
+-}
 type alias TypedNodes =
     Data.Map.Dict String TOpt.Global (TOpt.Node Name)
 
 
+{-| Returns the graph with a node and an annotation added for every
+constructor of every custom type in `unions`.
+-}
 addUnions : ModuleName.Canonical -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addUnions home unions (TOpt.LocalGraph data) =
     let
@@ -139,15 +198,25 @@ addUnions home unions (TOpt.LocalGraph data) =
     TOpt.LocalGraph { data | nodes = nodes1, annotations = ann1 }
 
 
+{-| Returns the node table and annotations with each constructor of one
+custom type added.
+-}
 addUnion : ModuleName.Canonical -> Name.Name -> Can.Union -> ( TypedNodes, TOpt.Annotations Name ) -> ( TypedNodes, TOpt.Annotations Name )
 addUnion home typeName (Can.Union unionData) nodesAndAnn =
     List.foldl (addCtorNode home typeName unionData) nodesAndAnn unionData.alts
 
 
+{-| Returns the node table and annotations with one constructor added.
+
+Its type is a function from the constructor's arguments to the custom type
+applied to its type variables, and its annotation quantifies over those
+variables. The node is a `Ctor`, a `Box` or an `Enum` as the type's
+constructor options say.
+
+-}
 addCtorNode : ModuleName.Canonical -> Name.Name -> Can.UnionData -> Can.Ctor -> ( TypedNodes, TOpt.Annotations Name ) -> ( TypedNodes, TOpt.Annotations Name )
 addCtorNode home typeName unionData (Can.Ctor c) ( nodes, ann ) =
     let
-        -- Build the constructor type: arg1 -> arg2 -> ... -> UnionType
         resultType : Can.Type Name
         resultType =
             Can.TType home typeName (List.map Can.TVar unionData.vars)
@@ -189,17 +258,28 @@ addCtorNode home typeName unionData (Can.Ctor c) ( nodes, ann ) =
 -- ====== Type Aliases ======
 
 
+{-| Returns the graph with a constructor added for every alias in `aliases`
+that names a closed record.
+-}
 addAliases : ModuleName.Canonical -> Dict Name.Name Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addAliases home aliases graph =
     Dict.foldr (addAlias home) graph aliases
 
 
+{-| Returns the graph with a constructor added for one alias, if the alias names
+a closed record, and unchanged otherwise.
+
+The constructor is a `Define` of a function taking one argument per field, in
+the order `Can.fieldsToList` gives, and returning the record. It is given an
+annotation quantified over the alias's type variables, and each field name's
+use count goes up by one.
+
+-}
 addAlias : ModuleName.Canonical -> Name.Name -> Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addAlias home name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let
-                -- Build the constructor function type: field1Type -> field2Type -> ... -> recordType
                 fieldList : List ( Name.Name, Can.Type Name )
                 fieldList =
                     Can.fieldsToList fields
@@ -211,12 +291,10 @@ addAlias home name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
                         tipe
                         fieldList
 
-                -- Build argument names with types (without A.Located wrapper for Function)
                 argNamesWithTypes : List ( Name.Name, Can.Type Name )
                 argNamesWithTypes =
                     fieldList
 
-                -- Build record body: { field1 = field1, field2 = field2, ... }
                 bodyRecord : TOpt.Expr Name
                 bodyRecord =
                     TOpt.Record
@@ -258,6 +336,8 @@ addAlias home name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
             graph
 
 
+{-| Returns `fields` with the use count of `name` raised by one.
+-}
 addRecordCtorField : Name.Name -> Can.FieldType Name -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
     Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
@@ -267,6 +347,10 @@ addRecordCtorField name _ fields =
 -- ====== Effects ======
 
 
+{-| Returns the graph with the nodes for a module's effects added: a node for
+each port, or for an effect manager its `$fx$` `Manager` node and a `Link` to
+it under `command`, `subscription` or both, as the manager's kind says.
+-}
 addEffects : ModuleName.Canonical -> Annotations -> Can.Effects -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
     case effects of
@@ -313,6 +397,10 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
             TOpt.LocalGraph { data | nodes = newNodes }
 
 
+{-| Returns the graph with a node added for one port: a `PortIncoming` holding
+the decoder of its payload, or a `PortOutgoing` holding the encoder. Its type
+is the port's annotation, and a port with no annotation crashes the compiler.
+-}
 addPort : ModuleName.Canonical -> Annotations -> Name.Name -> Can.Port -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addPort home annotations name port_ graph =
     case port_ of
@@ -361,6 +449,9 @@ addPort home annotations name port_ graph =
 -- ====== Graph Helper ======
 
 
+{-| Returns the graph with `node` added under `name` and the field use counts in
+`fields` added to the graph's.
+-}
 addToGraph : TOpt.Global -> TOpt.Node Name -> Dict Name.Name Int -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addToGraph name node fields (TOpt.LocalGraph data) =
     TOpt.LocalGraph
@@ -374,11 +465,20 @@ addToGraph name node fields (TOpt.LocalGraph data) =
 -- ====== Value Declarations ======
 
 
+{-| Returns the graph with every declaration in `decls` added, in order, or the
+first error one of them raises.
+-}
 addDecls : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Decls -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDecls home annotations exprTypes exprVars kernelEnv annotationVars decls graph =
     ReportingResult.loop (addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars) ( decls, graph )
 
 
+{-| Adds the first declaration of `decls` to the graph and returns the
+declarations still to add, or the finished graph at the end of the list.
+
+A recursive group containing `main` fails with `BadCycle`.
+
+-}
 addDeclsHelp : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ( TCan.Decls, TOpt.LocalGraph Name ) -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph Name ) (TOpt.LocalGraph Name))
 addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars ( decls, graph ) =
     case decls of
@@ -403,6 +503,9 @@ addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars ( decl
             ReportingResult.ok (ReportingResult.Done graph)
 
 
+{-| Returns the region of the name of the definition called `main` in `defs`,
+if there is one.
+-}
 findMain : List TCan.Def -> Maybe A.Region
 findMain defs =
     case defs of
@@ -426,6 +529,8 @@ findMain defs =
                         findMain rest
 
 
+{-| Returns the name a definition defines.
+-}
 defToName : TCan.Def -> Name.Name
 defToName def =
     case def of
@@ -440,6 +545,12 @@ defToName def =
 -- ====== Single Definitions ======
 
 
+{-| Returns the graph with one non-recursive top-level definition added.
+
+A definition written without a type annotation also produces a
+`MissingTypeAnnotation` warning carrying its annotation from `annotations`.
+
+-}
 addDef : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> TCan.Def -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
     case def of
@@ -455,6 +566,19 @@ addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
             addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name (List.map Tuple.first typedArgs) body graph
 
 
+{-| Returns the graph with a definition's node added, after checking it first
+when the definition is `main`.
+
+`main` is accepted when its type, with every alias expanded, is a
+`VirtualDom.Node` of one argument or a `Platform.Program`. A program whose
+flags are eco/system's `Environment`, as `EcoEnvironment.isEnvironmentFlags`
+decides, gets `System`'s environment decoder as its flags decoder, with no
+check of the flags type. Any other program's flags must pass
+`Effects.checkPayload`, and are decoded by a decoder built for them. The
+graph's `main` is set, and the globals that `main` needs are added to the
+dependencies of its node.
+
+-}
 addDefHelp : A.Region -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> ModuleName.Canonical -> Name.Name -> List Can.Pattern -> TCan.Expr -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body ((TOpt.LocalGraph data) as graph) =
     if name /= Name.main_ then
@@ -484,8 +608,8 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
 
             Can.TType hm nm [ flags, _, message ] ->
                 if hm == ModuleName.platform && nm == Name.program && EcoEnvironment.isEnvironmentFlags tipe then
-                    -- eco/system program (D13): the environment decoder ignores the host
-                    -- JSON and builds the Environment, so no payload check applies.
+                    -- The environment decoder ignores the host's JSON and builds the
+                    -- Environment, so no payload check applies.
                     Names.registerGlobal A.zero
                         EcoEnvironment.systemHome
                         EcoEnvironment.environmentDecoderName
@@ -511,10 +635,23 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
                 ReportingResult.throw (E.BadType region tipe)
 
 
+{-| Returns the graph with a `TrackedDefine` node added for one top-level
+definition, depending on the globals its body uses and on `mainDeps`.
+
+A definition with arguments becomes a `TrackedFunction`. An argument pattern
+other than a variable or alias is bound to a generated name, an alias pattern to
+its alias name, and the body is wrapped in a `Destruct`
+for each variable the pattern binds; every such variable is in scope, with its
+type, while the body is optimized.
+
+The node's type is the definition's annotation, and its solver variable is as
+the module docstring describes. A definition with no annotation crashes the
+compiler.
+
+-}
 addDefNode : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> A.Region -> Name.Name -> List Can.Pattern -> TCan.Expr -> EverySet String TOpt.Global -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body mainDeps graph =
     let
-        -- Get the def type from annotations
         defType : Can.Type Name
         defType =
             case Dict.get name annotations of
@@ -524,16 +661,13 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
                 Nothing ->
                     Utils.Crash.crash "Module.addDefNode: no annotation"
 
-        -- Extract tvar from the body expression (TCan.Expr = A.Located TCan.Expr_)
         bodyTvar : Maybe Vars.Variable
         bodyTvar =
             case A.toValue body of
                 TCan.TypedExpr info ->
                     info.tvar
 
-        -- For value definitions (no args), bodyTvar correctly represents the definition's type.
-        -- For function definitions (with args), look up the annotation-level solver variable
-        -- from the solver's Env. This gives us the full function type variable.
+        -- A function's body variable is that of its result, not of the whole function.
         nodeTvar : Maybe Vars.Variable
         nodeTvar =
             case args of
@@ -546,7 +680,6 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
                             Just var
 
                         Nothing ->
-                            -- Fallback to bodyTvar if not found (shouldn't happen for user defs)
                             bodyTvar
 
         ( deps, fields, def ) =
@@ -560,19 +693,16 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
                             |> Names.andThen
                                 (\( argNamesWithTypes, destructors ) ->
                                     let
-                                        -- Compute body type by peeling off arg types from function type
                                         bodyType =
                                             peelFunctionType (List.length args) defType
 
-                                        -- Root argument bindings (e.g., "_v0" for tuple patterns)
+                                        -- Each argument's bound name and type, generated or not.
                                         argBindings =
                                             List.map (\( A.At _ n, t ) -> ( n, t )) argNamesWithTypes
 
-                                        -- Extract bindings from destructors (e.g., "x", "y" from tuple (x, y))
                                         destructorBindings =
                                             List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
-                                        -- Combine all bindings so pattern variables are in scope
                                         allBindings =
                                             argBindings ++ destructorBindings
                                     in
@@ -591,7 +721,8 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
     addToGraph (TOpt.Global home name) (TOpt.TrackedDefine region def (EverySet.union deps mainDeps) { tipe = defType, tvar = nodeTvar }) fields graph
 
 
-{-| Wrap an expression in a Destruct node.
+{-| Returns `expr` wrapped in a `Destruct` that binds `destructor`, typed
+`bodyType` and keeping `expr`'s solver variable.
 -}
 wrapDestruct : Can.Type Name -> TOpt.Destructor Name -> TOpt.Expr Name -> TOpt.Expr Name
 wrapDestruct bodyType destructor expr =
@@ -602,6 +733,9 @@ wrapDestruct bodyType destructor expr =
 -- ====== Recursive Definitions ======
 
 
+{-| The definitions of a recursive group optimized so far, split into values
+(definitions with no arguments) and functions, each list newest first.
+-}
 type State
     = State
         { values : List ( Name.Name, TOpt.Expr Name )
@@ -609,6 +743,15 @@ type State
         }
 
 
+{-| Returns the graph with a recursive group added: one `Cycle` node holding
+every member, under a name combined from the members' names, and a `Link` to it
+under each member's own name.
+
+Only the members with no arguments are in the cycle set given to the
+optimizer, so only references to them are treated as references into the
+cycle.
+
+-}
 addRecDefs : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> List TCan.Def -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addRecDefs home annotations exprTypes exprVars kernelEnv annotationVars defs (TOpt.LocalGraph data) =
     let
@@ -643,6 +786,8 @@ addRecDefs home annotations exprTypes exprVars kernelEnv annotationVars defs (TO
         }
 
 
+{-| Returns the name a definition defines.
+-}
 toName : TCan.Def -> Name.Name
 toName def =
     case def of
@@ -653,12 +798,12 @@ toName def =
             name
 
 
+{-| Returns `names` with the definition's name added if it takes no arguments.
+-}
 addCycleName : TCan.Def -> EverySet String Name.Name -> EverySet String Name.Name
 addCycleName def names =
     case def of
         TCan.Def (A.At _ name) args _ ->
-            -- Only add zero-argument definitions (values) to the cycle set.
-            -- Functions are not tracked since they don't form true cyclic dependencies.
             if List.isEmpty args then
                 EverySet.insert identity name names
 
@@ -673,6 +818,8 @@ addCycleName def names =
                 names
 
 
+{-| Returns `links` with `link` added under the definition's name.
+-}
 addLink : ModuleName.Canonical -> TOpt.Node Name -> TCan.Def -> TypedNodes -> TypedNodes
 addLink home link def links =
     case def of
@@ -683,6 +830,11 @@ addLink home link def links =
             Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
 
 
+{-| Returns a computation that optimizes one member of a recursive group and
+adds it to `state`: a member with no arguments as a value, any other as a
+function that may be a tail-call loop, as `Expr.optimizePotentialTailCall`
+decides. A member with no annotation crashes the compiler.
+-}
 addRecDef : ModuleName.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name Vars.Variable -> EverySet String Name.Name -> State -> TCan.Def -> Names.Tracker State
 addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (State state) def =
     case def of
@@ -731,6 +883,8 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
 -- ====== Helpers ======
 
 
+{-| Returns the annotation of `name`, and crashes the compiler when there is none.
+-}
 findAnnotation : Name.Name -> Annotations -> Can.Annotation Name
 findAnnotation name annotations =
     case Dict.get name annotations of
@@ -741,6 +895,8 @@ findAnnotation name annotations =
             Utils.Crash.crash ("findAnnotation: " ++ name ++ " not found")
 
 
+{-| Returns the field use counts of `a` and `b` added together, name by name.
+-}
 mergeFieldCounts : Dict Name.Name Int -> Dict Name.Name Int -> Dict Name.Name Int
 mergeFieldCounts a b =
     Dict.foldl (\k v acc -> Dict.update k (\mv -> Just (Maybe.withDefault 0 mv + v)) acc) b a

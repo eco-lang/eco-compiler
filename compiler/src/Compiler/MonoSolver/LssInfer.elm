@@ -6,36 +6,65 @@ module Compiler.MonoSolver.LssInfer exposing
     , canTypeArrowDepth, canTypeMentionsArrow
     )
 
-{-| Lambda-set signature inference (LSS design §7).
+{-| Infers each definition's lambda-set signature, so that a call site can learn
+which functions the callee's body puts into the arrows of its type without
+walking that body.
 
-A def's LSS signature summarizes what its _body_ contributes to the arrows of
-its _annotation type_ — the facts a caller must apply without walking the
-body. With id-only members this is small and flat: per annotation-arrow
-ordinal, an `Engine.ArrowFact { rep, members, top }`.
+A _lambda set_ is the set of function values that can flow through one arrow of
+a type. The solver's store gives each arrow a _set slot_, and a slot holds
+_members_: integer ids, each naming one function value, interned from string
+keys by `Compiler.MonoSolver.Engine`. The key's prefix says what kind of value
+it names: `l|` a source lambda, `g|` a global, `c|` an enum or box
+constructor, `k|` a kernel, `a|` a record accessor, and `p|<global>|<d>` a
+partial application of a global with `d` arguments supplied. A slot can
+instead be ⊤, the set that may hold anything, which is always sound and only
+loses precision. What a slot can hold and how writes combine is
+`Compiler.MonoSolver.Store`'s to say.
 
-Inference is SCC-granular and demand-lazy: `signatureFor` memoizes per global
-(`S.lssSignatures`); a `TOpt.Cycle` node is one inference unit whose members
-share their annotation Points through one scratch-store memo (the paper's
-Σ/TIU-Self-Ref rule — recursive calls share the def's own set slots, which
-forbids polymorphic recursion in set parameters and guarantees termination).
+A slot that is not ⊤ claims to list every function that can reach its arrow,
+and a later stage may turn a call through a one-member set into a direct call.
+Much of this module is therefore deciding, where a set might be incomplete,
+whether to publish it or make it ⊤.
 
-The body walk is a TYPES-ONLY fold over `TOpt.Expr` — not a shadow of
-`Translate.translate`. Within one def the typechecker already connected
-everything: sub-expression types share solver-rooted `MVarId`s, and the
-scratch memo (`MVarId → Point`) makes every occurrence load to the same
-Point. The walk only adds what the type checker never knew — set facts. It
-performs no enqueues, allocates no SpecIds, emits no exprs, and touches no
-multi-instance stacks.
+A definition's signature is an `Engine.LssSignature`, one `Engine.ArrowFact`
+per arrow of its _signature source type_. That type is the definition's stored
+annotation when it has one, and its own type otherwise (`sigSourceTypeFor`).
+A fact's index is the arrow's _ordinal_: the position of its slot in the array
+`Store.loadTypeWithArrows` returns for that type. `instantiateWithSignature`
+applies the facts to a fresh instantiation loaded with
+`Store.loadTypeIsolatedWithArrows`, pairing facts with slots by ordinal, so the
+type it is given must be sourced the same way. When a non-trivial signature
+and the instantiation differ in length nothing can be paired, and every slot of
+the instantiation is made ⊤.
 
-Ordinal discipline (LSS\_006): a signature's `arrows` index is the minting
-order of `Store.loadTypeWithArrows` over the def's SIGNATURE SOURCE type —
-the stored annotation if present, else the node's `meta.tipe`.
-`instantiateWithSignature` pairs facts by the same ordinal from
-`Store.loadTypeIsolatedWithArrows` over the type its caller sourced the same
-way (`Translate.translateCall`'s annotation-first order). On arrow-count
-mismatch (an unannotated def whose use-site instantiation grew arrows), facts
-cannot be paired positionally — the total, sound fallback is to poison every
-slot of the instantiation (⊤ loses precision, never soundness).
+The unit of inference is one `TOpt.Cycle` node, all of its members together,
+or one other definition. A unit is inferred the first time any of its members
+is asked for, and every member's signature is memoized in `lssSignatures`.
+The signatures of the globals a unit references are computed first, so that
+the unit itself is inferred inside one scratch store (`Engine.withScratchStore`)
+with no other inference nested in it. Every member's signature source type is
+loaded through that store's shared memo, so a recursive or sibling reference
+unifies with the member's own slots. Asking for the signature of a unit that is
+still being inferred crashes.
+
+Most of the file is the body walk, `walkExpr`. It is a fold over the typed
+expression that loads types and writes set facts; it translates nothing and
+creates no specializations. Lambda literals and references to named functions
+write their own member ids into their type's slots, a call applies its callee's
+signature, an `if` or `case` joins its branches into one result, and a `let`
+joins its right-hand side into the name's type. Each walked expression hands
+its parent a `WalkPoint`, which says whether the sets it carries are known to be
+complete.
+
+After the walk, each member's slots are read back into facts. Where a slot's
+contents arrive over a deferred inclusion edge from another of the same
+signature's slots, the fact records that ordinal in `sources`, and the caller
+installs the edge in its own store; members from any other inflow are copied
+into the fact. An empty fact means only that the body added nothing visible to
+that arrow, not that no function reaches it.
+
+The module also exposes the helpers that write member ids along a type's
+arrows, the arity queries, and the directed set flow `flowArrowSetsPlain`.
 
 
 # Signatures
@@ -78,10 +107,15 @@ import System.TypeCheck.IO as IO
 -- ====== PUBLIC API ======
 
 
-{-| The memoized per-definition signature. Computes (and memoizes) the whole
-SCC unit on first demand. Crashes (EngineBug) on re-entry into an in-flight
-unit — pre-resolution of callee signatures makes that impossible; the crash
-keeps it that way.
+{-| Returns the lambda-set signature of `global`, inferring and memoizing its
+whole unit on first demand.
+
+A `Link` node is followed first, and the member's own memoized signature is
+preferred over the target's. A global that is a cycle group's handle rather
+than a member gets a trivial placeholder. With LSS disabled the result is
+`Engine.trivialSignature 0` and nothing is memoized. Asking for a member of a
+unit still being inferred aborts with an `EngineBug`.
+
 -}
 signatureFor : TOpt.Global -> Engine.S -> ( Engine.LssSignature, Engine.S )
 signatureFor global s0 =
@@ -103,11 +137,9 @@ signatureFor global s0 =
             else
                 case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
                     Just (TOpt.Link target) ->
-                        -- Chase links BEFORE unit resolution. A cycle member
-                        -- maps as `member -> Link(_M$first group)`, and
-                        -- inferring the group memoizes EVERY member's own
-                        -- signature — so after the chase, prefer this gkey's
-                        -- freshly memoized signature over the target handle's.
+                        -- A cycle member links to its group's handle, and
+                        -- inferring the group memoizes every member's own
+                        -- signature, which is preferred over the handle's.
                         case signatureFor target s0 of
                             ( sigTarget, s1 ) ->
                                 case HashMap.get TOpt.globalHash (==) global s1.lssSignatures of
@@ -121,11 +153,14 @@ signatureFor global s0 =
                         inferUnit global s0
 
 
-{-| Load the callee's signature-source type as a fresh per-call-site
-instantiation (isolated memo) and apply the callee's signature facts to its
-arrow slots. `funcCanType` must be sourced annotation-first exactly as
-`Translate.translateCall` does — the signature side uses the same source, so
-ordinals pair (LSS\_006).
+{-| Loads `funcCanType` as a fresh instantiation and applies the signature of
+`global` to its arrow slots, returning the instantiation's root.
+
+`funcCanType` must be `global`'s stored annotation when it has one, since that
+is the type the signature's ordinals count; otherwise the facts may pair with
+the wrong arrows, or, for a non-trivial signature whose arrow count differs,
+every slot is made ⊤.
+
 -}
 instantiateWithSignature : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateWithSignature global funcCanType s0 =
@@ -134,14 +169,9 @@ instantiateWithSignature global funcCanType s0 =
             instantiateWithSig global sig funcCanType s1
 
 
-{-| `instantiateWithSignature` with the signature already in hand, so a caller
-that had to fetch it for another reason does not fetch it twice.
-
-Step 16 (D8): for a TRIVIAL signature `applyFacts` returns immediately, and the
-only thing the arrow-ordinal `Array` it is given exists for is to be indexed by
-facts. Building it — `Array.fromList (List.reverse …)` per call — is then pure
-waste, so a trivial signature takes the plain isolated load.
-
+{-| Does what `instantiateWithSignature` does with the signature `sig` already
+in hand. A trivial signature has no facts to apply, so its type is loaded
+without collecting the arrow slots.
 -}
 instantiateWithSig : TOpt.Global -> Engine.LssSignature -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateWithSig global sig funcCanType s1 =
@@ -156,14 +186,9 @@ instantiateWithSig global sig funcCanType s1 =
                         ( funcVar, s3 )
 
 
-{-| Unify a source lambda's own member into the first `arity` arrows of its
-loaded type's result spine (LSS\_013 spine injection), via 'injectSpineMemberId'.
-`arity` is the lambda's parameter count — the exact number of arrows a partial
-application of it can peel; the spine is bounded there so a function-returning
-body never stamps its returned closure's arrows (see 'injectSpineMemberId').
-No-op for untagged lambdas and for any spine arrow with no slot (an erased-var
-head has no slot to constrain — sound: the arrow reads back whatever its other
-constraints say, or LTop). The argument arrows are deliberately never touched.
+{-| Writes a source lambda's raw member id into the first `arity` arrows of
+`funcVar`'s result spine, as `injectSpineMemberId` describes. `arity` is the
+lambda's parameter count. A lambda with no source id writes nothing.
 -}
 injectLambdaMember : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> Engine.S
 injectLambdaMember arity srcLam funcVar s0 =
@@ -175,33 +200,24 @@ injectLambdaMember arity srcLam funcVar s0 =
             injectSpineMemberId arity (Engine.srcLambdaKey lamId) funcVar s0
 
 
-{-| Fix B (LSS\_017): `injectLambdaMember` for TRANSLATION-phase mints —
-the member id is spec-qualified via `Engine.lambdaInstanceMemberId` when
-the defining global routes keyed, so keyed clones of one source lambda
-stay distinguishable. The inference-phase walk (`walkExpr`) keeps the raw
-`injectLambdaMember`: signatures are per-unit and pre-spec by design.
+{-| Does what `injectLambdaMemberQualifiedId` does, without returning the id.
 -}
 injectLambdaMemberQualified : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> Engine.S
 injectLambdaMemberQualified arity srcLam funcVar s0 =
-    -- Step 22(b): the id-returning form is the real one; this is the
-    -- unit-returning wrapper for the three arg-injection sites that have no
-    -- use for the id. Written as a case rather than `Engine.map` so it costs
-    -- no closure.
     case injectLambdaMemberQualifiedId arity srcLam funcVar s0 of
         ( _, s1 ) ->
             s1
 
 
-{-| `injectLambdaMemberQualified` returning the member id it minted (step 22b).
+{-| Mints a source lambda's member id with `Engine.lambdaInstanceMemberId`,
+writes it along `funcVar`'s result spine, and returns it. A lambda with no
+source id writes nothing and returns `Nothing`.
 
-The id was previously re-derived by a SECOND call to
-`Engine.lambdaInstanceMemberMaybe` in `Translate.specializeLambda`, which is
-state-idempotent but not cheap: each call runs `instanceQualTagFor`, the
-`rootLamOf` fold, `layoutQualKey` (a multi-kilobyte string concat) and a
-`byKey` probe. Returning it from the one mint that has to happen anyway makes
-LSS\_017's "stamped IDENTICALLY in its set injection and its
-`ClosureInfo.lssMember`" true by construction instead of by an idempotence
-argument.
+The id is written into the first `arity` arrows, `arity` being the lambda's
+parameter count, except for a lambda that is the root of its definition and so
+was given its global's `g|` id. That id names the unapplied global, so it is
+written on the head arrow only, and the deeper arrows, which hold partial
+applications of the global, get its `p|` ids (`injectFoldedSuccessors`).
 
 -}
 injectLambdaMemberQualifiedId : Int -> Maybe TypeIds.SrcLambdaId -> Vars.Variable -> Engine.S -> ( Maybe Int, Engine.S )
@@ -213,21 +229,6 @@ injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
         Just lamId ->
             case Engine.lambdaInstanceMemberId lamId s0 of
                 ( mid, s1 ) ->
-                    -- plans/lss-root-fold-depth-qualified-spine.md §3: a
-                    -- root-FOLDED lambda's id is its global's GROUND
-                    -- STANDALONE key — a STAMPABLE `g|` — and must not be
-                    -- written past the head. `lss-root-member-fold.md` §1.5
-                    -- AR-1: "the papMembers miscompile required a stampable
-                    -- id on a PARTIAL application; depth>0 stays `p|`
-                    -- (declining), so that door stays shut" — and the two
-                    -- OTHER spine writers (`Translate.stampSelfSpine` via
-                    -- `memberIdForDepth`, `injectPapSuccessors`) already
-                    -- honour that. This one did not: `spineGoC` writes ONE
-                    -- id at every depth, which is correct for `l|` lambdas
-                    -- (LSS_013 — LSS_011's PAP-prefix stamp layout-checks
-                    -- them) and wrong for a folded `g|`.
-                    --
-                    -- Non-folded lambdas keep the LSS_013 full-spine write.
                     case CoreDict.get (Engine.srcLambdaKey lamId) s1.lssMemberTable.rootLamOf of
                         Just g ->
                             case injectSpineMemberId 1 mid funcVar s1 of
@@ -246,10 +247,9 @@ injectLambdaMemberQualifiedId arity srcLam funcVar s0 =
 -- ====== SIGNATURE SOURCE ======
 
 
-{-| The one place that decides which canonical type a def's signature is
-enumerated over: the stored annotation if the global has one, else the given
-fallback (the node's own type on the inference side; the use-site
-`funcMeta.tipe` on the call side).
+{-| Returns the type whose arrows `global`'s signature ordinals count: its
+stored annotation if it has one, else `fallbackType`. Inference and every call
+site go through this, so that both count the same arrows.
 -}
 sigSourceTypeFor : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> Can.Type TypeIds.MVarId
 sigSourceTypeFor global fallbackType s =
@@ -261,16 +261,12 @@ sigSourceTypeFor global fallbackType s =
             fallbackType
 
 
-{-| Apply per-ordinal facts to freshly minted slots. Count mismatch ⇒ poison
-everything (sound fallback; see module doc).
+{-| Applies `sig`'s facts to `slots`, the arrow slots of a fresh instantiation
+rooted at `funcVar`, pairing them by ordinal.
 
-LSS\_026 census (plan §2.6 row 6): the mismatch branch is REPORT-COUNTED per
-callee. Note the guard order — `sig.trivial` short-circuits FIRST, so a
-trivial-signature callee can never reach the poison no matter how far its
-occurrence type diverges from its annotation. The population that CAN reach
-it is exactly the non-trivial one, i.e. the callees whose facts the GAP-2
-transport exists to deliver, which is why this counter is a direct read on
-the transport's yield rather than a curiosity.
+A trivial signature writes nothing, whatever the slot count. Otherwise, when the
+signature and the instantiation have different numbers of arrows, every arrow
+set under `funcVar` is made ⊤, and the mismatch is counted under `lss.report`.
 
 -}
 applyFacts : TOpt.Global -> Engine.LssSignature -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -285,16 +281,12 @@ applyFacts global sig slots funcVar s0 =
         applyFactsGo sig.arrows slots 0 s0
 
 
-{-| LSS\_026 census: an arrow-count mismatch poisoned a whole instantiation.
-`shape=<sigN>-><slotsN>` records the direction (occurrence GREW arrows vs
-shrank), which is what distinguishes "annotation is more general than the
-use" from a genuine pairing bug. Report-gated.
+{-| Counts, under `lss.report`, an instantiation of `global` made ⊤ because its
+`slotsN` arrows did not match the signature's `sigN`: once in total, once per
+global, and once per pair of counts.
 -}
 censusLenGuard : TOpt.Global -> Int -> Int -> Engine.S -> Engine.S
 censusLenGuard global sigN slotsN s =
-    -- Gated since step 6: the two keys below are built with `++` on the call
-    -- line, so an ungated call pays for two strings per `applyFacts` whether or
-    -- not anything will read them.
     if not s.env.lss.report then
         s
 
@@ -305,6 +297,11 @@ censusLenGuard global sigN slotsN s =
             |> Engine.bumpArgFlowCensus ("poison|lenGuardShape|" ++ String.fromInt sigN ++ "->" ++ String.fromInt slotsN)
 
 
+{-| Applies the facts from ordinal `i` onwards to their slots. For each fact, the
+slot is unified with the slot of its `rep` ordinal, then made ⊤ (keeping the
+fact's ⊤ kind) or given the fact's members, and then given a deferred inclusion
+edge from the slot of each ordinal in `sources`.
+-}
 applyFactsGo : Array Engine.ArrowFact -> Array Vars.Variable -> Int -> Engine.S -> Engine.S
 applyFactsGo facts slots i s0 =
     case ( Array.get i facts, Array.get i slots ) of
@@ -337,16 +334,9 @@ applyFactsGo facts slots i s0 =
                     in
                     case afterSet of
                         s2 ->
-                            -- LSS_023: install the directed half — for each
-                            -- source ordinal j, "slots[i] ⊇ slots[j]" as a
-                            -- deferred edge. Pull-at-read makes the
-                            -- eager-vs-late ordering irrelevant: this is
-                            -- exactly the deferral that makes directed facts
-                            -- sound where the snapshot read was not, even
-                            -- though applyFacts still precedes arg
-                            -- unification. Missing ordinal → skip (a count
-                            -- mismatch is already poisoned by applyFacts'
-                            -- length guard).
+                            -- The edges are followed when the slot is read,
+                            -- so members the source slots gain later, from the
+                            -- call's arguments, still arrive.
                             case installSources fact.sources slots slot s2 of
                                 s3 ->
                                     applyFactsGo facts slots (i + 1) s3
@@ -355,6 +345,9 @@ applyFactsGo facts slots i s0 =
             s0
 
 
+{-| Adds to `dst` a deferred inclusion edge from the slot of each ordinal in
+`ordinals`, skipping an ordinal with no slot.
+-}
 installSources : List Int -> Array Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 installSources ordinals slots dst s0 =
     case ordinals of
@@ -376,20 +369,33 @@ installSources ordinals slots dst s0 =
 -- ====== UNIT INFERENCE ======
 
 
+{-| One definition of an inference unit: the global, the type its signature is
+read from, and the body to walk, which is `Nothing` for a node with no
+expression to walk (a constructor, enum, box, manager or kernel node, or an
+unknown global).
+
+`tailArgs` is non-empty only for a tail-recursive member of a cycle. Its body
+is typed at the function's result while `sigType` is the whole function type,
+so the walk first binds these names to the first arrows of the loaded type.
+
+-}
 type alias UnitMember =
     { g : TOpt.Global
     , gkey : String
     , sigType : Can.Type TypeIds.MVarId
     , body : Maybe (TOpt.Expr TypeIds.MVarId)
-
-    -- LSS_020 (B.1): non-empty ONLY for Cycle `TailDef` members, whose body
-    -- expr is ARG-STRIPPED (typed at the result) while `sigType` is the full
-    -- function type — `walkMembers` peels this many arrows off the loaded
-    -- root (binding the arg names) before joining the body's flow.
     , tailArgs : List Name
     }
 
 
+{-| Infers the signatures of the whole unit `global` belongs to, memoizes each
+member's, and returns `global`'s.
+
+The unit's members are marked as in progress for the duration. A `global` that
+is not itself one of the members, a cycle group's handle, is given a trivial
+placeholder.
+
+-}
 inferUnit : TOpt.Global -> Engine.S -> ( Engine.LssSignature, Engine.S )
 inferUnit global s0 =
     case resolveUnit global s0 of
@@ -398,8 +404,8 @@ inferUnit global s0 =
                 s2 =
                     { s1 | lssInProgress = HashMap.insert TOpt.globalHash (==) global () (List.foldl (\m acc -> HashMap.insert TOpt.globalHash (==) m.g () acc) s1.lssInProgress members) }
             in
-            -- Pre-resolve callee signatures OUTSIDE the scratch store so
-            -- scratch stores never nest.
+            -- Callee signatures are computed before entering the scratch
+            -- store, so that no inference runs inside it.
             case preResolveCallees members s2 of
                 s3 ->
                     case Engine.withScratchStore (inferUnitInScratch members) s3 of
@@ -416,13 +422,6 @@ inferUnit global s0 =
                                     ( sig, s5 )
 
                                 [] ->
-                                    -- gkey is a Cycle GROUP handle (`_M$first`),
-                                    -- not itself a def: every member's real
-                                    -- signature was memoized above, and callers
-                                    -- always reach members via their Link chase
-                                    -- (which prefers the member's own memo).
-                                    -- The group handle itself gets a trivial
-                                    -- placeholder.
                                     let
                                         placeholder =
                                             Engine.trivialSignature 0
@@ -430,16 +429,18 @@ inferUnit global s0 =
                                     ( placeholder, { s5 | lssSignatures = HashMap.insert TOpt.globalHash (==) global placeholder s5.lssSignatures } )
 
 
-{-| Resolve the inference unit: a `TOpt.Cycle` node is one unit (all its
-members); anything else is a singleton. Members without a walkable body
-(Ctor/Enum/Box/Kernel/Manager) get trivial signatures via a body-less member.
-Signature-source types are annotation-first (LSS\_006).
+{-| Returns the members of the inference unit `global` belongs to, following
+`Link` nodes: every value and function definition of a `TOpt.Cycle`, or the one
+definition otherwise.
+
+A constructor, enum, box, manager, kernel or unknown global becomes a member
+with no body, which contributes nothing to its signature.
+
 -}
 resolveUnit : TOpt.Global -> Engine.S -> ( List UnitMember, Engine.S )
 resolveUnit ((TOpt.Global home _) as global) s0 =
     case HashMap.get TOpt.globalHash (==) global s0.env.toptNodes of
         Nothing ->
-            -- Unknown global (e.g. an accessor pseudo-global): trivial.
             ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
         Just node ->
@@ -500,6 +501,9 @@ resolveUnit ((TOpt.Global home _) as global) s0 =
                     ( [ memberOf global Can.TUnit Nothing s0 ], s0 )
 
 
+{-| Builds a unit member for `g` with no tail arguments, its signature type chosen
+by `sigSourceTypeFor`.
+-}
 memberOf : TOpt.Global -> Can.Type TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> UnitMember
 memberOf g fallbackType body s =
     { g = g
@@ -510,8 +514,8 @@ memberOf g fallbackType body s =
     }
 
 
-{-| Fold over unit bodies collecting referenced globals; `signatureFor` each
-one outside the unit and not yet memoized. Cheap syntactic pass.
+{-| Computes the signature of every global the unit's bodies reference, except
+the unit's own members and globals already memoized.
 -}
 preResolveCallees : List UnitMember -> Engine.S -> Engine.S
 preResolveCallees members s0 =
@@ -535,6 +539,9 @@ preResolveCallees members s0 =
     preResolveGo unitKeys (CoreDict.values referenced) s0
 
 
+{-| Computes the signature of each of `globals` that is neither in `unitKeys` nor
+already memoized.
+-}
 preResolveGo : Dict String () -> List TOpt.Global -> Engine.S -> Engine.S
 preResolveGo unitKeys globals s0 =
     case globals of
@@ -555,6 +562,9 @@ preResolveGo unitKeys globals s0 =
                         preResolveGo unitKeys rest s1
 
 
+{-| Adds to `acc` every global, enum, box and cycle member that `expr` references,
+keyed by its comparable name.
+-}
 collectReferencedGlobals : TOpt.Expr TypeIds.MVarId -> Dict String TOpt.Global -> Dict String TOpt.Global
 collectReferencedGlobals expr acc =
     case expr of
@@ -578,22 +588,22 @@ collectReferencedGlobals expr acc =
 -- ====== THE SCRATCH-STORE UNIT PASS ======
 
 
+{-| Infers the signatures of `members` inside the current scratch store: loads
+each member's signature type through the shared memo, walks the bodies, and
+reads the slots back into signatures, in member order.
+
+Under `lss.qCensus`, the unit's recorded constraints are then compared with the
+store's answer and counted, and the constraint log is cleared, so that the same
+constraints are not counted again when the scratch store is dropped.
+
+-}
 inferUnitInScratch : List UnitMember -> Engine.S -> ( List ( TOpt.Global, Engine.LssSignature ), Engine.S )
 inferUnitInScratch members s0 =
-    -- Load every member's signature type through the SHARED scratch memo,
-    -- capturing per-member roots + arrow-slot arrays (self/sibling annotation
-    -- vars share Points — the Σ rule).
     case loadMemberSlots members [] s0 of
         ( loaded, s1 ) ->
-            -- `loaded` is in member order by construction (one triple per
-            -- member, body-less members included), so the zips align.
+            -- `loaded` has one entry per member, in member order.
             case walkMembers (List.map2 Tuple.pair members loaded) s1 of
                 s2 ->
-                    -- LSS_026 §11.2(i) defaulted a WRAP-CLASS member's
-                    -- head-arrow fact here. MEASURED NO-GO (plan §11.5): it
-                    -- pushed 184 signatures into `trivial`, whose
-                    -- short-circuits then cost 60 % of grounding, and bought
-                    -- 0.000 pp of dispatch coverage.
                     case
                         zonkSignatures
                             (List.map2
@@ -605,21 +615,8 @@ inferUnitInScratch members s0 =
                             s2
                     of
                         ( sigs, s3 ) ->
-                            -- §5.6 (plans/lss-paper-inclusion-constraints.md):
-                            -- score `Q` HERE, while the scratch store is still
-                            -- installed. This is the paper's inference boundary
-                            -- — the unit's constraints are complete and its
-                            -- signature roots are in hand — and it is the arm
-                            -- the REPRODUCES gate is about. `finishNode`'s
-                            -- census sees the SPECIALIZATION phase instead,
-                            -- where a stored demand legitimately re-enters as
-                            -- ground `σ̄`.
-                            --
-                            -- The log is cleared immediately after, so these
-                            -- constraints are not counted a second time as
-                            -- `scratchDropped` when the scratch store unwinds:
-                            -- the two censuses must PARTITION the constraints,
-                            -- not overlap.
+                            -- Counted here, while the scratch store still
+                            -- holds the unit's complete constraints.
                             let
                                 s4 =
                                     Store.qInferenceCensus
@@ -632,6 +629,9 @@ inferUnitInScratch members s0 =
                             ( sigs, { s4 | itemAux = { aux4 | qLog = [] } } )
 
 
+{-| Loads each member's signature type through the shared memo, returning, in
+member order, the member's global, the type's root and its arrow slots.
+-}
 loadMemberSlots : List UnitMember -> List ( TOpt.Global, Vars.Variable, Array Vars.Variable ) -> Engine.S -> ( List ( TOpt.Global, Vars.Variable, Array Vars.Variable ), Engine.S )
 loadMemberSlots members acc s0 =
     case members of
@@ -644,14 +644,14 @@ loadMemberSlots members acc s0 =
                     loadMemberSlots rest (( m.g, root, slots ) :: acc) s1
 
 
-{-| LSS\_020 (B.1.f): the raw member id of the def's OWN body lambda. Filtered
-at signature readback — transporting it through signatures is redundant
-(callers already receive the def's identity via the `g|` standalone spine
-injection, which grounds per LSS\_019, and via `injectArgLambdaMember`
-translate-side) and harmful (raw `l|` ids decline at AbiCloning per LSS\_017,
-and an unfiltered self-id would make EVERY ≥1-param def's signature
-nontrivial, killing the `trivial` short-circuits). Inner-lambda ids are NOT
-filtered — those are genuine body contributions.
+{-| Returns the raw member id of the lambda that is the member's whole body, if
+it is one.
+
+This id is removed from the member's facts when they are read back. A
+reference to the definition already names it with its `g|` member, and keeping
+the raw id would make the signature of every definition with a parameter
+non-trivial. Ids of lambdas inside the body are kept.
+
 -}
 selfIdOf : UnitMember -> Maybe Int
 selfIdOf m =
@@ -666,6 +666,11 @@ selfIdOf m =
             Nothing
 
 
+{-| Walks each member's body and joins the value it hands back into the member's
+loaded signature type, binding a tail-recursive member's arguments to that
+type's first arrows and joining at the arrow after them. A member with no body
+is only counted, under `lss.report`.
+-}
 walkMembers : List ( UnitMember, ( TOpt.Global, Vars.Variable, Array Vars.Variable ) ) -> Engine.S -> Engine.S
 walkMembers pairs s0 =
     case pairs of
@@ -675,20 +680,9 @@ walkMembers pairs s0 =
         ( m, ( _, root, _ ) ) :: rest ->
             case m.body of
                 Nothing ->
-                    -- LSS_026 census (plan §2.1 row 3): a BODY-LESS unit
-                    -- member (Ctor/Enum/Box/Manager/Kernel/port). Its
-                    -- signature is trivial HONESTLY — there is no body that
-                    -- could have contributed — so it must not be counted
-                    -- against the producer-side transport population.
                     walkMembers rest (Engine.bumpArgFlowCensus "sig|bodyless" s0)
 
                 Just body ->
-                    -- LSS_020 (B.1): connect the member's own signature
-                    -- slots to the body's flow. TailDef bodies are
-                    -- ARG-STRIPPED (result-typed) while the root is the
-                    -- full function type, so peel |tailArgs| arrows off
-                    -- the root — binding the args while there — and join
-                    -- the spine end (single-source join: Honest|Opaque).
                     let
                         ( env0, maybeTarget, s1 ) =
                             bindParamsFromSpine m.tailArgs root CoreDict.empty CoreDict.empty s0
@@ -705,6 +699,10 @@ walkMembers pairs s0 =
                                     walkMembers rest s2
 
 
+{-| Reads back each pending member's slots into its signature, returning them in
+member order. Each entry carries the member's global, its own body lambda's
+raw id to leave out (`selfIdOf`), and its arrow slots.
+-}
 zonkSignatures : List ( TOpt.Global, Maybe Int, Array Vars.Variable ) -> List ( TOpt.Global, Engine.LssSignature ) -> Engine.S -> ( List ( TOpt.Global, Engine.LssSignature ), Engine.S )
 zonkSignatures pending acc s0 =
     case pending of
@@ -717,13 +715,9 @@ zonkSignatures pending acc s0 =
                     zonkSignatures rest (( gkey, sig ) :: acc) (censusSigFacts gkey sig s1)
 
 
-{-| LSS\_026 census (plan §2.6 "sigfacts"): dump every NON-default fact of a
-non-trivial signature, one key per (def, ordinal). This is what turns "551
-reachable sites" into "which POSITIONS carry what, per producer" — D1
-connects the arg-callee's residual spine, so a producer whose members sit
-only at its own param ordinals yields nothing at the position the consumer
-reads. Report-gated; ~321 carrying signatures on the self-compile, a few
-ordinals each.
+{-| Counts, under `lss.report`, every fact of `g`'s non-trivial signature that is
+not the default, one key per ordinal, naming its member count and class, its
+source count, whether it is ⊤ and its `rep`.
 -}
 censusSigFacts : TOpt.Global -> Engine.LssSignature -> Engine.S -> Engine.S
 censusSigFacts g sig s =
@@ -732,8 +726,6 @@ censusSigFacts g sig s =
 
     else
         let
-            -- Step 12: rendered only here, behind the report gate. The
-            -- signature maps are keyed by the `Global` itself now.
             gkey =
                 TOpt.toComparableGlobal g
         in
@@ -775,11 +767,25 @@ censusSigFacts g sig s =
             (List.indexedMap Tuple.pair (Array.toList sig.arrows))
 
 
+{-| Reads back one member's arrow slots into its signature, leaving `selfId` out
+of every fact.
+-}
 zonkOneSignature : Maybe Int -> Array Vars.Variable -> Engine.S -> ( Engine.LssSignature, Engine.S )
 zonkOneSignature selfId slots s0 =
     zonkSigGo selfId slots (Array.length slots) 0 [] s0
 
 
+{-| Reads back the slots from ordinal `i` onwards, then builds the signature.
+
+Each fact's `rep` is the smallest ordinal whose slot is unified with this one.
+A ⊤ slot gives a ⊤ fact of the same kind with no members. A slot with members
+gives them, unless there are more than `lss.maxSetSize` (when that is above 0),
+which gives ⊤. A slot with deferred edges is resolved by `sigResolveEdges`. An
+unwritten slot gives the default fact. The signature is trivial when every fact
+is the default, and its `residual` pairs the `rep` of each fact that carries
+members with those members.
+
+-}
 zonkSigGo : Maybe Int -> Array Vars.Variable -> Int -> Int -> List Engine.ArrowFact -> Engine.S -> ( Engine.LssSignature, Engine.S )
 zonkSigGo selfId slots n i factsRev s0 =
     if i >= n then
@@ -795,12 +801,8 @@ zonkSigGo selfId slots n i factsRev s0 =
                     )
         in
         let
-            -- §5.2: `Q` — `ℓ… ⋸ α`, keyed by the CANONICAL ordinal, so a use
-            -- re-emits against the variable rather than against a position.
-            -- Members of a non-canonical ordinal belong to its rep's variable;
-            -- `applyFacts` unifies those slots first, so either key writes the
-            -- same class, but keying canonically is what makes it a constraint
-            -- ON A VARIABLE.
+            -- Keyed by `rep`: unified slots are one set, so their members
+            -- belong to one key.
             residual =
                 List.foldr
                     (\( j, f ) acc ->
@@ -843,17 +845,12 @@ zonkSigGo selfId slots n i factsRev s0 =
                             ( fact, s3 ) =
                                 case desc.content of
                                     Vars.Structure (Vars.LambdaSet1 (Vars.LsTop tpK)) ->
-                                        -- Members are dead under ⊤ at every
-                                        -- fact consumer; carry none. §4.9:
-                                        -- the birth kind rides the fact.
                                         ( Ok { rep = rep, members = [], top = True, topKind = tpK, sources = [] }, s2 )
 
                                     Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers ms0)) ->
                                         let
-                                            -- B.1.f self-id filter (see
-                                            -- `selfIdOf`); preserves the
-                                            -- ascending order the set-write
-                                            -- contract requires.
+                                            -- Filtering keeps the ascending
+                                            -- order set writes require.
                                             ms =
                                                 case selfId of
                                                     Just sid ->
@@ -862,11 +859,7 @@ zonkSigGo selfId slots n i factsRev s0 =
                                                     Nothing ->
                                                         ms0
                                         in
-                                        -- B.4 rider: the maxSetSize policy
-                                        -- applies to the signature channel
-                                        -- too (mirrors Store.zonkSetSlot's
-                                        -- cap; LSS_005 — widening only).
-                                        -- 0 = UNLIMITED (2026-08-29).
+                                        -- A `maxSetSize` of 0 means no cap.
                                         if s2.env.lss.maxSetSize > 0 && List.length ms > s2.env.lss.maxSetSize then
                                             ( Ok { rep = rep, members = [], top = True, topKind = Mono.tkWiden, sources = [] }
                                             , Engine.bumpWidenedBySigSize s2
@@ -876,20 +869,10 @@ zonkSigGo selfId slots n i factsRev s0 =
                                             ( Ok { rep = rep, members = ms, top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
 
                                     Vars.Structure (Vars.LambdaSet1 (Vars.LsFrom ms0 srcs)) ->
-                                        -- LSS_023 promote-or-internalize (the
-                                        -- paper's Fig. 7 split, at the id
-                                        -- level): walk the edge graph; a node
-                                        -- UF-equivalent to ANOTHER signature
-                                        -- ordinal is PROMOTED (recorded in
-                                        -- `sources`, not descended — the
-                                        -- caller-side edge delivers its
-                                        -- members); everything else is
-                                        -- INTERNALIZED (members collected,
-                                        -- its own srcs descended).
                                         ( Err ( ms0, srcs ), s2 )
 
                                     _ ->
-                                        -- FlexVar: the body contributed nothing.
+                                        -- Unwritten: the body contributed nothing.
                                         ( Ok { rep = rep, members = [], top = False, topKind = Mono.tkLegacy, sources = [] }, s2 )
                         in
                         case fact of
@@ -906,19 +889,9 @@ zonkSigGo selfId slots n i factsRev s0 =
                                         zonkSigGo selfId slots n (i + 1) (done :: factsRev) s5
 
 
-{-| LSS\_026 census (plan §2.1 row 3): classify a finished signature so
-Phase 0 can decompose the trivial mass instead of reporting one number.
-
-  - `sig|arrowfree` — no arrow slots at all (a value def): trivial by
-    construction, nothing a transport could ever add.
-  - `sig|allflex` — has arrows, every fact default: the body contributed
-    nothing to ANY slot. This is the bucket GAP-2's producer side is about.
-  - `sig|hasTop` — carries at least one ⊤ fact (poisoned or widened).
-  - `sig|carrying` — carries members and/or promoted sources: the
-    non-trivial population whose facts the transport can deliver.
-
-`sig|arrows=<n>` gives the arity distribution. Report-gated.
-
+{-| Counts, under `lss.report`, a finished signature of `n` arrows by its number
+of arrows and by class: `arrowfree` for no arrows, `allflex` for a trivial
+signature, `hasTop` for one with a ⊤ fact, and `carrying` for the rest.
 -}
 censusSignature : Int -> List Engine.ArrowFact -> Bool -> Engine.S -> Engine.S
 censusSignature n facts trivial s =
@@ -945,18 +918,20 @@ censusSignature n facts trivial s =
             |> Engine.bumpArgFlowCensus ("sig|arrows=" ++ String.fromInt n)
 
 
-{-| LSS\_023 §3.2: the edge-graph walk behind `zonkSigGo`'s `LsFrom` arm.
-Same visited discipline as `Store.resolveSlotMembers` (raw pointKey, marked on
-entry, fresh per call); classification per reached node:
+{-| Resolves the slot at ordinal `i`, holding members `ms0` and deferred edges
+from `srcs`, into the members and source ordinals of its fact.
 
-  - UF-equivalent to `slots[j]` for some ordinal `j /= i`: PROMOTE — record
-    `j`, do NOT descend (the caller-side edge delivers j's members);
-  - otherwise: INTERNALIZE — collect its members, descend its sources.
+The edges are followed transitively. A slot unified with the slot of another
+ordinal is _promoted_: the ordinal goes into `sources` and the slot is not
+followed further, because the caller installs that edge itself. Any other slot
+is _internalized_: its members are collected and its own edges followed.
+Reaching a ⊤ slot, or a slot that is not a lambda set, makes the fact ⊤.
 
-A reachable ⊤ short-circuits to `{ top = True, members = [], sources = [] }`.
-The self-id filter (B.1.f) applies to the COLLECTED members; ordinal self
-(and rep-equal ordinals — their equality is already the rep link) are
-dropped from sources.
+Reaching an unwritten slot makes the fact ⊤ too when it would otherwise carry
+any members or source ordinals: values can arrive through that slot that
+neither the members nor the caller's edges account for, so a non-empty fact
+would claim a completeness it does not have. A fact that would be empty stays
+empty. `selfId` is removed from the collected members.
 
 -}
 sigResolveEdges : Maybe Int -> Array Vars.Variable -> Int -> List Int -> List Vars.Variable -> Engine.S -> ( { top : Bool, members : List Int, sources : List Int }, Engine.S )
@@ -976,31 +951,6 @@ sigResolveEdges selfId slots i ms0 srcs s0 =
                             members
             in
             if sawFlex && not (List.isEmpty filtered && List.isEmpty ordinals) then
-                -- LSS_026(a), signature side: this internalization crossed a
-                -- DANGLING (FlexVar) inflow — an untracked inhabitant
-                -- channel — while carrying members or promoted ordinals. The
-                -- fact would claim completeness it does not have (plan §0.5:
-                -- `pick`/`d`), so it resolves ⊤.
-                --
-                -- UNCONDITIONAL since 2026-08-23. The plan shipped this
-                -- flag-gated because the Phase-0 census found zero crossings
-                -- on the self-compile; the escalation trigger was a runtime
-                -- witness instead — `test/elm/src/LssMixedSigHonestyTest.elm`
-                -- miscompiles at the shipping default without the rule (a
-                -- false `{g|incr}` singleton that LSS_025's post-settle
-                -- devirt trusts, turning `d ident` into `incr`). Plan §0.5's
-                -- own escalation criterion: `gc` exposure ⇒ unconditional,
-                -- ahead of D1/D2. Cost on the self-compile is nil BECAUSE the
-                -- census is zero there — this is a pure soundness fix, not a
-                -- precision trade.
-                --
-                -- A promoted-ordinals-only fact is NOT exempt: the
-                -- caller-side edges deliver the ordinals' members, but the
-                -- dangling inflow is in NEITHER channel.
-                --
-                -- The all-empty case keeps today's empty fact (consumers
-                -- write nothing, the slot stays flex and reads ⊤ — sound,
-                -- and it preserves the trivial-signature mass).
                 ( { top = True, members = [], sources = [] }
                 , censusMixedSig filtered (Engine.bumpTopMixedFlexSig s1)
                 )
@@ -1009,16 +959,12 @@ sigResolveEdges selfId slots i ms0 srcs s0 =
                 ( { top = False, members = filtered, sources = List.sort ordinals }, s1 )
 
 
-{-| LSS\_026 census (plan §2.1 row 2, signature side): count a mixed fact and
-the coarsest class of member it carries. `gc` members ground (LSS\_019) and
-are consumable by LSS\_025 post-settle devirt / E9.1 — a false one is the
-representative-hijack miscompile class, so a nonzero `mixed|sig|gc` is the
-plan's escalation gate. Report-gated.
+{-| Counts, under `lss.report`, a fact made ⊤ because it crossed an unwritten
+slot, once in total and once by `Engine.membersClass` of the `members` it
+would have carried.
 -}
 censusMixedSig : List Int -> Engine.S -> Engine.S
 censusMixedSig members s =
-    -- Gated since step 6: `membersClass` is a string classification of the
-    -- member list, built per call.
     if not s.env.lss.report then
         s
 
@@ -1028,6 +974,10 @@ censusMixedSig members s =
             |> Engine.bumpArgFlowCensus ("mixed|sig|" ++ Engine.membersClass members s.lssMemberTable)
 
 
+{-| Follows the deferred edges in `pending`, skipping visited slots, and returns
+the members and promoted ordinals collected so far (or `Nothing` once a ⊤ or
+non-set slot is reached), with whether an unwritten slot was crossed.
+-}
 sigEdgesGo : Array Vars.Variable -> Int -> List Vars.Variable -> List Int -> List Int -> List Int -> Bool -> Engine.S -> ( ( Maybe ( List Int, List Int ), Bool ), Engine.S )
 sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
     case pending of
@@ -1045,7 +995,6 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
             else
                 case ordinalOf slots i src s0 of
                     ( Just j, s1 ) ->
-                        -- PROMOTE: record the ordinal, do not descend.
                         sigEdgesGo slots
                             i
                             rest
@@ -1061,7 +1010,6 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                             s1
 
                     ( Nothing, s1 ) ->
-                        -- INTERNALIZE.
                         let
                             ( store1, desc ) =
                                 UF.get src s1.store
@@ -1083,25 +1031,25 @@ sigEdgesGo slots i pending visited accMembers accOrdinals sawFlex s0 =
                                 sigEdgesGo slots i (ss ++ rest) visited1 (IO.unionSortedAsc accMembers ms) accOrdinals sawFlex s2
 
                             Vars.FlexVar _ ->
-                                -- LSS_026(a): a dangling inflow. Contributes
-                                -- no members, but the crossing is recorded —
-                                -- `sigResolveEdges` applies the policy.
+                                -- Unwritten: no members, but the crossing
+                                -- is recorded for `sigResolveEdges`.
                                 sigEdgesGo slots i rest visited1 accMembers accOrdinals True s2
 
                             _ ->
-                                -- Defensive: fail toward ⊤ (§2.3's direction
-                                -- rule).
+                                -- Not a lambda set: fail toward ⊤.
                                 ( ( Nothing, sawFlex ), s2 )
 
 
-{-| The signature ordinal a Point IS (UF-equivalent to `slots[j]`, `j /= i`),
-scanning ALL ordinals — unlike `repOrdinal`, which scans only below `i`.
+{-| Returns the first ordinal other than `i` whose slot is unified with `node`,
+looking at every ordinal, unlike `repOrdinal`, which looks only below `i`.
 -}
 ordinalOf : Array Vars.Variable -> Int -> Vars.Variable -> Engine.S -> ( Maybe Int, Engine.S )
 ordinalOf slots i node s0 =
     ordinalOfGo slots i node 0 s0
 
 
+{-| Looks for `node` among the slots from ordinal `j` onwards, skipping `i`.
+-}
 ordinalOfGo : Array Vars.Variable -> Int -> Vars.Variable -> Int -> Engine.S -> ( Maybe Int, Engine.S )
 ordinalOfGo slots i node j s0 =
     if j >= Array.length slots then
@@ -1130,14 +1078,15 @@ ordinalOfGo slots i node j s0 =
                     ordinalOfGo slots i node (j + 1) s1
 
 
-{-| The B.4 cap and final shaping for a resolved `LsFrom` fact: over-cap
-resolved members ⇒ ⊤ (sources DROPPED — ⊤ absorbs; `widenedBySigSize`
-bumped), else the members-plus-sources fact.
+{-| Builds the fact for a slot resolved by `sigResolveEdges`. A resolved ⊤
+becomes a ⊤ fact of the edge kind. More than `lss.maxSetSize` members (when
+that is above 0) becomes a ⊤ fact of the widening kind, with its sources
+dropped. Otherwise the fact carries the members and source ordinals.
 -}
 finishSigFact : Int -> { top : Bool, members : List Int, sources : List Int } -> Engine.S -> ( Engine.ArrowFact, Engine.S )
 finishSigFact rep resolved s0 =
     if resolved.top then
-        -- §4.9: an edge-resolved ⊤ (the DFS ⊤ marker drops the birth kind).
+        -- The ⊤ slot's own kind is not carried back by the edge walk.
         ( { rep = rep, members = [], top = True, topKind = Mono.tkEdge, sources = [] }, s0 )
 
     else if s0.env.lss.maxSetSize > 0 && List.length resolved.members > s0.env.lss.maxSetSize then
@@ -1149,8 +1098,8 @@ finishSigFact rep resolved s0 =
         ( { rep = rep, members = resolved.members, top = False, topKind = Mono.tkLegacy, sources = resolved.sources }, s0 )
 
 
-{-| The smallest ordinal j < i whose slot is UF-equivalent to this one (i if
-none). Arrows-per-signature is small; the O(n²) is on n ≈ arity.
+{-| Returns the smallest ordinal from `j` up to `i` whose slot is unified with
+`slot`, which is `i` itself when none below it is.
 -}
 repOrdinal : Array Vars.Variable -> Vars.Variable -> Int -> Int -> Engine.S -> ( Int, Engine.S )
 repOrdinal slots slot i j s0 =
@@ -1178,38 +1127,43 @@ repOrdinal slots slot i j s0 =
 -- ====== THE WALK ======
 
 
-{-| letEnv: bound name — let-bound, or lambda/tail-def
-param — -> its loaded type Point (for the §7.4 set-slot-only join at use
-sites).
+{-| The names in scope during the walk that have a loaded type: let-bound names,
+and the parameters of lambdas and tail-recursive definitions, each mapped to
+the Point its type was loaded at. A use of the name joins its own type's set
+slots with that Point's.
 -}
 type alias LetEnv =
     Dict Name Vars.Variable
 
 
-{-| LSS\_020 (plan B.0): what a walked expression hands its parent — the Point
-the walk loaded for the expr's own type, tagged with an HONESTY class. The
-class is the soundness core of the control-flow joins: a published (non-⊤)
-set claims to list EVERY runtime inhabitant, so a hub may join member-bearing
-branches only when every branch's contribution is complete.
+{-| What the walk of one expression hands its parent: the Point at which it
+loaded the expression's type, if any, and whether the sets in that type's slots
+can be trusted to list every function the value can hold.
 
-  - `WpHonest p`: p's slot contents are COMPLETE-or-⊤ for this value —
-    injected identities (lambda literals, standalone refs), letEnv-linked
-    flow (the family's own invariant covers it), or an already-poisoned
-    point (⊤ is honest).
-  - `WpOpaque p`: a real point whose slots may be INCOMPLETE — call results
-    (callee facts are honest lower bounds, but a blind callee yields EMPTY,
-    not ⊤). Sound for SINGLE-SOURCE joins (root/result/let-rhs: empty facts
-    are sound — consumers default to ⊤ on unconstrained reads) but must not
-    be MIXED with member-bearing mates in a hub (a partial non-empty set
-    claims completeness — the false-singleton devirt vector).
-  - `WpSelf`: a tail call of the enclosing tail def. Its value IS the value
-    under construction: in a hub it contributes no NEW inhabitants and is
-    skipped — the μ-equation X = b₁ ∪ … ∪ X solves to the union of the other
-    branches, and any hub containing it is itself joined into the def's
-    result class by the enclosing walk, making the self edge redundant.
-  - `WpNone`: no point — containers, literals, pattern-bound locals, the
-    structural wildcard. The value's inhabitants are untracked; in a hub
-    this forces ⊤.
+The distinction matters where several values meet in one result, an `if` or
+`case` _hub_. Joining a branch whose sets may be incomplete with a branch that
+has members would publish a set that looks complete and is not, so the hub
+joins its branches only when every branch is honest or a self call, and
+otherwise makes its arrows ⊤.
+
+`WpHonest` carries a Point whose sets are complete or ⊤: a lambda literal, a
+reference to a named function, a hub, a literal whose arrow-bearing parts are
+all honest, or a kernel boundary whose result was made ⊤. A use of a name in
+the `LetEnv` is also classed `WpHonest`, whatever its right-hand side was, so
+its sets may be incomplete.
+
+`WpOpaque` carries a Point whose sets may be missing members: the result of a
+call, whose callee's signature can leave an arrow empty, or a literal with a
+part that is not honest. Joining it alone into a slot is still sound, because
+an empty set slot is not read as complete.
+
+`WpSelf` is a tail call of the enclosing tail-recursive definition. Its value
+is one of the values the other branches produce, so a hub skips it.
+
+`WpNone` has no Point: the value's type has no arrow where one is looked for,
+or it is a form the walk does not track, such as a record field access, a
+pattern-bound name, an enum or box constructor call, or a literal with LSS
+disabled. A hub with such a branch is made ⊤.
 
 -}
 type WalkPoint
@@ -1219,6 +1173,8 @@ type WalkPoint
     | WpOpaque Vars.Variable
 
 
+{-| Returns the Point a walk point carries, if any.
+-}
 wpPoint : WalkPoint -> Maybe Vars.Variable
 wpPoint wp =
     case wp of
@@ -1235,6 +1191,20 @@ wpPoint wp =
             Nothing
 
 
+{-| Walks `expr`, writing the set facts it implies into the store, and returns what
+it hands its parent.
+
+A lambda literal writes its own member along its type. A reference to a
+global, constructor, kernel or accessor writes its member on its type's head
+arrow, and for a global or constructor the members of its partial applications
+go on the arrows below, up to its declared arity. A call applies its
+callee (`walkCall`) and then walks the callee and arguments as values. A `let`
+joins the right-hand side's flow into the name's loaded type and walks the body
+with the name in scope. An `if` or `case` joins its branches (`joinCfHub`), and
+a record, tuple, list or update joins its parts (`walkLiteral`). Anything else
+only has its children walked.
+
+-}
 walkExpr : LetEnv -> TOpt.Expr TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkExpr letEnv expr s0 =
     case expr of
@@ -1254,19 +1224,10 @@ walkExpr letEnv expr s0 =
         TOpt.VarGlobal _ g meta ->
             case kernelAliasOf g s0 of
                 Just ( kernelPrefix, home, name ) ->
-                    -- E9.2 (LSS_016) identity fold: a kernel-ALIAS global
-                    -- (`cons = Elm.Kernel.List.cons`) IS the kernel value —
-                    -- mint the kernel member so the alias body's own VarKernel
-                    -- occurrence and every reference share ONE identity (a
-                    -- split g|/k| identity would join to a 2-set and kill
-                    -- every singleton consumer).
-                    -- Kernels stay HEAD-ONLY at both mint sites: `kernelToSig`
-                    -- misaligns at inner arrows (it takes the first n modes of
-                    -- the full sig against a residual param row), so keeping
-                    -- `k|` members off inner arrows makes that hazard
-                    -- unreachable by construction.
-                    -- refPapSpine: successors key by the ALIAS global —
-                    -- the k| head is untouched (kernelToSig hazard is k|-only).
+                    -- A kernel alias is the kernel value, so it gets the
+                    -- kernel's `k|` member rather than a `g|` of its own; one
+                    -- value with two ids would never read as a singleton.
+                    -- The `p|` members below the head are keyed by the alias.
                     withPapSuccessors g
                         (standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta)
                         s0
@@ -1281,7 +1242,6 @@ walkExpr letEnv expr s0 =
                             ( wp, sW )
 
         TOpt.VarEnum _ g _ meta ->
-            -- E9: ctor mints register the Global for devirt lookup.
             withPapSuccessors g
                 (standaloneMemberWith (Engine.standaloneMemberIdFor ("c|" ++ TOpt.toComparableGlobal g) g) meta)
                 s0
@@ -1292,25 +1252,16 @@ walkExpr letEnv expr s0 =
                 s0
 
         TOpt.VarCycle _ home name meta ->
-            -- GAP-7 seam 1 (LSS_020 plan Phase E.1): a cycle member mints
-            -- its `g|` head exactly as the VarGlobal arm does. Standalone
-            -- members are HEAD-ONLY — the `lss.spineArity` flag that could
-            -- deepen them to `declaredArity` was deleted 2026-09-17
-            -- (plans/remove-default-off-lss-flags.md); depth beyond the head
-            -- belongs to `papMembers`' `p|` successors, which is what keeps
-            -- one runtime value from carrying two names.
+            -- The `g|` member goes on the head arrow only; the arrows below
+            -- hold partial applications, which have `p|` members.
             withPapSuccessors (TOpt.Global home name)
                 (standaloneMemberWith (Engine.standaloneMemberIdFor ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name)) meta)
                 s0
 
         TOpt.VarKernel _ kernelPrefix home name meta ->
-            -- E9.2: kernel mints register (prefix, home, name) for devirt
-            -- lookup — the "k|" key (and so the member id) is unchanged.
-            -- Head-only: see the kernel-alias arm above.
             standaloneMemberWith (Engine.kernelMemberIdFor ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name )) meta s0
 
         TOpt.Accessor _ field meta ->
-            -- `.field` is itself a chomper shape; this arm stays 1 forever.
             standaloneMember ("a|" ++ field) meta s0
 
         TOpt.VarLocal name meta ->
@@ -1326,20 +1277,14 @@ walkExpr letEnv expr s0 =
                         ( rhsWp, s1 ) ->
                             case Store.loadTypeS defType s1 of
                                 ( rhsVar, s2 ) ->
-                                    -- LSS_020 (B.2): flag-on, connect the
-                                    -- letEnv hub to the RHS's returned flow
-                                    -- (single-source join; no-op flag-off).
                                     case sigFlowJoinInto rhsVar (wpPoint rhsWp) s2 of
                                         s3 ->
                                             walkExpr (CoreDict.insert name rhsVar letEnv) body s3
 
                 TOpt.TailDef _ name args rhs defType _ ->
-                    -- LSS_020 (B.2): the rhs is the ARG-STRIPPED body at
-                    -- the RESULT type while `defType` is the full
-                    -- function type — peel |args| arrows off the loaded
-                    -- hub (binding the args, closing leak 1 for local
-                    -- loops), then single-source-join the spine end
-                    -- against the rhs's returned flow.
+                    -- The rhs is typed at the result while `defType` is the
+                    -- whole function type, so the arguments are bound to the
+                    -- first arrows and the rhs is joined at the arrow after.
                     case Store.loadTypeS defType s0 of
                         ( rhsVar, s1 ) ->
                             let
@@ -1363,14 +1308,9 @@ walkExpr letEnv expr s0 =
                                             walkExpr (CoreDict.insert name rhsVar letEnv) body s3
 
         TOpt.Destruct _ body _ ->
-            -- Propagate: a Destruct's value is its body's. Identical store
-            -- ops to the old structural arm (directChildren = [ body ]).
             walkExpr letEnv body s0
 
         TOpt.If branches finally meta ->
-            -- Children in EXACTLY the structural arm's order (cond, branch
-            -- per pair, then finally), collecting the branch VALUES' flow;
-            -- then the hub join (LSS_020 B.2; no-op flag-off).
             case walkIfPairs letEnv branches [] s0 of
                 ( branchWps, s1 ) ->
                     case walkExpr letEnv finally s1 of
@@ -1378,21 +1318,15 @@ walkExpr letEnv expr s0 =
                             joinCfHub (finalWp :: branchWps) meta s2
 
         TOpt.Case _ _ decider jumps meta ->
-            -- All Case children are branch VALUES (decider Inline leaves +
-            -- jump bodies); same order as the structural arm.
             case walkCollect letEnv (deciderExprs decider ++ List.map Tuple.second jumps) [] s0 of
                 ( wps, s1 ) ->
                     joinCfHub wps meta s1
 
         TOpt.TailCall _ tcArgs _ ->
-            -- Children exactly as the structural arm walked them; `WpSelf` —
-            -- the self edge is redundant in hubs (see `WalkPoint`).
             case walkChildren letEnv (List.map Tuple.second tcArgs) s0 of
                 s1 ->
                     ( WpSelf, s1 )
 
-        -- F4-sig (plans/lss-container-payload-transport.md §12.10.1): literals
-        -- hand their parent a POINT — flag-off, exactly the structural arm.
         TOpt.Record fields meta ->
             walkLiteral letEnv "record" (CoreDict.toList fields) Nothing meta expr s0
 
@@ -1409,21 +1343,17 @@ walkExpr letEnv expr s0 =
             walkLiteral letEnv "update" (List.map (\( ln, e ) -> ( A.toValue ln, e )) (DMap.toList fields)) (Just record) meta expr s0
 
         _ ->
-            -- Everything else: structural recursion only. Shared MVarIds
-            -- already carry the intra-def flow; re-implementing translate's
-            -- demand-concretization corners here would be wrong-layer work.
+            -- Types inside one definition already share their Points
+            -- through the memo, so these forms add no set facts.
             case walkChildren letEnv (directChildren expr) s0 of
                 s1 ->
                     ( WpNone, s1 )
 
 
-{-| LSS\_020 (B.1.e): the `Function`/`TrackedFunction` arm body. Flag-on it
-binds the params from the lambda's OWN loaded spine into letEnv (the root
-join in `walkMembers` makes the annotation slots reachable through UF
-transitivity — the existing `VarLocal` arms then join every param occurrence
-for free) and joins the spine's result position against the body's returned
-flow (single-source: Honest|Opaque). Flag-off: byte-for-byte today's
-sequence.
+{-| Walks a lambda literal: loads its type, writes its raw member id along the
+first arrows of that type (one per parameter), binds the parameters to those
+arrows' argument types, walks the body, and joins the body's value into the
+arrow after the last parameter. The lambda is `WpHonest`.
 -}
 walkFunction : List Name -> Maybe TypeIds.SrcLambdaId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> LetEnv -> Engine.S -> ( WalkPoint, Engine.S )
 walkFunction paramNames srcLam body meta letEnv s0 =
@@ -1447,19 +1377,16 @@ walkFunction paramNames srcLam body meta letEnv s0 =
                                     ( WpHonest funcVar, s4 )
 
 
-{-| F4-sig (plans/lss-container-payload-transport.md §12.10.1): a record /
-tuple / list / update literal's WalkPoint. Flag-off: the structural arm
-verbatim (`WpNone`). Shipped as `lss.flow.litFacts`, DEFAULT-ON 2026-09-16 —
-13,443 literal points (tuple 6,858 / list 5,341 / record 1,244 honest, update
-1,541 opaque), `var` 837 -> 821, k1 +133 / kN +87, the largest gain of the
-series — and unconditional since 2026-09-18. Under LSS: walk the elements (the same children the
-structural arm walks, so member injection inside them is unchanged), load the
-literal's own type, join every element's point into its slot of that type
-(structurally — `joinArrowSetsSig`, as the result join already is), and hand
-back the literal's var — HONEST only if every arrow-bearing element (and the
-update's base) handed an honest point, else OPAQUE (the hub rule: a partially
-visible container must not be mixed with member-bearing mates). An element
-whose slot cannot be located leaves it unwritten (var — no claim).
+{-| Walks a record, tuple, list or record update (`form` names which), whose
+parts are `elems`, keyed by field name or position, plus the updated record
+`maybeBase`.
+
+With LSS enabled, the literal's type is loaded and each part's value is joined
+into the part of that type it fills (`joinLiteralElems`), the updated record
+into the whole. The result is `WpHonest` when the base, if any, is honest and
+every part whose type mentions an arrow is honest, and `WpOpaque` otherwise.
+With LSS disabled only the children are walked, and the result is `WpNone`.
+
 -}
 walkLiteral : LetEnv -> String -> List ( String, TOpt.Expr TypeIds.MVarId ) -> Maybe (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkLiteral letEnv form elems maybeBase meta expr s0 =
@@ -1506,6 +1433,8 @@ walkLiteral letEnv form elems maybeBase meta expr s0 =
                                                 )
 
 
+{-| Tells whether a walk point is `WpHonest`.
+-}
 isHonest : WalkPoint -> Bool
 isHonest wp =
     case wp of
@@ -1516,6 +1445,8 @@ isHonest wp =
             False
 
 
+{-| Walks the expression, if there is one.
+-}
 walkMaybe : LetEnv -> Maybe (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( Maybe WalkPoint, Engine.S )
 walkMaybe letEnv maybeExpr s0 =
     case maybeExpr of
@@ -1528,6 +1459,9 @@ walkMaybe letEnv maybeExpr s0 =
                     ( Just wp, s1 )
 
 
+{-| Walks each keyed expression in order, pairing each key with what its walk
+returns.
+-}
 walkKeyed : LetEnv -> List ( String, TOpt.Expr TypeIds.MVarId ) -> List ( String, WalkPoint ) -> Engine.S -> ( List ( String, WalkPoint ), Engine.S )
 walkKeyed letEnv elems acc s0 =
     case elems of
@@ -1540,6 +1474,9 @@ walkKeyed letEnv elems acc s0 =
                     walkKeyed letEnv rest (( k, wp ) :: acc) s1
 
 
+{-| Joins the updated record's value, when its walk carried a Point, into the
+literal's type.
+-}
 joinLiteralBase : Vars.Variable -> Maybe WalkPoint -> Engine.S -> Engine.S
 joinLiteralBase litVar baseWp s0 =
     case Maybe.andThen wpPoint baseWp of
@@ -1550,10 +1487,10 @@ joinLiteralBase litVar baseWp s0 =
             s0
 
 
-{-| Locate each element's slot in the literal's loaded type and join the
-element's point into it. Records by field name, tuples by position, lists all
-into the one element slot. Aliases chased; any other shape leaves the slots
-unwritten (counted).
+{-| Joins each part's Point into the part of the literal's loaded type it fills:
+a record field by name, a tuple element by position, and every list element
+into the list's element type. Aliases are followed. A type of any other shape
+is left alone and, under `lss.report`, counted.
 -}
 joinLiteralElems : String -> Vars.Variable -> List ( String, WalkPoint ) -> Engine.S -> Engine.S
 joinLiteralElems form litVar wps s0 =
@@ -1576,8 +1513,8 @@ joinLiteralElems form litVar wps s0 =
                     censusLitShapeMiss form s1
 
 
-{-| The per-literal census key, gated. This is the only ungated `++` census key
-that ran per NODE rather than per item, so it is the one that mattered.
+{-| Counts, under `lss.report`, one walked literal of kind `form`, as honest or
+opaque.
 -}
 censusLitFacts : String -> Bool -> Engine.S -> Engine.S
 censusLitFacts form honest s =
@@ -1598,6 +1535,9 @@ censusLitFacts form honest s =
             s
 
 
+{-| Counts, under `lss.report`, a literal of kind `form` whose type had no shape
+its parts could be joined into.
+-}
 censusLitShapeMiss : String -> Engine.S -> Engine.S
 censusLitShapeMiss form s =
     if not s.env.lss.report then
@@ -1607,6 +1547,9 @@ censusLitShapeMiss form s =
         Engine.bumpArgFlowCensus ("litFacts|shapeMiss|" ++ form) s
 
 
+{-| Joins each walk point's Point into its paired slot, skipping pairs where
+either is missing.
+-}
 joinKeyedSlots : List ( Maybe Vars.Variable, WalkPoint ) -> Engine.S -> Engine.S
 joinKeyedSlots pairs s0 =
     case pairs of
@@ -1624,12 +1567,15 @@ joinKeyedSlots pairs s0 =
                     joinKeyedSlots rest s0
 
 
-{-| Call handling. Global callee: instantiate with signature facts and unify
-params/result (best-effort). Kernel/Debug callee: every arrow crossing the
-ABI is dynamic — poison arg and result arrows (LSS\_004). Local callee
-(LSS\_020 B.3): slot-only call-shape join against the
-letEnv family — NEVER whole-type unification of the shared family Point
-(§7.4). Anything else: children only (the caller recurses via walkChildren).
+{-| Applies the callee of a call to its arguments, returning what the call
+hands its parent. The callee and arguments themselves are walked by the caller.
+
+A global or cycle member is applied through its signature (`applyCalleeAt`), a
+kernel through what `KernelSetFacts` records about it (`kernelCallBoundary`),
+and a let-bound or parameter name through its loaded type (`localCalleeJoin`).
+A `Debug` function makes the arrows of every argument and of the result ⊤. An
+enum or box constructor, or any other callee not listed, gives `WpNone`.
+
 -}
 walkCall : LetEnv -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 walkCall letEnv func args meta s0 =
@@ -1641,9 +1587,6 @@ walkCall letEnv func args meta s0 =
             applyCalleeAt (TOpt.Global home name) funcMeta.tipe args meta s0
 
         TOpt.VarKernel _ kernelPrefix home name funcMeta ->
-            -- LSS_021/LSS_022: consult the audited set-flow table — licensed
-            -- kernels behave like a plain callee, positional rows refine per
-            -- param, no row / arity mismatch keeps LSS_004 full poison.
             kernelCallBoundary kernelPrefix home name funcMeta args meta s0
 
         TOpt.VarDebug _ _ _ _ _ ->
@@ -1656,18 +1599,28 @@ walkCall letEnv func args meta s0 =
             localCalleeJoin letEnv name args meta s0
 
         TOpt.VarEnum _ _ _ _ ->
-            -- A ctor call carries no member of its own: the ctor's payload
-            -- members reach the site through the argument walk, not through
-            -- the callee.
             ( WpNone, s0 )
 
         TOpt.VarBox _ _ _ ->
+            -- The payload's members reach the constructed value through
+            -- the arguments' walk, not through the callee.
             ( WpNone, s0 )
 
         _ ->
             ( WpNone, s0 )
 
 
+{-| Applies the global `g` to `args` at a call of type `meta.tipe`, joining the
+callee's parameters with the arguments and its remaining type with the call's,
+and writes the `p|` members of a partial application (`injectPapMemberInfer`).
+The result is `WpOpaque`, or `WpNone` when the callee is inert
+(`calleeInert`).
+
+A member of the unit being inferred is loaded through the shared memo, so the
+call unifies with that member's own signature slots. Any other global is
+loaded as a fresh instantiation with its signature applied.
+
+-}
 applyCalleeAt : TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 applyCalleeAt g funcFallbackType args meta s0 =
     let
@@ -1675,11 +1628,6 @@ applyCalleeAt g funcFallbackType args meta s0 =
             sigSourceTypeFor g funcFallbackType s0
     in
     if HashMap.member TOpt.globalHash (==) g s0.lssInProgress then
-        -- Σ self/sibling reference within the in-flight unit: the annotation
-        -- loads through the SHARED scratch memo, so its Points ARE the
-        -- member's own signature slots — unifying against them is the
-        -- paper's TIU-Self-Ref rule (which forbids polymorphic recursion in
-        -- set parameters and guarantees termination).
         case Store.loadTypeS srcType s0 of
             ( funcVar, s1 ) ->
                 case unifyCallShape funcVar args meta s1 of
@@ -1687,19 +1635,9 @@ applyCalleeAt g funcFallbackType args meta s0 =
                         injectPapMemberInfer g (List.length args) callVar s2
 
     else
-        -- The signature is forced FIRST, at exactly the point it was forced
-        -- before, so the memo and mint order do not move.
         case signatureFor g s0 of
             ( sig, s1 ) ->
                 if calleeInert sig args meta then
-                    -- Step 16 (D1). Nothing below this point could write or
-                    -- connect a set slot: the signature is trivial, so
-                    -- `applyFacts` returns immediately and never touches the
-                    -- isolated instantiation's slots; and with the call's own
-                    -- type and every argument type arrow-free, the per-argument
-                    -- unify has no arrow on either side to reach a `FunL`. The
-                    -- whole isolated instantiation plus its unifies is a fixed
-                    -- cost buying nothing.
                     ( WpNone, Engine.bumpArgFlowCensus "callee|inert" s1 )
 
                 else
@@ -1710,12 +1648,9 @@ applyCalleeAt g funcFallbackType args meta s0 =
                                     injectPapMemberInfer g (List.length args) callVar s3
 
 
-{-| Can this callee's instantiation reach a set slot at all?
-
-Trivial signature: `applyFacts` writes nothing. Arrow-free call type and
-arrow-free arguments: the per-argument unify has no `FunL` on either side, so
-no slot is connected and none is written.
-
+{-| Tells whether applying a callee could not touch any set slot: its signature
+is trivial, so no fact is written, and neither the call's type nor any
+argument's type mentions an arrow, so unifying them connects no slot.
 -}
 calleeInert : Engine.LssSignature -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Bool
 calleeInert sig args meta =
@@ -1724,27 +1659,16 @@ calleeInert sig args meta =
         && List.all (\a -> not (canTypeMentionsArrow (TOpt.typeOf a))) args
 
 
-{-| INJECTION COMPLETENESS, inference side (the twin of
-`Translate.injectPapMember`; plans/lss-injection-completeness.md §2.4).
+{-| Writes the members of a partial application into `callVar`, the loaded type
+of a call that supplies `argCount` arguments to `g`, and returns `WpOpaque
+callVar`.
 
-`unifyCallShape` returns the call's OWN loaded Point — for a partial
-application that Point IS the residual type, already unified with the
-instantiation's remaining arrows by `unifyParamsBestEffort`. So unlike the
-translate side there is no spine to descend: inject straight into `callVar`.
-
-Without this twin the two sides fall out of lockstep: a def whose body RETURNS
-a partial application would carry the member in its specialization demand but
-not at its signature's residual ordinal, so callers of that def would not see
-it.
-
-**Identity and depth follow `Translate.injectPapMember` exactly** — a distinct
-`p|<global>|<supplied>` element (NEVER the callee's `g|`/`k|` id, which
-denotes the unapplied global and licenses a direct-call rewrite a PAP cannot
-support), injected HEAD-ONLY because one arrow deeper is a different PAP and
-therefore a different element. That function's docs carry the full argument
-and the miscompile it was corrected from.
-
-Returns the `WalkPoint` unchanged — this is a pure store write.
+When `g`'s declared arity is above `argCount`, the call's value is a partial
+application: its head arrow gets the `p|<g>|<argCount>` member, and each arrow
+below gets the member of the partial application with one more argument, up to
+the declared arity. The `g|` member of `g` itself is never written here, since
+it names the unapplied global. Nothing is written with LSS disabled or for a
+saturated call.
 
 -}
 injectPapMemberInfer : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> ( WalkPoint, Engine.S )
@@ -1762,19 +1686,20 @@ injectPapMemberInfer g argCount callVar s0 =
         in
         case injectSpineMemberId 1 mid callVar sMid of
             s1 ->
-                -- L2: finish the deep residual — twin of the
-                -- Translate producer site, same keys, same walk.
                 case injectPapSuccessorsFrom g (argCount + 1) callVar s1 of
                     s2 ->
                         ( WpOpaque callVar, s2 )
 
 
-{-| Unify a callee instantiation's params against the args and its residual
-against the call's own type, so returned arrows carry their sets into this
-def's flow. Returns the call's own loaded Point (the value the parent may
-propagate — `WpOpaque` class). ISOLATED-instantiation path only: the
-whole-type best-effort unify here must never target a shared letEnv family
-Point (§7.4; local callees go through `joinCallArgs` instead).
+{-| Unifies the parameters of the callee type `funcVar` with the arguments'
+types, and the rest of the callee type with the call's own type, returning the
+call's loaded type. The unifications are best effort, so a mismatch is
+discarded.
+
+The callee type is unified whole, so when `funcVar` is a Point shared with
+other uses, those uses' types are merged. `applyCalleeAt` relies on this for a
+member of the unit being inferred, whose Point comes from the shared memo.
+
 -}
 unifyCallShape : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 unifyCallShape funcVar args meta s0 =
@@ -1787,46 +1712,23 @@ unifyCallShape funcVar args meta s0 =
                             ( callVar, s3 )
 
 
-{-| Liveness census (plans/lss-provenance-ratio-census.md §7): this arrow is
-being peeled into (param, rest) because an argument is being passed to it — so
-it is APPLIED. Not a proxy for application; this IS the application.
+{-| Counts an application of the arrow whose content is `content`, when
+`lss.arrowCensus` is on: every call counts an attempt, then the arrow is
+counted as having no set slot, as having a slot with no known `ArrowId`, or as
+a hit, which also records its `ArrowId` as applied. The counters themselves are
+written only under `lss.report`.
 
-The `ArrowId` lookup goes through the union-find CLASS, not the raw Point, for
-`noteMultiSet`'s reason: the slot that survives a unification is often not the
-slot that was minted, and only the loaded side ever carries an ArrowId. Using
-the raw Point would silently miss every arrow that unified with a
-demand-encoded one — the same keyspace discipline the multi-set census uses,
-which is what lets var/set/applied intersect exactly.
-
-Report-gated twice over: `bumpAppliedArrow` checks `lss.report`, and
-`arrowOfSlot` is empty without it anyway.
+The `ArrowId` is looked up by the slot's union-find representative, not the
+slot itself, since the slot recorded at load may since have been unified with
+others.
 
 -}
 noteApplied : Vars.Content -> Engine.S -> Engine.S
 noteApplied content s =
     if not s.env.lss.arrowCensus then
-        -- Gated on its OWN flag, not `report` (§7.7): this runs per
-        -- APPLICATION — 512,757 times on one self-compile — and the benchmark
-        -- protocol mandates `report`, so leaving it there bills every timed
-        -- run. `qCensus` was split out for precisely this reason.
         s
 
     else
-        -- POSITIVE CONTROL (§7.6). Every call of this function IS an
-        -- application — we are peeling an arrow precisely because an argument
-        -- is being passed — so `apply|attempt` is a ground-truth denominator
-        -- that assumes NO relationship between resolution and application.
-        -- That is what the first control got wrong: it presumed concrete
-        -- arrows are concrete BECAUSE called, which is false for a function
-        -- held in a record field or returned and never invoked.
-        --
-        -- The split then says exactly where applications are lost:
-        --   noSlot     — the content was not a `FunL` (no set slot to name)
-        --   noArrowId  — a slot, but `arrowOfSlot` cannot name it
-        --   hit        — named, and counted in `appliedArrows`
-        -- A high hit rate means `appliedArrows` is a FAIR sample of the
-        -- applications on hooked paths, and a low set-overlap is then a real
-        -- property rather than an instrument artefact.
         let
             sA =
                 Engine.bumpArgFlowCensus "apply|attempt" s
@@ -1851,13 +1753,14 @@ noteApplied content s =
                         Engine.bumpArgFlowCensus "apply|hit" (Engine.bumpAppliedArrow aid s1)
 
 
-{-| Unify each argument against the callee's corresponding parameter, one
-arrow peeled per argument. Each argument's TYPE is loaded fresh — the known
-A.1 leak: members the argument WALK minted sit in a class this load never
-connects to the param, so signatures can read allflex at a position the
-argument did feed. `lss.argPoints` carried a mechanism that handed the walked
-point here instead; it measured negative and then inert, and was deleted
-2026-09-17 (plans/remove-default-off-lss-flags.md §2).
+{-| Unifies each argument's type with the parameter of the next arrow of
+`funcVar`, best effort, and returns what is left of the callee type after the
+last argument, or where it stops being an arrow.
+
+Each argument's type is loaded again from the argument expression's type, not
+taken from the argument's walk, so members that walk wrote need not reach the
+parameter; a signature can then be empty at a position an argument did feed.
+
 -}
 unifyParamsBestEffort : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> ( Vars.Variable, Engine.S )
 unifyParamsBestEffort funcVar args s0 =
@@ -1882,16 +1785,18 @@ unifyParamsBestEffort funcVar args s0 =
                                     unifyParamsBestEffort pRest rest s3
 
                 Nothing ->
-                    -- Over-applied or opaque at this depth: stop.
                     ( funcVar, s1 )
 
 
-{-| LSS\_020 (B.3): a call whose callee is a letEnv-bound local. Slot-only
-call-shape join against the family Point: one arrow peeled per arg (arg-type
-loads guarded by `canTypeMentionsArrow`), the spine end joined against the
-call's own type. The result-side join is the payload (the family's
-result-arrow members reach the site); the arg-side joins are cheap structure
-that becomes live if the arg-load residue (plan §A.1) is ever fixed.
+{-| Applies a let-bound or parameter name to `args`: each argument's value flows
+into the matching parameter of the name's loaded type (`joinCallArgs`), and,
+when the call's type mentions an arrow, the rest of that type flows into the
+call's loaded type, which is returned as `WpOpaque`.
+
+The name's Point is shared by all its uses, so only set slots are connected;
+the types themselves are never unified. A name not in scope,
+a type that runs out of arrows, or an arrow-free call gives `WpNone`.
+
 -}
 localCalleeJoin : LetEnv -> Name -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 localCalleeJoin letEnv name args meta s0 =
@@ -1904,17 +1809,12 @@ localCalleeJoin letEnv name args meta s0 =
                 ( maybeRest, s1 ) ->
                     case maybeRest of
                         Nothing ->
-                            -- Over-applied/opaque spine: stop (sound —
-                            -- nothing joined, nothing claims
-                            -- completeness).
                             ( WpNone, s1 )
 
                         Just restVar ->
                             if canTypeMentionsArrow meta.tipe then
                                 case Store.loadTypeS meta.tipe s1 of
                                     ( callVar, s2 ) ->
-                                        -- LSS_023 directed: the callee's
-                                        -- residual flows INTO the call.
                                         case flowArrowSetsSig restVar callVar s2 of
                                             s3 ->
                                                 ( WpOpaque callVar, s3 )
@@ -1923,10 +1823,10 @@ localCalleeJoin letEnv name args meta s0 =
                                 ( WpNone, s1 )
 
 
-{-| Descend a family Point's arrow spine one arrow per argument, slot-joining
-each (arrow-bearing) arg's loaded type against the param position. Returns
-the spine position after the last arg (Nothing on early stop). The `seen`
-set guards the transparent-alias chase, mirroring `spineGoC`.
+{-| Walks `v`'s arrows one per argument, adding directed set flow from each
+argument's loaded type into the parameter, for arguments whose type mentions an
+arrow. Returns the rest of the type after the last argument, or `Nothing` when
+the type runs out of arrows or an alias leads back to a Point already passed.
 -}
 joinCallArgs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Dict Int () -> Engine.S -> ( Maybe Vars.Variable, Engine.S )
 joinCallArgs v args seen s0 =
@@ -1959,8 +1859,6 @@ joinCallArgs v args seen s0 =
                                 if canTypeMentionsArrow (TOpt.typeOf arg) then
                                     case Store.loadTypeS (TOpt.typeOf arg) s1 of
                                         ( argVar, s2 ) ->
-                                            -- LSS_023 directed: the argument
-                                            -- flows INTO the param family.
                                             case flowArrowSetsSig argVar pParam s2 of
                                                 s3 ->
                                                     joinCallArgs pRest rest (CoreDict.insert key () seen) s3
@@ -1972,40 +1870,26 @@ joinCallArgs v args seen s0 =
                                 ( Nothing, s1 )
 
 
-{-| A kernel call boundary, resolved against the audited set-flow table.
+{-| Applies a kernel to `args` according to what `KernelSetFacts.factFor` records
+about it. `funcMeta.tipe` is the kernel's type at this use and `meta.tipe` the
+call's.
 
-`TypeFaithful` (LSS\_022) is the LICENSED tier. A `Transports` license behaves
-exactly like a plain callee — instantiate the kernel's own occurrence type in
-an isolated memo and unify the call shape, so the type's shared variables
-transport sets with no poison and no bespoke machinery. This is
-`applyCalleeAt`'s non-in-progress path minus the signature facts (a kernel
-has no body and therefore no signature to consult). No arity rule is needed:
-`unifyCallShape` peels one arrow per arg and unifies the residual with the
-call's own type, which is shape-correct for partial and over-application
-alike. An `Inert` license skips the boundary entirely — see the arm.
+A kernel with no row, or with a license that `KernelSetFacts.licenseApplies`
+rejects at this use's type, is treated as `poisonCallBoundary` treats it. An
+`Inert` license gives `WpNone` and touches nothing, since nothing such a kernel
+takes or finally returns has an arrow. Any other license loads the kernel's
+type as a fresh instantiation and applies it as an ordinary callee with no
+signature (`unifyCallShape`), giving `WpOpaque`; this holds for partial and
+over-application alike.
 
-`Positional` (LSS\_021) is the per-param tier, and it IS arity-aligned — a
-mismatch (partial/over application) falls back to full poison. Per param:
-`PSFOpaque` → load + poison (exactly what `poisonArgList` would do — same op
-order, so rowless behavior is unchanged); `PSFApplies` → NOTHING (no load;
-the arg expr is still walked by the Call arm's `walkChildren`, so member
-mints are unchanged — the kernel adds no inhabitants and the caller's
-knowledge survives the boundary); `PSFTunnels` → load, then set-slot-join
-against the result's loaded type. Result row per `plan.result`.
+A `Positional` row applies only when the call supplies exactly as many
+arguments as the row has parameters; otherwise the call is poisoned as for no
+row. Each `PSFOpaque` parameter has its argument's arrows made ⊤, and a
+`PSFApplies` parameter is left alone. A `PSFOpaque` result has the call's
+arrows made ⊤ and gives `WpHonest`; any other result is left unconstrained and
+gives `WpNone`.
 
-`widenedByKernel` bumps ONCE iff any position poisoned (the counter keeps
-meaning "boundaries that poisoned", so licensed boundaries never bump it);
-`kernelFactHits` records a positional application and `kernelLicensed` a
-licensed one (both report-gated, disjoint).
-
-Honesty class of the licensed result is `WpOpaque` — a call result is
-empty-or-honest and must not mix into hubs, the same contract
-`applyCalleeAt` ships. The known A.1 arg-position leak applies here as
-everywhere on the inference side (arg loads are fresh), so the licensed
-inference path mainly buys rep-linkage into signatures; the full per-site
-member transport happens translation-side, where `deriveKernelAbiTypeCall`
-already unifies the real item-memo arg Points before the (now skipped)
-poison.
+The `widenedByKernel` counter is bumped once when anything was made ⊤.
 
 -}
 kernelCallBoundary : Name -> Name -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
@@ -2016,32 +1900,18 @@ kernelCallBoundary prefix home name funcMeta args meta s0 =
 
         Just (KernelSetFacts.TypeFaithful license) ->
             if not (KernelSetFacts.licenseApplies (Engine.isScalarVar s0) license funcMeta.tipe) then
-                -- LSS_022 occurrence verification: this kernel is used here at
-                -- a type the audit never examined (an `Inert` row whose Elm
-                -- annotation grew a function-capable position, or a declared
-                -- shape the occurrence does not instantiate). Fail SAFE — treat
-                -- it as unaudited and poison, exactly as if no row existed.
+                -- Used at a type the license does not cover: treated as
+                -- having no row.
                 poisonCallBoundary args meta s0
 
             else
                 case license.scope of
                     KernelSetFacts.Inert ->
-                        -- The `vacuous` class: no arrows and no unconstrained
-                        -- variables anywhere in the kernel's type, so its loaded
-                        -- scheme has ZERO set slots. Poison and transport are
-                        -- both provable no-ops — the boundary is skipped
-                        -- outright rather than instantiated, because ~5 in 6
-                        -- licensed kernels are this class and an instantiation
-                        -- here would be a fixed cost on a hot path buying
-                        -- nothing. `WpNone` is the honest summary: the call
-                        -- contributes no members. Hub mates cannot be harmed by
-                        -- it — `joinCfHub` is `canTypeMentionsArrow`-guarded on
-                        -- the hub type, and an inert call's type is the hub's.
+                        -- For a saturated call the result type has no arrow
+                        -- either, so a hub this call is a branch of is not
+                        -- poisoned by the `WpNone`.
                         ( WpNone, Engine.bumpKernelLicensed s0 )
 
-                    -- `TransportsAs` behaves identically once verified — the
-                    -- declared shape's only job is to make the license
-                    -- checkable for a kernel the typechecker does not bound.
                     _ ->
                         case Store.loadTypeIsolated funcMeta.tipe s0 of
                             ( funcVar, s1 ) ->
@@ -2084,17 +1954,16 @@ kernelCallBoundary prefix home name funcMeta args meta s0 =
                                                             )
                                                 in
                                                 if resPoisoned then
-                                                    -- ⊤ result: honest summary.
                                                     ( WpHonest resVar, s5 )
 
                                                 else
-                                                    -- Unconstrained result: the
-                                                    -- value's inhabitants are
-                                                    -- untracked — WpNone (hub
-                                                    -- mates must not mix with it).
                                                     ( WpNone, s5 )
 
 
+{-| Applies a `Positional` row's parameter flows to the arguments in order, making
+the arrows of each `PSFOpaque` argument's loaded type ⊤. Returns whether any
+argument was made ⊤, and `tunnelsRev` unchanged, since no flow adds to it.
+-}
 kernelArgsGo : List KernelSetFacts.ParamSetFlow -> List (TOpt.Expr TypeIds.MVarId) -> Bool -> List Vars.Variable -> Engine.S -> ( ( Bool, List Vars.Variable ), Engine.S )
 kernelArgsGo flows args poisoned tunnelsRev s0 =
     case ( flows, args ) of
@@ -2114,6 +1983,9 @@ kernelArgsGo flows args poisoned tunnelsRev s0 =
             ( ( poisoned, tunnelsRev ), s0 )
 
 
+{-| Adds directed set flow from each of `vars` into the kernel call's result type
+`resVar`.
+-}
 joinTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinTunnels resVar vars s0 =
     case vars of
@@ -2121,21 +1993,15 @@ joinTunnels resVar vars s0 =
             s0
 
         v :: rest ->
-            -- LSS_023: a tunnelled kernel parameter takes the DIRECTED join,
-            -- so the row's members reach the result arrow's slot rather than
-            -- being symmetrically unified into it. This used to be a selector
-            -- — the kernel boundary is not part of the LSS_020 signature walk,
-            -- so `lss.sigFlow` had to be consulted HERE or the first
-            -- PSFTunnels row would mint `LsFrom` with the channel off and
-            -- falsify the Phase-A inertness gate (§2.2). That flag was fixed
-            -- at its default and removed 2026-09-18; the directed join is
-            -- simply what happens now. Zero tunnel rows ship today; this is
-            -- the enabling condition for the sortBy/sortWith refinement.
             case flowArrowSetsPlain v resVar s0 of
                 s1 ->
                     joinTunnels resVar rest s1
 
 
+{-| Makes every arrow in each argument's loaded type and in the call's loaded type
+⊤, counts the boundary in `widenedByKernel`, and returns the call's type as
+`WpHonest`, since ⊤ is complete.
+-}
 poisonCallBoundary : List (TOpt.Expr TypeIds.MVarId) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 poisonCallBoundary args meta s0 =
     case poisonArgList args s0 of
@@ -2144,10 +2010,11 @@ poisonCallBoundary args meta s0 =
                 ( resVar, s2 ) ->
                     case Store.poisonArrowSets resVar s2 of
                         s3 ->
-                            -- ⊤ is an honest summary (LSS_004 boundary).
                             ( WpHonest resVar, Engine.bumpWidenedByKernel s3 )
 
 
+{-| Makes every arrow in each argument's loaded type ⊤.
+-}
 poisonArgList : List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 poisonArgList args s0 =
     case args of
@@ -2162,45 +2029,34 @@ poisonArgList args s0 =
                             poisonArgList rest s2
 
 
-{-| A standalone function value (a named global/ctor/kernel/accessor referenced
-as a value) contributes its interned member to the HEAD arrow of its OWN type at
-this occurrence (LSS\_013 spine injection with an arity bound of 1; nothing to do
-for non-arrows).
-
-Head-only, not the full spine: unlike a lambda literal, a name reference carries
-no local parameter count, and a global's own return may itself be a function (a
-chomper combinator `... -> (State -> ChomperResult)`). Bounding to arity 1 —
-identical to the pre-spine baseline for these forms — keeps the injection sound
-(the head arrow is always inhabited by `m`) without descending into a returned
-closure's arrows. Standalone-value PAP spine (bounded by the global's declared
-arity) is a follow-up once that arity is threaded here; the primary E2 target
-(lambda literals flowing into HOFs) rides the arity-bounded 'injectLambdaMember'
-path instead.
-
+{-| Writes the member interned for `key` on the head arrow of the referenced
+value's type, as `standaloneMemberWith` does. Used for record accessors.
 -}
 standaloneMember : String -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 standaloneMember key =
     standaloneMemberWith (Engine.memberIdFor key)
 
 
-{-| The declared parameter count of a global, following `Link` hops up to
-`fuel` times. Ctors report their arity, function defines their parameter
-count, cycle members their own def's arity; anything unknown floors at 1.
+{-| Returns the number of parameters `g` is declared with, following at most
+`fuel` `Link` nodes.
+
+A constructor gives its arity, which may be 0, and a box gives 1. A definition
+whose body is a lambda gives the lambda's parameter count, and a member of a
+cycle the count of its own definition. A kernel alias gives the length of the
+outer arrow spine of the kernel's type. Every other case, including a
+definition with no parameters, an unknown global and running out of fuel,
+gives 1.
+
 -}
 declaredArityOf : TOpt.Global -> Int -> Engine.S -> Int
 declaredArityOf ((TOpt.Global _ name) as g) fuel s =
     declaredArityGo name g fuel s
 
 
-{-| GAP-7 seam 1 (LSS\_020 plan Phase E.1): the arity walk threads the
-ORIGINAL sought name through `Link` hops, because a cycle member maps as
-`member -> Link(_M$first group)` — recursing with the target alone loses the
-name before the `TOpt.Cycle` node is reached. `sought` stays fixed across
-hops: correct for the documented single-hop pattern; a multi-hop chain
-through a differently-named intermediate floors at 1 (sound — today's
-behavior). Callers are the saturation checks (`papMembers`, root-fold depth,
-`Translate.stampSpineGo`), NOT standalone member injection: that is head-only
-since `lss.spineArity` was deleted.
+{-| Does what `declaredArityOf` describes, with `sought` the name first asked
+for. A cycle member is a `Link` to its group's node, so the member's own
+definition is found in the group by `sought`, which is kept unchanged however
+many links are followed.
 -}
 declaredArityGo : Name -> TOpt.Global -> Int -> Engine.S -> Int
 declaredArityGo sought g fuel s =
@@ -2224,14 +2080,6 @@ declaredArityGo sought g fuel s =
             Just (TOpt.TrackedDefine _ (TOpt.Function _ params _ _) _ _) ->
                 List.length params
 
-            -- `TrackedFunction` bodies were MISSING here until 2026-08-23,
-            -- and that is the shape `LocalOpt.Typed.Module.addDefNode` emits
-            -- for a def with parameters — so this walk silently floored the
-            -- DOMINANT def shape at 1. It went unnoticed because the only
-            -- consumer then was the dormant `lss.spineArity` (since deleted);
-            -- today the saturation checks read it on every compile. Found by
-            -- the LSS_026 saturation census reading `Basics.composeL` (3
-            -- source params) as arity 1.
             Just (TOpt.Define (TOpt.TrackedFunction _ params _ _) _ _) ->
                 List.length params
 
@@ -2241,19 +2089,9 @@ declaredArityGo sought g fuel s =
             Just (TOpt.Cycle _ _ funcDefs _) ->
                 cycleDefArity sought funcDefs
 
-            -- KERNEL-ALIAS defines (`(::)` → VarGlobal List.cons, node =
-            -- Define (VarKernel …)) fell through the wildcard and floored at
-            -- 1 — the SECOND missing-arm defect in this walk (TrackedFunction
-            -- was the first, 2026-08-23). Consequence: `(::) x` read
-            -- declared=1 = supplied → "saturated" → the papMembers injection
-            -- never fired on the exact shape that motivated it, and the
-            -- injection-totality census inherited the same blindness (it
-            -- shares this walk), so `papInject == papKnown` held while both
-            -- excluded every kernel-alias partial. A kernel's declared arity
-            -- IS its type's arrow spine — kernels are uncurried at their
-            -- declared C++ ABI arity, so the spine count is exact for them
-            -- (unlike general defs, where a returned lambda would overcount;
-            -- those keep the sound floor).
+            -- A kernel alias has no lambda to count, so its arity is the
+            -- kernel type's outer arrow spine. For a definition that spine
+            -- would also count the arrows of a returned function.
             Just (TOpt.Define (TOpt.VarKernel _ _ _ _ kernelMeta) _ _) ->
                 canTypeArrowSpine kernelMeta.tipe
 
@@ -2264,9 +2102,8 @@ declaredArityGo sought g fuel s =
                 1
 
 
-{-| The length of a canonical type's outer arrow spine (aliases followed).
-`a -> b -> c` = 2. Used for kernel-alias arity, where the spine IS the
-declared arity.
+{-| Returns the number of arrows along a canonical type's outer spine, following
+aliases: 2 for `a -> b -> c`, and 3 for `(a -> b) -> List a -> List b -> c`.
 -}
 canTypeArrowSpine : Can.Type TypeIds.MVarId -> Int
 canTypeArrowSpine t =
@@ -2284,9 +2121,10 @@ canTypeArrowSpine t =
             0
 
 
-{-| Dig a cycle unit's def list for the sought member's declared param
-count: `Def` bodies carry their params on the `Function` node; `TailDef`
-carries an explicit typed-args list; no hit floors at 1.
+{-| Returns the parameter count of the function definition named `sought` in a
+cycle: the lambda's parameter count for a definition whose body is a lambda,
+and the argument count for a tail-recursive one. A definition whose body is not
+a lambda, or a name not among `funcDefs`, gives 1.
 -}
 cycleDefArity : Name -> List (TOpt.Def TypeIds.MVarId) -> Int
 cycleDefArity sought funcDefs =
@@ -2330,14 +2168,13 @@ cycleDefArity sought funcDefs =
             arity
 
         Nothing ->
-            -- valueDefs (arity-1 thunk shapes) and misses both floor at 1.
             1
 
 
-{-| E9.2: is the global an eta-free KERNEL ALIAS — a Define whose body is
-exactly a `VarKernel` reference (`cons = Elm.Kernel.List.cons`), Link-chased?
-Operator-as-value canonicalizes to the aliasing GLOBAL (`(::)` becomes
-`VarGlobal List.cons`), so kernel identity must be recognized through it.
+{-| Returns the kernel's prefix, home and name when `g`, after following `Link`
+nodes, is a _kernel alias_: a definition whose body is exactly a reference to a
+kernel, such as `cons = Elm.Kernel.List.cons`. A reference to such a global is
+a reference to the kernel value.
 -}
 kernelAliasOf : TOpt.Global -> Engine.S -> Maybe ( Name, Name, Name )
 kernelAliasOf g s =
@@ -2355,11 +2192,15 @@ kernelAliasOf g s =
             Nothing
 
 
-{-| `standaloneMember` with an explicit mint step — the ctor arms mint via
-`Engine.standaloneMemberIdFor` so the member's Global lands in the E9
-devirt reverse map (globals AND ctors — `Can.Normal` ctors like `List.::`
-are VarGlobal/"g|"), and the kernel arm mints via `Engine.kernelMemberIdFor`
-for the E9.2 kernel reverse map; the accessor arm keeps the plain intern.
+{-| Walks a reference to a named function value whose type is `meta.tipe`: when
+that type is an arrow, mints its member with `mint`, writes it on the head
+arrow of the loaded type, and returns that type as `WpHonest`. Otherwise
+nothing is minted and the result is `WpNone`.
+
+Only the head arrow is written. A name, unlike a lambda literal, has no
+parameter count at hand, and the arrows below the head hold partial
+applications or a returned function, which are other values.
+
 -}
 standaloneMemberWith : (Engine.S -> ( Int, Engine.S )) -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 standaloneMemberWith mint meta s0 =
@@ -2370,17 +2211,15 @@ standaloneMemberWith mint meta s0 =
                     ( funcVar, s2 ) ->
                         case injectSpineMemberId 1 mid funcVar s2 of
                             s3 ->
-                                -- Injected identity: complete to the
-                                -- injection depth; beyond-depth slots stay
-                                -- flex (EMPTY facts — sound).
                                 ( WpHonest funcVar, s3 )
 
     else
         ( WpNone, s0 )
 
 
-{-| Sequence the successor walk after a mint arm, on the loaded variable the
-arm returns (`WpHonest`). `WpNone` (arrow-free reference) has nothing to walk.
+{-| Runs `step`, a reference's walk, and when it returns a `WpHonest` type writes
+`g`'s partial-application members below that type's head arrow
+(`injectPapSuccessors`).
 -}
 withPapSuccessors : TOpt.Global -> (Engine.S -> ( WalkPoint, Engine.S )) -> Engine.S -> ( WalkPoint, Engine.S )
 withPapSuccessors g step s0 =
@@ -2396,31 +2235,23 @@ withPapSuccessors g step s0 =
                     ( wp, s1 )
 
 
-{-| The PAP element's key: `p|<global>|<supplied>` — moved here from
-`Translate` (plans/lss-ref-pap-spine.md §4.2) so both injection sides mint
-through ONE definition. Distinct per (global, arity-prefix) because those ARE
-distinct values — and distinct from the callee's own `g|`/`k|` key, which
-denotes the unapplied global and licenses a direct-call rewrite that a PAP
-cannot support.
+{-| Returns the member key `p|<global>|<supplied>` of a partial application of
+a global, as `Engine.papMemberKey` builds it. Each number of supplied arguments
+is a different value, and none is the global itself.
 -}
 papMemberKey : TOpt.Global -> Int -> String
 papMemberKey =
     Engine.papMemberKey
 
 
-{-| L2, deep-PAP successor completion (plans/lss-coverage-four-levers.md
-§1.2): finish `injectPapMember`'s residual. The producer
-injection writes `p|g|supplied` at the residual HEAD only; the depths past it
-(`papInject|deep`, 584 sites on a self-compile) hold further PAPs of the SAME
-global and get `p|g|d` for d in startDepth..arity-1 — the identical walk and
-identical keys as the reference-spine successors, entered one level down.
-Caller passes startDepth = supplied + 1 and the residual head variable.
+{-| Writes, below the head arrow of `v0`, the members of the partial
+applications of `g` with `startDepth`, `startDepth + 1`, ... arguments
+supplied, one per arrow, up to `g`'s declared arity less one.
 
-SHIPPED 2026-08-29 as the L2 lever of `lss.injTotal` (with L1's completion-join
-head re-stamp and L3's Accessor/bare-VarKernel argument arms): coverage
-83.10 % -> 88.07 % (+4.97 pp, ⊤ −62 %) at EXACTLY neutral dispatch — typed −5,
-sat −69 of 2.24 B — with workload outputs byte-identical and join
-rounds/retranslations unchanged. Unconditional since 2026-09-18.
+`v0` is the type of a partial application of `g` with `startDepth - 1`
+arguments, whose own member is on its head arrow; each arrow below holds the
+value one more argument further in. Nothing is written with LSS disabled or
+when `startDepth` reaches the declared arity.
 
 -}
 injectPapSuccessorsFrom : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> Engine.S
@@ -2444,28 +2275,13 @@ injectPapSuccessorsFrom g startDepth v0 s0 =
                         (Engine.bumpArgFlowCensus "papInject|deepDone" s1)
 
 
-{-| Reference-spine PAP successors (plans/lss-ref-pap-spine.md):
-after a standalone reference's HEAD member, write the PAP successor members
-down the loaded type's result spine — depth d in 1..declaredArity-1 gets
-`p|<g>|<d>`, the SAME id `Translate.injectPapMember` (producer partial
-applications) and `Translate.memberIdForDepth` (registration self-identity)
-mint, so the three paths unify at every join (E9.2 one-identity).
+{-| Writes, below the head arrow of `v0`, the type of a reference to `g`, the
+member `p|<g>|<d>` on the arrow at depth `d`, for `d` from 1 to `g`'s declared
+arity less one. The arrow at depth `d` holds `g` with `d` arguments supplied,
+which is a partial application; the arrows past the declared arity hold what
+`g`'s body returns, and are not written.
 
-This is the paper's 𝒬 applied to the nested λs of the conceptually-curried
-global at its instantiation: Eco's runtime value at spine depth d IS the PAP
-object, and `p|g|d` is its established identity. LSS\_013 bounds the walk at
-declaredArity — the arrow past the last parameter belongs to the value the
-BODY produces, which is the body tie's to claim, never this walk's.
-
-The walk mirrors `spineGoC` (alias-chasing, seen-guarded, ctx-threaded), but
-writes a DIFFERENT member per depth, into the RESULT arrow's own slot.
-
-SHIPPED 2026-08-29 as `lss.refPapSpine`: same-source coverage 79.85 % ->
-83.10 % (+3.25 pp, var −4,104, ⊤ −134) at EXACTLY neutral dispatch (typed
-delta 0, workload outputs byte-identical) and REDUCED spec fan-out —
-`List.foldl` created specs 2,540 -> 2,137, because concrete `p|` key fragments
-merge demands that per-type var numbering kept apart. Unconditional since
-2026-09-18.
+Nothing is written with LSS disabled or for a declared arity of 1 or less.
 
 -}
 injectPapSuccessors : TOpt.Global -> Vars.Variable -> Engine.S -> Engine.S
@@ -2482,8 +2298,6 @@ injectPapSuccessors g v0 s0 =
             Engine.bumpArgFlowCensus "refspine|arity1" s0
 
         else
-            -- Mint the successor ids first (Step-level interning), then one
-            -- ctx-threaded store pass writes them at their depths.
             case mintPapSuccessorIds g 1 arity [] s0 of
                 ( midsRev, s1 ) ->
                     Store.foldSetWrites
@@ -2491,19 +2305,9 @@ injectPapSuccessors g v0 s0 =
                         (Engine.bumpArgFlowCensus "refspine|inject" s1)
 
 
-{-| Depth-qualified successors for a ROOT-FOLDED def's OWN spine
-(plans/lss-root-fold-depth-qualified-spine.md §3/§4.1). Identical walk and
-identical ids to 'injectPapSuccessors', with two deliberate differences:
-
-  - the depth bound is the root lambda's own `arity` (the LSS\_013 bound — the
-    arrows a partial application of THIS lambda can peel), not
-    `declaredArityOf`, because the caller already has the parameter count;
-  - it is NOT part of the reference-spine successor walk, which governs the
-    REFERENCE-side spine; this is the def's own identity write and must not
-    depend on it. With `refPapSpine = 0` this becomes the only writer of
-    `p|g|d` at those depths, which is strictly more coverage than that arm
-    has today and cannot mint a stampable-on-PAP id (it writes `p|`).
-
+{-| Writes the same members `injectPapSuccessors` writes, bounded by `arity`,
+the parameter count of `g`'s root lambda, instead of by `g`'s declared arity.
+Nothing is written for an arity of 1 or less.
 -}
 injectFoldedSuccessors : TOpt.Global -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectFoldedSuccessors g arity v0 s0 =
@@ -2518,6 +2322,9 @@ injectFoldedSuccessors g arity v0 s0 =
                     (Engine.bumpArgFlowCensus "rootFold|spineDepth" s1)
 
 
+{-| Mints the partial-application member ids of `g` for `d` up to `arity` less
+one, prepending each to `acc`, so the result is deepest first.
+-}
 mintPapSuccessorIds : TOpt.Global -> Int -> Int -> List Int -> Engine.S -> ( List Int, Engine.S )
 mintPapSuccessorIds g d arity acc s0 =
     if d >= arity then
@@ -2529,9 +2336,10 @@ mintPapSuccessorIds g d arity acc s0 =
                 mintPapSuccessorIds g (d + 1) arity (mid :: acc) s1
 
 
-{-| `mids` is depth-ordered (head = the member for the value ONE application
-in). `v` is the arrow at the previous depth; step into its result, write the
-head member into the result's own arrow slot, recurse with the tail.
+{-| Writes `mids`, shallowest first, down the result chain of `v`: the first
+goes on the arrow that is `v`'s result, the next on that arrow's result, and so
+on. Aliases are followed without using a member. The walk stops at a result
+that is not an arrow with a set slot, or at a Point it has already passed.
 -}
 papSuccGoC : List Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
 papSuccGoC mids seen v c0 =
@@ -2560,19 +2368,18 @@ papSuccGoC mids seen v c0 =
                 in
                 case desc.content of
                     Vars.Structure (Vars.FunL _ res _) ->
-                        -- Step into the result value; write there if it is
-                        -- itself an arrow (chasing aliases first).
                         papSuccWrite mid rest seen1 res c1
 
                     Vars.Alias _ _ _ real ->
-                        -- Transparent alias: chase without consuming a depth.
                         papSuccGoC mids seen1 real c1
 
                     _ ->
-                        -- Not an arrow (ground/var/slotless Fun1): spine ends.
                         c1
 
 
+{-| Writes `mid` on `res` when it is an arrow with a set slot, following aliases,
+and continues `papSuccGoC` from it with the rest of the members.
+-}
 papSuccWrite : Int -> List Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
 papSuccWrite mid rest seen res c0 =
     let
@@ -2595,56 +2402,30 @@ papSuccWrite mid rest seen res c0 =
         in
         case desc.content of
             Vars.Structure (Vars.FunL _ _ slot) ->
-                -- The result IS an arrow: this member names it; continue the
-                -- walk FROM it for the next depth — with `seen` UNCHANGED.
-                -- `papSuccGoC` records the variable it is entered on, exactly
-                -- as `spineGoC` does. Passing `seen1` (which already holds
-                -- `res`) made that guard fire on the very next step, so every
-                -- successor walk — the `refPapSpine` reference spine and
-                -- `injTotal`'s deep residual — wrote depth 1 and STOPPED
-                -- (`papInject|deep|d2 433, d3 40, d4 1`; a 32-ary constructor
-                -- reference named at depths 0-1 and unwritten at 2-31). Found
-                -- by the post-translation producer census, 2026-09-15
-                -- (plans/lss-container-payload-transport.md §12).
+                -- `seen`, not `seen1`: `papSuccGoC` adds `res` itself when
+                -- it enters, and would stop at once if `res` were already in.
                 papSuccGoC rest seen res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
             Vars.Alias _ _ _ real ->
                 papSuccWrite mid rest seen1 real c1
 
             _ ->
-                -- Result is not an arrow (fully-ground tail): spine ends.
                 c1
 
 
-{-| LSS\_013 (spine injection): a member id names not just the value's own head
-arrow but every arrow of its RESULT chain that a partial application of `m`
-traverses — a partial application of member `m` is still `m`, one stage further
-in (design §3.3/OQ4). The store shares a partial application's result Point with
-the callee's inner-arrow Point (Unify's `FunL × FunL` arm subUnifies
-`res1 ~ res2`), so writing `m` on the spine makes ordinary call unification
-transport the fact to every partial-application site of `m` — no new transport
-machinery.
+{-| Writes the member `mid` into the set slots of the first `arity` arrows along
+`v0`'s result chain: `v0` itself, its result, that arrow's result, and so on.
+Aliases are followed without counting an arrow, and the walk stops early at a
+result that is not an arrow with a set slot, or at a Point already passed.
 
-BOUNDED BY THE VALUE'S ARITY. Only the first `arity` arrows are `m`'s: those are
-the value's own parameter arrows, the ones a partial application peels. The type
-spine can extend PAST the arity when the fully-applied result is itself a
-function (a returned closure `q`): `weird : Int -> (Int -> Int)` has arity 1 but
-a 2-arrow spine, and that second arrow is inhabited by `q`, NOT by a PAP of `m`.
-The type cannot distinguish it from `add : Int -> Int -> Int` (arity 2, both
-arrows `m`'s) — only the value's parameter count can. Descending past the arity
-would stamp `q`'s arrow with `m` (unsound: a downstream singleton consumer would
-mis-dispatch), and when that beyond-arity Point later unifies against a concrete
-return type (e.g. `ChomperResult`) it fails `Lambda /vs/ Type`. So `spineGo`
-stops when `remaining` reaches 0.
+A value applied to fewer arguments than its parameter count is, for this
+purpose, the same value, so `mid` names those arrows too. The bound matters
+because a type cannot tell parameters from a returned function:
+`f : Int -> (Int -> Int)` with one parameter returns some other function at its
+second arrow, which `mid` must not name. Argument arrows are never written;
+they hold the caller's values.
 
-ARGUMENT-position arrows are never injected: an argument arrow is inhabited by
-the CALLER's values, not by `m`. Only the result chain is `m`'s.
-
-The `seen` set mirrors `Store.poisonGo` — defensive against a cyclic type
-(store structure is finite and `loadTypeC` alias-expands at load, so a cycle
-should not arise, but recursion over an unbounded chain must terminate). Slots
-are written with the total-join `Store.unifySlotWithSet` (extra inhabitants
-from later unification widen the set; they never corrupt it — LSS\_005).
+Writes merge with what the slot holds, as `Store.unifySlotWithSet` describes.
 
 -}
 injectSpineMemberId : Int -> Int -> Vars.Variable -> Engine.S -> Engine.S
@@ -2652,12 +2433,17 @@ injectSpineMemberId arity mid v0 s0 =
     spineGo mid arity CoreDict.empty v0 s0
 
 
+{-| Does what `injectSpineMemberId` describes, with `remaining` arrows still to
+write and the Points in `seen` already passed.
+-}
 spineGo : Int -> Int -> Dict Int () -> Vars.Variable -> Engine.S -> Engine.S
 spineGo mid remaining seen v s0 =
-    -- Phase 3: ctx-threaded — one S write-back for the whole spine.
     Store.foldSetWrites (spineGoC mid remaining seen v (Store.setWriteCtx (Store.qOnFor s0) s0.store)) s0
 
 
+{-| Does what `spineGo` does on a set-write context, so that the whole walk is
+written back to the state once.
+-}
 spineGoC : Int -> Int -> Dict Int () -> Vars.Variable -> Store.SetWriteCtx -> Store.SetWriteCtx
 spineGoC mid remaining seen v c0 =
     if remaining <= 0 then
@@ -2681,22 +2467,19 @@ spineGoC mid remaining seen v c0 =
             in
             case desc.content of
                 Vars.Structure (Vars.FunL _ res slot) ->
-                    -- One arrow consumed: descend the result with one fewer
-                    -- arrow of budget.
                     spineGoC mid (remaining - 1) (CoreDict.insert key () seen) res (Store.unifySlotWithSetC Nothing [ mid ] slot c1)
 
                 Vars.Alias _ _ _ real ->
-                    -- Transparent alias: chase the aliased Point WITHOUT
-                    -- spending budget (same arrow, not a new one). Mono stores
-                    -- are alias-expanded at load, so this is defensive.
                     spineGoC mid remaining (CoreDict.insert key () seen) real c1
 
                 _ ->
-                    -- Non-arrow result (ground type / var), or a slotless `Fun1`
-                    -- (lss-off — no slot to write): the spine ends here.
                     c1
 
 
+{-| Walks a use of the name `name`: when it is in the `LetEnv` and its type
+mentions an arrow, loads the use's type, joins it with the name's bound Point,
+and returns it as `WpHonest`. Otherwise the result is `WpNone`.
+-}
 joinLetUse : LetEnv -> Name -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 joinLetUse letEnv name meta s0 =
     case CoreDict.get name letEnv of
@@ -2705,11 +2488,7 @@ joinLetUse letEnv name meta s0 =
 
         Just rhsVar ->
             if not (canTypeMentionsArrow meta.tipe) then
-                -- LSS_020 (B.1.h) cost guard: with params
-                -- bound into letEnv an unguarded load would fire at every
-                -- bound-name occurrence program-wide; an arrow-free join
-                -- writes no slots, so skipping it is semantics-free.
-                --
+                -- An arrow-free join would write no slot.
                 ( WpNone, s0 )
 
             else
@@ -2717,25 +2496,19 @@ joinLetUse letEnv name meta s0 =
                     ( useVar, s1 ) ->
                         case joinArrowSets identity rhsVar useVar s1 of
                             s2 ->
-                                -- letEnv-linked flow: the family's own
-                                -- invariant (rhs join + poison-on-divergence)
-                                -- makes this complete-or-⊤.
                                 ( WpHonest useVar, s2 )
 
 
-{-| §7.4 let boundary, v1 policy: walk two loaded type structures in
-parallel, unifying ONLY the set slots of arrows at matching positions. On
-structural divergence (either side a variable or the shapes differ — a
-generalized position), poison BOTH sides' remaining arrow slots and stop
-descending that branch. All uses of a let-bound function thereby share one
-set (union over uses — sound; per-use separation is the vNext upgrade, which
-is why this stays a separate named function).
+{-| Walks the types `a` and `b` side by side and unifies the set slots of the
+arrows found at matching positions, without unifying the types themselves.
 
-`onPoison` (LSS\_020 B.4): applied once per poison event so callers can
-attribute the ⊤ — `identity` for the pre-plan let channel (its number is
-frozen Run-J data), `Engine.bumpWidenedByCf` for every join the sigFlow
-repair adds (via `joinArrowSetsSig`). Phase H.2 widens this parameter into a
-poison MODE (PoisonUseOnly) — design for the parameter, don't over-build.
+Where the two sides stop matching, because one is a type variable, they are
+arrows of different kinds, or they have different shapes, every arrow set under
+both is made ⊤ and `onPoison` is applied, and that branch is not walked
+further. An empty record against any other structure, or unit against unit,
+matches with nothing to join.
+Aliases are followed. Records join only the fields they share, then their
+extensions.
 
 -}
 joinArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -2805,35 +2578,28 @@ joinArrowSets onPoison a b s0 =
             joinArrowSets onPoison a realB s1
 
         _ ->
-            -- A variable on either side = a generalized position: poison both.
             poisonBoth onPoison a b s1
 
 
-{-| `joinArrowSets` with sigFlow attribution: every join LSS\_020 adds
-(member-root, lambda-result, If/Case hub, Let rhs, local-callee shape) counts
-its poison events in `sigStats.widenedByCf` (report-gated inside the bump).
+{-| Does what `joinArrowSets` does, counting each place it makes sets ⊤ in
+`widenedByCf` under `lss.report`.
 -}
 joinArrowSetsSig : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 joinArrowSetsSig =
     joinArrowSets Engine.bumpWidenedByCf
 
 
-{-| LSS\_023: "values of src flow into dst" — the DIRECTED twin of
-`joinArrowSets` (`plans/lss-directed-set-flow.md` §5.1).
+{-| Makes the functions held by the type `src` flow into the type `dst`: walks
+both side by side and, at each pair of matching arrows, adds a deferred
+inclusion edge from `src`'s set slot to `dst`'s (`Store.addSlotSource`), so
+`dst`'s set includes `src`'s without the two being made equal.
 
-Slot positions get a deferred edge (`Store.addSlotSource`) instead of
-unification. ARG positions FLIP operands — contravariance: dst's callers'
-arguments flow into src's params; the double-flip in nested arg positions is
-correctly covariant. Container positions (App1/Record1/Tuple1) DEGRADE the
-WHOLE subtree to the symmetric join (per-parameter variance unknown;
-symmetric is the sound over-approximation — and `joinArrowSets` never
-resumes a directed spine inside, it recurses only into itself). Alias chase,
-EmptyRecord/Unit accept, mismatch/variable → `poisonBoth onPoison` — all as
-`joinArrowSets`.
-
-**Any FUTURE directed call site must re-argue variance.** A directed walk
-that recursed argument positions co-variantly would install wrong-direction
-edges and UNDER-approximate — the miscompile class.
+Results are walked in the same direction and arguments in the opposite one,
+since the functions a caller of `dst` passes in reach `src`'s parameters. At a
+custom type, tuple or record the variance of the parts is not known, so the
+whole of that part is joined symmetrically by `joinArrowSets` instead. A
+mismatch, an alias, an empty record or unit is handled as `joinArrowSets`
+handles it.
 
 -}
 flowArrowSets : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
@@ -2856,11 +2622,9 @@ flowArrowSets onPoison src dst s0 =
                         s2 ->
                             case flowArrowSets onPoison resS resD s2 of
                                 s3 ->
-                                    -- ARG: contravariant flip.
                                     flowArrowSets onPoison argD argS s3
 
                 ( Vars.Fun1 argS resS, Vars.Fun1 argD resD ) ->
-                    -- Slotless arrow: same variance, no edge to install.
                     case flowArrowSets onPoison resS resD s1 of
                         s2 ->
                             flowArrowSets onPoison argD argS s2
@@ -2893,14 +2657,11 @@ flowArrowSets onPoison src dst s0 =
             flowArrowSets onPoison src realD s1
 
         _ ->
-            -- A variable on either side = a generalized position: poison both.
             poisonBoth onPoison src dst s1
 
 
-{-| The container degrade: the WHOLE subtree goes symmetric. `flowDegraded`
-bumps only when the degraded pair can actually CARRY a set (arrow-mention in
-the src structure) — ground leaves like `Int` would otherwise dominate the
-counter and make it meaningless.
+{-| Joins `src` and `dst` symmetrically with `joinArrowSets`, counting the join
+in `flowDegraded` under `lss.report` when `src` mentions an arrow.
 -}
 degradeToSymmetric : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 degradeToSymmetric onPoison src dst s0 =
@@ -2917,14 +2678,18 @@ degradeToSymmetric onPoison src dst s0 =
                 )
 
 
-{-| Does the store structure under this Point mention an arrow? Bounded
-walk with a visited list (aliases can cycle through records).
+{-| Tells whether the type in the store under `root` contains an arrow, with or
+without a set slot, looking through type arguments, tuples, records and
+aliases, and visiting each Point once.
 -}
 storeMentionsArrow : Vars.Variable -> Engine.S -> ( Bool, Engine.S )
 storeMentionsArrow root s0 =
     storeMentionsArrowGo [ root ] [] s0
 
 
+{-| Does what `storeMentionsArrow` does for the Points in `pending`, skipping those
+in `visited`.
+-}
 storeMentionsArrowGo : List Vars.Variable -> List Int -> Engine.S -> ( Bool, Engine.S )
 storeMentionsArrowGo pending visited s0 =
     case pending of
@@ -2973,23 +2738,28 @@ storeMentionsArrowGo pending visited s0 =
                         storeMentionsArrowGo rest visited1 s1
 
 
-{-| `flowArrowSets` with sigFlow attribution — the directed twin of
-`joinArrowSetsSig`.
+{-| Does what `flowArrowSets` does, counting each place it makes sets ⊤ in
+`widenedByCf` under `lss.report`.
 -}
 flowArrowSetsSig : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSetsSig =
     flowArrowSets Engine.bumpWidenedByCf
 
 
-{-| Set-flow with no poison attribution — the directed twin of
-`joinArrowSetsPlain`, for translation-side consumers (kernel tunnels).
+{-| Makes the functions held by the type `src` flow into the type `dst`, as a
+directed inclusion: at each pair of matching arrows, `dst`'s set comes to
+include `src`'s. Results flow in the same direction and arguments in the
+opposite one. Inside a custom type, tuple or record the parts are joined
+symmetrically, and where the two types stop matching every arrow set under both
+is made ⊤.
 -}
 flowArrowSetsPlain : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 flowArrowSetsPlain =
     flowArrowSets identity
 
 
-{-| Single-source join (Let rhs → letEnv hub; skip on no point).
+{-| Joins `maybePoint`, when there is one, into `target`, with
+`joinArrowSetsSig`.
 -}
 sigFlowJoinInto : Vars.Variable -> Maybe Vars.Variable -> Engine.S -> Engine.S
 sigFlowJoinInto target maybePoint s0 =
@@ -3001,6 +2771,9 @@ sigFlowJoinInto target maybePoint s0 =
             s0
 
 
+{-| Joins the two lists' Points pairwise, ignoring the longer list's extra
+Points.
+-}
 joinArrowSetsList : (Engine.S -> Engine.S) -> List Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinArrowSetsList onPoison xs ys s0 =
     case ( xs, ys ) of
@@ -3013,6 +2786,8 @@ joinArrowSetsList onPoison xs ys s0 =
             s0
 
 
+{-| Joins each pair of Points.
+-}
 joinArrowSetsPairs : (Engine.S -> Engine.S) -> List ( Vars.Variable, Vars.Variable ) -> Engine.S -> Engine.S
 joinArrowSetsPairs onPoison pairs s0 =
     case pairs of
@@ -3025,14 +2800,11 @@ joinArrowSetsPairs onPoison pairs s0 =
                     joinArrowSetsPairs onPoison rest s1
 
 
+{-| Makes every arrow set under `a` and under `b` ⊤, then applies `onPoison`
+once.
+-}
 poisonBoth : (Engine.S -> Engine.S) -> Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 poisonBoth onPoison a b s0 =
-    -- GAP-9a ⊤ source. One-shot census 2026-08-18 (Run J,
-    -- benchmarks/lss-opt.md): 672 invocations on the self-compile vs
-    -- topSiteShapes local=7,361 — a minor component of the local-⊤ mass;
-    -- the per-event counter was removed after the measurement (plan
-    -- lss-fidelity-1 §7). LSS_020 joins attribute their events via
-    -- `onPoison` instead.
     case Store.poisonArrowSets a s0 of
         s1 ->
             case Store.poisonArrowSets b s1 of
@@ -3040,11 +2812,9 @@ poisonBoth onPoison a b s0 =
                     onPoison s2
 
 
-{-| P0 sizing instrument (plans/lss-ctor-arrow-identity.md §8.1): how many
-LEADING arrows does this type have? `a -> (Int -> b)` is 2. Compared against
-the depth an injection actually covers, this decides whether a deeper
-nameable position EXISTS at an argument — the `/a0/r`-class the census says
-holds the mass.
+{-| Returns the number of arrows along a canonical type's outer spine: 2 for
+`a -> (Int -> b)`. Aliases are followed only when they are `Filled`; a `Holey`
+alias counts as no arrow.
 -}
 canTypeArrowDepth : Can.Type TypeIds.MVarId -> Int
 canTypeArrowDepth t =
@@ -3059,6 +2829,8 @@ canTypeArrowDepth t =
             0
 
 
+{-| Tells whether a canonical type is an arrow, following `Filled` aliases only.
+-}
 canTypeIsArrow : Can.Type TypeIds.MVarId -> Bool
 canTypeIsArrow t =
     case t of
@@ -3072,11 +2844,9 @@ canTypeIsArrow t =
             False
 
 
-{-| Does a canonical type mention an arrow ANYWHERE (LSS\_020 B.2's cheap
-guard — keeps the new loads off the overwhelmingly arrow-free majority)?
-Verbatim twin of `Translate.canTypeHasArrow`. `TVar → False` is deliberate: a
-pure-TVar position either already connects via the MVarId memo or is
-generalized, where a join would only poison.
+{-| Tells whether a canonical type contains an arrow anywhere, looking through
+type arguments, records, tuples, and both the body and the arguments of an
+alias. A type variable counts as no arrow, though it may stand for a function.
 -}
 canTypeMentionsArrow : Can.Type TypeIds.MVarId -> Bool
 canTypeMentionsArrow t =
@@ -3106,12 +2876,11 @@ canTypeMentionsArrow t =
             canTypeMentionsArrow real || List.any (\( _, at ) -> canTypeMentionsArrow at) aliasArgs
 
 
-{-| LSS\_020 (B.1.g): descend an arrow spine binding one param name per arrow
-into letEnv; returns the extended env and the spine position after the last
-param (`Nothing` on early stop — erased/over-shadowed heads leave the
-remaining params untracked, today's behavior, sound). Total: store reads
-only. The `seen` set guards the transparent-alias chase (mirrors `spineGoC`);
-`Store.arrowParts` handles Fun1+FunL but NOT Alias, hence the explicit arm.
+{-| Binds each of `names` in `letEnv` to the argument type of the next arrow along
+`v`'s spine, following aliases. Returns the extended environment and the rest
+of the type after the last name, or `Nothing` with only the names bound so far
+when the spine runs out of arrows or an alias leads back to a Point already
+passed. The store is read, not written.
 -}
 bindParamsFromSpine : List Name -> Vars.Variable -> Dict Int () -> LetEnv -> Engine.S -> ( LetEnv, Maybe Vars.Variable, Engine.S )
 bindParamsFromSpine names v seen letEnv s0 =
@@ -3151,13 +2920,16 @@ bindParamsFromSpine names v seen letEnv s0 =
                                 ( letEnv, Nothing, s1 )
 
 
-{-| LSS\_020 (B.2): the If/Case hub. Publishes the joined branch flow ONLY
-when every branch is `WpHonest` (`WpSelf` skipped — see `WalkPoint`);
-otherwise ⊤ is the only honest summary of a partially visible value, so the
-hub POISONS (counted: `sigStats.widenedByCf`) — a partial member join would
-claim completeness while a blind branch's runtime inhabitants are invisible,
-the false-singleton devirt vector. A poisoned hub returns `WpHonest` — ⊤
-propagates upward correctly through the parents' joins.
+{-| Joins the branches of an `if` or `case` whose result type is `meta.tipe`
+into one loaded result type, the hub, and returns it as `WpHonest`.
+
+When every branch is `WpHonest` or `WpSelf`, each honest branch's functions
+flow into the hub (`flowArrowSets`), so the hub's sets are the union of the
+branches'. Otherwise the hub's arrows are made ⊤ and counted in `widenedByCf`
+under `lss.report`, since a branch that may be incomplete would make that union
+look complete when it is not. A result type with no arrow gives `WpNone` and
+loads nothing.
+
 -}
 joinCfHub : List WalkPoint -> TOpt.Meta TypeIds.MVarId -> Engine.S -> ( WalkPoint, Engine.S )
 joinCfHub wps meta s0 =
@@ -3168,11 +2940,8 @@ joinCfHub wps meta s0 =
         case Store.loadTypeS meta.tipe s0 of
             ( hub, s1 ) ->
                 if List.all hubHonest wps then
-                    -- LSS_023: DIRECTED — each branch flows INTO the hub
-                    -- (branch → hub), so the branches keep their own sets and
-                    -- the hub resolves their union at read. The symmetric
-                    -- version unified all branches into one class — the Run-X
-                    -- pollution this plan exists to remove.
+                    -- Directed at the arrows of the result's spine; inside
+                    -- a container the join is symmetric.
                     case flowAllSig hub (List.filterMap wpPoint wps) s1 of
                         s2 ->
                             ( WpHonest hub, s2 )
@@ -3183,6 +2952,9 @@ joinCfHub wps meta s0 =
                             ( WpHonest hub, Engine.bumpWidenedByCf s2 )
 
 
+{-| Tells whether a branch can be joined into a hub: an honest branch or a self
+call.
+-}
 hubHonest : WalkPoint -> Bool
 hubHonest wp =
     case wp of
@@ -3199,6 +2971,8 @@ hubHonest wp =
             False
 
 
+{-| Makes each of `pts` flow into `hub` with `flowArrowSetsSig`.
+-}
 flowAllSig : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 flowAllSig hub pts s0 =
     case pts of
@@ -3206,12 +2980,14 @@ flowAllSig hub pts s0 =
             s0
 
         p :: rest ->
-            -- branch → hub: p is the SOURCE.
             case flowArrowSetsSig p hub s0 of
                 s1 ->
                     flowAllSig hub rest s1
 
 
+{-| Walks each condition and branch of an `if` in order, prepending each branch's
+walk point to `acc`.
+-}
 walkIfPairs : LetEnv -> List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> List WalkPoint -> Engine.S -> ( List WalkPoint, Engine.S )
 walkIfPairs letEnv pairs acc s0 =
     case pairs of
@@ -3226,6 +3002,8 @@ walkIfPairs letEnv pairs acc s0 =
                             walkIfPairs letEnv rest (wp :: acc) s2
 
 
+{-| Walks each expression in order, prepending its walk point to `acc`.
+-}
 walkCollect : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> List WalkPoint -> Engine.S -> ( List WalkPoint, Engine.S )
 walkCollect letEnv exprs acc s0 =
     case exprs of
@@ -3242,6 +3020,8 @@ walkCollect letEnv exprs acc s0 =
 -- ====== STRUCTURAL CHILD FOLDS ======
 
 
+{-| Walks each expression in order, discarding what the walks return.
+-}
 walkChildren : LetEnv -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 walkChildren letEnv exprs s0 =
     case exprs of
@@ -3254,6 +3034,10 @@ walkChildren letEnv exprs s0 =
                     walkChildren letEnv rest s1
 
 
+{-| Returns the immediate subexpressions of `expr`. For a `case` these are the
+expressions inlined in its decision tree's leaves and the bodies of its
+shared branches.
+-}
 directChildren : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 directChildren expr =
     case expr of
@@ -3355,6 +3139,9 @@ directChildren expr =
             []
 
 
+{-| Returns the expressions inlined in a decision tree's leaves; a leaf that jumps
+to a shared branch contributes none.
+-}
 deciderExprs : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId)
 deciderExprs decider =
     case decider of

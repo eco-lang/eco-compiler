@@ -8,11 +8,28 @@ module Builder.Elm.Outline exposing
     , defaultSummary
     )
 
-{-| Project outline parsing and validation for elm.json files.
+{-| Every project is described by its `elm.json` file, and this module is the
+typed form of that file and the rules a file must meet to be accepted.
 
-This module handles reading, parsing, and validating elm.json configuration files
-for both application and package projects. It validates dependencies, source
-directories, exposed modules, and enforces structural constraints.
+The parsed file is called an _outline_. A project is either an application or
+a package, and the two files have different fields. An application lists its
+source directories and pins every dependency to an exact version, split into
+direct and indirect dependencies and again into ordinary and test ones. A
+package names itself, gives a summary, a license, its own version and the
+modules it exposes, and states its dependencies and the Elm version it accepts
+as version constraints.
+
+`read` decodes `<root>/elm.json` with `decoder` and then checks what decoding
+cannot: that the right core packages are depended on and that every source
+directory exists. Decoding and checking problems come back as an
+`Exit.Outline`; a file that cannot be read at all crashes the program, as
+`File.readUtf8` describes. Other checks on an outline, such as how its
+dependencies fit together, are not made here. `write` turns an outline back
+into `elm.json`.
+
+The module also holds a binary encoding of a source directory, and
+`getAllModulePaths`, which finds the source file of every module of a project
+and of its dependencies.
 
 
 # Core Types
@@ -81,17 +98,21 @@ import Utils.Main as Utils
 -- ====== OUTLINE ======
 
 
-{-| Represents the top-level structure of an elm.json file.
-Can be either an application outline or a package outline.
+{-| The contents of one `elm.json` file: an application's (`App`) or a
+package's (`Pkg`), told apart by its `"type"` field.
 -}
 type Outline
     = App AppOutline
     | Pkg PkgOutline
 
 
-{-| Data structure for an application elm.json.
-Contains Elm version, source directories, and direct/indirect dependencies
-for both main dependencies and test dependencies.
+{-| What an application's `elm.json` says.
+
+Every dependency is pinned to one exact version. `depsDirect` and `depsIndirect`
+are the `"direct"` and `"indirect"` objects of `"dependencies"`, and
+`testDirect` and `testIndirect` those of `"test-dependencies"`. `elm` is the one
+Elm version the application is for.
+
 -}
 type alias AppOutlineData =
     { elm : V.Version
@@ -103,15 +124,19 @@ type alias AppOutlineData =
     }
 
 
-{-| Wrapper type for application outline data.
+{-| The outline of an application, as `AppOutlineData` describes it.
 -}
 type AppOutline
     = AppOutline AppOutlineData
 
 
-{-| Data structure for a package elm.json.
-Contains package name, summary, license, version, exposed modules,
-and dependency constraints for both main and test dependencies.
+{-| What a package's `elm.json` says.
+
+Unlike an application's, its dependencies are version constraints, not exact
+versions, and so is `elm`, the range of Elm versions it accepts. `version` is
+the package's own version. A decoded `summary` is shorter than 80 characters,
+as written in the file.
+
 -}
 type alias PkgOutlineData =
     { name : Pkg.Name
@@ -125,22 +150,31 @@ type alias PkgOutlineData =
     }
 
 
-{-| Wrapper type for package outline data.
+{-| The outline of a package, as `PkgOutlineData` describes it.
 -}
 type PkgOutline
     = PkgOutline PkgOutlineData
 
 
-{-| Represents how modules are exposed in a package.
-Can be a simple list of modules or a dictionary with categorized sections.
+{-| The modules a package exposes, as its `"exposed-modules"` field writes them.
+
+`ExposedList` is a plain array of module names. `ExposedDict` is an object
+whose keys are section titles, each holding an array of module names; the
+sections are kept in the order the file gives them, and a decoded title is
+shorter than 20 characters as written in the file.
+
 -}
 type Exposed
     = ExposedList (List ModuleName.Raw)
     | ExposedDict (List ( String, List ModuleName.Raw ))
 
 
-{-| Represents a source directory path.
-Can be either absolute or relative to the project root.
+{-| One entry of an application's `"source-directories"`, as written.
+
+A relative path (`RelativeSrcDir`) is relative to the project root, the
+directory holding `elm.json`; an absolute one is `AbsoluteSrcDir`. Both keep the
+text exactly as the file gives it, which is also what is written back.
+
 -}
 type SrcDir
     = AbsoluteSrcDir FilePath
@@ -151,7 +185,7 @@ type SrcDir
 -- ====== DEFAULTS ======
 
 
-{-| The default placeholder summary text for new packages.
+{-| The placeholder summary given to a new package, for its author to replace.
 -}
 defaultSummary : String
 defaultSummary =
@@ -162,8 +196,8 @@ defaultSummary =
 -- ====== HELPERS ======
 
 
-{-| Flattens an Exposed structure into a simple list of module names.
-Works for both ExposedList and ExposedDict by extracting all modules.
+{-| Returns every exposed module name, section by section in order when the
+modules are in sections.
 -}
 flattenExposed : Exposed -> List ModuleName.Raw
 flattenExposed exposed =
@@ -179,7 +213,8 @@ flattenExposed exposed =
 -- ====== WRITE ======
 
 
-{-| Writes an Outline to an elm.json file at the specified root directory.
+{-| Writes `outline` to `<root>/elm.json`, crashing the program if the write
+fails.
 -}
 write : FilePath -> Outline -> Task Never ()
 write root outline =
@@ -190,6 +225,8 @@ write root outline =
 -- ====== JSON ENCODE ======
 
 
+{-| Returns the JSON of an `elm.json` holding `outline`.
+-}
 encode : Outline -> E.Value
 encode outline =
     case outline of
@@ -226,6 +263,9 @@ encode outline =
                 ]
 
 
+{-| Returns the JSON of an `"exposed-modules"` field: an array, or an object
+of sections in their order.
+-}
 encodeExposed : Exposed -> E.Value
 encodeExposed exposed =
     case exposed of
@@ -236,16 +276,23 @@ encodeExposed exposed =
             E.object (List.map (Tuple.mapSecond (E.list encodeModule)) chunks)
 
 
+{-| Returns a module name as a JSON string, unescaped.
+-}
 encodeModule : ModuleName.Raw -> E.Value
 encodeModule name =
     E.name name
 
 
+{-| Returns a JSON object of dependencies keyed by package name, with each
+version or constraint encoded by `encodeValue`.
+-}
 encodeDeps : (a -> E.Value) -> Dict Pkg.Name a -> E.Value
 encodeDeps encodeValue deps =
     E.stdDict Pkg.toJsonString encodeValue deps
 
 
+{-| Returns a source directory as the JSON string it was written as.
+-}
 encodeSrcDir : SrcDir -> E.Value
 encodeSrcDir srcDir =
     case srcDir of
@@ -260,8 +307,20 @@ encodeSrcDir srcDir =
 -- ====== PARSE AND VERIFY ======
 
 
-{-| Reads and validates an elm.json file from the specified root directory.
-Returns either an error describing what went wrong or a validated Outline.
+{-| Reads `<root>/elm.json` and returns its outline, or the first problem
+found.
+
+The file must decode with `decoder`. A package must then depend on `elm/core`
+in `"dependencies"`, unless it is `elm/core` itself. An application must have
+`elm/core` as a direct dependency and `elm/json` as a direct or indirect one,
+and every source directory must exist. Test dependencies are not looked at.
+
+There is also a check that no two source directories name the same directory
+once canonicalised, but it never reports one: it groups the directories with
+`Utils.dictFromListWith`, which always returns an empty dictionary.
+
+The program crashes if the file cannot be read.
+
 -}
 read : FilePath -> Task Never (Result Exit.Outline Outline)
 read root =
@@ -269,6 +328,9 @@ read root =
         |> Task.andThen (parseAndValidateOutline root)
 
 
+{-| Returns the outline that `bytes`, the text of the `elm.json` in `root`,
+decodes to and passes the checks `read` makes, or the first problem found.
+-}
 parseAndValidateOutline : FilePath -> String -> Task Never (Result Exit.Outline Outline)
 parseAndValidateOutline root bytes =
     case D.fromByteString decoder bytes of
@@ -279,6 +341,9 @@ parseAndValidateOutline root bytes =
             validateOutline root outline
 
 
+{-| Returns `outline` if it passes the checks `read` makes after decoding, or
+the first problem found.
+-}
 validateOutline : FilePath -> Outline -> Task Never (Result Exit.Outline Outline)
 validateOutline root outline =
     case outline of
@@ -289,6 +354,9 @@ validateOutline root outline =
             validateAppOutline root appData.srcDirs appData.depsDirect appData.depsIndirect outline
 
 
+{-| Returns `outline`, the outline of package `pkg`, unless `deps` lacks
+`elm/core` and `pkg` is not `elm/core` itself.
+-}
 validatePkgOutline : Pkg.Name -> Dict Pkg.Name a -> Outline -> Task Never (Result Exit.Outline Outline)
 validatePkgOutline pkg deps outline =
     Task.succeed <|
@@ -299,6 +367,10 @@ validatePkgOutline pkg deps outline =
             Ok outline
 
 
+{-| Returns the application `outline` if `direct` holds `elm/core`, `direct` or
+`indirect` holds `elm/json`, and the source directories pass the checks of
+`checkSrcDirsAndDuplicates`; otherwise the first problem found.
+-}
 validateAppOutline : FilePath -> NE.Nonempty SrcDir -> Dict Pkg.Name a -> Dict Pkg.Name b -> Outline -> Task Never (Result Exit.Outline Outline)
 validateAppOutline root srcDirs direct indirect outline =
     if not (Dict.member Pkg.core direct) then
@@ -312,6 +384,10 @@ validateAppOutline root srcDirs direct indirect outline =
             |> Task.andThen (checkSrcDirsAndDuplicates root srcDirs outline)
 
 
+{-| Returns an error naming `badDirs`, the source directories found missing, if
+there are any, and otherwise the result of looking for two of `srcDirs` that
+name the same directory.
+-}
 checkSrcDirsAndDuplicates : FilePath -> NE.Nonempty SrcDir -> Outline -> List SrcDir -> Task Never (Result Exit.Outline Outline)
 checkSrcDirsAndDuplicates root srcDirs outline badDirs =
     case List.map toGiven badDirs of
@@ -323,6 +399,9 @@ checkSrcDirsAndDuplicates root srcDirs outline badDirs =
                 |> Task.map (checkForDuplicateSrcDirs outline)
 
 
+{-| Returns `outline`, or an error when `maybeDups` holds a directory and two
+entries that both name it.
+-}
 checkForDuplicateSrcDirs : Outline -> Maybe ( FilePath, ( FilePath, FilePath ) ) -> Result Exit.Outline Outline
 checkForDuplicateSrcDirs outline maybeDups =
     case maybeDups of
@@ -333,11 +412,15 @@ checkForDuplicateSrcDirs outline maybeDups =
             Err (Exit.OutlineHasDuplicateSrcDirs canonicalDir dir1 dir2)
 
 
+{-| Returns whether the source directory is missing, resolved against `root`.
+-}
 isSrcDirMissing : FilePath -> SrcDir -> Task Never Bool
 isSrcDirMissing root srcDir =
     Task.map not (Utils.dirDoesDirectoryExist (toAbsolute root srcDir))
 
 
+{-| Returns a source directory's path as the file wrote it.
+-}
 toGiven : SrcDir -> FilePath
 toGiven srcDir =
     case srcDir of
@@ -348,6 +431,9 @@ toGiven srcDir =
             dir
 
 
+{-| Returns a source directory's path, joined to `root` with `Utils.fpCombine`
+when it is relative.
+-}
 toAbsolute : FilePath -> SrcDir -> FilePath
 toAbsolute root srcDir =
     case srcDir of
@@ -358,6 +444,14 @@ toAbsolute root srcDir =
             Utils.fpCombine root dir
 
 
+{-| Returns the canonical path of a directory that two of `srcDirs` both name,
+with the two entries as written, or `Nothing`.
+
+The entries are grouped by canonical path with `Utils.dictFromListWith`, which
+never adds a key, so the grouping is empty and the result is always `Nothing`.
+The paths are still canonicalised.
+
+-}
 detectDuplicates : FilePath -> List SrcDir -> Task Never (Maybe ( FilePath, ( FilePath, FilePath ) ))
 detectDuplicates root srcDirs =
     Utils.listTraverse (toPair root) srcDirs
@@ -370,12 +464,16 @@ detectDuplicates root srcDirs =
             )
 
 
+{-| Returns a source directory's canonical path, paired with the path as written.
+-}
 toPair : FilePath -> SrcDir -> Task Never ( FilePath, OneOrMore.OneOrMore FilePath )
 toPair root srcDir =
     Utils.dirCanonicalizePath (toAbsolute root srcDir)
         |> Task.map (\key -> ( key, OneOrMore.one (toGiven srcDir) ))
 
 
+{-| Returns the first two paths when there are at least two.
+-}
 isDup : OneOrMore.OneOrMore FilePath -> Maybe ( FilePath, FilePath )
 isDup paths =
     case paths of
@@ -390,8 +488,24 @@ isDup paths =
 -- ====== GET ALL MODULE PATHS ======
 
 
-{-| Recursively discovers all module file paths in the project and its dependencies.
-Returns a dictionary mapping canonical module names to their file paths.
+{-| Returns the path of the source file of every module of the project in
+`root` and of its dependencies, keyed by the module's canonical name.
+
+Every `.elm` file under a source directory, at any depth, counts as a module,
+named by its path below that directory.
+
+For an application, its modules are found in its source directories and are
+given the placeholder package name `Pkg.dummyName`; its dependencies are its
+direct and indirect ones, at their pinned versions, and test dependencies are
+left out. For a package, its own modules are looked for under `<root>/st.src`,
+and each dependency is taken at the lower bound of its constraint. A dependency's
+modules are looked for under `st.src` in its package cache directory. Only the
+listed dependencies are visited, not theirs in turn.
+
+When `read` returns a problem, the result is empty; when it crashes, so does
+this. A directory that is looked in and does not exist crashes the program, as
+`Utils.dirListDirectory` describes.
+
 -}
 getAllModulePaths : FilePath -> Task Never (DataMap.Dict String ModuleName.Canonical FilePath)
 getAllModulePaths root =
@@ -426,6 +540,10 @@ getAllModulePaths root =
             )
 
 
+{-| Returns the modules found under `packageSrcDirs`, as modules of package
+`packageName`, together with those of every package in `deps` at the version
+given. Where both hold the same canonical name, a dependency's entry is kept.
+-}
 getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict String ModuleName.Canonical FilePath)
 getAllModulePathsHelper packageName packageSrcDirs deps =
     Utils.listTraverse recursiveFindFiles packageSrcDirs
@@ -450,12 +568,17 @@ getAllModulePathsHelper packageName packageSrcDirs deps =
             )
 
 
+{-| Returns the path of every `.elm` file under `root`, each paired with `root`.
+-}
 recursiveFindFiles : FilePath -> Task Never (List ( FilePath, FilePath ))
 recursiveFindFiles root =
     recursiveFindFilesHelp root
         |> Task.map (List.map (Tuple.pair root))
 
 
+{-| Returns the path of every `.elm` file under `root`, at any depth, those in
+subdirectories first.
+-}
 recursiveFindFilesHelp : FilePath -> Task Never (List FilePath)
 recursiveFindFilesHelp root =
     Utils.dirListDirectory root
@@ -477,11 +600,16 @@ recursiveFindFilesHelp root =
             )
 
 
+{-| Returns whether `path` ends in extension `ext`, which includes its `.`.
+-}
 hasExtension : String -> FilePath -> Bool
 hasExtension ext path =
     ext == Utils.fpTakeExtension path
 
 
+{-| Returns the module name of `filePath`, a file under `root`: its path below
+`root` without the extension, with `/` turned into `.`.
+-}
 moduleNameFromFilePath : FilePath -> FilePath -> Name.Name
 moduleNameFromFilePath root filePath =
     filePath
@@ -490,6 +618,8 @@ moduleNameFromFilePath root filePath =
         |> String.replace "/" "."
 
 
+{-| Returns `pkgName` paired with its package cache directory for version `vsn`.
+-}
 resolvePackagePaths : Pkg.Name -> V.Version -> Task Never ( Pkg.Name, FilePath )
 resolvePackagePaths pkgName vsn =
     Stuff.resolveBundledPackages []
@@ -501,14 +631,18 @@ resolvePackagePaths pkgName vsn =
 -- ====== JSON DECODE ======
 
 
-{-| A decoder type specialized for outline parsing errors.
+{-| A JSON decoder of part of an `elm.json`, whose problems are
+`Exit.OutlineProblem`s.
 -}
 type alias Decoder a =
     D.Decoder Exit.OutlineProblem a
 
 
-{-| Decodes an Outline from JSON.
-Checks the "type" field to determine whether to parse as an application or package.
+{-| A decoder for a whole `elm.json`, read as an application or a package
+according to its `"type"` field; any other `"type"` fails with `OP_BadType`.
+
+It decodes only. The checks `read` makes afterwards are not made here.
+
 -}
 decoder : Decoder Outline
 decoder =
@@ -535,6 +669,8 @@ decoder =
             )
 
 
+{-| A decoder for the fields of an application's `elm.json`.
+-}
 appDecoder : Decoder AppOutline
 appDecoder =
     D.pure (\elm srcDirs depsDirect depsIndirect testDirect testIndirect -> AppOutline { elm = elm, srcDirs = srcDirs, depsDirect = depsDirect, depsIndirect = depsIndirect, testDirect = testDirect, testIndirect = testIndirect })
@@ -546,6 +682,8 @@ appDecoder =
         |> D.apply (D.field "test-dependencies" (D.field "indirect" (depsDecoder versionDecoder)))
 
 
+{-| A decoder for the fields of a package's `elm.json`.
+-}
 pkgDecoder : Decoder PkgOutline
 pkgDecoder =
     D.pure (\name summary license version exposed deps testDeps elm -> PkgOutline { name = name, summary = summary, license = license, version = version, exposed = exposed, deps = deps, testDeps = testDeps, elm = elm })
@@ -563,11 +701,16 @@ pkgDecoder =
 -- ====== JSON DECODE HELPERS ======
 
 
+{-| A decoder for a package name.
+-}
 nameDecoder : Decoder Pkg.Name
 nameDecoder =
     D.mapError (Basics.uncurry Exit.OP_BadPkgName) Pkg.decoder
 
 
+{-| A decoder for a package summary, which fails with `OP_BadSummaryTooLong`
+unless its text, as written in the file, is shorter than 80 characters.
+-}
 summaryDecoder : Decoder String
 summaryDecoder =
     D.customString
@@ -575,26 +718,39 @@ summaryDecoder =
         (\_ _ -> Exit.OP_BadSummaryTooLong)
 
 
+{-| A decoder for an exact version.
+-}
 versionDecoder : Decoder V.Version
 versionDecoder =
     D.mapError (Basics.uncurry Exit.OP_BadVersion) V.decoder
 
 
+{-| A decoder for a version constraint.
+-}
 constraintDecoder : Decoder Con.Constraint
 constraintDecoder =
     D.mapError Exit.OP_BadConstraint Con.decoder
 
 
+{-| Produces a decoder for an object of dependencies keyed by package name, with
+each value read by `valueDecoder`.
+-}
 depsDecoder : Decoder a -> Decoder (Dict Pkg.Name a)
 depsDecoder valueDecoder =
     D.stdDict (Pkg.keyDecoder Exit.OP_BadDependencyName) valueDecoder
 
 
+{-| A decoder for a non-empty array of source directories, each classed as
+relative or absolute; an empty array fails with `OP_NoSrcDirs`.
+-}
 dirsDecoder : Decoder (NE.Nonempty SrcDir)
 dirsDecoder =
     D.map (NE.map toSrcDir) (D.nonEmptyList D.string Exit.OP_NoSrcDirs)
 
 
+{-| Returns `path` as a relative or an absolute source directory, as
+`Utils.fpIsRelative` judges it.
+-}
 toSrcDir : FilePath -> SrcDir
 toSrcDir path =
     if Utils.fpIsRelative path then
@@ -608,6 +764,9 @@ toSrcDir path =
 -- ====== EXPOSED MODULES DECODER ======
 
 
+{-| A decoder for `"exposed-modules"`, tried first as an array of module names
+and then as an object of sections.
+-}
 exposedDecoder : Decoder Exposed
 exposedDecoder =
     D.oneOf
@@ -616,11 +775,17 @@ exposedDecoder =
         ]
 
 
+{-| A decoder for a module name.
+-}
 moduleDecoder : Decoder ModuleName.Raw
 moduleDecoder =
     D.mapError (Basics.uncurry Exit.OP_BadModuleName) ModuleName.decoder
 
 
+{-| A key decoder for a section title of `"exposed-modules"`, which fails with
+`OP_BadModuleHeaderTooLong` unless the title, as written in the file, is
+shorter than 20 characters.
+-}
 headerKeyDecoder : D.KeyDecoder Exit.OutlineProblem String
 headerKeyDecoder =
     D.KeyDecoder
@@ -632,6 +797,9 @@ headerKeyDecoder =
 -- ====== BOUND PARSER ======
 
 
+{-| Produces a parser that reads all of the remaining text and succeeds with it
+when it is shorter than `bound`, and otherwise fails with `tooLong`.
+-}
 boundParser : Int -> x -> P.Parser x String
 boundParser bound tooLong =
     P.Parser <|
@@ -652,8 +820,8 @@ boundParser bound tooLong =
                 P.Cerr st.row newCol (\_ _ -> tooLong)
 
 
-{-| Encodes a SrcDir to bytes for serialization.
-Uses a tag byte (0 for absolute, 1 for relative) followed by the path string.
+{-| Returns the binary encoding of a source directory: a tag byte, 0 for
+absolute and 1 for relative, then the path. `srcDirDecoder` reads it back.
 -}
 srcDirEncoder : SrcDir -> Bytes.Encode.Encoder
 srcDirEncoder srcDir =
@@ -671,8 +839,8 @@ srcDirEncoder srcDir =
                 ]
 
 
-{-| Decodes a SrcDir from bytes.
-Reads a tag byte (0 for absolute, 1 for relative) followed by the path string.
+{-| A decoder for the binary encoding `srcDirEncoder` writes. Any tag other than
+0 or 1 fails.
 -}
 srcDirDecoder : Bytes.Decode.Decoder SrcDir
 srcDirDecoder =

@@ -1,16 +1,17 @@
 module Compiler.Type.Occurs exposing (occurs)
 
-{-| Occurs check for detecting infinite types during type unification.
+{-| An infinite type is one that contains itself, such as a variable `a` that
+has been solved to `List a`. Such a type cannot be written down. This module
+provides a test for whether a variable's solved type is infinite.
 
-The occurs check prevents the creation of infinite types by detecting when a type
-variable would occur within its own definition (e.g., `a = List a` where `a` appears
-on both sides). This is essential for ensuring that type unification terminates and
-produces valid, finite types.
+The solved types live in the union-find store of `Compiler.Type.UnionFind`, as
+variables whose contents may refer to further variables. A cycle among those
+references is an infinite type. `occurs` walks the references from one variable
+and reports whether it ever reaches a variable a second time along the same
+path.
 
-During type inference, if we attempt to unify a type variable with a structure
-containing that same variable, we have detected a type error that would create an
-infinite type. This module performs that check by traversing type structures and
-tracking which variables have been seen.
+The check is a separate walk over the store; nothing in this module runs it
+automatically.
 
 
 # Occurs Check
@@ -29,10 +30,14 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- ====== OCCURS ======
 
 
-{-| Checks if a type variable occurs within its own definition, which would create an infinite type.
+{-| Returns `True` when the type reachable from `var` contains a cycle, that is,
+when some variable is reached again while following references from `var`.
 
-Returns True if a cycle is detected (the variable appears in its own structure),
-False otherwise. This is used during type unification to prevent infinite types.
+The variables remembered are those on the current path only, so substructure
+shared between two branches is walked once for each branch and is not a cycle.
+For an alias, only the alias's arguments are followed, not the type it stands
+for. A lambda set is not followed into: its members are not type structure, so
+no infinite type can arise through them.
 
 -}
 occurs : Vars.Variable -> IO Bool
@@ -40,6 +45,9 @@ occurs var =
     occursHelp [] var False
 
 
+{-| Returns `True` when a variable on the path `seen` is reached again from
+`var`, and otherwise `foundCycle`.
+-}
 occursHelp : List Vars.Variable -> Vars.Variable -> Bool -> IO Bool
 occursHelp seen var foundCycle =
     if List.member var seen then
@@ -81,13 +89,8 @@ occursHelp seen var foundCycle =
                                         |> IO.andThen (occursHelp newSeen a)
 
                                 Vars.LambdaSet1 _ ->
-                                    -- Ground member ids. Since LSS_023 an
-                                    -- `LsFrom` set MAY carry source Points,
-                                    -- and the occurs check deliberately does
-                                    -- NOT descend into them: inclusion edges
-                                    -- are SET-LATTICE edges, not type
-                                    -- structure — no infinite TYPE can arise
-                                    -- through them.
+                                    -- Inclusion edges between lambda sets are not type
+                                    -- structure, so no infinite type arises through them.
                                     IO.pure foundCycle
 
                                 Vars.EmptyRecord1 ->

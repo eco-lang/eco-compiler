@@ -1,15 +1,20 @@
 module Compiler.Canonicalize.Environment.Dups exposing (Info, ToError, Tracker, checkFields, checkLocatedFields, detect, insert, none, one, union, unions)
 
-{-| Utilities for detecting duplicate names in declarations.
+{-| Canonicalization must reject a name defined twice in one scope, and the
+error has to point at two of the places it was defined. This module is the
+one mechanism for that check, whatever kind of name is being checked.
 
-This module provides a generic duplicate-tracking system used throughout
-canonicalization to detect and report duplicate:
+A _tracker_ maps each name to every occurrence of it collected so far. An
+occurrence is the region the name was written at, together with whatever value
+the caller wants to keep for it. Trackers are built with `none`, `one`,
+`insert`, `union` and `unions`, and nothing is checked while they are built.
 
-  - Type names
-  - Constructor names
-  - Field names in records
-  - Variable names
-  - Type parameters
+The check happens once, in `detect`, which turns a tracker into a `Dict` from
+each name to its one value, or fails on a name with more than one occurrence.
+The caller supplies the error constructor as a `ToError`, so the same tracker
+serves declarations, types, constructors, pattern variables, type arguments,
+exports and record fields alike. `checkFields` and `checkLocatedFields` do the
+whole job for a list of record fields.
 
 @docs Info, ToError, Tracker, checkFields, checkLocatedFields, detect, insert, none, one, union, unions
 
@@ -29,13 +34,18 @@ import Utils.Main as Utils
 -- ====== DUPLICATE TRACKER ======
 
 
-{-| Tracks potential duplicate names, storing one or more occurrences of each name.
+{-| A collection of name occurrences, keyed by name, holding every occurrence of
+each name that has been added.
+
+This is a name for a `Dict`, not a new type.
+
 -}
 type alias Tracker value =
     Dict Name (OneOrMore (Info value))
 
 
-{-| Information about a name occurrence, including its source region and associated value.
+{-| One occurrence of a name: the region it was written at, and the value the
+caller keeps for it.
 -}
 type Info value
     = Info A.Region value
@@ -45,16 +55,20 @@ type Info value
 -- ====== DETECT ======
 
 
-{-| Function that constructs a duplicate name error from name and two conflicting regions.
+{-| A function that builds the error for a duplicated name, given the name and
+the regions of two of its occurrences.
 -}
 type alias ToError =
     Name -> A.Region -> A.Region -> Error
 
 
-{-| Detect duplicate names in a tracker and convert to a dictionary.
+{-| Returns a `Dict` from each name in the tracker to the value of its one
+occurrence, or fails with the error `toError` builds for a name that occurs more
+than once.
 
-Returns an error if any name appears more than once, otherwise returns a dictionary
-with one entry per unique name.
+Names are checked in ascending order and the first duplicated one stops the
+check, so only one error is reported. Its two regions are the first two
+occurrences in the order the tracker holds them.
 
 -}
 detect : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict Name a)
@@ -71,10 +85,11 @@ detect toError dict =
         dict
 
 
-{-| Like `detect`, but returns located names in the resulting dictionary.
+{-| Returns what `detect` returns, but with each key carrying the region of the
+name's occurrence.
 
-The name keys in the result include their source region, useful when the location
-information needs to be preserved for later processing.
+The failure is the same as `detect`'s. A duplicated name is keyed at `A.zero`
+until the check reaches it, but it then fails, so no such key is ever returned.
 
 -}
 detectLocated : ToError -> Tracker a -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
@@ -90,6 +105,9 @@ detectLocated toError dict =
         |> ReportingResult.mapTraverseWithKey A.toValue (\(A.At _ name) values -> detectHelp toError name values)
 
 
+{-| Returns the region of a name's occurrence when it has exactly one, and
+`Nothing` otherwise.
+-}
 extractLocation : OneOrMore.OneOrMore (Info a) -> Maybe A.Region
 extractLocation oneOrMore =
     case oneOrMore of
@@ -100,6 +118,9 @@ extractLocation oneOrMore =
             Nothing
 
 
+{-| Returns the value of a name's only occurrence, or fails with the error
+`toError` builds from the regions of its first two occurrences.
+-}
 detectHelp : ToError -> Name -> OneOrMore (Info a) -> ReportingResult.RResult i w Error a
 detectHelp toError name values =
     case values of
@@ -118,28 +139,28 @@ detectHelp toError name values =
 -- ====== CHECK FIELDS ======
 
 
-{-| Check for duplicate field names in a list of fields, returning located names.
-
-Used when processing record types and patterns where field location information
-needs to be preserved.
-
+{-| Returns a dictionary from each field name, carrying the region it was
+written at, to its value, or fails with `DuplicateField` for the first field
+name, in ascending order, that occurs more than once.
 -}
 checkLocatedFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
 checkLocatedFields fields =
     detectLocated Error.DuplicateField (List.foldr addField none fields)
 
 
-{-| Check for duplicate field names in a list of fields.
-
-Returns an error if any field name appears more than once, otherwise returns
-a dictionary mapping field names to their values.
-
+{-| Returns a dictionary from each field name to its value, or fails with
+`DuplicateField` for the first field name, in ascending order, that occurs more
+than once. The regions in the error are those of its first two occurrences in
+the list.
 -}
 checkFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict Name a)
 checkFields fields =
     detect Error.DuplicateField (List.foldr addField none fields)
 
 
+{-| Adds a field's name, region and value to the tracker, ahead of any
+occurrence of the same name already there.
+-}
 addField : ( A.Located Name, a ) -> Tracker a -> Tracker a
 addField ( A.At region name, value ) dups =
     Utils.dictInsertWith OneOrMore.more name (OneOrMore.one (Info region value)) dups
@@ -149,38 +170,39 @@ addField ( A.At region name, value ) dups =
 -- ====== BUILDING DICTIONARIES ======
 
 
-{-| Create an empty tracker with no names.
+{-| A tracker with no names in it.
 -}
 none : Tracker a
 none =
     Dict.empty
 
 
-{-| Create a tracker with a single name occurrence.
+{-| Creates a tracker holding one occurrence of `name`.
 -}
 one : Name -> A.Region -> value -> Tracker value
 one name region value =
     Dict.singleton name (OneOrMore.one (Info region value))
 
 
-{-| Insert a name occurrence into a tracker.
-
-If the name already exists, both occurrences are tracked for duplicate detection.
-
+{-| Adds an occurrence of `name` to the tracker, after any occurrence of the
+same name already there.
 -}
 insert : Name -> A.Region -> a -> Tracker a -> Tracker a
 insert name region value dict =
     Utils.dictInsertWith (\new old -> OneOrMore.more old new) name (OneOrMore.one (Info region value)) dict
 
 
-{-| Combine two trackers, merging occurrences of the same name.
+{-| Returns a tracker holding every occurrence in `a` and in `b`. Where both
+hold a name, the occurrences in `a` come first.
 -}
 union : Tracker a -> Tracker a -> Tracker a
 union a b =
     Utils.dictUnionWith OneOrMore.more a b
 
 
-{-| Combine a list of trackers into a single tracker.
+{-| Returns a tracker holding every occurrence in every tracker of the list.
+Where several hold a name, a later tracker's occurrences come before an earlier
+one's.
 -}
 unions : List (Tracker a) -> Tracker a
 unions dicts =

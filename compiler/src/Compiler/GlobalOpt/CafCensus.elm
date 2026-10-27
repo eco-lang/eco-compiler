@@ -1,25 +1,36 @@
 module Compiler.GlobalOpt.CafCensus exposing (report)
 
-{-| Inner-CAF opportunity census (`ECO_CAF_CENSUS=1`,
-design\_docs/caf-memoization-design.md §12 "Inner CAFs",
-plans/caf-hoist-closed-expressions.md H0).
+{-| Reports how many closed subexpressions inside function bodies
+`Compiler.GlobalOpt.CafHoist` could move out into CAFs (constant applicative
+forms: nullary top-level values evaluated once), and why it would skip the
+rest, without changing the graph.
 
-Walks the MonoGraph handed to it — pre-hoist for the opportunity
-baseline, post-hoist (prefix "caf-census(post-hoist)") for the H2
-collapse gate — and counts every MAXIMAL closed non-trivial
-subexpression inside function bodies, plus the H0 breakdowns the hoist
-pass's defaults depend on: closure-containing, pkg-bytes-excluded,
-Debug-containing, scalar-ABI, below-minNodes, the v1-eligible subset,
-the DISTINCT-shape count (dedupe upper bound, via CafHoist's
-region-zeroed structural equality), and the LAYERED count (all closed
-candidate nodes including nested — the hoist pass's site upper bound
-under plan DQ7 layering).
+The terms are those of `CafHoist`'s module docstring: a _closed_
+subexpression mentions no local variable bound outside itself, and hoisting
+one turns it into a new top-level value evaluated once. This module counts
+the opportunity; `report` returns its counts as text and the graph it is given
+is not modified.
 
-This walk is deliberately SEPARATE from CafHoist's rewrite walk: H3
-compares their outputs as a cross-check (divergence beyond tolerance is
-a bug in one of them, not a shrug).
+The walk looks where `CafHoist` looks: the body and capture expressions of a
+`MonoDefine` whose value is a closure, and the body of a `MonoTailFunc`. It
+collects _maximal_ candidates: a closed node of a candidate kind (a call,
+`let`, `if`, `case`, destructuring, record creation or update, tuple, or
+non-empty list) is taken whole and the candidates inside it are not counted
+separately. The _layered_ count is the other measure: every closed node of a
+candidate kind, including those nested inside another.
 
-Output-only (stderr); never affects artifacts.
+Each candidate records whether its result is of scalar type, whether it is of
+function type, whether it touches `elm/bytes`, whether it references a `Debug`
+kernel, and its size in nodes. The _eligible_ count is the candidates that are
+of none of these kinds and have at least `minNodes` nodes. Each candidate also
+records whether it contains a closure; the eligible count does not test it.
+
+This walk is separate code from `CafHoist`'s and does not give the same
+answer. A `Debug` reference counts here only when a `Debug` kernel appears in
+the subtree itself, whereas `CafHoist` also rejects a subtree referencing a
+global spec from which `Debug` is reachable, so the eligible count here can be
+higher. It can also be lower, because a maximal candidate that fails a test
+hides any eligible candidates inside it, which `CafHoist` would still take.
 
 @docs report
 
@@ -34,19 +45,40 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
+{-| One maximal closed candidate found by the walk, with the attributes the
+census counts.
+
+`head` names the callee of a call: `"G:"` followed by a SpecId for a global,
+`"K:"` followed by home and name for a kernel, `"dyn"` for any other callee,
+and the empty string for a candidate that is not a call. `size` is the
+candidate's size in nodes. `valueAbi` is false for a scalar-typed result.
+`bytesEx` is true when the result type touches `elm/bytes` or the candidate is
+a call to a `Bytes` kernel. `dedupeKey` is the key under which two candidates
+are the same shape, and is `Nothing` for a candidate that contains a closure.
+
+-}
 type alias Cand =
     { kind : String
-    , head : String -- "G:<specId>" | "K:<name>" | "" — resolved at render
+    , head : String
     , size : Int
     , valueAbi : Bool
     , hasClosure : Bool
     , hasDebug : Bool
     , bytesEx : Bool
     , fnType : Bool
-    , dedupeKey : Maybe ( String, Mono.MonoType, Mono.MonoExpr ) -- (kind tag, demanded type, zeroed); closure-free only
+    , dedupeKey : Maybe ( String, Mono.MonoType, Mono.MonoExpr ) -- kind tag, type, region-zeroed expression
     }
 
 
+{-| What the walk knows about one subexpression once it has been visited.
+
+`free` is the set of local names it mentions that are bound outside it; it is
+closed when `free` is empty. `cands` are the maximal candidates found in it,
+and `layered` counts every closed candidate node in it, nested ones included.
+`size` is its size in nodes, and `hasClosure` and `hasDebug` say whether it
+contains a closure or a reference to a `Debug` kernel.
+
+-}
 type alias Walk =
     { free : Set Name.Name
     , cands : List Cand
@@ -57,11 +89,16 @@ type alias Walk =
     }
 
 
+{-| The walk of a subexpression that mentions nothing and contains nothing.
+-}
 emptyWalk : Walk
 emptyWalk =
     { free = Set.empty, cands = [], size = 0, hasClosure = False, hasDebug = False, layered = 0 }
 
 
+{-| Combines the walks of two sibling subexpressions: free names and
+candidates are united, sizes and layered counts are added.
+-}
 merge : Walk -> Walk -> Walk
 merge a b =
     { free = Set.union a.free b.free
@@ -73,14 +110,16 @@ merge a b =
     }
 
 
+{-| Combines the walks of any number of sibling subexpressions.
+-}
 mergeAll : List Walk -> Walk
 mergeAll =
     List.foldl merge emptyWalk
 
 
-{-| Would this node, if closed, be a hoisting candidate? Trivial leaves,
-already-interned forms (zero-capture closures, literals, empty lists), and
-pure references are not.
+{-| Returns the kind name and callee head of `expr` if its top node is of a
+candidate kind, or `Nothing` if it is not. Closures, literals, empty lists,
+variable references and accessors are not candidate kinds.
 -}
 candKind : Mono.MonoExpr -> Maybe ( String, String )
 candKind expr =
@@ -120,6 +159,9 @@ candKind expr =
             Nothing
 
 
+{-| Returns the `head` string naming a call's callee, in the form `Cand`
+describes.
+-}
 headOf : Mono.MonoExpr -> String
 headOf func =
     case func of
@@ -133,8 +175,8 @@ headOf func =
             "dyn"
 
 
-{-| Mirror of Types.monoTypeToAbi's scalar cases (HEAP\_035 slot scope)
-without a Generate-layer import.
+{-| Tells whether `t` is not a scalar type. It is false for `Int`, `Float`,
+`Char` and a `number` type variable, and true for every other type.
 -}
 valueAbi : Mono.MonoType -> Bool
 valueAbi t =
@@ -155,6 +197,8 @@ valueAbi t =
             True
 
 
+{-| Returns the local variable a destructuring path starts from.
+-}
 pathRoot : Mono.MonoPath -> Name.Name
 pathRoot path =
     case path of
@@ -171,6 +215,8 @@ pathRoot path =
             pathRoot rest
 
 
+{-| Returns the local variable a decision-tree test path starts from.
+-}
 dtRoot : Mono.MonoDtPath -> Name.Name
 dtRoot path =
     case path of
@@ -184,6 +230,10 @@ dtRoot path =
             dtRoot rest
 
 
+{-| Walks a `case` decision tree: the inline branch bodies at its leaves, and
+the variables its tests inspect, which count as free. A jump leaf contributes
+nothing; the branch it jumps to is walked with the `case` itself.
+-}
 walkDecider : Mono.Decider Mono.MonoChoice -> Walk
 walkDecider decider =
     case decider of
@@ -208,8 +258,13 @@ walkDecider decider =
                 |> (\acc -> { acc | free = Set.insert (dtRoot dtPath) acc.free })
 
 
-{-| Bottom-up walk. Maximality: a closed candidate node swallows its
-children's candidates (but `layered` keeps counting them).
+{-| Walks `expr` bottom-up and returns its `Walk`.
+
+When `expr` is closed and of a candidate kind, its `cands` is that one
+candidate, replacing whatever was found inside it, while `layered` still adds
+the nested ones. Names bound by a closure, `let` or destructuring are removed
+from the free set of the part they scope over.
+
 -}
 walkExpr : Mono.MonoExpr -> Walk
 walkExpr expr =
@@ -383,6 +438,8 @@ walkExpr expr =
         sized
 
 
+{-| Tells whether `expr` is a call whose callee is a kernel with home `Bytes`.
+-}
 bytesHeadedCensus : Mono.MonoExpr -> Bool
 bytesHeadedCensus expr =
     case expr of
@@ -393,8 +450,12 @@ bytesHeadedCensus expr =
             False
 
 
-{-| Candidates for one spec node. Thunk bodies (nullary defines) are already
-memoized whole — skipped. Ports and non-body nodes are skipped.
+{-| Returns the candidates found in one node and its layered count.
+
+Only the body and capture expressions of a `MonoDefine` whose value is a
+closure, and the body of a `MonoTailFunc`, are walked. Every other node,
+including a `MonoDefine` whose value is not a closure, gives no candidates.
+
 -}
 walkNode : Mono.MonoNode -> ( List Cand, Int )
 walkNode node =
@@ -425,9 +486,22 @@ walkNode node =
             ( [], 0 )
 
 
-{-| Build the census report for a graph as stderr text. The prefix labels the
-lines (for example a post-hoist run), and `minNodes` is the hoist pass's
-size threshold used for the below-minNodes and v1-eligible counts.
+{-| Builds the census report for a graph as six lines of text, each starting
+with `prefix`. `minNodes` is the size floor used for the below-minimum and
+eligible counts.
+
+The first line gives the number of node slots in the graph, the number of
+candidates, how many have a non-scalar ABI, and their total size in nodes. The
+second gives the eligible count, the number of distinct shapes among eligible
+candidates without a closure, the layered count, how many candidates contain a
+closure, and how many have each excluded attribute (including being below
+`minNodes`). A candidate can have several attributes, so those
+counts overlap. Two candidates have the same shape when their kind tags and
+types are equal and their expressions are equal once source regions are
+erased, as `CafHoist.zeroRegions` describes. The remaining lines give counts
+by kind and by size bucket, the 25 most common call heads, and the 20 specs
+with the most candidates.
+
 -}
 report : String -> { minNodes : Int } -> Mono.MonoGraph -> String
 report prefix hoistCfg (Mono.MonoGraph g) =
@@ -465,8 +539,6 @@ report prefix hoistCfg (Mono.MonoGraph g) =
         candNodes =
             List.sum (List.map .size allCands)
 
-        -- H0 breakdowns (plan DQ1/DQ6): attributes overlap; eligibleV1 is
-        -- the conjunction the hoist pass would accept as a SITE.
         closureContaining =
             List.length (List.filter .hasClosure allCands)
 
@@ -496,8 +568,6 @@ report prefix hoistCfg (Mono.MonoGraph g) =
         eligibleV1 =
             List.length (List.filter eligible allCands)
 
-        -- Distinct shapes among eligible closure-free candidates: the
-        -- dedupe upper bound (collision-impossible equality — CafHoist).
         distinctShapes =
             List.foldl
                 (\c buckets ->
@@ -631,6 +701,8 @@ report prefix hoistCfg (Mono.MonoGraph g) =
         ]
 
 
+{-| Adds one to the count for `k`, starting from zero.
+-}
 bump : String -> Dict String Int -> Dict String Int
 bump k d =
     Dict.insert k (1 + Maybe.withDefault 0 (Dict.get k d)) d

@@ -8,18 +8,27 @@ module Compiler.LocalOpt.Typed.Names exposing
     , withVarTypes, lookupLocalType
     )
 
-{-| Tracks names, dependencies, and types during typed optimization.
+{-| The state that typed local optimization carries while it rewrites code,
+and the operations that read and change it.
 
-This module provides a state monad (Tracker) that threads through the typed optimization
-process, collecting information about:
+Optimizing an expression produces more than the new expression. It also has to
+record which other definitions the result refers to, its _dependencies_, so
+that later phases know what to include; how often each record field name is
+used; and it has to invent names for temporaries it introduces. On the typed
+path it also needs the type of every local variable it meets, because each
+optimized node carries a type and a local reference is typed by its binding.
 
-  - Global dependencies (functions, constructors, kernels used)
-  - Field names accessed across the module
-  - Fresh variable names for generated temporaries
-  - Local variable types (added for typed optimization)
+`Tracker` is a state monad holding all four. `run` starts it with a counter of
+0 and everything empty, and returns the dependencies, the field counts and the
+result.
 
-The key difference from Erased.Names is the locals environment that maps variable
-names to their types, enabling type-aware optimization.
+The _local type environment_ is a map from local variable names to their types.
+It is scoped: `withVarTypes` adds bindings for one sub-computation and puts the
+previous environment back after it, and `lookupLocalType` reads it, crashing
+when a name is absent.
+
+The `register*` functions add a dependency or field use and, for a reference,
+return the optimized expression that stands for it.
 
 
 # Core Type
@@ -71,15 +80,13 @@ import Utils.Crash exposing (crash)
 -- ====== CORE TYPE ======
 
 
-{-| State monad that tracks name generation, dependencies, and local types during optimization.
+{-| A computation producing an `a` that reads and updates the optimizer's
+state: the counter for fresh names, the set of global dependencies, the use
+count of each record field name, and the local type environment.
 
-Threads through four pieces of state:
-
-  - A unique ID counter for generating fresh variable names
-  - A set of global dependencies (functions, constructors, kernels)
-  - A dictionary tracking field name usage counts
-  - A dictionary of local variable types (Name -> Can.Type Name)
-
+Values are built with `pure`, `generate`, the `register*` functions and
+`lookupLocalType`, combined with `map`, `andThen`, `traverse` and
+`withVarTypes`, and executed with `run`.
 -}
 type Tracker a
     = Tracker
@@ -91,10 +98,15 @@ type Tracker a
         )
 
 
+{-| The state after a `Tracker` step, together with the value it produced.
+-}
 type TResult a
     = TResult TResultProps a
 
 
+{-| The four pieces of state a `Tracker` threads. `uid` is the index the next
+fresh name will use.
+-}
 type alias TResultProps =
     { uid : Int
     , deps : EverySet String TOpt.Global
@@ -103,7 +115,7 @@ type alias TResultProps =
     }
 
 
-{-| Helper to construct TResult with positional args
+{-| Builds a `TResult` from the four pieces of state and the value.
 -}
 tResult : Int -> EverySet String TOpt.Global -> Dict Name Int -> Dict Name (Can.Type Name) -> a -> TResult a
 tResult uid deps fields locals value =
@@ -114,13 +126,12 @@ tResult uid deps fields locals value =
 -- ====== RUNNING ======
 
 
-{-| Execute a Tracker computation, returning collected dependencies, fields, and the result value.
+{-| Runs a `Tracker` from a counter of 0, no dependencies, no field uses and an
+empty local type environment, and returns the dependencies it registered, the
+use count of each field name, and its result.
 
-Returns a tuple of:
-
-  - Global dependencies (functions, constructors, kernels used)
-  - Field names and their usage counts
-  - The computed result value
+Each run starts the counter again, so names from `generate` are unique only
+within one run.
 
 -}
 run : Tracker a -> ( EverySet String TOpt.Global, Dict Name Int, a )
@@ -134,10 +145,11 @@ run (Tracker k) =
 -- ====== NAME GENERATION ======
 
 
-{-| Generate a fresh, unique variable name.
+{-| Returns a fresh name, `_v` followed by the counter, and advances the counter.
 
-The generated name is guaranteed to not conflict with any other names in the module.
-Names are generated sequentially as _v0, _v1, \_v2, etc.
+The names are distinct within one `run`, and a later run starts again from
+`_v0`. They cannot collide with a name from source code, which cannot begin
+with an underscore.
 
 -}
 generate : Tracker Name
@@ -151,10 +163,10 @@ generate =
 -- ====== DEPENDENCY REGISTRATION ======
 
 
-{-| Register a dependency on a kernel function and return the given value.
+{-| Returns `value`, after registering a dependency on the kernel module `home`.
 
-Kernel functions are JavaScript primitives exposed to Elm code.
-Registering them ensures they are included in the final output.
+The dependency is on the module as a whole, as `TOpt.toKernelGlobal` names it,
+not on any one function in it.
 
 -}
 registerKernel : Name -> a -> Tracker a
@@ -164,11 +176,8 @@ registerKernel home value =
             tResult uid (EverySet.insert TOpt.toComparableGlobal (TOpt.toKernelGlobal home) deps) fields locals value
 
 
-{-| Register a dependency on a global function or value and return a reference to it.
-
-Creates a VarGlobal expression referencing the function/value and adds it to the
-dependency set so the code generator knows to import it.
-
+{-| Returns a `VarGlobal` reference to `name` in module `home`, with type
+`itype` and solver variable `tvar`, after registering it as a dependency.
 -}
 registerGlobal : A.Region -> ModuleName.Canonical -> Name -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
 registerGlobal region home name itype tvar =
@@ -182,10 +191,12 @@ registerGlobal region home name itype tvar =
             tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = tvar })
 
 
-{-| Register a dependency on a Debug module function and return a debug variable reference.
+{-| Returns a `VarDebug` reference to the `Debug` function `name`, with type
+`itype` and solver variable `tvar`, after registering that function of the
+`Debug` module as a dependency.
 
-Debug functions are special-cased to support conditional compilation and removal
-in production builds. The home module is tracked for context.
+`home` is carried in the `VarDebug`, not used for the dependency, and the
+reference's optional name is `Nothing`.
 
 -}
 registerDebug : Name -> ModuleName.Canonical -> A.Region -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
@@ -200,13 +211,14 @@ registerDebug name home region itype tvar =
             tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing { tipe = itype, tvar = tvar })
 
 
-{-| Register a dependency on a type constructor and return an optimized expression.
+{-| Returns a reference to the constructor `name` of module `home`, after
+registering the constructor as a dependency. The reference's form follows
+`opts`, the shape of the constructor's type (see `Can.CtorOpts`).
 
-Handles three cases based on constructor options:
-
-  - Normal: Regular constructor, returns VarGlobal
-  - Enum: Zero-argument constructor, returns VarEnum (or Bool for True/False in Basics)
-  - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
+For `Normal` it is a `VarGlobal`. For `Enum` it is a `VarEnum` carrying
+`index`, except that `True` and `False` of `Basics` become a `Bool` literal
+whose type is `Bool` rather than `itype`. For `Unbox` it is a `VarBox`, and
+`Basics.identity` is registered as a dependency as well.
 
 -}
 registerCtor : A.Region -> ModuleName.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type Name -> Maybe Vars.Variable -> Tracker (TOpt.Expr Name)
@@ -260,16 +272,15 @@ registerCtor region home (A.At _ name) index opts itype tvar =
                     tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global { tipe = itype, tvar = tvar })
 
 
+{-| The global for `Basics.identity`, which `registerCtor` adds as a dependency
+of every `Unbox` constructor.
+-}
 identity : TOpt.Global
 identity =
     TOpt.Global ModuleName.basics Name.identity_
 
 
-{-| Register usage of a record field name and return the given value.
-
-Increments the usage count for the field name, which is used by the code generator
-to determine optimal field name mangling strategies.
-
+{-| Returns `value`, after adding one to the use count of the field `name`.
 -}
 registerField : Name -> a -> Tracker a
 registerField name value =
@@ -278,11 +289,8 @@ registerField name value =
             tResult uid d (insertWith (+) name 1 fields) locals value
 
 
-{-| Register usage of multiple record fields from a dictionary and return the given value.
-
-Takes a dictionary where keys are field names and increments the usage count for each.
-The dictionary values are ignored - only the keys (field names) matter.
-
+{-| Returns `value`, after adding one to the use count of each key of
+`newFields`; the dictionary's values are ignored.
 -}
 registerFieldDict : Dict Name v -> a -> Tracker a
 registerFieldDict newFields value =
@@ -295,21 +303,24 @@ registerFieldDict newFields value =
                 value
 
 
+{-| Returns a function that stores `v` at `k` in a dictionary, or, where `k`
+already holds a value `old`, stores `f v old` there.
+-}
 insertWith : (a -> a -> a) -> comparable -> a -> Dict comparable a -> Dict comparable a
 insertWith f k v =
     Dict.update k (Maybe.map (f v) >> Maybe.withDefault v >> Just)
 
 
+{-| Returns the union of `a` and `b`, with `f` combining the two values of a key
+present in both.
+-}
 unionWith : (a -> a -> a) -> Dict comparable a -> Dict comparable a -> Dict comparable a
 unionWith f a b =
     Dict.merge Dict.insert (\k va vb acc -> Dict.insert k (f va vb) acc) Dict.insert a b Dict.empty
 
 
-{-| Register usage of multiple record fields from a list and return the given value.
-
-Increments the usage count for each field name in the list. Useful when processing
-field accesses or record patterns.
-
+{-| Returns `value`, after adding one to the use count of each name in `names`,
+once per occurrence.
 -}
 registerFieldList : List Name -> a -> Tracker a
 registerFieldList names value =
@@ -318,6 +329,8 @@ registerFieldList names value =
             tResult uid deps (List.foldr addOne fields names) locals value
 
 
+{-| Returns `fields` with one added to the use count of `name`.
+-}
 addOne : Name -> Dict Name Int -> Dict Name Int
 addOne name fields =
     insertWith (+) name 1 fields
@@ -327,10 +340,12 @@ addOne name fields =
 -- ====== LOCAL TYPE ENVIRONMENT ======
 
 
-{-| Extend the local type environment with multiple bindings for the duration of a computation.
+{-| Runs the given computation with `bindings` added to the local type
+environment, and afterwards restores the environment it started with.
 
-All bindings are visible within the provided Tracker computation and are automatically
-removed when that computation completes.
+A binding replaces any type the name already had, and a later binding in the
+list replaces an earlier one of the same name. The counter, dependencies and
+field counts the computation leaves are kept.
 
 -}
 withVarTypes : List ( Name, Can.Type Name ) -> Tracker a -> Tracker a
@@ -343,15 +358,11 @@ withVarTypes bindings (Tracker inner) =
             in
             case inner uid deps fields extendedLocals of
                 TResult props value ->
-                    -- Restore original locals after inner computation
                     tResult props.uid props.deps props.fields locals value
 
 
-{-| Look up the type of a local variable.
-
-Returns the type if the variable is in scope, or crashes with an error message
-if the variable is not found. This should not happen in well-typed code.
-
+{-| Returns the type of the local variable `name` from the local type
+environment, and crashes if the name has no binding there.
 -}
 lookupLocalType : Name -> Tracker (Can.Type Name)
 lookupLocalType name =
@@ -369,10 +380,8 @@ lookupLocalType name =
 -- ====== MONAD OPERATIONS ======
 
 
-{-| Transform the result value of a Tracker computation using the given function.
-
-Preserves all tracked dependencies and state while applying the function to the result.
-
+{-| Returns a computation with the same effect on the state, whose result is
+`func` applied to the original result.
 -}
 map : (a -> b) -> Tracker a -> Tracker b
 map func (Tracker kv) =
@@ -383,23 +392,16 @@ map func (Tracker kv) =
                     tResult props.uid props.deps props.fields props.locals (func value)
 
 
-{-| Lift a pure value into a Tracker computation without tracking any dependencies.
-
-Equivalent to `return` in Haskell's monad notation. The value is wrapped in a Tracker
-that doesn't modify the state or add any dependencies.
-
+{-| Returns a computation that leaves the state unchanged and produces `value`.
 -}
 pure : a -> Tracker a
 pure value =
     Tracker (\n d f l -> tResult n d f l value)
 
 
-{-| Chain two Tracker computations together, threading state from first to second.
-
-Equivalent to `>>=` (bind) in Haskell. The callback receives the result of the first
-computation and can use it to produce a second computation. Dependencies and state
-accumulate across both computations.
-
+{-| Returns a computation that runs the given one, passes its result to
+`callback`, and runs the computation `callback` returns on the state the first
+left, the local type environment included.
 -}
 andThen : (a -> Tracker b) -> Tracker a -> Tracker b
 andThen callback (Tracker k) =
@@ -412,7 +414,9 @@ andThen callback (Tracker k) =
                             kb props.uid props.deps props.fields props.locals
 
 
-{-| Execute a tail-recursive loop in the Tracker monad.
+{-| Returns a computation that runs `callback` on `loopState`, and again on each
+new state it returns as `Loop`, threading the tracker state through, until it
+returns `Done`, whose value is the result. It runs without growing the stack.
 -}
 loop : (state -> Tracker (Step state a)) -> state -> Tracker a
 loop callback loopState =
@@ -422,6 +426,8 @@ loop callback loopState =
         )
 
 
+{-| Runs the loop of `loop` from `loopState` and the given tracker state.
+-}
 loopHelper :
     (state -> Tracker (Step state a))
     -> state
@@ -441,11 +447,8 @@ loopHelper callback loopState n d f l =
                     TResult props a
 
 
-{-| Apply a Tracker-producing function to each element of a list, accumulating results.
-
-Sequences the Tracker computations from left to right, threading state through each step.
-Returns a Tracker containing the list of all results with all dependencies accumulated.
-
+{-| Returns a computation that runs `func` on each element of `list` from left
+to right, threading the state through, and produces the results in list order.
 -}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func list =

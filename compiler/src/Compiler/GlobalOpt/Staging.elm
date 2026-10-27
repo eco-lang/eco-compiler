@@ -1,29 +1,27 @@
 module Compiler.GlobalOpt.Staging exposing (regroup, checkClosureStaging)
 
-{-| Staging regroups function types so that each closure's type has as many
-parameters in its first stage as the closure takes (GOPT\_001).
+{-| Code generation relies on a closure's type agreeing with the closure about
+how many arguments it takes at once, and this module rewrites the types of the
+closures in a monomorphized graph's define and tail function nodes so that they
+do.
 
 A function value can take its arguments in groups, called stages, and the list
-of group sizes is its segmentation. Monomorphization keeps every function type
-curried, one argument per stage; this pass rewrites the type of every
-`MonoClosure` and `MonoTailFunc` so that its first stage takes exactly the
-closure's parameters and the remaining arguments form one further stage
-(`flattenTypeToArity`), and gives every `MonoDefine` the type of its rewritten
-expression. It creates no values.
+of group sizes is its segmentation. A function type records a segmentation as
+nested arrows, one arrow per stage, so the same closure can carry a type whose
+first stage is shorter or longer than its parameter list.
 
-**History** (plans/staging-honesty-and-production-test-pipeline.md P3). This
-module used to build a union-find over function producers and slots, pick a
-segmentation per class by majority vote, and wrap the producers that
-disagreed. Measured on 2026-10-06 it inserted no wrapper in the self-compile,
-the E2E corpus or the elm-test programs: the graph never connected a `case`'s
-inline branches, function arguments to parameters, or let-bound variables to
-their producers, and pre-mono η-expansion dissolves the joins a vote could
-have reconciled. Its one other output, the set of "dynamic" slots, was exactly
-the function-typed parameters of tail functions, which
-`MonoGlobalOptimize.isDynamicCallee` now computes directly. The vote and the
-wrappers were removed; the type regrouping below is what remained in effect,
-and the output is byte-identical. A join of differently staged lambdas keeps
-its branches' own staging; GOPT\_003 makes no call claim more.
+`regroup` rewrites the type of each `MonoClosure` with at least one parameter
+in a define or tail function node, other than closures inside a closure's
+capture list, and of every `MonoTailFunc` node with at least one parameter, so
+that its first stage takes exactly its parameters and any remaining arguments
+form one further stage, and gives every `MonoDefine` the type of its rewritten
+expression. Port nodes are left unchanged. It creates no values and changes no
+expression's shape. Only these types change: a `case` or `if` whose branches
+are differently staged closures keeps its own stored type, and its branches
+keep their own staging.
+
+`checkClosureStaging` checks this agreement on a graph and reports each closure
+or tail function that breaks it.
 
 @docs regroup, checkClosureStaging
 
@@ -37,20 +35,22 @@ import Compiler.Monomorphize.MonoTraverse as MonoTraverse
 import Utils.Crash exposing (crash)
 
 
+{-| Returns the graph with the types of its defines' and tail functions'
+closures and tail functions regrouped as the module documentation describes,
+and every define retyped to its rewritten expression.
 
--- ============================================================================
--- REGROUP (GOPT_001)
--- ============================================================================
+Port nodes, and closures inside them, are left as they are.
 
-
-{-| Regroups the type of every closure and tail function in the graph to its
-parameter count, and retypes every define to its rewritten expression.
 -}
 regroup : Mono.MonoGraph -> Mono.MonoGraph
 regroup (Mono.MonoGraph mono0) =
     Mono.MonoGraph { mono0 | nodes = Array.map (Maybe.map regroupNode) mono0.nodes }
 
 
+{-| Returns a define or tail function node with its closures regrouped, and
+any other node unchanged. A tail function's own type is regrouped to its
+parameter count.
+-}
 regroupNode : Mono.MonoNode -> Mono.MonoNode
 regroupNode node =
     case node of
@@ -68,6 +68,10 @@ regroupNode node =
             node
 
 
+{-| Returns `expr` with each closure in it that has at least one parameter
+and is not inside a closure's capture list retyped so that its first stage
+takes its parameters. Other expressions keep their stored types.
+-}
 regroupExpr : Mono.MonoExpr -> Mono.MonoExpr
 regroupExpr expr =
     case expr of
@@ -120,6 +124,8 @@ regroupExpr expr =
             expr
 
 
+{-| Returns a let-bound definition with its body regrouped.
+-}
 regroupDef : Mono.MonoDef -> Mono.MonoDef
 regroupDef def =
     case def of
@@ -130,6 +136,10 @@ regroupDef def =
             Mono.MonoTailDef name params (regroupExpr expr)
 
 
+{-| Returns a decision tree with the expressions inlined in its leaves
+regrouped. Jump leaves name a branch of the enclosing `MonoCase`, which
+`regroupExpr` regroups separately.
+-}
 regroupDecider : Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 regroupDecider decider =
     case decider of
@@ -148,14 +158,19 @@ regroupDecider decider =
                 (regroupDecider fallback)
 
 
-{-| Flatten a function type to a given arity.
-Flattens nested MFunction to match the target param count.
+{-| Returns `monoType` re-staged so that its first stage takes `targetArity`
+arguments and the rest, if any, form one second stage.
+
+Every stage arrow of the result carries the lambda set annotation of
+`monoType`'s outermost arrow; the annotations of its inner arrows are dropped.
+A `targetArity` of zero, or a type that is not a function, gives `monoType`
+unchanged. A function type with fewer arguments across all its stages than
+`targetArity` crashes, because the graph is then inconsistent.
+
 -}
 flattenTypeToArity : Int -> Mono.MonoType -> Mono.MonoType
 flattenTypeToArity targetArity monoType =
     let
-        -- Rebuilder: all re-segmented stage arrows of one callable share the
-        -- original head annotation (stages share provenance).
         anno =
             Mono.headAnno monoType
 
@@ -163,15 +178,12 @@ flattenTypeToArity targetArity monoType =
             Closure.flattenFunctionType monoType
     in
     if targetArity == 0 then
-        -- Not a function type, return as-is
         monoType
 
     else if List.length allArgs == targetArity then
-        -- Already correct arity
         Mono.mFunction anno allArgs finalResult
 
     else if List.length allArgs > targetArity then
-        -- More args than params - take first N, nest the rest
         let
             ( firstArgs, restArgs ) =
                 splitAt targetArity allArgs
@@ -186,11 +198,9 @@ flattenTypeToArity targetArity monoType =
         Mono.mFunction anno firstArgs nestedResult
 
     else if List.isEmpty allArgs then
-        -- Non-function type - return as-is
         monoType
 
     else
-        -- Fewer args than params - mono graph is inconsistent
         crash
             ("flattenTypeToArity: paramCount ("
                 ++ String.fromInt targetArity
@@ -200,23 +210,22 @@ flattenTypeToArity targetArity monoType =
             )
 
 
-{-| Split a list at index n.
+{-| Returns the first `n` elements of `xs` and the elements after them.
 -}
 splitAt : Int -> List a -> ( List a, List a )
 splitAt n xs =
     ( List.take n xs, List.drop n xs )
 
 
+{-| Returns one message, in node order, for each `MonoClosure` whose parameter
+count differs from its type's first stage, and for each tail function node whose
+parameter count differs from its node type's first stage. An empty list means
+none was found.
 
--- ============================================================================
--- CHECK CLOSURE STAGING (GOPT_001)
--- ============================================================================
+Closures are looked for in define, tail function and port nodes. Each message
+starts with the tag `GOPT_001:` and names the node's SpecId, and for a closure
+its lambda.
 
-
-{-| GOPT\_001: every `MonoClosure` has as many parameters as its type's first
-stage, and every tail function as many as its node type's first stage. Returns
-one message per violation, naming the closure's lambda or the node's SpecId.
-`Compiler.Pipeline.Steps.checkClosureStaging` runs it under `mono.validate`.
 -}
 checkClosureStaging : Mono.MonoGraph -> List String
 checkClosureStaging (Mono.MonoGraph mono) =
@@ -282,9 +291,3 @@ checkClosureStaging (Mono.MonoGraph mono) =
     Array.foldl (\maybeNode ( specId, acc ) -> ( specId + 1, node specId maybeNode acc )) ( 0, [] ) mono.nodes
         |> Tuple.second
         |> List.reverse
-
-
-
--- ============================================================================
--- ANNOTATE CALL STAGING
--- ============================================================================

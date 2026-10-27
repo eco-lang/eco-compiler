@@ -3,13 +3,23 @@ module Compiler.Monomorphize.EntryPrep exposing
     , flagsDecoderName, findEntryPointId, findNodeAnnotationType
     )
 
-{-| Engine-agnostic monomorphization input preparation, shared by the two
-monomorphizer drivers (`Compiler.Monomorphize.Monomorphize` and
-`Compiler.MonoSolver.Monomorphize`).
+{-| Monomorphization starts from a typed graph in which every type variable,
+lambda and arrow has a program-wide id, and from a decoder for the entry
+point's flags. This module produces both, once, so that the pre-mono passes and
+whichever monomorphization engine is selected all start from the same graph.
 
-Extracted verbatim from the original driver so both engines see byte-identical
-entry-point discovery and flags-decoder synthesis. Nothing here depends on
-either engine's type machinery.
+`assign` turns a `TOpt.GlobalGraph Name` into an `Assigned` value in two steps.
+First it adds the _flags decoder_: a synthetic `Define` named
+`flagsDecoderName` (`main$flagsDecoder`) in the entry's home module, holding the
+decoder for the flags of a `Platform.Program flags model msg` entry. An entry of
+any other type gets none. Then it runs `AssignMVarIds.assignIds`, whose module
+docstring describes the ids. The decoder node is built with names and so is
+inserted before the ids are assigned.
+
+The entry is found by its name alone, in any module: the first `Define` or
+`TrackedDefine` with that name in the graph's key order. `findEntryPointId` and
+`findNodeAnnotationType` look up the entry and a node's annotation in the
+graph after assignment.
 
 @docs Assigned, assign
 @docs flagsDecoderName, findEntryPointId, findNodeAnnotationType
@@ -30,14 +40,13 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as DMap
 
 
-{-| A graph that has been through `AssignMVarIds`, with the allocator state that
-produced it and the entry's flags-decoder global.
+{-| A typed graph after id assignment, with the id-supply state that produced
+it and the global of the flags decoder (`Nothing` when the entry is not a
+`Program` or no entry was found).
 
-This is the shape the PRE-MONO passes operate on
-(`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). Identity — every
-`MVarId`, `SrcLambdaId` and `ArrowId` — already exists on this graph, so a
-transform that creates or copies a node MUST mint through
-`Compiler.GlobalOpt.PreMono.Fresh` rather than reuse an id.
+Every `MVarId`, source-lambda id and `ArrowId` already exists on `graph`, so a
+pass that creates or copies a node must take new ids from `mvarState` (through
+`Compiler.GlobalOpt.PreMono.Fresh`) rather than reuse one.
 
 -}
 type alias Assigned =
@@ -47,18 +56,11 @@ type alias Assigned =
     }
 
 
-{-| Prepare a `GlobalGraph Name` for monomorphization: synthesize the entry's
-flags decoder, then assign ids.
+{-| Returns the `Assigned` form of `graph`: the flags decoder for the entry
+named `entryPointName` is inserted, then ids are assigned.
 
-Both engines did exactly this at their own entry points; it is lifted here so it
-can run ONCE, before the pre-mono passes, with the resulting `Assigned` handed to
-whichever engine is selected. The two `Bool`s are the engine's assignment flags
-(`useSolverRoots`, `censusOn`) — the solver passes its `LssConfig`'s, the subst
-and diff engines pass `( False, False )`; changing them would move that engine's
-output.
-
-The flags-decoder node is Name-typed and is therefore inserted BEFORE assignment,
-exactly as it was at both engine entry points.
+The pair is passed to `AssignMVarIds.assignIds` as its `useSolverRoots` and
+`censusOn` arguments.
 
 -}
 assign : ( Bool, Bool ) -> Name -> TOpt.GlobalGraph Name -> Assigned
@@ -76,22 +78,25 @@ assign ( useSolverRoots, censusOn ) entryPointName graph =
     }
 
 
-{-| The synthetic Global holding the root program's flags decoder. The `$`
-is sanitized by the MLIR backend (Names.sanitizeName) and cannot collide
-with a user-written Elm identifier.
+{-| The name of the synthetic flags-decoder global. The `$` cannot appear in an
+Elm identifier, so the name cannot collide with a user definition.
 -}
 flagsDecoderName : Name
 flagsDecoderName =
     "main$flagsDecoder"
 
 
-{-| Synthesize the flags-decoder node for the entry point (Phase 5).
+{-| Returns the graph with a flags-decoder node added, and that node's global,
+when the entry named `entryPointName` is a `Program`; otherwise the graph
+unchanged and `Nothing`.
 
-Walks the pre-MVarId graph for the entry's `Define`/`TrackedDefine` node;
-when its (dealiased) annotation is `Program flags model msg`, builds the
-payload decoder with the same `Port.toFlagsDecoder` the JS pipeline uses
-and inserts it as a plain `Define` node under `flagsDecoderName` in the
-entry's home module. Non-Program entries (test value mains) get none.
+The entry is the first `Define` or `TrackedDefine` with that name, in any
+module. Its type is deep-dealiased; when the result is
+`Platform.Program flags model msg`, a `Define` of type `Json.Decode.Decoder flags`
+is inserted under `flagsDecoderName` in the entry's home module. Its body is a
+reference to `System.environmentDecoder` when `EcoEnvironment.isEnvironmentFlags`
+holds for the type as written, and otherwise the decoder `Port.toFlagsDecoder`
+builds for `flags`.
 
 -}
 insertFlagsDecoderNode : Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
@@ -140,8 +145,7 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                             decoderCanType =
                                 Can.TType ModuleName.jsonDecode "Decoder" [ flagsType ]
 
-                            -- eco/system program (D13): reference the environment
-                            -- decoder of System instead of synthesizing a JSON one.
+                            -- An eco/system Environment cannot come from JSON.
                             ( deps, _, decoderExpr ) =
                                 if EcoEnvironment.isEnvironmentFlags tipe then
                                     Names.run
@@ -174,7 +178,8 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                     ( graph, Nothing )
 
 
-{-| Find an entry point by name in the ID-rewritten global graph.
+{-| Returns the global and annotation type of the first `Define` or
+`TrackedDefine` named `entryPointName` in `nodes`, in any module, or `Nothing`.
 -}
 findEntryPointId : Name -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
 findEntryPointId entryPointName nodes =
@@ -207,7 +212,8 @@ findEntryPointId entryPointName nodes =
         nodes
 
 
-{-| Look up a node's annotation type (Define/TrackedDefine meta.tipe).
+{-| Returns the annotation type of the node at `global` when it is a `Define` or
+`TrackedDefine`, and `Nothing` for any other node or a missing one.
 -}
 findNodeAnnotationType : TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe (Can.Type TypeIds.MVarId)
 findNodeAnnotationType global nodes =

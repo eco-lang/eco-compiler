@@ -3,12 +3,29 @@ module Terminal.Init exposing
     , Flags(..)
     )
 
-{-| Project initialization command for creating new Elm projects.
+{-| The `eco init` command, which turns an empty directory into a project that
+builds straight away.
 
-This module implements the `init` command which scaffolds a new Elm project by
-creating an elm.json configuration file, a `src` directory, and a starter
-`src/Main.elm` module that compiles immediately. It supports both application and
-package project types.
+A project is described by its `elm.json`, the _outline_, which lists the
+project's dependencies at versions that work together. A new outline cannot
+simply name a few packages: their versions, and for an application every
+indirect dependency too, must come from the dependency solver. So most of this
+module is a chain of tasks that sets up the solver, solves the default
+dependencies, and only then writes files.
+
+The chain refuses to run where an `elm.json` already exists, and otherwise
+explains what it will do and asks for confirmation unless `--yes` was given.
+It then makes the bundled packages, `eco/kernel` and `eco/system`, visible to
+the solver. These ship with eco next to the executable rather than through the
+package registry, and are found as `Builder.Stuff.resolveBundledPackages`
+describes. It solves the application defaults and then the test defaults, which
+are empty, creates `src/`, writes a starter `src/Main.elm` unless one exists,
+and writes the outline.
+
+An application outline names the defaults as direct dependencies at their solved
+versions and every other solved package as indirect. A package outline names
+only `elm/core`, with a constraint from its solved version up to the next major
+version, under the placeholder name `author/project` at version 1.0.0.
 
 
 # Command Entry
@@ -47,21 +64,18 @@ import Utils.Main as Utils
 -- ====== RUN ======
 
 
-{-| Configuration flags for the init command.
+{-| The command-line flags of `init`.
 
-Contains flags for package mode and auto-yes to skip confirmation prompts.
+The first `Bool` asks for a package rather than an application. The second
+skips the confirmation question; the explanation is still printed.
 
 -}
 type Flags
     = Flags Bool Bool
 
 
-{-| Initialize a new Elm project.
-
-Creates an elm.json file with default dependencies, a `src` directory, and a
-starter `src/Main.elm` module so the project compiles right away. Supports both
-application and package projects.
-
+{-| Runs `eco init` in the current directory, as the module documentation
+describes, and on failure reports the error and exits with failure.
 -}
 run : () -> Flags -> Task Never ()
 run () (Flags package autoYes) =
@@ -71,6 +85,9 @@ run () (Flags package autoYes) =
         )
 
 
+{-| Fails with `InitAlreadyExists` when `exists` says an `elm.json` is
+present, and otherwise asks for confirmation and proceeds as the answer says.
+-}
 checkExistsAndAsk : Bool -> Bool -> Bool -> Task Never (Result Exit.Init ())
 checkExistsAndAsk package autoYes exists =
     if exists then
@@ -81,6 +98,10 @@ checkExistsAndAsk package autoYes exists =
             |> Task.andThen (handleInitApproval package)
 
 
+{-| Prints the explanation and returns whether to go ahead. With `autoYes` the
+explanation is printed without a question and the answer is yes; otherwise the
+user is asked as `Builder.Reporting.ask` describes.
+-}
 askInitQuestion : Bool -> Task Never Bool
 askInitQuestion autoYes =
     if autoYes then
@@ -95,6 +116,9 @@ askInitQuestion autoYes =
             )
 
 
+{-| Creates the project when `approved`, and otherwise prints that nothing was
+changed and succeeds.
+-}
 handleInitApproval : Bool -> Bool -> Task Never (Result Exit.Init ())
 handleInitApproval package approved =
     if approved then
@@ -105,6 +129,9 @@ handleInitApproval package approved =
             |> Task.map (\_ -> Ok ())
 
 
+{-| Builds the explanation shown before creating a project, with `question`
+appended as its last lines.
+-}
 information : List D.Doc -> D.Doc
 information question =
     D.stack
@@ -144,6 +171,8 @@ information question =
 -- ====== INIT ======
 
 
+{-| The parts of the solver environment that solving the defaults needs.
+-}
 type alias InitEnv =
     { cache : Stuff.PackageCache
     , connection : Solver.Connection
@@ -151,23 +180,28 @@ type alias InitEnv =
     }
 
 
+{-| The solutions for the default dependencies and for the test defaults, each
+covering indirect dependencies too.
+-}
 type alias InitDetails =
     { details : Dict Pkg.Name Solver.Details
     , testDetails : Dict Pkg.Name Solver.Details
     }
 
 
+{-| Creates the project, a package when `package` is `True`, after making the
+bundled packages visible to the solver and setting up its environment.
+-}
 init : Bool -> Task Never (Result Exit.Init ())
 init package =
-    -- Locate the bundled packages (`eco/kernel`, `eco/system`; next to the
-    -- executable) so the dependency solver can resolve them: the scaffolded
-    -- application depends on eco/system for console IO, and both ship with eco
-    -- rather than the package registry.
     Stuff.resolveBundledPackages []
         |> Task.andThen (Solver.initEnv Registry.Normal)
         |> Task.andThen (initWithEnv package)
 
 
+{-| Solves the application defaults in the environment `eitherEnv`, or fails
+with the registry problem that kept it from being set up.
+-}
 initWithEnv : Bool -> Result Exit.RegistryProblem Solver.Env -> Task Never (Result Exit.Init ())
 initWithEnv package eitherEnv =
     case eitherEnv of
@@ -183,6 +217,9 @@ initWithEnv package eitherEnv =
                 |> Task.andThen (verifyTestDefaults env package)
 
 
+{-| Turns a failed solution of the defaults into an `Exit.Init` error naming
+them, and on success solves the test defaults.
+-}
 verifyTestDefaults : InitEnv -> Bool -> Solver.SolverResult (Dict Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
 verifyTestDefaults env package result =
     case result of
@@ -200,6 +237,10 @@ verifyTestDefaults env package result =
                 |> Task.andThen (createProjectFiles package details)
 
 
+{-| Turns a failed solution of the test defaults into an `Exit.Init` error
+naming them, and on success creates `src/`, the starter module and the outline,
+given `details`, the solution of the defaults.
+-}
 createProjectFiles : Bool -> Dict Pkg.Name Solver.Details -> Solver.SolverResult (Dict Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
 createProjectFiles package details result =
     case result of
@@ -220,9 +261,8 @@ createProjectFiles package details result =
                 |> Task.map (\_ -> Ok ())
 
 
-{-| Write a starter `src/Main.elm` so the freshly created project compiles right
-away with `eco make src/Main.elm`. If the file already exists it is left
-untouched, so re-running `init` over a partially set-up project is safe.
+{-| Writes the starter module for a package or an application to
+`src/Main.elm`, leaving an existing file there untouched.
 -}
 writeStarterModule : Bool -> Task Never ()
 writeStarterModule package =
@@ -243,6 +283,9 @@ writeStarterModule package =
             )
 
 
+{-| Writes `elm.json` in the current directory: a package outline when
+`package` is `True`, otherwise an application outline.
+-}
 writeOutline : Bool -> InitDetails -> Task Never ()
 writeOutline package initDetails =
     let
@@ -256,6 +299,10 @@ writeOutline package initDetails =
     Outline.write "." outline
 
 
+{-| Builds a package outline whose dependencies are `packageDefaults` and
+`packageTestDefaults`, each constrained from its solved version up to the next
+major version. It crashes if a package default is missing from its solution.
+-}
 buildPackageOutline : InitDetails -> Outline.Outline
 buildPackageOutline initDetails =
     let
@@ -296,6 +343,11 @@ buildPackageOutline initDetails =
             }
 
 
+{-| Builds an application outline from the two solutions: the defaults are
+direct dependencies and every other solved package is indirect, and likewise for
+the test solution, whose indirect dependencies leave out packages already among
+the main dependencies.
+-}
 buildAppOutline : InitDetails -> Outline.Outline
 buildAppOutline initDetails =
     let
@@ -336,6 +388,8 @@ buildAppOutline initDetails =
             }
 
 
+{-| Solves `constraints`, as `Builder.Deps.Solver.verify` does.
+-}
 verify :
     Stuff.PackageCache
     -> Solver.Connection
@@ -346,15 +400,12 @@ verify cache connection registry constraints =
     Solver.verify cache connection registry constraints
 
 
-{-| Default direct dependencies for a new application. eco is geared toward CLI
-and server-side programs, so the scaffold is a console app: `eco/system` (bundled
-with eco) provides the program definition, the environment and stdin/stdout/stderr
-streams, and `elm/core` provides `Task` and friends. A browser app can add
-`elm/browser`/`elm/html` with `eco install`.
+{-| The direct dependencies of a new application, any version of each:
+`eco/system`, which the starter application module imports, and `elm/core`.
 
-`eco/kernel` is deliberately absent: it is the compiler's internal IO layer, not a
-package for applications. It is still resolvable (bundled, `eco install
-eco/kernel`) but is never added by default.
+These are also solved when creating a package, though a package outline names
+only `packageDefaults`. `eco/kernel` is not among them.
+
 -}
 defaults : Dict Pkg.Name Con.Constraint
 defaults =
@@ -364,16 +415,17 @@ defaults =
         ]
 
 
-{-| No test dependencies are scaffolded. The usual choice, `elm-explorations/test`,
-relies on JavaScript kernel modules (`Elm.Kernel.Test`, `Elm.Kernel.HtmlAsJson`)
-that eco cannot compile, so including it would leave the new project unable to
-build. Test scaffolding can be added once an eco-compatible test package exists.
+{-| The test dependencies of a new application, which are none.
+`elm-explorations/test` is not included because it relies on JavaScript kernel
+modules that eco cannot compile, so the new project would not build.
 -}
 testDefaults : Dict Pkg.Name Con.Constraint
 testDefaults =
     Dict.empty
 
 
+{-| The direct dependencies of a new package: `elm/core`, any version.
+-}
 packageDefaults : Dict Pkg.Name Con.Constraint
 packageDefaults =
     Dict.fromList
@@ -381,15 +433,16 @@ packageDefaults =
         ]
 
 
+{-| The test dependencies of a new package, which are none.
+-}
 packageTestDefaults : Dict Pkg.Name Con.Constraint
 packageTestDefaults =
     Dict.empty
 
 
-{-| Starter module for an application project: a "Hello World!" console program
-built with `eco/system`, the same shape as the getting-started guide. It only
-needs the default dependencies (`eco/system`, `elm/core`) so
-`eco make src/Main.elm` succeeds immediately.
+{-| The source of the starter `Main` module for an application: a program,
+built with `eco/system`, that writes "Hello World!" to standard output. It
+imports only modules of the default dependencies.
 -}
 appExample : String
 appExample =
@@ -406,8 +459,8 @@ main =
 """
 
 
-{-| Starter module for a package project: a single exposed value so the package
-has at least one exposed module and builds out of the box.
+{-| The source of the starter `Main` module for a package, the module the
+package outline exposes. It exposes one documented string, `hello`.
 -}
 packageExample : String
 packageExample =

@@ -7,11 +7,57 @@ module Compiler.Monomorphize.TypeSubst exposing
     , refreshConstraints
     )
 
-{-| Type substitution and unification for monomorphization.
+{-| Monomorphization needs, at every use of a polymorphic value, the concrete
+type it is used at, and this module is the type algebra that works it out.
 
-This module handles converting canonical types to monomorphic types
-by applying type variable substitutions. All substitutions are keyed
-by MVarId (as Int via Id.toComparable), not by Name.
+Two kinds of type meet here. A _canonical type_ (`Can.Type MVarId`) is a type
+as the source declares it, with type variables. A _MonoType_ is a type as one
+specialization uses it, and it may still contain open variables (`MVar`). A
+_substitution_ (`State.Substitution`) maps type variables to MonoTypes. It is
+keyed by `MVarId` (as `Id.toComparable`), never by name, so two variables that
+share a name in the source are still kept apart.
+
+The module does two things with them.
+
+_Unification_ (`unify`, `unifyExtend`, `unifyArgsOnly`,
+`unifyCallSiteDirect`, `unifyCallSiteDirectWithExpected`) walks a canonical type
+and a MonoType side by side and records what each variable must be. It is
+lenient: there is no failure result, and a pair of shapes it does not recognise
+adds nothing; where argument or element lists differ in length, the common
+prefix is unified and the surplus ignored. A
+binding of a canonical type variable is skipped when the type contains a
+variable whose chain of variable-to-variable bindings leads back to the bound
+variable; containment through a variable bound to a non-variable type is not
+detected. Bindings made while re-unifying an old binding with a new type, and
+record extension bindings, are not checked. When a variable
+that is already bound meets a new type, the old and the new types are unified
+with each other and then the new type is stored, unless that binding is
+cyclic.
+
+_Application_ (`applySubstPure`, `applySubstPureRO`, `applySubstFiltered`)
+turns a canonical type into a MonoType by replacing each bound variable. Each
+arrow becomes a one-argument `MFunction`, so `a -> b -> c` becomes a function
+returning a function, never a two-argument one. The `elm/core` types `Int`,
+`Float`, `Bool`, `Char` and `String` become the primitive MonoTypes and `List`
+becomes `MList`. A variable with no binding stays an `MVar`. In particular an
+open number variable is not defaulted to `Int` here; that happens later, in
+`Compiler.Monomorphize.Prune`. Application reads the `MVarEnv` and never
+changes it.
+
+One rule about constraints runs through unification. Each `MVar` carries a
+stamp, `CNumber` for a variable known to be a number and `CEcoValue` for any
+other, read from the `MVarEnv` side table (`State.isNumberVar`). When an
+unbound canonical number variable meets a `CEcoValue` `MVar`, or when two `MVar`s
+of different constraint meet while re-unifying an old binding, number wins: the
+`CEcoValue` variable is bound toward the number variable and recorded as a number
+in the `MVarEnv` (`State.taintNumber`). Copies of a tainted variable stamped
+before the taint still say `CEcoValue`; such a copy has a _stale stamp_, and
+`refreshConstraints` corrects it. An unbound canonical `CEcoValue` variable
+meeting a number `MVar` is bound to it but not recorded as a number.
+
+A _scheme_ (`State.SchemeInfo`) is a callee's type prepared for unification at
+a call site. `buildSchemeInfo` and `refreshSchemeInfo` give every variable of it
+a fresh id, so bindings made at one call site do not reach another.
 
 
 # Substitution
@@ -53,6 +99,10 @@ import Dict
 import Set exposing (Set)
 
 
+{-| Returns the stamp a variable should carry now: `CNumber` when the `MVarEnv`
+records it as a number, `CEcoValue` otherwise, including for a variable
+constrained to `comparable`, `appendable` or `compappend`.
+-}
 constraintOf : MVarId -> MVarEnv -> Mono.Constraint
 constraintOf mvarId env =
     if State.isNumberVar mvarId env then
@@ -62,20 +112,16 @@ constraintOf mvarId env =
         Mono.CEcoValue
 
 
-{-| Re-stamp every `MVar id _` in a MonoType with its CURRENT class constraint
-from the shared side table (`constraintOf`). Join-R records a number taint in the
-table at merge time; a copy stamped `MVar id CEcoValue` before that merge still
-carries the stale annotation. Applying this before building a specialization key
-(`Mono.toComparableMonoType`) reconciles the stamped annotation with the
-authoritative side table, so a tainted number var keys to the concrete Int
-specialization (D4) instead of the boxed-erased sentinel.
+{-| Returns `monoType` with every `MVar` restamped `CNumber` or `CEcoValue`
+according to the `MVarEnv` as it is now.
 
-Identity-preserving (perf, see plans/monomorphization-perf-analysis.md Q1): this
-runs on the hottest keying path (every `enqueueSpec`, every instance lookup). A
-stale stamp is RARE (only Join-R-tainted copies), so an allocation-free pre-scan
-(`hasStaleConstraint`) short-circuits the common case and returns the input by
-reference — no deep copy. Only when a genuine disagreement exists is the type
-rebuilt.
+A variable recorded as a number after a copy of it was stamped `CEcoValue`
+leaves that copy with a stale stamp. A specialization key built from the
+type without this refresh keys such a variable as a boxed value rather than as
+the number it has become.
+
+When no stamp is stale the input itself is returned, not a copy; the type is
+rebuilt only when some stamp disagrees.
 
 -}
 refreshConstraints : MVarEnv -> Mono.MonoType -> Mono.MonoType
@@ -87,8 +133,8 @@ refreshConstraints env monoType =
         monoType
 
 
-{-| Does any `MVar id stamped` in the type disagree with `constraintOf id env`?
-Zero-allocation short-circuiting walk (records use non-short-circuit foldl, cheap).
+{-| Returns whether any `MVar` in the type carries a stamp that differs from the
+one `constraintOf` gives it now.
 -}
 hasStaleConstraint : MVarEnv -> Mono.MonoType -> Bool
 hasStaleConstraint env monoType =
@@ -115,6 +161,8 @@ hasStaleConstraint env monoType =
             False
 
 
+{-| Returns a copy of the type with every `MVar` restamped from the `MVarEnv`.
+-}
 refreshConstraintsRebuild : MVarEnv -> Mono.MonoType -> Mono.MonoType
 refreshConstraintsRebuild env monoType =
     case monoType of
@@ -140,10 +188,10 @@ refreshConstraintsRebuild env monoType =
             monoType
 
 
-
--- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
-
-
+{-| Maps `f` over a list, where `f` also says whether it changed its element.
+Returns whether any element changed, and the original list itself when none
+did.
+-}
 listMapChanged :
     (a -> ( Bool, a ))
     -> List a
@@ -152,6 +200,9 @@ listMapChanged f list =
     listMapChangedHelp f list list False []
 
 
+{-| Does the work of `listMapChanged`, with `acc` holding the mapped elements so
+far in reverse.
+-}
 listMapChangedHelp : (a -> ( Bool, a )) -> List a -> List a -> Bool -> List a -> ( Bool, List a )
 listMapChangedHelp f remaining original anyChanged acc =
     case remaining of
@@ -170,6 +221,10 @@ listMapChangedHelp f remaining original anyChanged acc =
             listMapChangedHelp f xs original (anyChanged || changed) (newX :: acc)
 
 
+{-| Maps `f` over a dictionary's values, where `f` also says whether it changed
+its value. Returns whether any value changed, and the original dictionary when
+none did.
+-}
 dictMapChanged :
     (v -> ( Bool, v ))
     -> Dict.Dict Name v
@@ -195,14 +250,23 @@ dictMapChanged f dict =
             ( False, dict )
 
 
-{-| Follow MVar chains in the substitution to find the root variable.
-Path compression updates intermediate links to point directly to the root.
+{-| Returns the variable at the end of the chain of variable-to-variable bindings
+that starts at `mvarId`, which is `mvarId` itself when it is bound to anything
+other than a variable, or to nothing.
+
+The returned substitution has each link passed on the way pointed directly at
+that root. The chain stops early at a variable bound to itself or at a variable
+already passed. The `MVarEnv` is returned unchanged.
+
 -}
 findRootVar : MVarEnv -> MVarId -> Substitution -> ( MVarId, Substitution, MVarEnv )
 findRootVar env mvarId subst =
     findRootVarHelp env Set.empty mvarId subst
 
 
+{-| Does the work of `findRootVar`, with `visited` holding the keys already
+passed so that a cycle of bindings ends the walk.
+-}
 findRootVarHelp : MVarEnv -> Set Int -> MVarId -> Substitution -> ( MVarId, Substitution, MVarEnv )
 findRootVarHelp env visited mvarId subst =
     let
@@ -244,7 +308,11 @@ findRootVarHelp env visited mvarId subst =
             ( mvarId, subst, env )
 
 
-{-| Normalize a MonoType by resolving MVar references via the substitution.
+{-| Returns `ty` with each `MVar` that is not its own root replaced by the root
+variable of its chain (`findRootVar`), stamped from the `MVarEnv`; a variable that
+is its own root keeps its stamp. A variable bound to a type other
+than a variable is left as it is; this replaces variables only by variables.
+Also returns the substitution with its chains shortened.
 -}
 normalizeMonoType : MVarEnv -> Substitution -> Mono.MonoType -> ( Mono.MonoType, Substitution, MVarEnv )
 normalizeMonoType env subst ty =
@@ -321,6 +389,9 @@ normalizeMonoType env subst ty =
             ( ty, subst, env )
 
 
+{-| Applies `normalizeMonoType` to each type of a list, threading the
+substitution.
+-}
 normalizeList : MVarEnv -> Substitution -> List Mono.MonoType -> ( List Mono.MonoType, Substitution, MVarEnv )
 normalizeList env subst types =
     List.foldr
@@ -335,7 +406,9 @@ normalizeList env subst types =
         types
 
 
-{-| Insert a binding into the substitution with normalization, keyed by MVarId.
+{-| Binds `mvarId` to `ty` in the substitution, after replacing each variable in
+`ty` by the root of its chain. Unlike `insertBindingSafe`, it does no occurs
+check, and it replaces any binding already there.
 -}
 insertBinding : MVarEnv -> MVarId -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 insertBinding env mvarId ty subst =
@@ -346,22 +419,34 @@ insertBinding env mvarId ty subst =
     ( Dict.insert (Id.toComparable mvarId) normalizedTy subst1, env1 )
 
 
-{-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
+{-| Returns the substitution that makes `canType` match `monoType`, starting from
+an empty one, together with the `MVarEnv` with any number taints added.
+Mismatched shapes contribute nothing rather than failing.
 -}
 unify : MVarEnv -> Can.Type MVarId -> Mono.MonoType -> ( Substitution, MVarEnv )
 unify env canType monoType =
     unifyHelp env canType monoType Dict.empty
 
 
-{-| Extend an existing substitution by unifying a canonical type with a monomorphic type.
-Like `unify`, but starts from `baseSubst` instead of an empty substitution.
+{-| Like `unify`, but starts from `baseSubst` instead of an empty substitution.
 -}
 unifyExtend : MVarEnv -> Can.Type MVarId -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyExtend env canType monoType baseSubst =
     unifyHelp env canType monoType baseSubst
 
 
-{-| Helper for unification that extends an existing substitution.
+{-| Extends `subst` so that `canType` matches `monoType`, as `unify` describes.
+
+For a variable already bound, the old binding and `monoType` are unified with
+each other (`unifyMonoMono`) and then `monoType` replaces the old binding,
+unless that binding would be cyclic, in which case the old binding stays. For
+an unbound number variable meeting a `CEcoValue` variable, the `CEcoValue`
+variable is the one bound, toward the number variable, and it is tainted as a
+number, so the number variable stays open. A record's extension variable is
+bound to a record of the fields `monoType` has beyond the canonical ones. A
+`Holey` alias is unified through its body; its arguments are not related to
+`monoType`.
+
 -}
 unifyHelp : MVarEnv -> Can.Type MVarId -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyHelp env canType monoType subst =
@@ -380,18 +465,9 @@ unifyHelp env canType monoType subst =
                         Mono.MVar otherId _ ->
                             case ( constraintOf mvarId env, constraintOf otherId env ) of
                                 ( Mono.CNumber, Mono.CEcoValue ) ->
-                                    -- Symmetric join (J2), canonical-vs-mono form. A number
-                                    -- canonical tvar is unifying with a boxed (CEcoValue) mono
-                                    -- var — typically a number ARGUMENT being resolved against a
-                                    -- polymorphic/kernel-ABI parameter slot (e.g. Debug.log's `a`,
-                                    -- PreserveVars). Binding the number var TOWARD the boxed var
-                                    -- (the default) would erase its number-ness, so the arg would
-                                    -- be typed CEcoValue while its value stays an unboxed i64 —
-                                    -- an i64/ptr boundary mismatch. Instead: number dominates.
-                                    -- Bind the boxed var toward the number var (as an open CNumber
-                                    -- residual) and taint it, leaving the number var open so it
-                                    -- closes to Int; the boxed ABI slot (a separate, already-built
-                                    -- funcMonoType) still drives boxing at the call boundary.
+                                    -- Binding the number var toward the boxed one, as the
+                                    -- default branch would, would type a number argument as a
+                                    -- boxed value while its value stays an unboxed integer.
                                     insertBindingSafe (State.taintNumber otherId env) otherId (Mono.MVar mvarId Mono.CNumber) subst
 
                                 _ ->
@@ -400,7 +476,6 @@ unifyHelp env canType monoType subst =
                         _ ->
                             insertBindingSafe env mvarId monoType subst
 
-        -- Handle primitive types from elm/core that map to specialized MonoTypes
         ( Can.TType (ModuleName.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
             ( subst, env )
 
@@ -450,7 +525,6 @@ unifyHelp env canType monoType subst =
 
         ( Can.TRecord fields maybeExtension, Mono.MRecord _ monoFields ) ->
             let
-                -- First unify matching fields
                 ( substWithFields, env1 ) =
                     Dict.foldl
                         (\fieldName monoFieldType ( s, e ) ->
@@ -467,7 +541,6 @@ unifyHelp env canType monoType subst =
             case maybeExtension of
                 Just extMvarId ->
                     let
-                        -- Fields in monoFields that are not in the canonical record
                         remainingFields =
                             Dict.diff monoFields fields
                     in
@@ -507,11 +580,15 @@ unifyHelp env canType monoType subst =
             ( subst, env )
 
 
-{-| Propagate transitive bindings between two MonoTypes.
+{-| Extends `subst` so that MonoTypes `m1` and `m2` agree, binding the variables
+either one contains. This is how a variable that is re-bound passes what it
+learns on to the variables in its old binding.
 
-When a type variable is re-bound from one MonoType to another,
-this function ensures that any MVar references in the old binding
-get transitively resolved.
+When two variables meet and one is a number and the other is not, the other is
+bound toward the number variable and tainted as a number, whichever side it is
+on. Function arguments, tuple elements and custom-type arguments are paired
+position by position and any surplus on either side is ignored; record fields
+are paired by name.
 
 -}
 unifyMonoMono : MVarEnv -> Mono.MonoType -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
@@ -524,16 +601,7 @@ unifyMonoMono env m1 m2 subst =
             else
                 case ( constraintOf mvarId1 env, constraintOf mvarId2 env ) of
                     ( Mono.CNumber, Mono.CEcoValue ) ->
-                        -- Symmetric constraint join. The class constraint is the join
-                        -- of members: CNumber dominates CEcoValue. Make the number var
-                        -- (mvarId1) the class representative — bind the boxed var toward
-                        -- it (Join-W, subst-carried, so routing survives however the env
-                        -- is threaded) — AND taint the boxed var Number in the shared
-                        -- side table (Join-R, so copies of its type stamped before this
-                        -- merge still close to Int and key to the concrete Int spec).
-                        -- The decision reads constraintOf (the authoritative side table),
-                        -- not the stamped annotations, and is outcome-symmetric with the
-                        -- mirror case below.
+                        -- Decided by the side table, not by the stamps, which may be stale.
                         insertBinding (State.taintNumber mvarId2 env) mvarId2 m1 subst
 
                     ( Mono.CEcoValue, Mono.CNumber ) ->
@@ -568,11 +636,8 @@ unifyMonoMono env m1 m2 subst =
                 (List.map2 Tuple.pair args1 args2)
 
         ( Mono.MRecord _ fields1, Mono.MRecord _ fields2 ) ->
-            -- Recurse into matching fields. Without this, re-binding a scheme var
-            -- whose old and new monos are records (e.g. a `map`/fold combinator's
-            -- element var bound to `{n:Float}` from the function and then re-unified
-            -- against `{n: CNumber}` from the container) would drop the field-level
-            -- propagation, leaving the container element defaulted to Int.
+            -- Needed so that, e.g., `{ n : Float }` re-unified with `{ n : number }`
+            -- binds the number var to Float rather than leaving it to close to Int.
             Dict.foldl
                 (\fieldName ft2 ( s, e ) ->
                     case Dict.get fieldName fields1 of
@@ -595,7 +660,10 @@ unifyMonoMono env m1 m2 subst =
             ( subst, env )
 
 
-{-| Unify function arguments only, ignoring the result type.
+{-| Extends `subst` by unifying the first argument type of `canFuncType` with the
+first of `argTypes`, the second with the second, and so on, ignoring the result
+type. It stops at the first position where `canFuncType` is no longer an arrow,
+so surplus arguments are ignored.
 -}
 unifyArgsOnly : MVarEnv -> Can.Type MVarId -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyArgsOnly env canFuncType argTypes subst =
@@ -603,7 +671,6 @@ unifyArgsOnly env canFuncType argTypes subst =
         ( _, [] ) ->
             ( subst, env )
 
-        -- Fast path: single argument (most common for curried Elm)
         ( Can.TLambda _ from _, [ singleArg ] ) ->
             unifyHelp env from singleArg subst
 
@@ -614,15 +681,13 @@ unifyArgsOnly env canFuncType argTypes subst =
             in
             unifyArgsOnly env1 to rest subst1
 
-        -- If we run out of lambdas or mismatch shape, just stop.
         _ ->
             ( subst, env )
 
 
-{-| Extract parameter types from a Mono.mFunction type.
-When we have a function type MFunction [arg1, arg2, ...] returnType,
-this extracts the list of argument types [arg1, arg2, ...].
-For non-function types, returns an empty list.
+{-| Returns every argument type down a chain of functions, in order: for a
+function returning a function, the outer arguments followed by the inner ones.
+A type that is not a function gives the empty list.
 -}
 extractParamTypes : Mono.MonoType -> List Mono.MonoType
 extractParamTypes monoType =
@@ -634,8 +699,9 @@ extractParamTypes monoType =
             []
 
 
-{-| Resolve MVar references in a MonoType using a substitution.
-Uses Int keys (Id.toComparable) for substitution lookups.
+{-| Returns `monoType` with every bound variable replaced by its binding, itself
+resolved in turn. An unbound variable, including an open number variable, is
+kept. Where nothing changes the input itself is returned.
 -}
 resolveMonoVars : Substitution -> Mono.MonoType -> Mono.MonoType
 resolveMonoVars subst monoType =
@@ -644,8 +710,9 @@ resolveMonoVars subst monoType =
         |> Tuple.second
 
 
-{-| Resolve MVars in a MonoType using a substitution, tracking which MVarId keys
-are currently being expanded to detect indirect cycles.
+{-| Does the work of `resolveMonoVars`, also returning whether anything changed.
+`visiting` holds the variables being expanded, so that a cycle of bindings among
+variables leaves the repeated variable in place instead of looping.
 -}
 resolveMonoVarsHelp : Set Int -> Substitution -> Mono.MonoType -> ( Bool, Mono.MonoType )
 resolveMonoVarsHelp visiting subst monoType =
@@ -670,10 +737,7 @@ resolveMonoVarsHelp visiting subst monoType =
                     Nothing ->
                         case constraint of
                             Mono.CNumber ->
-                                -- Quiescence-before-defaulting: preserve the number
-                                -- var as a residual (no change). CNumber is discharged
-                                -- only by the residual-number close (fused into Prune) at the end of
-                                -- monomorphization.
+                                -- Left open: Prune closes number vars to Int.
                                 ( False, monoType )
 
                             Mono.CEcoValue ->
@@ -741,17 +805,13 @@ resolveMonoVarsHelp visiting subst monoType =
             ( False, monoType )
 
 
-{-| Apply a type substitution to a canonical type to produce a monomorphic type.
+{-| Returns the MonoType that `canType` becomes under `subst`, with no
+hash-consing.
 
-INVARIANT: Preserves TLambda staging exactly.
-
-    a -> b -> c becomes Mono.mFunction [a] (Mono.mFunction [b] c), NOT Mono.mFunction [a, b] c.
-
-Each TLambda in the Can.Type MVarId produces a single-arg Mono.mFunction. This preserves
-Elm's curried semantics faithfully.
-
-GlobalOpt will flatten these types to match closure param counts (GOPT\_016).
-The flattening happens there, not here, because Monomorphize is staging-agnostic.
+Each arrow becomes a one-argument function, so `a -> b -> c` becomes a function
+from `a` returning a function from `b`, not a two-argument function. A bound
+variable becomes its binding with the variables in it resolved; an unbound one
+stays an `MVar` stamped from `env`.
 
 -}
 applySubstPure : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
@@ -759,24 +819,13 @@ applySubstPure env subst canType =
     Tuple.first (applySubstPureI env subst canType Intern.disabled)
 
 
-{-| `applySubstPure` **reading** a hash-cons table without writing to it (K7 of
-`plans/mono-comparable-key-optimization.md`).
+{-| Returns the same type as `applySubstPure`, sharing structure with the
+hash-cons table `intern` without adding to it.
 
-`applySubstPure`'s callers hold no place to put an updated table, so before K7
-they ran the whole traversal with `Intern.disabled` and every type they built
-was uninterned — never shared, and therefore separately retained. That was 42%
-of all composite `hashCons` traffic on a subst self-compile (plan §16), diluting
-K6's win by exactly that much.
-
-This entry point closes the gap without any state threading: it probes the table
-and returns the EXISTING canonical object on a hit, and on a miss keeps the node
-it just built and registers nothing. Since nothing is registered there is no new
-table, so the caller passes a table it already holds and forgets about it — one
-extra ARGUMENT, never a returned pair, and none of the `state`/`state1` hazard
-that threading brings.
-
-Passing `Intern.disabled` is still valid and still means "no interning": the
-read-only view of a disabled table is a disabled table.
+Each type built that is already in the table is replaced by the object there,
+and one that is not is kept as built and not registered. So the table is never
+changed and the caller has none to thread back. Passing `Intern.disabled` means
+no sharing.
 
 -}
 applySubstPureRO : Intern -> MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
@@ -784,25 +833,19 @@ applySubstPureRO intern env subst canType =
     Tuple.first (applySubstPureI env subst canType (Intern.readOnly intern))
 
 
-{-| `applySubstPure` with a hash-consing table threaded through it (K6 of
-`plans/mono-comparable-key-optimization.md`).
+{-| Returns the MonoType `canType` becomes under `subst`, as `applySubstPure`
+describes, offering every list, tuple, record, custom type and function it
+builds to `Intern.hashCons`, and returns the table after.
 
-Every composite this traversal builds is offered to `Intern.hashCons`, so a
-structure that already exists is returned as the EXISTING object instead of a
-fresh one. A self-compile builds 14.8M type nodes for 116K distinct types
-(plan §13), and this is where nearly all of them are built.
+Children are offered before their parent. The exception is a bound variable,
+whose resolved binding is returned without being offered.
 
-Children are canonicalised before their parent, so the bucket confirm inside
-`hashCons` compares child pointers rather than walking subtrees. The one
-exception is the `Can.TVar` branch, whose `resolveMonoVars` result is left
-uncanonical (that function is identity-preserving where nothing changes, so its
-output is already shared in the common case); a parent above such a child pays a
-structural compare on a bucket hit.
-
-Callers with no table to thread pass `Intern.disabled`, which turns every
-`hashCons` into an identity; callers that hold a table but cannot thread an
-updated one back go through `applySubstPureRO`, whose read-only view shares on a
-hit and registers nothing.
+A record's extension variable contributes the fields of its binding only when it
+is bound directly to a record; otherwise only the record's own fields remain.
+An `elm/core` `List` with other than one argument becomes a list of unit. A
+`Holey` alias is applied by binding each of its parameter ids to its applied
+argument and applying that to the body. The parameter ids are bound in order
+into one substitution, so parameters sharing an id resolve to the last argument.
 
 -}
 applySubstPureI : MVarEnv -> Substitution -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
@@ -824,10 +867,7 @@ applySubstPureI env subst canType intern =
                     in
                     case constraint of
                         Mono.CNumber ->
-                            -- Quiescence-before-defaulting: preserve the number var
-                            -- as a residual. CNumber->MInt is discharged only by the
-                            -- residual-number closing (fused into Prune) at the end
-                            -- of monomorphization.
+                            -- Left open: Prune closes number vars to Int.
                             ( Mono.MVar mvarId constraint, intern )
 
                         Mono.CEcoValue ->
@@ -882,7 +922,6 @@ applySubstPureI env subst canType intern =
 
         Can.TRecord fields maybeExtension ->
             let
-                -- Start with base fields from extension variable if present
                 baseFields =
                     case maybeExtension of
                         Just extMvarId ->
@@ -896,7 +935,6 @@ applySubstPureI env subst canType intern =
                         Nothing ->
                             Dict.empty
 
-                -- Convert explicit fields and merge into base using foldl
                 ( monoFields, intern1 ) =
                     Dict.foldl
                         (\k (Can.FieldType _ t) ( acc, i ) ->
@@ -941,9 +979,8 @@ applySubstPureI env subst canType intern =
             applySubstPureI env newSubst inner intern1
 
 
-{-| Apply applySubstPureI to a list of canonical types. Env-pure (MONO\_028 J5): the
-MVarEnv is read-only here — applySubstPureI never taints or allocates fresh vars — so
-there is no env to thread back. The Intern table IS threaded, left to right.
+{-| Applies `applySubstPureI` to each type of a list, threading the hash-cons
+table from left to right.
 -}
 applySubstListI : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Intern -> ( List Mono.MonoType, Intern )
 applySubstListI env subst types intern =
@@ -962,12 +999,13 @@ applySubstListI env subst types intern =
             ( head :: tail, intern2 )
 
 
-{-| Apply a substitution to a canonical type, but only for MVarIds that
-actually appear in the type. This prevents cross-scheme contamination
-when a substitution carries bindings from multiple schemes.
+{-| Returns the MonoType `canType` becomes under `subst`, as `applySubstPureI`
+describes, after dropping from a substitution of more than eight bindings every
+binding not reachable from the variables of `canType`.
 
-Filtering is by the MVarIds present in canType (sufficient because MVarIds are
-globally unique post-AssignMVarIds), so no scheme/FreeVars argument is needed.
+Reachable means a variable of `canType`, or a variable in the binding of a
+reachable one. Bindings of variables from other schemes that share the
+substitution are therefore not consulted.
 
 -}
 applySubstFiltered :
@@ -978,9 +1016,7 @@ applySubstFiltered :
     -> ( Mono.MonoType, Intern )
 applySubstFiltered mvarEnv subst canType intern =
     if Dict.size subst <= 8 then
-        -- For small substitutions, filtering costs more than just applying
-        -- the full subst directly (the overhead of building Set + Dict.filter
-        -- exceeds any savings from a slightly smaller dict).
+        -- Filtering a small substitution costs more than it saves.
         applySubstPureI mvarEnv subst canType intern
 
     else
@@ -991,10 +1027,7 @@ applySubstFiltered mvarEnv subst canType intern =
             rootKeys =
                 List.map Id.toComparable rootIds
 
-            -- Compute transitive closure: include all MVarIds reachable
-            -- through substitution bindings. This ensures chains like
-            -- Id_x -> MVar 10, 10 -> MInt keep both entries so that
-            -- applySubst + resolveMonoVars can fully resolve.
+            -- Transitive, so a chain like x -> MVar 10, 10 -> MInt survives whole.
             reachableKeys =
                 closureOverSubst rootKeys subst
 
@@ -1006,15 +1039,16 @@ applySubstFiltered mvarEnv subst canType intern =
         applySubstPureI mvarEnv filteredSubst canType intern
 
 
-{-| Compute the transitive closure of substitution keys reachable from
-the given initial keys. Starting from the root keys, follow each binding's
-MonoType to discover further MVarId dependencies, and include those keys too.
+{-| Returns the keys reachable from `initialKeys`: the keys themselves, and the
+keys of the variables in the binding of any reachable key.
 -}
 closureOverSubst : List Int -> Substitution -> Set Int
 closureOverSubst initialKeys subst =
     closureOverSubstHelp initialKeys Set.empty subst
 
 
+{-| Does the work of `closureOverSubst`, with `pending` the keys still to visit.
+-}
 closureOverSubstHelp : List Int -> Set Int -> Substitution -> Set Int
 closureOverSubstHelp pending visited subst =
     case pending of
@@ -1043,7 +1077,8 @@ closureOverSubstHelp pending visited subst =
                         closureOverSubstHelp (depKeys ++ rest) newVisited subst
 
 
-{-| Collect all MVarIds from a MonoType, mirroring collectMVarIds for Can.Type.
+{-| Returns the variables of a MonoType that are not in `acc`, each once, in
+front of `acc`.
 -}
 collectMVarIdsFromMono : Mono.MonoType -> List MVarId -> List MVarId
 collectMVarIdsFromMono monoType acc =
@@ -1054,6 +1089,9 @@ collectMVarIdsFromMono monoType acc =
     Tuple.first (collectMVarIdsFromMonoHelp monoType ( acc, seen ))
 
 
+{-| Does the work of `collectMVarIdsFromMono`, with `seen` holding the keys
+already in the list.
+-}
 collectMVarIdsFromMonoHelp : Mono.MonoType -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
 collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
     case monoType of
@@ -1091,7 +1129,9 @@ collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
             pair
 
 
-{-| Collect a TLambda chain iteratively, then build the curried Mono.mFunction structure.
+{-| Returns the curried function MonoType for an arrow chain, with `argsAcc` the
+argument types gathered so far, innermost first, and `to` the rest of the chain.
+Each function built is offered to `Intern.hashCons`.
 -}
 applySubstLambdaChainI : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Intern -> ( Mono.MonoType, Intern )
 applySubstLambdaChainI env subst argsAcc to intern =
@@ -1112,13 +1152,13 @@ applySubstLambdaChainI env subst argsAcc to intern =
                 argsAcc
 
 
+{-| Builds the scheme for `canType`, with every variable replaced by a fresh one
+from the `MVarEnv`, so its ids are shared with no existing substitution.
 
--- ========== SCHEME INFO ==========
+Each fresh variable is a number exactly when the one it replaces is. The
+argument types are the arguments down the arrow chain, looking through `Filled`
+aliases, and the result type is what remains.
 
-
-{-| Build SchemeInfo from a canonical function type.
-Freshens all MVarIds using the global MVarEnv id supply so that scheme
-ids never collide with caller substitutions.
 -}
 buildSchemeInfo : MVarEnv -> Can.Type MVarId -> ( SchemeInfo, MVarEnv )
 buildSchemeInfo env canType =
@@ -1152,9 +1192,13 @@ buildSchemeInfo env canType =
     )
 
 
-{-| Re-freshen a cached SchemeInfo by replacing all its MVarIds with new ones.
-This prevents stale MVar bindings from a previous unification from leaking
-into a new call site that reuses the cached scheme.
+{-| Returns a copy of a scheme with every variable in `varIds` replaced by a fresh
+one, so bindings made at an earlier use of the scheme do not apply to this one.
+
+Each fresh variable is a number exactly when the `MVarEnv` records the old one
+as a number now, which includes a number taint the old one received at an
+earlier use.
+
 -}
 refreshSchemeInfo : MVarEnv -> SchemeInfo -> ( SchemeInfo, MVarEnv )
 refreshSchemeInfo env cached =
@@ -1188,7 +1232,8 @@ refreshSchemeInfo env cached =
     )
 
 
-{-| Apply renaming to a single MVarId key, returning the renamed key or the original if not in the map.
+{-| Returns the key of the fresh variable `renameMap` gives for key `id`, or `id`
+itself when it has none.
 -}
 applyRenameToId : Dict.Dict Int MVarId -> Int -> Int
 applyRenameToId renameMap id =
@@ -1200,7 +1245,13 @@ applyRenameToId renameMap id =
             id
 
 
-{-| Accumulator for buildSchemeRenaming.
+{-| A renaming of a scheme's variables to fresh ones, as `buildSchemeRenaming`
+builds it.
+
+`renameMap` is keyed by the old variable's comparable key. `freshIds` is in
+reverse order of the old variables. `numberVarKeys` holds the keys of the fresh
+variables that are numbers.
+
 -}
 type alias SchemeRenamingAcc =
     { renameMap : Dict.Dict Int MVarId
@@ -1210,8 +1261,8 @@ type alias SchemeRenamingAcc =
     }
 
 
-{-| Build a renaming for all MVarIds in a scheme:
-allocates fresh ids from the global MVarEnv, preserves constraints.
+{-| Builds a renaming of `varIds` to fresh variables from the `MVarEnv`, each a
+number exactly when `constraintOf` says the old one is.
 -}
 buildSchemeRenaming :
     MVarEnv
@@ -1255,8 +1306,9 @@ buildSchemeRenaming env varIds =
         varIds
 
 
-{-| Rename all MVarIds in a canonical type using an Int-keyed map
-from original Id.toComparable to fresh MVarId.
+{-| Returns `canType` with each variable renamed by `renameMap`, including record
+extension variables and alias parameters. A variable the map lacks is kept.
+Arrow ids are copied unchanged.
 -}
 renameMVarIdsInCanType :
     Dict.Dict Int MVarId
@@ -1277,28 +1329,9 @@ renameMVarIdsInCanType renameMap canType =
                     canType
 
         Can.TLambda aid from to ->
-            -- ⚠️ THIS CLONES ARROW IDS (Phase 2a §4.7, and the register's
-            -- "clone rule"). The function exists to FRESHEN — `buildSchemeInfo`
-            -- / `refreshSchemeInfo` call it precisely to stop stale MVar
-            -- bindings leaking into a new call site that reuses a cached
-            -- scheme. Copying the arrow ids into the "fresh" copy is the same
-            -- defect one level up: an `arrowMemo` load would resolve the
-            -- original and the instantiation to ONE slot, i.e. every call site
-            -- of a cached scheme would share one lambda set.
-            --
-            -- SOUND ONLY WHILE this output never reaches `Store.loadType*`.
-            -- It does not today: this module is the SUBST engine, nothing
-            -- under `Compiler/MonoSolver/` imports it, and the subst engine
-            -- has no `Store` and no `arrowMemo`. Preserving (rather than
-            -- dropping to `NoArrow`) keeps the function honest about what it
-            -- renames — it renames MVarIds, nothing else.
-            --
-            -- The moment the solver routes through it, or this helper is
-            -- reused for solver-side instantiation, it MUST thread an
-            -- `ArrowId` supply and mint fresh ids per `TLambda`. The supply's
-            -- natural home is `MVarEnv` (`Monomorphize/State.elm`), which is
-            -- already threaded through both callers and already carries the
-            -- MVarId supply.
+            -- The arrow id is copied, so the original and the renamed copy
+            -- share it; a consumer keying on arrow ids would see all uses of a
+            -- scheme as one arrow.
             Can.TLambda aid
                 (renameMVarIdsInCanType renameMap from)
                 (renameMVarIdsInCanType renameMap to)
@@ -1367,7 +1400,9 @@ renameMVarIdsInCanType renameMap canType =
             canType
 
 
-{-| Collect all TVar MVarIds from a canonical type.
+{-| Returns the variables of a canonical type that are not in `acc`, each once, in
+front of `acc`, including record extension variables and the variables of alias
+arguments.
 -}
 collectMVarIds : Can.Type MVarId -> List MVarId -> List MVarId
 collectMVarIds canType acc =
@@ -1378,6 +1413,9 @@ collectMVarIds canType acc =
     Tuple.first (collectMVarIdsHelp canType ( acc, seen ))
 
 
+{-| Does the work of `collectMVarIds`, with `seen` holding the keys already in
+the list.
+-}
 collectMVarIdsHelp : Can.Type MVarId -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
 collectMVarIdsHelp canType (( acc, seen ) as pair) =
     case canType of
@@ -1442,7 +1480,9 @@ collectMVarIdsHelp canType (( acc, seen ) as pair) =
             pair
 
 
-{-| Flatten a TLambda chain into (argTypes, resultType).
+{-| Returns the argument types down an arrow chain, after those already in `acc`
+(held innermost first), and the result type that remains. `Filled` aliases are
+looked through; a `Holey` one ends the chain.
 -}
 flattenTLambda : Can.Type MVarId -> List (Can.Type MVarId) -> ( List (Can.Type MVarId), Can.Type MVarId )
 flattenTLambda canType acc =
@@ -1457,16 +1497,15 @@ flattenTLambda canType acc =
             ( List.reverse acc, canType )
 
 
+{-| Unifies a scheme's argument types with the types of the arguments supplied at
+a call, starting from `baseSubst`, and returns the substitution, the scheme's
+whole type under it as a curried function MonoType, and the `MVarEnv` with any
+number taints added.
 
--- ========== SINGLE-PASS CALL-SITE UNIFIER ==========
-
-
-{-| Single-pass call-site unifier that replaces the multi-step
-unifyArgsOnly + applySubst + resolveMonoVars + unifyExtend sequence.
-
-Walks argTypes and argMonoTypes in lockstep, unifying each pair via unifyHelp.
-Then applies the resulting substitution to the result type, and constructs
-Mono.mFunction in one pass. Returns the updated substitution and the funcMonoType.
+Arguments are paired by position; those beyond the scheme's arity are ignored.
+Every argument type of the function MonoType, supplied or not, is the scheme's
+argument type under the final substitution, not the supplied type. Types are
+shared with the hash-cons table `intern` as `applySubstPureRO` describes.
 
 -}
 unifyCallSiteDirect :
@@ -1481,15 +1520,21 @@ unifyCallSiteDirect intern env schemeArgTypes schemeResultType argMonoTypes base
     unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMonoTypes Nothing baseSubst
 
 
-{-| Variant of unifyCallSiteDirect that additionally constrains the scheme by
-unifying the scheme's residual type (after consuming the supplied argument
-positions) with the call's expected result canonical type. This lets
-concrete information encoded in the outer expression's result type (e.g. the
-fact that `List.map swap` at a given use site returns `List (Int, Int)`) flow
-back into the scheme's type variables, and through them into the arg
-expressions' own free type variables. Without this, a polymorphic arg such as
-a let-bound `swap : (ta, tb) -> (tb, ta)` passed as a first-class function
-would remain unresolved and get specialized as `(!eco.value, !eco.value)`.
+{-| Does what `unifyCallSiteDirect` does and, when given the call's expected
+result type, also unifies the scheme with it.
+
+The part of the scheme a call leaves unapplied, its residual, is the arrow chain
+of the argument types not supplied ending in the scheme's result type. That
+residual is unified with the expected result type under the substitution so far.
+This lets what the context knows about the result reach the scheme's
+variables: for example that `List.map swap` here returns `List ( Int, Int )`
+fixes the type `swap` is used at.
+
+When the call supplies more arguments than the scheme takes, the surplus is
+applied to the scheme's result, so the expected result type is first wrapped in
+one arrow per surplus argument. For `Tuple.first fns 1` the scheme's result is
+then unified with a function from `Int`, not with the final result.
+
 -}
 unifyCallSiteDirectWithExpected :
     Intern
@@ -1502,15 +1547,9 @@ unifyCallSiteDirectWithExpected :
     -> ( Substitution, Mono.MonoType, MVarEnv )
 unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMonoTypes maybeCallResultCanType baseSubst =
     let
-        -- Unify each scheme arg type with the corresponding call-site mono type
         ( substAfterArgs0, env0 ) =
             unifyArgTypesZip env schemeArgTypes argMonoTypes baseSubst
 
-        -- Additionally, if we know the call's own expected result canonical
-        -- type, unify the scheme's residual (remaining scheme args + scheme
-        -- result, curried as a function chain) with it. This pushes concrete
-        -- information from the enclosing context back into scheme type
-        -- variables.
         ( substAfterArgs, env1 ) =
             case maybeCallResultCanType of
                 Just callResultCanType ->
@@ -1521,18 +1560,8 @@ unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMo
                         callResultMono =
                             applySubstPureRO intern env0 substAfterArgs0 callResultCanType
 
-                        -- Over-application: when the call supplies MORE args than
-                        -- the scheme's own arity, the surplus args are applied to
-                        -- the scheme's RESULT, not the scheme itself. The scheme
-                        -- result is therefore a function consuming those surplus
-                        -- args and yielding the call's result. Re-wrap the expected
-                        -- result mono with one arrow per surplus arg so the scheme
-                        -- result variable unifies with the intermediate function
-                        -- type (e.g. `Tuple.first fns 1` ⇒ `a := Int -> Int`), not
-                        -- the final over-applied result (`Int`). Without this, the
-                        -- residual `a` was unified directly with `Int`, collapsing
-                        -- the projected-element type to an unboxed primitive and
-                        -- emitting an invalid `eco.papExtend` (operand #0 i64).
+                        -- Over-application: the surplus arguments apply to the
+                        -- scheme's result, so it must unify with a function.
                         surplusArgMonos =
                             List.drop (List.length schemeArgTypes) argMonoTypes
 
@@ -1547,41 +1576,32 @@ unifyCallSiteDirectWithExpected intern env schemeArgTypes schemeResultType argMo
                 Nothing ->
                     ( substAfterArgs0, env0 )
 
-        -- Derive supplied arg types by applying the final substitution to the
-        -- scheme's arg types, not from argMonoTypes directly. This matters when
-        -- a supplied arg was a row-polymorphic local function whose argMono was
-        -- narrowed (e.g. its record extension var was unbound at argument
-        -- preparation time). Pulling from scheme-via-applySubst lets the cross-
-        -- arg unification (e.g. a third arg giving the full record shape) flow
-        -- back into the earlier positions instead of preserving the narrow type.
-        -- applySubstPure is env-pure (J5), so the arg/result resolution below reads
-        -- env1 (the last tainting step: unifyArgTypesZip + the residual unifyHelp)
-        -- without threading — there is no further env to carry.
+        -- From the scheme, not argMonoTypes: a later argument can widen what an
+        -- earlier one supplied, e.g. the full shape of a record whose extension
+        -- var was unbound when that argument was typed.
         suppliedSchemeArgs =
             List.take (List.length argMonoTypes) schemeArgTypes
 
         resolvedSuppliedArgs =
             List.map (applySubstPureRO intern env1 substAfterArgs) suppliedSchemeArgs
 
-        -- Resolve REMAINING scheme arg types through substitution
         remainingSchemeArgs =
             List.drop (List.length argMonoTypes) schemeArgTypes
 
         resolvedAllArgs =
             resolvedSuppliedArgs ++ List.map (applySubstPureRO intern env1 substAfterArgs) remainingSchemeArgs
 
-        -- Apply substitution to result type
         resultMono =
             applySubstPureRO intern env1 substAfterArgs schemeResultType
 
-        -- Build the function mono type directly
         funcMonoType =
             buildCurriedFuncType schemeArgTypes resolvedAllArgs resultMono
     in
     ( substAfterArgs, funcMonoType, env1 )
 
 
-{-| Zip scheme arg types with mono arg types and unify pairwise.
+{-| Extends `subst` by unifying each canonical argument type with the MonoType in
+the same position, stopping at the end of the shorter list.
 -}
 unifyArgTypesZip : MVarEnv -> List (Can.Type MVarId) -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyArgTypesZip env canArgs monoArgs subst =
@@ -1597,8 +1617,9 @@ unifyArgTypesZip env canArgs monoArgs subst =
             ( subst, env )
 
 
-{-| Build a curried Mono.mFunction mirroring the TLambda structure.
-Each scheme arg corresponds to one level of currying.
+{-| Returns a curried function MonoType with one one-argument function per
+element of `resolvedArgs`, ending in `resultMono`. `schemeArgs` only bounds how
+many are used: the chain stops at the end of the shorter list.
 -}
 buildCurriedFuncType : List (Can.Type MVarId) -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 buildCurriedFuncType schemeArgs resolvedArgs resultMono =
@@ -1610,13 +1631,9 @@ buildCurriedFuncType schemeArgs resolvedArgs resultMono =
             resultMono
 
 
-{-| Build a curried Can.Type chain: args ++ result → TLambda arg0 (TLambda arg1 ... result).
-When args is empty, returns result unchanged.
-
-Phase 2a §4.7: `NoArrow` on every arrow — this is a NEW spine (the
-partial-application residual), so no original id exists to carry. Subst engine
-only; nothing under `Compiler/MonoSolver/` reaches it.
-
+{-| Returns the canonical arrow chain from `args` to `result`, or `result` itself
+when `args` is empty. The arrows are new, so they carry no arrow id
+(`Can.tLambda`).
 -}
 buildCurriedCanType : List (Can.Type MVarId) -> Can.Type MVarId -> Can.Type MVarId
 buildCurriedCanType args result =
@@ -1628,29 +1645,24 @@ buildCurriedCanType args result =
             Can.tLambda first (buildCurriedCanType rest result)
 
 
-
--- ========== MERGED OCCURS CHECK + NORMALIZATION ==========
-
-
-{-| Insert a binding with occurs check and normalization in a single pass.
-If the target MVarId appears in `monoType`, skip the binding (cyclic type).
-Otherwise, normalize MVars via findRootVar and insert.
+{-| Binds `targetId` to `monoType`, with each variable in it replaced by the root
+of its chain, replacing any binding already there. When `targetId` is itself a
+root of a variable in `monoType`, the binding would be cyclic and the
+substitution is returned unchanged.
 -}
 insertBindingSafe : MVarEnv -> MVarId -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 insertBindingSafe env targetId monoType subst =
     case normalizeAndOccursCheck env targetId subst monoType of
         Nothing ->
-            -- Occurs check failed: targetId appears in monoType, skip binding
             ( subst, env )
 
         Just ( normalizedTy, subst1, env1 ) ->
             ( Dict.insert (Id.toComparable targetId) normalizedTy subst1, env1 )
 
 
-{-| Walk a MonoType, normalizing MVar references via findRootVar and
-simultaneously checking whether `targetId` appears anywhere.
-Returns Nothing if targetId is found (occurs check failure),
-or Just (normalizedType, updatedSubst, updatedEnv) on success.
+{-| Returns `ty` normalized as `normalizeMonoType` does, with the substitution
+whose chains were shortened on the way, or `Nothing` when any variable in `ty`
+has `targetId` as its root.
 -}
 normalizeAndOccursCheck : MVarEnv -> MVarId -> Substitution -> Mono.MonoType -> Maybe ( Mono.MonoType, Substitution, MVarEnv )
 normalizeAndOccursCheck env targetId subst ty =
@@ -1722,11 +1734,17 @@ normalizeAndOccursCheck env targetId subst ty =
             Just ( ty, subst, env )
 
 
+{-| Applies `normalizeAndOccursCheck` to each type of a list, giving `Nothing`
+if any element does.
+-}
 normalizeAndOccursCheckList : MVarEnv -> MVarId -> Substitution -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Substitution, MVarEnv )
 normalizeAndOccursCheckList env targetId subst types =
     normalizeAndOccursCheckListHelp env targetId subst types []
 
 
+{-| Does the work of `normalizeAndOccursCheckList`, with `acc` holding the
+normalized elements so far in reverse.
+-}
 normalizeAndOccursCheckListHelp : MVarEnv -> MVarId -> Substitution -> List Mono.MonoType -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Substitution, MVarEnv )
 normalizeAndOccursCheckListHelp env targetId subst remaining acc =
     case remaining of
@@ -1742,6 +1760,9 @@ normalizeAndOccursCheckListHelp env targetId subst remaining acc =
                     normalizeAndOccursCheckListHelp env1 targetId subst1 rest (tNorm :: acc)
 
 
+{-| Applies `normalizeAndOccursCheck` to each field type of a record, giving
+`Nothing` if any field does.
+-}
 normalizeAndOccursCheckDict : MVarEnv -> MVarId -> Substitution -> Dict.Dict Name Mono.MonoType -> Maybe ( Dict.Dict Name Mono.MonoType, Substitution, MVarEnv )
 normalizeAndOccursCheckDict env targetId subst fields =
     Dict.foldl

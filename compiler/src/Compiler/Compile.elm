@@ -3,24 +3,33 @@ module Compiler.Compile exposing
     , Artifacts(..), TypedArtifacts(..), TypedArtifactsData
     )
 
-{-| Orchestrates the full compilation pipeline from source to optimized artifacts.
+{-| Turns one parsed module into the per-module results the rest of the
+compiler builds on, or into the error that stops it.
 
-This module provides the main entry points for compiling Elm modules. It coordinates
-the complete transformation from parsed source code through canonicalization, type
-checking, pattern match verification, and optimization.
+There are two front ends, one per back end. Both canonicalize the module
+(resolve every name to the module that defines it), type check it, check that
+its pattern matches are exhaustive and have no redundant patterns
+(_nitpicking_), and optimize it into a local graph of definitions.
 
-`compile` (the JavaScript path) runs four phases:
+`compile` is the _erased path_, used for JavaScript: the type checker yields
+only each definition's annotation, and the erased optimizer
+(`Compiler.LocalOpt.Erased.Module`) produces an `Opt.LocalGraph`.
 
-1.  **Canonicalization** - Resolves all names to their home modules
-2.  **Type Checking** - Infers and verifies types via constraint solving
-3.  **Nitpicking** - Verifies pattern match exhaustiveness
-4.  **Optimization** - Produces efficient intermediate representation
+`compileTyped` is the _typed path_, used for native code. It is dominated by
+one fact: the solver's union-find store, in which variables the type checker
+proved equal share one _root_, exists only while this module is type checking.
+So everything the typed back end needs from it is copied out here: node and
+annotation variables are replaced by their roots, the _scheme roots_ of each
+definition that has any are recorded, and `Compiler.Type.PostSolve` fills in the remaining
+expression types and the types of kernel functions. Then, in the node types
+and annotations that have a solver variable, the function arrows the stamping
+walk reaches are _stamped_ with the index of their root, as
+`Compiler.Type.SolverRoots` describes. The typed optimizer (`Compiler.LocalOpt.Typed.Module`) produces a
+`TOpt.LocalGraph`. The erased optimizer does not run on this path.
 
-`compileTyped` (the native/MLIR path) runs the same canonicalization and
-nitpicking, but its type check keeps the solver state: it normalizes solver
-variables to union-find roots, runs PostSolve, and stamps arrow types with
-their root indices. It then runs the typed optimizer in place of the erased
-one, joining the results into a single `TypedArtifacts`.
+Errors are wrapped by phase: canonicalization errors in `E.BadNames`, type
+errors in `E.BadTypes`, pattern errors in `E.BadPatterns`, and optimizer errors
+in `E.BadMains`.
 
 
 # Compilation
@@ -71,33 +80,33 @@ import Utils.Main as Utils
 -- ====== Artifacts ======
 
 
-{-| Compilation artifacts produced by the standard compilation pipeline.
-
-Contains the canonical AST, type annotations for all definitions, and the
-optimized local graph suitable for JavaScript code generation.
-
+{-| What the erased path produces for one module: the canonical module, the
+annotation of each top-level definition by name, and the erased local graph.
 -}
 type Artifacts
     = Artifacts Can.Module (Dict.Dict Name (Can.Annotation Name)) Opt.LocalGraph
 
 
-{-| Extended compilation artifacts with typed optimization for MLIR backend.
+{-| What the typed path produces for one module.
 
-In addition to standard artifacts, includes a typed optimization graph that
-preserves full type information throughout the optimization process. This
-enables type-directed optimizations and direct lowering to MLIR.
+`annotations` have their arrows stamped with solver roots where they have a
+solver variable. `objects` is not an erased graph: it is `Opt.typedPathStub`, which is empty except that it records
+whether the module has a `main`. `typedObjects` is the typed local graph, and
+`typeEnv` is the module's type environment, built from the canonical module
+by `TypeEnv.fromCanonical`.
 
 -}
 type alias TypedArtifactsData =
     { canonical : Can.Module
     , annotations : Dict.Dict Name (Can.Annotation Name)
-    , objects : Opt.LocalGraph -- Opt.typedPathStub on the typed path (plan S5): empty but for a `main` marker
+    , objects : Opt.LocalGraph
     , typedObjects : TOpt.LocalGraph Name
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 
 
-{-| Wrapper for typed compilation artifacts.
+{-| What the typed path produces for one module, as described at
+`TypedArtifactsData`.
 -}
 type TypedArtifacts
     = TypedArtifacts TypedArtifactsData
@@ -107,16 +116,12 @@ type TypedArtifacts
 -- ====== Compilation ======
 
 
-{-| Compiles an Elm module through the complete pipeline.
+{-| Compiles `modul` of package `pkg` along the erased path, given the
+interfaces of the modules it imports.
 
-Executes all compilation phases in sequence:
-
-1.  Canonicalization - resolves names and imports
-2.  Type checking - infers and verifies types
-3.  Pattern match analysis - ensures exhaustiveness
-4.  Optimization - produces efficient intermediate representation
-
-Returns artifacts suitable for JavaScript code generation.
+Type checking and nitpicking both run before either result is looked at, and
+when both fail the type error is the one returned. The optimizer runs only
+when both succeed.
 
 -}
 compile : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
@@ -154,27 +159,23 @@ compile pkg ifaces modul =
             )
 
 
-{-| Phase boundary between canonicalize/type-check/nitpick/optimize. These
-`Task.succeed ()` boundaries began as trace points (commit f177f7ac); any
-scheduling or GC benefit from them has not been measured.
+{-| A task that does nothing and succeeds, placed between the phases of
+`compile` and `compileTyped`. Each phase runs in a `Task.map` or
+`Task.andThen` after one of these, rather than all of them being computed
+before the first task starts.
 -}
 phase : Task Never ()
 phase =
     Task.succeed ()
 
 
-{-| Compiles an Elm module with typed optimization for native code generation.
+{-| Compiles `modul` of package `pkg` along the typed path, given the
+interfaces of the modules it imports.
 
-Performs canonicalization, type checking (with solver-root normalization,
-PostSolve and arrow-root stamping), nitpicking and typed optimization, producing:
-
-  - `Opt.LocalGraph` - `Opt.typedPathStub`: the erased optimizer does not run on the
-    typed path (plan S5), so this is an empty graph carrying only a presence marker
-    for `main` (see `Opt.typedPathStub`)
-  - `TOpt.LocalGraph Name` - Typed optimized IR with preserved type information
-
-The typed optimization phase preserves type information needed for monomorphization
-and direct lowering to MLIR/LLVM.
+Unlike `compile`, nitpicking runs only once type checking has succeeded. When
+the `ECO_STAMP_GUARD_CENSUS` environment variable is `1`, `true` or `yes`, one
+line per module is written to stderr counting the node types and annotations
+that the arrow-root stamping did and did not enter (see `typeCheckTyped`).
 
 -}
 compileTyped : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
@@ -201,15 +202,6 @@ compileTyped pkg ifaces modul =
                                 (\census ->
                                     case typeCheckTyped modul canonical census of
                                         Ok { annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots, stampWalked, stampSkipped, annWalked, annSkipped } ->
-                                            -- Stamping-guard census (§8.3.2),
-                                            -- env-gated so it costs one env
-                                            -- read per module and prints
-                                            -- nothing on a normal build. One
-                                            -- line PER MODULE, summed
-                                            -- externally: the alternative was
-                                            -- plumbing a counter from the
-                                            -- type-check phase to a report
-                                            -- rendered in the mono phase.
                                             emitStampGuard census modName stampWalked stampSkipped annWalked annSkipped
                                                 |> Task.andThen
                                                     (\_ -> phase)
@@ -218,10 +210,6 @@ compileTyped pkg ifaces modul =
                                                     (\nitpickResult ->
                                                         case nitpickResult of
                                                             Ok () ->
-                                                                -- Plan S5: the erased optimizer no longer runs on the
-                                                                -- typed path. Its graph was never read there (no .eco
-                                                                -- write, stripUntypedGraph discarded it), and the
-                                                                -- typed optimizer raises the identical BadMains errors.
                                                                 phase
                                                                     |> Task.map
                                                                         (\_ ->
@@ -255,11 +243,11 @@ compileTyped pkg ifaces modul =
 
 
 
--- ====== Helpers ======
 -- ====== Internal Compilation Phases ======
--- Converts source AST to canonical form, resolving all names and imports.
 
 
+{-| Canonicalizes `modul`, wrapping any naming errors in `E.BadNames`.
+-}
 canonicalize : Pkg.Name -> Dict.Dict ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
     case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
@@ -270,10 +258,9 @@ canonicalize pkg ifaces modul =
             Err (E.BadNames errors)
 
 
-
--- Infers and verifies types for all definitions in the canonical module.
-
-
+{-| Type checks `canonical` along the erased path, returning the annotation of
+each top-level definition, or the type errors in `E.BadTypes`.
+-}
 typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict.Dict Name (Can.Annotation Name))
 typeCheck modul canonical =
     case TypeErased.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
@@ -284,18 +271,23 @@ typeCheck modul canonical =
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
 
+{-| Type checks `canonical` along the typed path and copies out of the solver
+everything the typed back end needs, before the solver's state is dropped.
 
--- Type checks a module and produces a TypedCanonical module with per-expression types.
+On success it returns the annotations and node types with every arrow the
+stamping walk reaches stamped with its solver root, the node and annotation
+variables replaced by their roots, the scheme roots of each definition that
+has any, the
+kernel type environment from `PostSolve`, and the `TypedCanonical` module built
+from the stamped node types. Scheme roots of a definition with a written
+annotation come from the type checker's binder variables; those of any other
+definition are found by walking its inferred annotation, and a definition for
+which that walk finds none gets no entry.
 
-
-{-| Type check a module and produce both annotations and a TypedCanonical module.
-
-This function extends the standard type checking to also build a TypedCanonical
-module where every expression is paired with its inferred type. This is useful
-for downstream phases that need access to per-expression type information.
-
-Also runs the PostSolve phase to fix remaining Group B expression types (Str, Chr, Float, Unit) and compute
-kernel function types for typed optimization.
+A node type or annotation without a solver variable is not stamped. When
+`census` is true, the four counts report how many node types (of those
+present) and annotations had a variable and so entered the walk, and how many
+were skipped; when it is false they are all zero.
 
 -}
 typeCheckTyped :
@@ -313,12 +305,7 @@ typeCheckTyped :
             , annotationVars : Dict.Dict Name Vars.Variable
             , allSchemeRoots : SolverRoots.AllSchemeRoots
 
-            -- Stamping-guard census (plans/lss-provenance-ratio-census.md
-            -- §8.3.2): how many node types ENTERED the arrow-root walk versus
-            -- were skipped for want of a solver variable. This is the one
-            -- number that splits the `stampwalk:` census's `none` bucket into
-            -- "the walk failed at the root" (repairable) and "the walk never
-            -- ran" (not repairable by fixing the walk).
+            -- Stamping counts, all zero unless `census` is true
             , stampWalked : Int
             , stampSkipped : Int
             , annWalked : Int
@@ -341,23 +328,19 @@ typeCheckTyped modul canonical census =
 
         ( Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
             let
-                -- Normalize solver vars to union-find roots
                 rootedNodeVars =
                     SolverRoots.normalizeNodeVars solverState nodeVars
 
                 rootedAnnotationVars =
                     SolverRoots.normalizeAnnotationVars solverState annotationVars
 
-                -- Normalize scheme binder vars to roots (from annotated Can.TypedDef defs)
                 annotatedSchemeRoots =
                     SolverRoots.normalizeAllSchemeRoots solverState schemeBinderVars
 
-                -- Extract binder roots for unannotated Can.Def defs (Step 2.4)
                 inferredSchemeRoots =
                     Dict.foldl
                         (\defName annotation acc ->
                             if Dict.member defName annotatedSchemeRoots then
-                                -- Already has roots from Can.TypedDef path
                                 acc
 
                             else
@@ -382,14 +365,12 @@ typeCheckTyped modul canonical census =
                         Dict.empty
                         annotations
 
-                -- Merge annotated + inferred roots
                 normalizedSchemeRoots =
                     Dict.foldl
                         (\defName roots acc -> Dict.insert defName roots acc)
                         annotatedSchemeRoots
                         inferredSchemeRoots
 
-                -- Run PostSolve to fix remaining Group B types and compute kernel env
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
@@ -399,21 +380,8 @@ typeCheckTyped modul canonical census =
                 kernelEnv =
                     postSolveResult.kernelEnv
 
-                -- Phase 2b (plans/lss-unknown-elimination.md §4.9): stamp every
-                -- arrow with its own union-find ROOT INDEX, here and nowhere
-                -- else, because THIS is the last point where `solverState` is
-                -- live. Downstream, `AssignMVarIds` resolves each
-                -- `(moduleKey, rootIdx)` to a global `ArrowId`, so two arrows
-                -- the type checker unified end up sharing one lambda-set slot.
-                --
-                -- Unconditional, NOT flag-gated: the index rides `Can.Type` and
-                -- therefore the cached artifact, so gating it here would key
-                -- the on-disk format to a mono-time flag. Solver-root arrow ids
-                -- gates whether AssignMVarIds USES it.
-                --
-                -- The index is meaningless without its module, and the walk
-                -- leaves any subtree it cannot follow in lockstep as `NoArrow`
-                -- (degrading to a Phase-2a occurrence id, never to a wrong id).
+                -- Stamped here because this is the last point where `solverState`
+                -- is live. Unconditional: the stamps are part of the cached artifact.
                 stampedNodeTypes =
                     Array.indexedMap
                         (\i maybeType ->
@@ -426,20 +394,7 @@ typeCheckTyped modul canonical census =
                         )
                         fixedNodeTypes
 
-                -- Census of THIS guard (§8.3.2). The `( Just t, Just v )` arm
-                -- is the only one that enters the walk; everything else is a
-                -- node the walk never saw, which no repair to
-                -- `stampArrowRoots` can reach. Counted over the same array and
-                -- with the same condition as the stamping above, so the two
-                -- cannot drift.
-                --
-                -- Gated on `census` and allocation-free. It used to run on
-                -- every compile of every module and to build a whole second
-                -- array — one `( maybeType, maybeVar )` tuple per expression
-                -- node — just to fold it down to two Ints that a normal build
-                -- never prints. The indexed loop below reads both arrays in
-                -- place; its Int accumulators are unboxed and its tuple result
-                -- is multi-value, so nothing is allocated.
+                -- Counted with the same condition as the stamping above.
                 stampGuardCounts =
                     if census then
                         stampGuardGo 0 0 0
@@ -481,11 +436,6 @@ typeCheckTyped modul canonical census =
                         )
                         annotations
 
-                -- The SECOND stamping guard (§8.3.2). Censused separately from
-                -- the node-type guard because a skip here has the same
-                -- consequence — a type the walk never entered — and the two
-                -- populations are very different sizes (annotations are
-                -- per-def; node types are per-expression).
                 annGuardCounts =
                     if census then
                         Dict.foldl
@@ -518,24 +468,13 @@ typeCheckTyped modul canonical census =
                 }
 
 
+{-| Writes one `[stampguard]` line to stderr when `census` is true, giving the
+four stamping counts from `typeCheckTyped` and the module name; does nothing
+otherwise.
 
--- Verifies pattern match exhaustiveness and detects redundant patterns.
-
-
-{-| Stamping-guard census (plans/lss-provenance-ratio-census.md §8.3.2).
-
-Splits the `stampwalk:` census's `none` bucket, which conflates two populations
-needing opposite work: a type the walk ENTERED and failed at the root (a walk
-failure, repairable by fixing `stampArrowRoots`) versus one it never entered for
-want of a solver variable (not repairable there at all).
-
-Emitted per module on stderr rather than plumbed to the LSS report, because the
-count arises in the TYPE-CHECK phase and that report renders in the MONO phase;
-threading it would touch `Compile`, `Build` and `Generate` for a diagnostic. Sum
-the lines externally.
-
-`ECO_STAMP_GUARD_CENSUS=1`. Off by default, so a normal build pays one env read
-per module and prints nothing.
+`skipped` counts the node types the walk never entered for want of a solver
+variable; `walked` counts those it entered, whether or not every arrow was
+stamped.
 
 -}
 emitStampGuard : Bool -> Name -> Int -> Int -> Int -> Int -> Task Never ()
@@ -558,9 +497,8 @@ emitStampGuard census modName walked skipped annW annS =
         Task.succeed ()
 
 
-{-| Read `ECO_STAMP_GUARD_CENSUS` once per module. The flag now gates the
-COUNTING as well as the printing: off (the default) the two guard censuses are
-not computed at all, so a normal build pays this env read and nothing else.
+{-| A task reading whether the `ECO_STAMP_GUARD_CENSUS` environment variable is
+`1`, `true` or `yes`. When it is not, the stamping counts are not computed.
 -}
 stampGuardEnabled : Task Never Bool
 stampGuardEnabled =
@@ -576,6 +514,9 @@ stampGuardEnabled =
             )
 
 
+{-| Checks the pattern matches of `canonical` for missing and redundant
+patterns, wrapping any errors in `E.BadPatterns`.
+-}
 nitpick : Can.Module -> Result E.Error ()
 nitpick canonical =
     case PatternMatches.check canonical of
@@ -586,10 +527,9 @@ nitpick canonical =
             Err (E.BadPatterns errors)
 
 
-
--- Optimizes the canonical module to produce efficient intermediate representation.
-
-
+{-| Runs the erased optimizer over `canonical`, wrapping any errors in
+`E.BadMains`.
+-}
 optimize : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
@@ -600,11 +540,9 @@ optimize modul annotations canonical =
             Err (E.BadMains (Localizer.fromModule modul) errors)
 
 
-
--- Performs typed optimization preserving full type information for MLIR backend.
--- Performs typed optimization from a TypedCanonical module.
-
-
+{-| Runs the typed optimizer over the typed canonical module and the solver
+information copied out of the type check, wrapping any errors in `E.BadMains`.
+-}
 typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict.Dict Name.Name Vars.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule)) of

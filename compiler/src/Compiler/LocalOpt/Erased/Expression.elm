@@ -4,15 +4,27 @@ module Compiler.LocalOpt.Erased.Expression exposing
     , destructArgs
     )
 
-{-| Optimizes canonical expressions into optimized expressions.
+{-| Code generation wants a smaller language than the one canonicalization
+produces, and this module lowers one canonical expression into the type-erased
+optimized AST of `Compiler.AST.Optimized`.
 
-This module transforms the canonical AST produced by type checking into an
-optimized representation suitable for code generation. Key optimizations include:
+Four things happen during the lowering. Every global, kernel module, constructor
+and record field the expression refers to is recorded in the `Names.Tracker` the
+result is built in, which is how the caller learns what a definition depends on.
+The variables a pattern binds (in function arguments, `let` destructuring and
+`case` branches) are bound by _destructors_: each names one variable and the
+_path_ (a chain of tuple, constructor, record-field and unbox steps from a root
+variable) that reads its value. For a `case`, which branch matches is decided
+by `Compiler.LocalOpt.Erased.Case`, which builds the decision tree.
 
-  - Inlining constructors and simple operations
-  - Tracking global dependencies and field usage
-  - Pattern destructuring for efficient field access
-  - Tail call detection and optimization for recursive functions
+The fourth job is tail calls. `optimizePotentialTailCall` lowers a named
+function and, where the function calls itself in tail position with exactly as
+many arguments as it has parameters, emits a `TailCall` instead of a `Call`, so
+that the definition becomes a `TailDef` that can be compiled as a loop.
+
+A _cycle_ is the set of top-level names whose references are emitted as
+`VarCycle` instead of as global references; which names it holds is up to the
+caller.
 
 
 # Core Types
@@ -49,25 +61,25 @@ import Utils.Main as Utils
 -- ====== OPTIMIZE ======
 
 
-{-| Set of names that participate in a recursive definition cycle.
-Used to identify which variables need special cycle-breaking handling during optimization.
+{-| The set of top-level names, in the module being optimized, that are
+referenced as `VarCycle` rather than registered as global dependencies.
 -}
 type alias Cycle =
     EverySet String Name.Name
 
 
-{-| Transforms a canonical expression into an optimized expression.
+{-| Lowers a canonical expression, recording in the tracker every dependency
+and record field it uses.
 
-This is the main entry point for expression optimization. It recursively processes
-the canonical AST, performing optimizations such as:
+A top-level name in `cycle` becomes a `VarCycle`; any other top-level or foreign
+name, and every operator, becomes a registered `VarGlobal`. Negation and binary
+operators become calls of their functions. A `case` whose scrutinee lowers to a
+local variable matches on that variable; otherwise the scrutinee is bound to a
+fresh name by a `Let` around the case. Characters, lists, tuples and unit add a
+dependency on a kernel module (`Utils`, or `List` for lists).
 
-  - Tracking global variable and constructor usage
-  - Registering field accesses for record optimization
-  - Converting pattern matches to efficient destructuring operations
-  - Detecting and preserving tail call opportunities
-
-The function works within the Names.Tracker monad to collect dependency information
-while transforming the expression tree.
+Tail calls are not looked for here, except in the definition of a `let rec`
+of one definition, which goes through `optimizePotentialTailCall`.
 
 -}
 optimize : Cycle -> Can.Expr -> Names.Tracker Opt.Expr
@@ -303,6 +315,8 @@ optimize cycle (A.At region exprInfo) =
 -- ====== UPDATE ======
 
 
+{-| Lowers the new value of one field in a record update.
+-}
 optimizeUpdate : Cycle -> Can.FieldUpdate -> Names.Tracker Opt.Expr
 optimizeUpdate cycle (Can.FieldUpdate _ expr) =
     optimize cycle expr
@@ -312,6 +326,8 @@ optimizeUpdate cycle (Can.FieldUpdate _ expr) =
 -- ====== DEFINITION ======
 
 
+{-| Wraps `body` in a `Let` binding the lowered local definition `def`.
+-}
 optimizeDef : Cycle -> Can.Def -> Opt.Expr -> Names.Tracker Opt.Expr
 optimizeDef cycle def body =
     case def of
@@ -322,6 +338,10 @@ optimizeDef cycle def body =
             optimizeDefHelp cycle region name (List.map Tuple.first typedArgs) expr body
 
 
+{-| Wraps `body` in a `Let` binding `name` to the lowered `expr`, or, when
+there are `args`, to a function of them whose pattern arguments are destructured
+at the start of its body.
+-}
 optimizeDefHelp : Cycle -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> Opt.Expr -> Names.Tracker Opt.Expr
 optimizeDefHelp cycle region name args expr body =
     case args of
@@ -350,16 +370,12 @@ optimizeDefHelp cycle region name args expr body =
 -- ====== DESTRUCTURING ======
 
 
-{-| Converts a list of function argument patterns into argument names and destructuring operations.
+{-| Returns one parameter name per argument pattern, and the destructors
+that bind the variables inside those patterns.
 
-For each pattern in the argument list, this generates a simple variable name and creates
-Destructor operations to extract any nested values. This allows function arguments to use
-complex patterns (like tuples or records) while maintaining efficient compiled code.
-
-Returns a tuple of:
-
-  - List of argument names (one per pattern)
-  - List of destructors to extract nested values from those arguments
+A variable pattern keeps its own name and an `as` pattern takes its alias name;
+any other pattern gets a fresh generated name. The destructors are in argument
+order and are meant to be wrapped, in that order, around the function body.
 
 -}
 destructArgs : List Can.Pattern -> Names.Tracker ( List (A.Located Name.Name), List Opt.Destructor )
@@ -372,12 +388,22 @@ destructArgs args =
             )
 
 
+{-| Returns the destructors that bind the variables of a case branch's
+pattern, reading from the variable `rootName`.
+-}
 destructCase : Name.Name -> Can.Pattern -> Names.Tracker (List Opt.Destructor)
 destructCase rootName pattern =
     destructHelp (Opt.Root rootName) pattern []
         |> Names.map List.reverse
 
 
+{-| Returns the name a pattern's value is bound to, and the destructors for
+the variables inside it.
+
+The name is the pattern's own for a variable, the alias for an `as` pattern,
+and a fresh generated name otherwise.
+
+-}
 destruct : Can.Pattern -> Names.Tracker ( A.Located Name.Name, List Opt.Destructor )
 destruct ((A.At region patternInfo) as pattern) =
     case patternInfo.node of
@@ -400,6 +426,18 @@ destruct ((A.At region patternInfo) as pattern) =
                     )
 
 
+{-| Adds to `revDs`, which is in reverse order, the destructors for every
+variable bound by a pattern whose value is at `path`.
+
+Literal, wildcard and unit patterns bind nothing. A record pattern also counts
+each of its fields as used. A tuple of more than three elements reads its extra
+elements from the `cs` field. A constructor with one argument reads it by index
+0, or through `Unbox` when its type's options are `Unbox`. A record's fields are
+read directly from `path`. A tuple, list or cons pattern, or a constructor with
+several arguments, whose value is nested below the root is first bound to a
+fresh name and its parts are read from that.
+
+-}
 destructHelp : Opt.Path -> Can.Pattern -> List Opt.Destructor -> Names.Tracker (List Opt.Destructor)
 destructHelp path (A.At region patternInfo) revDs =
     case patternInfo.node of
@@ -476,7 +514,7 @@ destructHelp path (A.At region patternInfo) revDs =
             Names.pure revDs
 
         Can.PList (hd :: tl) ->
-            -- Use placeholder ID (-1) for synthesized patterns
+            -- The rest of the list is a synthesized pattern, so it has no node id; -1 stands in.
             destructTwo path hd (A.At region { id = -1, node = Can.PList tl }) revDs
 
         Can.PCons hd tl ->
@@ -528,6 +566,10 @@ destructHelp path (A.At region patternInfo) revDs =
                                     )
 
 
+{-| Adds to `revDs` the destructors for two patterns at indexes 0 and 1 of the
+value at `path`, binding that value to a fresh name first unless `path` is a
+root.
+-}
 destructTwo : Opt.Path -> Can.Pattern -> Can.Pattern -> List Opt.Destructor -> Names.Tracker (List Opt.Destructor)
 destructTwo path a b revDs =
     case path of
@@ -549,6 +591,9 @@ destructTwo path a b revDs =
                     )
 
 
+{-| Adds to `revDs` the destructors for one constructor argument, read at its
+index in the value at `path`.
+-}
 destructCtorArg : Opt.Path -> List Opt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List Opt.Destructor)
 destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
     destructHelp (Opt.Index index path) arg revDs
@@ -558,12 +603,8 @@ destructCtorArg path revDs (Can.PatternCtorArg index _ arg) =
 -- ====== TAIL CALL ======
 
 
-{-| Optimizes a recursive definition to use tail calls where possible.
-
-This is the entry point for tail call optimization of definitions. It analyzes the
-definition to detect tail-recursive calls and converts them to efficient TailCall
-nodes that can be compiled to loops instead of recursive function calls.
-
+{-| Lowers a local definition as `optimizePotentialTailCall` does, taking the
+name, arguments and body from `def`.
 -}
 optimizePotentialTailCallDef : Cycle -> Can.Def -> Names.Tracker Opt.Def
 optimizePotentialTailCallDef cycle def =
@@ -575,17 +616,15 @@ optimizePotentialTailCallDef cycle def =
             optimizePotentialTailCall cycle region name (List.map Tuple.first typedArgs) expr
 
 
-{-| Analyzes a function definition for tail call optimization opportunities.
+{-| Lowers the definition of the function `name`, as a `TailDef` if it calls
+itself in tail position and as a `Def` of a function otherwise.
 
-Given a function's region, name, arguments, and body expression, this function:
-
-1.  Destructures the argument patterns into simple names
-2.  Analyzes the body for tail-recursive calls to the same function
-3.  Converts tail calls into TailCall nodes for efficient compilation
-4.  Returns either a TailDef (if tail calls found) or regular Def
-
-This enables recursive functions to be compiled as loops when they are tail-recursive,
-avoiding stack overflow and improving performance.
+A call is a tail self-call when its callee is `name` itself (as a local or a
+top-level name) and it passes exactly as many arguments as there are `args`; it
+becomes a `TailCall`. Tail position is followed through `if` branches, `case`
+branches, `let`, `let` destructuring and a `let rec` of one definition, but not
+into the body of a `let rec` of several definitions. A zero-argument definition
+still comes back as a function of no parameters.
 
 -}
 optimizePotentialTailCall : Cycle -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> Names.Tracker Opt.Def
@@ -598,6 +637,10 @@ optimizePotentialTailCall cycle region name args expr =
             )
 
 
+{-| Lowers `locExpr`, the body or a tail-position part of the body of the
+function `rootName` with parameters `argNames`, turning saturated self-calls in
+tail position into `TailCall`s.
+-}
 optimizeTail : Cycle -> Name.Name -> List (A.Located Name.Name) -> Can.Expr -> Names.Tracker Opt.Expr
 optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
     case exprInfo.node of
@@ -733,6 +776,9 @@ optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
 -- ====== DETECT TAIL CALLS ======
 
 
+{-| Builds a `TailDef` if the lowered body contains a tail call, and otherwise
+a `Def` of a function; either way the argument destructors wrap the body.
+-}
 toTailDef : A.Region -> Name.Name -> List (A.Located Name.Name) -> List Opt.Destructor -> Opt.Expr -> Opt.Def
 toTailDef region name argNames destructors body =
     if hasTailCall body then
@@ -742,6 +788,10 @@ toTailDef region name argNames destructors body =
         Opt.Def region name (Opt.TrackedFunction argNames (List.foldr Opt.Destruct body destructors))
 
 
+{-| Reports whether an expression contains a `TailCall` in tail position,
+looking through `if`, `let`, destructuring and every branch of a `case`, whether
+or not the branch is reachable.
+-}
 hasTailCall : Opt.Expr -> Bool
 hasTailCall expression =
     case expression of
@@ -764,6 +814,9 @@ hasTailCall expression =
             False
 
 
+{-| Reports whether any branch inlined into a decision tree contains a tail
+call.
+-}
 decidecHasTailCall : Opt.Decider Opt.Choice -> Bool
 decidecHasTailCall decider =
     case decider of

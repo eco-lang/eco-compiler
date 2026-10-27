@@ -1,35 +1,37 @@
 module Compiler.Monomorphize.ValidateLayout exposing (validate)
 
-{-| MONO\_029 layout-agreement validator (R0 of
-plans/solver-layout-connectivity-reconciliation.md). Engine-agnostic,
-opt-in via `ECO_MONO_VALIDATE=1`: walks the final MonoGraph and reports
-layout-disagreeing views of one runtime value. Heap slot layout is a pure
-function of the recorded type (only Int/Float/Char unboxed — REP rules), so
-two views of one value whose ABI kinds differ mean some emission site must
-read or write the wrong representation.
+{-| Checks a finished monomorphized program for places where two views of one
+runtime value disagree about how that value is laid out, which would make some
+emitted code read or write it in the wrong representation.
 
-Checks (violations are strings; the caller fails the compile on any):
+The check rests on one fact: how a value is stored in a heap object follows
+from its recorded type alone. Only `Int`, `Float` and `Char` are stored
+unboxed; everything else, `Bool` included, is a boxed pointer. Call that class
+of a type its _ABI kind_: raw-int, raw-float, raw-char or boxed. When two types
+recorded for the same value have different ABI kinds, at least one site that
+uses the value has been given the wrong layout.
 
-1.  Destructure paths: a `MonoIndex` element type whose ABI kind disagrees
-    with the destructor's leaf type (the erased-container / concrete-leaf
-    shape behind the foldMGo miscompile), and element-vs-parent-slot
-    disagreements along tuple paths.
-2.  `MonoTailCall` argument types vs the enclosing tail function's
-    parameter types (loop-state yields are coercion-free, so ABI kinds must
-    agree — mono-level mirror of `TailRec.checkedYieldOperands`).
-3.  `MonoTupleCreate` element expression types vs the recorded tuple node
-    type's slots (construct-side agreement).
+`validate` walks every `MonoDefine` and `MonoTailFunc` node of a `MonoGraph`
+(other nodes are not looked at) and reports three shapes of disagreement:
 
-Closure-capture / call-arg interior checks were prototyped (2026-07-20)
-for the all-globals-keying record-field-boxedness class and REMOVED: at
-the mono-type level, keying's disagreements are erased-vs-concrete
-(benign — the erased consumer is a polymorphic pass-through that never
-derefs the field; the whole E2E corpus compiles CORRECTLY under
-all-globals keying), which a per-node boxedness check cannot distinguish
-from the malign concrete-raw-vs-concrete-boxed case, while the real
-crash (self-compile-scale solver Unify pattern) never surfaces as a
-call-boundary field flip at all. MONO\_029 is enforced by engine
-connectivity (R1/R2), not a per-node validator, for exactly this reason.
+1.  A destructuring path. If its outermost step indexes into a tuple or a list,
+    and the destructured name needs a raw primitive, the element the step reads
+    must have that same ABI kind. A raw element bound to a boxed name is
+    allowed, since the value is boxed as it is read. Indexing into a
+    custom-type constructor is not checked here, because construction and
+    projection both take that layout from the constructor itself rather than
+    from the types at each site. In addition, every step of the path that
+    indexes into a tuple must read a type of the same ABI kind as the tuple's
+    slot.
+2.  A `MonoTailCall`. Each argument must have the ABI kind of the loop
+    parameter of the same name.
+3.  A `MonoTupleCreate`. Each element must have the ABI kind of the
+    corresponding slot of the tuple's recorded type.
+
+Captured closure values and ordinary call arguments are not checked. At the
+level of types, a disagreement there can be a harmless one between an erased
+type variable and a concrete type, which a check of one node at a time cannot
+tell apart from a real mismatch.
 
 @docs validate
 
@@ -42,7 +44,10 @@ import Compiler.Monomorphize.MonoTraverse as Traverse
 import Dict
 
 
-{-| Validate a pruned MonoGraph. Returns violation descriptions (empty = clean).
+{-| Returns one message for each layout disagreement found in the graph, or an
+empty list when there is none. Each message starts with
+`MONO_029 violation (spec N):`, where `N` is the specialization the
+disagreement was found in.
 -}
 validate : Mono.MonoGraph -> List String
 validate (Mono.MonoGraph graph) =
@@ -59,6 +64,9 @@ validate (Mono.MonoGraph graph) =
         (Array.indexedMap Tuple.pair graph.nodes)
 
 
+{-| Adds to `acc0` the violations found in one node, identified by `specId`.
+A node other than a `MonoDefine` or a `MonoTailFunc` adds nothing.
+-}
 validateNode : Int -> Mono.MonoNode -> List String -> List String
 validateNode specId node acc0 =
     let
@@ -79,9 +87,7 @@ validateNode specId node acc0 =
 
         Just e ->
             let
-                -- All loop frames in this node: the top MonoTailFunc (name
-                -- unknown at node level — TailCalls to it are matched via the
-                -- catch-all "" frame) plus every local MonoTailDef by name.
+                -- The node's own loop has no name here, so it is filed under "".
                 frames =
                     Traverse.foldExpr
                         (\ex fs ->
@@ -98,6 +104,11 @@ validateNode specId node acc0 =
             Traverse.foldExpr (checkExpr specId frames) acc0 e
 
 
+{-| Adds to `acc` the violations of one expression, without looking into its
+sub-expressions. `frames` maps each local loop's name to its parameters, with
+the node's own parameters under `""`; a tail call to a name not in `frames`
+is checked against the `""` entry, and is not checked when there is none.
+-}
 checkExpr : Int -> Dict.Dict Name (List ( Name, Mono.MonoType )) -> Mono.MonoExpr -> List String -> List String
 checkExpr specId frames expr acc =
     case expr of
@@ -160,9 +171,9 @@ checkExpr specId frames expr acc =
             acc
 
 
-{-| Walk a destructor path: the head `MonoIndex`'s element type must agree
-with the destructor leaf, and every tuple `MonoIndex` must agree with its
-parent's slot type.
+{-| Adds to `acc0` the violations of the destructuring path of `name`, whose
+bound type is `leafType`: the outermost step's element against `leafType`, as
+the module docstring describes, then every tuple step against its slot.
 -}
 checkPath : Int -> Name -> Mono.MonoType -> Mono.MonoPath -> List String -> List String
 checkPath specId name leafType path acc0 =
@@ -170,17 +181,7 @@ checkPath specId name leafType path acc0 =
         acc1 =
             case path of
                 Mono.MonoIndex _ kind elemType _ ->
-                    -- CustomContainer slots are excluded: both construct and
-                    -- project consult the shared CtorLayout registry
-                    -- (MONO_013 / REP_HEAP_001), so per-node type
-                    -- disagreement there does not imply layout disagreement.
-                    -- Tuple/list slots are per-site typed (layout-static).
-                    -- Direction matters: a RAW element with a BOXED leaf is a
-                    -- legal scalar coercion (project raw, box for the erased
-                    -- consumer — the pre-existing unboxed-field arm); the
-                    -- miscompile class is a BOXED/erased element view over a
-                    -- leaf that demands a raw primitive (nothing can be
-                    -- emitted — the MONO_029 crash arms).
+                    -- A boxed leaf is never reported: a raw element is boxed as it is read.
                     if perSiteTyped kind && abiKind leafType /= KBoxed && abiKind elemType /= abiKind leafType then
                         violation specId
                             ("destructor " ++ name ++ ": path element " ++ kindName elemType ++ " vs leaf " ++ kindName leafType)
@@ -195,6 +196,9 @@ checkPath specId name leafType path acc0 =
     checkPathChain specId name path acc1
 
 
+{-| Tells whether a container's slot layout comes from the types at each site,
+which is true of tuples and lists and false of custom-type constructors.
+-}
 perSiteTyped : Mono.ContainerKind -> Bool
 perSiteTyped kind =
     case kind of
@@ -205,6 +209,9 @@ perSiteTyped kind =
             True
 
 
+{-| Adds to `acc` a violation for every step of `path` that indexes into a
+tuple and reads a type whose ABI kind differs from that tuple slot's.
+-}
 checkPathChain : Int -> Name -> Mono.MonoPath -> List String -> List String
 checkPathChain specId name path acc =
     case path of
@@ -241,15 +248,16 @@ checkPathChain specId name path acc =
             acc
 
 
+{-| Adds the message `msg`, prefixed with the violation tag and `specId`, to
+`acc`.
+-}
 violation : Int -> String -> List String -> List String
 violation specId msg acc =
     ("MONO_029 violation (spec " ++ String.fromInt specId ++ "): " ++ msg) :: acc
 
 
-{-| The heap/ABI representation class of a recorded type: raw i64 / raw f64 /
-raw u16, or a boxed word. Everything not Int/Float/Char is boxed (REP rules;
-Bool is boxed True/False constants; erased residuals are boxed per MONO\_003).
-CNumber residuals close to MInt in Prune, so post-prune they read as raw-int.
+{-| The ABI kind of a recorded type: how a value of that type is stored in a
+heap object.
 -}
 type AbiKind
     = KRawInt
@@ -258,6 +266,10 @@ type AbiKind
     | KBoxed
 
 
+{-| Returns the ABI kind of a type. `Int`, `Float` and `Char` are raw, and so is
+a type variable constrained to `number`, which counts as raw-int; every other
+type is boxed.
+-}
 abiKind : Mono.MonoType -> AbiKind
 abiKind t =
     case t of
@@ -277,6 +289,8 @@ abiKind t =
             KBoxed
 
 
+{-| Returns the name of a type's ABI kind as it appears in violation messages.
+-}
 kindName : Mono.MonoType -> String
 kindName t =
     case abiKind t of

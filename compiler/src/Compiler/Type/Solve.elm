@@ -1,21 +1,40 @@
 module Compiler.Type.Solve exposing (run, runWithIds)
 
-{-| Constraint solver for Hindley-Milner type inference.
+{-| Type checking a module produces a tree of constraints, and this module
+solves that tree: it decides whether all of them can hold at once and, if they
+can, what type each top-level name has.
 
-This module solves type constraints generated during type checking. It implements
-Algorithm W with rank-based let-polymorphism, using pools to track variable scopes
-and enable efficient generalization.
+The constraints and the types they mention are described in
+`Compiler.Type.Type`; a type variable is a point of the union-find store, and
+two variables are made equal by `Compiler.Type.Unify`. The solver walks the
+tree in order. Each equality constraint is turned into two variables, the
+actual type and the expected one, which are then unified. A failed
+unification does not stop the walk: its error is recorded and solving goes on,
+so one run reports every error it finds. Errors are kept newest first.
 
-The solver works through constraints recursively:
+What makes this more than a sequence of unifications is let-polymorphism. A
+name bound by a `let` can be used at several types, so once its definition is
+solved its type is _generalized_: the variables that belong to that definition
+alone become placeholders, and every use of the name works on a fresh copy of
+them (an _instantiation_, `makeCopy`).
 
-1.  Converts types to unification variables
-2.  Unifies actual types with expected types
-3.  Manages variable ranks for generalization
-4.  Detects infinite types via occurs check
+Deciding which variables belong to a definition alone is what ranks are for. A
+variable's _rank_ is the let-nesting depth it was made at, as
+`Compiler.Type.Type` describes. The variables made at each rank are listed in
+that rank's _pool_. When a `let` that generalizes is solved, its definitions
+are solved one rank deeper, in the _young_ pool. Afterwards each young
+variable's rank is set to the highest rank among the variables its type
+reaches (`generalize`, `adjustRank`). A variable still at the young rank
+mentions nothing from an enclosing scope and is generalized by being given
+`Type.noRank`; one whose rank was lowered moves to the pool of that rank.
+Rigid variables, the ones an annotation names, must all generalize; one that
+does not is a compiler bug and crashes the solve.
 
-Variables are organized into pools by rank. Higher ranks represent more deeply
-nested scopes. During generalization, variables in young pools are either promoted
-to older pools or generalized to `noRank` (making them polymorphic).
+After a `let` body is solved, each name the `let` bound is checked for an
+infinite type (`occurs`), which is reported as an error.
+
+The result is the environment of names captured where the tree says
+`CSaveTheEnvironment`, each converted to an annotation.
 
 
 # Solving
@@ -52,11 +71,13 @@ import Utils.Main as Utils
 -- ====== Solver Entry Point ======
 
 
-{-| Solve a constraint tree and return either errors or type annotations.
+{-| Solves `constraint` and returns either every type error found, newest
+first, or the annotation of each name in the environment saved at
+`CSaveTheEnvironment`.
 
-Takes a constraint tree generated during type checking and solves it by
-unifying types. Returns either a non-empty list of type errors or a
-dictionary mapping names to their inferred type annotations.
+Names bound by a `let` are not in that environment unless the saved point is
+inside the `let`. With no `CSaveTheEnvironment` in the tree the annotations are
+empty.
 
 -}
 run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Dict Name.Name (Can.Annotation Name)))
@@ -78,13 +99,17 @@ run constraint =
             )
 
 
-{-| Solve constraints and return both annotations and per-node types.
+{-| Solves `constraint` as `run` does and, on success, also returns the solved
+type of each node.
 
-Takes a constraint tree and a node variable map (mapping expression and pattern
-IDs to their solver variables). Returns either errors or both the annotations
-and a dictionary mapping node IDs to their inferred types.
+`nodeVars` holds, for each node id, the solver variable recorded for that node,
+if any. `nodeTypes` is the same array with each variable converted to a
+`Can.Type`, all in one naming scope that avoids the names the annotations use
+(`Type.toCanTypeBatch`). `annotationVars` holds the saved environment's
+variables themselves, and `nodeVars` is returned unchanged.
 
-Used for building the TypedCanonical AST.
+`solverState.cells` is the store's point cells as they are at the end, after
+the conversions, which write generated names into the store.
 
 -}
 runWithIds :
@@ -112,16 +137,12 @@ runWithIds constraint nodeVars =
                         (\(State env _ errors) ->
                             case errors of
                                 [] ->
-                                    -- Convert env to annotations
                                     traverseDictIO Type.toAnnotation env
                                         |> IO.andThen
                                             (\annotations ->
-                                                -- Convert nodeVars to Can.Types with shared naming,
-                                                -- reserving the names the annotations hold
                                                 Type.toCanTypeBatch (annotationVarNames annotations) nodeVars
                                                     |> IO.andThen
                                                         (\nodeTypes ->
-                                                            -- Snapshot the solver state before returning
                                                             \s ->
                                                                 ( s
                                                                 , Ok
@@ -143,7 +164,8 @@ runWithIds constraint nodeVars =
             )
 
 
-{-| Initialize an empty solver state with no variables, no errors, and initial mark.
+{-| The state a solve starts from: an empty saved environment, no errors, and
+the first mark after `Type.noMark`.
 -}
 emptyState : State
 emptyState =
@@ -154,20 +176,27 @@ emptyState =
 -- ====== Solver State ======
 
 
-{-| Maps variable names to their unification variables.
+{-| The names in scope, each with the variable holding its type. For a
+generalized name that variable is the scheme a use copies.
 -}
 type alias Env =
     Dict Name.Name Variable
 
 
-{-| Mutable array of variable pools indexed by rank.
-Each pool contains variables at that rank level for generalization.
+{-| The pools, one per rank, indexed by rank: the variables made or introduced
+at each rank, which generalization at that rank examines.
+
+It is a mutable vector, so every holder sees a change. It starts with 8 ranks
+and is grown when a `let` nests deeper.
+
 -}
 type alias Pools =
     IORef (Array (Maybe (List Variable)))
 
 
-{-| Solver state containing environment, current mark, and accumulated errors.
+{-| What a solve carries from one constraint to the next: the environment last
+saved by `CSaveTheEnvironment`, the next unused mark, and the errors so far,
+newest first.
 -}
 type State
     = State Env Mark (List Error.Error)
@@ -177,19 +206,29 @@ type State
 -- ====== Main Solver ======
 
 
-{-| Main solver loop. A5: direct self-tail-recursive `solveGo` (TCO'd to a
-while-loop → stack-safe) replacing the former `IO.loop solveHelp`/`Step`
-trampoline. Each `Loop` transition becomes a self-tail-call of `solveGo` with the
-next constraint (state threaded through explicit `let`-bindings); each `Done`
-applies the `cont` continuation directly. This drops the `Step` ctor and the
-nested loop-state 3-tuple that were rebuilt per constraint. Byte-identical: same
-unify/introduce/generalize order and the same `cont` composition (`>> cont`).
+{-| Solves `constraint` with `env` in scope at `rank`, and returns the state
+after it.
 -}
 solve : Env -> Int -> Pools -> State -> Constraint -> IO State
 solve env rank pools state constraint =
     solveGo env rank pools state constraint identity
 
 
+{-| Solves `constraint` and passes the resulting state through `cont`, the work
+still to do once it is solved.
+
+It is written as direct self-tail-recursion so that it compiles to a loop: the
+body of a `let` is solved by a tail call, with the occurs checks on the `let`'s
+names added to `cont`, so a long chain of nested `let`s does not deepen the
+stack.
+
+A `CLet` takes one of three forms. With no rigids and a body of `CTrue`, its
+flexible variables are introduced at the current rank and its header is
+ignored. With no variables at all, the header is solved and its names bound at
+the current rank, with no generalization. Otherwise the header is solved one
+rank deeper and generalized, as the module docstring describes.
+
+-}
 solveGo : Env -> Int -> Pools -> State -> Constraint -> (IO State -> IO State) -> IO.State -> ( IO.State, State )
 solveGo env rank pools ((State _ sMark sErrors) as state) constraint cont s0 =
     case constraint of
@@ -417,8 +456,8 @@ solveGo env rank pools ((State _ sMark sErrors) as state) constraint cont s0 =
             solveGo newEnv rank nextPools tempState subCon newCont s9
 
 
-{-| Check that a variable has rank == noRank, meaning that it can be generalized.
-Crashes with a compiler bug message if the variable is not generic.
+{-| Checks that `var` was generalized, that is has `Type.noRank`, and crashes
+with a compiler bug report showing its type and rank if it was not.
 -}
 isGeneric : Variable -> IO ()
 isGeneric var =
@@ -448,8 +487,7 @@ isGeneric var =
 -- ====== Expectations to Variables ======
 
 
-{-| Convert an expected type into a unification variable.
-Extracts the underlying type from the expectation wrapper.
+{-| Returns a variable for the type `expectation` expects, made at `rank`.
 -}
 expectedToVariable : Int -> Pools -> Error.Expected Type -> IO Variable
 expectedToVariable rank pools expectation =
@@ -465,8 +503,8 @@ expectedToVariable rank pools expectation =
                 tipe
 
 
-{-| Convert a pattern expectation into a unification variable.
-Extracts the underlying type from the pattern expectation wrapper.
+{-| Returns a variable for the type a pattern expectation expects, made at
+`rank`.
 -}
 patternExpectationToVariable : Int -> Pools -> Error.PExpected Type -> IO Variable
 patternExpectationToVariable rank pools expectation =
@@ -483,7 +521,7 @@ patternExpectationToVariable rank pools expectation =
 -- ====== Error Helpers ======
 
 
-{-| Add a type error to the solver state.
+{-| Returns the state with `err` added at the front of its errors.
 -}
 addError : State -> Error.Error -> State
 addError (State savedEnv rank errors) err =
@@ -494,8 +532,9 @@ addError (State savedEnv rank errors) err =
 -- ====== Occurs Check ======
 
 
-{-| Perform occurs check on a variable to detect infinite types.
-If an infinite type is detected, marks the variable as Error and adds an error to state.
+{-| Checks whether the type of the bound name `name` contains itself. If it
+does, returns the state with an `InfiniteType` error added and the variable's
+content set to `Error`; otherwise returns the state unchanged.
 -}
 occurs : State -> ( Name.Name, A.Located Variable ) -> IO State
 occurs state ( name, A.At region variable ) =
@@ -523,9 +562,18 @@ occurs state ( name, A.At region variable ) =
 -- ====== Generalize ======
 
 
-{-| Generalize variables in the young pool after processing a let binding.
-Variables with rank less than youngRank are demoted to older pools.
-Variables with rank equal to youngRank are generalized to noRank (polymorphic).
+{-| Generalizes the young pool, the pool at `youngRank`, once a `let`'s header
+has been solved.
+
+Every young variable's rank is first set to the highest rank among the
+variables its type reaches (`adjustRank`). A variable left at
+`youngRank` is given `Type.noRank`; any other is added to the pool of its new
+rank. A variable that is no longer the root of its class is dropped. The young
+pool itself is not cleared here.
+
+`youngMark` is the mark the young variables are stamped with first, and
+`visitMark` the one a variable is stamped with once its rank is settled.
+
 -}
 generalize : Mark -> Mark -> Int -> Pools -> IO ()
 generalize youngMark visitMark youngRank pools =
@@ -535,9 +583,7 @@ generalize youngMark visitMark youngRank pools =
                 poolToRankTable youngMark youngRank youngVars
                     |> IO.andThen
                         (\rankTable ->
-                            -- get the ranks right for each entry.
-                            -- start at low ranks so that we only have to pass
-                            -- over the information once.
+                            -- Low ranks first, so that one pass settles every rank.
                             Vector.imapM_
                                 (\rank table ->
                                     IO.mapM_ (adjustRank youngMark visitMark rank) table
@@ -545,8 +591,6 @@ generalize youngMark visitMark youngRank pools =
                                 rankTable
                                 |> IO.andThen
                                     (\_ ->
-                                        -- For variables that have rank lowerer than youngRank, register them in
-                                        -- the appropriate old pool if they are not redundant.
                                         Vector.forM_ (Vector.unsafeInit rankTable)
                                             (\vars ->
                                                 IO.forM_ vars
@@ -568,9 +612,7 @@ generalize youngMark visitMark youngRank pools =
                                             )
                                             |> IO.andThen
                                                 (\_ ->
-                                                    -- For variables with rank youngRank
-                                                    --   If rank < youngRank: register in oldPool
-                                                    --   otherwise generalize
+                                                    -- Variables bucketed at youngRank may have been lowered since.
                                                     Vector.unsafeLast rankTable
                                                         |> IO.andThen
                                                             (\lastRankTable ->
@@ -600,15 +642,14 @@ generalize youngMark visitMark youngRank pools =
             )
 
 
-{-| Build a table mapping ranks to variables, sorting the young pool by rank.
-Marks all variables with youngMark during the process.
+{-| Returns the variables of the young pool in buckets by rank, from 0 to
+`youngRank`, and stamps each with `youngMark`.
 -}
 poolToRankTable : Mark -> Int -> List Variable -> IO (IORef (Array (Maybe (List Variable))))
 poolToRankTable youngMark youngRank youngInhabitants =
     MVector.replicate (youngRank + 1) []
         |> IO.andThen
             (\mutableTable ->
-                -- Sort the youngPool variables into buckets by rank.
                 IO.forM_ youngInhabitants
                     (\var ->
                         UF.get var
@@ -629,9 +670,13 @@ poolToRankTable youngMark youngRank youngInhabitants =
 -- ====== Adjust Rank ======
 
 
-{-| Adjust variable ranks such that ranks never increase as you move deeper.
-Returns the maximum rank found in the variable's structure.
-This ensures the outermost rank is representative of the entire structure.
+{-| Settles the rank of `var` and returns it.
+
+A young variable not yet visited gets the highest rank among the variables its
+content reaches, where a variable with no structure counts as `groupRank`. A
+variable already visited keeps its rank. Any other variable, one from an
+enclosing scope, gets the lower of its rank and `groupRank`.
+
 -}
 adjustRank : Mark -> Mark -> Int -> Variable -> IO Int
 adjustRank youngMark visitMark groupRank var =
@@ -660,14 +705,17 @@ adjustRank youngMark visitMark groupRank var =
                         minRank =
                             min groupRank props.rank
                     in
-                    -- TODO how can minRank ever be groupRank?
                     UF.set var (IO.makeDescriptor props.content minRank visitMark props.copy)
                         |> IO.map (\_ -> minRank)
             )
 
 
-{-| Adjust ranks for the content of a variable descriptor.
-Recursively adjusts ranks for all variables contained in the content.
+{-| Settles the ranks of the variables `content` reaches and returns the
+highest, or `groupRank` for content with no structure.
+
+A ground structure, such as `()`, an empty record or a lambda set, is
+`Type.outermostRank`. An alias counts only its arguments.
+
 -}
 adjustRankContent : Mark -> Mark -> Int -> Content -> IO Int
 adjustRankContent youngMark visitMark groupRank content =
@@ -705,10 +753,7 @@ adjustRankContent youngMark visitMark groupRank content =
                         |> IO.apply (IO.pure max |> IO.apply (go result) |> IO.apply (go setSlot))
 
                 Vars.LambdaSet1 _ ->
-                    -- THEORY: ground member ids never need to get generalized.
-                    -- (LsFrom's source Points — LSS_023 — are set-lattice
-                    -- edges, not type structure, and are additionally
-                    -- unreachable here per LSS_007's phase separation.)
+                    -- Ground member ids: nothing to generalize.
                     IO.pure Type.outermostRank
 
                 Vars.EmptyRecord1 ->
@@ -749,7 +794,7 @@ adjustRankContent youngMark visitMark groupRank content =
 -- ====== Register Variables ======
 
 
-{-| Register variables at the given rank by adding them to the pool and updating their descriptors.
+{-| Adds `variables` to the pool at `rank` and gives each of them that rank.
 -}
 introduce : Int -> Pools -> List Variable -> IO ()
 introduce rank pools variables =
@@ -771,15 +816,15 @@ introduce rank pools variables =
 -- ====== Type to Variable Conversion ======
 
 
-{-| Convert a Type to a unification Variable at the given rank.
+{-| Returns a variable for `tipe`, with each new variable made at `rank`.
 -}
 typeToVariable : Int -> Pools -> Type -> IO Variable
 typeToVariable rank pools tipe =
     typeToVar rank pools tipe
 
 
-{-| Convert a Type to a Variable, tracking alias placeholders in aliasDict.
-Recursively converts all contained types to variables and registers them in pools.
+{-| Returns a variable for `tipe`. A variable in it is used as it is; each
+structure gets a new variable at `rank`, added to that rank's pool.
 -}
 typeToVar : Int -> Pools -> Type -> IO Variable
 typeToVar rank pools tipe =
@@ -814,9 +859,6 @@ typeToVar rank pools tipe =
             IO.traverseList (IO.traverseTuple go) args
                 |> IO.andThen
                     (\argVars ->
-                        -- Perf (#17): typeToVar ignores its 3rd (dict) arg, so the
-                        -- `Dict.fromList argVars` built here was dead. `go` already
-                        -- passes `Dict.empty`; use it and drop the allocation.
                         go aliasType
                             |> IO.andThen
                                 (\aliasVar ->
@@ -857,8 +899,7 @@ typeToVar rank pools tipe =
                     )
 
 
-{-| Register a new variable with the given content at the specified rank.
-Creates a fresh unification variable and adds it to the appropriate pool.
+{-| Returns a new variable with `content` at `rank`, added to that rank's pool.
 -}
 register : Int -> Pools -> Content -> IO Variable
 register rank pools content =
@@ -870,14 +911,14 @@ register rank pools content =
             )
 
 
-{-| Content for an empty record type.
+{-| The content of the empty record type.
 -}
 emptyRecord1 : Content
 emptyRecord1 =
     Vars.Structure Vars.EmptyRecord1
 
 
-{-| Content for a unit type.
+{-| The content of the unit type.
 -}
 unit1 : Content
 unit1 =
@@ -888,8 +929,13 @@ unit1 =
 -- ====== Source Type to Variable ======
 
 
-{-| Convert a canonical source type to a unification variable.
-Creates fresh variables for all free type variables based on their constraints.
+{-| Returns a variable for the annotation type `srcType` of a foreign name,
+whose free type variables are `freeVars`, made at `rank`.
+
+Each free variable gets a fresh flexible variable, which is the instantiation.
+Its kind is read from its name: one starting `number`, `comparable`,
+`appendable` or `compappend` is constrained to that class.
+
 -}
 srcTypeToVariable : Int -> Pools -> Dict Name.Name () -> Can.Type Name -> IO Variable
 srcTypeToVariable rank pools freeVars srcType =
@@ -923,8 +969,12 @@ srcTypeToVariable rank pools freeVars srcType =
             )
 
 
-{-| Convert a canonical source type to a variable, with flexVars mapping free variable names.
-Recursively converts all contained types to variables.
+{-| Returns a variable for `srcType`, with its type variables taken from
+`flexVars` and each structure a new variable at `rank`.
+
+The body of a holey alias is converted with only the alias's own arguments in
+scope. A type variable or record extension missing from `flexVars` crashes.
+
 -}
 srcTypeToVar : Int -> Pools -> Dict Name.Name Variable -> Can.Type Name -> IO Variable
 srcTypeToVar rank pools flexVars srcType =
@@ -1008,8 +1058,7 @@ srcTypeToVar rank pools flexVars srcType =
                     )
 
 
-{-| Convert a canonical field type to a variable.
-Unwraps the FieldType wrapper and converts the inner type.
+{-| Returns a variable for the type of a record field, as `srcTypeToVar` does.
 -}
 srcFieldTypeToVar : Int -> Pools -> Dict Name.Name Variable -> Can.FieldType Name -> IO Variable
 srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
@@ -1020,8 +1069,8 @@ srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
 -- ====== Copy (Instantiation) ======
 
 
-{-| Create a copy of a polymorphic variable by instantiating it at the given rank.
-Used when referencing let-bound polymorphic variables.
+{-| Returns an instance of the type of `var` at `rank`: its generalized
+variables are replaced by fresh ones, and the rest is shared.
 -}
 makeCopy : Int -> Pools -> Variable -> IO Variable
 makeCopy rank pools var =
@@ -1033,8 +1082,14 @@ makeCopy rank pools var =
             )
 
 
-{-| Helper for makeCopy that recursively copies variable structure.
-Links the original to the copy to avoid duplicating work during recursive copying.
+{-| Returns the copy of `variable` for one instantiation at `maxRank`.
+
+A variable that is not generalized is returned as it is. A generalized one gets
+a fresh variable, added to the pool at `maxRank`, with its content copied; a
+rigid variable becomes a flexible one with the same name. The original records
+its copy, so a variable reached twice is copied once; `restore` clears those
+records afterwards.
+
 -}
 makeCopyHelp : Int -> Pools -> Variable -> IO Variable
 makeCopyHelp maxRank pools variable =
@@ -1118,8 +1173,9 @@ makeCopyHelp maxRank pools variable =
 -- ====== Restore ======
 
 
-{-| Restore a variable to its pre-copy state by clearing copy links.
-Recursively restores all variables in the structure.
+{-| Clears the copy that `makeCopyHelp` recorded on `variable` and on the
+variables its content reaches, resetting each to `Type.noRank` and
+`Type.noMark`. A variable with no copy recorded stops the walk.
 -}
 restore : Variable -> IO ()
 restore variable =
@@ -1136,7 +1192,7 @@ restore variable =
             )
 
 
-{-| Restore the content of a variable by recursively restoring all contained variables.
+{-| Applies `restore` to each variable `content` holds.
 -}
 restoreContent : Content -> IO ()
 restoreContent content =
@@ -1196,8 +1252,7 @@ restoreContent content =
 -- ====== Traverse Flat Type ======
 
 
-{-| Apply a function to all variables in a FlatType structure.
-Used during copying to transform all contained variables.
+{-| Returns `flatType` with `f` applied to each variable it holds.
 -}
 traverseFlatType : (Variable -> IO Variable) -> Vars.FlatType -> IO Vars.FlatType
 traverseFlatType f flatType =
@@ -1217,11 +1272,7 @@ traverseFlatType f flatType =
                 |> IO.apply (f s)
 
         Vars.LambdaSet1 ls ->
-            -- Ground data: no variables to transform. CONDITIONALLY true since
-            -- LSS_023 (`LsFrom` carries source Points) — but unreachable here:
-            -- LSS_007 keeps typechecking-phase stores free of FunL/LambdaSet1,
-            -- and no MonoSolver module imports Type.Solve, so an `LsFrom` can
-            -- never arrive at this copy.
+            -- Ground member ids, no variables. Type checking never creates a lambda set.
             IO.pure (Vars.LambdaSet1 ls)
 
         Vars.EmptyRecord1 ->
@@ -1246,7 +1297,7 @@ traverseFlatType f flatType =
 -- ====== Dict Traversal Helpers ======
 
 
-{-| Traverse a core Dict, applying an IO-producing function to each value.
+{-| Returns an action that applies `f` to each value of `dict`, in key order.
 -}
 traverseDictIO : (a -> IO b) -> Dict comparable a -> IO (Dict comparable b)
 traverseDictIO f dict =
@@ -1255,7 +1306,8 @@ traverseDictIO f dict =
         |> IO.map Dict.fromList
 
 
-{-| Traverse a core Dict, applying an IO-producing function to each key-value pair.
+{-| Returns an action that applies `f` to each key and value of `dict`, in key
+order.
 -}
 traverseDictIOWithKey : (comparable -> a -> IO b) -> Dict comparable a -> IO (Dict comparable b)
 traverseDictIOWithKey f dict =
@@ -1264,7 +1316,7 @@ traverseDictIOWithKey f dict =
         |> IO.map Dict.fromList
 
 
-{-| Every type variable name the top-level annotations use.
+{-| Returns every type variable name the quantifiers of `annotations` hold.
 -}
 annotationVarNames : Dict Name.Name (Can.Annotation Name) -> Dict Name ()
 annotationVarNames annotations =

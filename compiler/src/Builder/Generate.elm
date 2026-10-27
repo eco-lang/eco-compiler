@@ -5,12 +5,35 @@ module Builder.Generate exposing
     , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirStreamingBytecode
     )
 
-{-| Code generation orchestration for the Elm compiler.
+{-| Turns the artifacts of a finished build into output: JavaScript through a
+`CodeGen` backend, or MLIR through monomorphization and the middle end.
 
-This module coordinates the transformation of compiled Elm code into executable output
-through various code generation backends. It handles loading optimized artifacts from
-disk, preparing them for code generation, and invoking the appropriate backend to
-produce JavaScript, MLIR, or other target code.
+A build (`Builder.Build`) leaves each of its own modules either _fresh_,
+compiled in this build with its graphs in memory, or _cached_, unchanged since
+an earlier build, so that what code generation needs must be read back from
+the files that build wrote. Both paths here start the same way: they gather
+every module's graph, from memory or from disk, and merge it with the
+dependencies' graph into one global graph. A module's file that cannot be read
+fails generation with `GenerateCannotLoadArtifacts`.
+
+The JavaScript path (`dev`, `debug`, `prod`) works on the untyped optimized
+graph. It reads each cached module's `.eco` file on a thread of its own, finds
+the `main` of each root, picks a `Mode` and hands everything to the backend.
+
+The MLIR path (`writeMonoMlirStreaming`, `writeMonoMlirStreamingBytecode`)
+works on the typed graph. It runs the middle end that `Compiler.Pipeline.Steps`
+describes and adds what that module leaves to its caller: the validators
+between the steps, phase timing under `Builder.Eco.FEStats`, and the census
+lines. A _census_ is a report of what a pass did, or would do, written to
+stderr when a report flag is on. Most of this file's length is the rendering
+of those lines.
+
+The MLIR path is shaped by peak memory. Cached modules' typed data is read and
+merged one `.ecot` file at a time, so only one module's data is alive beside
+the merged graph. Each phase is a separate top-level function chained with
+`Task.andThen` rather than a closure, so that a phase's input graph is not
+captured by anything that outlives it and can be collected once the next phase
+has its output.
 
 
 # Code Generation Backends
@@ -26,9 +49,6 @@ produce JavaScript, MLIR, or other target code.
 # Production Builds
 
 @docs prod
-
-
-# REPL Code Generation
 
 
 # Native MLIR Streaming
@@ -101,13 +121,9 @@ import Utils.Task.Extra as Task
 
 
 -- ====== BACKENDS ======
-{- NOTE: This is used by Make, Repl, and Reactor right now. But it may be
-   desirable to have Repl and Reactor to keep foreign objects in memory
-   to make things a bit faster?
--}
 
 
-{-| Standard JavaScript code generation backend.
+{-| The JavaScript code generation backend (`Compiler.Generate.CodeGen.JavaScript`).
 -}
 javascriptBackend : CodeGen.CodeGen
 javascriptBackend =
@@ -118,7 +134,14 @@ javascriptBackend =
 -- ====== GENERATORS ======
 
 
-{-| Generates debug-mode output with type information for runtime type checking.
+{-| Generates output in development mode with the types of every module attached,
+as `Mode.Dev (Just types)`.
+
+The types come from the dependency interfaces, the fresh modules' interfaces,
+and each cached module's interface, which is read from its `.eci` file when the
+build did not load it. Source files are read for source maps only when
+`withSourceMaps` is set.
+
 -}
 debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
@@ -127,18 +150,24 @@ debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Arti
         |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
+{-| Loads the types of every module, then waits for the object graphs `loading` is reading, and returns both.
+-}
 loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
 loadTypesAndFinalize root maybeBuildDir ifaces modules loading =
     loadTypes root maybeBuildDir ifaces modules
         |> Task.andThen (finalizeObjectsWithTypes loading)
 
 
+{-| Waits for the object graphs `loading` is reading and pairs them with `types`.
+-}
 finalizeObjectsWithTypes : LoadingObjects -> Extract.Types -> Task Exit.Generate ( Objects, Extract.Types )
 finalizeObjectsWithTypes loading types =
     finalizeObjects loading
         |> Task.map (\objects -> ( objects, types ))
 
 
+{-| Generates debug-mode output from the loaded objects and types.
+-}
 generateDebugOutput : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> ( Objects, Extract.Types ) -> Task Exit.Generate CodeGen.Output
 generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects, types ) =
     let
@@ -155,6 +184,8 @@ generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
+{-| Runs `backend` on the merged graph and the roots' `main` values.
+-}
 generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
 generateWithBackend backend leadingLines mode graph mains sourceMaps =
     backend.generate
@@ -166,7 +197,8 @@ generateWithBackend backend leadingLines mode graph mains sourceMaps =
         }
 
 
-{-| Generates development-mode output without optimization.
+{-| Generates output in development mode, as `Mode.Dev Nothing`. Source files are
+read for source maps only when `withSourceMaps` is set.
 -}
 dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 dev backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
@@ -175,6 +207,8 @@ dev backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifa
         |> Task.andThen (generateDevOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
+{-| Generates development-mode output from the loaded objects.
+-}
 generateDevOutput : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> Objects -> Task Exit.Generate CodeGen.Output
 generateDevOutput backend withSourceMaps leadingLines root pkg roots objects =
     let
@@ -191,7 +225,12 @@ generateDevOutput backend withSourceMaps leadingLines root pkg roots objects =
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
-{-| Generates production-mode output with optimizations and minified field names.
+{-| Generates output in production mode, with record field names shortened
+(`Mode.Prod`).
+
+Fails with `GenerateCannotOptimizeDebugValues`, naming the modules, when any of
+the build's own modules uses `Debug`. Dependency packages are not checked.
+
 -}
 prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 prod backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
@@ -200,12 +239,16 @@ prod backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artif
         |> Task.andThen (checkDebugAndGenerate backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
+{-| Fails if any of the build's own modules uses `Debug`, and otherwise generates production-mode output.
+-}
 checkDebugAndGenerate : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> Objects -> Task Exit.Generate CodeGen.Output
 checkDebugAndGenerate backend withSourceMaps leadingLines root pkg roots objects =
     checkForDebugUses objects
         |> Task.andThen (\_ -> generateProdOutput backend withSourceMaps leadingLines root pkg roots objects)
 
 
+{-| Generates production-mode output from the loaded objects, with field names shortened across the whole merged graph.
+-}
 generateProdOutput : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Pkg.Name -> NE.Nonempty Build.Root -> Objects -> Task Exit.Generate CodeGen.Output
 generateProdOutput backend withSourceMaps leadingLines root pkg roots objects =
     let
@@ -222,6 +265,8 @@ generateProdOutput backend withSourceMaps leadingLines root pkg roots objects =
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
+{-| Reads the source of every module of the project at `root` when `withSourceMaps` is set, and returns `NoSourceMaps` otherwise.
+-}
 prepareSourceMaps : Bool -> FilePath -> Task Exit.Generate CodeGen.SourceMaps
 prepareSourceMaps withSourceMaps root =
     if withSourceMaps then
@@ -238,6 +283,10 @@ prepareSourceMaps withSourceMaps root =
 -- ====== CHECK FOR DEBUG ======
 
 
+{-| Fails with `GenerateCannotOptimizeDebugValues`, naming every one of the
+build's own modules that uses `Debug` (`Compiler.Nitpick.Debug.hasDebugUses`),
+and succeeds when none does.
+-}
 checkForDebugUses : Objects -> Task Exit.Generate ()
 checkForDebugUses (Objects _ locals) =
     case Dict.keys (Dict.filter (\_ -> Nitpick.hasDebugUses) locals) of
@@ -252,11 +301,16 @@ checkForDebugUses (Objects _ locals) =
 -- ====== GATHER MAINS ======
 
 
+{-| Returns the `main` of every root that has one, keyed by its canonical module name.
+-}
 gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict String ModuleName.Canonical Opt.Main
 gatherMains pkg (Objects _ locals) roots =
     Data.Map.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
 
 
+{-| Returns the canonical name and `main` of `root`'s module, or `Nothing` when it
+has no `main` or, for an inside root, is not among `locals`.
+-}
 lookupMain : Pkg.Name -> Dict ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( ModuleName.Canonical, Opt.Main )
 lookupMain pkg locals root =
     let
@@ -276,10 +330,18 @@ lookupMain pkg locals root =
 -- ====== LOADING OBJECTS ======
 
 
+{-| Object graphs that are still being read: an MVar for the dependencies' graph
+and one for each cached module's local graph, each filled when its read ends,
+beside the fresh modules' graphs already in memory. `Nothing` in an MVar means
+the graph could not be read.
+-}
 type LoadingObjects
     = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Dict ModuleName.Raw (MVar (Maybe Opt.LocalGraph))) (Dict ModuleName.Raw Opt.LocalGraph)
 
 
+{-| Starts reading the dependencies' object graph and every cached module's `.eco`
+file, and returns at once with the graphs still being read.
+-}
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
 loadObjects root maybeBuildDir details modules =
     Task.io
@@ -288,10 +350,13 @@ loadObjects root maybeBuildDir details modules =
         )
 
 
+{-| Returns the loading state for `modules`: the fresh modules' graphs as they are,
+and for each cached module an MVar that a forked read of its `.eco` file fills.
+`mvar` is the dependencies' graph.
+-}
 loadModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Opt.GlobalGraph) -> Task Never LoadingObjects
 loadModuleObjects root maybeBuildDir modules mvar =
     let
-        -- Partition: Fresh modules have their graph in memory, Cached need MVar I/O
         partitionModules : List Build.Module -> ( List ( ModuleName.Raw, Opt.LocalGraph ), List Build.Module ) -> ( List ( ModuleName.Raw, Opt.LocalGraph ), List Build.Module )
         partitionModules mods ( freshAcc, cachedAcc ) =
             case mods of
@@ -316,6 +381,10 @@ loadModuleObjects root maybeBuildDir modules mvar =
         |> Task.map (\mvars -> LoadingObjects mvar (Dict.fromList mvars) freshDict)
 
 
+{-| Returns a cached module's name with an MVar that a forked thread fills from its
+`.eco` file. Given a fresh module, which the caller has already set aside, it
+returns a filled MVar holding an empty graph.
+-}
 loadCachedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
 loadCachedObject root maybeBuildDir modul =
     case modul of
@@ -324,17 +393,20 @@ loadCachedObject root maybeBuildDir modul =
                 |> Task.andThen (forkLoadCachedObject root maybeBuildDir name)
 
         Build.Fresh name _ _ _ _ ->
-            -- Should not reach here after partitioning, but handle gracefully
             Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just (Opt.LocalGraph Nothing Data.Map.empty Dict.empty))
                 |> Task.map (\mv -> ( name, mv ))
 
 
+{-| Forks a thread that fills `mvar` from module `name`'s `.eco` file, and returns the pair at once.
+-}
 forkLoadCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
 forkLoadCachedObject root maybeBuildDir name mvar =
     Utils.forkIO (readAndStoreCachedObject root maybeBuildDir name mvar)
         |> Task.map (\_ -> ( name, mvar ))
 
 
+{-| Reads module `name`'s `.eco` file into `mvar`, storing `Nothing` when it is missing or cannot be decoded.
+-}
 readAndStoreCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ()
 readAndStoreCachedObject root maybeBuildDir name mvar =
     File.readBinary Opt.localGraphDecoder (Stuff.ecoWithBuildDir root maybeBuildDir name)
@@ -345,10 +417,16 @@ readAndStoreCachedObject root maybeBuildDir name mvar =
 -- ====== FINALIZE OBJECTS ======
 
 
+{-| Every object graph JavaScript generation needs: the dependencies' global
+graph, and the local graph of each of the build's own modules, by name.
+-}
 type Objects
     = Objects Opt.GlobalGraph (Dict ModuleName.Raw Opt.LocalGraph)
 
 
+{-| Waits for every graph `loadObjects` started reading, failing with
+`GenerateCannotLoadArtifacts` when any of them could not be read.
+-}
 finalizeObjects : LoadingObjects -> Task Exit.Generate Objects
 finalizeObjects (LoadingObjects mvar mvars freshModules) =
     Task.eio identity
@@ -357,23 +435,30 @@ finalizeObjects (LoadingObjects mvar mvars freshModules) =
         )
 
 
+{-| Waits for each cached module's graph and combines them with `freshModules` and the dependencies' graph.
+-}
 collectLocalObjects : Dict ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Dict ModuleName.Raw Opt.LocalGraph -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
 collectLocalObjects mvars freshModules globalResult =
     Utils.dictTraverse (Utils.takeMVar (BD.maybe Opt.localGraphDecoder)) mvars
         |> Task.map (combineGlobalAndLocalObjects globalResult freshModules)
 
 
+{-| Returns the objects when the dependencies' graph and every cached module's
+graph were read, and `GenerateCannotLoadArtifacts` otherwise.
+-}
 combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Dict ModuleName.Raw Opt.LocalGraph -> Dict ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
 combineGlobalAndLocalObjects globalResult freshModules cachedResults =
     case ( globalResult, Utils.dictSequenceMaybe cachedResults ) of
         ( Just globals, Just cachedLocals ) ->
-            -- Merge fresh (already have graphs) with cached (loaded from MVars)
             Ok (Objects globals (Dict.union cachedLocals freshModules))
 
         _ ->
             Err Exit.GenerateCannotLoadArtifacts
 
 
+{-| Merges every local graph into the dependencies' graph. Where a module and the
+dependencies' graph hold a node for the same global, the module's node is kept.
+-}
 objectsToGlobalGraph : Objects -> Opt.GlobalGraph
 objectsToGlobalGraph (Objects globals locals) =
     Dict.foldr (\_ -> GA.addOptLocalGraph) globals locals
@@ -383,10 +468,14 @@ objectsToGlobalGraph (Objects globals locals) =
 -- ====== LOAD TYPES ======
 
 
+{-| Returns the types of every module: those of the dependency interfaces
+`ifaces`, of the fresh modules' interfaces, and of each cached module's
+interface. Fails with `GenerateCannotLoadArtifacts` when a cached module's
+interface is corrupt or its `.eci` file cannot be read.
+-}
 loadTypes : FilePath -> Maybe String -> Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
 loadTypes root maybeBuildDir ifaces modules =
     let
-        -- Partition: Fresh modules already have interfaces in memory
         partitionTypes : List Build.Module -> ( List Extract.Types, List Build.Module ) -> ( List Extract.Types, List Build.Module )
         partitionTypes mods ( freshAcc, cachedAcc ) =
             case mods of
@@ -410,6 +499,8 @@ loadTypes root maybeBuildDir ifaces modules =
         )
 
 
+{-| Waits for each cached module's types and merges them with `freshTypes` and the types of the dependency interfaces `ifaces`.
+-}
 collectAndMergeTypes : Data.Map.Dict String ModuleName.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
 collectAndMergeTypes ifaces freshTypes mvars =
     let
@@ -421,6 +512,9 @@ collectAndMergeTypes ifaces freshTypes mvars =
         |> Task.map (mergeLoadedTypes foreigns freshTypes)
 
 
+{-| Merges `foreigns`, `freshTypes` and the cached modules' types, or fails with
+`GenerateCannotLoadArtifacts` when any cached module's types are missing.
+-}
 mergeLoadedTypes : Extract.Types -> List Extract.Types -> List (Maybe Extract.Types) -> Result Exit.Generate Extract.Types
 mergeLoadedTypes foreigns freshTypes cachedResults =
     case Utils.sequenceListMaybe cachedResults of
@@ -431,6 +525,10 @@ mergeLoadedTypes foreigns freshTypes cachedResults =
             Err Exit.GenerateCannotLoadArtifacts
 
 
+{-| Returns an MVar that holds, or will hold, a cached module's types, once the
+build has filled the module's cached-interface MVar. Given a fresh module, which
+the caller has already set aside, it returns the types of its interface.
+-}
 loadTypesFromCached : FilePath -> Maybe String -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
 loadTypesFromCached root maybeBuildDir modul =
     case modul of
@@ -439,10 +537,14 @@ loadTypesFromCached root maybeBuildDir modul =
                 |> Task.andThen (handleCachedInterfaceForTypes root maybeBuildDir name)
 
         Build.Fresh name iface _ _ _ ->
-            -- Should not reach here after partitioning
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
 
+{-| Returns an MVar for module `name`'s types, according to what the build did with
+its interface. `Unneeded` forks a read of its `.eci` file, `Loaded` uses the
+interface in hand, and `Corrupted` gives `Nothing`, which fails generation
+later.
+-}
 handleCachedInterfaceForTypes : FilePath -> Maybe String -> ModuleName.Raw -> Build.CachedInterface -> Task Never (MVar (Maybe Extract.Types))
 handleCachedInterfaceForTypes root maybeBuildDir name cachedInterface =
     case cachedInterface of
@@ -457,12 +559,16 @@ handleCachedInterfaceForTypes root maybeBuildDir name cachedInterface =
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) Nothing
 
 
+{-| Forks a thread that fills `mvar` from module `name`'s `.eci` file, and returns `mvar` at once.
+-}
 forkLoadInterfaceTypes : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never (MVar (Maybe Extract.Types))
 forkLoadInterfaceTypes root maybeBuildDir name mvar =
     Utils.forkIO (loadAndStoreInterfaceTypes root maybeBuildDir name mvar)
         |> Task.map (\_ -> mvar)
 
 
+{-| Reads module `name`'s `.eci` file and stores its types in `mvar`, or `Nothing` when it is missing or cannot be decoded.
+-}
 loadAndStoreInterfaceTypes : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never ()
 loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
     File.readBinary I.interfaceDecoder (Stuff.eciWithBuildDir root maybeBuildDir name)
@@ -473,13 +579,22 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 -- ====== TYPED OBJECTS LOADING ======
 
 
-{-| Typed loading state: global artifacts MVar, list of cached module names
-(for sequential .ecot loading), Fresh modules dict, and root/buildDir for file paths.
+{-| The typed inputs to the MLIR path before they are merged.
+
+It holds an MVar for the dependencies' typed artifacts, whose `Err` lists the
+files that could not be read; the names of the modules whose `.ecot` file must
+be read; the typed data of the fresh modules already in memory; and the root
+and build directory those files are under.
+
 -}
 type TypedLoadingObjects
     = TypedLoadingObjects (MVar (Result (List FilePath) Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Dict ModuleName.Raw ModuleTyped) FilePath (Maybe String)
 
 
+{-| Starts reading the dependencies' typed artifacts and sorts `modules` into those
+whose typed data is in memory and those whose `.ecot` file must be read. It
+reads no `.ecot` file itself.
+-}
 loadTypedObjects : FilePath -> Maybe String -> List ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
 loadTypedObjects root maybeBuildDir localPackages details modules =
     Task.io
@@ -488,10 +603,13 @@ loadTypedObjects root maybeBuildDir localPackages details modules =
         )
 
 
+{-| Returns the typed loading state for `modules`. A fresh module that carries both
+a typed graph and a type env is kept in memory; every other module is listed to
+be read from its `.ecot` file.
+-}
 loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Result (List FilePath) Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root maybeBuildDir modules mvar =
     let
-        -- Partition: Fresh modules with typed data go directly, others need .ecot loading
         partition : List Build.Module -> ( List ( ModuleName.Raw, ModuleTyped ), List ModuleName.Raw ) -> ( List ( ModuleName.Raw, ModuleTyped ), List ModuleName.Raw )
         partition mods acc =
             case mods of
@@ -536,7 +654,6 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
         freshDict =
             Dict.fromList freshPairs
     in
-    -- No MVars needed — cached modules will be loaded sequentially during merge
     Task.succeed (TypedLoadingObjects mvar cachedNames freshDict root maybeBuildDir)
 
 
@@ -544,7 +661,7 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
 -- ====== FINALIZE TYPED OBJECTS ======
 
 
-{-| Combined typed data for a module.
+{-| One module's typed graph and type env.
 -}
 type alias ModuleTyped =
     { graph : TOpt.LocalGraph Name
@@ -552,18 +669,21 @@ type alias ModuleTyped =
     }
 
 
-{-| Merged typed data: GlobalGraph + GlobalTypeEnv, ready for monomorphization.
-Per-module data has been merged and discarded.
+{-| The typed global graph and the global type env, with every module of the build and every dependency merged in.
 -}
 type MergedTypedData
     = MergedTypedData (TOpt.GlobalGraph Name) TypeEnv.GlobalTypeEnv
 
 
-{-| Finalize typed objects by sequentially loading and merging per-module data
-into GlobalGraph/GlobalTypeEnv. Each .ecot file is loaded, deserialized, merged,
-and discarded before the next is loaded. Only one module's data is alive at a
-time (plus the growing merged structures), avoiding the ~1400MB peak from
-loading all 232 modules simultaneously.
+{-| Waits for the dependencies' typed artifacts, then merges every module's typed
+graph and type env into them.
+
+Cached modules are read from their `.ecot` files one at a time, so that only one
+module's data is alive at once beside the merged result. Fails with
+`GenerateCannotLoadPackageArtifacts` when a dependency's typed artifacts could
+not be read, and with `GenerateCannotLoadArtifacts` when an `.ecot` file could
+not.
+
 -}
 finalizeAndMergeTypedObjects : TypedLoadingObjects -> Task Exit.Generate MergedTypedData
 finalizeAndMergeTypedObjects (TypedLoadingObjects mvar cachedModulesList freshModules root maybeBuildDir) =
@@ -573,10 +693,10 @@ finalizeAndMergeTypedObjects (TypedLoadingObjects mvar cachedModulesList freshMo
         )
 
 
-{-| Stream-load-and-merge: first merge Fresh modules (already in memory),
-then sequentially load each cached module's .ecot file, merge, and discard.
-Fails if any dependency's package artifacts could not be read; merging an
-empty graph in their place only defers the failure to monomorphization.
+{-| Merges the fresh modules' typed data into the dependencies' typed artifacts,
+then the cached modules' data one `.ecot` file at a time. When the
+dependencies' artifacts are an `Err`, fails with
+`GenerateCannotLoadPackageArtifacts` naming the unreadable files.
 -}
 streamLoadAndMerge :
     List ModuleName.Raw
@@ -592,7 +712,6 @@ streamLoadAndMerge cachedNames freshModules root maybeBuildDir loadedGlobalArtif
 
         Ok globalArtifacts ->
             let
-                -- Merge Fresh modules (pure fold, no I/O needed)
                 ( mergedGraph, mergedEnv ) =
                     Dict.foldl
                         (\_ modTyped ( g, e ) ->
@@ -603,13 +722,13 @@ streamLoadAndMerge cachedNames freshModules root maybeBuildDir loadedGlobalArtif
                         ( globalArtifacts.typedGraph, globalArtifacts.typeEnv )
                         freshModules
             in
-            -- Sequentially load and merge cached modules
             streamLoadAndMergeCached cachedNames root maybeBuildDir mergedGraph mergedEnv
 
 
-{-| Sequentially load each cached module's .ecot file, merge into the running
-GlobalGraph/GlobalTypeEnv, then discard. The per-module data goes out of scope
-after merging, becoming GC-eligible before the next module is loaded.
+{-| Reads each module in `remaining` from its `.ecot` file and merges it into
+`graph` and `env`, one at a time, so that each module's data can be collected
+before the next is read. Fails with `GenerateCannotLoadArtifacts` at the first
+file that cannot be read.
 -}
 streamLoadAndMergeCached :
     List ModuleName.Raw
@@ -639,7 +758,6 @@ streamLoadAndMergeCached remaining root maybeBuildDir graph env =
                                     env2 =
                                         Data.Map.insert ModuleName.toComparableCanonical artifact.typeEnv.home artifact.typeEnv env
                                 in
-                                -- artifact goes out of scope here; GC can reclaim it
                                 streamLoadAndMergeCached rest root maybeBuildDir graph2 env2
                     )
 
@@ -648,7 +766,8 @@ streamLoadAndMergeCached remaining root maybeBuildDir graph env =
 -- ====== MONOMORPHIZED GENERATION ======
 
 
-{-| Result of monomorphized code generation, containing the mono graph and compilation mode.
+{-| The monomorphized and optimized program, with the mode to generate MLIR from it
+in. The mode is always `Mode.Dev Nothing`.
 -}
 type alias MonoBuildResult =
     { monoGraph : Mono.MonoGraph
@@ -656,6 +775,13 @@ type alias MonoBuildResult =
     }
 
 
+{-| Returns the monomorphized and optimized program for the build's artifacts.
+
+It drops the build's cached-interface MVars, clears the fresh modules' untyped
+graphs, merges every module's typed data with the dependencies', and runs the
+middle end with its validators and census lines.
+
+-}
 buildMonoGraph :
     Config.EcoConfig
     -> FEStats.Handle
@@ -670,23 +796,20 @@ buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details (Build.A
         roots =
             artifacts.roots
 
-        -- Strip Opt.LocalGraph from Fresh modules: it's only needed by the JS backend,
-        -- not the MLIR/monomorphization path. Without this, 232 Opt.LocalGraph structures
-        -- are pinned in memory as dead weight throughout the entire pipeline.
+        -- Only the JavaScript path reads the untyped graphs; clearing them lets them be collected.
         modules =
             List.map stripUntypedGraph artifacts.modules
     in
-    -- Row 4 (plans/frontend-heap-release.md §7.2): drop the cached-interface
-    -- MVars first. Nothing on the MLIR path reads them (only the JS debug
-    -- path's `loadTypes` does), and an MVar is an off-heap GC root until
-    -- dropped (HEAP_005). Never drop them inside Build: `checkRoot`'s
-    -- `loadInterfaces` takes them.
+    -- Nothing on this path reads the cached-interface MVars, and an MVar keeps
+    -- its contents alive until it is dropped.
     Task.io (Utils.listTraverse_ dropCachedInterfaceMVar artifacts.modules)
         |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir localPackages details modules)
         |> Task.andThen finalizeAndMergeTypedObjects
         |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
 
 
+{-| Drops a cached module's interface MVar, and does nothing for a fresh module.
+-}
 dropCachedInterfaceMVar : Build.Module -> Task Never ()
 dropCachedInterfaceMVar modul =
     case modul of
@@ -697,8 +820,7 @@ dropCachedInterfaceMVar modul =
             Task.succeed ()
 
 
-{-| Remove the untyped Opt.LocalGraph from a Fresh module.
-The MLIR/monomorphization path only needs the typed graph and type env.
+{-| Returns a fresh module with its untyped local graph replaced by an empty one, and a cached module unchanged.
 -}
 stripUntypedGraph : Build.Module -> Build.Module
 stripUntypedGraph modul =
@@ -710,6 +832,10 @@ stripUntypedGraph modul =
             modul
 
 
+{-| Adds the outside roots' typed graphs and type envs, assigns ids
+(`Compiler.Pipeline.Steps.prepare`), and runs the rest of the middle end on the
+result.
+-}
 buildMonoGraphFromMerged : Config.EcoConfig -> FEStats.Handle -> NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
 buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph mergedEnv) =
     let
@@ -721,37 +847,31 @@ buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph merg
         globalTypeEnv =
             List.foldl addRootTypeEnv mergedEnv (NE.toList roots)
 
-        -- PHASE 0 — `AssignMVarIds` runs HERE, in front of the pre-mono
-        -- passes, so they operate on `MVarId`s rather than on names
-        -- (`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). It
-        -- also synthesizes the entry's flags decoder, exactly as it did at
-        -- each engine's own entry point. Identity therefore EXISTS during the
-        -- pre-mono passes: anything they create or copy must mint through
-        -- `PreMono.Fresh`, and `validateMinted` checks that under
-        -- `mono.validate`.
         assigned : EntryPrep.Assigned
         assigned =
             Steps.prepare ecoConfig typedGraph
     in
-    -- Row 5 (plans/frontend-heap-release.md §7.3): assignment is its OWN step.
-    -- This callback's argument (the merged Name-typed graph) is rooted until
-    -- it returns, so handing `( assigned, globalTypeEnv )` to a following step
-    -- is what lets the Name-typed graph die before the pre-mono rewrites.
+    -- The rest runs as a following step, so that the graph before id
+    -- assignment, this function's argument, can be collected.
     Task.succeed ( assigned, globalTypeEnv )
         |> Task.andThen (\( a, env ) -> runMonoOptPipeline ecoConfig stats env a)
 
 
+{-| Runs the pre-monomorphization passes (`Compiler.Pipeline.Steps.preMono`),
+under `mono.validate` checks that they minted fresh ids for what they copied,
+and monomorphizes the result.
+
+Under `inline.report` it writes a census line for each pre-mono pass, whatever
+that pass's own flag says. Alias forwarding and η-expansion with their flag off
+report what they would have rewritten, the pre-mono inliner with its flag off
+reports empty metrics, and the closed-lambda-argument census
+(`Compiler.GlobalOpt.PreMono.LiftClosedArgs`), which has no transform behind
+it, is taken of the graph after all three.
+
+-}
 runMonoOptPipeline : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
     let
-        -- `assignedRaw` is `EntryPrep.assign`'s result, computed in the
-        -- previous step (`buildMonoGraphFromMerged`, row 5).
-        --
-        -- The PRE-MONO passes (alias forwarding, η-expansion, the pre-mono
-        -- inliner — their order and flags are documented there) run in
-        -- `Compiler.Pipeline.Steps.preMono`, which the test harness calls too
-        -- (plans/staging-honesty-and-production-test-pipeline.md P1). This step
-        -- adds their census lines, under `inline.report`.
         pre =
             Steps.preMono ecoConfig assignedRaw
 
@@ -765,12 +885,6 @@ runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
             else
                 Task.succeed ()
 
-        -- CENSUS ONLY, no rewrite
-        -- (plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md §5
-        -- layer C). Runs on the graph the lift would see: after η-expansion
-        -- and after the pre-mono inliner, which is where §3.5 puts the pass.
-        -- There is no flag because there is no transform yet — the plan is
-        -- census-gated and this is the gate's own instrument.
         preLiftReport () =
             if ecoConfig.inline.report then
                 writeReport (renderPreLiftReport (LiftClosedArgs.census assigned1.graph))
@@ -789,8 +903,8 @@ runMonoOptPipeline ecoConfig stats globalTypeEnv assignedRaw =
             )
 
 
-{-| `Compiler.Pipeline.Steps.checkMinted` as a build step: under
-`mono.validate`, a pre-mono pass that copied without minting fails the build.
+{-| Fails with `GenerateMonomorphizationError` when, under `mono.validate`,
+`Compiler.Pipeline.Steps.checkMinted` finds a missing or repeated id.
 -}
 validateMinted : Config.EcoConfig -> EntryPrep.Assigned -> Task Exit.Generate ()
 validateMinted ecoConfig assigned =
@@ -802,9 +916,9 @@ validateMinted ecoConfig assigned =
             Task.throw (Exit.GenerateMonomorphizationError message)
 
 
-{-| `Compiler.Pipeline.Steps.checkPruned` as a build step: under
-`mono.validate` with the prune on, a pruned live specialization (MONO\_011)
-fails the build.
+{-| Fails with `GenerateMonomorphizationError` when, under `mono.validate` with
+`inline.pruneDead` on, `Compiler.Pipeline.Steps.checkPruned` finds a live
+specialization that references a pruned one (MONO\_011).
 -}
 validatePruned : Config.EcoConfig -> Mono.MonoGraph -> Task Exit.Generate ()
 validatePruned ecoConfig graph =
@@ -816,6 +930,16 @@ validatePruned ecoConfig graph =
             Task.throw (Exit.GenerateMonomorphizationError message)
 
 
+{-| Monomorphizes `assigned`, then runs inlining and global optimization, and
+returns the result.
+
+The LSS census, when the engine returns one, is written to stderr. Stage arity
+is checked after monomorphization and again at the end, whatever
+`mono.validate` says; under `mono.validate`, layout is checked after
+monomorphization and closure staging at the end. A failed check fails with
+`GenerateMonomorphizationError`.
+
+-}
 monoPipelineFrom : Config.EcoConfig -> FEStats.Handle -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Task Exit.Generate MonoBuildResult
 monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
     FEStats.withPhaseLazy stats
@@ -828,23 +952,16 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                 Ok ( monoGraph0, maybeLssReport ) ->
                     (case maybeLssReport of
                         Just report ->
-                            -- LSS census (lss.report / ECO_MONO_LSS_REPORT=1):
-                            -- stderr side-channel, never stdout (MLIR text mode
-                            -- owns stdout).
                             Task.io (System.IO.writeLn System.IO.stderr report)
                                 |> Task.map (\_ -> monoGraph0)
 
                         Nothing ->
                             Task.succeed monoGraph0
                     )
-                        -- HEAP_078 stage arity backstop: unconditional, not
-                        -- behind mono.validate.
+                        -- Not behind mono.validate.
                         |> Task.andThen validateStageArityLimit
                         |> Task.andThen
                             (\g ->
-                                -- MONO_029 layout-agreement validator
-                                -- (ECO_MONO_VALIDATE=1): engine-agnostic, fails
-                                -- the compile on any layout-disagreeing views.
                                 case Steps.checkLayout ecoConfig g of
                                     Ok g1 ->
                                         Task.succeed g1
@@ -853,16 +970,13 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
                                         Task.throw (Exit.GenerateMonomorphizationError message)
                             )
         )
-        -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
+        -- A separate function, so that the monomorphizer's inputs can be collected.
         |> Task.andThen (runInlineSimplifyPhase ecoConfig stats)
-        -- HEAP_078 again after inlining and GlobalOpt: those passes decline
-        -- any rewrite over the limit, so a violation here is a compiler bug.
         |> Task.andThen
             (\result ->
                 validateStageArityLimit result.monoGraph
                     |> Task.map (\_ -> result)
             )
-        -- GOPT_001 under mono.validate (Steps.checkClosureStaging).
         |> Task.andThen
             (\result ->
                 case Steps.checkClosureStaging ecoConfig result.monoGraph of
@@ -874,9 +988,10 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
             )
 
 
-{-| HEAP\_078 backstop (`Compiler.Pipeline.Steps.checkStageArity`): fails the
-build with a located `STAGE ARITY LIMIT` error when some closure has more
-parameters plus captured variables than a closure stage can hold.
+{-| Returns the graph, or fails with a `STAGE ARITY LIMIT` error listing every
+closure with more parameters plus captured variables than a closure stage can
+hold (`Compiler.Pipeline.Steps.checkStageArity`). This check does not depend on
+`mono.validate`.
 -}
 validateStageArityLimit : Mono.MonoGraph -> Task Exit.Generate Mono.MonoGraph
 validateStageArityLimit g =
@@ -888,7 +1003,9 @@ validateStageArityLimit g =
             Task.throw (Exit.GenerateMonomorphizationError message)
 
 
-{-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.
+{-| Runs the post-monomorphization inliner (`Compiler.Pipeline.Steps.inline`),
+then the prune and its census, then global optimization, each as a separate
+step so that its input graph can be collected.
 -}
 runInlineSimplifyPhase : Config.EcoConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
 runInlineSimplifyPhase ecoConfig stats monoGraph0 =
@@ -896,52 +1013,31 @@ runInlineSimplifyPhase ecoConfig stats monoGraph0 =
         FEStats.PhaseInlineSimplify
         (\() ->
             let
-                -- The inliner under the build's effective inline configuration
-                -- (blacklists and the `inline.postMono` switch are documented
-                -- at `Compiler.Pipeline.Steps.inline`).
                 ( inlinedGraph, inlineMetrics ) =
                     Steps.inline ecoConfig monoGraph0
             in
-            -- E-a (plans/frontend-heap-release.md §7.4): the prune and the census
-            -- run in the NEXT step. This thunk captures `monoGraph0`, and the
-            -- running callback stays rooted until it returns, so doing the prune
-            -- here would keep the pre-inline graph live through it.
+            -- The prune runs in the next step: this callback captures
+            -- `monoGraph0`, which stays alive until the callback returns.
             Task.succeed ( inlinedGraph, inlineMetrics )
                 |> Task.andThen (pruneAndReportInline ecoConfig)
         )
-        -- Hand off to a separate function so monoGraph0 goes out of scope
         |> Task.andThen (runGlobalOptPhase ecoConfig ecoConfig.mono.lss.report ecoConfig.list.report ecoConfig.borrow ecoConfig.cafMemo ecoConfig.cse stats)
 
 
-{-| The second step of the inline phase (E-a): the post-inline dead-spec prune,
-the inline census and the prune validator. A top-level function so the step
-captures only `ecoConfig`, never the pre-inline graph.
+{-| Under `inline.pruneDead`, removes the specializations the inliner left
+unreferenced (`Compiler.Pipeline.Steps.prune`); otherwise the graph is
+unchanged. It checks the result with `validatePruned`.
+
+Under `inline.report` it first writes the inline and prune census lines, taken
+of the pruned graph.
 -}
 pruneAndReportInline : Config.EcoConfig -> ( Mono.MonoGraph, MonoInlineSimplify.Metrics ) -> Task Exit.Generate Mono.MonoGraph
 pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
     let
-        -- POST-INLINE DEAD-SPEC PRUNE
-        -- (plans/post-inline-dead-spec-prune.md). The inliner orphans a
-        -- specialization whenever it inlines the only reference to it, and
-        -- nothing removed those: `Prune` runs at the END of
-        -- monomorphization and the inliner returns `callEdges =
-        -- Array.empty`. HERE is the only position where a
-        -- `MonoVarGlobal`-reachability is exact — everything that
-        -- references a spec by another route (AbiCloning's
-        -- `fastEvaluatorSpec`, post-settle devirt targets, CafHoist's
-        -- mints) runs after `runGlobalOptPhase`.
         simplifiedGraph =
             Steps.prune ecoConfig inlinedGraph
     in
     if ecoConfig.inline.report then
-        -- Inline census (inline.report / ECO_INLINE_REPORT=1): pass
-        -- metrics + the static count of closures surviving the pass
-        -- (HOF-elimination plan H0.2). stderr, like the LSS census.
-        --
-        -- Rendered over the PRUNED graph: `closuresRemaining` and the
-        -- residual taxonomy counted closures in dead specs until the prune
-        -- existed, so every one of those figures steps down once when it
-        -- lands (plan §4 R3 — a correction, not a regression).
         Task.io
             (System.IO.writeLn System.IO.stderr
                 (renderInlineReportWith ecoConfig.inline inlineMetrics simplifiedGraph
@@ -957,13 +1053,10 @@ pruneAndReportInline ecoConfig ( inlinedGraph, inlineMetrics ) =
             |> Task.map (\_ -> simplifiedGraph)
 
 
-{-| Census line for pre-mono alias forwarding
-(`plans/pre-mono-lss-transforms-04-alias-forwarding.md` §7).
-
-`pre-afwd-census:` when the flag is off (the map was built and the walk
-counted, nothing was rewritten) and `pre-afwd:` when it is on, so a log cannot
-be misread as evidence that the rewrite happened.
-
+{-| Renders the alias forwarding census line, ending with the 20 targets with the
+largest counts. The line opens `pre-afwd:` when `enabled`, and
+`pre-afwd-census:` when not, in which case the counts are of what the pass
+would have rewritten.
 -}
 renderPreAliasForwardReport : Bool -> AliasForward.Metrics -> String
 renderPreAliasForwardReport enabled m =
@@ -1017,17 +1110,10 @@ renderPreAliasForwardReport enabled m =
         ++ topTargets
 
 
-{-| Census line for pre-mono η-expansion
-(`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md` §2.8).
-
-`pre-eta-census:` when the flag is off (the classifier ran, nothing was
-rewritten) and `pre-eta:` when it is on, so a log cannot be misread as evidence
-that the rewrite happened.
-
-`bodiesSeen` is the denominator whose zero is impossible — the pre-mono
-inliner's lesson: `defs = 0` reads identically whether the pass refused
-everything or matched no node shape at all.
-
+{-| Renders the η-expansion census line, with the 20 most expanded and the 20 most
+declined names. The line opens `pre-eta:` when `enabled`, and
+`pre-eta-census:` when not, in which case the counts are of what the pass would
+have rewritten.
 -}
 renderPreEtaReport : Bool -> EtaExpand.Metrics -> String
 renderPreEtaReport enabled m =
@@ -1100,17 +1186,9 @@ renderPreEtaReport enabled m =
         ++ topDeclined
 
 
-{-| Census line for the closed-lambda-argument LIFT
-(`plans/pre-mono-lss-transforms-03-lift-closed-lambda-args.md` §5 layer C).
-
-Named `pre-lift-census:`, never `pre-lift:` — there is no transform behind it,
-and the η line's lesson is that a census must not be readable as evidence that
-a rewrite happened.
-
-`candidates` is the denominator whose zero is impossible; `closed` is the §5
-build gate's number and `liftable` is that number after R1 removes the callees
-loopify would claim.
-
+{-| Renders the closed-lambda-argument census line, `pre-lift-census:`, with the
+20 callees with the largest liftable and loopifiable counts. No transform
+stands behind it.
 -}
 renderPreLiftReport : LiftClosedArgs.Metrics -> String
 renderPreLiftReport m =
@@ -1154,9 +1232,8 @@ renderPreLiftReport m =
         ++ topBy m.byCalleeLoopifiable
 
 
-{-| Census line for the PRE-mono inliner (`plans/pre-mono-inline-simplify.md`).
-Deliberately mirrors the `inline-simplify:` line's leading fields so the two
-positions can be diffed directly.
+{-| Renders the pre-mono inliner's census line, `pre-inline-simplify:`, followed by
+its breakdown of the undetermined, over-budget and higher-order candidates.
 -}
 renderPreInlineReport : InlineSimplify.Metrics -> String
 renderPreInlineReport m =
@@ -1229,7 +1306,7 @@ renderPreInlineReport m =
            )
 
 
-{-| Top-N entries of a count dict, largest first, as `k=v` tokens.
+{-| Returns the `n` entries of `d` with the largest counts, largest first, as space-separated `k=v` tokens.
 -}
 top : Int -> Dict String Int -> String
 top n d =
@@ -1240,15 +1317,10 @@ top n d =
         |> String.join " "
 
 
-{-| Census line for the post-inline dead-spec prune
-(`plans/post-inline-dead-spec-prune.md` §3.5).
-
-`pruned` is specs the prune removed, `kept` what survived; a `pruned=0` next to
-a large `kept` is the flag being off, which the line says outright rather than
-leaving the reader to infer. Pruned specs are attributed to their GLOBAL via
-the pre-prune `reverseMapping`, because a spec id means nothing across compiles
-and a global name is the join key to every other census here.
-
+{-| Renders the prune census line from the graph `before` and `after` the prune:
+how many specializations were removed and kept, and the 20 globals that lost the
+most. A removed specialization is counted under its global in `before`'s
+registry, or under `?` when it has none.
 -}
 renderPruneReport : Mono.MonoGraph -> Mono.MonoGraph -> String
 renderPruneReport (Mono.MonoGraph before) (Mono.MonoGraph after) =
@@ -1306,6 +1378,12 @@ renderPruneReport (Mono.MonoGraph before) (Mono.MonoGraph after) =
            )
 
 
+{-| Renders the post-mono inliner's census lines: every inlined callee, the pass
+metrics, the identity-clearing reshapes, the uids of returned reshapes, the
+inline redundancy counts, the top 20 callees, the residual closures and the
+function results. The closure counts and the residual breakdowns are taken of
+`graph`.
+-}
 renderInlineReportWith : Config.InlineConfig -> MonoInlineSimplify.Metrics -> Mono.MonoGraph -> String
 renderInlineReportWith inlineConfig m graph =
     let
@@ -1367,9 +1445,6 @@ renderInlineReportWith inlineConfig m graph =
             ++ String.fromInt m.declinedArityCap
             ++ " closuresRemaining="
             ++ String.fromInt (MonoInlineSimplify.countClosures graph)
-
-        -- P0 (plans/lss-inline-member-propagation.md §7): identity-clearing
-        -- reshapes, and §7.1's use-shape split that decides §5 vs §6.
         , "inline reshapes (P0 axis 1: identity-clearing reshapes; axis 2: residual use shape): cleared="
             ++ String.fromInt
                 (Dict.foldl
@@ -1459,15 +1534,14 @@ renderInlineReportWith inlineConfig m graph =
         ]
 
 
-{-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
+{-| Runs global optimization (`Compiler.Pipeline.Steps.globalOptCore`, then `cse`,
+`dedupe` and `hoist`) and writes its census lines, returning the final graph.
 
-E-b (plans/frontend-heap-release.md §7.5): each pass is its OWN step —
-GlobalOpt, CSE, CAF dedupe, CAF hoist — so a pass's input graph dies as soon as
-the next pass has produced its output, instead of every intermediate being kept
-by one eager `let` rooted at `simplifiedGraph`. The census lines that need an
-intermediate graph are rendered to a `Maybe String` IN the step where that graph
-is live (the `if` is outside any closure, §10 trap 2), and every stderr line is
-still written in the original order by the last step.
+Each piece is its own step, so that its input graph can be collected once the
+next piece has its output. A census that needs an intermediate graph is
+rendered in the step where that graph is alive, and every line is written by
+the last step. `mapTemplateCfg` is the whole build configuration; the other
+configuration arguments are parts of it.
 
 -}
 runGlobalOptPhase : Config.EcoConfig -> Bool -> Bool -> Config.BorrowConfig -> Config.CafMemoConfig -> Config.CseConfig -> FEStats.Handle -> Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
@@ -1494,8 +1568,8 @@ runGlobalOptPhase mapTemplateCfg lssReport listReport borrowCfg cafMemo cseCfg s
         )
 
 
-{-| The configuration the GlobalOpt steps read (E-b). Flags and small records
-only — never a graph.
+{-| The configuration the global optimization steps read, kept apart from any graph
+so that no step captures one. `mapTemplateCfg` is the whole `EcoConfig`.
 -}
 type alias GlobalOptCfg =
     { mapTemplateCfg : Config.EcoConfig
@@ -1507,44 +1581,46 @@ type alias GlobalOptCfg =
     }
 
 
-{-| What the GlobalOpt steps carry besides the current graph: pass stats and
-census lines already rendered from graphs that are now dead.
+{-| What the global optimization steps carry besides the current graph: each
+piece's statistics and the census text already rendered. A name for
+`Compiler.Pipeline.Steps.GlobalOptResult`.
 -}
 type alias GlobalOptCarry =
     Steps.GlobalOptResult
 
 
-{-| kernel-opt-13 C2: bounded-scope CSE of pure calls, with its census
-(`Compiler.Pipeline.Steps.cse`). Runs HERE, post-annotation, because it adds
-MonoLet bindings and annotateCallStaging is O(2^let-depth); and BEFORE
-CafDedupe, so CSE never has to reason about specs dedupe is about to merge away.
+{-| Runs common subexpression elimination of pure calls (`Compiler.Pipeline.Steps.cse`) as a step.
 -}
 globalOptCseStep : GlobalOptCfg -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
 globalOptCseStep cfg goResult =
     Task.succeed (Steps.cse cfg.mapTemplateCfg goResult)
 
 
-{-| CAF spec dedupe and the pre-hoist CAF census
-(`Compiler.Pipeline.Steps.dedupe`): merge structurally identical nullary specs
-BEFORE census/hoist so downstream counts see the deduped graph. Its stats line
-IS the dedupe census.
+{-| Runs CAF dedupe and the pre-hoist CAF census (`Compiler.Pipeline.Steps.dedupe`) as a step.
 -}
 globalOptDedupeStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
 globalOptDedupeStep cfg cseResult =
     Task.succeed (Steps.dedupe cfg.mapTemplateCfg cseResult)
 
 
-{-| CAF hoisting (`Compiler.Pipeline.Steps.hoist`;
-plans/caf-hoist-closed-expressions.md DQ3 order: GlobalOpt → census(pre) →
-hoist → hoist stats → census(post)).
+{-| Runs CAF hoisting (`Compiler.Pipeline.Steps.hoist`) as a step.
 -}
 globalOptHoistStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task x ( Mono.MonoGraph, GlobalOptCarry )
 globalOptHoistStep cfg dedupeResult =
     Task.succeed (Steps.hoist cfg.mapTemplateCfg dedupeResult)
 
 
-{-| The last GlobalOpt step: every stderr line, in the original order, then the
-result. Only the final (hoisted) graph is live here.
+{-| Writes the global optimization census lines to stderr and returns the final
+graph with `Mode.Dev Nothing`.
+
+The lines come in this order, each under its own flag: CAF dedupe statistics,
+CSE statistics, the CSE census, the pre-hoist CAF census, CAF hoist statistics,
+the post-hoist CAF census (which needs hoisting on as well as `cafMemo.census`),
+the list combinator and `List.map` template censuses (`list.report`), the
+`lss globalopt:` line with the AbiCloning census (`mono.lss.report`), the
+generic-call census (`mono.stagingReport`) and the borrow census
+(`borrow.report`).
+
 -}
 globalOptReportStep : GlobalOptCfg -> ( Mono.MonoGraph, GlobalOptCarry ) -> Task Exit.Generate MonoBuildResult
 globalOptReportStep cfg ( hoistedGraph, carry ) =
@@ -1607,7 +1683,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
         |> Task.andThen
             (\_ ->
                 if cafMemo.census && cafMemo.hoist.enabled then
-                    -- POST-hoist residue: the H2 collapse gate.
                     writeLnErr (CafCensus.report "caf-census(post-hoist)" censusCfg hoistedGraph)
 
                 else
@@ -1616,10 +1691,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
         |> Task.andThen
             (\_ ->
                 if listReport then
-                    -- List-combinator recognition census (list.report /
-                    -- ECO_LIST_REPORT=1; chunked-list plan §6 L1.1).
-                    -- stderr, like the LSS census; compared against the
-                    -- L0 static census (§11.a) as the recognition gate.
                     writeLnErr (ListCombinators.report hoistedGraph)
 
                 else
@@ -1628,17 +1699,8 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
         |> Task.andThen
             (\_ ->
                 if listReport then
-                    -- List.map template licence census
-                    -- (plans/list-map-mlir-template.md Gate 3:
-                    -- licensed + declined* == recognized). Rides on the
-                    -- same env flag as the combinator census and is
-                    -- derived from the SAME graph codegen will see, so the
-                    -- printed numbers are the numbers emission acts on.
-                    -- The derivation is repeated here rather than threaded
-                    -- out of Backend: this is a census-only path, and
-                    -- paying CsePurity.analyze twice under
-                    -- ECO_LIST_REPORT=1 is cheaper than a plumbing seam
-                    -- that could drift from what emission actually used.
+                    -- Derived here from the final graph rather than taken
+                    -- from the backend, which derives it again for emission.
                     writeLnErr
                         (MapTemplate.report
                             (MapTemplate.derive mapTemplateCfg hoistedGraph)
@@ -1650,9 +1712,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
         |> Task.andThen
             (\_ ->
                 if lssReport then
-                    -- GlobalOpt census line (stderr, like the mono census above):
-                    -- staging wrapper insertions + AbiCloning singleton-upgrade
-                    -- outcomes (design §9.4's retirement counters).
                     Task.io
                         (System.IO.writeLn System.IO.stderr
                             ("lss globalopt: dispatchUpgraded="
@@ -1719,9 +1778,6 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
             )
         |> Task.andThen
             (\_ ->
-                -- Borrow-inference census (borrow.report / ECO_BORROW_REPORT):
-                -- the real B2 uniqueness/sharing oracle census. stderr,
-                -- graph-inert.
                 if borrowCfg.report then
                     writeLnErr (Borrow.renderStats goStats.borrow)
                         |> Task.map (\_ -> result)
@@ -1731,19 +1787,21 @@ globalOptReportStep cfg ( hoistedGraph, carry ) =
             )
 
 
-{-| The generic-call census line
-(plans/staging-honesty-and-production-test-pipeline.md P0.3), under
-`mono.stagingReport` (`ECO_STAGING_REPORT=1`).
+{-| Renders the generic-call census line, `lss gencall:`.
 -}
 stagingCensusLine : MonoGlobalOptimize.GlobalOptStats -> String
 stagingCensusLine goStats =
     "lss gencall: " ++ GenCallCensus.render goStats.genCalls
 
 
-{-| Census lines (2026-07-21, plans/lss-dispatch-value-extraction.md open
-questions): per-member decline attribution (+ rep symbols for the runtime
-census join), the multi-set site histogram (E3 de-risk), and the LTop
-callee-shape split (E8 sizing). Report-only.
+{-| Renders the AbiCloning census lines that follow the `lss globalopt:` line:
+declines and blocked members by member, call sites with several candidate
+members, callee shapes, and the instance-qualified tables by host.
+
+Some labels state a smaller count than the table can hold. The table labelled
+`top400` takes up to 1,200,000 entries, `noInstance by host+guard top80` up to
+400,000, and `declines by host top60` up to 4,000.
+
 -}
 abiCensusLines : AbiCloning.AbiCloningStats -> String
 abiCensusLines abi =
@@ -1786,18 +1844,12 @@ abiCensusLines abi =
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
 
-        -- Phase 1a/3: the "still a variable" half of the old undifferentiated
-        -- ⊤ site population (plans/lss-unknown-elimination.md §2.5).
         unknownShapes =
             Dict.toList abi.varSiteShapes
                 |> List.sortBy (\( _, c ) -> negate c)
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
 
-        -- The go/no-go table: per HOST global, how its consulted call sites
-        -- resolved. The join key against the caller-attributed runtime
-        -- dispatch census. UNTRUNCATED on purpose: a take ranked by site
-        -- count silently drops hosts whose sites fragment across a rich key.
         iqHosts =
             Dict.toList abi.instQual.byHost
                 |> List.filter (\( k, _ ) -> not (String.endsWith "|stamped" k))
@@ -1806,10 +1858,6 @@ abiCensusLines abi =
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
 
-        -- arityOver is 34.8 % of all declines and hosts every hot fold
-        -- callback (plans/lss-instance-qualified-members.md §12.5). Its own
-        -- line, wide, because it is the successor target and the JOIN KEY for
-        -- the caller-attributed dynamic census.
         iqArityOverHosts =
             byReason "|arityOver" 80
 
@@ -1824,8 +1872,6 @@ abiCensusLines abi =
                 |> List.map (\( k, c ) -> k ++ "=" ++ String.fromInt c)
                 |> String.join " "
 
-        -- LSS_026 §11: blocked members with their blocker instance — the
-        -- adopting synthetic closure's symbol names the wrapped def.
         blockedLine =
             abi.blockedMembers
                 |> List.map
@@ -1904,9 +1950,7 @@ abiCensusLines abi =
                )
         , "lss census instQual noInstance GUARD TOTALS (UNTRUNCATED - a take ranked by site count silently hides fragmented hosts): "
             ++ (let
-                    -- key is `<host>|<why>` and `why` itself contains
-                    -- `|` (e.g. `g3over|1->2|peelable`), so drop the
-                    -- FIRST segment and rejoin the rest.
+                    -- A key is `<host>|<why>`, and `why` may itself contain `|`.
                     whyOf k =
                         String.join "|" (List.drop 1 (String.split "|" k))
 
@@ -2034,7 +2078,9 @@ abiCensusLines abi =
         ]
 
 
-{-| Stream MLIR output directly to a file, avoiding holding the full text in memory.
+{-| Builds the program as the module docstring describes and writes it to `target`
+as MLIR text, in chunks as it is generated. The constant-thunk census is written
+first, under `constThunksReport`.
 -}
 writeMonoMlirStreaming :
     Config.EcoConfig
@@ -2066,8 +2112,8 @@ writeMonoMlirStreaming ecoConfig stats root maybeBuildDir localPackages details 
             )
 
 
-{-| Generate MLIR bytecode using the streaming encoder.
-Processes funcs one at a time to reduce peak memory usage.
+{-| Builds the program as `writeMonoMlirStreaming` does and writes it to `target`
+as MLIR bytecode.
 -}
 writeMonoMlirStreamingBytecode :
     Config.EcoConfig
@@ -2096,7 +2142,8 @@ writeMonoMlirStreamingBytecode ecoConfig stats root maybeBuildDir localPackages 
             )
 
 
-{-| CGEN\_082 census (`ECO_CONST_THUNK_REPORT=1`): stderr, before codegen.
+{-| Writes the constant-thunk census (`Compiler.Generate.MLIR.Backend.constThunkReport`)
+to stderr when `constThunksReport` is on.
 -}
 constThunkCensus : Config.EcoConfig -> Mono.MonoGraph -> Task x ()
 constThunkCensus ecoConfig monoGraph =
@@ -2107,6 +2154,8 @@ constThunkCensus ecoConfig monoGraph =
         Task.succeed ()
 
 
+{-| Merges an outside root's typed graph into `graph`. An inside root, or an outside root with no typed graph, leaves it unchanged.
+-}
 addRootTypedGraph : Build.Root -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addRootTypedGraph root graph =
     case root of
@@ -2123,6 +2172,8 @@ addRootTypedGraph root graph =
                     graph
 
 
+{-| Adds an outside root's type env to `globalEnv`. An inside root, or an outside root with no type env, leaves it unchanged.
+-}
 addRootTypeEnv : Build.Root -> TypeEnv.GlobalTypeEnv -> TypeEnv.GlobalTypeEnv
 addRootTypeEnv root globalEnv =
     case root of

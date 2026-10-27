@@ -3,37 +3,37 @@ module Compiler.Generate.MLIR.LogicalTypes exposing
     , addLogicalTypesAttr, addLogicalTypesAttrUnknown
     )
 
-{-| Encode a function's logical Elm parameter/result types as
-StringAttr entries for the `eco.logical_param_types` /
-`eco.logical_result_types` attributes on `func.func` ops (CGEN\_065).
+{-| An emitted function's MLIR signature says how each value is passed, not what
+Elm type it has, and this module records the Elm-level shape alongside it.
 
-The encoding pipeline is two-stage:
+A function's ABI type for a parameter is `i64`, `f64`, `i16`, `i1` or
+`!eco.value`. A tuple, a record, a list and a custom value all pass as
+`!eco.value`, so the signature cannot say whether a parameter is, say, a pair
+of an `Int` and a `Float`. The _logical type_ of a parameter or result is that
+shape: which aggregate it is and what kind each of its elements has. This module
+attaches the logical types to a `func.func` op as two array attributes of
+strings, `eco.logical_param_types` with one entry per parameter and
+`eco.logical_result_types` with one entry for the result. Anything that reads
+them later can tell which functions take or return a small aggregate whose
+elements are primitive.
 
-    MonoType / MlirType  →  LogicalTypeDesc  →  wire-format String
+An Elm type is first described as a `LogicalTypeDesc`, then rendered as a
+string, the _wire format_:
 
-The intermediate `LogicalTypeDesc` ADT carries the structural facts
-the cross-spec pass needs (field count for records, ctor tag for
-customs, element kinds for aggregates) so the producer side can't
-accidentally emit a malformed encoding — every valid `LogicalTypeDesc`
-maps to a parseable wire string and vice versa.
+  - `"i64"`, `"f64"`, `"i16"`, `"i1"` for a primitive.
+  - `"value"` for anything else, and for a type whose shape is not known.
+  - `"tuple2:K:K"` and `"tuple3:K:K:K"` for a tuple of two or three elements.
+  - `"record:N:K..."` for a record of N fields, listed in the order
+    `Types.computeRecordLayout` gives them.
+  - `"custom:Tag:N:K..."` for a custom type with exactly one constructor, whose
+    tag is Tag and whose N fields number between one and a limit the caller
+    passes.
+  - `"cons:K:v"` for a list.
 
-Aggregate element types are constrained to a single primitive-kind
-character (`i`/`f`/`c`/`v`) by the wire format itself; the `AggKind`
-type makes that constraint explicit on the producer side too.
-
-Wire format (one StringAttr per param/result):
-
-  - `"i64"` / `"f64"` / `"i16"` / `"i1"` — primitive ABI types.
-  - `"value"` — `!eco.value` (boxed; not aggregate-eligible). Also
-    serves as the "unknown / opaque" entry that satisfies CGEN\_065's
-    "absent or LUnknown ⇒ non-eligible" clause.
-  - `"tuple2:K0:K1"` — 2-tuple. K is single-char element kind.
-  - `"tuple3:K0:K1:K2"` — 3-tuple.
-  - `"record:N:K0:...:KN-1"` — record with N fields in layout order.
-  - `"custom:Tag:N:K0:...:KN-1"` — single-constructor custom with N
-    ≤ `customMaxFields` fields. Multi-ctor and oversized customs
-    encode as `"value"` so cross-spec leaves them boxed.
-  - `"cons:Khead:Ktail"` — list cons cell (tail is always `v`).
+Each `K` is an _aggregate kind_, one character saying what an element is: `i`
+for `Int`, `f` for `Float`, `c` for `Char`, and `v` for anything else, nested
+aggregates included. The kind comes from the element's Elm type alone, not from
+how a heap object stores it.
 
 @docs LogicalTypeDesc, AggKind
 @docs addLogicalTypesAttr, addLogicalTypesAttrUnknown
@@ -46,18 +46,25 @@ import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
-{-| Structural description of one parameter or result's logical type.
+{-| The logical type of one parameter or result: its Elm-level shape, before it
+is rendered as a wire-format string.
 
-Each variant maps 1:1 to a wire-format string but carries the
-structural facts in typed form so producers can't accidentally
-emit a malformed encoding (e.g. record field count disagreeing
-with the kind list).
+`LValue` is any type with no more specific description, including `Bool`,
+`String`, the unit type, functions, type variables, tuples of other sizes and
+most custom types.
 
-`LUnknown` is the explicit "logical type unavailable" entry —
-distinct from `LValue` (`!eco.value` is a real boxed Elm type)
-even though both serialise to `"value"` on the wire. The
-distinction matters for diagnostic output and possible future
-refinement; cross-spec treats them identically for now.
+`LI64`, `LF64` and `LI16` are `Int`, `Float` and `Char`. `LI1` comes only from
+an `i1` ABI type, never from an Elm type.
+
+`LTuple2` and `LTuple3` carry the kind of each element in order. `LRecord`
+carries the kind of each field in record layout order, and its field count is
+the length of that list. `LCustom` carries the constructor's tag and the kind of
+each of its fields. `LCons` carries the kind of the list's head and of its tail,
+which is always `AKValue` here.
+
+`LUnknown` means the logical type could not be determined. It renders as
+`"value"`, the same string as `LValue`, so nothing reading the attribute can
+tell the two apart.
 
 -}
 type LogicalTypeDesc
@@ -74,8 +81,8 @@ type LogicalTypeDesc
     | LUnknown
 
 
-{-| Aggregate element kind. Single-character on the wire
-(REP\_HEAP\_002): `i`/`f`/`c`/`v` for i64/f64/i16/!eco.value.
+{-| What one element of an aggregate is, written as one character in the wire
+format: `Int`, `Float`, `Char`, or any other type.
 -}
 type AggKind
     = AKInt
@@ -84,8 +91,9 @@ type AggKind
     | AKValue
 
 
-{-| Compute the logical description of a MonoType, consulting the
-ctor registry to recognise single-constructor customs.
+{-| Returns the logical type of `ty`. `ctorShapes` supplies the constructors of a
+custom type, and a custom type is described as `LCustom` only when
+`customDescFor` accepts it.
 -}
 monoTypeToLogical : Int -> Mono.LayoutMap (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
 monoTypeToLogical customMaxFields ctorShapes ty =
@@ -113,7 +121,6 @@ monoTypeToLogical customMaxFields ctorShapes ty =
             LRecord (List.map (kindOf << .monoType) layout.fields)
 
         Mono.MList _ headType ->
-            -- Tail is recursive (List a), always boxed at the wire level.
             LCons (kindOf headType) AKValue
 
         Mono.MCustom _ _ _ _ ->
@@ -123,8 +130,9 @@ monoTypeToLogical customMaxFields ctorShapes ty =
             LValue
 
 
-{-| Try to build an `LCustom` for a single-constructor Mono.mCustom with
-≤ `customMaxFields` fields; fall back to `LValue` otherwise.
+{-| Returns `LCustom` for a custom type that has exactly one constructor in
+`ctorShapes`, with between one and `customMaxFields` fields, and `LValue` for
+any other, including one `ctorShapes` does not know.
 -}
 customDescFor : Int -> Mono.LayoutMap (List Mono.CtorShape) -> Mono.MonoType -> LogicalTypeDesc
 customDescFor customMaxFields ctorShapes ty =
@@ -147,9 +155,8 @@ customDescFor customMaxFields ctorShapes ty =
             LValue
 
 
-{-| Project a MonoType down to its aggregate-element kind. Non-
-primitive types (including nested aggregates) collapse to `AKValue`,
-matching the wire format's single-character element encoding.
+{-| Returns the aggregate kind of an element of type `ty`: `AKValue` for anything
+but `Int`, `Float` and `Char`, nested aggregates included.
 -}
 kindOf : Mono.MonoType -> AggKind
 kindOf ty =
@@ -167,10 +174,8 @@ kindOf ty =
             AKValue
 
 
-{-| Derive a logical description from an MLIR ABI type alone (no
-MonoType context). Used by `func.func` emitters that don't carry
-MonoTypes — kernel decls in particular. Only the four primitive
-ABI types map directly; everything else is `LUnknown`.
+{-| Returns the logical type that an ABI type alone shows: a primitive for
+`i64`, `f64`, `i16` and `i1`, and `LUnknown` for any other.
 -}
 mlirTypeToLogical : MlirType -> LogicalTypeDesc
 mlirTypeToLogical mlirType =
@@ -191,11 +196,7 @@ mlirTypeToLogical mlirType =
             LUnknown
 
 
-{-| Render a logical description as its wire-format string.
-
-Total over the `LogicalTypeDesc` constructor space; producers can
-never emit a malformed encoding by construction.
-
+{-| Renders a logical type as its wire-format string.
 -}
 encodeLogicalType : LogicalTypeDesc -> String
 encodeLogicalType desc =
@@ -237,12 +238,10 @@ encodeLogicalType desc =
             "cons:" ++ kindChar h ++ ":" ++ kindChar t
 
         LUnknown ->
-            -- LUnknown wire-encodes identically to LValue but stays
-            -- distinct in the ADT for diagnostic / future use.
             "value"
 
 
-{-| Single-character encoding of an aggregate element's primitive kind.
+{-| Returns the one-character wire form of an aggregate kind.
 -}
 kindChar : AggKind -> String
 kindChar k =
@@ -260,12 +259,12 @@ kindChar k =
             "v"
 
 
-{-| Post-hoc attribute attacher. Adds `eco.logical_param_types` and
-`eco.logical_result_types` to a `func.func` op based on its logical
-parameter / result MonoTypes. No-op for non-`func.func` ops.
+{-| Returns `op` with the logical types of `argTypes` and `resultType` attached,
+replacing any already there. An op that is not a `func.func` is returned
+unchanged.
 
-`ctorShapes` comes from `ctx.typeRegistry.ctorShapes` and is needed
-for recognising single-constructor customs.
+`ctorShapes` supplies the constructors of each custom type, and a custom type
+with more than `customMaxFields` fields is described as `"value"`.
 
 -}
 addLogicalTypesAttr : Int -> Mono.LayoutMap (List Mono.CtorShape) -> List Mono.MonoType -> Mono.MonoType -> MlirOp -> MlirOp
@@ -276,11 +275,11 @@ addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
         op
 
 
-{-| Attach `eco.logical_param_types` / `eco.logical_result_types`
-using only MLIR ABI types — no MonoType context. Aggregate slots
-all become `LUnknown` since the ABI type alone can't recover the
-aggregate's shape; cross-spec then conservatively skips the function
-(CGEN\_065).
+{-| Returns `op` with logical types attached for a function known only by its ABI
+types, replacing any already there. An `i64`, `f64`, `i16` or `i1` is described
+as that primitive and any other type as `"value"`, because an `!eco.value` does
+not show which aggregate, if any, it holds. An op that is not a `func.func` is
+returned unchanged.
 -}
 addLogicalTypesAttrUnknown : List MlirType -> MlirType -> MlirOp -> MlirOp
 addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
@@ -290,9 +289,8 @@ addLogicalTypesAttrUnknown argMlirTypes resultMlirType op =
         op
 
 
-{-| Shared attribute-attachment core. Both `addLogicalTypesAttr` and
-`addLogicalTypesAttrUnknown` funnel through here after converting
-their inputs to `LogicalTypeDesc`s.
+{-| Returns `op` with `argDescs` and `resultDesc` rendered into its two
+logical-type attributes, if it is a `func.func`, and unchanged otherwise.
 -}
 addLogicalDescsAttr : List LogicalTypeDesc -> LogicalTypeDesc -> MlirOp -> MlirOp
 addLogicalDescsAttr argDescs resultDesc op =

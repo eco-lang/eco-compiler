@@ -7,32 +7,70 @@ module Compiler.MonoSolver.Engine exposing
     , AliasKey, AliasVerdict(..), ArrowFact, Env, GroundingStats, ItemAux, LayoutQualStats, LssMemberTable, LssSignature, LssStats, MemberSource(..), MonoMemo, NodeResolution, NumberInstance, NumberMultiEntry, QEntry(..), QPre(..), QShadowStats, SettledStats, SigFlowStats, SpecTally, aliasKeyEq, aliasKeyHash, bumpAppliedArrow, bumpArgFlowCensus, bumpArgFlowCensusBy, bumpCompletionJoin, bumpCompletionJoinNoop, bumpEdgeInstalled, bumpFlowDegraded, bumpKernelFactHit, bumpKernelLicensed, bumpTopMixedFlexSig, bumpWidenedByCf, bumpWidenedByKernel, bumpWidenedBySigSize, clearResidualReads, clearedAux, consS, crashFailure, emptyItemAux, emptyLssStats, emptyMemberTable, emptyMonoMemo, groundSetMembers, groundStandaloneMemberIdFor, harvestSuperTableExcept, insertVar, internMemberKey, isLocalMultiTarget, isScalarVar, kernelMemberIdFor, lambdaInstanceMemberId, layoutQualKey, localInstanceTagFor, localVarInfo, lookupCallMemo, lookupSchemeMono, lookupVar, markFlexCtorSpec, memberIdFor, membersClass, memoizedSignatureTrivial, mixTag, numberMultiRootType, papMemberIdFor, papMemberKey, popLocalMulti, popNumberMulti, pushLocalMulti, pushNumberMulti, putAliasVerdict, putCallMemo, putSchemeMono, recordLocalInstance, recordNumberInstance, recordSpecWidenedKey, renderFailure, restoredAux, scoped, specIdsForGlobal, srcLambdaKey, standaloneMemberGlobal, standaloneMemberIdFor, standaloneMemberKernel, trivialSignature, withScratchStore
     )
 
-{-| Core state + step monad for the solver-based monomorphizer.
+{-| The state the solver-based monomorphizer threads through all of its work,
+and the primitives over that state which the other `Compiler.MonoSolver`
+modules share.
 
-`S` is one record threading BOTH the global monomorphization state (worklist,
-registry, nodes, …) and the per-work-item solver state (the union-find `store`
-plus the `memo` mapping MVarIds to union-find Points).
+Monomorphization turns a polymorphic program into one in which every function
+is used at one concrete type. The solver engine does it one _work item_ at a
+time. A work item is one specialization, or _spec_: one global definition at
+one concrete `MonoType`, named by a `SpecId`. Translating a work item loads the
+definition's types into a union-find _point store_ (an `IO.State` from
+`System.TypeCheck.IO`), unifies them with the demanded type, and reads the
+results back as `MonoType`s. Each work item starts with a fresh store, and every
+store numbers its Points from 0, so a Point means nothing outside the store that
+minted it.
 
-`Step a = S -> ( a, S )` is a plain state-passing function — a type synonym,
-not a monad. Step 10 removed the `Result Failure` half: nothing in the
-`Translate`/`Store`/`LssInfer` call graph ever CONSTRUCTED a failure, so the
-short-circuit was propagation of something that could not happen, at the cost
-of one `Ok` box and one `Result` match per bind on paths that run hundreds of
-millions of times per self-compile. The two real failure modes kept their
-own channels: `ItemAux.pendingFailure` for the MONO\_030 enqueue watchdog
-(read once per item by `Monomorphize.drain`), and `crashFailure` for engine
-bugs. Only the three driver-level functions still return `Result Failure`
-(`drain`, `processItem`, `specializeNodeSaturating`) — see the module doc of
-`Compiler.MonoSolver.Monomorphize`.
+That fact divides `S` in two. The run-global fields live for the whole run: the
+worklist, the specialization registry, the translated nodes, the super table,
+the lambda-set signatures and member table, the classification memos and the
+hash-cons table `intern`. The per-item fields are replaced by `resetItem`
+before each work item: the store, `memo` (MVarId to Point), `revMemo` (Point to
+the first MVarId that minted it), the local variable environment, the
+multi-instance stacks and `itemAux`. The `itemAux` fields that `clearedAux`
+empties are _store-scoped_: `withScratchStore` runs a step against a separate
+store, so it clears those fields on the way in and restores them on the way out.
+`lssRootAnn` also holds a Point but is carried across the swap unchanged.
 
-There is no combinator layer any more: `andThen`, `map`, `map2`, `succeed`,
-`getS`, `modifyS`, `runStep`, `lift`, `liftU`, `afterU` and `scopedStep` were
-all deleted in step 10g and their call sites are explicit `case … of ( a, s1 )`
-chains. `traverse`, `foldlS`, `scoped`, `withScratchStore` and `liftIO` survive
-as ordinary direct-state higher-order functions. Writing the chains out is not
-a style preference: a function whose result-spine leaves are tuple LITERALS is
-eligible for the backend's `$sret` multi-result promotion (`Backend.buildSretPromoted`),
-and one written as a combinator chain never is.
+`Step a` is `S -> ( a, S )`: plain state passing, with no failure channel. A
+construct the engine cannot handle, or a broken internal invariant, aborts the
+process through `crashFailure`. A spec watchdog trip in `enqueueSpec` is instead
+recorded in `ItemAux.pendingFailure`, for the driver in
+`Compiler.MonoSolver.Monomorphize` to report once the item finishes. The few
+combinators kept (`traverse`, `foldlS`, `scoped`, `withScratchStore`,
+`liftIO`) take the state directly, and callers write their sequencing as
+explicit `case ... of ( a, s1 )` chains: a function whose results are tuple
+literals can have its multi-result return promoted by the native backend
+(`Backend.buildSretPromoted`), and one written as a combinator chain cannot.
+
+**Lambda-set specialization (LSS).** With `env.lss.enabled` on, every function
+type carries a _lambda set_: the function values that can reach that position.
+Each such value is a _member_, named by an integer _member id_. Member ids come
+from one supply, `nextMemberId`, and one key table, `LssMemberTable.byKey`, so
+minting a member is get-or-create on its key. The key forms are:
+
+  - `g|<global>`, a reference to a global function, and `c|<global>`, a
+    constructor used as a value. These are _provisional_: when a set is read
+    back at a concrete arrow, `groundSetMembers` rewrites them to _ground_
+    members `g|<global>|<typeKey>`, one per global and instantiation layout.
+  - `k|<home>.<name>`, a kernel function, and `a|<field>`, a record accessor.
+  - `p|<global>|<n>`, a partial application of a global with `n` arguments
+    supplied. It is never grounded and never treated as the global itself,
+    because a direct call to the global would drop the supplied arguments.
+  - `l|<raw>|<qualifier>`, one instance of a source lambda, where `raw` is the
+    lambda's id from `AssignMVarIds` and the qualifier names the spec it was
+    translated in (see `lambdaInstanceMemberId`). A definition's root lambda
+    uses its global's `g|<global>|<qualifier>` key instead, so that it is the
+    same member a grounded reference to the global gives.
+
+The supply is seeded above the source lambda ids, so a raw lambda id and an
+interned id never collide. A raw lambda id is used un-interned in signatures,
+and wherever LSS is off or no spec is being translated.
+
+Much of the file is census: `LssStats` and its sub-records, and the `bump*`
+functions, which count events for the LSS report (`lss.report`). Some count
+only when the report is on, and their docstrings say so; the others count
+always. Two fields of `LssStats` are also read by the engine (see `LssStats`).
 
 @docs S, Step, Failure, WorkItem
 @docs traverse, foldlS, liftIO
@@ -69,16 +107,15 @@ import Utils.Crash as Crash
 -- ====== STATE ======
 
 
-{-| A unit of pending work: specialize the definition behind this SpecId.
+{-| A unit of pending work on the worklist: translate the spec named by this
+`SpecId`.
 -}
 type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
-{-| Per-global spec tally: count for the M4 budget (O(1) read on the enqueue
-hot path) and the created spec ids for the `lss.destrAnno` ctor-demand-union
-read (plans/lss-ctor-arrow-identity.md §9.6). Ids are prepended, newest
-first.
+{-| The specs created so far for one global under LSS: how many, for the
+per-global spec budget, and their ids, newest first.
 -}
 type alias SpecTally =
     { count : Int
@@ -86,13 +123,16 @@ type alias SpecTally =
     }
 
 
+{-| The tally of a global with no specs.
+-}
 emptySpecTally : SpecTally
 emptySpecTally =
     { count = 0, ids = [] }
 
 
-{-| The created-spec ids for a global (comparable key), newest first. Empty
-when LSS is off (the tally is maintained only under LSS).
+{-| Returns the ids of the specs created for the global whose comparable key is
+`gkey`, newest first. The list is empty when LSS is off, because the tally is
+kept only by the LSS path of `enqueueSpec`.
 -}
 specIdsForGlobal : String -> S -> List Int
 specIdsForGlobal gkey s =
@@ -104,139 +144,124 @@ specIdsForGlobal gkey s =
             []
 
 
-{-| One annotation arrow's LSS facts (design §7.1):
+{-| What a definition's body says about the lambda set of one arrow in its
+annotation, as part of an `LssSignature`.
 
-  - `rep`: smallest ordinal whose set slot the body unified with this one
-    (the "same α at two positions" linkage, e.g. `twice : (a -> a) -> a -> a`
-    sharing its two arrows).
-  - `members`: ids the body itself injects into this arrow's set.
-  - `top`: the body forces ⊤ (e.g. the arrow reaches a kernel boundary).
-  - `sources` (LSS\_023): ordinals whose sets flow INTO this one — the
-    DIRECTED half of the fact language. `rep` stays genuine UF-equality
-    (same-value chains: for `pass f = f` the param and result ARE one
-    value); `sources` is inclusion, applied by the caller as deferred
-    `Store.addSlotSource` edges and resolved at read. This is the paper's
-    promoted-`ᾱ` half of promote-or-internalize (Fig. 7): a reached
-    signature ordinal is PROMOTED here; a reached non-signature slot is
-    INTERNALIZED into `members`.
+`rep` is the smallest arrow ordinal whose set the body unified with this one,
+so two arrows with equal `rep` share one set (in `twice : (a -> a) -> a -> a`
+both arrows are one function value). `members` are the member ids the body
+itself puts in this arrow's set. `top` means the body forces the set to ⊤,
+the set that may hold anything. `topKind` records the cause of that ⊤ and is
+meaningful only when `top` is set. `sources` are ordinals whose sets flow into
+this one: an inclusion, not an equality, which a caller installs as directed
+edges in its own store.
 
 -}
 type alias ArrowFact =
     { rep : Int
     , members : List Int
     , top : Bool
-
-    -- §4.9 ⊤ provenance: the birth kind of the ⊤ this fact transports
-    -- (meaningful only when `top = True`; `Mono.tkLegacy` otherwise). Rides
-    -- the signature channel so an instantiated ⊤ keeps its cause instead of
-    -- being re-manufactured as unattributed at every application site.
     , topKind : Int
     , sources : List Int
     }
 
 
-{-| Per-definition lambda-set signature: the facts a caller must apply to the
-arrows of a fresh instantiation of the def's annotation type, indexed by
-ARROW ORDINAL — position in the slot array minted by
-`Store.loadTypeIsolatedWithArrows`/`loadTypeWithArrows` over the SAME
-annotation type (LSS\_006).
+{-| A definition's lambda-set signature: the facts a caller applies to the
+arrows of a fresh instantiation of the definition's annotation.
+
+`arrows` is indexed by arrow ordinal, the position of the arrow's set slot in
+the slot array that `Store.loadTypeWithArrows` or
+`Store.loadTypeIsolatedWithArrows` mints for that same annotation. `trivial`
+means every fact is the default one (`trivialSignature`). `residual` restates
+the `members` of each arrow as pairs of the arrow's representative ordinal
+(`rep`) and its member ids, for a
+caller to apply as constraints against a fresh instantiation.
+
 -}
 type alias LssSignature =
     { arrows : Array ArrowFact
-    , trivial : Bool -- every fact is {rep=self, members=[], top=False}
-
-    -- §5.2 (plans/lss-paper-inclusion-constraints.md): `residual` is `Q` — `ℓ… ⋸ α`, keyed by CANONICAL ordinal. It carries the
-    -- same information `ArrowFact.members` does, in the paper's direction: a
-    -- constraint the USE re-emits against a freshly instantiated α, rather
-    -- than a solved set the use copies. Derived from `members` at
-    -- generalization, so the two agree by construction and the change is
-    -- byte-neutral; what it buys is that the application path stops reading a
-    -- pre-solved answer, which is the precondition for §5.3.
+    , trivial : Bool
     , residual : List ( Int, List Int )
     }
 
 
-{-| LSS census counters (rendered by the report, `lss.report`).
+{-| The run's LSS counters and histograms, printed by the LSS report.
+
+Most of them are census only. Two are also read by the engine.
+`flexCtorSpecs` holds the constructor specs demanded by a construction whose
+translated argument carried an unresolved arrow, and the settle pass
+`settleVarCtorRows` reads it. `joinRounds` counts the rounds, after the
+worklist drains, that re-translate dirty specs, and the driver stops with an
+error when it reaches its cap; `retranslations` counts the specs those rounds
+re-translate.
+
 -}
 type alias LssStats =
     { setsZonked : Int
-    , flexCtorSpecs : CoreDict.Dict Int () -- Phase 2b (plans/lss-var-chain-roots.md §3): ctor SPECS demanded by a slow-path construction whose translated arg carried a FLEX arrow — a real inhabitant may hide behind that spec's var payload row, so settleVarCtorRows must not settle-write cells where such a spec still shows var
-    , joinRounds : Int -- LSS_010 drain-end flush rounds
-    , retranslations : Int -- specs re-translated across all flush rounds
+    , flexCtorSpecs : CoreDict.Dict Int ()
+    , joinRounds : Int
+    , retranslations : Int
     , widenedBySize : Int
     , widenedByKernel : Int
     , widenedByBudget : Int
-    , devirtDirect : Int -- E9 (LSS_015): singleton-ctor indirect calls rewritten to direct ctor calls
-    , devirtKernel : Int -- E9.2 (LSS_016): singleton whitelisted-kernel indirect calls rewritten to direct kernel calls
-    , sizeHist : CoreDict.Dict Int Int -- set size -> count (post-zonk)
-    , unqualifiedLambdaMints : Int -- Fix B (LSS_017): translation-phase lambda-instance mints under keyed routing with no current spec id (expected 0; nonzero = a mint site outside any work item)
+    , devirtDirect : Int -- indirect calls through a one-member set of a constructor or function global, rewritten to direct calls
+    , devirtKernel : Int -- calls through a set whose one member is a kernel or a kernel alias, rewritten to direct kernel calls
+    , sizeHist : CoreDict.Dict Int Int -- set size at read-back -> count
+    , unqualifiedLambdaMints : Int -- lambda instances minted with LSS on and no spec being translated
 
-    -- Census (2026-07-21, plans/lss-dispatch-value-extraction.md open
-    -- questions): the E9.2 kernel-devirt guard-decline split (E10.0's
-    -- `declinedUnsettled` proxy = the CNumber bucket) + the whitelist-growth
-    -- shopping list. Stats-only — never touches the graph.
-    , declinedKernelShape : Int -- kernel devirt declined by the SHAPE guard (site type not the whitelist entry's true shape)
-    , declinedKernelCNumber : Int -- declined by the deep-CNumber emission checks (residual number vars = UNSETTLED site; the E10.0 population)
-    , declinedKernelEmission : Int -- declined by the non-CNumber emission checks (unboxed-scalar tail/result, arg shape)
-    , declinedKernelArity : Int -- whitelisted kernel singleton consulted at a non-whitelist-arity site
-    , kernelUnsolvedHist : CoreDict.Dict String Int -- ONE-SHOT CENSUS (kernel-intrinsic-annotations): LICENSED kernels whose occurrence verification was REFUSED — i.e. exactly where an intrinsic annotation would pay
-    , kernelMissHist : CoreDict.Dict String Int -- NON-whitelisted kernel singleton call sites, "home.name" -> count (whitelist growth)
+    -- Why a one-kernel set was not turned into a direct kernel call
+    , declinedKernelShape : Int -- the call site's type is not the kernel's expected shape
+    , declinedKernelCNumber : Int -- an unresolved number variable remains at the site
+    , declinedKernelEmission : Int
+    , declinedKernelArity : Int -- the call's arity is not the one the kernel is listed with
+    , kernelUnsolvedHist : CoreDict.Dict String Int -- licensed kernels whose check at an occurrence failed -> count
+    , kernelMissHist : CoreDict.Dict String Int -- "home.name" of kernels not on the direct-call list -> call sites
 
-    -- Substrate census (Phase 1 of plans/lss-set-write-substrate.md). Stats
-    -- only — never touches the graph. These size the substrate work: the
-    -- set-write split says how much of the write path the E9.3 fast paths
-    -- already cover (`setWriteSlow` ≈ 0 is the evidence to delete the
-    -- defensive slow arm), the join split separates the wasted rebuild-and-
-    -- discard population from real widening, and `widenedSizeHist` records
-    -- the magnitudes the `widenedBySize` counter throws away.
-    , setWriteSkip : Int -- unifySlotWithSet: no-op (⊤-absorb, or members already ⊆ slot)
-    , setWriteFlex : Int -- unifySlotWithSet: adopted content into an unconstrained FlexVar slot
-    , setWriteTopJoin : Int -- unifySlotWithSet: ⊤ write onto an LsMembers slot — direct set of the shared constant (Phase 2; was slow)
-    , setWriteUnion : Int -- unifySlotWithSet: real member union onto an LsMembers slot — direct root join (Phase 2; was slow)
-    , joinIdenticalHit : Int -- keyed registry hit, demand bit-identical to the stored type (no join ran)
-    , joinNoop : Int -- keyed registry hit, join ran and changed nothing (rebuilt tree discarded)
-    , joinChanged : Int -- keyed registry hit, join widened the stored type (drives markDirty)
-    , completionJoins : Int -- processItem completion joins (one per body-bearing spec)
-    , completionJoinNoop : Int -- Phase 4a: the subset of those that added nothing (changed flag False — no rebuild)
-    , widenedSizeHist : CoreDict.Dict Int Int -- SIZE -> count for sets widened by size at zonk (sizeHist is blind on that branch)
-    , slotsMinted : Int -- Phase 3 rider: unconstrained FunL slot mints in loadTypeC (LSS_006 population; demand-encoded slots excluded by design — they are born written). Sizes Phase 5's dead-slot case against writes/zonk-visits.
-    , grounding : GroundingStats -- LSS_019 census (plans/lss-fidelity-2-standalone-member-grounding.md §5); sub-record (grouped when the native runtime capped records at 32 fields; records now take up to 2047, so the grouping is structural only)
-    , sigStats : SigFlowStats -- LSS_020 signature-flow census (plans/lss-fidelity-3-signature-flow-completion.md §B.4); sub-record, grouped like `grounding`
-    , layoutQual : LayoutQualStats -- layout-qualified-members census (plans/lss-layout-qualified-members.md §2.5); NESTED like `grounding`
+    -- How set writes and registry joins went
+    , setWriteSkip : Int
+    , setWriteFlex : Int
+    , setWriteTopJoin : Int
+    , setWriteUnion : Int
+    , joinIdenticalHit : Int -- registry hit with a demand identical to the stored type
+    , joinNoop : Int -- registry hit whose join changed nothing
+    , joinChanged : Int -- registry hit whose join widened the stored type
+    , completionJoins : Int
+    , completionJoinNoop : Int
+    , widenedSizeHist : CoreDict.Dict Int Int -- size -> count of sets widened to top for exceeding `maxSetSize`
+    , slotsMinted : Int
+    , grounding : GroundingStats
+    , sigStats : SigFlowStats
+    , layoutQual : LayoutQualStats
     }
 
 
-{-| LSS\_024 layout-qualification census: `mints` counts layout-qualified
-lambda mints, `shared` counts id reuse across DISTINCT enclosing specs (the
-fix working — detected via `lambdaQualified`'s first-minter payload),
-`fallback` counts mints whose spec had
-no captured widened key (fell back to SpecId qualification — expected 0),
-`tieBypass` counts §2.3 equal-id μ-tie bypasses. Stats only.
+{-| Census counters for minting lambda-instance members (see
+`lambdaInstanceMemberId`).
+
+`mints` counts every qualified lambda mint, including a definition's root
+lambda. `shared` counts mints whose id was first minted under a different spec.
+`fallback` counts mints whose spec had no recorded widened key and so were
+qualified by `SpecId`. `tieBypass` counts mints where the spec's demand already
+carried the very id the key gives, so no μ-tie was recorded. `instApplied`
+counts mints that carried an instance tag, `instCapped` the instance tags
+refused at the `maxInstances` cap, and `instRootSkip` the tags refused because
+the lambda is a definition's root lambda.
+
 -}
 type alias LayoutQualStats =
     { mints : Int
     , shared : Int
     , fallback : Int
     , tieBypass : Int
-
-    -- Instance qualification (plans/lss-instance-qualified-members.md).
-    -- `instApplied`: mints that carried a local-multi instance tag — the
-    -- population this plan creates. `instCapped`: re-translations at or past
-    -- `maxInstances`, which keep today's key (the §3.3 termination backstop;
-    -- a large number means the cap, not the mechanism, is deciding).
-    -- `instRootSkip`: mints declined a tag because `rootFold` would fold this
-    -- lambda onto its global's ground key, which LSS_019 grounding produces
-    -- from a reference WITHOUT an instance component (§3.5).
     , instApplied : Int
     , instCapped : Int
     , instRootSkip : Int
     }
 
 
-{-| LSS\_019 grounding census: `grounded` counts provisional→ground member
-rewrites at zonk; `deferred` counts provisional members kept because the
-arrow being read still carried residual MVars (the recorded precision
-frontier — §3.2 detail 1 of the plan). Stats only — never touches the graph.
+{-| Census counters for `groundSetMembers`: provisional members rewritten to
+ground ones, and provisional members left as they were because the arrow being
+read back still contained unresolved type variables.
 -}
 type alias GroundingStats =
     { grounded : Int
@@ -244,24 +269,22 @@ type alias GroundingStats =
     }
 
 
-{-| LSS\_020 signature-flow census (plan lss-fidelity-3 §B.4).
+{-| Census counters about how lambda sets flow through signatures, kernel
+boundaries and call arguments, plus the two nested census records
+`QShadowStats` and `SettledStats`.
 
-`widenedBySigSize` is a POLICY counter (a signature arrow's member list
-exceeded `maxSetSize` at readback and widened to ⊤) — bumped
-unconditionally, same class as `widenedBySize`/`widenedByKernel`.
-`widenedByCf` counts poison events inside the sigFlow joins (hub poisons +
-divergence in the new member-root/result/rhs/call-shape joins),
-`kernelFactHits` counts Phase F POSITIONAL fact-row applications and
-`kernelLicensed` (LSS\_022) counts boundaries that took the licensed
-`TypeFaithful` pass-through — all census-only and therefore REPORT-GATED per
-plan 1 §7.6 (the bump helpers check `env.lss.report`; the default path
-carries only a branch).
-
-The two kernel counters partition the fact-bearing boundaries: a boundary
-bumps `kernelFactHits` (positional tier) or `kernelLicensed` (license tier),
-never both, and a rowless boundary bumps neither. `widenedByKernel` keeps its
-own meaning — boundaries that actually poisoned — so licensed boundaries
-stop bumping it entirely (plan §3.4).
+`widenedBySigSize`, `topMixedFlexSig` and `topMixedFlexDemand` are policy
+counters, bumped whether or not the report is on: the first counts signature
+arrows whose member list exceeded `maxSetSize` and became ⊤, the other two
+count sets resolved to ⊤ because a source they drew from was never written.
+The other counters, and the dictionaries, are filled only under `lss.report`
+(`qShadow` and `qInfer` follow the census settings their writers check).
+`kernelFactHits` counts kernel boundaries handled by a positional fact row and
+`kernelLicensed` those passed through by a license. `multiSetsByArrow` maps an
+arrow's `ArrowId` to the union of every set of two or more members read back
+there, and `appliedArrows` counts how often each arrow was applied to an
+argument. Both are keyed by `ArrowId` and survive `resetItem`, so they gather
+across specs.
 
 -}
 type alias SigFlowStats =
@@ -269,234 +292,156 @@ type alias SigFlowStats =
     , widenedByCf : Int
     , kernelFactHits : Int
     , kernelLicensed : Int
-    , edgesInstalled : Int -- LSS_023 directed edges installed (report-gated)
-    , flowDegraded : Int -- LSS_023 container subtrees degraded to symmetric AND capable of carrying a set (report-gated)
-
-    -- Multi-set census (M3): ArrowId -> the UNION of every member set that
-    -- arrow's slot ever read back with |set| >= 2. REPORT-GATED. Lives here
-    -- rather than on `LssStats`, as the counters below do.
-    --
-    -- Keyed by ARROW, so it answers "how many distinct arrow positions in the
-    -- program carry a multi-member set" — the question `sizeHist` cannot,
-    -- because it counts readbacks. The union is across specs: one polymorphic
-    -- def specialized twice reads the same syntactic arrow twice, and the
-    -- ARROW is the position we are counting.
+    , edgesInstalled : Int
+    , flowDegraded : Int -- container subtrees joined both ways, not directed, that could carry a set
     , multiSetsByArrow : CoreDict.Dict Int (List Int)
-
-    -- LIVENESS census (plans/lss-provenance-ratio-census.md §7): ArrowId ->
-    -- times this arrow was PEELED BY AN ARGUMENT at a call site. Not a proxy
-    -- for application — peeling an arrow into (param, rest) IS application.
-    -- Global and surviving `resetItem` for `multiSetsByArrow`'s reason, and
-    -- keyed the same way (via `itemAux.arrowOfSlot`) so the var/set/applied
-    -- keyspaces intersect exactly. Report-gated: `arrowOfSlot` is only
-    -- populated under `lss.report`, so this reads empty with the flag off.
     , appliedArrows : CoreDict.Dict Int Int
-
-    -- LSS_026 call-argument set transport (plans/lss-gap2-callarg-transport.md
-    -- §3.1 W0.4). These live HERE, not on `LssStats`: they were placed when
-    -- the native runtime capped records at 32 fields and `LssStats` was at
-    -- that cap, the reason `grounding`/`sigStats`/`layoutQual` are
-    -- sub-records. Records now take up to 2047 fields (wide objects), so the
-    -- placement is no longer forced.
-    --
-    -- The first four are BEHAVIOR counters for the D1/D2 arms (bumped
-    -- unconditionally — plain ints, artifact-neutral); `topMixedFlex*` are
-    -- D0 policy counters (same class as `widenedBySigSize`); `argFlowCensus`
-    -- is the Phase-0 census keyspace and is REPORT-GATED at every bump.
-    , topMixedFlexSig : Int -- D0: signature-side mixed-fact widenings (members/sources + a dangling FlexVar source)
-    , topMixedFlexDemand : Int -- D0: demand-side mixed-resolution widenings
-    , argFlowCensus : CoreDict.Dict String Int -- Phase-0 census rows (§2.1); populated ONLY under `lss.report`
-
-    -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2).
-    -- REPORT-GATED; zero unless `lss.report`.
+    , topMixedFlexSig : Int
+    , topMixedFlexDemand : Int
+    , argFlowCensus : CoreDict.Dict String Int -- census key -> count
     , settled : SettledStats
-
-    -- §5.1 `Q` IN SHADOW MODE, scored at `finishNode` — the SPECIALIZATION
-    -- phase. Not gated: a spec's stored demand type legitimately re-enters the
-    -- store as ground (`Translate.demandUnifyVar`), which is the paper's `σ̄`,
-    -- so divergence here is expected and is an observation, not a defect.
-    , qShadow : QShadowStats
-
-    -- §5.6 `Q` OVER INFERENCE — scored inside `inferUnitInScratch`, where the
-    -- paper's `Q` actually lives. THIS is the gated one.
-    , qInfer : QShadowStats
+    , qShadow : QShadowStats -- scored per specialized item; a divergence here is expected
+    , qInfer : QShadowStats -- scored per signature-inference unit
     }
 
 
-{-| §5.1 (plans/lss-paper-inclusion-constraints.md): what the shadow `Q`
-census found, accumulated across items.
+{-| A census that compares two ways of computing lambda sets, accumulated
+across work items.
 
-THE GATE THIS EXISTS TO CHECK: _"`Q` must reproduce the eager answer
-everywhere the eager answer is defined. A divergence here is a bug in `Q`, not
-a finding."_ So `agree` is the number that should carry everything, and every
-`diverge*` bucket is a defect report on the recording, not a result about the
-program.
-
-The comparison is per SLOT CLASS — constraints are grouped by `UF.repr` at
-item end, so two slots the solver unified are one σ, exactly as they are one
-variable in the paper. `shadow` is the least solution of the recorded
-constraints over that class (`seed ⊔ direct members ⊔ ⋃ over edges`), and
-`eager` is what the store actually holds, with `LsFrom` resolved the way
-`zonkSetSlot` resolves it so the two sides are read alike.
-
-`unresolved` is the third census item §5.1 asks for, stated in terms of the
-only boundary this architecture has: a class whose eager answer is STILL
-unconstrained when the item finishes. Those are the constraints that a solve
-living at the def boundary could carry and a per-item store cannot.
+The store computes each set eagerly, joining members into a slot as they are
+written. Alongside that, each write can be recorded as an inclusion constraint
+(a `QEntry` in `ItemAux.qLog`), and at the end of an item the least solution of
+those constraints is compared, slot class by slot class, with what the store
+holds. A slot class is the set of slots the solver unified into one. `agree`
+counts classes where the two answers are equal, and the `diverge*` counters
+count the ways they differ. `unresolved` counts classes the store still holds
+as unconstrained at the end of the item. `reaching` and `internal` split the
+constrained classes by whether the definition's root type reaches them, and
+are zero for an item without a root (`sigRoots` counts items with one).
+`subMerged` and `subUnseen` classify the `divergeSub` classes by whether the
+missing member appears elsewhere in the item's constraints. `divergeSamples`
+holds a capped list of diverging classes for a person to read.
 
 -}
 type alias QShadowStats =
     { items : Int -- items with at least one recorded constraint
-    , members : Int -- `ℓ ⋸ σ` constraints recorded
-    , tops : Int -- `⊤ ⋸ σ` constraints recorded
-    , edges : Int -- `σ_dst ⊇ σ_src` constraints recorded
-    , classes : Int -- distinct σ (UF classes) in Q's domain at item end
+    , members : Int -- member constraints recorded
+    , tops : Int -- top constraints recorded
+    , edges : Int -- edge constraints recorded
+    , classes : Int -- slot classes in the recorded constraints at item end
     , agree : Int -- classes where shadow == eager
-    , divergeSuper : Int -- shadow ⊋ eager  (Q over-approximates: a missed absorb)
-    , divergeSub : Int -- shadow ⊊ eager  (Q under-records: a write path not instrumented)
+    , divergeSuper : Int -- shadow ⊋ eager  (the constraint solution over-approximates: a missed absorb)
+    , divergeSub : Int -- shadow ⊊ eager  (the constraint solution under-records: a write path not instrumented)
     , divergeTop : Int -- one side is ⊤ and the other is not
     , divergeOther : Int -- incomparable member sets
     , unresolved : Int -- classes still unconstrained at item end (no eager answer to compare)
     , edgeClasses : Int -- classes reached only through an edge, not by a direct member write
-
-    -- THE PAPER'S PARTITION, prototyped (§3.1 / §5.3). Of the σ this item
-    -- constrained, how many are REACHED BY THE SIGNATURE (would be quantified
-    -- into `ᾱ`) and how many are not (would be internalized to `S(Q,α)`).
-    -- `sigRoots` counts items where the root type Point was available at all;
-    -- where it is not, both buckets are silently zero, so read them against it.
     , sigRoots : Int
     , reaching : Int
     , internal : Int
-    , scratchDropped : Int -- constraints recorded inside a scratch store and dropped with it (see withScratchStore)
-
-    -- Why a `divergeSub` class under-recorded. `subMerged`: every missing
-    -- member appears elsewhere in this item's Q, so it arrived by UNIFICATION
-    -- of two set slots — `Unify.merge` joins their contents without going
-    -- through `unifySlotWithSetC`, so the class Q built is a strict subset of
-    -- the class the store built. `subUnseen`: the member is nowhere in Q, so
-    -- it came from a slot minted WITH content (an `LSet` annotation) that was
-    -- never constrained and therefore never entered Q's domain.
+    , scratchDropped : Int -- constraints recorded inside a scratch store and dropped with it
     , subMerged : Int
     , subUnseen : Int
-
-    -- §5.3: the same score restricted to the INTERNAL population — the
-    -- classes the paper replaces with `S(Q,α)`. Substituting the shadow
-    -- solution is only safe where it EQUALS the eager one, so this pair, not
-    -- the overall agreement, is what decides whether the eager union can be
-    -- retired.
-    , internAgree : Int
+    , internAgree : Int -- `agree`, restricted to the `internal` classes
     , internDiverge : Int
-
-    -- The diverging classes themselves, as member KEY strings, so the cause can
-    -- be TRACED rather than inferred from counters. Report-gated and capped:
-    -- this exists to be read by a human, not to be complete.
     , divergeSamples : List String
     }
 
 
+{-| A `QShadowStats` with every counter zero and no samples.
+-}
 emptyQShadowStats : QShadowStats
 emptyQShadowStats =
     { items = 0, members = 0, tops = 0, edges = 0, classes = 0, agree = 0, divergeSuper = 0, divergeSub = 0, divergeTop = 0, divergeOther = 0, unresolved = 0, edgeClasses = 0, sigRoots = 0, reaching = 0, internal = 0, scratchDropped = 0, subMerged = 0, subUnseen = 0, internAgree = 0, internDiverge = 0, divergeSamples = [] }
 
 
-{-| The second ledger: the SAME readbacks as the in-flight one, replayed at
-`finishNode` against the same (now fully written) item store.
+{-| A census of the same set read-backs made during translation, repeated when
+the item finishes, against the same store after every write in the item has
+landed. It is filled only under `lss.report`.
 
-Buckets mirror the §2.5 ledger exactly so the two lines subtract:
-`k1 + kN + overcap + top + var == zonked`, and `zonked` must equal the
-in-flight `setsZonked` — same variables, same multiplicity. A mismatch there
-is a BUG in the log (a missed clear on a store swap, or a zonk that ran
-outside any item), not a finding, and the report says so.
-
-`varArrows` is the discriminator §3.2's stop criterion actually needs. A
-readback that is STILL `var` after its item settled is unresolved for one of
-two reasons, and they point opposite ways:
-
-  - the members exist, but in ANOTHER item's store (Eco's per-item store
-    teardown means they can never meet) — a post-mono solve over one global
-    graph WOULD resolve it, so this is the prize;
-  - nothing anywhere ever writes that position (kernel/FFI/port boundary) —
-    no reordering helps, and the ceiling is Eco's setting, not its schedule.
-
-`multiSetsByArrow` is global and survives `resetItem`, so intersecting these
-two keyspaces at report time separates them. Needs arrow identity to be on
-(`arrowOfSlot` is empty otherwise), which is why §3.2 runs an arrow-id arm.
+`zonked` should equal the `setsZonked` counted during translation, less the
+read-backs made inside scratch stores (`scratchDropped`), which cannot be
+repeated because their store is gone. `causeTop` counts read-backs that are
+still ⊤ and `causeVar` those that are still unresolved. `varArrows` and
+`setArrows` count, per `ArrowId`, the read-backs that came out unresolved and
+the ones that came out as a concrete set; they are empty unless arrow identity
+is recorded (`ItemAux.arrowOfSlot`).
 
 -}
 type alias SettledStats =
     { items : Int -- items whose log was replayed
-    , zonked : Int -- set slots re-read (must match the in-flight setsZonked)
-    , hist : CoreDict.Dict Int Int -- set-size histogram at item end
+    , zonked : Int
+    , hist : CoreDict.Dict Int Int -- set size at item end -> count
     , widenedBySize : Int
-    , causeTop : Int -- poison + edgeTop
-    , causeVar : Int -- flex + edgeEmpty  <- the population §3.2 is about
-    , varArrows : CoreDict.Dict Int Int -- ArrowId -> still-var readbacks there
-    , setArrows : CoreDict.Dict Int Int -- ArrowId -> concrete readbacks there, ANY size
-    , scratchDropped : Int -- logged readbacks discarded with a scratch store (see withScratchStore)
+    , causeTop : Int
+    , causeVar : Int
+    , varArrows : CoreDict.Dict Int Int
+    , setArrows : CoreDict.Dict Int Int
+    , scratchDropped : Int
     }
 
 
+{-| A `SettledStats` with every counter zero and every table empty.
+-}
 emptySettledStats : SettledStats
 emptySettledStats =
     { items = 0, zonked = 0, hist = CoreDict.empty, widenedBySize = 0, causeTop = 0, causeVar = 0, varArrows = CoreDict.empty, setArrows = CoreDict.empty, scratchDropped = 0 }
 
 
+{-| What a non-lambda member stands for, recorded in `LssMemberTable.sources`.
 
--- The lss-fidelity-1 one-shot census counters (fidelity.muTied /
--- widenedByLet / localMultiBypass) were REMOVED 2026-08-18 after their
--- deliverable run (benchmarks/lss-opt.md Run J: 0 / 672 / 469) so the
--- default path carries only implementation cost. The μ-tie's live
--- monitoring signal is derived free at report time from
--- lssMemberTable.muTied (set size) + AbiCloning's declinedBlocked.
--- Re-instrument per plans/lss-fidelity-1-watchdogs-budget-accounting.md §7
--- if a new census is ever needed.
+`SourceGlobal` is a global function or constructor. It is recorded for `g|`
+and `c|` members, for ground `g|<global>|<typeKey>` members, and for a
+definition's root lambda (see `lambdaInstanceMemberId`).
 
+`SourceKernel` is a kernel function, as its prefix, home and name.
 
-{-| What a standalone member REFERS to. A member id is a global/ctor or a
-kernel, never both, so the two reverse maps are arms of one sum rather than
-two dicts over the same id space — one tree, and `buildMemberOrigins`'s
-prefix dispatch reads it with a single lookup.
+`SourcePap` is a partial application of a global with the given number of
+arguments supplied. It is recorded only so that the member can be named; it is
+not the global, and `standaloneMemberGlobal` gives no global for it.
+
 -}
 type MemberSource
     = SourceGlobal TOpt.Global
     | SourceKernel ( String, String, String )
-    | SourcePap TOpt.Global Int -- p| members: (global, supplied). Registered so the graph can NAME a partial application; see `papMemberIdFor` for why this must never promote it into the stampable class.
+    | SourcePap TOpt.Global Int
 
 
-{-| Interned non-lambda member ids (§3.3 keys) + the E9/E9.2 standalone
-reverse map. One S field for both: the engine self-hosts, and when this was
-written the native runtime capped records at 32 fields and `S` was at that cap.
-Records now take up to 2047 fields (wide objects), so the grouping is
-structural only.
+{-| The run's table of member keys and what is known about each member id.
+
+`byKey` is the interning table: key to member id. `sources` says what a
+non-lambda member stands for. `lambdaQualified` maps a qualified lambda member
+to the lambda key it was minted from (the raw id, or the raw id mixed with an
+instance tag) and the first spec that minted it; several specs can share the
+id, so the spec is only the first. `muTied` holds the ids a μ-tie has reused
+(see `lambdaInstanceMemberId`). `provisionalStandalone` holds exactly the
+provisional `g|`/`c|` ids, with their global, and is what `groundSetMembers`
+rewrites; ground ids are never in it. `specWidenedKeys` maps a `SpecId` to the
+annotation-widened rendering of its creation type, recorded once when the spec
+is created. `rootLamOf` maps a raw lambda id to the global whose definition it
+is the root lambda of; a lambda absent from it mints an `l|` key.
+
 -}
 type alias LssMemberTable =
     { byKey : CoreDict.Dict String Int
     , sources : CoreDict.Dict Int MemberSource
-    , lambdaQualified : CoreDict.Dict Int ( Int, Int ) -- LSS_018: qualified mid -> (raw lambda id, FIRST-minting SpecId — first-mint-wins; under layout qualification several specs share one mid, so the payload is diagnostics only); written at the qualified intern
-    , muTied : CoreDict.Dict Int () -- LSS_018: member ids ever the target of a μ-tie — exported as MonoGraph.lssBlockedMembers (AbiCloning force-blocks them)
-    , provisionalStandalone : CoreDict.Dict Int TOpt.Global -- LSS_019: ids minted by standaloneMemberIdFor with a "g|"/"c|" key (NOT kernel-alias-folded, NOT ground). Written at the same intern site; the zonk grounding rewrite consults this to decide "rewrite" vs "pass through". Ground ids are NEVER in this dict — that is what makes grounding idempotent.
-    , specWidenedKeys : CoreDict.Dict Int String -- Layout-qualified members: SpecId -> the IMMUTABLE annotation-widened creation key (toComparableMonoType of widenSets keyType), captured write-once at spec creation (enqueueSpecKeyed / seedSpec — §2.2 of plans/lss-layout-qualified-members.md). Qualifies lambda mints; a missing entry falls back to SpecId qualification (censused, expected 0).
-    , rootLamOf : CoreDict.Dict Int TOpt.Global -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): raw SrcLambdaId -> the global whose def-ROOT lambda it is. Populated by `Translate.classifyLambdaHead` on the stashed-root path, kernel-alias globals excluded THERE (folding one would re-create the g|/k| split E9.2 removes). A miss mints `l|` exactly as today. Lives on the member table, not S (placed when S sat at the runtime's former 32-field record cap, now 2047).
+    , lambdaQualified : CoreDict.Dict Int ( Int, Int )
+    , muTied : CoreDict.Dict Int ()
+    , provisionalStandalone : CoreDict.Dict Int TOpt.Global
+    , specWidenedKeys : CoreDict.Dict Int String
+    , rootLamOf : CoreDict.Dict Int TOpt.Global
     }
 
 
-{-| The M2 classification memos, GLOBAL (they survive `resetItem`; a
-ground/closed classification is item-independent):
+{-| The run's memos of type classifications that do not depend on the work
+item, so they survive `resetItem`.
 
-  - `schemeMono` — a CLOSED (var-free) callee scheme's classification, keyed by
-    `TOpt.toComparableGlobal`;
-  - `callMemo` — an open-scheme call at all-ground args:
-    `(funcMonoType, resultMonoType, specId)`. D10 caches the specId so a hit
-    skips re-enqueue/re-serialize. Keyed by the callee `Global` plus the
-    synthetic `args -> result` arrow those types already denote
-    (`Mono.SpecKey`), so the probe reads the `specHashOf` Int the node already
-    carries and confirms with `eqKeySpec` — NO string is built
-    (plans/speckey-optimization.md §10.2).
-
-These are ONE `S` field for the same reason `LssMemberTable` is: when they were
-grouped the native runtime capped records at 32 fields and `S` was at that cap;
-grouping them made room for `S.intern` (K6). Records now take up to 2047
-fields (wide objects).
+`schemeMono` holds the mono type of a callee whose type scheme has no type
+variables, keyed by the global's comparable key. `callMemo` holds, for a call
+to a polymorphic callee at ground argument types, the callee's mono type, the
+result's mono type and the `SpecId` it was enqueued as, keyed by a
+`Mono.SpecKey`. `aliasMemo` holds what is known about an instantiation of a
+type alias (see `AliasKey`).
 
 -}
 type alias MonoMemo =
@@ -513,18 +458,12 @@ emptyMonoMemo =
     { schemeMono = CoreDict.empty, callMemo = Mono.specKeyMapEmpty, aliasMemo = HashMap.empty }
 
 
-{-| Identity of one alias INSTANTIATION whose arguments are ground and arrow-free.
+{-| The identity of one instantiation of a type alias, for `MonoMemo.aliasMemo`.
 
-An alias occurrence cannot be keyed on object identity: `AssignMVarIds.rewriteCanType`
-rebuilds every node of every type per occurrence, and the types it rebuilds were
-themselves decoded per module, so two occurrences of `S` are two distinct trees before
-anything runs. The cheapest EXACT structural key is the alias's name plus its
-arguments: an alias is defined once per module and a module exists once per program, so
-`(home, name, args)` determines the expanded body.
-
-`args` holds the argument TYPES only. The ids paired with them in `Can.TAlias` are
-per-def binder ids minted by `AssignMVarIds.ensureBinder`, not identity, so they are
-dropped. `hash` is computed once by `Store.aliasKeyOf`.
+An alias is defined once in its module, so its home, its name and its argument
+types determine what it expands to. `args` holds the argument types only: the
+ids paired with them in `Can.TAlias` are not part of the identity. `hash` is
+stored so that it is computed once, by whoever builds the key.
 
 -}
 type alias AliasKey =
@@ -535,33 +474,34 @@ type alias AliasKey =
     }
 
 
-{-| What the run has learned about an instantiation: either it is not memoisable (its
-body reaches an arrow), or it is, and this is its canonical interned classification.
+{-| What the run has learned about one alias instantiation.
+
+`AliasIneligible` means the instantiation is not memoised. `AliasGround`
+carries its classification as a mono type, the interned copy from `S.intern`.
+
 -}
 type AliasVerdict
     = AliasIneligible
     | AliasGround Mono.MonoType
 
 
-{-| The precomputed hash of an `AliasKey`.
+{-| Returns the hash stored in an `AliasKey`.
 -}
 aliasKeyHash : AliasKey -> Int
 aliasKeyHash k =
     k.hash
 
 
-{-| Structural equality of two `AliasKey`s (name, home and argument types).
+{-| Tells whether two `AliasKey`s have the same name, home and argument types.
+The stored hashes are not compared.
 -}
 aliasKeyEq : AliasKey -> AliasKey -> Bool
 aliasKeyEq a b =
-    -- Name first: it is the cheapest discriminator. `args` are ground and arrow-free,
-    -- so no ArrowId or MVarId can enter this comparison, and the common case is `[]`.
     a.name == b.name && a.home == b.home && a.args == b.args
 
 
-{-| Record what the run knows about an instantiation. The map is never invalidated:
-`S.intern` is seeded empty and only ever grows, so a stored canonical `MonoType` stays
-the table's object for the rest of the run.
+{-| Records a verdict for an alias instantiation in `MonoMemo.aliasMemo`,
+replacing any earlier one. Entries are never removed.
 -}
 putAliasVerdict : AliasKey -> AliasVerdict -> S -> S
 putAliasVerdict key v s =
@@ -579,21 +519,30 @@ emptyMemberTable =
     { byKey = CoreDict.empty, sources = CoreDict.empty, lambdaQualified = CoreDict.empty, muTied = CoreDict.empty, provisionalStandalone = CoreDict.empty, specWidenedKeys = CoreDict.empty, rootLamOf = CoreDict.empty }
 
 
+{-| Adds a key and its member id to the interning table.
+-}
 insertMemberKey : String -> Int -> LssMemberTable -> LssMemberTable
 insertMemberKey key mid t =
     { t | byKey = CoreDict.insert key mid t.byKey }
 
 
+{-| Records that a member id stands for a global, replacing any earlier source.
+-}
 insertMemberGlobal : Int -> TOpt.Global -> LssMemberTable -> LssMemberTable
 insertMemberGlobal mid g t =
     { t | sources = CoreDict.insert mid (SourceGlobal g) t.sources }
 
 
+{-| Records that a member id stands for a kernel function, replacing any earlier
+source.
+-}
 insertMemberKernel : Int -> ( String, String, String ) -> LssMemberTable -> LssMemberTable
 insertMemberKernel mid k t =
     { t | sources = CoreDict.insert mid (SourceKernel k) t.sources }
 
 
+{-| Marks a member id as a provisional member of the given global.
+-}
 insertMemberProvisional : Int -> TOpt.Global -> LssMemberTable -> LssMemberTable
 insertMemberProvisional mid g t =
     { t | provisionalStandalone = CoreDict.insert mid g t.provisionalStandalone }
@@ -606,7 +555,9 @@ emptyLssStats =
     { setsZonked = 0, flexCtorSpecs = CoreDict.empty, joinRounds = 0, retranslations = 0, widenedBySize = 0, widenedByKernel = 0, widenedByBudget = 0, devirtDirect = 0, devirtKernel = 0, sizeHist = CoreDict.empty, unqualifiedLambdaMints = 0, declinedKernelShape = 0, declinedKernelCNumber = 0, declinedKernelEmission = 0, declinedKernelArity = 0, kernelUnsolvedHist = CoreDict.empty, kernelMissHist = CoreDict.empty, setWriteSkip = 0, setWriteFlex = 0, setWriteTopJoin = 0, setWriteUnion = 0, joinIdenticalHit = 0, joinNoop = 0, joinChanged = 0, completionJoins = 0, completionJoinNoop = 0, widenedSizeHist = CoreDict.empty, slotsMinted = 0, grounding = { grounded = 0, deferred = 0 }, sigStats = { widenedBySigSize = 0, widenedByCf = 0, kernelFactHits = 0, kernelLicensed = 0, edgesInstalled = 0, flowDegraded = 0, multiSetsByArrow = CoreDict.empty, appliedArrows = CoreDict.empty, topMixedFlexSig = 0, topMixedFlexDemand = 0, argFlowCensus = CoreDict.empty, settled = emptySettledStats, qShadow = emptyQShadowStats, qInfer = emptyQShadowStats }, layoutQual = { mints = 0, shared = 0, fallback = 0, tieBypass = 0, instApplied = 0, instCapped = 0, instRootSkip = 0 } }
 
 
-{-| The all-defaults signature for an annotation with `n` arrows.
+{-| Returns the signature that says nothing, for an annotation with `n`
+arrows: each arrow its own representative, with no members, no ⊤ and no
+sources.
 -}
 trivialSignature : Int -> LssSignature
 trivialSignature n =
@@ -616,22 +567,22 @@ trivialSignature n =
     }
 
 
-{-| A source lambda's member id IS its stamped id (the engine's interning
-supply is seeded past `GlobalMVarState.nextLam`, so the two never collide).
+{-| Returns a source lambda's raw member id: its `SrcLambdaId` as an integer.
+This is the id used for a lambda where no qualified id is minted (see
+`lambdaInstanceMemberId`).
 -}
 srcLambdaKey : TypeIds.SrcLambdaId -> Int
 srcLambdaKey =
     Id.toComparable
 
 
-{-| Compose one local-multi instance ordinal onto the enclosing tag
-(plans/lss-instance-qualified-members.md §3.2). Composition rather than
-overwrite: an inner let-function's ordinal-1 instance inside outer instance 0
-must not collide with the same ordinal inside outer instance 1.
+{-| Returns the instance tag for ordinal `ord` nested inside the enclosing tag
+`tag`, so that the same ordinal inside two different enclosing instances gets
+two different tags.
 
-`+ 1` so a leading ordinal 0 is not absorbed into the 0 = "no instance"
-sentinel. A composed value CAN land on 0 by collision, which degrades to
-today's shared id — the fence then declines, exactly as it does now.
+An instance tag of 0 means "not inside any instance". The `+ 1` keeps
+`mixTag 0 ord` away from 0 for small ordinals, but the result is a hash and can
+still be 0 by collision, in which case the instance is treated as untagged.
 
 -}
 mixTag : Int -> Int -> Int
@@ -639,33 +590,25 @@ mixTag tag ord =
     modBy 1073741789 (tag * 1000003 + ord + 1)
 
 
-{-| The tag a re-translation of local-multi instance `ord` should run under.
-Instance qualification off gives the enclosing tag unchanged; otherwise the
-tag is the enclosing tag composed with `ord` (`mixTag`), except for the
-_untagged_ case below. Bumps `instCapped` on a cap hit.
+{-| Returns the instance tag under which instance `ord` of a let-bound
+function is re-translated, given the enclosing tag in
+`ItemAux.currentLocalInstance`.
 
-**Ordinal 0 under an untagged enclosing context is never tagged.** It keeps
-today's key, so the overwhelmingly common case — a let-function with exactly
-ONE instance, not nested in a split one — mints exactly the ids it mints now.
-Only the siblings that a split actually created pay for the split. This is
-also what makes the cap meaningful: `maxInstances = 1` tags nothing and
-reproduces the pre-instanceQual collapse exactly, and a cap of K bounds one
-(lambda, spec) to K identity classes per level — K-1 tagged plus the shared
-ordinal-0 one.
+A let-bound function used at several types is translated once per type, and
+each translation is an _instance_ with an ordinal, 0 for the first. Lambdas
+minted inside instance `ord` are tagged so that their member ids differ from
+those of the other instances (see `lambdaInstanceMemberId`).
 
-**Under a TAGGED enclosing instance, ordinal 0 is composed too**
-(`mixTag tag 0`). A lambda's tag encodes the path of ordinals of the
-local-multi instances enclosing it, and every path of one lambda has the same
-length (one ordinal per enclosing local-multi let). Dropping only the LEADING
-zeros of equal-length paths keeps them distinct; dropping a zero after a
-non-zero ordinal does not: (outer 0, inner 1) and (outer 1, inner 0) would
-both run under `mixTag 0 1`, and the inner lambda of two different instances
-— one capturing what the other does not — would share one member id
-(`LssInstanceQualTest` test 8).
-
-A capped re-translation (`ord >= maxInstances`) runs under the tag ordinal 0
-would get at this level, joining the shared class rather than splitting
-further.
+With LSS off the enclosing tag is returned unchanged. Ordinal 0 gets the
+enclosing level's shared tag: 0 when the enclosing tag is 0, so a function with
+one instance mints the same ids as if it had none, and `mixTag tag 0`
+otherwise. Ordinal 0 must be composed under a non-zero tag because a lambda's
+tag stands for the whole path of ordinals enclosing it: if a 0 after a
+non-zero ordinal were dropped, (outer 0, inner 1) and (outer 1, inner 0) would
+both get `mixTag 0 1`. Any other ordinal gets the enclosing tag composed with
+`ord`, unless `stamp.maxInstances` is positive and `ord` is at or above it: then
+the instance gets the shared tag and `instCapped` is counted. So a cap of `k`
+gives at most `k` distinct tags per level, and a cap of 1 tags nothing.
 
 -}
 localInstanceTagFor : Int -> S -> ( Int, S )
@@ -698,6 +641,8 @@ localInstanceTagFor ord s =
         ( mixTag outer ord, s )
 
 
+{-| Applies `f` to the `layoutQual` census counters.
+-}
 bumpInstanceQual : (LayoutQualStats -> LayoutQualStats) -> S -> S
 bumpInstanceQual f s =
     let
@@ -707,11 +652,14 @@ bumpInstanceQual f s =
     { s | lssStats = { stats | layoutQual = f stats.layoutQual } }
 
 
-{-| The instance tag a mint of source lambda `raw` should be qualified by, and
-the reasons it may be declined (§3.5): `rootFold` folds a def's ROOT lambda
-onto its global's GROUND key, which LSS\_019 grounding reproduces from a
-reference with no instance component — qualifying it would silently break the
-`{l|, g|}` singleton collapse.
+{-| Returns the instance tag for a mint of source lambda `raw`: the current
+instance tag, or 0 when there is none or when `raw` is a definition's root
+lambda.
+
+A root lambda mints its global's ground key, which grounding also produces
+from a plain reference to the global, and a reference carries no tag. A tag
+would make the two ids differ, so it is refused and `instRootSkip` is counted.
+
 -}
 instanceQualTagFor : Int -> S -> ( Int, S )
 instanceQualTagFor raw s =
@@ -725,8 +673,10 @@ instanceQualTagFor raw s =
         ( s.itemAux.currentLocalInstance, s )
 
 
-{-| The LSS\_018 μ-tie lookup/record key: the raw lambda id, or the raw id mixed
-with the instance tag under instance qualification (§3.6).
+{-| Returns the key that names a lambda within one instance: the raw lambda id
+when `instTag` is 0, otherwise the raw id mixed with the tag. It keys
+`ItemAux.demandQualified` and the first component of
+`LssMemberTable.lambdaQualified`.
 -}
 qualifiedRawKey : Int -> Int -> Int
 qualifiedRawKey raw instTag =
@@ -737,11 +687,8 @@ qualifiedRawKey raw instTag =
         mixTag raw instTag
 
 
-{-| Append the instance-qualification component to a member key. `#` cannot
-appear in a `toComparableMonoType` rendering (Elm identifiers, module and
-package names have no `#`), so the tagged and untagged forms can never
-collide, and tag 0 reproduces today's string BYTE FOR BYTE — the flag-off
-byte-identity rail.
+{-| Returns `key` with `|#<instTag>` appended, or `key` unchanged when
+`instTag` is 0.
 -}
 withInstTag : Int -> String -> String
 withInstTag instTag key =
@@ -752,26 +699,22 @@ withInstTag instTag key =
         key ++ "|#" ++ String.fromInt instTag
 
 
-{-| Fix B (LSS\_017): the member id for a lambda INSTANCE minted during
-translation. When the defining global routes through the keyed spec path
-(the same predicate `enqueueSpec` uses), the id is qualified by the
-enclosing SpecId — interned as `l|<lam>|<spec>` — so keyed clones of one
-source lambda carry DISTINCT members and can never impersonate each other
-at singleton consumers (the §11.6 representative-hijack root cause:
-`plans/lss-fork-qualified-members.md`). Non-keyed-routed globals keep the
-raw id: their spec keys are annotation-insensitive (`widenSets` /
-lss-off), so same-layout duplicate instances are impossible and raw stays
-sound AND byte-identical. Interning is idempotent, so LSS\_010 dirty-flush
-re-translations of a spec re-mint the same id.
+{-| Returns the member id for one instance of source lambda `lamId`, minted
+while translating a spec.
 
-A translation-phase mint under keyed routing with no current spec falls
-back to the raw id and bumps `unqualifiedLambdaMints` (expected 0 —
-visible in the census, never a silent mis-qualification).
+One source lambda is translated once per spec of its enclosing definition, and
+those copies can capture values of different layouts, so they must not all be
+one member. With LSS on and a spec being translated
+(`ItemAux.currentSpecId`), the id is interned under a key qualified by that
+spec, as `lambdaMemberLayoutQualified` describes: by the spec's
+annotation-widened creation key, so that specs differing only in lambda sets
+share the id, and by the instance tag when the lambda is inside an instance of
+a let-bound function. A definition's root lambda uses its global's `g|` key
+instead. Interning is get-or-create, so the same key always gives the same id.
 
-Inference-phase signature mints (`LssInfer.walkExpr`) deliberately do NOT
-use this: signatures are per-unit and pre-spec; their raw members carry no
-instances post-Fix-B, so signature-transported singletons decline at
-AbiCloning (unstampable-but-sound).
+With LSS off the raw id (`srcLambdaKey`) is returned. With LSS on and no spec
+being translated the raw id is returned too, and `unqualifiedLambdaMints` is
+counted.
 
 -}
 lambdaInstanceMemberId : TypeIds.SrcLambdaId -> S -> ( Int, S )
@@ -798,42 +741,35 @@ lambdaInstanceMemberId lamId s0 =
                 ( raw, { s0 | lssStats = { stats | unqualifiedLambdaMints = stats.unqualifiedLambdaMints + 1 } } )
 
 
-{-| The routed mint, split out of `lambdaInstanceMemberId` so the instance tag
-(plans/lss-instance-qualified-members.md) can be resolved once and handed to
-both qualification regimes.
+{-| Returns the member id for lambda `raw` under instance tag `instTag` in spec
+`specId`; it is `lambdaMemberLayoutQualified`.
 -}
 lambdaInstanceMemberGo : Int -> Int -> Int -> S -> ( Int, S )
 lambdaInstanceMemberGo raw instTag specId s0 =
-    -- Layout-qualified identity (plans/lss-layout-qualified-members.md), with the §2.3
-    -- equal-id μ-tie bypass — see
-    -- `lambdaMemberLayoutQualified`.
     lambdaMemberLayoutQualified raw instTag specId s0
 
 
-{-| LSS\_024: the layout-qualified mint. The member id
-for a keyed-routed lambda instance is `l|<raw>|<widenedKey>` where
-`widenedKey` is the enclosing spec's IMMUTABLE annotation-widened creation
-key (captured write-once at spec creation — `specWidenedKeys`, §2.2 of
-plans/lss-layout-qualified-members.md). Annotation-only spec splits render
-EQUAL widened keys, so their clones intern ONE id and consumer slots stay
-singletons; layout-differing specs stay distinct. A mint whose spec has no
-captured key falls back to TODAY'S SpecId qualification (fail toward the
-status quo, never toward raw ids) and bumps `layoutQual.fallback`
-(expected 0). Fallback-vs-widened collisions are impossible: every
-`toComparableMonoType` rendering starts with a letter code, which a
-bare-integer SpecId suffix never equals.
+{-| Returns the member id for lambda `raw`, under instance tag `instTag`,
+minted while translating spec `specId`.
 
-The μ-tie (LSS\_018) interplay is load-bearing (plan §2.3): under layout
-qualification the demand-carried id of a same-layout sibling EQUALS the id
-this mint would intern, and an unmodified tie would record it μ-tied and
-force-block the very stamps the plan recovers. So: when the demand-carried
-id equals the id this mint's key already interned, take the plain mint path
-and record NOTHING in `muTied` (censused as `layoutQual.tieBypass`); only a
-tie to a DIFFERENT id — the genuinely-divergent recursive class — ties,
-records, and blocks exactly as before, preserving LSS\_018's
-spiral-termination role (layout qualification strictly reduces id fan-out:
-a generation-2 spiral spec is an annotation-only split of generation 1, so
-its widened key is equal and the mint re-interns the same string).
+The key is `layoutQualKey`'s: `l|<raw>|<widened key>` from the spec's
+annotation-widened creation key in `specWidenedKeys`, or `l|<raw>|<specId>`
+when none was recorded, with the instance tag appended when it is not 0. Two
+specs whose types differ only in their lambda sets have equal widened keys, so
+the lambda gets one id in both. When `raw` is a definition's root lambda
+(`rootLamOf`), the `l|<raw>` head of the key is replaced by `g|<global>`, so
+the id is the one grounding gives a reference to that global at the same
+layout, and the id is recorded as a `SourceGlobal`.
+
+Before minting, the spec's stored demand is consulted (`ItemAux.demandQualified`,
+keyed by `qualifiedRawKey`). If the demand already carries an id for this
+lambda and that id differs from the one the key has interned, the demand's id
+is returned instead and recorded in `muTied`: this is the _μ-tie_. It stops a
+recursive function whose specs keep feeding their own lambda back into their
+demand from minting a new id, and so a new spec, at every step. When the
+demand's id is the one the key has interned, nothing is recorded in `muTied`
+and the mint is counted as a `tieBypass`. So one lambda in two same-layout
+specs can still get two ids, when a demand carries a different one.
 
 -}
 lambdaMemberLayoutQualified : Int -> Int -> Int -> S -> ( Int, S )
@@ -842,15 +778,6 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
         ( plainKey, isFallback ) =
             layoutQualKey s0.lssMemberTable.specWidenedKeys raw instTag specId
 
-        -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.1): a def's ROOT
-        -- lambda interns the GROUND STANDALONE key of its global instead of
-        -- the `l|` key — same qualifier tail, so the string equals what
-        -- LSS_019 grounding produces from a reference and what the
-        -- `regIdentity` head stamp mints. One string ⇒ one id ⇒ the
-        -- `{l|, g|}` head pairs collapse to singletons. Interning is
-        -- get-or-create by key and EVERY consumer (injection, closure
-        -- instance lookup, μ-tie comparison) recomputes the key through this
-        -- function, so mint and lookup cannot disagree.
         ( key, foldedTo ) =
             case CoreDict.get raw s0.lssMemberTable.rootLamOf of
                 Just g ->
@@ -875,10 +802,14 @@ lambdaMemberLayoutQualified raw instTag specId s0 =
             mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback False s0
 
 
-{-| LSS\_024: the key a layout-qualified mint interns — `l|<raw>|<widenedKey>`
-when the enclosing spec's creation key was captured, the SpecId FALLBACK
-`l|<raw>|<specId>` otherwise (True in the second component). Pure — exposed
-for the §5.1 unit pins.
+{-| Returns the key a lambda mint interns, and whether it fell back to the
+`SpecId`.
+
+Given the table of recorded widened keys, the key for lambda `raw` in spec
+`specId` is `l|<raw>|<widened key>` when that spec has a recorded key, and
+`l|<raw>|<specId>` with `True` when it has none. A non-zero `instTag` is
+appended as `|#<instTag>`.
+
 -}
 layoutQualKey : CoreDict.Dict Int String -> Int -> Int -> Int -> ( String, Bool )
 layoutQualKey specWidenedKeys raw instTag specId =
@@ -890,10 +821,10 @@ layoutQualKey specWidenedKeys raw instTag specId =
             ( withInstTag instTag ("l|" ++ String.fromInt raw ++ "|" ++ String.fromInt specId), True )
 
 
-{-| The mint tail, plus `SourceGlobal` registration when the
-id was FOLDED — the folded id denotes the global, and devirt's reverse lookup
-(and the stampable-class licensing) read `sources`. Ground ids never enter
-`provisionalStandalone` (LSS\_019 idempotence).
+{-| Mints `key` as `mintLayoutQualified` does and, when the key is a root
+lambda's (`foldedTo` is the global), records the id as a `SourceGlobal` of that
+global unless it already has a source. The id is not marked provisional.
+Under `lss.report`, each root-lambda mint is counted as `rootFold|folded`.
 -}
 mintLayoutQualifiedFold : Maybe TOpt.Global -> String -> Int -> Int -> Int -> Bool -> Bool -> S -> ( Int, S )
 mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s0 =
@@ -914,12 +845,10 @@ mintLayoutQualifiedFold foldedTo key raw instTag specId isFallback isTieBypass s
                     ( mid, s1 )
 
 
-{-| The LSS\_024 intern + census tail: interns `key`, records the LSS\_018
-`lambdaQualified` reverse entry
-(first-mint-wins — under LSS\_024 several specs share one mid, so the payload
-is the FIRST-minting spec, diagnostics only), and bumps the `layoutQual`
-counters. `shared` bumps on a mint whose id's first minter was a DIFFERENT
-spec — id reuse across enclosing specs, the fix working.
+{-| Interns `key` and returns its id, recording in `lambdaQualified` the
+lambda key and spec of the first mint of that id, and counting the mint in the
+`layoutQual` census. `shared` is counted when the id's first mint was in a
+different spec.
 -}
 mintLayoutQualified : String -> Int -> Int -> Int -> Bool -> Bool -> S -> ( Int, S )
 mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
@@ -991,10 +920,8 @@ mintLayoutQualified key raw instTag specId isFallback isTieBypass s0 =
                 ( mid, { s2 | lssMemberTable = { table | lambdaQualified = CoreDict.insert mid ( qualifiedRawKey raw instTag, specId ) table.lambdaQualified } } )
 
 
-{-| LSS\_024 §2.2: capture a just-created spec's annotation-widened creation
-key. Write-once and idempotent (SpecIds are create-once; LSS\_010
-re-translations re-read the same immutable entry). K6 discipline: the table
-is only written back when it actually grew.
+{-| Records `wkey` as the annotation-widened creation key of spec `specId`,
+unless the spec already has one, which is kept.
 -}
 recordSpecWidenedKey : Int -> String -> S -> S
 recordSpecWidenedKey specId wkey s =
@@ -1009,8 +936,7 @@ recordSpecWidenedKey specId wkey s =
         { s | lssMemberTable = { table | specWidenedKeys = CoreDict.insert specId wkey table.specWidenedKeys } }
 
 
-{-| LSS\_018: record a member id as μ-tied (idempotent). The set is exported
-as `MonoGraph.lssBlockedMembers` at assembly.
+{-| Adds a member id to the set of μ-tied ids, `LssMemberTable.muTied`.
 -}
 recordMuTied : Int -> S -> S
 recordMuTied tiedId s =
@@ -1025,7 +951,8 @@ recordMuTied tiedId s =
         { s | lssMemberTable = { table | muTied = CoreDict.insert tiedId () table.muTied } }
 
 
-{-| Increment the `widenedByKernel` statistics counter.
+{-| Counts one kernel boundary that forced a lambda set to ⊤ in
+`widenedByKernel`. A policy counter: it counts whether or not the report is on.
 -}
 bumpWidenedByKernel : S -> S
 bumpWidenedByKernel s =
@@ -1036,8 +963,8 @@ bumpWidenedByKernel s =
     { s | lssStats = { stats | widenedByKernel = stats.widenedByKernel + 1 } }
 
 
-{-| LSS\_020 (B.4): a signature arrow's member list exceeded `maxSetSize` at
-readback and widened to ⊤. Policy counter — unconditional.
+{-| Counts one signature arrow whose member list exceeded `maxSetSize` and
+became ⊤. A policy counter: it counts whether or not the report is on.
 -}
 bumpWidenedBySigSize : S -> S
 bumpWidenedBySigSize s =
@@ -1051,8 +978,8 @@ bumpWidenedBySigSize s =
     { s | lssStats = { stats | sigStats = { sig | widenedBySigSize = sig.widenedBySigSize + 1 } } }
 
 
-{-| LSS\_020 (B.4): a poison event inside a sigFlow join (hub poison or
-divergence in the new joins). Census-only — REPORT-GATED (plan 1 §7.6).
+{-| Counts, under `lss.report`, one lambda set forced to ⊤ while joining sets
+along a signature's flow.
 -}
 bumpWidenedByCf : S -> S
 bumpWidenedByCf s =
@@ -1070,8 +997,8 @@ bumpWidenedByCf s =
         s
 
 
-{-| LSS\_021 (Phase F): a POSITIONAL KernelSetFacts row applied at a kernel
-boundary. Census-only — REPORT-GATED (plan 1 §7.6).
+{-| Counts, under `lss.report`, one kernel boundary handled by a positional
+row of kernel set facts.
 -}
 bumpKernelFactHit : S -> S
 bumpKernelFactHit s =
@@ -1089,8 +1016,8 @@ bumpKernelFactHit s =
         s
 
 
-{-| LSS\_023: a directed inclusion edge was installed (`Store.addSlotSource`).
-Census-only — REPORT-GATED.
+{-| Counts, under `lss.report`, one directed inclusion edge installed between
+two set slots.
 -}
 bumpEdgeInstalled : S -> S
 bumpEdgeInstalled s =
@@ -1108,8 +1035,8 @@ bumpEdgeInstalled s =
         s
 
 
-{-| LSS\_023: a directed structural walk degraded a container subtree to the
-symmetric join, and the subtree can carry a set. Census-only — REPORT-GATED.
+{-| Counts, under `lss.report`, one container subtree that a directed walk
+joined both ways instead, where the subtree can carry a lambda set.
 -}
 bumpFlowDegraded : S -> S
 bumpFlowDegraded s =
@@ -1127,10 +1054,8 @@ bumpFlowDegraded s =
         s
 
 
-{-| LSS\_022: a kernel boundary took the LICENSED (`TypeFaithful`)
-pass-through — no LSS\_004 poison on either side. Census-only —
-REPORT-GATED, and disjoint from `bumpKernelFactHit` by construction (one
-boundary takes one tier).
+{-| Counts, under `lss.report`, one kernel boundary passed through without
+forcing ⊤ because the kernel is licensed as type-faithful.
 -}
 bumpKernelLicensed : S -> S
 bumpKernelLicensed s =
@@ -1148,10 +1073,9 @@ bumpKernelLicensed s =
         s
 
 
-{-| LSS\_026 (D0, signature side): a members- or sources-carrying
-internalization crossed a dangling (FlexVar) source and resolved ⊤ rather
-than claiming completeness. POLICY counter — unconditional, same class as
-`widenedBySigSize`.
+{-| Counts one signature-side set that drew on a source never written and so
+was resolved to ⊤ rather than to its known members. A policy counter: it counts
+whether or not the report is on.
 -}
 bumpTopMixedFlexSig : S -> S
 bumpTopMixedFlexSig s =
@@ -1165,11 +1089,10 @@ bumpTopMixedFlexSig s =
     { s | lssStats = { stats | sigStats = { sig | topMixedFlexSig = sig.topMixedFlexSig + 1 } } }
 
 
-{-| Phase 2b flex-construction mark (plans/lss-var-chain-roots.md §3): the
-slow path records the ctor SPEC whenever a construction's translated arg
-carries a flex arrow. Bookkeeping only — never touches the graph. NOT
-report-gated: `settleVarCtorRows` (flag-gated) is the sole reader, and the
-mark must exist whenever that pass runs.
+{-| Records constructor spec `specId` in `LssStats.flexCtorSpecs`: a
+construction whose translated argument carried an unresolved arrow demanded it.
+Unlike the census counters this is recorded whether or not the report is on,
+because the settle pass `settleVarCtorRows` reads it.
 -}
 markFlexCtorSpec : Int -> S -> S
 markFlexCtorSpec specId s =
@@ -1180,8 +1103,8 @@ markFlexCtorSpec specId s =
     { s | lssStats = { stats | flexCtorSpecs = CoreDict.insert specId () stats.flexCtorSpecs } }
 
 
-{-| LSS\_026 Phase-0 census (§2.1): bump one census key. REPORT-GATED — the
-default path carries only the branch (the `bumpWidenedByCf` precedent).
+{-| Adds one, under `lss.report`, to the census row `key` of
+`argFlowCensus`.
 -}
 bumpArgFlowCensus : String -> S -> S
 bumpArgFlowCensus key s =
@@ -1202,8 +1125,8 @@ bumpArgFlowCensus key s =
         s
 
 
-{-| `bumpArgFlowCensus` by an arbitrary delta (report-gated the same way):
-for cells that count nodes/visits rather than events.
+{-| Adds `delta`, under `lss.report`, to the census row `key` of
+`argFlowCensus`.
 -}
 bumpArgFlowCensusBy : String -> Int -> S -> S
 bumpArgFlowCensusBy key delta s =
@@ -1224,13 +1147,8 @@ bumpArgFlowCensusBy key delta s =
         s
 
 
-{-| Liveness census (plans/lss-provenance-ratio-census.md §7): record that the
-arrow with this `ArrowId` was PEELED BY AN ARGUMENT — i.e. applied.
-
-Report-gated for the same reason as `bumpArgFlowCensus`, and additionally inert
-without it: the caller resolves the `ArrowId` through `itemAux.arrowOfSlot`,
-which is only populated under `lss.report`.
-
+{-| Counts, under `lss.report`, one application of the arrow with `ArrowId`
+`aid` to an argument, in `appliedArrows`.
 -}
 bumpAppliedArrow : Int -> S -> S
 bumpAppliedArrow aid s =
@@ -1251,22 +1169,26 @@ bumpAppliedArrow aid s =
         s
 
 
-{-| LSS\_026 Phase-0 census: is this global's signature ALREADY memoized, and
-is it trivial? A pure READ — the census must never FORCE a signature, because
-signature computation allocates from the shared member-id supply and
-`lss.report` is excluded from the config hash (a report-on run must produce
-the same artifact as a report-off one).
+{-| Tells whether the global's signature, if it has already been inferred, is
+trivial; `Nothing` when it has not been inferred.
+
+It only reads the memo, so a census can call it without causing inference.
+Inferring a signature mints member ids from the shared supply, so a census
+that did so would change the ids, and the output, of a run with the report on.
+
 -}
 memoizedSignatureTrivial : TOpt.Global -> S -> Maybe Bool
 memoizedSignatureTrivial g s =
     Maybe.map .trivial (HashMap.get TOpt.globalHash (==) g s.lssSignatures)
 
 
-{-| LSS\_026 Phase-0 census: the member CLASS of a member id, as the
-escalation gate needs it (plan §0.5) — `gc` (standalone global/ctor: grounds
-at zonk and IS consumable by LSS\_025/E9.1 devirt, so a false one is a
-miscompile), `k` (kernel), `l` (lambda instance: declines at AbiCloning per
-LSS\_017, so a false one is merely imprecise). Pure read.
+{-| Returns the census class of a member id: `"gc"` for a `SourceGlobal`
+member, `"k"` for a kernel, and `"l"` for anything else, which includes lambda
+instances and partial applications.
+
+Only census counters read it. Whether a member may become a direct call is
+decided elsewhere, from `standaloneMemberGlobal`.
+
 -}
 memberClassOf : Int -> LssMemberTable -> String
 memberClassOf mid table =
@@ -1278,21 +1200,16 @@ memberClassOf mid table =
             "k"
 
         Just (SourcePap _ _) ->
-            -- EXPLICIT, not the default arm: registering a source for `p|`
-            -- must NOT promote it out of the declining class. Every DIRECT
-            -- consumer (E9/E9.1/E9.5 devirt) keys on this, and a direct
-            -- rewrite of a partial application drops its bound arguments —
-            -- the recorded miscompile behind `Translate.injectPapMember`.
-            -- Written out so a future reader cannot "tidy" it into "gc".
+            -- A partial application is not its global: classed with lambdas.
             "l"
 
         _ ->
             "l"
 
 
-{-| LSS\_026 Phase-0 census: the coarsest class present in a member list —
-`gc` dominates `k` dominates `l` (the escalation gate asks "does this mixed
-fact carry a STAMPABLE member?").
+{-| Returns the census class of a member list: `"gc"` if any member is `"gc"`
+(see `memberClassOf`), else `"k"` if any is a kernel, else `"none"` for an
+empty list and `"l"` otherwise.
 -}
 membersClass : List Int -> LssMemberTable -> String
 membersClass members table =
@@ -1309,14 +1226,12 @@ membersClass members table =
         "l"
 
 
-{-| Step 10c: record a MONO\_030 watchdog trip for the driver to pick up.
+{-| Records a spec watchdog failure in `ItemAux.pendingFailure`, unless one is
+already recorded, which is kept.
 
-The trip no longer aborts the item mid-flight — `enqueueSpec*` has no `Result`
-to return it in — so the tripped spec IS committed (a valid state is required
-to finish the item) and `Monomorphize.drain` stops before ever processing it.
-Termination is unaffected: one item's translation is finite, and the next
-`drain` step reads the flag. FIRST TRIP WINS, which is what aborting
-immediately used to mean.
+The failure does not stop the current item: the spec that tripped the
+watchdog is still created and scheduled, and the driver reads the failure
+after the item finishes.
 
 -}
 notePendingFailure : Failure -> S -> S
@@ -1333,11 +1248,16 @@ notePendingFailure f s =
             { s | itemAux = { aux | pendingFailure = Just f } }
 
 
-{-| MONO\_030 (solver arm): validate a just-CREATED spec against the breadth
-and key-size watchdogs. `Nothing` = fine; `Just` = the loud failure that
-replaces a silent hang/OOM (poly-rec through annotated mutual cycles is
-legal Elm — plan §1.1). Callers gate on the created path only, so this
-never runs on registry probe hits. A limit of 0 disables its check.
+{-| Checks a newly created spec of `global` at `monoType` against the spec
+watchdogs in `env.limits`, returning a `LimitExceeded` failure when one trips.
+
+The breadth watchdog trips when the registry has created more than
+`specBreadth` specs of the global; the size watchdog trips when `monoType` has
+more than `specTypeNodes` nodes. A limit of 0 or less disables its check. The
+watchdogs exist because polymorphic recursion through annotated mutually
+recursive definitions is legal Elm and can demand ever larger types without
+end. The message names the global being specialized when there is one.
+
 -}
 checkSpecWatchdogs : Mono.Global -> Mono.MonoType -> Mono.SpecializationRegistry -> S -> Maybe Failure
 checkSpecWatchdogs global monoType reg s =
@@ -1345,10 +1265,7 @@ checkSpecWatchdogs global monoType reg s =
         limits =
             s.env.limits
 
-        -- THUNKED DELIBERATELY. This function runs on every CREATED spec
-        -- (~41k on a self-compile) and the message is emitted essentially
-        -- never, so the context string must not be built on the passing path.
-        -- Same discipline as `Translate.unifyStepCtx`'s `() -> String`.
+        -- A thunk, so the string is built only when a watchdog trips.
         context : () -> String
         context =
             \() ->
@@ -1372,146 +1289,108 @@ checkSpecWatchdogs global monoType reg s =
         Nothing
 
 
-{-| M7: the immutable Reader-style context — set once at `initState`, never
-updated. Grouped so `S` updates copy one `env` ref rather than five dead ones.
+{-| The run's fixed inputs and settings, kept in `S.env` and never changed
+after the initial state is built.
+
+`currentModule` is the entry module, the home given to every anonymous lambda.
+`superStatic` holds the type checker's constraints on type variables
+(`number`, `comparable` and so on), as against `S.superTable`, which also
+gains what work items discover. `lamLabels` and the `arrowTotal` and `stamp*`
+counts are read only by the LSS report: they describe the arrows that
+`AssignMVarIds` gave ids to. `limits` holds the spec watchdog limits.
+
 -}
 type alias Env =
-    { toptNodes : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId) -- 4c: hash-keyed, NOT DMap — `Data.Map` rebuilds `toComparableGlobal` on every probe, and this map is read per occurrence
+    { toptNodes : HashMap.HashMap TOpt.Global (TOpt.Node TypeIds.MVarId)
     , annotations : TOpt.AnnotationsByGlobal TypeIds.MVarId
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , currentModule : ModuleName.Canonical -- entry module; home of every AnonymousLambda
-    , superStatic : Dict Int Vars.SuperType -- static solver truth ONLY (loadVar)
-    , lss : Config.LssConfig -- lambda-set specialization knobs; enabled=False is byte-identical off
-    , lamLabels : CoreDict.Dict Int String -- member id -> "defKey#id" (census rendering only)
-
-    -- STAMPING-WALK CENSUS denominator: every arrow occurrence AssignMVarIds
-    -- stamped. Census rendering ONLY; nothing reads it during solving. Its
-    -- companions `arrowRootOf` / `arrowRootClasses` belonged to
-    -- `lss.sigRootIdentity` and went with it (2026-09-17).
+    , currentModule : ModuleName.Canonical
+    , superStatic : Dict Int Vars.SuperType
+    , lss : Config.LssConfig
+    , lamLabels : CoreDict.Dict Int String -- source-lambda id -> label; every label is the empty string
     , arrowTotal : Int
-
-    -- Stamping-walk census (§8): how the lost provenance is DISTRIBUTED.
-    -- `partial` types prove mid-walk abandonment; `none` types are never-walked
-    -- or root-failed and no repair to the walk reaches them.
     , stampTypesAll : Int
     , stampTypesNone : Int
     , stampTypesPartial : Int
     , stampArrowsInNone : Int
     , stampArrowsUnstampedInPartial : Int
-    , limits : Config.SpecLimits -- MONO_030 spec watchdogs (0 = a check disabled); failure-only, hash-excluded
+    , limits : Config.SpecLimits
     }
 
 
-{-| The whole engine state: global fields persist across work items; the
-per-item fields (`store`, `memo`, `revMemo`) are reset by `resetItem`.
+{-| The whole state of a monomorphization run, threaded through every `Step`.
+
+The fields above `store` are run-global and survive `resetItem`; `store` and
+the fields after it belong to the current work item and are replaced by
+`resetItem` (see the module docstring). `superTable` starts as the type
+checker's constraints on type variables and gains the `number` constraints that
+finished items discover (`harvestSuperTableExcept`). `dirtySpecs` holds the
+scheduled specs whose stored type a later demand widened, which must be
+translated again; `dirtyList` holds the same specs as a list, because a
+`BitSet` cannot be enumerated. `specCountByGlobal` is kept only with LSS on.
+`intern` is the hash-cons table for `MonoType`s, so that equal types built
+anywhere in the run share one value. `currentGlobal` is the global whose spec
+is being translated.
+
 -}
 type alias S =
-    { -- Global accumulators (mirror State.SpecAccum minus the subst machinery)
+    { -- Run-global
       worklist : List WorkItem
     , nodes : Array (Maybe Mono.MonoNode)
     , inProgress : BitSet
     , scheduled : BitSet
-    , dirtySpecs : BitSet -- LSS_010: specs whose stored type was annotation-JOINED after scheduling; re-translated at drain-end flush rounds (flag-off: never set)
-    , dirtyList : List Mono.SpecId -- enumeration twin of dirtySpecs (BitSet has no iteration); duplicate-free via the bit check; consumed by the drain-end flush
-    , specCountByGlobal : CoreDict.Dict String SpecTally -- M4 keyed budget: specs created per global (only maintained under LSS; consulted by underBudget). §9.6: the tally also carries the CREATED spec ids so the destructor-side ctor-demand-union read (destrAnno Fix B) is O(specs-of-this-global), not O(registry)
+    , dirtySpecs : BitSet
+    , dirtyList : List Mono.SpecId
+    , specCountByGlobal : CoreDict.Dict String SpecTally -- keyed by the global's comparable key
     , registry : Mono.SpecializationRegistry
     , ports : List Mono.PortRegistration
     , lambdaCounter : Int
-
-    -- Number/super truth: seeded from AssignMVarIds' superVars, read by
-    -- loadType when minting a var, and fed to shared Prune at the end.
-    , superTable : Dict Int Vars.SuperType -- static solver truth + Join-R harvested number-taint (zonk/key/Prune)
+    , superTable : Dict Int Vars.SuperType
     , nextMVarId : TypeIds.MVarId
-
-    -- LSS (all GLOBAL — survive resetItem; signatures/members are per-run facts)
-    , lssSignatures : HashMap.HashMap TOpt.Global LssSignature -- keyed by the Global itself (step 12): probing this was ~10^6 string builds and 14-16 long-prefix compares per run
-    , lssInProgress : HashMap.HashMap TOpt.Global () -- in-flight inference units (re-entry = EngineBug)
-    , lssMemberTable : LssMemberTable -- interned non-lambda member ids + E9 devirt reverse map (ONE field, grouped when the runtime capped records at 32 fields)
-    , nextMemberId : Int -- shared supply, seeded past GlobalMVarState.nextLam
+    , lssSignatures : HashMap.HashMap TOpt.Global LssSignature
+    , lssInProgress : HashMap.HashMap TOpt.Global () -- globals whose signature is being inferred
+    , lssMemberTable : LssMemberTable
+    , nextMemberId : Int
     , lssStats : LssStats
-    , monoMemo : MonoMemo -- the three classification memos (ONE field: see `MonoMemo`)
-    , nodeResolution : CoreDict.Dict String NodeResolution -- D13: per-GLOBAL node lookup + annotation-id set, keyed by TOpt.toComparableGlobal. Depends only on the immutable toptNodes, so it survives resetItem; a global with N specs resolves once instead of N times.
-
-    -- K6 (plans/mono-comparable-key-optimization.md §15): construction-time
-    -- hash-consing for MonoType. GLOBAL — survives resetItem, so every type the
-    -- run builds shares one canonical object per distinct structure. Threaded
-    -- into `Store.classifyGo` (which already carries S), `Store.zonkToMono`'s
-    -- `ZonkCtx`, and `Zonk.canTypeToMonoWithI`.
+    , monoMemo : MonoMemo
+    , nodeResolution : CoreDict.Dict String NodeResolution -- keyed by the global's comparable key
     , intern : Intern
-
-    -- M7: the 5 IMMUTABLE context fields (never updated after initState) live in
-    -- one `env` sub-record, so each `{ s | … }` copies one `env` ref instead of
-    -- five refs it never changes.
     , env : Env
-    , currentGlobal : Maybe Mono.Global -- (changes per item — stays top-level)
+    , currentGlobal : Maybe Mono.Global
 
-    -- Per-work-item solver state
+    -- Per work item
     , store : IO.State
-    , memo : Dict Int Vars.Variable -- MVarId (Id.toComparable) -> Point
-    , revMemo : Array (Maybe TypeIds.MVarId) -- A2: Point index -> first MVarId that minted it. Point indices are DENSE from 0 in a fresh per-item store, so an Array (indexed by point) replaces the former Dict Int — O(log32) point-keyed reads with no `_Utils_cmp`, sparse structure-point slots hold Nothing.
-    , varEnv : CoreDict.Dict String Mono.MonoType -- local variable name -> monomorphized type
-    , numberMulti : List NumberMultiEntry -- stack of let-bound number vars being multi-specialized
-    , localMulti : List NumberMultiEntry -- stack of let-bound FUNCTIONS being multi-specialized (f, f$1, …)
-    , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- destructor-bound name -> the destructor's canType (bridges a derived fn's call back to its root's type vars)
-    , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> its RHS canType (destructor root slot lookup)
-
-    -- Per-item auxiliary state, grouped into ONE field. It was grouped when
-    -- compiled Record heap objects had a 32-slot GC scan limit and S sat
-    -- exactly at it; records now take up to 2047 fields (wide objects), so
-    -- the limit is gone, but per-item state still belongs here.
-    --
-    --   lssRootAnn: lss on, function-root defs only — the demandUnify-seeded
-    --   annotation var, consumed ONCE by the def-root classifyLambdaHead so
-    --   binder/param types zonk demand-transported lambda sets (LSS_006).
-    --
-    --   ecoResidualReads/ecoResidualKeyReads (MONO_029 R2 stale-read
-    --   barrier): every zonk/classify that PRODUCES an erased CEcoValue
-    --   residual records what it read — a canonical-backed store var or a
-    --   never-loaded MVarId. At item end, a recorded read whose var/memo
-    --   entry has since been BOUND (or Number-tainted) in the SHARED memo
-    --   component proves the recorded output was a stale snapshot;
-    --   specializeNodeSaturating re-translates against the saturated store.
-    --   CNumber residuals are NOT tracked (eager-Int number-multi reads them
-    --   stale by design; Prune's number close owns them).
-    --
-    --   loopParams (MONO_029 R1): enclosing tail-recursive functions'
-    --   (name, typedArgs) frames, innermost first; the TailCall arm connects
-    --   recursive-call args to loop params (the TCO transform rebuilds that
-    --   call chain with a fresh id family).
+    , memo : Dict Int Vars.Variable -- MVarId (as an Int) -> Point
+    , revMemo : Array (Maybe TypeIds.MVarId) -- indexed by Point; Nothing for a Point no MVarId minted
+    , varEnv : CoreDict.Dict String Mono.MonoType -- local variable name -> its mono type
+    , numberMulti : List NumberMultiEntry -- innermost first
+    , localMulti : List NumberMultiEntry -- innermost first
+    , derivedDestructors : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- name bound by a destructor -> the destructor's type
+    , localCanTypes : CoreDict.Dict String (Can.Type TypeIds.MVarId) -- let-bound name -> the type of its right-hand side
     , itemAux : ItemAux
     }
 
 
-{-| §5.1 (plans/lss-paper-inclusion-constraints.md): ONE recorded inclusion
-constraint, in the paper's `ℓ ⋸ σ` shape.
+{-| One recorded inclusion constraint on a lambda-set slot, kept only for the
+census that `QShadowStats` describes; translation never reads it.
 
-SHADOW ONLY — nothing consumes these. They are recorded alongside the eager
-union so the census can ask whether `Q` would reproduce the eager answer, and
-whether anything is left over at the item boundary.
-
-`QPre` is the target slot's content IMMEDIATELY BEFORE the write. Every
-recording site already reads that descriptor, so capturing it is free, and it
-is what makes the comparison well-posed: the eager answer is `seed ⊔ Q`, and
-without the seed a slot minted from an `LSet` annotation would read as a
-spurious divergence.
+`QMembers` says the slot includes the listed member ids. `QTop` says the slot
+is ⊤. `QEdge` says the first slot includes the second, and carries the
+pre-state of both. Each constraint carries the pre-state of its slot as it was
+just before the write, because a slot can start out with members from an
+annotation, and the comparison must start from that seed. An edge also carries
+its source's pre-state, because a seeded slot that only ever appears as a
+source receives no constraint of its own.
 
 -}
 type QEntry
-    = QMembers Vars.Variable (List Int) QPre -- ℓ… ⋸ σ
-    | QTop Vars.Variable QPre -- ⊤ ⋸ σ (Eco's incompleteness marker; the paper has none)
-    | QEdge Vars.Variable Vars.Variable QPre QPre -- σ_dst ⊇ σ_src (LSS_023 LsFrom): dst, src, dst's pre, src's pre
+    = QMembers Vars.Variable (List Int) QPre
+    | QTop Vars.Variable QPre
+    | QEdge Vars.Variable Vars.Variable QPre QPre
 
 
-
--- The SOURCE's pre is captured as well as the destination's. A slot that
--- was seeded from an `LSet` annotation and only ever appears as an edge
--- SOURCE receives no constraint of its own, so without its seed the shadow
--- solution would under-approximate every destination downstream of it and
--- the census would report a divergence that is an artifact of the log.
-
-
-{-| The pre-state of a set slot recorded with a `QEntry`: still flexible, ⊤, or
-seeded with a member list.
+{-| The content of a lambda-set slot just before a `QEntry` was recorded
+against it: unconstrained, ⊤, or holding the listed members.
 -}
 type QPre
     = PreFlex
@@ -1519,127 +1398,66 @@ type QPre
     | PreMembers (List Int)
 
 
-{-| Per-work-item auxiliary state: the root annotation, residual reads, loop
-parameters, the SpecId and local-multi instance being translated, per-item
-memos and logs, and a pending watchdog failure.
+{-| The rest of a work item's state, reset by `resetItem`.
+
+The store-scoped fields are the ones `clearedAux` empties, which hold Points or
+Point indices of the item's store: `ecoResidualReads`, `ecoResidualKeyReads`,
+`arrowMemo`, `groundLoads`, `arrowOfSlot`, `zonkLog`, `qLog` and `qSigRoot`.
+`withScratchStore` clears them for the scratch store and restores them
+afterwards (`clearedAux`, `restoredAux`). A Point leaking across that swap names
+an unrelated Point of the other store, and can end up in a signature, which is
+run-global. `lssRootAnn` also holds a Point, but is not in that list: it is
+carried across the swap unchanged.
+
+`lssRootAnn` is the annotation of a definition whose body is a lambda, with the
+Point it was loaded as, consumed by the translation of that root lambda.
+`ecoResidualReads` and `ecoResidualKeyReads` record what each read-back that
+produced an erased residual type read; when one of those has since been bound,
+the read-back was stale and the item is translated again against the same
+store. `loopParams` holds the parameters of the enclosing tail-recursive
+functions, innermost first. `currentSpecId` is the spec being translated.
+`demandQualified` maps a lambda key (`qualifiedRawKey`) to the smallest member
+id the spec's stored demand carries for it, for the μ-tie. `currentLocalInstance`
+is the instance tag of the code being translated, 0 outside any instance.
+`retranslating` names the let-bound function whose instance is being
+re-translated, with its lambda id and arity. `arrowMemo` maps an arrow's id to
+its lambda-set slot. `arrowOfSlot`, `zonkLog`, `qLog` and `qSigRoot` are census
+logs, filled only when their census is on. `pendingFailure` is a spec watchdog
+failure waiting for the driver.
+
 -}
 type alias ItemAux =
     { lssRootAnn : Maybe ( Can.Type TypeIds.MVarId, Vars.Variable )
     , ecoResidualReads : List Vars.Variable
     , ecoResidualKeyReads : List Int
     , loopParams : List ( String, List ( String, Can.Type TypeIds.MVarId ) )
-    , currentSpecId : Maybe Int -- Fix B (LSS_017): the SpecId being translated; set by processItem after resetItem, cleared at finishNode. Qualifies lambda-instance member ids for keyed-routed globals.
-    , demandQualified : CoreDict.Dict Int Int -- LSS_018: QUALIFIED-raw lambda key -> SMALLEST qualified member id present in this spec's STORED demand (built by processItem from the registry type; consulted by lambdaInstanceMemberId's μ-tie). The key is the raw lambda id, or `mixTag raw instTag` under instance qualification — otherwise a mint inside local-multi instance B finds instance A's id, ties to it and force-blocks exactly the stamps this plan recovers (§3.6).
-
-    -- Instance qualification (plans/lss-instance-qualified-members.md §3.2):
-    -- the composed local-multi instance tag for the RHS currently being
-    -- re-translated; 0 = not inside one. COMPOSED, not overwritten, so an
-    -- inner let-function's instances stay distinguishable across the outer
-    -- instances that contain them. NOT reset by `clearedAux`
-    -- (`retranslateAt` sets it explicitly after the clear, and the
-    -- composition reads the OUTER value) and restored from the OUTER side by
-    -- `restoredAux` — the default there is keep-from-inner, which would leak
-    -- a scratch tag into the enclosing item.
+    , currentSpecId : Maybe Int
+    , demandQualified : CoreDict.Dict Int Int
     , currentLocalInstance : Int
-
-    -- F2.b (plans/lss-container-payload-transport.md §12.9.4): the local-multi
-    -- def whose instance RHS is being re-translated right now — (def name,
-    -- its RHS source lambda id, arity). A `VarLocal` reference to that name
-    -- inside the re-translation has no `varEnv` binding (the stack entry is
-    -- popped, the scope closed), so `injectArgLambdaMemberGo` injects the
-    -- instance's own id from here; the tag is already the instance's
-    -- (`retranslateWithTag`). Nothing outside a local-multi re-translation.
     , retranslating : Maybe ( String, TypeIds.SrcLambdaId, Int )
-
-    -- Phase 2a arrow identity (plans/lss-unknown-elimination.md §4.5):
-    -- `Id.toComparable arrowId` -> that arrow's lambda-set SLOT Point IN THIS
-    -- ITEM'S STORE.
-    --
-    -- STORE-SCOPED. It holds Points, so it MUST be cleared on every store
-    -- swap (`clearedAux`) and restored on the way out (`restoredAux`).
-    -- Leaking it into a scratch store aliases low outer Point indices —
-    -- indices are dense from 0 in BOTH stores — and `zonkSigGo` then bakes
-    -- garbage `LambdaSet1` content into a memoised `LssSignature`, which is
-    -- GLOBAL (`S.lssSignatures`) and survives the whole run. Silent
-    -- miscompile, not a crash. The identical hazard is recorded verbatim at
-    -- `Translate.retranslateAt`.
-    --
-    -- `clearResidualReads` must NOT clear it: the saturation pass
-    -- re-translates against the SAME store, so the Points are still valid and
-    -- clearing would silently re-mint and lose sharing mid-item.
     , arrowMemo : CoreDict.Dict Int Vars.Variable
     , groundLoads : HashMap.HashMap AliasKey Vars.FlatType
-
-    -- Multi-set census (M3): set-slot `pointKey` -> the `ArrowId` that minted
-    -- it. REPORT-GATED — empty unless `lss.report`, so the default path pays
-    -- nothing and the byte-identity rails are untouched.
-    --
-    -- Recorded in BOTH `arrowIdentity` arms, because the whole point is to key
-    -- multi-member sets by a corpus-stable ARROW rather than by readback:
-    -- `sizeHist` cannot tell 518 distinct 6-member arrows from one hot arrow
-    -- read 518 times (plan §2.5.5), and ArrowIds — minted by `AssignMVarIds`
-    -- from the syntax, independent of any lss flag — are the only key that is
-    -- stable across arms. (Symbol names are NOT: see runtime-calls Run AE.)
-    --
-    -- Store-scoped exactly like `arrowMemo`: it holds `pointKey`s, which are
-    -- dense from 0 in EVERY store, so it MUST be cleared and restored on every
-    -- scratch-store swap.
-    , arrowOfSlot : CoreDict.Dict Int Int
-
-    -- POST-SETTLE RE-ZONK (plans/lss-post-mono-architecture.md §3.2, Item 2):
-    -- every `Vars.Variable` handed to `Store.zonkToMono` during this item, in
-    -- reverse call order. REPORT-GATED — empty unless `lss.report`, so the
-    -- default path pays nothing and the byte-identity rails are untouched.
-    --
-    -- The point of the log is that `resetItem` installs a FRESH store per
-    -- work item, so a set slot read during translation can only ever be
-    -- refined by writes that land before that same item finishes. Replaying
-    -- the log at `finishNode` — against the same store, just later — is the
-    -- only "read it after it settles" experiment this architecture admits,
-    -- and it is exactly the one §3.2 needs: same variables, same multiplicity,
-    -- same denominator, only the TIME of the read differs.
-    --
-    -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot` (it holds Points),
-    -- so it MUST be cleared and restored on every scratch-store swap.
-    , zonkLog : List Vars.Variable
-
-    -- §5.1 `Q` IN SHADOW MODE (plans/lss-paper-inclusion-constraints.md):
-    -- every inclusion constraint this item recorded, in reverse order.
-    -- REPORT-GATED — empty unless `lss.report`, so the default path pays
-    -- nothing and every byte-identity rail is untouched.
-    --
-    -- Store-scoped exactly like `arrowMemo`/`arrowOfSlot`/`zonkLog` (it holds
-    -- Points), so it MUST be cleared and restored on every scratch-store swap.
-    , qLog : List QEntry
-
-    -- §5.1: the def's ROOT TYPE Point — `demandUnifyRoot`'s `annVar`, the
-    -- annotation loaded into this item's store and unified with the demand.
-    -- The census walks it at item end to collect the set slots the SIGNATURE
-    -- reaches, which is the paper's own partition criterion (§3.1: *"variables
-    -- not reaching the signature are internalized"*). Deliberately NOT gated
-    -- on the expression being a lambda, unlike `lssRootAnn`: `fns = [incr,
-    -- decr]` is not a lambda and its type carries the arrows this whole arc is
-    -- about.
-    --
-    -- REPORT-GATED and store-scoped exactly like `qLog`.
-    , qSigRoot : Maybe Vars.Variable
-    , pendingFailure : Maybe Failure -- Step 10c: a MONO_030 watchdog trip recorded at enqueue time and consumed by `Monomorphize.drain` once per item; first trip wins. It lives on ItemAux and NOT on `S` (placed when `S` was near the runtime's former 32-field record cap, now 2047; R3). `clearedAux`/`restoredAux` deliberately let it flow through a scratch store: it holds no store Points, and a trip inside `withScratchStore` must still reach the driver.
+    , arrowOfSlot : CoreDict.Dict Int Int -- set slot's pointKey -> the ArrowId that minted it
+    , zonkLog : List Vars.Variable -- every type read back in this item, newest first
+    , qLog : List QEntry -- newest first
+    , qSigRoot : Maybe Vars.Variable -- the definition's root type, unified with the demand
+    , pendingFailure : Maybe Failure
     }
 
 
-{-| An `ItemAux` with every field empty or unset.
+{-| An `ItemAux` with every field empty or unset, and instance tag 0.
 -}
 emptyItemAux : ItemAux
 emptyItemAux =
     { lssRootAnn = Nothing, ecoResidualReads = [], ecoResidualKeyReads = [], loopParams = [], currentSpecId = Nothing, demandQualified = CoreDict.empty, currentLocalInstance = 0, retranslating = Nothing, arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing, pendingFailure = Nothing }
 
 
-{-| Scratch-store entry: clear ONLY the read lists (scratch Point indices are
-meaningless against the restored item store); other aux fields flow through.
+{-| Returns `aux` with every store-scoped field emptied (see `ItemAux`), for
+use on entering a scratch store. The other fields are kept.
 
-NOTE for future per-item state: anything holding scratch-store Points MUST be
-added here and to `restoredAux`, or it leaks across the store swap — a silent
-miscompile, not a crash.
+The emptied fields are the store-scoped ones listed in `ItemAux`. `lssRootAnn`
+also holds a Point but is kept. A field emptied here must also be restored in
+`restoredAux`.
 
 -}
 clearedAux : ItemAux -> ItemAux
@@ -1647,16 +1465,20 @@ clearedAux aux =
     { aux | ecoResidualReads = [], ecoResidualKeyReads = [], arrowMemo = CoreDict.empty, groundLoads = HashMap.empty, arrowOfSlot = CoreDict.empty, zonkLog = [], qLog = [], qSigRoot = Nothing }
 
 
-{-| Scratch-store exit: restore the outer read lists, keep everything else
-from the inner state (matches the pre-pack behavior field for field).
+{-| Returns the `ItemAux` to continue with on leaving a scratch store: `inner`,
+with every store-scoped field, and also `currentLocalInstance` and
+`retranslating`, taken from `outer`. The other fields, including
+`pendingFailure`, `currentSpecId` and `demandQualified`, keep their values from
+`inner`.
 -}
 restoredAux : ItemAux -> ItemAux -> ItemAux
 restoredAux outer inner =
     { inner | ecoResidualReads = outer.ecoResidualReads, ecoResidualKeyReads = outer.ecoResidualKeyReads, arrowMemo = outer.arrowMemo, groundLoads = outer.groundLoads, arrowOfSlot = outer.arrowOfSlot, zonkLog = outer.zonkLog, qLog = outer.qLog, qSigRoot = outer.qSigRoot, currentLocalInstance = outer.currentLocalInstance, retranslating = outer.retranslating }
 
 
-{-| Saturation-pass reset (MONO\_029 R2): drop the recorded reads before
-re-translating against the same store.
+{-| Empties the recorded residual reads, before an item is translated again
+against the same store. The other store-scoped fields are kept, because their
+Points are still valid in that store.
 -}
 clearResidualReads : S -> S
 clearResidualReads s =
@@ -1667,10 +1489,10 @@ clearResidualReads s =
     { s | itemAux = { aux | ecoResidualReads = [], ecoResidualKeyReads = [] } }
 
 
-{-| D13: the per-global result of resolving a `Mono.Global` against `toptNodes`,
-plus the annotation-id set harvested from the resolved node. Both depend only on
-the immutable node map, so they are computed once per global and reused across
-every specialization of that global (memoized in `S.nodeResolution`).
+{-| A global's node in `Env.toptNodes`, if it has one, and the set of
+annotation variable ids found in that node. Both depend only on the node map,
+so they are computed once per global and kept in `S.nodeResolution` for all of
+its specs.
 -}
 type alias NodeResolution =
     { node : Maybe (TOpt.Node TypeIds.MVarId)
@@ -1678,46 +1500,55 @@ type alias NodeResolution =
     }
 
 
-{-| A let-bound value being specialized at multiple monomorphic types
-(number-multi / value-multi). `instances` is keyed by the demanded `MonoType`
-ITSELF (`Mono.SpecMap` — `specHashOf` + `eqKeySpec`, no string built; Phase 3
-site 2, plans/speckey-optimization.md §10.3); index 0 keeps the bare name,
-later ones get `$v<idx>`.
+{-| A let-bound definition being translated once per type it is used at, with
+the instances found so far.
 
-**Iteration order is insertion order**, not the rendered-type lexicographic
-order the old `Dict String` gave. That is observable: `Translate`'s
-`buildLocalDefs` and the two destructor sites emit one def per instance in
-iteration order, so emitted-def order — and therefore SpecId assignment
-order — changes. Accepted by decision (§10.4); names are unaffected because
-`freshName` is assigned from `specMapSize` at INSERT time.
+The same record serves both stacks of `S`. On `numberMulti` it is a let-bound
+value whose type involves `number`; on `localMulti` it is a let-bound function.
+The body of the `let` is translated first, and each use records the type it
+needs (`recordNumberInstance`, `recordLocalInstance`). `instances` is keyed by
+that `MonoType`, lambda sets included, and is iterated in insertion order. The
+first instance keeps the definition's name.
+
+`rhsLam` is the lambda id and parameter count of the right-hand side when it is
+a lambda; `rhsPap` is the global and supplied argument count when it is a
+partial application. Both are `Nothing` on the `numberMulti` stack.
+`pendingEnrich` is always empty on that stack.
 
 -}
 type alias NumberMultiEntry =
     { defName : String
     , instances : Mono.SpecMap NumberInstance
-    , rhsLam : Maybe ( TypeIds.SrcLambdaId, Int ) -- F2 (plans/lss-container-payload-transport.md §12.9.4): the let-function's RHS source lambda id and param count when the RHS is a lambda literal — what a use site injects; Nothing for tail defs, non-lambda RHSs and the numberMulti stack
-    , rhsPap : Maybe ( TOpt.Global, Int ) -- F2.c (§12.10.1): the RHS is a PARTIAL APPLICATION of this global with this many args supplied — a use site injects `p|<global>|<supplied>`; Nothing otherwise
-    , pendingEnrich : CoreDict.Dict String ( String, Mono.MonoType ) -- E4a deferral (Translate.flushLocalMultiEnrich): instance name -> (its let's defName, the instance RHS type) of let-functions nested in THIS entry's body whose use-site overlay is owed to the outermost let-function's single walk; always empty on the numberMulti stack
+    , rhsLam : Maybe ( TypeIds.SrcLambdaId, Int )
+    , rhsPap : Maybe ( TOpt.Global, Int )
+    , pendingEnrich : CoreDict.Dict String ( String, Mono.MonoType ) -- instance name -> (its definition's name, the instance's type)
     }
 
 
-{-| One concrete instance of a local-multi or number-multi definition: its fresh
-name, the mono type it is used at, and its insertion ordinal.
+{-| One instance of a `NumberMultiEntry`: the name it is emitted under, the
+type it is used at, and its ordinal, which is its insertion index and, from 1
+on, the number in its name.
 -}
 type alias NumberInstance =
     { freshName : String
     , monoType : Mono.MonoType
-    , ordinal : Int -- insertion index in the entry's `SpecMap` == the `$N` of `freshName` == `buildLocalDefs`' re-translation ordinal (F2: the use site needs it to reproduce the instance tag)
+    , ordinal : Int
     }
 
 
-{-| Why a work item was abandoned. All are surfaced as a top-level `Err`
-(never a fallback): `Unsupported` = feature not yet built; `UnifyMismatch` =
-the real unifier rejected something the old engine absorbed silently;
-`EngineBug` = an invariant the engine believes cannot happen;
-`LimitExceeded` = a MONO\_030 resource watchdog tripped — a diagnosable
-program/limit condition, NOT a compiler bug (renderFailure must not frame it
-as one).
+{-| A reason monomorphization cannot go on.
+
+`Unsupported` is a construct the engine does not handle. `UnifyMismatch` is a
+unification that had to succeed and failed. `EngineBug` is a broken internal
+invariant. Inside a `Step` these three abort the process through
+`crashFailure`; the driver in `Compiler.MonoSolver.Monomorphize` also returns
+some `EngineBug`s as an `Err`.
+
+`LimitExceeded` is a spec watchdog trip (see `checkSpecWatchdogs`). It is a
+limit the program reached, not a compiler bug, so it never goes through
+`crashFailure`: it is recorded in `ItemAux.pendingFailure`, and the driver
+returns it as an `Err` once the current item finishes.
+
 -}
 type Failure
     = Unsupported String
@@ -1727,19 +1558,19 @@ type Failure
 
 
 
--- ====== STEP MONAD ======
+-- ====== STEPS ======
 
 
-{-| A state transition: takes the state, returns a result and the new state.
-Failures do not travel here — see the module doc.
+{-| A computation over the engine state, returning a result and the new state.
+It has no failure channel (see the module docstring).
 -}
 type alias Step a =
     S -> ( a, S )
 
 
-{-| Step 10: the human-readable text of a `Failure`. Moved here from
-`Monomorphize.renderFailure` so `crashFailure` can use it; `Monomorphize`'s one
-caller now calls this.
+{-| Returns the message for a `Failure`: a `MonoSolver.` prefix naming the
+kind, then the text, except that a `LimitExceeded` message is returned as it
+is, without a prefix that would present it as a compiler fault.
 -}
 renderFailure : Failure -> String
 renderFailure failure =
@@ -1754,23 +1585,15 @@ renderFailure failure =
             "MonoSolver.bug: " ++ msg
 
         LimitExceeded msg ->
-            -- MONO_030: a resource watchdog, deliberately NOT framed as a
-            -- compiler bug — the message itself names the limit, the env
-            -- var, and the likely cause (poly-rec via annotated mutual
-            -- cycles is legal Elm).
             msg
 
 
-{-| Step 10: abort the process with the SAME text a `Failure` would have
-surfaced as. `EngineBug` and `Unsupported` are "never a fallback" by their own
-docstring — every site aborts the build — so once a function stops carrying a
-`Result`, this is where they go. It type-checks in a `Step`-typed position as
-readily as in a direct one, which is what lets the crash sites convert
-independently of their enclosing functions.
+{-| Aborts the process with the `renderFailure` message of `f`. Its result type
+is free, so it can stand wherever a value or a `Step` is expected.
 
-`LimitExceeded` must NOT come through here: MONO\_030 calls it diagnosable
-rather than a bug, and `SpecWatchdogTest` pins the clean failure. It travels as
-`ItemAux.pendingFailure` instead.
+It is for `Unsupported`, `UnifyMismatch` and `EngineBug`. A `LimitExceeded`
+failure is recorded with `ItemAux.pendingFailure` instead, so that it reaches
+the user as an ordinary error.
 
 -}
 crashFailure : Failure -> a
@@ -1778,14 +1601,17 @@ crashFailure f =
     Crash.crash (renderFailure f)
 
 
-{-| Run a `Step` over each element of a list in order, threading the state and
-collecting the results.
+{-| Runs `f` on each element of `items` in order, threading the state, and
+returns the results in the same order.
 -}
 traverse : (a -> Step b) -> List a -> Step (List b)
 traverse f items =
     \s -> traverseGo f items s
 
 
+{-| Runs `f` on each element in order, threading the state; the body of
+`traverse`.
+-}
 traverseGo : (a -> Step b) -> List a -> S -> ( List b, S )
 traverseGo f items s =
     case items of
@@ -1800,8 +1626,8 @@ traverseGo f items s =
                             ( b :: bs, s2 )
 
 
-{-| Left fold, threading the state. Step 10g: direct — the `succeed`/`andThen`
-pair it used to be built from no longer exists.
+{-| Folds `f` over `items` from the left, starting from `acc` and threading the
+state.
 -}
 foldlS : (a -> b -> Step b) -> b -> List a -> Step b
 foldlS f acc items s =
@@ -1815,13 +1641,11 @@ foldlS f acc items s =
                     foldlS f acc1 rest s1
 
 
-{-| Run a solver `IO` action against the item's store.
+{-| Runs a solver `IO` action against the item's store, keeping the store it
+returns.
 -}
 liftIO : IO.IO a -> S -> ( a, S )
 liftIO io s =
-    -- Step 10e: direct. A1 explicit trailing-S, tuple-literal leaf; `liftIO`
-    -- is on the store path of nearly every mint, so it must not be the thing
-    -- that boxes.
     let
         ( store1, a ) =
             io s.store
@@ -1833,19 +1657,26 @@ liftIO io s =
 -- ====== SOLVER-STORE HELPERS ======
 
 
-{-| Mint a fresh union-find Point with the given content, at the single fixed
-engine rank (`outermostRank`). No generalization happens, so any fixed rank is
-safe (`Unify.merge` uses `min`, `Occurs` ignores rank).
+{-| Mints a new Point in the item's store with the given content.
+
+Every Point the engine mints gets the same rank, `Type.outermostRank`. Rank
+matters to the type checker only for generalization, which the engine never
+does.
+
 -}
 freshVar : Vars.Content -> S -> ( Vars.Variable, S )
 freshVar content =
     liftIO (UF.fresh (IO.makeDescriptor content Type.outermostRank Type.noMark Nothing))
 
 
-{-| The one member-interning code path (LSS\_019 made it pure so `Store`'s
-zonk grounding and the `Step`-level mints share it): key → (id, table',
-nextId'). A hit returns the table and supply UNCHANGED (same pointers), so
-callers can detect the fresh-intern branch as `nextId' /= nextId`.
+{-| Returns the member id for `key`, with the table and next free id to
+continue with. A key already in the table gives its id with the table and
+`nextId` unchanged, so a caller can tell a new key by the returned next id
+differing from `nextId`. A new key is given `nextId`.
+
+Every member is interned through this function. It takes the table and supply
+rather than `S` so that read-back code holding them outside `S` can use it.
+
 -}
 internMemberKey : String -> LssMemberTable -> Int -> ( Int, LssMemberTable, Int )
 internMemberKey key table nextId =
@@ -1857,12 +1688,9 @@ internMemberKey key table nextId =
             ( nextId, insertMemberKey key nextId table, nextId + 1 )
 
 
-{-| Member id for a non-lambda function value, interned by kind+identity.
-Keys: "g|<global>" (global function ref), "c|<global>" (ctor used as a
-function), "k|home.name" (kernel ref), "a|field" (accessor value),
-"g|<global>|<typeKey>" (LSS\_019 ground standalone). Ids come from the same
-supply as Phase-0 lambda ids (`nextMemberId` is seeded past
-`GlobalMVarState.nextLam`), so member ids never collide (LSS\_003).
+{-| Returns the member id for `key`, interning it in `S.lssMemberTable` if it
+is new. The key forms are listed in the module docstring. This records nothing
+about what the member stands for; the `*MemberIdFor` functions below add that.
 -}
 memberIdFor : String -> S -> ( Int, S )
 memberIdFor key s =
@@ -1877,25 +1705,21 @@ memberIdFor key s =
         ( mid, { s | lssMemberTable = table1, nextMemberId = next1 } )
 
 
-{-| The interned key for a partial application of `global` with `argCount`
-arguments already supplied. ONE definition, because five sites mint it
-(`Translate.injectPapMember` and its successor walk, `LssInfer`'s inference
-twin and ITS successor walk, and `Monomorphize`'s varsucc successor ids) and
-two of them used to build the string independently — the same two-site drift
-that produced the LSS\_017 raw-vs-qualified split.
+{-| Returns the member key for a partial application of `global` with
+`argCount` arguments supplied, `p|<global>|<argCount>`. Every place that names
+such a member builds the key here, so that they all agree.
 -}
 papMemberKey : TOpt.Global -> Int -> String
 papMemberKey global argCount =
     "p|" ++ TOpt.toComparableGlobal global ++ "|" ++ String.fromInt argCount
 
 
-{-| Intern a `p|` member AND record its `SourcePap` origin.
+{-| Returns the member id for a partial application of `global` with
+`argCount` arguments supplied, recording it as a `SourcePap` unless the id
+already has a source.
 
-Deliberately NOT `insertMemberProvisional`: LSS\_019 grounding rewrites members
-found in `provisionalStandalone`, and a PAP element must keep the identity its
-injection gave it (`p|<g>|<supplied>` — one arrow deeper is a DIFFERENT PAP).
-The source registration exists only so the graph can NAME the global and the
-supplied count; `memberClassOf` keeps the member in the declining class.
+The id is not marked provisional, so grounding never rewrites it: the same
+global with one more argument supplied is a different partial application.
 
 -}
 papMemberIdFor : TOpt.Global -> Int -> S -> ( Int, S )
@@ -1913,12 +1737,13 @@ papMemberIdFor global argCount s0 =
                 ( mid, { s1 | lssMemberTable = { t | sources = CoreDict.insert mid (SourcePap global argCount) t.sources } } )
 
 
-{-| E9: intern a STANDALONE-GLOBAL member ("g|" or "c|" key — named
-globals, ctors incl. `Can.Normal` ones like `List.::`, box/enum ctors) and
-record its Global in the reverse map the devirt consults
-(`standaloneMemberGlobal`) AND in `provisionalStandalone` (LSS\_019 — these
-ids are PROVISIONAL: family names awaiting type-keyed grounding at zonk).
-Same interning as `memberIdFor`; the reverse inserts are idempotent.
+{-| Returns the member id for `key`, a `g|` or `c|` key for global `g`, and,
+unless the id already has a source, records it as a `SourceGlobal` of `g` and
+marks it provisional, so that `groundSetMembers` will rewrite it.
+
+The check is on the id's source, not on whether the key is new: a key interned
+earlier without a source is still recorded and marked.
+
 -}
 standaloneMemberIdFor : String -> TOpt.Global -> S -> ( Int, S )
 standaloneMemberIdFor key g s0 =
@@ -1931,8 +1756,9 @@ standaloneMemberIdFor key g s0 =
                 ( mid, { s1 | lssMemberTable = insertMemberProvisional mid g (insertMemberGlobal mid g s1.lssMemberTable) } )
 
 
-{-| E9: the Global behind a member id, when the member is a standalone
-global/ctor reference.
+{-| Returns the global a member id stands for when its source is
+`SourceGlobal`, and `Nothing` for any other member, including a partial
+application.
 -}
 standaloneMemberGlobal : Int -> S -> ( Maybe TOpt.Global, S )
 standaloneMemberGlobal mid s =
@@ -1946,14 +1772,15 @@ standaloneMemberGlobal mid s =
     )
 
 
-{-| LSS\_019: intern a GROUND standalone member — `g|<global>|<typeKey>`,
-one id per (global × instantiation layout). Pure (callable from `Store`'s
-zonk, which threads no `Step`). Writes `sources` ONLY, never
-`provisionalStandalone`: ground ids pass through the grounding rewrite
-untouched, which is what makes zonk∘encode∘zonk idempotent — the stability
-LSS\_010's finite-lattice termination argument consumes. The `typeKey` must
-be the ANNOTATION-WIDENED arrow key (`groundSetMembers` builds it), so a
-set never participates in its own members' identity (μ-severing).
+{-| Returns the ground member id `g|<global>|<typeKey>` for global `g`, with the
+table and next free id to continue with, recording a newly interned id as a
+`SourceGlobal` of `g`.
+
+Ground ids are never marked provisional, so grounding a set a second time
+leaves them as they are. `typeKey` is expected to be the annotation-widened
+rendering of the arrow type (`groundSetMembers` builds it that way), so that
+the lambda set of the arrow is not part of its own members' identity.
+
 -}
 groundStandaloneMemberIdFor : TOpt.Global -> String -> LssMemberTable -> Int -> ( Int, LssMemberTable, Int )
 groundStandaloneMemberIdFor g typeKey table nextId =
@@ -1968,43 +1795,30 @@ groundStandaloneMemberIdFor g typeKey table nextId =
         ( mid, insertMemberGlobal mid g table1, next1 )
 
 
-{-| LSS\_019 (GAP-1 element grounding, plans/lss-fidelity-2-standalone-member-grounding.md §3):
-rewrite each PROVISIONAL standalone member (`g|`/`c|`, recorded in
-`provisionalStandalone`) of a set slot being read back at the arrow
-`paramT -> resultT` to its GROUND member `g|<global>|<widened-arrow-typeKey>`.
-Element identity becomes (global × instantiation layout) — the id-space
-image of the paper's μ-aware substitution for `d⟨σ̄⟩` occurrences in sets.
+{-| Returns the members of a lambda set read back at the arrow
+`paramT -> resultT`, with each provisional member rewritten to its ground
+member, together with the table and next free id to continue with and the
+counts for the grounding census.
 
-Three load-bearing details (plan §3.2):
+A ground member is `g|<global>|<typeKey>`, where `typeKey` renders the arrow
+type with its own lambda sets widened, so one global gets one ground id per
+layout it is instantiated at. Members that are not provisional are kept as
+they are.
 
-1.  DEFERRAL: a residual-carrying arrow (`containsAnyMVar`) keeps the
-    provisional ids — grounding there would embed per-item residual MVar
-    ids in the key, minting different ids for the same value in different
-    specs (spurious 2-sets). Deferral equals the pre-plan semantics and is
-    convergent under LSS\_010 re-translation (a later, more concrete demand
-    grounds it then). Counted as the census's `deferred` — the explicit
-    precision frontier.
-2.  The key is ANNOTATION-WIDENED (`widenSets` before `toComparable`): an
-    arrow's own set cannot participate in its members' identity — that is
-    the μ-circularity, severed by construction.
-3.  The caller applies the maxSetSize policy to the REWRITTEN list (dedup
-    only shrinks; within one slot a provisional maps to exactly one ground
-    id, so per-slot size never grows — cap semantics never regress).
-
-Lambda (`l|`), kernel (`k|`), accessor (`a|`) and already-ground members
-pass through untouched (not in `provisionalStandalone`). Mixed
-provisional/ground sets are legal mid-run; rewrite+dedup at every zonk
-keeps annotations canonical.
+Three cases. With no provisional member, `members` is returned unchanged. When
+`paramT` or `resultT` still contains an unresolved type variable, nothing is
+rewritten, because the key would contain item-specific variable ids, and each
+provisional member is counted as `deferred`. Otherwise every provisional member
+is rewritten and counted as `grounded`, and the result is sorted ascending
+with duplicates removed. Rewriting never makes a set larger.
 
 -}
 groundSetMembers : Mono.MonoType -> Mono.MonoType -> List Int -> LssMemberTable -> Int -> { members : List Int, table : LssMemberTable, nextId : Int, grounded : Int, deferred : Int }
 groundSetMembers paramT resultT members table0 nextId0 =
     if not (List.any (\mid -> CoreDict.member mid table0.provisionalStandalone) members) then
-        -- Fast path (the common case): no provisional member in the slot.
         { members = members, table = table0, nextId = nextId0, grounded = 0, deferred = 0 }
 
     else if Mono.containsAnyMVar paramT || Mono.containsAnyMVar resultT then
-        -- Detail 1: deferral at a residual-carrying arrow.
         { members = members
         , table = table0
         , nextId = nextId0
@@ -2024,7 +1838,6 @@ groundSetMembers paramT resultT members table0 nextId0 =
 
     else
         let
-            -- Detail 2: the annotation-widened arrow key, built ONCE per slot.
             typeKey =
                 Mono.toComparableMonoType (Mono.widenSets (Mono.mFunction Mono.topWiden [ paramT ] resultT))
 
@@ -2050,7 +1863,6 @@ groundSetMembers paramT resultT members table0 nextId0 =
                     { members = [], table = table0, nextId = nextId0, grounded = 0, deferred = 0 }
                     members
         in
-        -- Re-establish LSS_001's ascending-sorted, duplicate-free shape.
         { members = dedupAscending (List.sort rewritten.members)
         , table = rewritten.table
         , nextId = rewritten.nextId
@@ -2059,6 +1871,8 @@ groundSetMembers paramT resultT members table0 nextId0 =
         }
 
 
+{-| Removes adjacent duplicates, which in a sorted list are all duplicates.
+-}
 dedupAscending : List Int -> List Int
 dedupAscending xs =
     case xs of
@@ -2073,10 +1887,9 @@ dedupAscending xs =
             xs
 
 
-{-| E9.2 (LSS\_016): intern a KERNEL member ("k|home.name" key — unchanged,
-so member ids are identical to the pre-E9.2 mint) and record its
-(prefix, home, name) identity in the reverse map the kernel devirt
-consults (`standaloneMemberKernel`). Mirrors `standaloneMemberIdFor`.
+{-| Returns the member id for a kernel's `k|` key and, unless the id already has
+a source, records it as a `SourceKernel` with the kernel's prefix, home and
+name.
 -}
 kernelMemberIdFor : String -> ( String, String, String ) -> S -> ( Int, S )
 kernelMemberIdFor key k s0 =
@@ -2089,8 +1902,8 @@ kernelMemberIdFor key k s0 =
                 ( mid, { s1 | lssMemberTable = insertMemberKernel mid k s1.lssMemberTable } )
 
 
-{-| E9.2: the kernel (prefix, home, name) behind a member id, when the
-member is a kernel-value reference.
+{-| Returns the kernel a member id stands for, as prefix, home and name, when
+its source is `SourceKernel`, and `Nothing` otherwise.
 -}
 standaloneMemberKernel : Int -> S -> ( Maybe ( String, String, String ), S )
 standaloneMemberKernel mid s =
@@ -2104,35 +1917,31 @@ standaloneMemberKernel mid s =
     )
 
 
-{-| Run a Step against a fresh scratch store, restoring the item's
-store/memo/revMemo afterward. This is `Translate.retranslateAt`'s
-stash/restore promoted to a combinator — the scratch store's Points never
-leak into the surrounding item, and vice versa.
+{-| Runs `step` against an empty scratch store, then goes back to the item's
+own store.
+
+The step starts with an empty store, `memo` and `revMemo`, and with the
+store-scoped `ItemAux` fields emptied (`clearedAux`). Afterwards the item's
+store, `memo` and `revMemo` are put back and `ItemAux` is restored as
+`restoredAux` describes. Everything else the step changed is kept, including
+run-global state such as member ids and signatures, and the per-item
+`varEnv` and multi-instance stacks.
+
+Read-backs and constraints the step logged in the scratch store are dropped
+with it. When there were any, their number is counted in `settled` (under
+`lss.report`) and in `qShadow` (under `lss.qCensus`), as `scratchDropped`.
+
 -}
 withScratchStore : (S -> ( a, S )) -> S -> ( a, S )
 withScratchStore step s0 =
     let
         sFresh =
-            -- The stale-read barrier's read lists are stashed too: scratch
-            -- Points are meaningless against the restored item store, so
-            -- residual reads made inside the scratch must not be scanned at
-            -- item end (scratch re-translation is itself a re-translation
-            -- mechanism; its staleness is out of scope for MONO_029 v1).
             { s0 | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, itemAux = clearedAux s0.itemAux }
     in
     case step sFresh of
         ( a, s1 ) ->
             let
-                -- §3.2 reconciliation: readbacks made INSIDE the scratch store
-                -- are counted by the in-flight ledger but can never be
-                -- replayed — `restoredAux` drops the inner log because those
-                -- Points die with the scratch store. Count them, so
-                -- `settled.zonked + scratchDropped == setsZonked` closes and a
-                -- MATCHES shortfall is reconciled rather than assumed.
-                --
-                -- This counts LOGGED READBACK CALLS, not set slots, so it is a
-                -- lower bound on the slot shortfall; it identifies the cause,
-                -- it does not have to close the arithmetic exactly.
+                -- Counts logged read-back calls, not set slots.
                 s2 =
                     if s1.env.lss.report && not (List.isEmpty s1.itemAux.zonkLog) then
                         let
@@ -2150,12 +1959,6 @@ withScratchStore step s0 =
                     else
                         s1
 
-                -- §5.1: the same reconciliation for the shadow `Q`. Constraints
-                -- recorded inside a scratch store name Points that die with it,
-                -- so `restoredAux` drops them — and a dropped constraint is
-                -- INVISIBLE to the census, which would otherwise report
-                -- `edges=0` while `sigflow` independently counts edges
-                -- installed. Count them so the gap explains itself.
                 s3 =
                     if s2.env.lss.qCensus && not (List.isEmpty s2.itemAux.qLog) then
                         let
@@ -2180,22 +1983,25 @@ withScratchStore step s0 =
 -- ====== WORKLIST / REGISTRY ======
 
 
-{-| Allocate or reuse the SpecId for a specialization, scheduling it if new.
-Mirrors the original `enqueueSpec`: LIFO worklist (cons), `scheduled` dedups.
+{-| Returns the `SpecId` for `global` at `monoType`, creating the spec in the
+registry and scheduling it if it is new.
+
+A newly scheduled spec is pushed on the front of the worklist, so the worklist
+is last in, first out, and `scheduled` keeps a spec from being pushed twice.
+With LSS on the work is done by `enqueueSpecKeyed`, whose docstring says how
+lambda sets take part in the key; with LSS off the registry is keyed on the
+type as given. In both cases a newly created spec is checked against the spec
+watchdogs, and a trip is recorded with `ItemAux.pendingFailure` while the spec
+is still created and scheduled.
+
 -}
 enqueueSpec : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
 enqueueSpec global monoType s0 =
-    -- A1: explicit trailing-S param (was `\s -> …`) → saturated callers avoid the
-    -- per-call closure; body unchanged → byte-identical.
     if s0.env.lss.enabled then
         enqueueSpecKeyed global monoType s0
 
     else
         let
-            -- This branch is reached only when `lss.enabled` is False — the
-            -- test above routes the enabled case to `enqueueSpecKeyed` — so the
-            -- keyed arm that used to sit here was unreachable. It went with the
-            -- flag removal.
             ( ( specId, reg1, hit ), s2 ) =
                 let
                     ( sid, r ) =
@@ -2209,9 +2015,8 @@ enqueueSpec global monoType s0 =
             storedChanged =
                 hit == Registry.HitChangedJoin
 
-            -- MONO_030: `hit == CreatedNew` is NOT a reliable created signal on
-            -- the lss-off arm (it labels every probe CreatedNew) — nextId growth
-            -- is, on both arms.
+            -- `hit` is always `CreatedNew` here, so creation is detected by the
+            -- registry's next id advancing.
             watchdog =
                 if reg1.nextId > s0.registry.nextId then
                     checkSpecWatchdogs global monoType reg1 s
@@ -2221,30 +2026,23 @@ enqueueSpec global monoType s0 =
         in
         case watchdog of
             Just failure ->
-                -- Step 10c: the tripped spec is still committed; `drain` stops
-                -- before it is ever processed.
                 enqueueSpecCommit specId reg1 storedChanged (notePendingFailure failure s)
 
             Nothing ->
                 enqueueSpecCommit specId reg1 storedChanged s
 
 
-{-| The post-watchdog commit tail shared by `enqueueSpec`'s unkeyed/off arm
-and `enqueueSpecKeyed`.
+{-| Finishes an enqueue of spec `specId`, given the registry `reg1` the probe
+returned and whether the probe widened the spec's stored type.
 
-On an already-scheduled hit with a CHANGED join (LSS\_010): a later demand
-widened the stored annotations of an already-scheduled spec. The node
-(translated, in flight, or pending) was/will be seeded from a NARROWER
-demand — its body annotations could claim a singleton set that lies about
-this caller's values, and a fast-dispatch stamp on such a site is a silent
-miscompile. Mark dirty ONLY — re-translation happens in drain-end flush
-rounds (markDirty), so a spec re-translates once per round with its
-FULLY-joined demand instead of once per join (the per-join immediate
-re-push cascaded into hour-scale churn on the self-compile).
-
-On an unchanged hit (D2): the registry is the SAME value, so
-`{ s | registry = reg1 }` would copy the whole S to change nothing —
-return S unaltered.
+A spec not yet scheduled is scheduled: `reg1` is installed and the spec is
+pushed on the worklist. A scheduled spec whose stored type was widened is
+marked dirty (`markDirty`) rather than pushed again. Its translation may have
+started from a narrower type, so its lambda sets could leave out values this
+demand brings, and it must be translated again; the dirty specs are
+re-translated together after the worklist drains, once per round instead of
+once per widening. A scheduled spec whose type did not change is returned with
+`s` unchanged, so `reg1` is not installed in that case.
 
 -}
 enqueueSpecCommit : Mono.SpecId -> Mono.SpecializationRegistry -> Bool -> S -> ( Mono.SpecId, S )
@@ -2266,17 +2064,10 @@ enqueueSpecCommit specId reg1 storedChanged s =
         )
 
 
-{-| Phase 1 census (`plans/lss-set-write-substrate.md`): attribute a keyed
-registry probe. `CreatedNew` costs nothing — it is the miss path, which
-always rebuilds `S` anyway, and a counter there would only re-count what
-`registry.nextId` already tracks.
-
-The two HIT-without-change outcomes are the ones worth the record copy: they
-land on the D2 "return S unaltered" path, so this is the one place
-instrumentation adds a copy the un-instrumented compiler does not make. That
-cost is deliberate and bounded — it is exactly the population Phase 4
-removes, and Run B measures it against Run A.
-
+{-| Counts the outcome of a registry probe in the census: an identical hit, a
+hit whose join changed nothing, or a hit whose join widened the stored type.
+A `CreatedNew` outcome is not counted. These counters are not gated on the
+report.
 -}
 bumpKeyedHit : Registry.KeyedHit -> S -> S
 bumpKeyedHit hit s =
@@ -2298,8 +2089,8 @@ bumpKeyedHit hit s =
             { s | lssStats = { stats | joinChanged = stats.joinChanged + 1 } }
 
 
-{-| Phase 1 census: one processItem completion join ran (one per completed
-body-bearing spec). Phase 4a: this is now the CHANGED half of that population.
+{-| Counts one completion join, the join of a finished spec's result into its
+stored type, that changed the stored type.
 -}
 bumpCompletionJoin : S -> S
 bumpCompletionJoin s =
@@ -2310,9 +2101,9 @@ bumpCompletionJoin s =
     { s | lssStats = { stats | completionJoins = stats.completionJoins + 1 } }
 
 
-{-| Phase 4a census: a completion join that added nothing — the changed flag
-came back `False`, so no tree was rebuilt. Bumps the total too, keeping
-`completionJoins` the invocation count Phase 1 defined it as.
+{-| Counts one completion join that changed nothing, in both
+`completionJoinNoop` and `completionJoins`, so that `completionJoins` counts
+every completion join.
 -}
 bumpCompletionJoinNoop : S -> S
 bumpCompletionJoinNoop s =
@@ -2329,9 +2120,9 @@ bumpCompletionJoinNoop s =
     }
 
 
-{-| LSS\_010: record that a scheduled spec's stored type was join-widened.
-Duplicate-free: the BitSet guards the list. The drain-end flush re-pushes
-and `processItem` consumes the bit when it re-translates.
+{-| Installs registry `reg1` and marks `specId` dirty: its stored type was
+widened after it was scheduled. A spec already dirty is not added to
+`dirtyList` again.
 -}
 markDirty : Mono.SpecId -> Mono.SpecializationRegistry -> S -> S
 markDirty specId reg1 s =
@@ -2346,24 +2137,24 @@ markDirty specId reg1 s =
         }
 
 
-{-| M4 (`keyed = True`, design §8.5): the dedup KEY is the fully annotated
-type while this global is under its spec budget — lambda sets fan out
-specializations, giving each caller's member its own copy of the callee
-(the precondition for fast dispatch inside shared HOF bodies). Past the
-budget, new demands fall back to the widened key (types never widen —
-MONO\_020/021/024) and the event is counted in `widenedByBudget`.
+{-| Does `enqueueSpec` with LSS on.
 
-BOTH branches go through the JOINING variant (LSS\_010): an annotated key
-can collide with a widened one when the demand is all-`LTop` (an escaping
-reference's storeless classify keys exactly like a widened set-bearing
-type), and a plain first-demand-wins hit there would resurrect the shared
--spec miscompile through the keyed path. Under-budget hits with identical
-annotations short-circuit inside `getOrCreateSpecIdKeyed` (equal stored
-type, or a join that changes nothing).
+The registry key depends on how many specs the global already has. While the
+global is under its budget, `lss.maxSpecsPerGlobal` (0 or less means no
+limit, the default), the key is `monoType` with its lambda sets, so demands
+that differ only in lambda sets get separate specs and each body sees only
+the functions that can reach it. Past the budget the key is `monoType` with
+its lambda sets widened, and the demand is counted in `widenedByBudget`. A
+widened key does not match a spec created under the budget unless every set
+in that spec's type was ⊤, so the first demand past the budget can still
+create a new spec.
 
-`specCountByGlobal` counts CREATED specs per global (detected by
-`registry.nextId` advancing), so budget checks are O(log n) and reuse of
-an existing spec never burns budget.
+Either way the probe joins the demand into the spec's stored type
+(`Registry.getOrCreateSpecIdKeyed`), and a join that widens the stored type of
+a scheduled spec marks it dirty (see `enqueueSpecCommit`). Only creation
+counts against the budget. A newly created spec has its annotation-widened
+key recorded (`recordSpecWidenedKey`), which is what its lambda mints are
+qualified by, and is checked against the spec watchdogs.
 
 -}
 enqueueSpecKeyed : Mono.Global -> Mono.MonoType -> S -> ( Mono.SpecId, S )
@@ -2378,17 +2169,11 @@ enqueueSpecKeyed global monoType s0 =
         count =
             tally.count
 
-        -- 0 (or negative) = UNLIMITED (2026-08-29): the budget is fan-out
-        -- POLICY since LSS_018 μ-tie, and the no-limits default expresses
-        -- "no policy" as 0 rather than a sentinel magnitude.
         underBudget =
             s0.env.lss.maxSpecsPerGlobal <= 0 || count < s0.env.lss.maxSpecsPerGlobal
 
-        -- Layout-qualified members §2.2: the annotation-widened key is needed on the
-        -- over-budget arm (it IS the dedup key there) and on the
-        -- under-budget arm too (the capture probe — the under-budget create
-        -- path is exactly the sigFlow-split population). Built at most once,
-        -- K6 hash-consed.
+        -- Needed on both arms: the key past the budget, and the recorded
+        -- creation key of a new spec.
         ( maybeWidened, sPre ) =
             let
                 ( keyType, intern1 ) =
@@ -2401,7 +2186,6 @@ enqueueSpecKeyed global monoType s0 =
                 ( Registry.getOrCreateSpecIdKeyed global monoType monoType sPre.registry, sPre )
 
             else
-                -- K6: hash-cons the budget-widened key (see `enqueueSpec`).
                 ( Registry.getOrCreateSpecIdKeyed global (Maybe.withDefault monoType maybeWidened) monoType sPre.registry
                 , sPre
                 )
@@ -2435,10 +2219,6 @@ enqueueSpecKeyed global monoType s0 =
                         { stats0 | widenedByBudget = stats0.widenedByBudget + 1 }
             }
 
-        -- Layout-qualified members §2.2: capture the widened creation key for a just-CREATED
-        -- spec, write-once. Both arms record (widenSets is idempotent, so
-        -- budget-widened and annotation-created twins of one global land
-        -- EQUAL widened keys — their lambdas share, per the plan's §5 pins).
         s2 =
             case ( created, maybeWidened ) of
                 ( True, Just keyType ) ->
@@ -2447,7 +2227,6 @@ enqueueSpecKeyed global monoType s0 =
                 _ ->
                     s1
     in
-    -- MONO_030: watchdogs on the created path only (probe hits never check).
     case
         if created then
             checkSpecWatchdogs global monoType reg1 s2
@@ -2456,12 +2235,9 @@ enqueueSpecKeyed global monoType s0 =
             Nothing
     of
         Just failure ->
-            -- Step 10c: commit, record, and let `drain` stop at the item end.
             enqueueSpecCommit specId s2.registry storedChanged (notePendingFailure failure s2)
 
         Nothing ->
-            -- LSS_010 dirty machinery on a changed join — mark only; the
-            -- drain-end flush re-pushes.
             enqueueSpecCommit specId s2.registry storedChanged s2
 
 
@@ -2469,8 +2245,7 @@ enqueueSpecKeyed global monoType s0 =
 -- ====== PER-ITEM RESET ======
 
 
-{-| A fresh, empty solver store. Built here (rather than via a private IO.elm
-seed) so the engine touches zero lines of the type checker.
+{-| An empty point store, with no Points and node-id recording off.
 -}
 freshStore : IO.State
 freshStore =
@@ -2494,40 +2269,41 @@ freshStore =
     }
 
 
-{-| Reset the per-work-item solver state before specializing a node.
-
-The finished item's store is dead by now (`finishNode` has already run the
-harvest and the report-gated censuses), so it is replaced by an empty one.
-
+{-| Replaces every per-item field with its empty value, before a work item is
+translated: an empty store, empty memos, an empty variable environment and
+multi-instance stacks, and an empty `ItemAux`, which also clears any pending
+failure. Anything still needed from the previous item's store must have been
+read out before this.
 -}
 resetItem : S -> S
 resetItem s =
     { s | store = freshStore, memo = CoreDict.empty, revMemo = Array.empty, varEnv = CoreDict.empty, numberMulti = [], localMulti = [], derivedDestructors = CoreDict.empty, localCanTypes = CoreDict.empty, itemAux = emptyItemAux }
 
 
-{-| Bind a local variable's monomorphized type.
+{-| Binds a local variable's name to its mono type in `varEnv`.
 -}
 insertVar : String -> Mono.MonoType -> S -> S
 insertVar name monoType s =
     { s | varEnv = CoreDict.insert name monoType s.varEnv }
 
 
-{-| Look up a local variable's type (populated by let/lambda/destructor bindings).
+{-| Returns the mono type `varEnv` binds a local variable's name to.
 -}
 lookupVar : String -> S -> ( Maybe Mono.MonoType, S )
 lookupVar name s =
     ( CoreDict.get name s.varEnv, s )
 
 
-{-| Push an empty number-multi entry for a let-bound number var before walking
-its body (instance discovery is body-first).
+{-| Pushes an entry with no instances for the let-bound value `defName` onto
+`numberMulti`, before the `let` body is translated and records its uses.
 -}
 pushNumberMulti : String -> S -> S
 pushNumberMulti defName s =
     { s | numberMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = Nothing, rhsPap = Nothing, pendingEnrich = CoreDict.empty } :: s.numberMulti }
 
 
-{-| Pop the top number-multi entry after the body is specialized.
+{-| Pops the innermost `numberMulti` entry, or returns `Nothing` when the stack
+is empty.
 -}
 popNumberMulti : S -> ( Maybe NumberMultiEntry, S )
 popNumberMulti s =
@@ -2539,9 +2315,9 @@ popNumberMulti s =
             ( Nothing, s )
 
 
-{-| The eager (index-0, bare-name) instance monoType of a number-multi target,
-or Nothing if `name` is not one. Used by the destructor-derived divert to
-overlay a refined slot onto the root container's type.
+{-| Returns the type of the first instance, the one named `name` itself, of the
+innermost `numberMulti` entry for `name`; `Nothing` when there is no such entry
+or it has no such instance yet.
 -}
 numberMultiRootType : String -> S -> ( Maybe Mono.MonoType, S )
 numberMultiRootType name s =
@@ -2556,9 +2332,10 @@ numberMultiRootType name s =
     )
 
 
-{-| Record (or reuse) an instance of a number-multi var at the demanded type,
-returning its per-instance name (`defName` for the first/Int instance, then
-`defName$v<idx>`). Keyed structurally on the demanded type (`Mono.SpecMap`).
+{-| Returns the name and type of the instance of the `numberMulti` entry `name`
+at `monoType`, recording a new instance if there is none: the first instance
+is named `name`, later ones `name$v1`, `name$v2` and so on. See
+`recordMultiInstance` for the case where `name` has no entry.
 -}
 recordNumberInstance : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType ), S )
 recordNumberInstance name monoType s =
@@ -2567,21 +2344,24 @@ recordNumberInstance name monoType s =
             ( ( freshName, instType ), s1 )
 
 
+{-| Does `recordNumberInstance`, also returning the instance's ordinal.
+-}
 recordNumberInstanceOrd : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordNumberInstanceOrd name monoType s =
     recordMultiInstance .numberMulti (\stk st -> { st | numberMulti = stk }) "$v" name monoType s
 
 
-{-| Push an empty local-multi entry for a let-bound function before walking its
-body (each use records the concrete type it is applied at).
+{-| Pushes an entry with no instances for the let-bound function `defName` onto
+`localMulti`, with its right-hand side's lambda or partial application if it is
+one, before the `let` body is translated and records the types it is used at.
 -}
 pushLocalMulti : Maybe ( TypeIds.SrcLambdaId, Int ) -> Maybe ( TOpt.Global, Int ) -> String -> S -> S
 pushLocalMulti rhsLam rhsPap defName s =
     { s | localMulti = { defName = defName, instances = Mono.specMapEmpty, rhsLam = rhsLam, rhsPap = rhsPap, pendingEnrich = CoreDict.empty } :: s.localMulti }
 
 
-{-| Pop the top local-multi entry, returning it, or `Nothing` if the stack is
-empty.
+{-| Pops the innermost `localMulti` entry, or returns `Nothing` when the stack
+is empty.
 -}
 popLocalMulti : S -> ( Maybe NumberMultiEntry, S )
 popLocalMulti s =
@@ -2593,17 +2373,16 @@ popLocalMulti s =
             ( Nothing, s )
 
 
-{-| Whether the named definition is a let-bound function on the local-multi
-stack.
+{-| Tells whether some `localMulti` entry is for `name`.
 -}
 isLocalMultiTarget : String -> S -> ( Bool, S )
 isLocalMultiTarget name s =
     ( List.any (\e -> e.defName == name) s.localMulti, s )
 
 
-{-| D9: read all three `VarLocal` classifiers in one `getS` (is-local-multi,
-is-number-multi, varEnv binding) — collapses three sequential `getS` andThen
-closures on the hot local-ref node into one.
+{-| Returns what is known about a local name, in one call: whether a
+`localMulti` entry is for it, whether a `numberMulti` entry is for it, and its
+binding in `varEnv`.
 -}
 localVarInfo : String -> S -> ( ( Bool, Bool, Maybe Mono.MonoType ), S )
 localVarInfo name s =
@@ -2615,30 +2394,31 @@ localVarInfo name s =
     )
 
 
-{-| Record (or reuse) an instance of a local-multi FUNCTION at a demanded type;
-per-instance name is `defName` (first) then `defName$<idx>`.
+{-| Returns the name, type and ordinal of the instance of the `localMulti` entry
+`name` at `monoType`, recording a new instance if there is none: the first
+instance is named `name`, later ones `name$1`, `name$2` and so on. See
+`recordMultiInstance` for the case where `name` has no entry.
 -}
 recordLocalInstance : String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordLocalInstance name monoType s =
     recordMultiInstance .localMulti (\stk st -> { st | localMulti = stk }) "$" name monoType s
 
 
-{-| Shared machinery behind `recordNumberInstance` / `recordLocalInstance`:
-find the entry for `name` in the given stack, get-or-create an instance keyed
-by the demanded `MonoType` (`Mono.SpecMap`), and name it `defName` for index 0
-else `defName ++ sep ++ idx`. The third component is the instance ORDINAL
-(`idx`), stored on the instance so an existing one reports the same number.
+{-| Returns the name, type and ordinal of the instance at `monoType` of the
+innermost entry for `name` in the stack that `getStack` reads, recording a new
+instance there if the entry has none at that type.
+
+A new instance's ordinal is the number of instances the entry already had; it
+is named `name` for ordinal 0 and `name ++ sep ++ ordinal` otherwise. Instances
+are keyed by `monoType` with its lambda sets, so two uses that differ only in
+lambda sets are two instances. When the stack has no entry for `name`, the
+result is `name`, `monoType` and ordinal 0, and nothing is recorded.
+
 -}
 recordMultiInstance : (S -> List NumberMultiEntry) -> (List NumberMultiEntry -> S -> S) -> String -> String -> Mono.MonoType -> S -> ( ( String, Mono.MonoType, Int ), S )
 recordMultiInstance getStack setStack sep name monoType s =
     let
         update entry =
-            -- Deliberately annotation-SENSITIVE (M4 == audit): local-multi
-            -- instances are specialization-intent — differing lambda sets
-            -- mint separate per-instance bindings (f / f$1), never share.
-            -- `Mono.SpecMap` is the spec flavour (`specHashOf`/`eqKeySpec`),
-            -- which is exactly the `toComparableMonoType` equivalence the
-            -- string key used to give (§10.1).
             case Mono.specMapGet monoType entry.instances of
                 Just inst ->
                     ( entry, ( inst.freshName, inst.monoType, inst.ordinal ) )
@@ -2688,32 +2468,32 @@ recordMultiInstance getStack setStack sep name monoType s =
     ( res, setStack newStack s )
 
 
-{-| Run a step in a nested variable scope: bindings introduced inside are
-discarded afterward (so they don't leak to sibling expressions). Mirrors the
-original engine's varEnv push/pop.
+{-| Runs `step` and then puts `varEnv` back as it was, so local variables the
+step binds do not reach sibling expressions. Every other change the step makes
+is kept.
 -}
 scoped : (S -> ( a, S )) -> S -> ( a, S )
 scoped step s0 =
-    -- Step 10e: direct HOF. The scope restore IS the copy (plan N11) — never
-    -- drop it.
     case step s0 of
         ( a, s1 ) ->
             ( a, { s1 | varEnv = s0.varEnv } )
 
 
-{-| Harvest, excluding the given MVarId keys. Annotation vars of the item's own
-global MUST be excluded: they are re-instantiated at a different type by every
-specialization of that global, and a Number binding from one spec would make
-another spec's residuals stamp CNumber (→ closed to MInt) behind an
-erased-typed call site — an ABI break (ListConcatMap empty-call crash).
+{-| Adds to `superTable` a `number` constraint for every MVarId whose Point in
+the item's store is constrained to `number`, except the MVarIds in `excluded`.
+Only the first MVarId to mint each Point (`revMemo`) is considered.
+
+The caller excludes the annotation variables of the item's own global. Each
+spec of that global instantiates them at a different type, so a `number`
+constraint learnt in one spec does not hold in another, and recording it would
+make another spec's unresolved variables default to `Int` at a call site that
+expects a boxed value.
+
 -}
 harvestSuperTableExcept : EverySet.EverySet Int Int -> S -> S
 harvestSuperTableExcept excluded s =
     let
-        -- A2: revMemo is now an Array indexed by point index; Array.foldl visits
-        -- indices 0,1,2,… ascending (== the former Dict.foldl ascending-key order)
-        -- with a threaded index counter, skipping empty (Nothing) structure-point
-        -- slots (== keys the Dict never had). Byte-identical harvest.
+        -- The fold carries the Point index alongside the store and the table.
         step maybeMvarId ( pointIdx, ( store, super ) ) =
             ( pointIdx + 1
             , case maybeMvarId of
@@ -2726,9 +2506,8 @@ harvestSuperTableExcept excluded s =
 
                     else
                         let
-                            -- Compressing read, state dropped: compression is
-                            -- unobservable and this fold discarded its store
-                            -- half at the end anyway.
+                            -- The store a read returns differs only by path
+                            -- compression, so it is dropped.
                             ( _, desc ) =
                                 UF.get (Vars.Pt pointIdx) store
                         in
@@ -2750,17 +2529,19 @@ harvestSuperTableExcept excluded s =
 
 
 
--- ====== M2 CACHES ======
+-- ====== CLASSIFICATION MEMOS ======
 
 
-{-| Look up the memoized mono type for a scheme key.
+{-| Returns the mono type `MonoMemo.schemeMono` holds for a global's
+comparable key.
 -}
 lookupSchemeMono : String -> S -> ( Maybe Mono.MonoType, S )
 lookupSchemeMono key s =
     ( CoreDict.get key s.monoMemo.schemeMono, s )
 
 
-{-| Record the mono type for a scheme key.
+{-| Records the mono type of a global with a variable-free scheme in
+`MonoMemo.schemeMono`, under the global's comparable key.
 -}
 putSchemeMono : String -> Mono.MonoType -> S -> S
 putSchemeMono key monoType s =
@@ -2771,14 +2552,16 @@ putSchemeMono key monoType s =
     { s | monoMemo = { m | schemeMono = CoreDict.insert key monoType m.schemeMono } }
 
 
-{-| Look up a memoized call result (two mono types and the SpecId) by spec key.
+{-| Returns the callee type, result type and `SpecId` that `MonoMemo.callMemo`
+holds for a call key.
 -}
 lookupCallMemo : Mono.SpecKey -> S -> ( Maybe ( Mono.MonoType, Mono.MonoType, Mono.SpecId ), S )
 lookupCallMemo key s =
     ( Mono.specKeyMapGet key s.monoMemo.callMemo, s )
 
 
-{-| Record a call result (two mono types and the SpecId) under a spec key.
+{-| Records the callee type, result type and `SpecId` of a call in
+`MonoMemo.callMemo`.
 -}
 putCallMemo : Mono.SpecKey -> ( Mono.MonoType, Mono.MonoType, Mono.SpecId ) -> S -> S
 putCallMemo key entry s =
@@ -2790,20 +2573,15 @@ putCallMemo key entry s =
 
 
 
--- ====== K6 INTERN TABLE ======
+-- ====== INTERN TABLE ======
 
 
-{-| Canonicalise one already-built type against `S.intern`.
+{-| Returns the canonical copy of `mt` from `S.intern`, adding `mt` to the table
+if it is new.
 
-Use it where a producer builds a single composite over children that are already
-canonical — only the top node needs a probe. The RECURSIVE producers
-(`Store.classifyGo`, `Store.zonkFlatC`, `Zonk.canTypeToMonoWithI`,
-`Intern.widenSets`) hash-cons bottom-up instead, which is what keeps each bucket
-confirm O(arity) rather than O(tree).
-
-Direct state in/out rather than a `Step`: every call site is in the engine's
-desugared direct-state style, where a `Result`-wrapped step would only have to be
-unwrapped again.
+Only the top node is looked up, so this is for a type whose children are
+already canonical, such as one built from a single constructor over canonical
+parts. Code that builds whole types interns each node as it builds it.
 
 -}
 consS : Mono.MonoType -> S -> ( Mono.MonoType, S )
@@ -2815,27 +2593,19 @@ consS mt s =
     ( mt1, withIntern intern1 s )
 
 
-{-| Write a table back into `S` **only if it actually grew.**
+{-| Installs `intern1` as `S.intern`, unless its `Intern.entries` count equals
+the current table's, in which case `s` is returned unchanged.
 
-This guard is not a micro-optimization, it is what makes S-threaded
-hash-consing affordable. `consS` runs once per composite — order 10^7 times on a
-self-compile — and an unconditional `{ s | intern = … }` would put a 31-slot
-record copy on every one of them. It would also defeat `enqueueSpec`'s D2 path,
-whose entire purpose is to return `S` untouched when nothing changed. (The subst
-engine sidesteps this by threading a bare `Intern` through
-`applySubstPureI`'s recursion; the solver's producers already thread `S`, so it
-needs the guard instead.)
-
-Size is an EXACT test for "unchanged", not an approximation: `Intern.hashCons`
-either hits — returning the very table it was given — or inserts, and every
-insert increments the count `Data.HashMap` carries. So equal counts imply the
-same table value. `HashMap.size` reads that stored count, O(1).
+`intern1` is expected to be the current table after zero or more additions, so
+an equal count means nothing was added. Returning `s` itself then saves
+copying the whole state record, which matters because a table is offered back
+after every interned node. The test is on `Intern.entries` rather than on the
+size of the canonical table because the table's memo of widened types can grow
+without a new canonical type being added.
 
 -}
 withIntern : Intern -> S -> S
 withIntern intern1 s =
-    -- `entries`, not `size`: the widen memo (step 11b) grows without adding a
-    -- canonical structure, and a guard on `size` would discard it.
     if Intern.entries intern1 == Intern.entries s.intern then
         s
 
@@ -2847,22 +2617,20 @@ withIntern intern1 s =
 -- ====== KEYS ======
 
 
-{-| The comparable integer key of an `MVarId`, for use in `Dict` keys.
+{-| Returns an `MVarId` as an integer, for use as a `Dict` key.
 -}
 mvarIdKey : TypeIds.MVarId -> Int
 mvarIdKey =
     Id.toComparable
 
 
-{-| Ruling R1, operational: can NO function ever occur inside this type
-variable? True only for `number` (Int | Float) and `comparable` (scalars, and
-lists/tuples bottoming out in scalars). `appendable`/`compappend` reach a bare
-element variable through their `List a` arm, so they answer False, as does any
-variable the super table does not know — a miss is conservative, and the
-failure direction is a missing license rather than a wrong one.
+{-| Tells whether `superTable` constrains the type variable `mid` to `number`
+or `comparable`, so that no value of its type can contain a function.
 
-Read from the solver's own super table, so this is the typechecker's truth, not
-a guess from a variable's spelling.
+It answers `False` for every other variable, including one the table does not
+know. That includes `compappend`, whose values cannot contain a function
+either, and `appendable`, whose values can. A `False` is therefore only "not
+known to be function-free".
 
 -}
 isScalarVar : S -> TypeIds.MVarId -> Bool
@@ -2878,7 +2646,8 @@ isScalarVar s mid =
             False
 
 
-{-| The integer index of a store Point, for use as a `Dict` key.
+{-| Returns the index of a Point in its store, for use as a `Dict` key. Two
+stores give the same index to different Points.
 -}
 pointKey : Vars.Variable -> Int
 pointKey (Vars.Pt n) =

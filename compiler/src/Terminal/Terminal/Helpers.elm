@@ -4,11 +4,19 @@ module Terminal.Terminal.Helpers exposing
     , package, parsePackage
     )
 
-{-| Command-line argument parsers and validators for terminal commands.
+{-| Argument kinds that several terminal commands share: a version, an Elm
+source file, and a package name.
 
-This module provides parsers for common command-line argument types including
-version numbers, package names, and file paths. Each parser includes validation,
-suggestions, and example generation for user feedback.
+Each kind comes as two values, because a command-line argument is described and
+parsed separately. The `Parser` (from `Terminal.Terminal.Internal`) only
+describes the kind: its singular and plural names for help and error messages,
+a task suggesting completions for a partial argument, and a task giving example
+values. It does not parse. The matching `parseX` function turns an argument
+string into a value, or `Nothing`, and a command needs both.
+
+The package kind is the only one whose suggestions and examples look anything
+up: they read the package registry already cached on disk, and never contact
+the network.
 
 
 # Version Parsing
@@ -16,7 +24,7 @@ suggestions, and example generation for user feedback.
 @docs version, parseVersion
 
 
-# File Path Parsing
+# Elm File Parsing
 
 @docs elmFile, parseElmFile
 
@@ -44,9 +52,12 @@ import Utils.Main as Utils
 -- ====== VERSION ======
 
 
-{-| Parser for version numbers.
+{-| The description of a version argument, such as `1.0.0`.
 
-Accepts semantic version strings like "1.0.0" or "2.3.4".
+It suggests nothing. Its examples complete an argument made of one or two
+numbers separated by dots to three, so `1.2` gives `1.2.0`; an argument of
+three or more numbers gives its first three, and anything else gives `1.0.0`
+and `2.0.3`.
 
 -}
 version : Parser
@@ -59,10 +70,8 @@ version =
         }
 
 
-{-| Parse a string as a version number.
-
-Returns Just the parsed version or Nothing if invalid.
-
+{-| Returns the version that the whole of `chars` spells, as
+`Compiler.Elm.Version.parser` reads it, or `Nothing` if it is not one.
 -}
 parseVersion : String -> Maybe V.Version
 parseVersion chars =
@@ -74,11 +83,21 @@ parseVersion chars =
             Nothing
 
 
+{-| Returns no suggestions, whatever has been typed.
+-}
 suggestVersion : String -> Task Never (List String)
 suggestVersion _ =
     Task.succeed []
 
 
+{-| Returns one example version made from the partial version `chars`, or two
+fixed examples when `chars` is not dot-separated numbers.
+
+`chars` with one or two numbers is padded with zeros to three, and `chars` with
+more than three numbers is cut to its first three. An empty part, as in `1..2`,
+counts as not a number.
+
+-}
 exampleVersions : String -> List String
 exampleVersions chars =
     let
@@ -112,10 +131,8 @@ exampleVersions chars =
 -- ====== ELM FILE ======
 
 
-{-| Parser for Elm source file paths.
-
-Accepts file paths ending in .elm extension.
-
+{-| The description of an Elm source file argument. It suggests nothing, and
+its examples are `Main.elm` and `src/Main.elm`.
 -}
 elmFile : Parser
 elmFile =
@@ -127,9 +144,11 @@ elmFile =
         }
 
 
-{-| Parse a string as an Elm file path.
+{-| Returns `chars` unchanged if its extension, as `Utils.Main.fpTakeExtension`
+finds it, is exactly `.elm`, and `Nothing` otherwise.
 
-Returns Just the file path if it has an .elm extension, Nothing otherwise.
+The case must match, so `Main.ELM` is refused. Whether the file exists is not
+checked.
 
 -}
 parseElmFile : String -> Maybe FilePath
@@ -141,19 +160,25 @@ parseElmFile chars =
         Nothing
 
 
+{-| Returns the two fixed example Elm file paths, ignoring what has been typed.
+-}
 exampleElmFiles : String -> Task Never (List String)
 exampleElmFiles _ =
     Task.succeed [ "Main.elm", "src/Main.elm" ]
 
 
 
--- ====== FILE PATH ======
 -- ====== PACKAGE ======
 
 
-{-| Parser for Elm package names.
+{-| The description of a package name argument, such as `elm/core`.
 
-Accepts package names in the format "author/project" like "elm/core" or "elm/html".
+Its suggestions are every package name in the cached registry that starts with
+what has been typed, and none when no registry is cached. Its examples are up to
+four registry names closest to what has been typed, ignoring case, as
+`Compiler.Reporting.Suggest.sort` orders them, or `elm/json`, `elm/http` and
+`elm/random` when no registry is cached. Both read the registry from the
+package cache, whose directory is created if it is missing.
 
 -}
 package : Parser
@@ -166,10 +191,9 @@ package =
         }
 
 
-{-| Parse a string as an Elm package name.
-
-Returns Just the package name if valid (format: author/project), Nothing otherwise.
-
+{-| Returns the package name that the whole of `chars` spells, as
+`Compiler.Elm.Package.parser` reads it (`author/project`), or `Nothing` if it
+is not one.
 -}
 parsePackage : String -> Maybe Pkg.Name
 parsePackage chars =
@@ -181,6 +205,9 @@ parsePackage chars =
             Nothing
 
 
+{-| Returns every package name in the cached registry that starts with `given`,
+case-sensitively, or none when no registry is cached.
+-}
 suggestPackages : String -> Task Never (List String)
 suggestPackages given =
     Stuff.resolveBundledPackages []
@@ -200,6 +227,9 @@ suggestPackages given =
             )
 
 
+{-| Returns up to four package names in the cached registry closest to `given`,
+ignoring case, or three fixed names when no registry is cached.
+-}
 examplePackages : String -> Task Never (List String)
 examplePackages given =
     Stuff.resolveBundledPackages []

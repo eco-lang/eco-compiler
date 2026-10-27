@@ -3,10 +3,24 @@ module Compiler.Reporting.Error.Json exposing
     , Context, FailureToReport(..), Reason(..)
     )
 
-{-| Error reporting for JSON parsing and decoding failures.
+{-| The build tool reads JSON files such as `elm.json`, and when one cannot be
+read the user needs to be told what is wrong and where. This module turns a
+`Compiler.Json.Decode.Error` into a `Help.Report` that quotes the offending part
+of the file.
 
-This module converts low-level JSON parse errors and decode problems into
-user-friendly error reports with source code snippets and helpful suggestions.
+An error is one of two kinds, as `Compiler.Json.Decode` describes. A parse
+problem means the text is not JSON this parser accepts; the report shows the
+lines leading up to the position where parsing stopped and explains the likely
+mistake. A decode problem means the text is JSON but not the shape a decoder
+wanted; the report quotes the value that was rejected.
+
+A decode problem is a tree. Walking down it builds a `Context`, the path of
+fields and array positions to the failure, which chooses the opening sentence
+of the report. Where decoders were tried as alternatives, only the alternative
+that failed deepest is reported. Failures of the caller's own error type are
+handed to a `FailureToReport` the caller supplies, and the caller's `Reason`,
+a sentence introducing the problem with the file, opens the first paragraph of every
+report this module builds itself.
 
 
 # Error Reporting
@@ -34,8 +48,13 @@ import Utils.Main as Utils
 -- ====== TO REPORT ======
 
 
-{-| Convert a JSON parsing or decoding error into a user-friendly error report
-with source code snippets highlighting the problematic JSON location.
+{-| Returns the report for `err`, an error from reading the file at `path`.
+
+`ftr` builds the report for a failure of the caller's own type `x`, and `reason`
+opens the first paragraph of every other report. A decode problem whose
+expected value starts and ends on the same row crashes rather than returning a
+report.
+
 -}
 toReport : String -> FailureToReport x -> Error x -> Reason -> Help.Report
 toReport path ftr err reason =
@@ -47,13 +66,16 @@ toReport path ftr err reason =
             parseErrorToReport path (Code.toSource bytes) parseError reason
 
 
-{-| The reason a JSON value is being parsed, used in error messages.
-For example, "I need this because it contains package dependencies."
+{-| The caller's opening sentence for a report, such as "I ran
+into a problem with your elm.json file.". It is put, followed by a space, in
+front of the first sentence of a report.
 -}
 type Reason
     = ExplicitReason String
 
 
+{-| Returns `problem` with the reason's sentence and a space in front of it.
+-}
 because : Reason -> String -> String
 because (ExplicitReason iNeedThings) problem =
     iNeedThings ++ " " ++ problem
@@ -63,6 +85,13 @@ because (ExplicitReason iNeedThings) problem =
 -- ====== PARSE ERROR TO REPORT ======
 
 
+{-| Returns the report for a parse error in the file at `path`.
+
+The snippet shows the lines from two rows above the error position, or from the
+first row, down to that position, and marks the position itself. Each kind of
+`ParseError` has its own title and explanation.
+
+-}
 parseErrorToReport : String -> Code.Source -> ParseError -> Reason -> Help.Report
 parseErrorToReport path source parseError reason =
     let
@@ -308,6 +337,9 @@ parseErrorToReport path source parseError reason =
                 )
 
 
+{-| A note showing a small valid JSON object, with quoted field names and no
+trailing comma, added to the reports of errors met inside an object.
+-}
 objectNote : D.Doc
 objectNote =
     D.stack
@@ -336,8 +368,14 @@ objectNote =
 -- ====== PROBLEM TO REPORT ======
 
 
-{-| Tracks the path through the JSON structure to the error location.
-Used to provide context like "in the dependencies field" or "in the 3rd array element."
+{-| The path from the top of the JSON value down to the place where decoding
+failed, innermost step first.
+
+`CRoot` is the top-level value. `CField` is the value of the named key within
+the enclosing context, and `CIndex` the element at that position, counted from
+0, of the enclosing array. Only the innermost one or two steps affect the
+wording of a report.
+
 -}
 type Context
     = CRoot
@@ -345,6 +383,14 @@ type Context
     | CIndex Int Context
 
 
+{-| Returns the report for the decode problem `problem`, met at `context`.
+
+`Field` and `Index` extend the context and descend. Of a `OneOf`'s
+alternatives, only the one with the greatest `getMaxDepth` is reported, the
+first tried among equals. A `Failure` is handed to the caller's function with
+the path, source, context and region, and `reason` is not used for it.
+
+-}
 problemToReport : String -> FailureToReport x -> Code.Source -> Context -> Problem x -> Reason -> Help.Report
 problemToReport path (FailureToReport ftr) source context problem reason =
     case problem of
@@ -370,6 +416,9 @@ problemToReport path (FailureToReport ftr) source context problem reason =
             expectationToReport path source context region expectation reason
 
 
+{-| Returns how many `Field` and `Index` steps lie above the deepest failure in
+`problem`, taking the deepest alternative of a `OneOf`.
+-}
 getMaxDepth : Problem x -> Int
 getMaxDepth problem =
     case problem of
@@ -380,8 +429,6 @@ getMaxDepth problem =
             1 + getMaxDepth prob
 
         OneOf p ps ->
-            -- NOTE: only displays the deepest problem. This works well for the kind
-            -- of JSON used by Elm, but probably would not work well in general.
             Utils.listMaximum compare (getMaxDepth p :: List.map getMaxDepth ps)
 
         Failure _ _ ->
@@ -391,13 +438,24 @@ getMaxDepth problem =
             0
 
 
-{-| A function that converts custom decode failures into error reports.
-This allows different JSON decoders to provide specialized error messages.
+{-| The caller's way of reporting a decode failure of its own error type `x`.
+
+The function is given the file path, the file's source, the `Context` of the
+failure, the region of the value that failed, and the failure itself.
+
 -}
 type FailureToReport x
     = FailureToReport (String -> Code.Source -> Context -> A.Region -> x -> Help.Report)
 
 
+{-| Returns the report for a value that is not the kind `expectation` asks for,
+found at the given region and `context`.
+
+The opening sentence is chosen from the innermost one or two steps of
+`context`, and the second says what was expected. When the region spans more
+than one row the snippet shows only its first row; when it starts and ends on the same row this crashes.
+
+-}
 expectationToReport : String -> Code.Source -> Context -> A.Region -> DecodeExpectation -> Reason -> Help.Report
 expectationToReport path source context (A.Region start end) expectation reason =
     let

@@ -18,11 +18,26 @@ module Builder.Reporting.Exit exposing
     , Generate(..)
     )
 
-{-| Exit error reporting for the Elm build tool and package manager.
+{-| Every way a command of the build tool can fail is a value of one of the
+types in this module, and this module turns each of those values into the
+`Builder.Reporting.Exit.Help.Report` that is shown to the user.
 
-This module defines all possible error conditions that can occur during
-build tool operations (init, install, make, etc.) and provides
-functions to convert them into user-friendly error reports.
+There is one error type per command that reports through it (`Init`, `Install`,
+`Uninstall`, `Make`, `Diff`, `Bump`), each with its `...ToReport` function. Many
+failures are shared between commands: a bad elm.json (`Outline`), a problem
+verifying or building the dependencies (`Details`), a problem reaching the
+package registry (`RegistryProblem`), a failed compile (`BuildProblem`). Each
+shared failure has its own type and a private renderer, and a command's error
+type wraps it in a constructor reported by that renderer; the registry and docs
+wrappers pass it a title or a sentence saying what the command needed.
+
+Most of the file is the text of those reports. Some failures are produced in one
+task and read in another, so `BuildProblem`, `BuildProjectProblem`,
+`RegistryProblem` and `DetailsBadDep` also have binary encoders and decoders.
+
+Several distinct failures end in the same report. `GenerateCannotLoadArtifacts`
+and `BP_CannotLoadDependencies` both say that the cache in `eco-stuff/` is
+corrupt and suggest deleting it.
 
 
 # Output
@@ -48,12 +63,6 @@ functions to convert them into user-friendly error reports.
 # Make Errors
 
 @docs Make, makeToReport
-
-
-# REPL Errors
-
-
-# Test Errors
 
 
 # Diff Errors
@@ -141,14 +150,16 @@ import Utils.Main as Utils
 -- ====== RENDERERS ======
 
 
-{-| Writes a report to stderr with formatted output.
+{-| Writes `report` to standard error, laid out for a terminal as
+`Builder.Reporting.Exit.Help.reportToDoc` describes.
 -}
 toStderr : Help.Report -> Task Never ()
 toStderr report =
     Help.toStderr (Help.reportToDoc report)
 
 
-{-| Converts a report to JSON format for machine consumption.
+{-| Encodes `report` as JSON, as `Builder.Reporting.Exit.Help.reportToJson`
+describes.
 -}
 toJson : Help.Report -> Encode.Value
 toJson report =
@@ -159,7 +170,15 @@ toJson report =
 -- ====== INIT ======
 
 
-{-| Error conditions that can occur during project initialization.
+{-| A reason `init` could not create a project.
+
+`InitNoSolution` and `InitNoOfflineSolution` carry the default direct
+dependencies, or the default test dependencies, for which no compatible set of
+versions was found; the offline form is used when the package server could not be
+reached. `InitSolverProblem` and `InitRegistryProblem` are failures of the
+dependency solver and of loading the package list. `InitAlreadyExists` means an
+elm.json is already present.
+
 -}
 type Init
     = InitNoSolution (List Pkg.Name)
@@ -169,7 +188,7 @@ type Init
     | InitRegistryProblem RegistryProblem
 
 
-{-| Converts an initialization error to a user-friendly report.
+{-| Builds the report shown when `init` fails with `exit`.
 -}
 initToReport : Init -> Help.Report
 initToReport exit =
@@ -225,7 +244,21 @@ initToReport exit =
 -- ====== DIFF ======
 
 
-{-| Error conditions that can occur when computing package diffs.
+{-| A reason `diff` could not compare two versions of a package's API.
+
+`DiffNoOutline` means there is no elm.json, and `DiffApplication` that the
+elm.json describes an application, which has no published versions to compare.
+`DiffNoExposed` means the package exposes no modules, and `DiffUnpublished`
+that it has no published version.
+
+`DiffUnknownPackage` carries the name asked for and similar names to suggest.
+`DiffUnknownVersion` carries the version asked for and every published version,
+which the report lists grouped by major version.
+
+`DiffDocsProblem` carries the version whose documentation could not be obtained.
+`DiffBadOutline`, `DiffMustHaveLatestRegistry`, `DiffBadDetails` and
+`DiffBadBuild` wrap a shared failure.
+
 -}
 type Diff
     = DiffNoOutline
@@ -241,7 +274,7 @@ type Diff
     | DiffBadBuild BuildProblem
 
 
-{-| Converts a diff error to a user-friendly report.
+{-| Builds the report shown when the `diff` command fails with the given failure.
 -}
 diffToReport : Diff -> Help.Report
 diffToReport diff =
@@ -344,7 +377,18 @@ diffToReport diff =
 -- ====== BUMP ======
 
 
-{-| Error conditions that can occur when bumping package versions.
+{-| A reason `bump` could not work out the package's next version.
+
+`BumpNoOutline` means there is no elm.json, and `BumpApplication` that it
+describes an application, which has no version to bump.
+
+`BumpUnexpectedVersion` carries the version elm.json names, which is not one
+`bump` can start from (the latest published version or the newest of a major or
+minor series), and those versions, which the report suggests instead.
+`BumpCannotFindDocs` carries the version whose documentation could not be
+obtained. `BumpNoExposed` means the package exposes no modules. The other
+constructors wrap a shared failure.
+
 -}
 type Bump
     = BumpNoOutline
@@ -358,7 +402,7 @@ type Bump
     | BumpBadBuild BuildProblem
 
 
-{-| Converts a bump error to a user-friendly report.
+{-| Builds the report shown when the `bump` command fails with the given failure.
 -}
 bumpToReport : Bump -> Help.Report
 bumpToReport bump =
@@ -498,7 +542,13 @@ bumpToReport bump =
 -- ====== DOCS ======
 
 
-{-| Error conditions that can occur when loading package documentation.
+{-| A reason a published version's documentation could not be obtained.
+
+`DP_Http` is a failed request. `DP_Data` carries the URL fetched and the body
+that came back, which could not be read as documentation. `DP_Cache` means the
+locally cached copy was unreadable; its report tells the user that the copy has
+been deleted.
+
 -}
 type DocsProblem
     = DP_Http Http.Error
@@ -506,6 +556,13 @@ type DocsProblem
     | DP_Cache
 
 
+{-| Builds the report for `problem`, opening with `context`, a sentence fragment
+saying why the documentation was needed.
+
+For `DP_Data` the report quotes the body, cut to 73 characters and `...` when it
+is longer than 76.
+
+-}
 toDocsProblemReport : DocsProblem -> String -> Help.Report
 toDocsProblemReport problem context =
     case problem of
@@ -558,7 +615,18 @@ toDocsProblemReport problem context =
 -- ====== INSTALL ======
 
 
-{-| Error conditions that can occur when installing packages.
+{-| A reason `install` could not add a package to elm.json.
+
+`InstallNoOutline` means there is no elm.json, and its report suggests
+`eco init`. `InstallNoArgs` carries the directory where packages are cached,
+which its report names. The four `InstallNo...Solution` constructors carry the package
+that could not be fitted in: `App` and `Pkg` say whether the project is an
+application or a package, and `Online` and `Offline` whether the package server
+could be reached. `InstallUnknownPackageOnline` and
+`InstallUnknownPackageOffline` carry the name asked for and similar names to
+suggest, drawn from the server's list or, offline, from the cached list. The
+other constructors wrap a shared failure.
+
 -}
 type Install
     = InstallNoOutline
@@ -575,7 +643,7 @@ type Install
     | InstallBadDetails Details
 
 
-{-| Converts an install error to a user-friendly report.
+{-| Builds the report shown when `install` fails with `exit`.
 -}
 installToReport : Install -> Help.Report
 installToReport exit =
@@ -798,7 +866,16 @@ installToReport exit =
 -- ====== UNINSTALL ======
 
 
-{-| Error conditions that can occur when uninstalling packages.
+{-| A reason `uninstall` could not remove a package from elm.json.
+
+`UninstallNoOutline` means there is no elm.json, and `UninstallNoArgs` that no
+package was named.
+
+`UninstallNoOnlineAppSolution` and `UninstallNoOfflineAppSolution` carry the
+package being removed when the remaining dependencies have no compatible set of
+versions, the offline form when the package server could not be reached. The
+other constructors wrap a shared failure.
+
 -}
 type Uninstall
     = UninstallNoOutline
@@ -811,7 +888,7 @@ type Uninstall
     | UninstallBadDetails Details
 
 
-{-| Converts an uninstall error to a user-friendly report.
+{-| Builds the report shown when `uninstall` fails with `exit`.
 -}
 uninstallToReport : Uninstall -> Help.Report
 uninstallToReport exit =
@@ -884,7 +961,13 @@ uninstallToReport exit =
 -- ====== SOLVER ======
 
 
-{-| Error conditions that can occur during dependency resolution.
+{-| A failure to obtain the elm.json of one package version while solving
+dependency constraints.
+
+`SolverBadCacheData` means the cached copy was corrupt; its report tells the
+user that the copy has been deleted. `SolverBadHttpData` carries the URL whose
+response could not be read, and `SolverBadHttp` a failed request.
+
 -}
 type Solver
     = SolverBadCacheData Pkg.Name V.Version
@@ -892,6 +975,8 @@ type Solver
     | SolverBadHttp Pkg.Name V.Version Http.Error
 
 
+{-| Builds the report for a solver failure.
+-}
 toSolverReport : Solver -> Help.Report
 toSolverReport problem =
     case problem of
@@ -939,7 +1024,16 @@ toSolverReport problem =
 -- ====== OUTLINE ======
 
 
-{-| Error conditions that can occur when parsing elm.json files.
+{-| A reason the project's elm.json is not usable.
+
+`OutlineHasBadStructure` is a JSON decoding failure, whose specific problems
+are `OutlineProblem`s. `OutlineHasMissingSrcDirs` carries the first missing
+source directory and any others. `OutlineHasDuplicateSrcDirs` carries one
+directory and two entries that both refer to it; the entries may be equal or
+two spellings of the same path. `OutlineNoPkgCore` and `OutlineNoAppCore` mean
+elm/core is not a dependency of a package or an application, and
+`OutlineNoAppJson` that elm/json is not a dependency of an application.
+
 -}
 type Outline
     = OutlineHasBadStructure (Decode.Error OutlineProblem)
@@ -950,7 +1044,16 @@ type Outline
     | OutlineNoAppJson
 
 
-{-| Specific problems with elm.json structure and content.
+{-| A problem with one value in elm.json, found while decoding it.
+
+The constructors that carry a `Row` and `Col` know the position of the bad
+value, and their reports highlight it. `OP_BadLicense` carries licence names
+close to the one written, to suggest. `OP_BadType` is an unknown "type",
+`OP_BadConstraint` a version constraint that could not be read,
+`OP_BadModuleHeaderTooLong` a too-long section header in "exposed-modules",
+`OP_BadSummaryTooLong` a too-long "summary", and `OP_NoSrcDirs` an empty
+"source-directories".
+
 -}
 type OutlineProblem
     = OP_BadType
@@ -965,6 +1068,8 @@ type OutlineProblem
     | OP_NoSrcDirs
 
 
+{-| Builds the report for an unusable elm.json.
+-}
 toOutlineReport : Outline -> Help.Report
 toOutlineReport problem =
     case problem of
@@ -1039,6 +1144,9 @@ toOutlineReport problem =
                 ]
 
 
+{-| Builds the report for one elm.json decoding problem, showing the part of
+`source` at `region` with the position the problem carries, if any, highlighted.
+-}
 toOutlineProblemReport : FilePath -> Code.Source -> Json.Context -> A.Region -> OutlineProblem -> Help.Report
 toOutlineProblemReport path source _ region problem =
     let
@@ -1467,7 +1575,27 @@ toOutlineProblemReport path source _ region problem =
 -- ====== DETAILS ======
 
 
-{-| Error conditions that can occur during dependency resolution and validation.
+{-| A reason the project's dependencies could not be verified or built.
+
+`DetailsNoSolution` means elm.json's dependencies have no compatible set of
+versions, and `DetailsNoOfflineSolution` that they could not be verified from
+the cache when the package server could not be reached.
+`DetailsHandEditedDependencies` means the dependencies in elm.json are not a
+consistent set. `DetailsSolverProblem`, `DetailsBadOutline` and
+`DetailsCannotGetRegistry` wrap a shared failure.
+
+`DetailsBundledKernelMissing` carries a package that is shipped with eco rather
+than fetched from the registry, and the path where it was looked for, or an
+empty string when no such path is known.
+`DetailsBadElmInPkg` carries the elm-version constraint of a package's
+elm.json and `DetailsBadElmInAppOutline` the exact Elm version of an
+application's, when eco cannot build it.
+
+`DetailsBadDeps` carries the package cache directory and the dependencies that
+failed. Its report describes only one of them: a failed download or a missing
+local package comes before a failed build, and an empty list gets a general
+report suggesting the caches be deleted.
+
 -}
 type Details
     = DetailsNoSolution
@@ -1482,7 +1610,14 @@ type Details
     | DetailsBadDeps FilePath (List DetailsBadDep)
 
 
-{-| Specific dependency-related errors.
+{-| A reason one dependency could not be made ready.
+
+`BD_BadDownload` carries the package, version and why its download failed.
+
+`BD_BadBuild` carries, besides the package and version, the versions of every
+package it was built against, which its report lists for the package author.
+`BD_LocalPackageNotFound` concerns a package given with `--local-package`.
+
 -}
 type DetailsBadDep
     = BD_BadDownload Pkg.Name V.Version PackageProblem
@@ -1490,6 +1625,8 @@ type DetailsBadDep
     | BD_LocalPackageNotFound Pkg.Name
 
 
+{-| Builds the report for a dependency verification failure.
+-}
 toDetailsReport : Details -> Help.Report
 toDetailsReport details =
     case details of
@@ -1692,9 +1829,12 @@ toDetailsReport details =
                                 ]
 
 
+{-| Returns the rank by which `DetailsBadDeps` chooses the failure to report:
+the lowest rank is reported.
+-}
 toBadDepRank :
     DetailsBadDep
-    -> Int -- lower is better
+    -> Int
 toBadDepRank badDep =
     case badDep of
         BD_BadDownload _ _ _ ->
@@ -1711,7 +1851,15 @@ toBadDepRank badDep =
 -- ====== PACKAGE PROBLEM ======
 
 
-{-| Error conditions that can occur when downloading packages.
+{-| A reason the source code of one package version could not be downloaded.
+
+The endpoint is the address that gives the archive's download link and hash.
+`PP_BadEndpointRequest` and `PP_BadArchiveRequest` are HTTP failures fetching
+the endpoint and the archive.
+`PP_BadEndpointContent` and `PP_BadArchiveContent` carry the URL whose response
+could not be read. `PP_BadArchiveHash` carries the archive's URL, the expected
+hash and the hash of what was downloaded.
+
 -}
 type PackageProblem
     = PP_BadEndpointRequest Http.Error
@@ -1721,6 +1869,8 @@ type PackageProblem
     | PP_BadArchiveHash String String String
 
 
+{-| Builds the report for a failed download of version `vsn` of `pkg`.
+-}
 toPackageProblemReport : Pkg.Name -> V.Version -> PackageProblem -> Help.Report
 toPackageProblemReport pkg vsn problem =
     let
@@ -1780,13 +1930,22 @@ toPackageProblemReport pkg vsn problem =
 -- ====== REGISTRY PROBLEM ======
 
 
-{-| Error conditions that can occur when accessing the package registry.
+{-| A reason the list of published packages could not be loaded.
+
+`RP_Http` is an HTTP failure.
+
+`RP_Data` carries the URL fetched and the body that came back, which could not
+be read.
+
 -}
 type RegistryProblem
     = RP_Http Http.Error
     | RP_Data String String
 
 
+{-| Builds the report titled `title` for `problem`, opening with `context`, a
+sentence fragment saying why the list was needed.
+-}
 toRegistryProblemReport : String -> RegistryProblem -> String -> Help.Report
 toRegistryProblemReport title problem context =
     case problem of
@@ -1825,6 +1984,13 @@ toRegistryProblemReport title problem context =
                 ]
 
 
+{-| Builds the report titled `title` for a failed request, opening with `context`,
+a sentence fragment saying why the request was made.
+
+An HTTP exception other than a bad status or too many redirects is reported
+with the placeholder text `TODO` where the error message would go.
+
+-}
 toHttpErrorReport : String -> Http.Error -> String -> Help.Report
 toHttpErrorReport title err context =
     let
@@ -1910,6 +2076,9 @@ toHttpErrorReport title err context =
                 ]
 
 
+{-| Builds one line describing a redirect: its status code, then the `Location` it
+pointed to, or the status message when it has none.
+-}
 toRedirectDoc : Utils.HttpResponse body -> D.Doc
 toRedirectDoc response =
     let
@@ -1928,7 +2097,22 @@ toRedirectDoc response =
 -- ====== MAKE ======
 
 
-{-| Error conditions that can occur during the make/build process.
+{-| A reason `make` could not produce its output.
+
+`MakeNoOutline` means there is no elm.json. `MakeCannotOptimizeAndDebug` means
+both `--optimize` and `--debug` were given. `MakeAppNeedsFileNames` and
+`MakePkgNeedsExposing` mean there were no files to compile, in an application
+and in a package with no exposed modules. `MakeMultipleFilesIntoHtml` means
+several files were given for HTML output, and `MakeNoMain` that the file given
+for HTML output has no `main`.
+
+`MakeNonMainFilesIntoJavaScript` carries the modules lacking a `main`, the first
+one separately. `MakeConfigNotFound` carries the configuration path that does
+not exist, and `MakeBadConfig` the path of a configuration file that could not
+be decoded. `MakeFileIO` is a file system failure, reported under the title
+`FILE ERROR` except where its kind has a title of its own. The other
+constructors wrap a shared failure.
+
 -}
 type Make
     = MakeNoOutline
@@ -1946,7 +2130,7 @@ type Make
     | MakeFileIO IOError
 
 
-{-| Converts a make error to a user-friendly report.
+{-| Builds the report shown when the `make` command fails with the given failure.
 -}
 makeToReport : Make -> Help.Report
 makeToReport make =
@@ -2204,9 +2388,11 @@ makeToReport make =
 -- ====== IO ERROR ======
 
 
-{-| Render a structured `IOError` (from the Eco kernel) into a `Help.Report`,
-giving each classification a tailored title and message. Shared by every
-`Exit.*` constructor that carries an `IOError`.
+{-| Builds the report for a file system failure, titled `title`.
+
+`FileNotFound` and `PermissionDenied` ignore `title` and use the titles
+`FILE NOT FOUND` and `PERMISSION DENIED`.
+
 -}
 ioErrorToReport : String -> IOError -> Help.Report
 ioErrorToReport title ioError =
@@ -2256,14 +2442,35 @@ ioErrorToReport title ioError =
 -- ====== BUILD PROBLEM ======
 
 
-{-| Represents compilation failures, either from bad modules or project-level issues.
+{-| A reason the project could not be compiled.
+
+`BuildBadModules` carries the project root and the modules with compile errors,
+at least one. `BuildProjectProblem` is a problem with the set of files rather
+than with any module's code.
+
 -}
 type BuildProblem
     = BuildBadModules FilePath Error.Module (List Error.Module)
     | BuildProjectProblem BuildProjectProblem
 
 
-{-| Project-level build problems that affect the entire build.
+{-| A problem with which files make up the project, found before or instead of
+compiling them.
+
+`BP_PathUnknown` carries a file that does not exist, and `BP_WithBadExtension`
+one without a `.elm` extension. `BP_Cycle` carries the modules of an import
+cycle. `BP_WithAmbiguousSrcDir` carries a file and two source directories that
+both contain it. `BP_MainPathDuplicate` carries two paths given on the command line
+that name the same file. `BP_RootNameDuplicate` carries a module name and two
+files that declare it. `BP_RootNameInvalid` carries a file, the source
+directory it is in, and the path segments that do not form a module name; the
+report does not show the segments. `BP_CannotLoadDependencies` is reported as a
+corrupt cache in `eco-stuff/`.
+
+`BP_MissingExposed` carries the entries of elm.json's "exposed-modules" that
+resolve to no module or to several, as an `Import.Problem` each. Only the first
+is reported; an `AmbiguousForeign` problem is reported as a missing module.
+
 -}
 type BuildProjectProblem
     = BP_PathUnknown FilePath
@@ -2277,6 +2484,8 @@ type BuildProjectProblem
     | BP_MissingExposed (NE.Nonempty ( ModuleName.Raw, Import.Problem ))
 
 
+{-| Builds the report for a failed compile.
+-}
 toBuildProblemReport : BuildProblem -> Help.Report
 toBuildProblemReport problem =
     case problem of
@@ -2287,6 +2496,8 @@ toBuildProblemReport problem =
             toProjectProblemReport projectProblem
 
 
+{-| Builds the report for a problem with the project's set of files.
+-}
 toProjectProblemReport : BuildProjectProblem -> Help.Report
 toProjectProblemReport projectProblem =
     case projectProblem of
@@ -2421,6 +2632,9 @@ toProjectProblemReport projectProblem =
                         ]
 
 
+{-| Builds a two-column table pairing each module name in `names` with the file
+under `srcDir` that must declare it.
+-}
 toModuleNameConventionTable : FilePath -> List String -> D.Doc
 toModuleNameConventionTable srcDir names =
     let
@@ -2489,7 +2703,16 @@ toModuleNameConventionTable srcDir names =
 -- ====== GENERATE ======
 
 
-{-| Error conditions that can occur during code generation.
+{-| A reason the compiled program could not be turned into output.
+
+`GenerateCannotLoadArtifacts` is reported as a corrupt cache in `eco-stuff/`.
+`GenerateCannotLoadPackageArtifacts` carries the cached dependency artifact
+files that could not be read. `GenerateCannotOptimizeDebugValues` carries the
+modules that use `Debug`, which `--optimize` forbids.
+
+`GenerateMonomorphizationError` and `GenerateNativeDriverError` carry an error
+message from the monomorphizer and from lowering the MLIR to a native binary.
+
 -}
 type Generate
     = GenerateCannotLoadArtifacts
@@ -2499,6 +2722,14 @@ type Generate
     | GenerateNativeDriverError String
 
 
+{-| Builds the report for a code generation failure.
+
+A monomorphization error is reported as a likely compiler bug, except when its
+message starts with `"specialization "`: that is the specialization limit
+being reached, which is a condition of the program rather than a fault of the
+compiler.
+
+-}
 toGenerateReport : Generate -> Help.Report
 toGenerateReport problem =
     case problem of
@@ -2545,12 +2776,6 @@ toGenerateReport problem =
                 "An error occurred during monomorphization:"
                 ((D.fromChars errorMessage |> D.red |> D.indent 4)
                     :: (if String.startsWith "specialization " errorMessage then
-                            -- MONO_030 watchdog (both engines' messages start
-                            -- with "specialization "): a diagnosable
-                            -- program/limit condition, NOT a compiler bug —
-                            -- the message already carries the actionable
-                            -- advice, and bug-framing here would train users
-                            -- to file reports for their own poly-rec.
                             []
 
                         else
@@ -2582,6 +2807,9 @@ toGenerateReport problem =
 -- ====== CORRUPT CACHE ======
 
 
+{-| The report telling the user that the cache in `eco-stuff/` is corrupt and
+should be deleted.
+-}
 corruptCacheReport : Help.Report
 corruptCacheReport =
     Help.report "CORRUPT CACHE"
@@ -2595,12 +2823,10 @@ corruptCacheReport =
 
 
 
--- ====== REPL ======
--- ====== TEST ======
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes a dependency error to bytes for serialization.
+{-| Encodes a dependency failure in the binary form `detailsBadDepDecoder` reads.
 -}
 detailsBadDepEncoder : DetailsBadDep -> Bytes.Encode.Encoder
 detailsBadDepEncoder detailsBadDep =
@@ -2628,7 +2854,7 @@ detailsBadDepEncoder detailsBadDep =
                 ]
 
 
-{-| Decodes a dependency error from bytes.
+{-| A decoder for a dependency failure written by `detailsBadDepEncoder`.
 -}
 detailsBadDepDecoder : Bytes.Decode.Decoder DetailsBadDep
 detailsBadDepDecoder =
@@ -2657,7 +2883,7 @@ detailsBadDepDecoder =
             )
 
 
-{-| Encodes a build problem to bytes for serialization.
+{-| Encodes a compile failure in the binary form `buildProblemDecoder` reads.
 -}
 buildProblemEncoder : BuildProblem -> Bytes.Encode.Encoder
 buildProblemEncoder buildProblem =
@@ -2677,7 +2903,7 @@ buildProblemEncoder buildProblem =
                 ]
 
 
-{-| Decodes a build problem from bytes.
+{-| A decoder for a compile failure written by `buildProblemEncoder`.
 -}
 buildProblemDecoder : Bytes.Decode.Decoder BuildProblem
 buildProblemDecoder =
@@ -2699,7 +2925,8 @@ buildProblemDecoder =
             )
 
 
-{-| Encodes a project-level build problem to bytes for serialization.
+{-| Encodes a project problem in the binary form `buildProjectProblemDecoder`
+reads.
 -}
 buildProjectProblemEncoder : BuildProjectProblem -> Bytes.Encode.Encoder
 buildProjectProblemEncoder buildProjectProblem =
@@ -2764,7 +2991,7 @@ buildProjectProblemEncoder buildProjectProblem =
                 ]
 
 
-{-| Decodes a project-level build problem from bytes.
+{-| A decoder for a project problem written by `buildProjectProblemEncoder`.
 -}
 buildProjectProblemDecoder : Bytes.Decode.Decoder BuildProjectProblem
 buildProjectProblemDecoder =
@@ -2820,7 +3047,7 @@ buildProjectProblemDecoder =
             )
 
 
-{-| Encodes a registry problem to bytes for serialization.
+{-| Encodes a registry problem in the binary form `registryProblemDecoder` reads.
 -}
 registryProblemEncoder : RegistryProblem -> Bytes.Encode.Encoder
 registryProblemEncoder registryProblem =
@@ -2839,7 +3066,7 @@ registryProblemEncoder registryProblem =
                 ]
 
 
-{-| Decodes a registry problem from bytes.
+{-| A decoder for a registry problem written by `registryProblemEncoder`.
 -}
 registryProblemDecoder : Bytes.Decode.Decoder RegistryProblem
 registryProblemDecoder =
@@ -2860,6 +3087,8 @@ registryProblemDecoder =
             )
 
 
+{-| Encodes a download failure in the binary form `packageProblemDecoder` reads.
+-}
 packageProblemEncoder : PackageProblem -> Bytes.Encode.Encoder
 packageProblemEncoder packageProblem =
     case packageProblem of
@@ -2896,6 +3125,8 @@ packageProblemEncoder packageProblem =
                 ]
 
 
+{-| A decoder for a download failure written by `packageProblemEncoder`.
+-}
 packageProblemDecoder : Bytes.Decode.Decoder PackageProblem
 packageProblemDecoder =
     Bytes.Decode.unsignedInt8

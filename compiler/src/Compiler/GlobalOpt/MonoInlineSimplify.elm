@@ -3,21 +3,72 @@ module Compiler.GlobalOpt.MonoInlineSimplify exposing
     , functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
     )
 
-{-| Mono IR Inliner and Simplifier.
+{-| Removes higher-order plumbing from a monomorphized program, so that less of
+it becomes closures and indirect calls at run time.
 
-This pass runs after monomorphization and before MLIR generation to
-reduce/eliminate higher-order "pipeline plumbing" before it becomes
-ECO closures/PAPs.
+After monomorphization every function exists as _specializations_, one per
+combination of concrete types it is used at, each a node of the `MonoGraph`
+numbered by a `SpecId`. A typical program is full of small helpers, lambdas
+applied on the spot, partial applications applied once, and lambdas passed to
+loops. Left alone, they cost calls and closure objects at run time. This
+module rewrites the body of each specialization to remove as many of them as
+it can.
 
-Key optimizations:
+A few terms. A call is _exact_ when it passes as many arguments as the callee
+takes, _partial_ when it passes fewer, and _over-applied_ when it passes more.
+_Beta reduction_ applies a closure literal to arguments: each parameter is bound
+by a `let` to its argument under a fresh name, and the closure's body takes the
+call's place. _Inlining_ does the same with the body of another
+specialization. A partial beta reduction or partial inline cannot remove the
+closure: it builds a _residual closure_ over the parameters not yet given. A
+residual closure is a new function, not a copy of a source lambda, so its
+`srcLambda`, `lssMember`, `closureKind` and `captureAbi` are cleared and it
+belongs to no lambda set; building one is a _reshape_.
 
-  - Small-function inlining (with recursion guard)
-  - Beta-reduction of immediate lambdas
-  - Let-callee forwarding (a let-bound closure whose single use is the
-    callee of a call is beta-reduced into that call site)
-  - Let-sinking/let-elimination
-  - Dead code elimination (incl. chain-aware dead closure bindings)
-  - Case simplifications
+`optimize` takes each specialization with a body in turn and rewrites it in
+rounds, until a round changes nothing or the configured number of rounds has
+run. A round is `rewriteExpr` followed by `simplifyLets`. `rewriteExpr` makes
+these rewrites:
+
+  - beta reduction of a call whose callee is a closure literal;
+  - inlining of a call to an _inline candidate_: a non-recursive `MonoDefine`
+    that is within the cost budget or whitelisted, and not blacklisted;
+  - _loopification_ of a call that passes a lambda literal to a tail-recursive
+    specialization: the call becomes a local loop, a copy of the
+    specialization with the lambda in place of the parameter;
+  - _application merging_, `(f a) b` to `f a b`, when `f`'s arity is known and
+    covers every argument;
+  - moving the `let`s out of a callee, `(let d in f) a` to `let d in f a`;
+  - _let-callee forwarding_: a `let`-bound closure literal, or partial call,
+    used exactly once as the callee of a call, is moved into that call;
+  - folding an `if` whose one condition is the literal `True` or `False`.
+
+`simplifyLets` drops unused `let` definitions whose evaluation can be left
+out (closures, pure values or, with `kernelFactsDce`, calls of droppable
+kernels); it never drops a local tail function.
+
+Which candidates, arities and loopifiable specializations exist is computed
+once, after the arity-raising pre-pass (when on) and before the rounds start.
+So the body copied into a caller is the callee's body before any round of
+rewriting.
+
+Two rules run through the whole module. First, every body copied into a
+caller with its parameters bound has its parameters, `let` names and
+destructuring names replaced by fresh `mono_inline_<n>` names and its closures
+given fresh lambda ids. Closure and local tail-function parameters keep their
+names, and the renames stop at them. A callee with no parameters called with
+arguments is copied with fresh lambda ids only. Second, a chain of `let`s is
+handled as a whole, because the definitions of one chain can refer to each
+other in both directions.
+
+With `arityRaise` on, a pre-pass first merges the two stages of a curried
+specialization whose body is a closure literal or a call returning a function.
+The settings are those of
+`Compiler.Eco.Config.InlineConfig`, whose docstring states what each one does.
+
+The module also exposes the censuses the inline report prints:
+`countClosures`, `residualTaxonomy`, `functionResultCensus`, `reshapeCensus` and
+`reshapeReturnedUids`, and `buildBodyLookup`, a table of inlinable bodies.
 
 @docs Metrics, emptyMetrics, optimize, buildBodyLookup, countClosures
 @docs functionResultCensus, reshapeCensus, reshapeReturnedUids, residualTaxonomy
@@ -47,15 +98,40 @@ import Set
 -- ============================================================================
 
 
-{-| Metrics collected during optimization, available for debugging and the
-`ECO_INLINE_REPORT=1` census (HOF-elimination plan H0.2/H1.3):
+{-| What `optimize` did, counted over the whole graph, for the inline report.
 
-  - `betaForwards` counts let-bound closures forwarded into their single
-    callee-position use (H1.1).
-  - `closureDCE` counts dead closure bindings dropped by the chain-aware
-    let simplifier (H1.2).
-  - `inlinedByCallee` tallies successful direct-call inlines per callee
-    global ("Module.name").
+`inlineCount` counts direct-call inlines, once in each specialization the call
+is in, and `inlinedByCallee` splits that count by callee, keyed by its qualified
+name (`Module.name`), or `spec:<id>` when the registry gives none.
+`inlineSourceSites` counts inlines by source call site, keyed
+`<callee>|<row:col-row:col>`, so that the specializations of one source call
+share a key; partial inlines are not counted there.
+
+`betaReductions` counts closure literals applied to at least one argument,
+those applied by forwarding included, and `betaForwards` counts the let-bound
+closures forwarded. `partialMerges` counts application merges and forwarded
+partial calls. `loopifiable` is the number of specializations that could be
+loopified, and `hofLoopified` the number of calls that were.
+
+`letEliminations` counts dead non-closure definitions dropped, of which
+`kernelLetDCE` are calls of a kernel, and `closureDCE` counts dead closure
+definitions dropped. `deadLets`, `deadBareKernelVar` and
+`deadDroppableKernelLets` are a census of dead `let` definitions, taken each
+time a chain is simplified, before anything is dropped: all of them, those
+bound to a bare kernel reference, and those bound to a call of a kernel whose
+`KernelFacts` row is droppable, whatever the call's arguments. A definition
+that stays dead is counted again every round.
+
+`arityRaised` counts specializations raised, and `arityRaiseSkipped` those that
+had a raisable shape but were refused. `declinedPreserveSets` counts partial
+inlines and partial beta reductions refused under `preserveSets`, and
+`declinedArityCap` those refused because the residual closure could exceed
+`HeapLimits.maxStageArity`.
+
+`clearedMembers` is filled only with `report` on. A key `RESHAPES|<site>`
+counts the residual closures built at `site` (`tryInline` or `beta`), and a key
+`<lambda uid>|<member id>|<site>` counts those whose source closure had a
+lambda-set member.
 
 -}
 type alias Metrics =
@@ -66,9 +142,6 @@ type alias Metrics =
     , hofLoopified : Int
     , loopifiable : Int
     , letEliminations : Int
-
-    -- kernel-opt-11: attribution for the KernelFacts DCE widening, plus the
-    -- Phase-0 census counters (deadLets is the denominator for decision D-K).
     , kernelLetDCE : Int
     , deadLets : Int
     , deadBareKernelVar : Int
@@ -77,49 +150,25 @@ type alias Metrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
-
-    -- P0 (plans/pre-mono-inline-simplify.md §8): distinct SOURCE call sites
-    -- inlined — see `InternalMetrics.inlineSourceSites`.
     , inlineSourceSites : Dict String Int
-
-    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md §3.3: partial
-    -- inlines refused by `inline.preserveSets`, at both guarded sites. NOT
-    -- report-gated — it is the denominator that makes a `clearedMembers` of
-    -- zero readable: flag ON must show `cleared=0` AND this equal to the
-    -- flag-OFF `cleared` count on the same input.
     , declinedPreserveSets : Int
-
-    -- Partial inlines and beta reductions refused because the residual
-    -- closure's parameters plus captures could exceed the closure stage arity
-    -- limit (`HeapLimits.maxStageArity`, HEAP_078; wide-object Phase 2).
     , declinedArityCap : Int
-
-    -- P0 census (plans/lss-inline-member-propagation.md §7): every reshape that
-    -- CLEARED an LSS member, keyed `<newLambdaUid>|<clearedMemberId>|<site>`.
-    -- Captured at the clearing site itself, so this is the `reshaped` set by
-    -- CONSTRUCTION rather than inferred from before/after instance counts (a
-    -- DCE'd instance and a reshaped one are indistinguishable by counting).
-    -- Census-only; `report`-gated at the consumer.
     , clearedMembers : Dict String Int
     }
 
 
-{-| Public reifier-facing helper: build a `SpecId -> (params, body)`
-lookup table over the final, post-inline `MonoGraph.nodes` array,
-excluding recursive specs so the consumer (typically the bytes-fusion
-reifier doing beta-reduction at reify time) can't accidentally loop on
-self-referential helpers.
+{-| Returns the parameters and body of each specialization of the graph that can
+be inlined, as they are in the graph, keyed by `SpecId`.
 
-Mirrors the eligibility checks the inliner itself uses
-(`isRecursive` + `getInlinableBody`), but consumes the
-post-optimisation graph so each entry reflects the function's body as
-it would actually execute (any nested helpers it called have already
-been inlined into its body).
+A specialization is included when its node is a `MonoDefine`, it is not
+recursive, and its body, or the body of its closure, is not a `MonoCase`. A
+`MonoDefine` that is not a closure is included with no parameters. No cost
+limit, whitelist or blacklist applies.
 
-Used by `Compiler.Generate.MLIR.BytesFusion.Reify.reifyMapBody`'s
-`MonoVarGlobal` arm — closure conversion turns inline lambdas into
-global function references, so the reifier needs this lookup to apply
-a per-element encoder lambda to a synthetic iteration variable.
+A specialization is recursive when it lies on a cycle of the graph's
+`callEdges`, a self-edge included. A graph whose `callEdges` is empty, as
+`optimize` returns it, has no recursive specialization, so every `MonoDefine`
+that is not a case is included.
 
 -}
 buildBodyLookup : MonoGraph -> Dict SpecId ( List ( Name, Mono.MonoType ), MonoExpr )
@@ -149,12 +198,7 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
                                 ( accDict, specId + 1 )
 
                             Just ( params, body, _ ) ->
-                                -- Keep case bodies out of THIS lookup even
-                                -- though the inliner proper accepts them
-                                -- (H2.0): the consumer is the bytes-fusion
-                                -- reifier's reify-time beta-reducer, whose
-                                -- tolerance for case bodies has not been
-                                -- verified.
+                                -- The inliner accepts case bodies; this table does not.
                                 if isCase body then
                                     ( accDict, specId + 1 )
 
@@ -166,11 +210,10 @@ buildBodyLookup (MonoGraph { nodes, callEdges }) =
         |> Tuple.first
 
 
-{-| Static census helper (`ECO_INLINE_REPORT=1`): count the `MonoClosure`
-nodes remaining in the graph. Top-level closures of function definitions are
-skipped — they lower to `func.func`s, not runtime allocations; only closures
-in expression position (which become `eco.papCreate`s at reference sites)
-are counted.
+{-| Returns the number of closure expressions in the bodies of the graph's
+`MonoDefine`, `MonoTailFunc` and port nodes, closures nested in other closures
+included. A closure that is a `MonoDefine`'s whole body is the function itself
+and is not counted, and neither are the expressions it captures.
 -}
 countClosures : MonoGraph -> Int
 countClosures (MonoGraph { nodes }) =
@@ -223,26 +266,32 @@ countClosures (MonoGraph { nodes }) =
         nodes
 
 
-{-| H6.0c static residual taxonomy (`ECO_INLINE_REPORT=1`): classify every
-surviving expression-position `MonoClosure` by its CONSUMPTION CONTEXT, so
-the census says which mechanism gap dominates the residual allocations:
+{-| Returns the closure expressions left in the graph, counted by where each is
+used, largest count first.
 
-  - `arg-to-loopifiable` — argument of a call to a spec H5 COULD loopify
-    (the call site failed qualification: non-literal, multi-stage lambda…)
-  - `arg-to-tailfunc` — argument to a tail-recursive spec H5 can't loopify
-    (cost / self-ref / param analysis)
-  - `arg-to-global` — argument to a plain function spec (`List.foldr`
-    class: non-tail recursion or general HOFs)
-  - `arg-to-ctor` / `arg-to-kernel` / `arg-to-local` — escaping into data
-    constructors, kernel calls, or dynamically-dispatched callees
-  - `stored-data` — element of a list / record / tuple literal
-  - `let-bound` — bound and kept (multi-use or escaping uses)
-  - `captured` — a literal directly in another closure's capture list
-  - `callee` — literal in callee position (pending beta — should be ~0)
-  - `tailcall-arg` / `value` / `other`
+The closures counted are those `countClosures` counts, except closures under a
+record access. Each is put in a bucket by its position:
 
-Counts include closures nested inside other closures' bodies (they
-allocate when the outer body runs).
+  - an argument of a call to a specialization: `arg-to-loopifiable` when the
+    callee is a tail function that `inlineConfig` would let loopification copy,
+    `arg-to-tailfunc` for any other tail function, `arg-to-ctor` for a
+    constructor, `arg-to-global` for a `MonoDefine`, and `arg-to-other-spec`
+    otherwise;
+  - `arg-to-kernel` for an argument of a kernel, and `arg-to-local` for an
+    argument of any other callee;
+  - `stored-data` for an element of a list or tuple, or a field of a record or
+    a record update;
+  - `let-bound` for the bound expression of a `let` definition;
+  - `captured` for a value another closure captures;
+  - `callee` for the callee of a call;
+  - `tailcall-arg` for an argument of a tail call;
+  - `value` for the body of a node or of a closure, or the bound expression of
+    a local tail function;
+  - `other` for an `if` condition, or the record of a record update.
+
+The body of a `let` or a destructuring, and the branches of an `if` or a case,
+are counted in the bucket of the expression they belong to. The inside of a
+record access is not walked.
 
 -}
 residualTaxonomy : Config.InlineConfig -> MonoGraph -> List ( String, Int )
@@ -273,7 +322,7 @@ residualTaxonomy inlineConfig (MonoGraph { nodes }) =
         bump bucket acc =
             Dict.insert bucket (1 + Maybe.withDefault 0 (Dict.get bucket acc)) acc
 
-        -- `here` = the bucket a closure at THIS position would land in.
+        -- `here` is the bucket a closure at this position is counted in.
         taxExpr : String -> MonoExpr -> Dict String Int -> Dict String Int
         taxExpr here expr acc =
             case expr of
@@ -401,23 +450,10 @@ residualTaxonomy inlineConfig (MonoGraph { nodes }) =
         |> List.sortBy (\( _, n ) -> negate n)
 
 
-{-| H6.2 U0 (`ECO_INLINE_REPORT=1`): census of FUNCTION-TYPED-RESULT specs
-(`f : args -> (s -> r)` — the TypeCheck.IO monadic-bind shape) and how
-their saturated call results are consumed. Decision input for U2b
-result-arity raising: `applied` / `let-bound` sites are reachable by
-intra-function rewrites alone; everything else (returned / stored /
-passed on) needs the raised-worker ABI to collapse.
-
-Buckets: `fnres-specs` (spec population), then per saturated call site
-`fnres-applied` (callee position — result immediately applied),
-`fnres-let-bound`, `fnres-arg` (passed to another call), `fnres-stored`
-(data), `fnres-returned` (value position), `fnres-other`.
-
-H6.2.5 Lever 2 refactor: the walk now tallies PER SPEC
-(`fnResultSiteCensus`), because the arity-raise gate needs each spec's
-applied share; the aggregate report derives from the per-spec census
-unchanged.
-
+{-| Returns, for each function-result specialization of `nodes`, how its
+calls are used, as the bucket counts `functionResultCensus` describes. Every
+function-result specialization has an entry, an empty one when it has no
+counted calls.
 -}
 fnResultSiteCensus : Array (Maybe MonoNode) -> Dict Int (Dict String Int)
 fnResultSiteCensus nodes =
@@ -442,8 +478,8 @@ fnResultSiteCensus nodes =
                 nodes
                 |> Tuple.first
 
-        -- Every fn-result spec gets an entry (possibly empty) so the
-        -- population size survives into the derived report.
+        -- Every function-result spec gets an entry, possibly empty, so that the
+        -- report can count them.
         emptyCensus : Dict Int (Dict String Int)
         emptyCensus =
             Dict.map (\_ _ -> Dict.empty) fnResultSpecs
@@ -593,8 +629,22 @@ fnResultSiteCensus nodes =
         nodes
 
 
-{-| The aggregate U0 report, derived from the per-spec census (output
-identical to the pre-H6.2.5 direct tally).
+{-| Returns how the results of calls to function-result specializations are
+used, counted over the whole graph, largest count first.
+
+A _function-result specialization_ is a `MonoDefine` closure whose body has a
+function type, `f : a -> (s -> r)`. A call to one counts when it passes exactly
+as many arguments as the closure has parameters. Its result is counted in
+`fnres-applied` when the call is itself called, `fnres-let-bound` when it is
+bound by a `let`, `fnres-arg` when it is an argument of a call or tail call,
+`fnres-stored` when it is an element of a list, tuple or record, or a field of
+a record update, `fnres-returned` when it is the body of a node, a closure or a
+local tail function, or in tail position of one, and `fnres-other` anywhere
+else. `fnres-specs` is the number of function-result specializations.
+
+Only the bodies of `MonoDefine` and `MonoTailFunc` nodes are walked, and not
+the inside of a record access, nor the expressions a closure captures.
+
 -}
 functionResultCensus : MonoGraph -> List ( String, Int )
 functionResultCensus (MonoGraph { nodes }) =
@@ -615,12 +665,10 @@ functionResultCensus (MonoGraph { nodes }) =
         |> List.sortBy (\( _, n ) -> negate n)
 
 
-{-| H6.2.5 Lever 2: does spec `specId`'s site profile justify raising?
-`applied * 100 >= total * minPercent`, requiring at least one applied
-site. Specs with NO observed saturated sites are refused under any
-nonzero threshold (no evidence of a win; escapes-only specs only pay
-the PAP-extend tax when raised). Callers bypass this entirely at
-`minPercent <= 0` (raise-everything, the pre-Lever-2 behaviour).
+{-| Returns whether specialization `specId` has enough applied calls in
+`census` to be raised: at least one `fnres-applied` call, and `fnres-applied`
+at least `minPercent` percent of its counted calls. A specialization with no
+entry in `census` is refused.
 -}
 raiseAllowedBySites : Int -> Dict Int (Dict String Int) -> Int -> Bool
 raiseAllowedBySites minPercent census specId =
@@ -639,10 +687,15 @@ raiseAllowedBySites minPercent census specId =
             applied > 0 && applied * 100 >= total * minPercent
 
 
-{-| H6.1 F3: arity of a global-bodied point-free alias, chasing at most
-`fuel` links (alias-of-alias chains are short; cycles are cut by fuel).
-Kernel-bodied links use the FLAT arity — the convention the emitted
-wrapper spec and papCreate `arity` attr already use.
+{-| Returns the arity of specialization `specId`, following an alias of
+another global at most `fuel` times.
+
+A closure `MonoDefine` or a `MonoTailFunc` gives its parameter count. A
+`MonoDefine` whose body is a kernel reference gives the flat arity of the
+kernel's type (`flatArrowArity`), when that is above zero. A `MonoDefine` whose
+body is a global reference gives the arity of that global. Anything else, or
+running out of fuel, gives `Nothing`.
+
 -}
 aliasArity : Array (Maybe MonoNode) -> Int -> Int -> Maybe Int
 aliasArity nodes fuel specId =
@@ -675,29 +728,14 @@ aliasArity nodes fuel specId =
                 Nothing
 
 
-{-| H6.2 U2b (`ECO_ARITY_RAISE=1`, default off): uncurry a staged spec —
-`MonoDefine (MonoClosure [p…] body) : … -> (s… -> r)` becomes a FLAT
-`MonoClosure [p… ++ s…]` — when its stage-1 work is trivial (body IS a
-closure literal: the `andThen f ma = \s0 -> …` combinator shape) or cheap
-(body is a call within the inline threshold: the `unify a b =
-andThen … (…)` solver shape, wrapped as `MonoCall body svars` for the
-merge arm to collapse).
+{-| Returns `nodes` with every specialization that `raiseOne` can raise
+replaced by its raised form, and the counts of specializations raised and of
+those refused.
 
-Why this is the H6.2 lever: bind continuations escape because the state
-application happens in the CALLER. Raising moves the application point
-INTO each raised spec, where the existing merge / ForwardPartialCall /
-inline+beta fixpoint collapses the chain. Existing call sites need no
-rewrite: a saturated-at-old-arity call is simply a strictly-partial call
-of the raised spec (a PAP — the same single allocation the closure cost
-today), and `annotateCallStaging` re-derives all staging AFTER this pass.
-The raised closure clears srcLambda/closureKind/captureAbi (LSS\_009 — the
-reshaped closure must not impersonate its source member). The hand-eta'd
-`TypeCheck.IO.map`/`foldrM` prove the raised shape is fully supported
-downstream — this pass mechanizes that source idiom.
-
-Semantics note (why default-off): delaying a cheap PURE stage-1 body to
-application time is unobservable in Elm except for ⊥ timing (crash moves
-to first application) and `Debug.log` ordering.
+A specialization with a raisable shape is refused, and left as it is, when
+`allowSpec` refuses it or when its raised closure would have more parameters
+plus captures than `HeapLimits.maxStageArity` allows. The order of `nodes`, and
+so every `SpecId`, is unchanged.
 
 -}
 raiseStagedSpecs : (Int -> Bool) -> Array (Maybe MonoNode) -> ( Array (Maybe MonoNode), ( Int, Int ) )
@@ -708,12 +746,6 @@ raiseStagedSpecs allowSpec nodes =
                 Just (MonoDefine (MonoClosure info body cty) defTy) ->
                     case raiseOne specId info body cty defTy of
                         Just raised ->
-                            -- H6.2.5 Lever 2: the spec QUALIFIES structurally;
-                            -- the applied-share predicate decides whether its
-                            -- site profile pays for raising. Refused specs
-                            -- stay staged (identical to flag-off treatment).
-                            -- HEAP_078: so does a spec whose raised arity
-                            -- would exceed the closure stage arity cap.
                             if allowSpec specId && not (raisedExceedsStageArity raised) then
                                 ( Array.push (Just raised) acc, specId + 1, ( nRaised + 1, nSkipped ) )
 
@@ -731,8 +763,8 @@ raiseStagedSpecs allowSpec nodes =
         |> (\( acc, _, counters ) -> ( acc, counters ))
 
 
-{-| Whether a raised spec's closure has more parameters plus captures than the
-closure stage arity limit allows (HEAP\_078).
+{-| Returns whether a raised node's closure has more parameters plus captures
+than `HeapLimits.maxStageArity` allows.
 -}
 raisedExceedsStageArity : MonoNode -> Bool
 raisedExceedsStageArity node =
@@ -744,16 +776,34 @@ raisedExceedsStageArity node =
             False
 
 
+{-| Returns the raised form of specialization `specId`, the `MonoDefine` of
+the closure with `info`, `body` and type `cty` whose node has type `defTy`, or
+`Nothing` when it cannot be raised.
+
+_Arity raising_ turns a closure whose body returns a function, `\p -> \s -> e`,
+into one closure taking both stages' parameters, `\p s -> e`. `cty` and `defTy`
+lose a stage the same way (`flattenArrowOnce`). Two shapes of body qualify:
+
+  - A closure literal. Its parameters are appended, and its body becomes the
+    body.
+  - A call whose callee is not a local variable and whose type is a function.
+    Fresh parameters `_h62ar<specId>_<i>` are appended for the first stage of
+    the call's result, and the body becomes the call applied to them.
+
+Any other body, and a type without two stages, does not qualify. The raised
+closure is a new function: its `srcLambda`, `lssMember`, `closureKind` and
+`captureAbi` are cleared.
+
+-}
 raiseOne : Int -> Mono.ClosureInfo -> MonoExpr -> Mono.MonoType -> Mono.MonoType -> Maybe MonoNode
 raiseOne specId info body cty defTy =
     case ( flattenArrowOnce cty, flattenArrowOnce defTy ) of
         ( Just ctyFlat, Just defTyFlat ) ->
             case body of
                 MonoClosure innerInfo innerBody _ ->
-                    -- Combinator shape: splice the inner body directly. The
-                    -- inner params are already distinct from the outer ones
-                    -- (same source function — Elm forbids shadowing), so no
-                    -- freshening is needed.
+                    -- The inner params come from the same source function as
+                    -- the outer ones, and Elm forbids shadowing, so they need
+                    -- no renaming.
                     Just
                         (MonoDefine
                             (MonoClosure
@@ -771,29 +821,15 @@ raiseOne specId info body cty defTy =
                         )
 
                 MonoCall _ (MonoVarLocal _ _) _ _ _ ->
-                    -- Param-callee bodies (`apR x f = f x`): raising these is
-                    -- a strict LOSS. Pre-raise they inline at every saturated
-                    -- site and the pipe collapses to a single partial of the
-                    -- real callee; raised, the old-arity call becomes a PAP
-                    -- that wraps ANOTHER layer around the value, and every
-                    -- escaping pipe pays 2-4 allocations instead of 1
-                    -- (measured: raised apR wrappers carried 20.6M runtime
-                    -- extends on the self-compile census). Callers THROUGH
-                    -- such combinators still collapse: the unraised tiny spec
-                    -- inlines during the fixpoint and the merge arm proceeds.
+                    -- A body that calls a local (`apR x f = f x`) stays staged:
+                    -- raised, each call at the old arity would be a partial
+                    -- application of it.
                     Nothing
 
                 MonoCall region _ _ _ _ ->
-                    -- Call shape: apply the old body to fresh stage-2 params.
-                    -- The nested application is exactly what the merge arm
-                    -- collapses in the fixpoint. Deliberately NOT
-                    -- cost-bounded: bind-chain bodies carry closure-literal
-                    -- args (cost 5+body each), so any real chain blows a
-                    -- static bound — yet that construction work is exactly
-                    -- what collapses once the chain merges. The residual risk
-                    -- (an ESCAPING multi-applied staged value re-runs its
-                    -- cheap pure stage-1 per application) is the experiment
-                    -- this flag exists to measure.
+                    -- No cost limit applies to this shape. A raised value that
+                    -- is applied more than once runs the old first stage at
+                    -- each application.
                     case Mono.typeOf body of
                         Mono.MFunction _ _ stageTys retTy ->
                             let
@@ -831,10 +867,9 @@ raiseOne specId info body cty defTy =
             Nothing
 
 
-{-| H6.2 U2b: flatten one stage boundary of an arrow type. The inner
-stage's lambda-set annotation is dropped — the raised closure is a new
-shape with no source member to claim (annotation soundness over
-precision).
+{-| Returns function type `ty` with its first two stages merged into one, or
+`Nothing` when `ty` does not have two stages. The merged stage keeps the outer
+arrow's lambda-set annotation; the inner arrow's is dropped.
 -}
 flattenArrowOnce : Mono.MonoType -> Maybe Mono.MonoType
 flattenArrowOnce ty =
@@ -846,7 +881,22 @@ flattenArrowOnce ty =
             Nothing
 
 
-{-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
+{-| Returns `graph` with the body of every specialization rewritten under
+`inlineConfig`, and the counts of what was done.
+
+Each `MonoDefine`, `MonoTailFunc` and port node is rewritten on its own, in
+rounds of rewriting and `let` simplification, until a round leaves its body
+unchanged (`==`) or `postMonoFixpointIterations` rounds have run. Other nodes
+are kept as they are.
+
+With `arityRaise` on, staged specializations are raised first, and then every
+lambda-set annotation in the graph is widened to ⊤ (`Mono.widenSets`), because
+raising removes closures that annotations elsewhere can still name.
+
+The result's `callEdges` is empty, and so are its `specHasEffects` and
+`specValueUsed`. Its `nextLambdaIndex` is past every lambda id given to a
+copied closure. Every other field of the graph is passed through.
+
 -}
 optimize : Config.InlineConfig -> MonoGraph -> ( MonoGraph, Metrics )
 optimize inlineConfig graph =
@@ -857,9 +907,6 @@ optimize inlineConfig graph =
         ( raisedNodes, raiseCounters ) =
             if inlineConfig.arityRaise then
                 let
-                    -- H6.2.5 Lever 2: gate raising on the per-spec applied
-                    -- share. The site census walk is skipped entirely at
-                    -- threshold 0 (raise-everything, zero added cost).
                     allowSpec =
                         if inlineConfig.raiseAppliedShareMin <= 0 then
                             \_ -> True
@@ -875,13 +922,8 @@ optimize inlineConfig graph =
 
         rNodes =
             if inlineConfig.arityRaise then
-                -- Raising erases inner lambdas whose lambda-set annotations
-                -- still live on USE-site types (loadType-minted arrows) —
-                -- AbiCloning would stamp fast dispatch for members that no
-                -- longer exist and the runtime would misread the actual PAP
-                -- (found live: RaiseProbe returned garbage via a stale
-                -- `_capture_abi` stamp). Widen every anno to LTop flag-on:
-                -- annotation soundness over dispatch precision.
+                -- Raising removes inner closures that annotations on other
+                -- types can still name as lambda-set members.
                 Array.map
                     (Maybe.map (Traverse.mapNodeTypes Mono.widenSets))
                     raisedNodes
@@ -895,15 +937,13 @@ optimize inlineConfig graph =
         ctx =
             initRewriteCtx inlineConfig rNodes registry callGraph nextLambdaIndex
 
-        -- Convert nodes to a list so the Array can be GC'd during the fold.
-        -- List.foldl releases consumed cons cells, enabling incremental GC
-        -- of the input graph while building the output graph.
+        -- A list, so that the part of the input already folded over can be
+        -- freed while the output is built.
         nodesList =
             Array.toList rNodes
     in
-    -- Call a separate function so `nodes` (Array) goes out of scope
-    -- and becomes GC-eligible. Only `nodesList` is passed forward (the
-    -- raise counters are plain Ints — no graph state retained).
+    -- A separate function, so that the input array is out of scope while the
+    -- nodes are rewritten.
     optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMemberOrigins lssMemberKinds lssBlockedMembers
         |> Tuple.mapSecond
             (\m ->
@@ -914,6 +954,10 @@ optimize inlineConfig graph =
             )
 
 
+{-| Returns the graph built from `nodesList`, each node rewritten under `ctx`,
+and the passed-through fields, with the metrics of the context after the last
+node. Node order, and so every `SpecId`, is kept.
+-}
 optimizeNodes :
     List (Maybe MonoNode)
     -> RewriteCtx
@@ -976,37 +1020,26 @@ optimizeNodes nodesList ctx main registry ctorShapes ports flagsDecoder lssMembe
 -- ============================================================================
 
 
-{-| List of qualified names (module.name) that should always be inlined.
-Using a List since the whitelist is expected to be small.
-The format is "Module.Path.name" where the module path is joined with dots.
+{-| Qualified names, `Module.Path.name`, of functions inlined whatever their
+cost. This is a name for `List String`: nothing checks that a name is
+well formed or names a function.
 -}
 type alias InlineWhitelist =
     List String
 
 
-{-| Default whitelist of qualified names that always inline, bypassing the
-cost threshold. Two groups:
+{-| The built-in whitelist: the functions inlined whatever their cost, as long
+as they are not recursive and not blacklisted.
 
-  - elm/bytes public API primitives — thin wrappers around the I8/I16/U8/…
-    encoder constructors and the matching Bytes.Decode combinators. Inlining
-    them exposes the constructor / kernel-call shape to the bytes-fusion
-    reifier at the call site.
+The `Bytes.Encode` and `Bytes.Decode` entries are thin wrappers around
+elm/bytes' encoder constructors and decoder primitives, and its small
+combinators. The `Utils.Bytes.Encode`, `Utils.Bytes.Decode` and `Mlir.Bytecode`
+entries are compositions of those. Inlining them leaves the elm/bytes
+primitives themselves at each call site. `Bytes.Encode.encode` and
+`Bytes.Decode.decode` are not listed.
 
-  - Eco-internal encoder/decoder helpers (Utils.Bytes.{Encode,Decode}._,
-    Mlir.Bytecode.VarInt._, Mlir.Bytecode.Section.encodeSection). These are
-    above the default cost threshold but are pure compositions of elm/bytes
-    primitives. Inlining substitutes their body at the call site, where the
-    general fusion reifier patterns (literal-list + cons-of-List.map ELoop)
-    can match the substituted code.
-
-`Bytes.Encode.encode` and `Bytes.Decode.decode` are deliberately omitted:
-those are the fusion entry points the recognizer matches on; inlining them
-would replace them with the C++ kernel call and defeat fusion.
-
-`isRecursive` already gates inlining for recursive functions independently,
-so a recursive helper on this list still won't inline. The shell of a
-recursive helper inlines if its non-recursive cost remains under budget,
-but recursive bodies stay as function calls.
+A recursive function on the list is never inlined, because no recursive
+specialization is an inline candidate.
 
 -}
 defaultWhitelist : InlineWhitelist
@@ -1045,9 +1078,7 @@ defaultWhitelist =
     , "Bytes.Decode.map5"
     , "Bytes.Decode.andThen"
 
-    -- Eco-internal encoder helpers. Inlining-only; the reifier never sees
-    -- these names (it only sees the elm/bytes primitives + List.map/cons
-    -- that they expand into).
+    -- Eco-internal encoder helpers
     , "Utils.Bytes.Encode.unit"
     , "Utils.Bytes.Encode.bool"
     , "Utils.Bytes.Encode.int"
@@ -1086,8 +1117,8 @@ defaultWhitelist =
     ]
 
 
-{-| Convert a Global to a qualified name string for whitelist lookup.
-Format is "Module.name" where Module is the module path.
+{-| Returns a global's qualified name, `Module.name`, or `Nothing` for a record
+accessor.
 -}
 globalToQualifiedName : Mono.Global -> Maybe String
 globalToQualifiedName global =
@@ -1099,6 +1130,9 @@ globalToQualifiedName global =
             Nothing
 
 
+{-| Returns whether `global`'s qualified name is in `whitelist`. The blacklist
+is checked with it too.
+-}
 isWhitelisted : InlineWhitelist -> Mono.Global -> Bool
 isWhitelisted whitelist global =
     case globalToQualifiedName global of
@@ -1115,7 +1149,12 @@ isWhitelisted whitelist global =
 -- ============================================================================
 
 
-{-| Call graph with SCC-based recursion detection.
+{-| The call edges between specializations, with which of them are recursive.
+
+A specialization is recursive when it lies on a cycle of the edges, a self-edge
+included. `isRecursive` holds only the recursive ones, so a missing entry means
+not recursive.
+
 -}
 type alias CallGraph =
     { edges : Array (Maybe (List SpecId))
@@ -1123,10 +1162,13 @@ type alias CallGraph =
     }
 
 
+{-| Returns the call graph of `nodes` with `edges` kept as given. Recursion is
+decided on the edges between live specializations, those whose node is not
+`Nothing`; an edge to any other is ignored.
+-}
 buildCallGraph : Array (Maybe MonoNode) -> Array (Maybe (List SpecId)) -> CallGraph
 buildCallGraph nodes edges =
     let
-        -- Step 1: Assign dense indices 0..n-1 to each live SpecId
         specIds : List SpecId
         specIds =
             Array.foldl
@@ -1158,8 +1200,6 @@ buildCallGraph nodes edges =
                 Dict.empty
                 (List.indexedMap Tuple.pair specIds)
 
-        -- Step 2: Build forward and transposed adjacency + selfLoop bitset
-        -- Accumulate in Dict first, then convert to Array in one pass
         buildResult =
             Array.foldl
                 (\maybeNode ( specId, acc ) ->
@@ -1226,7 +1266,6 @@ buildCallGraph nodes edges =
         transArray =
             Array.initialize n (\i -> Dict.get i buildResult.trans |> Maybe.withDefault [])
 
-        -- Step 3: Run SCC on IntGraph
         sccsInt : List (Graph.SCC Int)
         sccsInt =
             Graph.stronglyConnCompInt
@@ -1236,7 +1275,6 @@ buildCallGraph nodes edges =
                 , size = n
                 }
 
-        -- Step 4: Mark recursive nodes (those in CyclicSCC)
         isRecursiveFromSCC =
             List.foldl
                 (\scc acc ->
@@ -1271,11 +1309,24 @@ buildCallGraph nodes edges =
 -- ============================================================================
 
 
+{-| Returns the sum of `f` over `list`.
+-}
 sumBy : (a -> Int) -> List a -> Int
 sumBy f list =
     List.foldl (\x acc -> acc + f x) 0 list
 
 
+{-| Returns the size of `expr` in the inliner's cost model, the number the
+inline budgets are compared with.
+
+Each node costs a fixed amount plus the cost of its parts: 1 for a variable,
+literal, unit, accessor or record access; 2 for a `let`, a destructuring or an
+`if`; 3 for a list, tuple, record, record update or case; and 5 for a closure,
+call or tail call. A case's decision tree is counted with it. With
+`kernelCostClasses` on, a call of a kernel costs what `kernelCallCost` gives
+instead of 5 plus 1 for the callee.
+
+-}
 computeCost : Config.InlineConfig -> MonoExpr -> Int
 computeCost cfg expr =
     case expr of
@@ -1304,9 +1355,7 @@ computeCost cfg expr =
             5 + computeCost cfg body
 
         MonoCall _ ((MonoVarKernel _ prefix home name _) as func) args resultTy _ ->
-            -- kernel-opt-11 (b). Flag-off this is byte-identical arithmetic to
-            -- the general arm below: `kernelCallCost` is not consulted and the
-            -- MonoVarKernel arm still scores 1, so the call still costs 6+args.
+            -- With the flag off, the same arithmetic as the general arm below.
             if cfg.kernelCostClasses then
                 kernelCallCost cfg prefix home name args resultTy
                     + sumBy (computeCost cfg) args
@@ -1330,10 +1379,7 @@ computeCost cfg expr =
             2 + computeCost cfg inner
 
         MonoCase _ _ decider branches _ ->
-            -- Count the decider's Inline leaf bodies too: they are real code,
-            -- and before the H2.0 case-guard lift this hole was masked (case
-            -- bodies never inlined). Without it a case whose branches all
-            -- live in Inline leaves costs 3 regardless of size.
+            -- The decision tree's Inline leaves hold branch bodies too.
             3 + computeCostDecider cfg decider + sumBy (\( _, e ) -> computeCost cfg e) branches
 
         MonoRecordCreate fields _ ->
@@ -1349,6 +1395,8 @@ computeCost cfg expr =
             3 + sumBy (computeCost cfg) items
 
 
+{-| Returns the cost of a `let` definition's bound expression.
+-}
 computeCostDef : Config.InlineConfig -> Mono.MonoDef -> Int
 computeCostDef cfg def =
     case def of
@@ -1359,6 +1407,10 @@ computeCostDef cfg def =
             computeCost cfg bound
 
 
+{-| Returns the cost of a case's decision tree: 1 for each test node, plus the
+cost of each `Inline` leaf. A `Jump` leaf costs nothing here, since its branch
+is in the case's jump list.
+-}
 computeCostDecider : Config.InlineConfig -> Mono.Decider Mono.MonoChoice -> Int
 computeCostDecider cfg decider =
     case decider of
@@ -1377,16 +1429,15 @@ computeCostDecider cfg decider =
                 + computeCostDecider cfg fallback
 
 
-{-| Cost of the CALL ITSELF; the caller prices the arguments. Today every kernel
-call scores 6 (= the general arm's 5 plus the `MonoVarKernel` arm's 1), and an
-UNLISTED symbol keeps exactly that, so switching the flag on can only move rows
-the KernelFacts audit actually covers.
+{-| Returns the cost of a call of the kernel `prefix`, `home`, `name` with
+`args` and result type `resultTy`, not counting the arguments themselves, for
+use with `kernelCostClasses` on.
 
-Two axes, in priority order. A call that lowers to an inline op is not a call at
-all -- `KernelIntrinsics.kernelIntrinsic` is the ground truth for that and is
-type-directed, which is correct post-mono; `Nothing` is treated as "not inline",
-the conservative answer. Otherwise the audited cost class decides, so a
-rope-allocating `Utils_append` no longer scores the same as an `eco.int.add`.
+A call that `KernelIntrinsics.kernelIntrinsic` lowers to an inline operation,
+given its argument and result types, costs `kernelCostInline`. Otherwise the
+kernel's `KernelFacts` cost class decides: `kernelCostGcLeaf`,
+`kernelCostAlloc` or `kernelCostHof`, and 6 for an unknown class or a kernel
+with no row, which is what every kernel call costs with the flag off.
 
 -}
 kernelCallCost : Config.InlineConfig -> Name -> Name -> Name -> List MonoExpr -> Mono.MonoType -> Int
@@ -1397,11 +1448,9 @@ kernelCallCost cfg prefix home name args resultTy =
 
         Nothing ->
             let
-                -- The price of a kernel we know nothing about. A row whose HOF
-                -- axis is `HofUnknown` is in exactly that epistemic state, so
-                -- the two MUST agree — before this was centralized, an
-                -- unaudited row was priced as a higher-order call (20) while a
-                -- missing row was priced at 6.
+                -- What any kernel call costs with the flag off: 5 for the call
+                -- and 1 for the callee. An unlisted kernel and one of unknown
+                -- cost class are equally unknown, so they cost the same.
                 unknownCost : Int
                 unknownCost =
                     6
@@ -1431,34 +1480,32 @@ kernelCallCost cfg prefix home name args resultTy =
 -- ============================================================================
 
 
+{-| What the rewrite carries from call to call: the facts computed from the
+graph, the settings, the inline budget of the node being rewritten, the
+counters for fresh names and lambda ids, and the metrics.
+
+`inlineCandidates` maps each inline candidate to its parameters, its body, and
+a pair: whether it is _exact-only_, and the lambda-set member of its closure. An
+exact-only candidate is never inlined at a call passing fewer arguments than it
+has parameters; such a call keeps the callee's own partial application.
+`specArities` maps a specialization to the number of arguments it takes in one
+call, and is what application merging and forwarding compare argument counts
+with. `loopifiables` holds what `buildLoopifiables` accepted.
+
+`varCounter` numbers the fresh `mono_inline_<n>` names and is never reset
+during a run, so no two names it makes are equal. `lambdaCounter` numbers fresh
+lambda ids, starting from the graph's `nextLambdaIndex`.
+`inlineCountThisFunction` counts the inlines and loopifications made in the
+current node, against `maxInlinesPerFunction`.
+
+-}
 type alias RewriteCtx =
-    -- (params, body, exactOnly): exactOnly candidates were admitted via the
-    -- H2 hofBudget (cost above the general threshold, not whitelisted) and
-    -- may inline at EXACT application only. This is permanent by design, not
-    -- a temporary containment (H2.5 step 2): partially inlining a GLOBAL
-    -- replaces its PAP value with a genuinely re-arited closure, and callers
-    -- compiled against the global's curried TYPE may over-apply it — the
-    -- runtime typed-apply cannot chain over-application of a real closure
-    -- (spliceArgsForSaturatedCall assert; CombinatorB* corpus pins).
-    -- Partials of globals stay PAPs per mono-uncurry's design principle;
-    -- application MERGING collapses the profitable single-use shapes.
-    -- Legacy and whitelisted candidates keep full pre-H2 privileges.
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr, ( Bool, Maybe Int ) )
-    , specArities : Dict Int Int -- H2.5: param count per spec (incl. recursive), for application merging
-    , loopifiables : Dict Int LoopifyInfo -- H5: tail-func specs whose closure param can be loopified
+    , specArities : Dict Int Int -- recursive specs included
+    , loopifiables : Dict Int LoopifyInfo
     , loopifyEnabled : Bool
-
-    -- P0 census gate (plans/lss-inline-member-propagation.md §7). Collection is
-    -- a Dict bump per reshape; it is tied to `inline.report` because that is
-    -- exactly when the numbers are rendered. OFF by default, so the ordinary
-    -- build pays nothing.
-    , reshapeCensusOn : Bool
-    , kernelFactsDce : Bool -- kernel-opt-11 (a): widen the dead-binding purity test to KernelFacts-droppable kernel calls
-
-    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md: decline the
-    -- strictly-partial inline rather than mint an identity-less residual
-    -- closure. Consulted at the ONE site that clears a member (see
-    -- `tryInlineCall`) and at `rewriteExpr`'s beta arm for symmetry.
+    , reshapeCensusOn : Bool -- `report`: fill `clearedMembers`
+    , kernelFactsDce : Bool
     , preserveSets : Bool
     , registry : Mono.SpecializationRegistry
     , whitelist : InlineWhitelist
@@ -1471,6 +1518,9 @@ type alias RewriteCtx =
     }
 
 
+{-| The counts the rewrite context accumulates. It is the same record type as
+`Metrics`, field for field, and `optimize` returns it as it is.
+-}
 type alias InternalMetrics =
     { inlineCount : Int
     , betaReductions : Int
@@ -1479,9 +1529,6 @@ type alias InternalMetrics =
     , hofLoopified : Int
     , loopifiable : Int
     , letEliminations : Int
-
-    -- kernel-opt-11: attribution for the KernelFacts DCE widening, plus the
-    -- Phase-0 census counters (deadLets is the denominator for decision D-K).
     , kernelLetDCE : Int
     , deadLets : Int
     , deadBareKernelVar : Int
@@ -1490,24 +1537,15 @@ type alias InternalMetrics =
     , arityRaised : Int
     , arityRaiseSkipped : Int
     , inlinedByCallee : Dict String Int
-
-    -- Mirrors `Metrics.declinedPreserveSets`.
     , declinedPreserveSets : Int
-
-    -- Mirrors `Metrics.declinedArityCap`.
     , declinedArityCap : Int
-
-    -- P0 census, mirrors `Metrics.clearedMembers`.
     , clearedMembers : Dict String Int
-
-    -- P0 for plans/pre-mono-inline-simplify.md §8: distinct SOURCE call sites
-    -- inlined, keyed `<callee qualified name>|<caller region>`. A pre-mono
-    -- inliner visits each of these ONCE; `inlineCount` counts them once per
-    -- specialization. The ratio is the redundancy this plan is about.
     , inlineSourceSites : Dict String Int
     }
 
 
+{-| Returns `ctx` with `hofLoopified` raised by one.
+-}
 bumpHofLoopified : RewriteCtx -> RewriteCtx
 bumpHofLoopified ctx =
     let
@@ -1517,6 +1555,8 @@ bumpHofLoopified ctx =
     { ctx | metrics = { m | hofLoopified = m.hofLoopified + 1 } }
 
 
+{-| Returns `ctx` with `partialMerges` raised by one.
+-}
 bumpPartialMerges : RewriteCtx -> RewriteCtx
 bumpPartialMerges ctx =
     let
@@ -1526,6 +1566,8 @@ bumpPartialMerges ctx =
     { ctx | metrics = { m | partialMerges = m.partialMerges + 1 } }
 
 
+{-| Returns `ctx` with `betaReductions` raised by one.
+-}
 bumpBetaReductions : RewriteCtx -> RewriteCtx
 bumpBetaReductions ctx =
     let
@@ -1535,9 +1577,8 @@ bumpBetaReductions ctx =
     { ctx | metrics = { m | betaReductions = m.betaReductions + 1 } }
 
 
-{-| All-zero metrics — what `optimize` would report having done nothing. Used
-when `inline.postMono` is off (plans/pre-mono-inline-simplify.md §7's EARLY
-arm), so the report renders honest zeroes rather than stale numbers.
+{-| Metrics with every count zero and every table empty, for reporting a
+build in which `optimize` did not run.
 -}
 emptyMetrics : Metrics
 emptyMetrics =
@@ -1563,8 +1604,7 @@ emptyMetrics =
     }
 
 
-{-| The integer inside a `LambdaId` — the P0 census key for a residual
-(plans/lss-inline-member-propagation.md §7).
+{-| Returns the number inside a lambda id.
 -}
 lambdaUid : Mono.LambdaId -> Int
 lambdaUid lid =
@@ -1573,9 +1613,7 @@ lambdaUid lid =
             uid
 
 
-{-| One strictly-partial inline refused by `inline.preserveSets`
-(plans/pre-mono-lss-transforms-02-inline-preserve-sets.md §3.3). Unconditional:
-one Int, and it is the instrument's own correctness check.
+{-| Returns `ctx` with `declinedPreserveSets` raised by one.
 -}
 bumpDeclinedPreserveSets : RewriteCtx -> RewriteCtx
 bumpDeclinedPreserveSets ctx =
@@ -1586,8 +1624,7 @@ bumpDeclinedPreserveSets ctx =
     { ctx | metrics = { m | declinedPreserveSets = m.declinedPreserveSets + 1 } }
 
 
-{-| One partial inline or beta reduction refused by the stage arity cap
-(`Metrics.declinedArityCap`).
+{-| Returns `ctx` with `declinedArityCap` raised by one.
 -}
 bumpDeclinedArityCap : RewriteCtx -> RewriteCtx
 bumpDeclinedArityCap ctx =
@@ -1598,18 +1635,19 @@ bumpDeclinedArityCap ctx =
     { ctx | metrics = { m | declinedArityCap = m.declinedArityCap + 1 } }
 
 
-{-| Whether a closure with `params` parameters and `captures` captured values
-exceeds the closure stage arity limit (HEAP\_078). Passes that rebuild a
-closure's captures decline any rewrite for which this holds, so
-compiler-generated arity never reaches the limit check of
-`Compiler.Monomorphize.ValidateLimits`.
+{-| Returns whether a closure with `params` and `captures` would have more
+parameters plus captured values than `HeapLimits.maxStageArity` allows. Partial
+inlining, partial beta reduction and arity raising are declined when it holds.
 -}
 exceedsStageArity : List a -> List b -> Bool
 exceedsStageArity params captures =
     List.length params + List.length captures > HeapLimits.maxStageArity
 
 
-{-| P0 census: record one identity-clearing reshape (see `Metrics.clearedMembers`).
+{-| Returns `ctx0` with one reshape recorded in `clearedMembers` when `report`
+is on, and `ctx0` unchanged otherwise. The reshape built a residual closure
+with lambda uid `newUid` at `site`, from a closure whose lambda-set member was
+`maybeMid`.
 -}
 bumpClearedMember : Int -> Maybe Int -> String -> RewriteCtx -> RewriteCtx
 bumpClearedMember newUid maybeMid site ctx0 =
@@ -1620,13 +1658,14 @@ bumpClearedMember newUid maybeMid site ctx0 =
         bumpClearedMemberGo newUid maybeMid site ctx0
 
 
+{-| Returns `ctx0` with `RESHAPES|<site>` raised by one in `clearedMembers`
+and, when there is a member, `<newUid>|<member>|<site>` raised by one too.
+-}
 bumpClearedMemberGo : Int -> Maybe Int -> String -> RewriteCtx -> RewriteCtx
 bumpClearedMemberGo newUid maybeMid site ctx0 =
     let
-        -- Count EVERY reshape, member or not: a zero `cleared` with a zero
-        -- `reshapes` means the sites never fired (broken instrument); a zero
-        -- `cleared` with a nonzero `reshapes` means the reshaped closures
-        -- carried no member to lose (the real answer).
+        -- Every reshape is counted, member or not, so that a report can tell
+        -- reshapes with no member apart from no reshapes.
         mTot =
             ctx0.metrics
 
@@ -1662,6 +1701,8 @@ bumpClearedMemberGo newUid maybeMid site ctx0 =
             }
 
 
+{-| Returns `ctx` with `betaForwards` raised by one.
+-}
 bumpBetaForwards : RewriteCtx -> RewriteCtx
 bumpBetaForwards ctx =
     let
@@ -1671,11 +1712,9 @@ bumpBetaForwards ctx =
     { ctx | metrics = { m | betaForwards = m.betaForwards + 1 } }
 
 
-{-| kernel-opt-11: `letEliminations` counts every dead binding dropped and would
-blur old drops with new ones, so attribute the widening separately. Bumps
-`kernelLetDCE` only for the shape the new arm can license: a call whose callee is
-a kernel var. Flag-off this is `bumpLetElimination` exactly, because no such
-binding reaches here.
+{-| Returns `ctx` with one dropped dead binding of `bound` counted: in
+`letEliminations` always, and in `kernelLetDCE` too when `bound` is a call
+whose callee is a kernel.
 -}
 bumpKernelDCE : RewriteCtx -> MonoExpr -> RewriteCtx
 bumpKernelDCE ctx bound =
@@ -1705,6 +1744,8 @@ bumpKernelDCE ctx bound =
     }
 
 
+{-| Returns `ctx` with `closureDCE` raised by one.
+-}
 bumpClosureDCE : RewriteCtx -> RewriteCtx
 bumpClosureDCE ctx =
     let
@@ -1714,15 +1755,18 @@ bumpClosureDCE ctx =
     { ctx | metrics = { m | closureDCE = m.closureDCE + 1 } }
 
 
-{-| Render a call-site region as a P0 key component
-(plans/pre-mono-inline-simplify.md §8). Two specializations of ONE source call
-site share their region, so this collapses them.
+{-| Returns a region as text, `row:col-row:col`. The specializations of one
+source call carry the same region, so they give the same text.
 -}
 regionKey : A.Region -> String
 regionKey (A.Region (A.Position r1 c1) (A.Position r2 c2)) =
     String.fromInt r1 ++ ":" ++ String.fromInt c1 ++ "-" ++ String.fromInt r2 ++ ":" ++ String.fromInt c2
 
 
+{-| Returns `ctx0` with an inline of `specId` recorded as `recordInline`
+records it, and also counted in `inlineSourceSites` under the callee's name
+and `region`.
+-}
 recordInlineAt : A.Region -> SpecId -> RewriteCtx -> RewriteCtx
 recordInlineAt region specId ctx0 =
     let
@@ -1749,8 +1793,9 @@ recordInlineAt region specId ctx0 =
     }
 
 
-{-| Record a successful direct-call inline: global count, per-callee tally,
-and the per-function budget counter.
+{-| Returns `ctx` with an inline of `specId` counted: in `inlineCount`, in
+`inlinedByCallee` under the callee's qualified name (`spec:<id>` when the
+registry gives none), and against the current node's inline budget.
 -}
 recordInline : SpecId -> RewriteCtx -> RewriteCtx
 recordInline specId ctx =
@@ -1777,17 +1822,14 @@ recordInline specId ctx =
     }
 
 
-{-| H2 "called-param" heuristic: does the candidate have a function-typed
-parameter that appears in CALLEE position in its body? Such candidates get
-the wider `hofThreshold` budget — inlining them lets a lambda argument
-beta-reduce away at the call site (`Maybe.andThen`-style case+call bodies).
-A function-typed param that is merely STORED (a `Task.andThen`-style body
-that tucks the callback into a structure) does not qualify: inlining those
-is pure code growth, the lambda escapes into data either way.
+{-| Returns whether some parameter of function type is the callee of a call in
+`body`. A function for which this holds gets the wider `hofThreshold` budget,
+since inlining it lets a lambda passed for that parameter be beta-reduced at
+the call site. A function parameter that is only stored or passed on does not
+count.
 
-The callee check is name-based without shadow tracking — sound as a
-heuristic: canonicalization forbids shadowing, and a false positive merely
-widens one candidate's budget.
+Names are compared without regard to scope, so a call of another local of the
+same name counts too. Elm forbids shadowing.
 
 -}
 hasCalledFunctionParam : List ( Name, Mono.MonoType ) -> MonoExpr -> Bool
@@ -1823,30 +1865,24 @@ hasCalledFunctionParam params body =
 
 
 -- ============================================================================
--- ====== RECURSIVE-HOF LOOPIFICATION (H5) ======
+-- ====== RECURSIVE-HOF LOOPIFICATION ======
 -- ============================================================================
 
 
-{-| A tail-recursive spec eligible for call-site loopification (plan H5):
-`params`/`body` are the spec's own, `flatParams` maps a function-typed
-parameter's index to its (uncurried) arity for every parameter that the
-body consumes ONLY as (a) exactly one saturated callee-position call plus
-(b) verbatim self-tail-call threading.
+{-| A tail-recursive specialization that loopification can copy, with the
+function parameters it can eliminate.
 
-At a saturated call site passing a lambda LITERAL at such an index, the
-call is rewritten to a local specialized loop (`MonoTailDef`) with the
-parameter eliminated: the literal replaces the callee of the single
-internal call (the existing beta arm reduces it on the next fixpoint
-iteration — captures are substituted to their caller-scope variables
-first), and self tail calls retarget the local loop with the flattened
-entry dropped. The lambda's papCreate disappears at this level; the local
-loop's own closure shell (a zero-self-capture papCreate with one saturated
-use — verified: pure tail recursion does not self-capture) is elided
-downstream by EcoPAPSimplify P1. Design note: this deliberately replaces
-the plan's original LSS-keyed spec-cloning formulation — the call-site
-literal makes the member identity self-evident, so v1 needs neither the
-solver engine nor keyed fan-out; variable-argument callers remain the
-LSS-based v2 extension.
+`params` and `body` are the specialization's own. `flatParams` maps the
+position of each eliminable parameter to its flat arity (`flatArrowArity`). A
+function parameter is eliminable when the body only calls it, once, with its
+full flat arity, and otherwise only passes it on unchanged as the same
+parameter of its own tail calls (`paramLoopifiable`).
+
+_Loopification_ rewrites a call of such a specialization that passes a lambda
+literal for an eliminable parameter. The call becomes a local tail-recursive
+definition (`MonoTailDef`), a copy of the body without that parameter in which
+the one call of the parameter calls the literal instead, applied to the other
+arguments. A later round, if one runs, beta-reduces the literal.
 
 -}
 type alias LoopifyInfo =
@@ -1856,6 +1892,14 @@ type alias LoopifyInfo =
     }
 
 
+{-| Returns the specializations of `nodes` that loopification can copy, keyed
+by `SpecId`, or none when `loopify` is off.
+
+A `MonoTailFunc` qualifies when its body costs at most twice the larger of
+`postMonoThreshold` and `hofThreshold`, does not name its own specialization
+(`referencesSpec`), and has at least one eliminable function parameter.
+
+-}
 buildLoopifiables : Config.InlineConfig -> Array (Maybe MonoNode) -> Dict Int LoopifyInfo
 buildLoopifiables inlineConfig nodes =
     if not inlineConfig.loopify then
@@ -1863,9 +1907,8 @@ buildLoopifiables inlineConfig nodes =
 
     else
         let
-            -- Loopification copies the spec body per call site, like
-            -- inlining but for recursive HOFs; give it double the HOF
-            -- budget (List.foldl/map-class bodies land in the 15–30 range).
+            -- Loopification copies the body into each call site, as inlining
+            -- does, with twice the larger inline budget.
             budget =
                 2 * max inlineConfig.postMonoThreshold inlineConfig.hofThreshold
         in
@@ -1914,11 +1957,9 @@ buildLoopifiables inlineConfig nodes =
             |> Tuple.first
 
 
-{-| Fully-peeled arrow arity: mono param types keep STAGE structure
-(`MFunction [a] (MFunction [b] r)` for a two-stage function), while
-internal call sites of a function-typed param apply all stages flat — the
-loopify arity must be the peeled total (the staged-currying twin of
-Specialize.peelCallResult).
+{-| Returns how many arguments a function type takes over all its stages: 2
+for both `MFunction [a, b] r` and `MFunction [a] (MFunction [b] r)`, and 0 for
+a type that is not a function.
 -}
 flatArrowArity : Mono.MonoType -> Int
 flatArrowArity t =
@@ -1930,8 +1971,8 @@ flatArrowArity t =
             0
 
 
-{-| Any reference to the given spec (a non-tail self-call would make the
-copied body re-enter the ORIGINAL function).
+{-| Returns whether `body` names specialization `specId` anywhere. A copy of
+such a body would call back into the original function.
 -}
 referencesSpec : Int -> MonoExpr -> Bool
 referencesSpec specId body =
@@ -1950,16 +1991,16 @@ referencesSpec specId body =
         body
 
 
-{-| Is param `p` (a function of `arity` args) consumed ONLY as one saturated
-callee-position call plus verbatim tail-threading? Uses an accounting
-identity over `countUsages` so no context-carrying walk is needed:
+{-| Returns whether parameter `p`, a function taking `arity` arguments over all
+its stages, can be eliminated from `body`.
 
-  - any use inside a nested closure or inner tail-def bound would inflate
-    `usesInsideClosures` / `usesInsideInnerTailDefs` (over-counting for
-    nested nesting is fine — the requirement is zero);
-  - a use in a call's ARGUMENTS, a case scrutinee, storage, etc. would make
-    `totalUses > calleeSites + threadEntries`;
-  - rebinding anywhere disqualifies outright (count semantics get murky).
+It can when `p` is never rebound (by a `let`, a destructuring, or a closure or
+tail definition parameter), is not used inside any closure or any local tail
+function's body, is the callee of exactly one call passing `arity` arguments,
+and is otherwise used only as the value `p` of the entry `p` of a tail call.
+
+The last condition is checked by counting: every use of `p` that
+`countUsages` finds must be that one call or one such tail-call entry.
 
 -}
 paramLoopifiable : Name -> Int -> MonoExpr -> Bool
@@ -2082,9 +2123,15 @@ paramLoopifiable p arity body =
         + threadEntries
 
 
-{-| Attempt loopification of a saturated call to a loopifiable spec. The
-budget shares `inlineCountThisFunction` (loopification IS a form of
-inlining for code-growth purposes).
+{-| Returns the loopified form of the call of `specId` with `args`, or
+`Nothing` when the call does not qualify.
+
+It does not when loopification is off, the current node's inline budget is
+spent, `specId` is not loopifiable, `args` does not match its parameters in
+number, or no eliminable position holds a closure literal whose parameter count
+is that position's flat arity and whose captures are all local variables. A
+loopification counts against the node's inline budget.
+
 -}
 tryLoopify : RewriteCtx -> Region -> Int -> List MonoExpr -> Mono.MonoType -> Maybe ( MonoExpr, RewriteCtx )
 tryLoopify ctx region specId args resultType =
@@ -2139,6 +2186,16 @@ tryLoopify ctx region specId args resultType =
                         Just (loopifyCall ctx region info qualifying args resultType)
 
 
+{-| Returns the call of `info`'s specialization with `args` loopified: a local
+tail definition, a copy of the specialization without the `qualifying`
+parameters, applied to the other arguments, under `let`s binding the values the
+qualifying literals capture.
+
+The copy gets fresh lambda ids, fresh `let` names and a fresh name for every
+parameter. Each qualifying literal captures fresh names instead of its own, and
+replaces the callee of the one call of its parameter.
+
+-}
 loopifyCall : RewriteCtx -> Region -> LoopifyInfo -> List ( Int, MonoExpr ) -> List MonoExpr -> Mono.MonoType -> ( MonoExpr, RewriteCtx )
 loopifyCall ctx region info qualifying args resultType =
     let
@@ -2148,8 +2205,8 @@ loopifyCall ctx region info qualifying args resultType =
         ( sF, ctx1 ) =
             freshVar ctx
 
-        -- Fresh names for EVERY spec param (the copied body enters caller
-        -- scope; source names could collide with caller locals).
+        -- Fresh names for every spec param: the copied body enters the
+        -- caller's scope, where its names could collide with the caller's.
         ( renamesRev, ctx2 ) =
             List.foldl
                 (\( old, _ ) ( acc, c ) ->
@@ -2178,17 +2235,10 @@ loopifyCall ctx region info qualifying args resultType =
                 |> List.head
                 |> Maybe.withDefault old
 
-        -- The lambda that replaces the flattened param's single call site:
-        -- every capture is re-bound to an INLINER-FRESH name in a prelude
-        -- let OUTSIDE the loop, and the capture references substitute to
-        -- that fresh name. Substituting to the caller variable DIRECTLY is
-        -- unsound: the copied spec body's own binders come from a different
-        -- source function and may collide (List.member's capture `x` vs
-        -- List.any's destructured head `x` — the loop would rebind the
-        -- capture to the element; EqualityBoolListMemberTest is the pin).
-        -- Fresh names cannot collide with anything. The prelude lets also
-        -- make the values free variables of the loop body, so the lifted
-        -- loop closure captures them exactly like the lambda used to.
+        -- Each capture of a literal is renamed to a fresh name, bound to the
+        -- captured value in a `let` outside the loop. Keeping the caller's
+        -- name would not do: the copied body's binders come from another
+        -- function and could rebind it inside the loop.
         ( lambdaPairs, preludeRev, ctxCaps ) =
             List.foldl
                 (\( i, lamExpr ) ( accPairs, accPrelude, c ) ->
@@ -2217,9 +2267,8 @@ loopifyCall ctx region info qualifying args resultType =
                                         ( ( cbody, [] ), accPrelude, c )
                                         cinfo.captures
                             in
-                            -- Keep the closure CLOSED: it captures the prelude names, so it
-                            -- is well scoped even if the fixpoint cap is hit before the
-                            -- next round's beta reduction dissolves it.
+                            -- The literal captures the fresh names, so it stays well
+                            -- scoped if the round limit is reached before it is reduced.
                             ( ( i, MonoClosure { cinfo | captures = List.reverse capsRev } cbody1 ctype ) :: accPairs
                             , accPrelude1
                             , c1
@@ -2263,8 +2312,8 @@ loopifyCall ctx region info qualifying args resultType =
                     )
 
         -- Copy the spec body: fresh lambda ids, fresh internal lets, then
-        -- rename every param reference (VarLocals only — tail-call entry
-        -- keys and callee retargeting happen in loopifyBody).
+        -- rename every param reference (variables only; tail-call entry
+        -- names and callees are handled by loopifyBody).
         ( bodyA, ctx3 ) =
             remapLambdaIds ctxCaps info.body
 
@@ -2324,13 +2373,17 @@ loopifyCall ctx region info qualifying args resultType =
     ( result, ctx5 )
 
 
-{-| The loopification body walk: retarget self tail calls to the local loop
-(renaming entry keys to the fresh param names and dropping the flattened
-entries), and replace the flattened params' single callee-position uses
-with their lambda literals. Inner tail defs keep their own tail calls (any
-callee in `innerNames` is left alone); closures are not descended into —
-the eligibility analysis proved the flattened params do not occur there,
-and their contents are otherwise untouched copies.
+{-| Returns the copied body `expr` with each tail call to the original
+function retargeted to the local loop `sF`, and each call of an eliminated
+parameter calling its literal instead.
+
+A tail call whose callee is not in `innerNames`, the local tail functions
+entered so far, is a call of the original function. Its entries are renamed by
+`renames`, and the entries of the eliminated parameters, `flatOldNames`, are
+dropped. A call whose callee is a local named in `lambdas` gets that literal as
+callee. Closures are not entered: the eliminated parameters do not occur in
+them.
+
 -}
 loopifyBody : Name -> List ( Name, Name ) -> List Name -> Dict Name MonoExpr -> List Name -> MonoExpr -> MonoExpr
 loopifyBody sF renames flatOldNames lambdas innerNames expr =
@@ -2439,6 +2492,8 @@ loopifyBody sF renames flatOldNames lambdas innerNames expr =
             expr
 
 
+{-| Returns a decision tree with `loopifyBody` applied to every `Inline` leaf.
+-}
 loopifyDecider : Name -> List ( Name, Name ) -> List Name -> Dict Name MonoExpr -> List Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 loopifyDecider sF renames flatOldNames lambdas innerNames decider =
     case decider of
@@ -2459,6 +2514,21 @@ loopifyDecider sF renames flatOldNames lambdas innerNames decider =
                 (loopifyDecider sF renames flatOldNames lambdas innerNames fallback)
 
 
+{-| Returns the context to start rewriting `nodes` with: the inline
+candidates, spec arities and loopifiable specializations computed once from
+`nodes`, the settings of `inlineConfig`, zeroed counts, and lambda ids
+numbered from `nextLambdaIndex`.
+
+A specialization is an inline candidate when it is not recursive, its node is
+a `MonoDefine`, it is not blacklisted, and its body costs at most
+`postMonoThreshold`, or it is whitelisted, or it is _hof-admitted_: it costs
+more than `postMonoThreshold` but no more than the larger of that and
+`hofThreshold`, and calls one of its function parameters. A candidate over
+`postMonoThreshold` and not whitelisted is exact-only, unless it is
+hof-admitted and `partialHof` is on. The whitelist is `defaultWhitelist` and
+the configured names, less the blacklisted ones.
+
+-}
 initRewriteCtx : Config.InlineConfig -> Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
 initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     let
@@ -2469,8 +2539,8 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                 (\name -> not (List.member name inlineConfig.blacklist))
                 (defaultWhitelist ++ inlineConfig.whitelist)
 
-        -- H2: budget for candidates with a CALLED function-typed parameter.
-        -- `max` so a raised general threshold is never undercut.
+        -- The budget of a candidate that calls a function parameter. `max`,
+        -- so that it is never below the general budget.
         hofBudget =
             max inlineConfig.postMonoThreshold inlineConfig.hofThreshold
 
@@ -2510,28 +2580,19 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                                     |> Maybe.map (isWhitelisted effectiveWhitelist)
                                                     |> Maybe.withDefault False
 
-                                            -- Blacklisted globals are never
-                                            -- inline candidates at all (not
-                                            -- merely removed from the
-                                            -- whitelist): list.chunks relies
-                                            -- on this to keep combinator
-                                            -- calls intact for the kernel
-                                            -- shunt (Generate.MLIR.Functions
-                                            -- listChunksShunt).
+                                            -- A blacklisted global is no
+                                            -- candidate at all, not merely
+                                            -- off the whitelist.
                                             blacklisted =
                                                 maybeGlobal
                                                     |> Maybe.map (isWhitelisted inlineConfig.blacklist)
                                                     |> Maybe.withDefault False
 
-                                            -- Ordered so the body scan only
-                                            -- runs for candidates over the
-                                            -- general threshold (the common
-                                            -- case stays one int compare).
-                                            -- Admitted ONLY by the hof budget:
-                                            -- over the general threshold, but
-                                            -- under `hofThreshold` with a
-                                            -- called function parameter. This
-                                            -- is the IO-monad-bind class.
+                                            -- Admitted only by the hof
+                                            -- budget. Ordered so that the
+                                            -- body scan runs only for a
+                                            -- candidate over the general
+                                            -- budget.
                                             hofAdmitted =
                                                 cost
                                                     > inlineConfig.postMonoThreshold
@@ -2542,15 +2603,6 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                                             withinBudget =
                                                 cost <= inlineConfig.postMonoThreshold || hofAdmitted
 
-                                            -- `partialHof` lifts the
-                                            -- exact-sites-only refusal for the
-                                            -- hof-admitted class (see the flag
-                                            -- doc in Compiler.Eco.Config). It
-                                            -- is the general form of the
-                                            -- measured whitelist win: `andThen`
-                                            -- is 2-of-3 arguments at all 367 of
-                                            -- its sites, so exact-only means
-                                            -- never.
                                             exactOnly =
                                                 cost
                                                     > inlineConfig.postMonoThreshold
@@ -2577,17 +2629,10 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
                         Just (MonoTailFunc params _ _) ->
                             ( Dict.insert specId (List.length params) acc, specId + 1 )
 
-                        -- H6.1 F3: point-free specs. A kernel alias
-                        -- (`and = Elm.Kernel.Bitwise.and`) or a global alias
-                        -- (`userAnd = Bitwise.and`) has no closure literal, so
-                        -- the closure/tailfunc arms above never record it and
-                        -- `<|`-styled partials of it can never merge — the
-                        -- Array.setHelp papCreate+extend+extend chains of the
-                        -- H6.0 census. Kernel-bodied: the annotation's first
-                        -- stage is the kernel's real parameter list (deeper
-                        -- stages are the kernel's own business — never merged
-                        -- past stage one). Global-bodied: chase the alias,
-                        -- bounded.
+                        -- A kernel alias (`and = Elm.Kernel.Bitwise.and`) or a
+                        -- global alias (`userAnd = Bitwise.and`) has no closure
+                        -- literal. Its arity is the kernel's flat arity, or the
+                        -- arity of the global it names, followed at most 4 links.
                         Just (MonoDefine (MonoVarKernel _ _ _ _ kernelType) _) ->
                             let
                                 n =
@@ -2657,6 +2702,9 @@ initRewriteCtx inlineConfig nodes registry callGraph nextLambdaIndex =
     }
 
 
+{-| Returns a fresh local name, `mono_inline_<n>`, and the context with the
+counter advanced.
+-}
 freshVar : RewriteCtx -> ( Name, RewriteCtx )
 freshVar ctx =
     ( "mono_inline_" ++ String.fromInt ctx.varCounter
@@ -2664,7 +2712,8 @@ freshVar ctx =
     )
 
 
-{-| Generate a fresh lambda ID to avoid duplicate lambda names when inlining.
+{-| Returns a fresh anonymous lambda id in module `home`, and the context with
+the counter advanced.
 -}
 freshLambdaId : RewriteCtx -> ModuleName.Canonical -> ( Mono.LambdaId, RewriteCtx )
 freshLambdaId ctx home =
@@ -2673,7 +2722,9 @@ freshLambdaId ctx home =
     )
 
 
-{-| Generate a fresh lambda ID for a specialization, looking up the home module.
+{-| Returns a fresh lambda id in the home module of specialization `specId`,
+or in a module with empty names when it has none: a record accessor, or a
+specialization the registry does not know.
 -}
 freshLambdaIdForSpec : RewriteCtx -> Mono.SpecId -> ( Mono.LambdaId, RewriteCtx )
 freshLambdaIdForSpec ctx specId =
@@ -2684,18 +2735,16 @@ freshLambdaIdForSpec ctx specId =
                     h
 
                 Just ( Mono.Accessor _, _ ) ->
-                    -- Accessor doesn't have a home, use a placeholder
                     ModuleName.Canonical ( "", "" ) ""
 
                 Nothing ->
-                    -- Fallback if not found
                     ModuleName.Canonical ( "", "" ) ""
     in
     freshLambdaId ctx home
 
 
-{-| Generate a fresh lambda ID for a closure.
-This is called after children are processed, so nested closures get IDs first.
+{-| Returns `expr` with a fresh lambda id in the same module when it is a
+closure, and `Nothing` for any other expression.
 -}
 remapClosureLambdaId : RewriteCtx -> MonoExpr -> ( Maybe MonoExpr, RewriteCtx )
 remapClosureLambdaId ctx expr =
@@ -2716,23 +2765,22 @@ remapClosureLambdaId ctx expr =
             ( Just (MonoClosure newInfo body closureType), ctx1 )
 
         _ ->
-            -- `Nothing`: every non-closure node is left exactly as it was, so
-            -- the traversal keeps the original subtree instead of copying it.
             ( Nothing, ctx )
 
 
-{-| Remap all lambda IDs in an expression to fresh values.
-This is necessary when inlining to avoid duplicate lambda function names in MLIR.
+{-| Returns `expr` with every closure in it given a fresh lambda id. Every
+copy of a body gets this, so that no lambda id is used by two closures.
 -}
 remapLambdaIds : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 remapLambdaIds ctx expr =
-    -- Spelled with its parameters: point-free it is declared arity 2 and
-    -- defined with none, so every call site built a PAP instead of making a
-    -- saturated call.
+    -- Written with its parameters: written point-free, every call of it would
+    -- build a partial application instead of making a saturated call.
     Traverse.traverseExpr remapClosureLambdaId ctx expr
 
 
-{-| A binding created during beta reduction or inlining.
+{-| A parameter bound to an argument by beta reduction or inlining: the
+parameter's name, the fresh name that replaces it, and the argument with its
+type.
 -}
 type alias Binding =
     { origName : Name
@@ -2748,9 +2796,12 @@ type alias Binding =
 -- ============================================================================
 
 
+{-| Returns `node` with its body rewritten to a fixpoint (`fixpoint`), and the
+context. The inline budget starts again at zero for each node. A node with no
+body to rewrite is returned as it is.
+-}
 optimizeNode : RewriteCtx -> MonoNode -> ( MonoNode, RewriteCtx )
 optimizeNode ctx node =
-    -- Reset per-function inline count at start of each node
     let
         ctxForNode =
             { ctx | inlineCountThisFunction = 0 }
@@ -2795,11 +2846,18 @@ optimizeNode ctx node =
 -- ============================================================================
 
 
+{-| Returns `expr` after rounds of `rewriteExpr` followed by `simplifyLets`,
+stopping after the first round that leaves it unchanged, or after
+`maxIterations` rounds.
+-}
 fixpoint : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 fixpoint ctx expr =
     iterate 0 expr ctx
 
 
+{-| Returns the result of round `n` and the rounds after it, as `fixpoint`
+describes; `current` is the expression before round `n`.
+-}
 iterate : Int -> MonoExpr -> RewriteCtx -> ( MonoExpr, RewriteCtx )
 iterate n current ctx =
     if n >= ctx.maxIterations then
@@ -2820,13 +2878,10 @@ iterate n current ctx =
             iterate (n + 1) simplified ctx2
 
 
-{-| Check if two expressions are structurally equal.
-This is a simple structural comparison.
+{-| Returns whether two expressions are equal under Elm's structural `==`.
 -}
 exprEqual : MonoExpr -> MonoExpr -> Bool
 exprEqual e1 e2 =
-    -- For simplicity, we use string representation comparison
-    -- In production, we'd want a proper structural equality check
     e1 == e2
 
 
@@ -2836,25 +2891,39 @@ exprEqual e1 e2 =
 -- ============================================================================
 
 
+{-| Returns `expr` rewritten once, with the context. An inlined call, a merged
+call and a call whose callee's `let`s were moved out are rewritten again; a
+beta-reduced or loopified call is not.
+
+A call is rewritten according to its callee:
+
+  - A closure literal is beta-reduced (`betaReduce`). A call passing some but
+    not all of its parameters is left as it is when `preserveSets` is on, or
+    when the closure's parameters plus captures exceed
+    `HeapLimits.maxStageArity`.
+  - A global is loopified when `tryLoopify` accepts the call, and otherwise
+    inlined when `tryInlineCall` does.
+  - A call `(f a) b` is merged into `f a b` when `calleeArity` knows `f`'s
+    arity and the total number of arguments does not exceed it. The merged
+    call has a default `CallInfo`.
+  - A `let` chain has its definitions moved out: `(let d in f) a` becomes
+    `let d in f a`.
+
+An `if` with one condition that is the literal `True` or `False` is replaced by
+the branch it chooses. A `let` chain is rewritten as a whole
+(`rewriteLetChain`). A tail call is never inlined. Anything else has its parts
+rewritten.
+
+-}
 rewriteExpr : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 rewriteExpr ctx expr =
     case expr of
-        -- Beta reduction: ((\\x -> body) arg)
         MonoCall region ((MonoClosure info closureBody _) as closureExpr) args resultType callInfo ->
             if ctx.preserveSets && not (List.isEmpty args) && List.length args < List.length info.params then
-                -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md: the
-                -- mirror of `tryInlineCall`'s clearing arm — `betaReduce`'s own
-                -- strictly-partial arm rebuilds the literal with
-                -- `lssMember = Nothing`. Guarded HERE rather than inside
-                -- `betaReduce` because the decline must reproduce the call
-                -- VERBATIM: `betaReduce` never receives the closure's type (its
-                -- caller discards it) or the call's `CallInfo`, so reconstructing
-                -- inside it would have to synthesize a `topSynth` closure type —
-                -- widening the very annotation this flag exists to keep. The
-                -- other two `betaReduce` call sites pass exact or over-applied
-                -- argument lists by construction, so this is the only path that
-                -- reaches that arm. MEASURED dead on the self-compile
-                -- (`declinedPreserveSets` will say if that ever changes).
+                -- Declined here, not inside `betaReduce`, because `betaReduce`
+                -- has neither the closure's type nor the call's CallInfo to
+                -- rebuild the call with. Its other callers never pass fewer
+                -- arguments than params.
                 let
                     ( rewrittenFunc, ctx1 ) =
                         rewriteExpr (bumpDeclinedPreserveSets ctx) closureExpr
@@ -2869,12 +2938,9 @@ rewriteExpr ctx expr =
                     && (List.length args < List.length info.params)
                     && exceedsStageArity info.params info.captures
             then
-                -- HEAP_078: a strictly-partial beta rebuilds the closure with
-                -- the remaining params and recomputed captures (at most one
-                -- per bound arg on top of the original captures), so its
-                -- slots are bounded by the original closure's. Decline when
-                -- that bound is over the cap, reproducing the call verbatim
-                -- as the preserveSets arm does.
+                -- The residual closure has the remaining params and at most
+                -- one capture per bound argument on top of the original ones,
+                -- so the original closure's count bounds it.
                 let
                     ( rewrittenFunc, ctx1 ) =
                         rewriteExpr (bumpDeclinedArityCap ctx) closureExpr
@@ -2887,13 +2953,11 @@ rewriteExpr ctx expr =
             else
                 betaReduce ctx region info closureBody args resultType
 
-        -- Direct call inlining
         MonoCall region (MonoVarGlobal varRegion specId funcType) args resultType callInfo ->
-            -- Recursive-HOF loopification (H5) first: recursive specs are
-            -- never inline candidates, so there is no overlap with
-            -- tryInlineCall. The loopified expression is returned as-is;
-            -- the fixpoint's next iteration beta-reduces the inlined lambda
-            -- literal and continues normal rewriting inside the loop.
+            -- Loopification first. Tail functions are never inline
+            -- candidates, so the two cannot both apply. The loopified call is
+            -- returned as it is; a later round, if one runs, reduces the
+            -- literal in it.
             case tryLoopify ctx region specId args resultType of
                 Just ( loopified, ctxL ) ->
                     ( loopified, ctxL )
@@ -2905,25 +2969,17 @@ rewriteExpr ctx expr =
                     in
                     case maybeInlined of
                         Just inlinedExpr ->
-                            -- Recursively rewrite the inlined expression
                             rewriteExpr ctx1 inlinedExpr
 
                         Nothing ->
-                            -- Can't inline, just rewrite children
                             let
                                 ( rewrittenArgs, ctx2 ) =
                                     rewriteExprs ctx1 args
                             in
                             ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
 
-        -- Application merging (H2.5 step 1): `(f a1s) a2s` ⇒ `f (a1s ++ a2s)`
-        -- when f's arity is statically known and the total does not exceed
-        -- it. A partial inner application only creates a PAP (no body runs),
-        -- so merging preserves evaluation order exactly; the merged
-        -- saturated call then takes the EXACT inline path — no residual
-        -- closure, no partial rebuild. Over-application totals are refused:
-        -- there the inner call executes the body, and merging would change
-        -- the call's shape into runtime over-application.
+        -- Application merging: `(f a1s) a2s` becomes `f (a1s ++ a2s)`. A
+        -- partial inner application runs no code, so evaluation order is kept.
         MonoCall region ((MonoCall _ innerFunc innerArgs _ _) as innerCall) outerArgs resultType callInfo ->
             let
                 mergeable =
@@ -2948,17 +3004,11 @@ rewriteExpr ctx expr =
                 in
                 ( MonoCall region rewrittenFunc rewrittenArgs resultType callInfo, ctx2 )
 
-        -- Let-callee hoisting (H2): `(let d in f) a` ⇒ `let d in (f a)`.
-        -- Inlining a curried callee exactly leaves its closure-literal body
-        -- wrapped in the argument lets, and the ENCLOSING call then applies
-        -- that let-wrapped closure — a shape codegen mis-arities at runtime
-        -- (spliceArgsForSaturatedCall assertion; the CombinatorB* corpus
-        -- tests catch it at hofThreshold ≥ the combinators' cost). Hoisting
-        -- preserves evaluation order exactly (defs, callee, args) and cannot
-        -- capture (names are unique post-freshening); the inner call then
-        -- beta-reduces against the exposed literal on the recursive rewrite.
-        -- The hoisted lets adopt the call's result type (chain-tail typing,
-        -- the wrapInLets invariant).
+        -- Let-callee hoisting: `(let d in f) a` becomes `let d in (f a)`, so
+        -- that a closure literal under the lets meets its arguments. The hoist
+        -- assumes the let names do not occur free in the arguments. The
+        -- hoisted lets take the call's result type, as every let of a chain
+        -- carries its final body's type.
         MonoCall region ((MonoLet _ _ _) as callee) args resultType callInfo ->
             let
                 ( calleeSpine, calleeInner ) =
@@ -2972,7 +3022,6 @@ rewriteExpr ctx expr =
             in
             rewriteExpr ctx rebuilt
 
-        -- Recursive cases - rewrite children
         MonoCall region func args resultType callInfo ->
             let
                 ( rewrittenFunc, ctx1 ) =
@@ -3008,7 +3057,6 @@ rewriteExpr ctx expr =
                 ( rewrittenFinal, ctx2 ) =
                     rewriteExpr ctx1 final
             in
-            -- Simplify if with known condition
             case rewrittenBranches of
                 [ ( MonoLiteral (Mono.LBool True) _, thenBranch ) ] ->
                     ( thenBranch, ctx2 )
@@ -3020,13 +3068,10 @@ rewriteExpr ctx expr =
                     ( MonoIf rewrittenBranches rewrittenFinal resultType, ctx2 )
 
         MonoLet _ _ _ ->
-            -- Let CHAINS are rewritten as a group: the let-callee forwarding
-            -- decision (H1.1) needs to see uses of a def's name in EVERY
-            -- sibling def of the chain, including EARLIER ones — letrec
-            -- sibling closures reference each other in both directions, and
-            -- from an inner let node an earlier sibling is an ancestor,
-            -- invisible to a subtree usage count (the same reason
-            -- freshenLetChain and simplifyLetChain work on the whole spine).
+            -- A let chain is rewritten as a whole: forwarding must see the
+            -- uses of a name in every sibling definition, earlier ones
+            -- included, and from an inner let an earlier sibling is an
+            -- ancestor, out of sight of a count over the subtree.
             rewriteLetChain ctx expr
 
         MonoDestruct destructor inner resultType ->
@@ -3078,14 +3123,13 @@ rewriteExpr ctx expr =
             ( MonoTupleCreate region rewrittenItems tupleType, ctx1 )
 
         MonoTailCall name args resultType ->
-            -- Never inline MonoTailCall to preserve tail-call optimization
+            -- A tail call is never inlined; only its arguments are rewritten.
             let
                 ( rewrittenArgs, ctx1 ) =
                     rewriteTailCallArgs ctx args
             in
             ( MonoTailCall name rewrittenArgs resultType, ctx1 )
 
-        -- Leaves - no children to rewrite
         MonoLiteral _ _ ->
             ( expr, ctx )
 
@@ -3105,6 +3149,9 @@ rewriteExpr ctx expr =
             ( expr, ctx )
 
 
+{-| Returns each expression of a list rewritten by `rewriteExpr`, in order,
+threading the context.
+-}
 rewriteExprs : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 rewriteExprs ctx exprs =
     let
@@ -3123,6 +3170,9 @@ rewriteExprs ctx exprs =
     ( List.reverse revExprs, finalCtx )
 
 
+{-| Returns each captured value of a closure rewritten by `rewriteExpr`,
+threading the context.
+-}
 rewriteCaptures : RewriteCtx -> List ( Name, MonoExpr, Bool ) -> ( List ( Name, MonoExpr, Bool ), RewriteCtx )
 rewriteCaptures ctx captures =
     let
@@ -3141,6 +3191,9 @@ rewriteCaptures ctx captures =
     ( List.reverse revCaptures, finalCtx )
 
 
+{-| Returns each condition and branch of an `if` rewritten by `rewriteExpr`, in
+order, threading the context.
+-}
 rewriteBranches : RewriteCtx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), RewriteCtx )
 rewriteBranches ctx branches =
     let
@@ -3162,6 +3215,8 @@ rewriteBranches ctx branches =
     ( List.reverse revBranches, finalCtx )
 
 
+{-| Returns a `let` definition with its bound expression rewritten.
+-}
 rewriteDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
 rewriteDef ctx def =
     case def of
@@ -3180,6 +3235,9 @@ rewriteDef ctx def =
             ( Mono.MonoTailDef name params rewritten, newCtx )
 
 
+{-| Returns each jump branch of a case rewritten by `rewriteExpr`, threading
+the context.
+-}
 rewriteCaseBranches : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
 rewriteCaseBranches ctx branches =
     let
@@ -3198,6 +3256,9 @@ rewriteCaseBranches ctx branches =
     ( List.reverse revBranches, finalCtx )
 
 
+{-| Returns a decision tree with every `Inline` leaf rewritten by
+`rewriteExpr`, threading the context.
+-}
 rewriteDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
 rewriteDecider ctx decider =
     case decider of
@@ -3246,6 +3307,9 @@ rewriteDecider ctx decider =
             ( Mono.FanOut path rewrittenEdges rewrittenFallback, ctx2 )
 
 
+{-| Returns each field value rewritten by `rewriteExpr`, threading the
+context.
+-}
 rewriteNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 rewriteNamedFields ctx fields =
     let
@@ -3264,6 +3328,9 @@ rewriteNamedFields ctx fields =
     ( List.reverse revFields, finalCtx )
 
 
+{-| Returns each argument of a tail call rewritten by `rewriteExpr`, threading
+the context.
+-}
 rewriteTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 rewriteTailCallArgs ctx args =
     let
@@ -3288,6 +3355,30 @@ rewriteTailCallArgs ctx args =
 -- ============================================================================
 
 
+{-| Returns the closure literal with `info` and `closureBody` applied to
+`args`, where `resultType` is the type of the call.
+
+Each parameter that gets an argument is bound to it by a `let` under a fresh
+name, and the body, with those parameters renamed and its own `let` names
+freshened, goes under the `let`s.
+
+  - With no arguments, the result is the closure itself, typed `resultType`.
+  - With exactly as many arguments as parameters, it is the body under the
+    `let`s.
+  - With fewer, it is a residual closure over the remaining parameters, under
+    the `let`s. Its captures are computed again from the new body, its type is
+    `residualClosureType`, and its `srcLambda`, `lssMember`, `closureKind` and
+    `captureAbi` are cleared, since it is a new function and not the source
+    lambda.
+  - With more, it is the body under the `let`s, called with the rest of the
+    arguments.
+
+The closure's capture list is dropped, and the body's references to captured
+names are left as they are. That is right only when each capture is a local
+variable of the capture's own name, which is how
+`Closure.computeClosureCaptures` builds them.
+
+-}
 betaReduce : RewriteCtx -> Region -> Mono.ClosureInfo -> MonoExpr -> List MonoExpr -> Mono.MonoType -> ( MonoExpr, RewriteCtx )
 betaReduce ctx region info closureBody args resultType =
     let
@@ -3301,11 +3392,9 @@ betaReduce ctx region info closureBody args resultType =
             List.length args
     in
     if numArgs == 0 then
-        -- No arguments, just return closure
         ( MonoClosure info closureBody (Mono.typeOf (MonoClosure info closureBody resultType)), ctx )
 
     else if numArgs == numParams then
-        -- Exact application: bind all params to args
         let
             ( bindings, ctx1 ) =
                 createBindings ctx params args
@@ -3316,7 +3405,6 @@ betaReduce ctx region info closureBody args resultType =
         ( wrapInLets bindings substituted resultType, bumpBetaReductions ctx2 )
 
     else if numArgs < numParams then
-        -- Partial application: bind available params, return closure with remaining
         let
             ( usedParams, remainingParams ) =
                 ( List.take numArgs params, List.drop numArgs params )
@@ -3337,15 +3425,6 @@ betaReduce ctx region info closureBody args resultType =
                 Closure.computeClosureCaptures remainingParams substituted
 
             newInfo =
-                -- The residual is a NEW function, not a verbatim copy of the
-                -- source lambda: params and capture layout differ. Claiming
-                -- the source's srcLambda would let AbiCloning treat it as an
-                -- interchangeable instance of the member (verbatim-copy
-                -- impersonation); clear the identity like tryInlineCall's
-                -- partial branch does. closureKind/captureAbi are stale for
-                -- the new capture set for the same reason (normally still
-                -- unset at inline time — AbiCloning runs later — but don't
-                -- rely on that).
                 { info
                     | params = remainingParams
                     , captures = newCaptures
@@ -3361,7 +3440,6 @@ betaReduce ctx region info closureBody args resultType =
         )
 
     else
-        -- Over-application: apply all params, then call result with extra args
         let
             ( usedArgs, extraArgs ) =
                 ( List.take numParams args, List.drop numParams args )
@@ -3380,6 +3458,10 @@ betaReduce ctx region info closureBody args resultType =
         )
 
 
+{-| Returns a binding of each parameter to the argument in the same position,
+each with a fresh name. Parameters or arguments beyond the shorter list are
+ignored.
+-}
 createBindings : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
 createBindings ctx params args =
     let
@@ -3405,23 +3487,15 @@ createBindings ctx params args =
     ( List.reverse revBindings, finalCtx )
 
 
-{-| H2.5 step 2: the type of the residual closure a partial-application
-rebuild produces.
+{-| Returns the type of a residual closure taking `remainingParams`, built by a
+partial call whose type is `resultType`.
 
-`peelCallResult` (Specialize.elm) already types a partial call node as the
-PEELED arrow — `Mono.mFunction anno remainingTypes result` — so the residual
-closure's type IS the call's result type, verbatim. The old construction
-wrapped it AGAIN (`Mono.mFunction LTop remTypes resultType` where resultType was
-itself the residual arrow), declaring a phantom extra application level:
-result-kind, staging, and arity metadata downstream all read the
-double-wrapped arrow, which is the root of the CGEN\_056 result-type
-mismatches and the runtime `spliceArgsForSaturatedCall` arity assert
-(plan H2.5, lesson 4).
-
-The shape check is defensive: if some producer typed the call differently
-(non-arrow, or an arrow whose param count disagrees with the actual
-remaining params), fall back to the legacy construction — no worse than the
-historical behavior, and the guards that contain the legacy path remain.
+When `resultType` is a function whose first stage takes as many arguments as
+there are remaining parameters, it is the closure's type as it is: a partial
+call is typed as the function still to be applied, and wrapping that again
+would declare one application more than the closure takes. Otherwise the type
+is a function from the remaining parameters' types to `resultType`, annotated ⊤
+(`Mono.topSynth`).
 
 -}
 residualClosureType : List ( Name, Mono.MonoType ) -> Mono.MonoType -> Mono.MonoType
@@ -3438,6 +3512,10 @@ residualClosureType remainingParams resultType =
             Mono.mFunction Mono.topSynth (List.map Tuple.second remainingParams) resultType
 
 
+{-| Returns `body` under one `let` per binding, the first binding outermost,
+each binding its fresh name to its argument. Every `let` gets type
+`resultType`.
+-}
 wrapInLets : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr
 wrapInLets bindings body resultType =
     List.foldr
@@ -3448,6 +3526,9 @@ wrapInLets bindings body resultType =
         bindings
 
 
+{-| Returns `expr` with each binding's parameter renamed to the binding's fresh
+name, the references taking the argument's type (`substitute`).
+-}
 substituteAll : List Binding -> MonoExpr -> MonoExpr
 substituteAll bindings expr =
     List.foldl
@@ -3458,6 +3539,17 @@ substituteAll bindings expr =
         bindings
 
 
+{-| Returns `expr` with every reference to the local `oldName` renamed to
+`newName` and given type `varType`.
+
+A reference is a variable, a case's root, the root of a destructuring or
+decision-tree path, or the name of a capture. Tail-call callees are not
+renamed. Below a binding of `oldName` nothing is renamed: inside a closure that
+has it as a parameter (whose captures are then left as they are too), in the
+body of a `let` that defines it, inside a local tail function that has it as a
+parameter, and inside a destructuring that binds it.
+
+-}
 substitute : Name -> Name -> Mono.MonoType -> MonoExpr -> MonoExpr
 substitute oldName newName varType expr =
     case expr of
@@ -3560,7 +3652,7 @@ substitute oldName newName varType expr =
             MonoDestruct (Mono.MonoDestructor destructName newPath destructType) newInner resultType
 
         MonoCase unused rootName decider branches resultType ->
-            -- MonoCase has two Name fields: first is unused, second is the root variable
+            -- The first Name is the case's label, the second its root variable.
             let
                 newRootName =
                     if rootName == oldName then
@@ -3594,6 +3686,10 @@ substitute oldName newName varType expr =
             MonoTupleCreate region (List.map (substitute oldName newName varType) items) tupleType
 
 
+{-| Returns a `let` definition with `substitute` applied to its bound
+expression, unless it is a local tail function with a parameter named
+`oldName`.
+-}
 substituteDef : Name -> Name -> Mono.MonoType -> Mono.MonoDef -> Mono.MonoDef
 substituteDef oldName newName varType def =
     case def of
@@ -3609,6 +3705,9 @@ substituteDef oldName newName varType def =
                 Mono.MonoTailDef name params (substitute oldName newName varType bound)
 
 
+{-| Returns a destructuring path with its root renamed to `newName` when the
+root is `oldName`.
+-}
 substitutePath : Name -> Name -> Mono.MonoPath -> Mono.MonoPath
 substitutePath oldName newName path =
     case path of
@@ -3629,6 +3728,9 @@ substitutePath oldName newName path =
             Mono.MonoUnbox resultType (substitutePath oldName newName innerPath)
 
 
+{-| Returns a decision-tree path with its root renamed to `newName` when the
+root is `oldName`.
+-}
 substituteDtPath : Name -> Name -> Mono.MonoDtPath -> Mono.MonoDtPath
 substituteDtPath oldName newName dtPath =
     case dtPath of
@@ -3646,6 +3748,9 @@ substituteDtPath oldName newName dtPath =
             Mono.DtUnbox resultTy (substituteDtPath oldName newName inner)
 
 
+{-| Returns a decision tree with `substitute` applied to every `Inline` leaf,
+and every test path's root renamed.
+-}
 substituteDecider : Name -> Name -> Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 substituteDecider oldName newName varType decider =
     case decider of
@@ -3674,6 +3779,8 @@ substituteDecider oldName newName varType decider =
                 (substituteDecider oldName newName varType fallback)
 
 
+{-| Returns the name a `let` definition binds.
+-}
 getDefName : Mono.MonoDef -> Name
 getDefName def =
     case def of
@@ -3684,6 +3791,8 @@ getDefName def =
             name
 
 
+{-| Returns a `let` definition with the name it binds replaced.
+-}
 setDefName : Name -> Mono.MonoDef -> Mono.MonoDef
 setDefName newName def =
     case def of
@@ -3696,17 +3805,21 @@ setDefName newName def =
 
 
 -- ============================================================================
--- ====== LET-CALLEE FORWARDING (H1.1 / H2.5) ======
+-- ====== LET-CALLEE FORWARDING ======
 -- ============================================================================
 
 
-{-| What a forwardable let binding carries to its single callee-position use:
+{-| What a `let` definition hands to the one call that uses it as callee, when
+let-callee forwarding moves it there.
 
-  - `ForwardClosure`: a closure literal — beta-reduced at the use
-    (saturated, ground-result uses only).
-  - `ForwardPartialCall`: a strictly-partial application of a known global —
-    merged with the use's arguments into one ordinary call (total ≤ arity),
-    so no residual closure is ever rebuilt (H2.5 step 1c).
+`ForwardClosure` carries a closure literal's info and body, which are
+beta-reduced against the call's arguments. A call passing exactly the closure's
+parameters is reduced in full; one passing more is reduced for the first stage
+and the result applied to the rest; one passing fewer is not forwarded to.
+
+`ForwardPartialCall` carries a partial call of a global or kernel: the callee,
+the arguments it was given, and its arity. The use becomes one call of the
+callee with both argument lists, provided the total does not exceed the arity.
 
 -}
 type ForwardPayload
@@ -3714,9 +3827,10 @@ type ForwardPayload
     | ForwardPartialCall MonoExpr (List MonoExpr) Int
 
 
-{-| Rewrite one let chain as a group: rewrite every def's bound expression
-and the final body (exactly what the per-let recursion did before), then
-attempt let-callee forwarding with full-chain visibility.
+{-| Returns a `let` chain with every bound expression and the final body
+rewritten, then each definition that binds a `let` chain ending in a closure
+split up (`flattenClosureDef`), and let-callee forwarding applied over the
+whole chain (`forwardInChain`).
 -}
 rewriteLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 rewriteLetChain ctx chainExpr =
@@ -3757,19 +3871,14 @@ rewriteLetChain ctx chainExpr =
     ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody2 spine2, ctx3 )
 
 
-{-| H2.0 let-of-closure flattening: `let f = (let a = e in λ) in body` ⇒
-`let a = e; f = λ in body`.
+{-| Returns a chain entry split in two when its bound expression is a `let`
+chain ending in a closure literal: `f = (let a = e in \x -> b)` becomes `a = e`
+followed by `f = \x -> b`. Any other entry is returned alone.
 
-`tryInlineCall`'s partial-application branch wraps its rebuilt closure in
-the argument bindings (`wrapInLetsForInline`), which hides the closure
-LITERAL from let-callee forwarding — the pipe shape `m |> Maybe.andThen λ`
-lands exactly there. Splicing the inner bindings into the enclosing chain
-preserves evaluation order (a, then the closure, exactly as before) and
-cannot capture: all names are unique post-freshening (and Elm forbids
-source shadowing). Spliced entries adopt the outer entry's result type —
-within a chain every `MonoLet` node carries the chain tail's type
-(`wrapInLets` invariant). Only chains ENDING in a closure literal are
-flattened; the general rewrite is sound but this is the shape that pays.
+A partial inline leaves this shape, the residual closure under the argument
+`let`s, and splitting it lets forwarding see the literal. The order of
+evaluation is kept. Each moved definition takes the outer entry's type, since
+every `let` of a chain carries the type of the chain's final body.
 
 -}
 flattenClosureDef : ( Mono.MonoDef, Mono.MonoType ) -> List ( Mono.MonoDef, Mono.MonoType )
@@ -3792,6 +3901,9 @@ flattenClosureDef (( d, t ) as entry) =
             [ entry ]
 
 
+{-| Returns the definitions of a `let` chain, outermost first, each with its
+`let`'s type, and the first expression below them that is not a `let`.
+-}
 splitLetSpine : MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr )
 splitLetSpine expr =
     let
@@ -3806,26 +3918,27 @@ splitLetSpine expr =
     go expr []
 
 
-{-| Forward let-bound closures into their single callee-position use, with
-the whole chain in view. A def is forwardable only when ALL of:
+{-| Returns the chain `spine` with body `finalBody` after let-callee forwarding,
+repeated until nothing more is forwarded. A forwarded definition is removed,
+and its value is moved into the one call that uses it as callee.
 
-  - it is a plain `MonoDef` bound to a closure literal;
-  - the closure does not reference its own name (a recursive closure's
-    self-call lives inside its own bound expression, invisible to any
-    body-side count — forwarding would delete the binding its body needs);
-  - no EARLIER sibling references the name. Letrec siblings reference each
-    other in both directions; forwarding into an earlier sibling's bound
-    expression would move the closure's capture reads BEFORE bindings they
-    may depend on, and deleting the def dangles the earlier capture. (This
-    is also why the decision needs the chain view at all: from an inner let
-    node an earlier sibling is an ancestor, invisible to a subtree count.)
-  - LATER siblings' bounds plus the final body reference the name exactly
-    once, and `forwardGo` proves that use is a legal callee position.
-    Forwarding INTO a later position is evaluation-order safe: every name
-    the closure references was already bound before the def's own position.
+A definition is forwarded when all of these hold:
 
-Forwarding one def can expose another (counts change), so the pass restarts
-until nothing forwards; each success removes a def, so this terminates.
+  - It binds a closure literal, or a call of a global or kernel whose arity
+    `calleeArity` knows, with fewer arguments than that arity, every argument
+    pure (`isPureExpr`).
+  - Its bound expression does not refer to its own name.
+  - No earlier definition of the chain refers to it. Sibling definitions can
+    refer to each other in both directions, and removing the definition would
+    leave such a reference unbound.
+  - The later definitions and the final body refer to it exactly once, and
+    `forwardGo` accepts that reference.
+
+The value moves to a later point, where everything it refers to is still
+bound. A partial call runs no code when it is bound, and its arguments are
+pure, so moving it changes nothing else. Forwarding a partial call removes a
+definition and adds none; forwarding a closure removes it and beta-reduces it
+at its use.
 
 -}
 forwardInChain : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), MonoExpr, RewriteCtx )
@@ -3860,12 +3973,9 @@ forwardInChain ctx spine finalBody =
                         skip () =
                             tryAt (entry :: beforeRev) rest fb c
 
-                        -- Shared eligibility: no self-reference in the bound
-                        -- expr, no earlier-sibling references, exactly one
-                        -- use across later siblings + final body. On a hit,
-                        -- rebuild the tail (later defs + final body) as one
-                        -- expression so forwardGo can reach a use in either
-                        -- place, then split it back.
+                        -- The later definitions and the final body are rebuilt
+                        -- as one expression, so that `forwardGo` can find the
+                        -- use in either, and split again afterwards.
                         attempt name boundExpr payload bumper =
                             if
                                 countUsages name boundExpr
@@ -3898,11 +4008,8 @@ forwardInChain ctx spine finalBody =
                             attempt name closureExpr (ForwardClosure cinfo cbody) bumpBetaForwards
 
                         Mono.MonoDef name ((MonoCall _ ((MonoVarGlobal _ _ _) as funcExpr) boundArgs _ _) as boundCall) ->
-                            -- H2.5 step 1c: a STRICTLY-PARTIAL application of
-                            -- a known global (binding evaluation only creates
-                            -- a PAP, no body runs) with pure, relocatable
-                            -- args. The pipe shape `m |> andThen λ` leaves
-                            -- exactly this binding behind after apR inlining.
+                            -- A partial application runs no code when bound, and
+                            -- pure arguments can be moved.
                             case calleeArity c funcExpr of
                                 Just arity ->
                                     if
@@ -3919,12 +4026,7 @@ forwardInChain ctx spine finalBody =
                                     skip ()
 
                         Mono.MonoDef name ((MonoCall _ ((MonoVarKernel _ _ _ _ _) as funcExpr) boundArgs _ _) as boundCall) ->
-                            -- H6.1 F3: same rule for a strictly-partial KERNEL
-                            -- call — point-free kernel aliases inline to a bare
-                            -- VarKernel, so the `<|`-partial (`Bitwise.and
-                            -- bitMask <| …` in elm/core Array internals) binds
-                            -- exactly this shape. Merging within the first
-                            -- stage re-saturates it onto the intrinsics path.
+                            -- The same rule for a partial call of a kernel.
                             case calleeArity c funcExpr of
                                 Just arity ->
                                     if
@@ -3954,30 +4056,21 @@ forwardInChain ctx spine finalBody =
     loop spine finalBody ctx
 
 
-{-| Find the single callee-position use of `name` in `expr` and replace the
-call with the beta-reduction of the given closure against the call's args.
-Returns `Nothing` when no legal use is found (the caller keeps the let).
+{-| Returns `expr` with the call whose callee is the local `name` replaced by
+`payload` applied to that call's arguments, as `ForwardPayload` describes, or
+`Nothing` when no call can take it, in which case the definition is kept.
 
-PRECONDITION: `countUsages name expr == 1` — the walk replaces the first
-qualifying call it finds and relies on the count for uniqueness (any other
-occurrence would make the count ≥ 2 and the caller skips forwarding).
+`name` must occur exactly once in `expr`: the walk takes the first call it
+finds.
 
-Guards (all return "not found here" so the caller conservatively keeps the
-let):
-
-  - Never descends into `MonoClosure` captures/bodies or `MonoTailDef`
-    bound expressions. For closures this is a CORRECTNESS guard, not just a
-    perf one: the forwarded body references outer names, and an enclosing
-    closure's `ClosureInfo.captures` was already computed — injecting new
-    free variables into its body would violate CGEN\_CLOSURE\_003 (FV ⊆
-    params ∪ captures ∪ siblings). For tail-def bounds it is the sinking
-    guard: a partial-application residue would allocate per loop iteration
-    instead of once.
-  - Never descends past any construct that rebinds `name` (shadowing —
-    should not occur post-freshening, but letrec sibling defs make a
-    same-named def genuinely ambiguous, so refuse outright).
-  - `MonoIf`/`MonoCase` branches are fine: they execute at most once per
-    evaluation of the let body.
+The walk does not enter a closure, neither its captures nor its body, nor the
+body of a local tail function. Moving the value there would build it at every
+call or every loop iteration, and a closure's captures are already fixed, so a
+new free variable in its body would not be captured. The walk stops at a
+definition or destructuring that binds `name`, at a case whose root or label is
+`name`, and at a tail call to `name`. A use that is not the callee of a call is
+not taken. Branches of an `if` or a case are entered: a branch runs at most once
+each time the body is evaluated.
 
 -}
 forwardGo : RewriteCtx -> Name -> ForwardPayload -> MonoExpr -> Maybe ( MonoExpr, RewriteCtx )
@@ -3989,20 +4082,8 @@ forwardGo ctx name payload expr =
                     if n == name then
                         case payload of
                             ForwardClosure cinfo cbody ->
-                                -- Only SATURATED closure uses forward — a
-                                -- partial use would route through the
-                                -- partial-rebuild path at a NEW site.
-                                -- Function-typed results are allowed since
-                                -- H2.5 step 2: an exact beta yields the
-                                -- source body (no rebuild), and if the
-                                -- enclosing expression applies it, hoisting
-                                -- + beta consume it on later iterations;
-                                -- if it is stored, it is a source-typed
-                                -- literal. (The old ground-result refusal
-                                -- predates hoisting and the faithful
-                                -- residual type — SKI/identity-composition
-                                -- unit fixtures and HofCurriedForwardTest
-                                -- pin the relaxation.)
+                                -- A use with fewer arguments than params is not
+                                -- taken: it would build a residual closure.
                                 if List.length args == List.length cinfo.params then
                                     Just (betaReduce ctx region cinfo cbody args t)
 
@@ -4010,18 +4091,10 @@ forwardGo ctx name payload expr =
                                     (List.length args > List.length cinfo.params)
                                         && not (List.isEmpty cinfo.params)
                                 then
-                                    -- H6.2 layer 3: a source-level multi-stage
-                                    -- application (`f a s1`) is ONE call node
-                                    -- carrying both stages' args, so the exact
-                                    -- check above never fires for a 1-param
-                                    -- literal and the whole bind-collapse
-                                    -- cascade stalls at its first link. Beta
-                                    -- the first stage EXACTLY (evaluation
-                                    -- order identical: stage-1 body runs at
-                                    -- application) and re-apply the rest to
-                                    -- the result — let-callee hoisting and
-                                    -- the merge arm consume the residual on
-                                    -- later fixpoint iterations.
+                                    -- One call node can carry the arguments of
+                                    -- several stages (`f a s1`). Reduce the
+                                    -- first stage exactly and apply the result
+                                    -- to the rest; later rounds reduce that.
                                     let
                                         nParams =
                                             List.length cinfo.params
@@ -4038,14 +4111,8 @@ forwardGo ctx name payload expr =
                                     Nothing
 
                             ForwardPartialCall funcExpr boundArgs arity ->
-                                -- H2.5 step 1c: merge a strictly-partial
-                                -- bound call with its single callee-position
-                                -- use. The merged node is an ordinary call
-                                -- of the original callee — no residual
-                                -- closure, staging metadata recomputed
-                                -- downstream. Over-application totals are
-                                -- refused (the residual would be applied
-                                -- again — the shape merging exists to avoid).
+                                -- A total over the arity is refused: the
+                                -- result would be applied again.
                                 if List.length boundArgs + List.length args <= arity then
                                     Just
                                         ( MonoCall region funcExpr (boundArgs ++ args) t Mono.defaultCallInfo
@@ -4075,8 +4142,7 @@ forwardGo ctx name payload expr =
 
         MonoLet d b t ->
             if getDefName d == name then
-                -- Rebinding (letrec sibling or shadow): everything below is
-                -- ambiguous — refuse.
+                -- `name` is rebound here, so the uses below are not ours.
                 Nothing
 
             else
@@ -4114,7 +4180,7 @@ forwardGo ctx name payload expr =
 
         MonoCase s r decider branches t ->
             if s == name || r == name then
-                -- The case scrutinizes our variable: not a callee use.
+                -- `name` is the case's root or label: not a callee use.
                 Nothing
 
             else
@@ -4178,10 +4244,10 @@ forwardGo ctx name payload expr =
             Nothing
 
 
-{-| H2.5: static arity of a callee expression, when knowable. Only closure
-literals and globals with function/tail-func nodes qualify — everything
-else (locals, kernel refs, computed callees) returns Nothing and is never
-merged.
+{-| Returns how many arguments a callee takes in one call, when that is known
+statically: a closure literal's parameter count, a global's entry in
+`specArities`, or a kernel's flat arity (`flatArrowArity`) when above zero.
+Any other callee gives `Nothing`.
 -}
 calleeArity : RewriteCtx -> MonoExpr -> Maybe Int
 calleeArity ctx funcExpr =
@@ -4193,12 +4259,8 @@ calleeArity ctx funcExpr =
             Dict.get specId ctx.specArities
 
         MonoVarKernel _ _ _ _ kernelType ->
-            -- H6.1 F3: partials with a bare kernel callee. Kernel types are
-            -- stored STAGED (`Int -> (Int -> Int)`), but emission flattens —
-            -- the wrapper spec and the papCreate `arity` attr both use
-            -- flatArrowArity — so the FLAT arity is the correct merge bound:
-            -- a merged saturated call reproduces exactly the shape a direct
-            -- source-level saturated call takes (intrinsics included).
+            -- A kernel's type is staged (`Int -> (Int -> Int)`), but its
+            -- arity here is the flat one, over every stage.
             let
                 n =
                     flatArrowArity kernelType
@@ -4213,6 +4275,9 @@ calleeArity ctx funcExpr =
             Nothing
 
 
+{-| Returns the list with `forwardGo` applied to the first element where it
+succeeds, or `Nothing` when it succeeds on none.
+-}
 forwardGoList : RewriteCtx -> Name -> ForwardPayload -> List MonoExpr -> Maybe ( List MonoExpr, RewriteCtx )
 forwardGoList ctx name payload exprs =
     case exprs of
@@ -4229,6 +4294,9 @@ forwardGoList ctx name payload exprs =
                         |> Maybe.map (\( rest1, c ) -> ( e :: rest1, c ))
 
 
+{-| Returns the pairs with `forwardGo` applied to the second part of the first
+pair where it succeeds, or `Nothing` when it succeeds on none.
+-}
 forwardGoSndList : RewriteCtx -> Name -> ForwardPayload -> List ( a, MonoExpr ) -> Maybe ( List ( a, MonoExpr ), RewriteCtx )
 forwardGoSndList ctx name payload pairs =
     case pairs of
@@ -4245,6 +4313,10 @@ forwardGoSndList ctx name payload pairs =
                         |> Maybe.map (\( rest1, c ) -> ( ( k, e ) :: rest1, c ))
 
 
+{-| Returns the conditions and branches of an `if` with `forwardGo` applied to
+the first of them, in order, where it succeeds, or `Nothing` when it succeeds
+on none. The final `else` is not included.
+-}
 forwardGoIfBranches : RewriteCtx -> Name -> ForwardPayload -> List ( MonoExpr, MonoExpr ) -> Maybe ( List ( MonoExpr, MonoExpr ), RewriteCtx )
 forwardGoIfBranches ctx name payload branches =
     case branches of
@@ -4266,6 +4338,9 @@ forwardGoIfBranches ctx name payload branches =
                                 |> Maybe.map (\( rest1, c ) -> ( ( cond, then_ ) :: rest1, c ))
 
 
+{-| Returns a decision tree with `forwardGo` applied to the first `Inline` leaf
+where it succeeds, or `Nothing` when it succeeds on none.
+-}
 forwardGoDecider : RewriteCtx -> Name -> ForwardPayload -> Mono.Decider Mono.MonoChoice -> Maybe ( Mono.Decider Mono.MonoChoice, RewriteCtx )
 forwardGoDecider ctx name payload decider =
     case decider of
@@ -4295,6 +4370,9 @@ forwardGoDecider ctx name payload decider =
                         |> Maybe.map (\( fb1, c ) -> ( Mono.FanOut path tests fb1, c ))
 
 
+{-| Returns the edges of a decision tree with `forwardGoDecider` applied to the
+first subtree where it succeeds, or `Nothing` when it succeeds on none.
+-}
 forwardGoDeciderSndList : RewriteCtx -> Name -> ForwardPayload -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe ( List ( a, Mono.Decider Mono.MonoChoice ), RewriteCtx )
 forwardGoDeciderSndList ctx name payload pairs =
     case pairs of
@@ -4317,35 +4395,23 @@ forwardGoDeciderSndList ctx name payload pairs =
 -- ============================================================================
 
 
-{-| Alpha-rename every let-bound name in an instantiated (inlined) body to a
-fresh name.
+{-| Returns `expr` with every name bound in it by a `let` definition, a local
+tail function or a destructuring replaced by a fresh name, and every reference
+renamed to match.
 
-`substituteAll` freshens the parameter bindings of an inlined call, but the
-body's internal let-bound names are copied verbatim. Inlining the same
-function twice into one consumer therefore produces duplicate let names on
-one chain, which breaks MLIR codegen: `generateLetSingle` keys SSA
-placeholders by name (`addPlaceholderMappings` reuses a same-named sibling
-placeholder and `forceResultVar` then renames two defining ops to the same
-SSA id — "redefinition of SSA value" / "operand does not dominate this use").
-
-So every instantiation must also freshen the let-bound names (MonoDef and
-MonoTailDef, including a tail def's MonoTailCall self-references) of the
-body it copies.
-
-Inner lets of a binding are freshened before the binding's own rename, so
-by the time a name is renamed no duplicate of it remains in scope and the
-rename cannot capture an inner shadowing binding.
+A copied body keeps the binder names of the function it came from, so two
+copies in one function would otherwise bind the same names twice. Inner
+binders are renamed before outer ones, so no rename can be captured by an inner
+binding of the same name. Closure parameters and tail-function parameters keep
+their names.
 
 -}
 freshenLetBoundNames : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 freshenLetBoundNames ctx expr =
     case expr of
         MonoLet _ _ _ ->
-            -- A let CHAIN is renamed as a group: sibling defs can reference
-            -- each other in BOTH directions (mutually recursive closures, the
-            -- reason codegen's currentLetSiblings exists), so each rename must
-            -- apply across every def's bound expression and the final body,
-            -- not just the lexical body of its own binding.
+            -- A chain is renamed as a whole: sibling definitions can refer to
+            -- each other in both directions.
             freshenLetChain ctx expr
 
         MonoVarLocal _ _ ->
@@ -4441,16 +4507,9 @@ freshenLetBoundNames ctx expr =
             ( MonoIf (List.reverse branchesRev) final1 resultType, ctx2 )
 
         MonoDestruct (Mono.MonoDestructor destructName path destructType) inner resultType ->
-            -- Destructure BINDERS are let-bound names too. Leaving them
-            -- unrenamed captures a same-named caller variable used after the
-            -- inlined segment: found live as the ECO_ARITY_RAISE self-compile
-            -- segfault (raised andThen's `let (s1, a) = ma s0` binder `a`
-            -- captured constrainTupleWithIds' source param `a`;
-            -- RaiseProbe.elm probe2 pins it — 212 instead of 512 pre-fix).
-            -- Flag-off the closure boundary happens to shield today's
-            -- inlinable bodies, but the freshener must not rely on that.
-            -- Inner is freshened FIRST (matching the def-rename policy), so
-            -- the binder rename cannot capture an inner shadowing binding.
+            -- A destructuring binder left as it is could capture a caller's
+            -- variable of the same name used after the inlined code. The inner
+            -- expression is freshened first, as for let definitions.
             let
                 ( inner0, ctx1 ) =
                     freshenLetBoundNames ctx inner
@@ -4533,15 +4592,16 @@ freshenLetBoundNames ctx expr =
             ( MonoTupleCreate region items1 tupleType, ctx1 )
 
 
-{-| Freshen one let chain as a group.
+{-| Returns a `let` chain with its names freshened as a whole:
 
-1.  Split the spine into its defs and the final (non-let) body.
-2.  Freshen recursively INSIDE each def's bound expression and the final
-    body. After this no binder anywhere below carries one of the spine's
-    old names, so the renames in step 4 are total and capture-free.
-3.  Allocate a fresh name per spine def and rename the def itself.
-4.  Apply every (old -> fresh) rename across the whole rebuilt chain, so
-    backward and forward sibling references both follow their binding.
+1.  Split the chain into its definitions and the final body that is not a
+    `let`.
+2.  Freshen inside each definition's bound expression and the final body.
+    After this no binder below carries one of the chain's own names, so the
+    renames of step 4 cannot be captured.
+3.  Give each definition of the chain a fresh name.
+4.  Apply every rename across the whole rebuilt chain, so that references in
+    both directions follow their definition.
 
 -}
 freshenLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
@@ -4610,6 +4670,9 @@ freshenLetChain ctx chainExpr =
     ( renamed, ctx3 )
 
 
+{-| Returns each expression of a list with `freshenLetBoundNames` applied, in
+order, threading the context.
+-}
 freshenLetBoundNamesList : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 freshenLetBoundNamesList ctx exprs =
     let
@@ -4628,8 +4691,8 @@ freshenLetBoundNamesList ctx exprs =
     ( List.reverse revExprs, ctx1 )
 
 
-{-| Freshen the lets inside a definition's bound expression (not the
-definition's own name — the caller renames that).
+{-| Returns a definition with the names bound inside its bound expression
+freshened. The definition's own name is left to the caller.
 -}
 freshenInDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
 freshenInDef ctx def =
@@ -4649,6 +4712,9 @@ freshenInDef ctx def =
             ( Mono.MonoTailDef name params bound1, ctx1 )
 
 
+{-| Returns a decision tree with `freshenLetBoundNames` applied to every
+`Inline` leaf.
+-}
 freshenLetBoundNamesInDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
 freshenLetBoundNamesInDecider ctx decider =
     case decider of
@@ -4692,13 +4758,13 @@ freshenLetBoundNamesInDecider ctx decider =
             ( Mono.FanOut path (List.reverse edgesRev) fallback1, ctx2 )
 
 
-{-| Rename all references to a let-bound name, preserving each occurrence's
-own type (unlike `substitute`, which rewrites the occurrence type to the
-binding's type — wrong for tail defs, whose occurrences carry function
-types).
+{-| Returns `expr` with every reference to the local `oldName` renamed to
+`newName`, each keeping its own type, unlike `substitute`, which gives every
+reference one type and would be wrong for a local tail function, whose
+references carry function types.
 
-Also renames MonoTailCall callee names, which `substitute` never needs to
-touch (parameters are not tail-callable) but a tail def's rename must.
+It also renames tail-call callees, which a tail function's rename needs.
+Otherwise it renames what `substitute` renames and stops where it stops.
 
 -}
 renameLocal : Name -> Name -> MonoExpr -> MonoExpr
@@ -4825,6 +4891,10 @@ renameLocal oldName newName expr =
             MonoTupleCreate region (List.map (renameLocal oldName newName) items) tupleType
 
 
+{-| Returns a `let` definition with `renameLocal` applied to its bound
+expression, unless it is a local tail function with a parameter named
+`oldName`.
+-}
 renameLocalInDef : Name -> Name -> Mono.MonoDef -> Mono.MonoDef
 renameLocalInDef oldName newName def =
     case def of
@@ -4839,6 +4909,9 @@ renameLocalInDef oldName newName def =
                 Mono.MonoTailDef name params (renameLocal oldName newName bound)
 
 
+{-| Returns a decision tree with `renameLocal` applied to every `Inline` leaf,
+and every test path's root renamed.
+-}
 renameLocalInDecider : Name -> Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 renameLocalInDecider oldName newName decider =
     case decider of
@@ -4871,14 +4944,37 @@ renameLocalInDecider oldName newName decider =
 -- ============================================================================
 
 
+{-| Returns the call of inline candidate `specId` with `args` replaced by a
+copy of the callee's body, or `Nothing` when the call is not inlined, with the
+context.
+
+It is not inlined when the current node's inline budget is spent, `specId` is
+not a candidate, an exact-only candidate gets fewer arguments than it has
+parameters, or a callee with no parameters whose value is a bare kernel
+reference is called with a function-typed result. A call with fewer arguments
+than parameters is also declined when `preserveSets` is on, or when the
+residual closure would exceed `HeapLimits.maxStageArity`.
+
+A callee with no parameters called with arguments is copied with fresh lambda
+ids only. Any other copy has fresh lambda ids, its parameters bound to the
+arguments by `let`s under fresh names, and fresh `let` names. Then:
+
+  - A callee with no parameters called with arguments becomes a call of the
+    copied value with all of them.
+  - An exact call becomes the body under the argument `let`s.
+  - A call with fewer arguments becomes a residual closure over the remaining
+    parameters, under the argument `let`s, with a fresh lambda id in the
+    callee's module and no lambda-set identity.
+  - A call with more arguments becomes a call of the body under the `let`s,
+    with the rest of the arguments.
+
+-}
 tryInlineCall : Region -> RewriteCtx -> SpecId -> List MonoExpr -> Mono.MonoType -> ( Maybe MonoExpr, RewriteCtx )
 tryInlineCall callRegion ctx specId args resultType =
-    -- Check budget
     if ctx.inlineCountThisFunction >= ctx.maxInlinesPerFunction then
         ( Nothing, ctx )
 
     else
-        -- Look up the callee from pre-filtered inline candidates
         case Dict.get specId ctx.inlineCandidates of
             Nothing ->
                 ( Nothing, ctx )
@@ -4892,28 +4988,15 @@ tryInlineCall callRegion ctx specId args resultType =
                         List.length args
                 in
                 if exactOnly && numArgs < numParams then
-                    -- hofBudget-admitted candidates never inline PARTIALLY:
-                    -- the partial rebuild's re-staged closure trips the
-                    -- runtime typed-apply arity assert when a caller
-                    -- over-applies it (see inlineCandidates doc).
+                    -- An exact-only candidate is never inlined partially.
                     ( Nothing, ctx )
 
                 else if numParams == 0 && numArgs > 0 then
-                    -- Inlining a non-closure value that's being called.
-                    -- The body is likely a function reference. Inline it and
-                    -- wrap with a call to apply the remaining arguments.
-                    --
-                    -- Exception: when the body is a bare MonoVarKernel and the
-                    -- call's result is a function type (partial application),
-                    -- DON'T inline. Inlining would replace the typed user
-                    -- wrapper (e.g. `Basics_add_$_1` whose body is the
-                    -- `eco.int.add` intrinsic) with a direct kernel reference
-                    -- (`Elm_Kernel_Basics_add`), forcing the partial-app
-                    -- target to use the polymorphic boxed kernel decl. The
-                    -- user wrapper already specializes correctly via
-                    -- registerKernelInstance / monoTypeToAbi, so leaving the
-                    -- call alone gets us the typed `papCreate function =
-                    -- @Basics_add_$_1` we want.
+                    -- A called value with no params: inline the value and call
+                    -- it. Not done for a bare kernel reference when the call's
+                    -- result is a function, so that the partial application
+                    -- keeps the specialized wrapper (such as `Basics.add` at
+                    -- `Int`) as its target rather than the kernel itself.
                     let
                         bodyIsKernelRef =
                             case body of
@@ -4947,25 +5030,13 @@ tryInlineCall callRegion ctx specId args resultType =
                         )
 
                 else if numArgs < numParams && ctx.preserveSets then
-                    -- plans/pre-mono-lss-transforms-02-inline-preserve-sets.md.
-                    -- DECLINE. The residual closure the arm below mints is the
-                    -- ONLY identity-clearing reshape that fires on real code
-                    -- (reshape census: `bySite=tryInline` and nothing else).
-                    -- Leaving the call alone leaves the callee's PAP in place,
-                    -- and a `p|<global>|k` PAP member is the best-served class
-                    -- in the compiler (LSS_040 stamps 2,041/2,418 sites) where
-                    -- the residual could not be stamped at all.
-                    --
-                    -- `( Nothing, … )` is exactly what the `exactOnly` refusal
-                    -- above returns; the caller then keeps the `MonoCall` and
-                    -- rewrites its children, so nothing else changes. This
-                    -- deliberately also refuses WHITELISTED and `partialHof`
-                    -- candidates: the flag's contract is that no clearing site
-                    -- fires, which admits no exception (plan §3.2).
+                    -- The residual closure built below would belong to no
+                    -- lambda set; the callee's own partial application keeps
+                    -- its member. Whitelisted and `partialHof` candidates are
+                    -- declined too.
                     ( Nothing, bumpDeclinedPreserveSets ctx )
 
                 else if numArgs < numParams then
-                    -- Partial application: bind available params, return closure with remaining
                     let
                         ( remappedBody, ctx1 ) =
                             remapLambdaIds ctx body
@@ -4979,14 +5050,12 @@ tryInlineCall callRegion ctx specId args resultType =
                         ( substituted, ctx2a ) =
                             freshenLetBoundNames ctx2 (substituteAllForInline bindings remappedBody)
 
-                        -- Create a new closure with the remaining parameters
                         ( newLambdaId, ctx3 ) =
                             freshLambdaIdForSpec ctx2a specId
 
                         newClosureType =
                             residualClosureType remainingParams resultType
 
-                        -- Compute captures for the new closure
                         newCaptures =
                             Closure.computeClosureCaptures remainingParams substituted
 
@@ -5007,8 +5076,6 @@ tryInlineCall callRegion ctx specId args resultType =
                             wrapInLetsForInline bindings newClosure newClosureType
                     in
                     if exceedsStageArity remainingParams newCaptures then
-                        -- HEAP_078: the residual closure would exceed the
-                        -- stage arity cap; keep the call.
                         ( Nothing, bumpDeclinedArityCap ctx )
 
                     else
@@ -5018,7 +5085,6 @@ tryInlineCall callRegion ctx specId args resultType =
                         )
 
                 else if numArgs > numParams then
-                    -- Over-application: apply all params, then call result with extra args
                     let
                         ( remappedBody, ctx1 ) =
                             remapLambdaIds ctx body
@@ -5043,9 +5109,8 @@ tryInlineCall callRegion ctx specId args resultType =
                     )
 
                 else
-                    -- Exact application: bind all params to args
                     let
-                        -- First, remap all lambda IDs in the body to avoid duplicate names
+                        -- Fresh lambda ids, so the copy does not duplicate the callee's.
                         ( remappedBody, ctx1 ) =
                             remapLambdaIds ctx body
 
@@ -5063,42 +5128,32 @@ tryInlineCall callRegion ctx specId args resultType =
                     )
 
 
+{-| Returns the parameters, body and lambda-set member of a node that can be
+inlined: the parameters and body of a `MonoDefine` closure, or the whole body
+of any other `MonoDefine` with no parameters and no member. Any other node,
+a tail function included, gives `Nothing`.
+-}
 getInlinableBody : MonoNode -> Maybe ( List ( Name, Mono.MonoType ), MonoExpr, Maybe Int )
 getInlinableBody node =
     case node of
         MonoDefine expr _ ->
-            -- Check if the define's expression is a closure. Case bodies are
-            -- inlinable (H2.0): eco.case is a value-producing expression op
-            -- (CGEN_010/CGEN_045), legal in any expression position — pinned
-            -- by CasePositionProbe/AndThenProbe. The historical refusal dated
-            -- from the terminator-era eco.case design.
             case expr of
                 MonoClosure info body _ ->
                     Just ( info.params, body, info.lssMember )
 
                 _ ->
-                    -- Simple define with no parameters (e.g., constants)
+                    -- A value with no parameters.
                     Just ( [], expr, Nothing )
 
         MonoTailFunc _ _ _ ->
-            -- Never inline tail-recursive functions. Their bodies contain
-            -- MonoTailCall nodes that are only meaningful inside a MonoTailFunc
-            -- (compiled via TailRec.compileTailFuncToWhile). Inlining would
-            -- place MonoTailCall in a non-tail-recursive context, producing
-            -- orphaned eco.jump ops that crash mkCaseRegionFromDecider.
+            -- Its MonoTailCalls mean something only inside a MonoTailFunc.
             Nothing
 
         _ ->
             Nothing
 
 
-{-| Check if an expression is a MonoCase (top level only).
-
-Used only to keep case bodies out of `buildBodyLookup` — the bytes-fusion
-reifier's reify-time beta-reducer hasn't been verified against them. The
-inliner itself accepts case bodies (H2.0): eco.case is value-producing
-(CGEN\_010/CGEN\_045), not a terminator.
-
+{-| Returns whether `expr` is a `MonoCase` at top level.
 -}
 isCase : MonoExpr -> Bool
 isCase expr =
@@ -5110,9 +5165,11 @@ isCase expr =
             False
 
 
+{-| Returns the bindings of `params` to `args`, as `createBindings` makes them,
+and none for a callee with no parameters.
+-}
 createBindingsForInline : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
 createBindingsForInline ctx params args =
-    -- For inlining, we need to handle the case where we have a parameterless define
     if List.isEmpty params then
         ( [], ctx )
 
@@ -5120,11 +5177,16 @@ createBindingsForInline ctx params args =
         createBindings ctx params args
 
 
+{-| Returns `expr` with the bindings' parameters renamed, as `substituteAll`
+does.
+-}
 substituteAllForInline : List Binding -> MonoExpr -> MonoExpr
 substituteAllForInline =
     substituteAll
 
 
+{-| Returns `body` under the bindings' `let`s, as `wrapInLets` does.
+-}
 wrapInLetsForInline : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr
 wrapInLetsForInline =
     wrapInLets
@@ -5136,21 +5198,17 @@ wrapInLetsForInline =
 -- ============================================================================
 
 
-{-| Simplify one let chain as a group: simplify inside every def's bound
-expression and the final body, then drop dead defs.
+{-| Returns a `let` chain with every bound expression and the final body
+simplified, and its dead definitions dropped.
 
-Two dead-def rules (H1.2):
-
-  - Non-closure pure defs drop when they have zero uses in their lexical
-    body (later siblings + final body) — the pre-existing rule, unchanged.
-  - Closure defs drop when they have zero uses across ALL other spine defs
-    and the final body. Closures need the both-directions check because
-    letrec siblings may reference each other backward (an earlier closure's
-    capture can point at a later one); a self-reference in the closure's own
-    bound expression does not keep it alive (the whole subtree is deleted).
-
-Dropping one def can make another dead (chains of dead closures referencing
-each other), so the drop pass iterates to a fixpoint within the chain.
+A definition that is not a closure is dead when no later definition and not the
+final body uses it, and its bound expression is pure: `isPureExpr`, or
+`isDroppableExpr` with `kernelFactsDce` on. A closure definition is dead when
+no other definition of the chain and not the final body uses it: siblings can
+refer to each other in both directions, but a closure's reference to itself
+does not keep it. A local tail function is never dropped. Dropping one
+definition can make another dead, so dropping repeats until nothing more is
+dropped.
 
 -}
 simplifyLetChain : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
@@ -5195,22 +5253,16 @@ simplifyLetChain ctx chainExpr =
     ( List.foldr (\( d, t ) acc -> MonoLet d acc t) finalBody1 keptSpine, ctx3 )
 
 
-{-| kernel-opt-11 Phase 0 census. Classifies every DEAD binding on this spine
-once, for sizing the DCE widening and for decision D-K's `deadBareKernelVar /
-deadLets` ratio.
+{-| Returns `ctx` with the dead definitions of a chain counted, before any is
+dropped.
 
-Deliberately a SEPARATE one-shot fold rather than counters inside
-`dropDeadDefs`: that function re-runs itself while anything dropped, and a
-dead-but-KEPT binding (a bare `MonoVarKernel`, which the predicate refuses to
-drop) is revisited on every iteration, so a counter there over-counts by the
-iteration depth.
-
-Two honest limits. It sees only the FIRST round, so bindings that become dead
-after an earlier drop are not counted -- it under-reports the fixpoint.
-And `deadDroppableKernelLets` classifies on the CALLEE alone, while the
-transform additionally requires every argument to be pure, so it is an UPPER
-bound on what `kernelLetDCE` will realize; the gap is argument impurity and is
-expected, not a bug.
+Every `MonoDef` that no later definition and not the final body uses is counted
+in `deadLets`, closures included. One bound to a bare kernel reference is also
+counted in `deadBareKernelVar`, and one bound to a call of a kernel whose
+`KernelFacts` row is droppable in `deadDroppableKernelLets`, whatever its
+arguments, so that count can exceed what is dropped. Definitions that become
+dead only after a drop are not seen. This runs each time the chain is
+simplified, so a dead definition that is kept is counted again every round.
 
 -}
 censusDeadDefs : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> RewriteCtx
@@ -5264,7 +5316,8 @@ censusDeadDefs ctx spine finalBody =
     { ctx | metrics = metrics1 }
 
 
-{-| One drop pass over the spine; re-runs itself while anything dropped.
+{-| Returns the definitions of `spine` that are not dead, as
+`simplifyLetChain` describes, dropping in passes until a pass drops nothing.
 -}
 dropDeadDefs : RewriteCtx -> List ( Mono.MonoDef, Mono.MonoType ) -> MonoExpr -> ( List ( Mono.MonoDef, Mono.MonoType ), RewriteCtx )
 dropDeadDefs ctx spine finalBody =
@@ -5330,17 +5383,17 @@ dropDeadDefs ctx spine finalBody =
         ( kept, ctxOut )
 
 
+{-| Returns `expr` with the dead definitions dropped from every `let` chain in
+it, at every depth (`simplifyLetChain`).
+-}
 simplifyLets : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 simplifyLets ctx expr =
     case expr of
         MonoLet _ _ _ ->
-            -- Let CHAINS are simplified as a group so dead-closure elimination
-            -- can see sibling references in BOTH directions (letrec closures
-            -- may reference each other backward and forward — the same reason
-            -- freshenLetChain works on the whole spine).
+            -- A chain is simplified as a whole, so that dead-closure removal
+            -- sees references between siblings in both directions.
             simplifyLetChain ctx expr
 
-        -- Recursive cases
         MonoCall region func args resultType callInfo ->
             let
                 ( simplifiedFunc, ctx1 ) =
@@ -5433,11 +5486,13 @@ simplifyLets ctx expr =
             in
             ( MonoTailCall name simplifiedArgs resultType, ctx1 )
 
-        -- Leaves
         _ ->
             ( expr, ctx )
 
 
+{-| Returns each expression of a list with `simplifyLets` applied, in order,
+threading the context.
+-}
 simplifyLetsExprs : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 simplifyLetsExprs ctx exprs =
     let
@@ -5456,6 +5511,9 @@ simplifyLetsExprs ctx exprs =
     ( List.reverse revExprs, finalCtx )
 
 
+{-| Returns each captured value of a closure with `simplifyLets` applied,
+threading the context.
+-}
 simplifyLetsCaptures : RewriteCtx -> List ( Name, MonoExpr, Bool ) -> ( List ( Name, MonoExpr, Bool ), RewriteCtx )
 simplifyLetsCaptures ctx captures =
     let
@@ -5474,6 +5532,9 @@ simplifyLetsCaptures ctx captures =
     ( List.reverse revCaptures, finalCtx )
 
 
+{-| Returns each condition and branch of an `if` with `simplifyLets` applied,
+threading the context.
+-}
 simplifyLetsBranches : RewriteCtx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), RewriteCtx )
 simplifyLetsBranches ctx branches =
     let
@@ -5495,6 +5556,9 @@ simplifyLetsBranches ctx branches =
     ( List.reverse revBranches, finalCtx )
 
 
+{-| Returns each jump branch of a case with `simplifyLets` applied, threading
+the context.
+-}
 simplifyLetsCaseBranches : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
 simplifyLetsCaseBranches ctx branches =
     let
@@ -5513,6 +5577,8 @@ simplifyLetsCaseBranches ctx branches =
     ( List.reverse revBranches, finalCtx )
 
 
+{-| Returns a decision tree with `simplifyLets` applied to every `Inline` leaf.
+-}
 simplifyLetsDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
 simplifyLetsDecider ctx decider =
     case decider of
@@ -5561,6 +5627,9 @@ simplifyLetsDecider ctx decider =
             ( Mono.FanOut path simplifiedEdges simplifiedFallback, ctx2 )
 
 
+{-| Returns each field value with `simplifyLets` applied, threading the
+context.
+-}
 simplifyLetsNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 simplifyLetsNamedFields ctx fields =
     let
@@ -5579,6 +5648,9 @@ simplifyLetsNamedFields ctx fields =
     ( List.reverse revFields, finalCtx )
 
 
+{-| Returns each argument of a tail call with `simplifyLets` applied,
+threading the context.
+-}
 simplifyLetsTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 simplifyLetsTailCallArgs ctx args =
     let
@@ -5597,6 +5669,8 @@ simplifyLetsTailCallArgs ctx args =
     ( List.reverse revArgs, finalCtx )
 
 
+{-| Returns a `let` definition's bound expression.
+-}
 getDefBound : Mono.MonoDef -> MonoExpr
 getDefBound def =
     case def of
@@ -5607,6 +5681,8 @@ getDefBound def =
             bound
 
 
+{-| Returns a `let` definition with its bound expression replaced.
+-}
 setDefBound : Mono.MonoDef -> MonoExpr -> Mono.MonoDef
 setDefBound def newBound =
     case def of
@@ -5617,7 +5693,7 @@ setDefBound def newBound =
             Mono.MonoTailDef name params newBound
 
 
-{-| Check if an expression is a closure.
+{-| Returns whether `expr` is a closure literal.
 -}
 isClosure : MonoExpr -> Bool
 isClosure expr =
@@ -5629,29 +5705,29 @@ isClosure expr =
             False
 
 
-{-| Legacy predicate: every call is impure. Kept verbatim for the H2.5/H6.1
-partial-forward guards, which RELOCATE their arguments rather than delete them
-and are deliberately not part of the kernel-opt-11 widening.
+{-| Returns whether evaluating `expr` can be left out or moved without changing
+what the program does. It cannot when `expr` contains, outside any closure, a
+call, a tail call or a bare kernel reference; a closure counts as pure, since
+building it runs nothing. This is the test for moving the arguments of a
+forwarded partial call, and for dropping a dead definition with
+`kernelFactsDce` off.
 -}
 isPureExpr : MonoExpr -> Bool
 isPureExpr =
     isPureExprGen False
 
 
-{-| Dead-binding predicate: as `isPureExpr`, but additionally drops kernel calls
-the audited KernelFacts table certifies `droppable` (`cseSafe` AND
-`totality == Total`). Gated by `inline.kernelFactsDce`.
+{-| Returns whether a dead definition bound to `expr` can be dropped: as
+`isPureExpr`, but also accepting a call of a kernel whose `KernelFacts` row is
+droppable, with no more arguments than the kernel's flat arity and pure
+arguments.
 -}
 isDroppableExpr : MonoExpr -> Bool
 isDroppableExpr =
     isPureExprGen True
 
 
-{-| Check if an expression is pure (no side effects).
-We're conservative here - only eliminate bindings we're certain are pure.
-Function calls might have side effects (like Debug.log), so we don't eliminate
-them -- except, when `kDrop` is set, a saturated call to a kernel whose
-KernelFacts row is `droppable`.
+{-| Returns `isPureExpr` of `expr`, or `isDroppableExpr` when `kDrop` is set.
 -}
 isPureExprGen : Bool -> MonoExpr -> Bool
 isPureExprGen kDrop expr =
@@ -5666,9 +5742,7 @@ isPureExprGen kDrop expr =
             True
 
         MonoVarKernel _ _ _ _ _ ->
-            -- DEFERRED (decision D-K): a BARE kernel var in value position stays
-            -- impure-conservative. Widening it needs an arrow guard so no
-            -- unaudited nullary kernel constant slips through, and its own A/B.
+            -- Treated as impure, so that no unaudited kernel constant is dropped.
             False
 
         MonoUnit ->
@@ -5687,18 +5761,11 @@ isPureExprGen kDrop expr =
         MonoCall _ callee args _ _ ->
             case ( kDrop, callee ) of
                 ( True, MonoVarKernel _ prefix home name kernelType ) ->
-                    -- Whitelist discipline: unlisted kernel => today's answer.
-                    --
-                    -- No separate HOF guard: KernelFacts validation V2 makes
-                    -- `cseSafe` imply `not callsBackIntoElm`, so `droppable`
-                    -- already excludes any kernel that re-enters Elm. That is a
-                    -- UNIT TEST, not a compile-time guarantee -- if V2 is ever
-                    -- relaxed, this arm must grow `&& not facts.callsBackIntoElm`.
-                    --
-                    -- The arity guard rejects OVER-application: extra args mean
-                    -- the kernel's result is applied further, which the row says
-                    -- nothing about. Under-application only mints a PAP, which
-                    -- the droppable bit already licenses.
+                    -- No separate check for kernels that call back into Elm:
+                    -- `droppable` needs `cseSafe`, which the KernelFacts
+                    -- validation rules require to exclude call-backs. Over-
+                    -- application is refused, since the row says nothing about
+                    -- applying the result; a partial call only builds a PAP.
                     (case KernelFacts.lookup ( prefix, home, name ) of
                         Just facts ->
                             KernelFacts.droppable facts
@@ -5710,11 +5777,9 @@ isPureExprGen kDrop expr =
                         && List.all (isPureExprGen kDrop) args
 
                 _ ->
-                    -- Non-kernel callees, and everything flag-off: unchanged.
                     False
 
         MonoTailCall _ _ _ ->
-            -- Tail calls might have side effects
             False
 
         MonoIf branches final _ ->
@@ -5745,6 +5810,8 @@ isPureExprGen kDrop expr =
             List.all (isPureExprGen kDrop) items
 
 
+{-| Returns `isPureExprGen` of a `let` definition's bound expression.
+-}
 isPureExprDefGen : Bool -> Mono.MonoDef -> Bool
 isPureExprDefGen kDrop def =
     case def of
@@ -5755,6 +5822,10 @@ isPureExprDefGen kDrop def =
             isPureExprGen kDrop bound
 
 
+{-| Returns whether every `Inline` leaf of a decision tree is pure under
+`isPureExprGen`. A `Jump` leaf counts as pure; its branch is in the case's jump
+list.
+-}
 isPureDeciderGen : Bool -> Mono.Decider Mono.MonoChoice -> Bool
 isPureDeciderGen kDrop decider =
     case decider of
@@ -5774,6 +5845,16 @@ isPureDeciderGen kDrop decider =
                 && isPureDeciderGen kDrop fallback
 
 
+{-| Returns how many times `expr` refers to the local `name`: as a variable, as
+a case's root, as the root of a destructuring path, or as the callee of a tail
+call.
+
+Inside a closure with a parameter `name` only the captures are counted, inside
+a `let` that defines `name` only its definition, and inside a local tail
+function with a parameter `name` nothing. The roots of decision-tree paths are
+not counted.
+
+-}
 countUsages : Name -> MonoExpr -> Int
 countUsages name expr =
     case expr of
@@ -5815,7 +5896,6 @@ countUsages name expr =
             countUsages name func + sumBy (countUsages name) args
 
         MonoTailCall funcName args _ ->
-            -- Count if this is a tail call to the variable
             (if funcName == name then
                 1
 
@@ -5843,12 +5923,9 @@ countUsages name expr =
                 boundUsages + countUsages name body
 
         MonoDestruct (Mono.MonoDestructor _ path _) inner _ ->
-            -- Count usage in the path (the source being destructured) + usage in inner
-            -- Note: destructName is the OUTPUT binding, not an input usage
             countUsagesInPath name path + countUsages name inner
 
         MonoCase _ rootName decider branches _ ->
-            -- MonoCase has two Names: first is unused, second is the root variable
             let
                 rootUsage =
                     if rootName == name then
@@ -5872,6 +5949,9 @@ countUsages name expr =
             sumBy (countUsages name) items
 
 
+{-| Returns `countUsages` of a `let` definition's bound expression, or 0 for a
+local tail function with a parameter named `name`.
+-}
 countUsagesInDef : Name -> Mono.MonoDef -> Int
 countUsagesInDef name def =
     case def of
@@ -5886,6 +5966,8 @@ countUsagesInDef name def =
                 countUsages name bound
 
 
+{-| Returns 1 when the root of a destructuring path is `name`, and 0 otherwise.
+-}
 countUsagesInPath : Name -> Mono.MonoPath -> Int
 countUsagesInPath name path =
     case path of
@@ -5906,6 +5988,8 @@ countUsagesInPath name path =
             countUsagesInPath name innerPath
 
 
+{-| Returns `countUsages` summed over the `Inline` leaves of a decision tree.
+-}
 countUsagesInDecider : Name -> Mono.Decider Mono.MonoChoice -> Int
 countUsagesInDecider name decider =
     case decider of
@@ -5925,6 +6009,10 @@ countUsagesInDecider name decider =
                 + countUsagesInDecider name fallback
 
 
+{-| Returns `expr` with each reference to the local `name` replaced by
+`replacement`. A case root or path root is replaced only when `replacement` is
+a variable. Nothing in this module calls it.
+-}
 inlineVar : Name -> MonoExpr -> MonoExpr -> MonoExpr
 inlineVar name replacement expr =
     case expr of
@@ -6045,6 +6133,9 @@ inlineVar name replacement expr =
             MonoTupleCreate region (List.map (inlineVar name replacement) items) tupleType
 
 
+{-| Returns a `let` definition with `inlineVar` applied to its bound
+expression, unless it is a local tail function with a parameter named `name`.
+-}
 inlineVarInDef : Name -> MonoExpr -> Mono.MonoDef -> Mono.MonoDef
 inlineVarInDef name replacement def =
     case def of
@@ -6059,6 +6150,9 @@ inlineVarInDef name replacement def =
                 Mono.MonoTailDef n params (inlineVar name replacement bound)
 
 
+{-| Returns a destructuring path whose root is `name` re-rooted at
+`replacement` when that is a variable, and otherwise unchanged.
+-}
 inlineVarInPath : Name -> MonoExpr -> Mono.MonoPath -> Mono.MonoPath
 inlineVarInPath name replacement path =
     case path of
@@ -6085,6 +6179,9 @@ inlineVarInPath name replacement path =
             Mono.MonoUnbox resultType (inlineVarInPath name replacement innerPath)
 
 
+{-| Returns a decision-tree path whose root is `name` re-rooted at
+`replacement` when that is a variable, and otherwise unchanged.
+-}
 inlineVarInDtPath : Name -> MonoExpr -> Mono.MonoDtPath -> Mono.MonoDtPath
 inlineVarInDtPath name replacement dtPath =
     case dtPath of
@@ -6107,6 +6204,9 @@ inlineVarInDtPath name replacement dtPath =
             Mono.DtUnbox resultTy (inlineVarInDtPath name replacement inner)
 
 
+{-| Returns a decision tree with `inlineVar` applied to every `Inline` leaf and
+every test path.
+-}
 inlineVarInDecider : Name -> MonoExpr -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 inlineVarInDecider name replacement decider =
     case decider of
@@ -6135,13 +6235,13 @@ inlineVarInDecider name replacement decider =
                 (inlineVarInDecider name replacement fallback)
 
 
-{-| P0 census, axis 2 weighting (plans/lss-inline-member-propagation.md §7.3):
-the residual lambda UIDs that landed in the `returned` bucket.
+{-| Returns, in ascending order, the lambda uid of each residual closure
+recorded in `cleared` (a `clearedMembers` table) that `graph` holds in tail
+position: as the value a node's or closure's body returns. A uid appears once
+for each such closure found.
 
-These are the only residuals §5 could act on, so they are the join key for the
-dynamic weight: each is emitted as `<Module>_lambda_<uid>` (or `<Module>_lambda_<uid>$cap`),
-and `ECO_DISPATCH_STATS=1` reports generic dispatch keyed by EVALUATOR pointer —
-which is what a stamp at the consuming site would convert to a direct call.
+Only residuals whose source closure had a lambda-set member are looked for, and
+the walk is the one `reshapeCensus` describes.
 
 -}
 reshapeReturnedUids : Dict String Int -> Mono.MonoGraph -> List Int
@@ -6151,21 +6251,19 @@ reshapeReturnedUids cleared graph =
         |> List.sort
 
 
-{-| P0 census, axis 2 (plans/lss-inline-member-propagation.md §7.1): classify
-each identity-clearing reshape by the residual's USE SHAPE, which decides
-whether §5 (fresh member + site rewrite) or §6 (sink to the unique application
-site) can take it.
+{-| Returns the residual closures recorded in `cleared` (a `clearedMembers`
+table) that `graph` still holds, counted by where each is:
 
-  - `appliedSameFn` — residual in CALLEE position of a call inside the function
-    that created it. §6's population.
-  - `returned` — residual in TAIL position of its node: it IS the result,
-    applied by some caller. §6 cannot cross that boundary; §5 only.
-  - `storedOrMulti` — every other position: a call ARGUMENT, a list/tuple/record
-    element, a non-forwarded let RHS, a non-tail branch. Neither helps.
+  - `appliedSameFn`: the callee of a call;
+  - `returned`: in tail position of a node's or closure's body, so that it is
+    the value returned;
+  - `storedOrMulti`: anywhere else, such as an argument, an element of data,
+    a `let`'s bound expression, or an `if` condition.
 
-Walks the WHOLE expression tree. The first version inspected only tail position
-and direct callee position, located 80 of 863 residuals, and silently dropped
-the rest — a limit of the instrument that was reported as if it were a result.
+Only residuals whose source closure had a lambda-set member are looked for:
+the `RESHAPES|` keys are skipped. The bodies of `MonoDefine` and
+`MonoTailFunc` nodes are walked, but not the expressions closures capture, nor
+the inside of a residual found as a callee.
 
 -}
 reshapeCensus : Dict String Int -> Mono.MonoGraph -> Dict String Int
@@ -6173,6 +6271,9 @@ reshapeCensus cleared graph =
     Tuple.first (reshapeCensusGo cleared graph)
 
 
+{-| Returns the counts `reshapeCensus` gives and the uids
+`reshapeReturnedUids` gives, from one walk.
+-}
 reshapeCensusGo : Dict String Int -> Mono.MonoGraph -> ( Dict String Int, List Int )
 reshapeCensusGo cleared (Mono.MonoGraph record) =
     let
@@ -6213,8 +6314,7 @@ reshapeCensusGo cleared (Mono.MonoGraph record) =
         bump k ( d, us ) =
             ( Dict.update k (\v -> Just (1 + Maybe.withDefault 0 v)) d, us )
 
-        -- `returned` additionally records the residual's uid: that list is the
-        -- join key for the dynamic weight (§7.3).
+        -- A `returned` residual also has its uid recorded.
         bumpAt tail uid acc =
             case bump (posKey tail) acc of
                 ( d, us ) ->
@@ -6250,8 +6350,8 @@ reshapeCensusGo cleared (Mono.MonoGraph record) =
                         fb
                         (List.foldl (\( _, dd ) a -> goDecider tail dd a) acc tests)
 
-        -- `tail` = this expression's value is the enclosing node's result.
-        -- Classify a residual AT its position, then recurse.
+        -- `tail`: this expression's value is the value of the enclosing node
+        -- or closure body.
         go tail e acc =
             case e of
                 MonoCall _ func args _ _ ->

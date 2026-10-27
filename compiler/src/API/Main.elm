@@ -1,10 +1,36 @@
 module API.Main exposing (main)
 
-{-| Entry point for the Elm compiler API server. This module dispatches commands
-from a JSON-based protocol to the appropriate API modules and returns JSON responses.
+{-| The program that runs one compiler command described in JSON and answers in
+JSON, so that another program can drive the compiler without a command line.
 
-Supported commands include building projects (make), formatting code (format),
-installing and uninstalling packages, and running diagnostics on source files.
+A run is one request and one response. The request is the first raw argument the
+runtime gives the program, and it must be a JSON object whose `command` field
+names the command: `make` (with `path`, `debug`, `optimize` and `sourcemaps`),
+`format` (with `content`), `install` or `uninstall` (with `pkg`, a package name
+such as `elm/json`), or `diagnostics` (with `content` or `path`). Ordinary
+command-line arguments do not decode. An empty argument list, or a first
+argument that does not decode, including one naming an unknown command, is not
+reported: it is run as a `make` of the empty path.
+
+_Diagnostics_ checks one module and reports its problems. Given `content`, it
+only parses that text as an application module. Given `path` (and no
+`content`), it runs a full `make` of that file without debug, optimisation or
+source maps.
+
+Each JSON response this module writes goes to stdout and is followed by an exit
+with success, whatever it says. The exceptions: `install` and `uninstall` print
+plain text such as "Success!" before their `null`, and their failures exit with
+failure and no JSON; `make`, and `diagnostics` given `path`, crash when the
+file at `path` does not define `main`. The responses:
+
+  - `make` and `format` answer `{"output": ...}`, or `{"error": ...}` holding a
+    string. For `make` that string is itself a JSON-encoded error report.
+  - `install` and `uninstall` answer `null`, or `{"error": "Invalid package..."}`
+    when `pkg` does not parse as a package name. Their other failures are not
+    answered here: `API.Install` and `API.Uninstall` handle them.
+  - `diagnostics` answers `{}` when there is no problem. A parse error of
+    `content` gives `{"errors": [report]}`; a failed `make` of `path` gives the
+    report object itself.
 
 
 # Program
@@ -34,15 +60,15 @@ import System.IO as IO
 import Task exposing (Task)
 
 
-{-| Entry point for the Elm compiler API server.
-Reads JSON commands from stdin and dispatches to the appropriate API modules.
+{-| The program: it runs `app` once.
 -}
 main : IO.Program
 main =
     IO.run app
 
 
-{-| Main application task that reads a command and dispatches to the appropriate handler.
+{-| The task that reads the request, runs the command it names, and writes the
+response and exits, in the shapes the module docstring lists.
 -}
 app : Task Never ()
 app =
@@ -125,11 +151,11 @@ app =
             )
 
 
-{-| Reads command arguments from the runtime.
+{-| Reads the request from the first raw argument.
 
-In the library API path (the bundle `scripts/build.sh api` builds), the getArgs handler returns a JSON
-command object directly. In the CLI path, this would get raw argv, which
-would fail to decode. This is fine since API/Main is only built into that bundle.
+An empty argument list, or a first argument that `argsDecoder` rejects, gives
+`MakeArgs "" False False False`, a `make` of the empty path, so a bad request is
+never reported as one.
 
 -}
 getArgs : Task Never Args
@@ -151,12 +177,14 @@ getArgs =
             )
 
 
-{-| Exits the process after writing a JSON response to stdout.
+{-| Writes `value` to stdout as compact JSON and exits the process with success.
+
+A failure to write is ignored, so the process exits with success even when the
+response was not written.
+
 -}
 exitWithResponse : Encode.Value -> Task Never ()
 exitWithResponse value =
-    -- `write` is fallible (Task IOError ()); swallow any IO error here so the
-    -- exit still fires — this is the response-already-printed path.
     Eco.Console.write Eco.Console.stdout (Encode.encode 0 value)
         |> Task.onError (\_ -> Task.succeed ())
         |> Task.andThen (\_ -> Eco.Process.exit Eco.Process.ExitSuccess)
@@ -166,24 +194,43 @@ exitWithResponse value =
 -- ====== ARGS ======
 
 
-{-| Command arguments parsed from the incoming JSON request.
+{-| A decoded request: the command to run and its arguments.
+
+`MakeArgs` carries the path to build and then the `debug`, `optimize` and
+`sourcemaps` flags, in that order.
+
+`FormatArgs` carries the source text to format.
+
+`InstallArgs` and `UninstallArgs` carry the package name as text, not yet
+parsed.
+
+`DiagnosticsArgs` carries the module to check.
+
 -}
 type Args
-    = MakeArgs String Bool Bool Bool -- path, debug, optimize, sourcemaps.
-    | FormatArgs String -- source code content.
-    | InstallArgs String -- package name string.
-    | UninstallArgs String -- package name string.
-    | DiagnosticsArgs DiagnosticsSource -- source for syntax checking.
+    = MakeArgs String Bool Bool Bool
+    | FormatArgs String
+    | InstallArgs String
+    | UninstallArgs String
+    | DiagnosticsArgs DiagnosticsSource
 
 
-{-| Source for diagnostics: either inline content or a file path.
+{-| The module a diagnostics request checks.
+
+`DiagnosticsSourceContent` carries the source text itself, which is only
+parsed. `DiagnosticsSourcePath` carries the path of a file, which is built.
+
 -}
 type DiagnosticsSource
-    = DiagnosticsSourceContent String -- inline source code.
-    | DiagnosticsSourcePath String -- path to source file.
+    = DiagnosticsSourceContent String
+    | DiagnosticsSourcePath String
 
 
-{-| Decodes the incoming JSON command into an Args value.
+{-| A decoder for a request, choosing its fields by the `command` field.
+
+It fails on an unknown command. A `diagnostics` request with both `content` and
+`path` is read as `content`.
+
 -}
 argsDecoder : Decode.Decoder Args
 argsDecoder =

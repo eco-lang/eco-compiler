@@ -3,11 +3,40 @@ module Compiler.Canonicalize.Module exposing
     , canonicalize
     )
 
-{-| Canonicalize an entire Elm module, transforming it from source AST to canonical AST.
+{-| Canonicalization is the step that turns a parsed module into one in which
+every name is resolved, and this module is where that step starts for a whole
+module.
 
-This module orchestrates the canonicalization of all module components including
-value declarations, type definitions, infix operators, exports, and effects. It performs
-cycle detection for both type inference and runtime termination analysis.
+Given the package the module belongs to and the interfaces of the modules it
+can import, `canonicalize` builds the name environment (imports first, then the
+module's own types and values), canonicalizes every top-level value, then the
+module's effects (ports or an effect manager), then its export list. Each step
+runs only if the one before it succeeded. Infix declarations are collected as
+they are. Warnings, such as unused variables, come back alongside the result.
+
+Every expression and pattern node gets an id from one counter that starts fresh
+for the module and runs through the top-level values in source order, so ids
+are unique within the module. How each node takes its id is owned by
+`Compiler.Canonicalize.Expression` and `Compiler.Canonicalize.Pattern`.
+
+Most of the file is the ordering of the top-level values into `Can.Decls`,
+which rests on two kinds of reference. A _direct_ use of a name is evaluated as
+soon as the definition is; a _delayed_ use sits inside a lambda or a local
+function and is evaluated only when that is called. Ordering then takes two
+phases.
+
+Phase one groups the values by every name each body uses, direct or delayed,
+into strongly connected components (as `Compiler.Graph` defines them). A value
+in no cycle becomes `Can.Declare`, and a cyclic group becomes `Can.DeclareRec`,
+which type inference checks together. The result is in dependency order, not
+source order.
+
+Phase two looks inside each cyclic group for a cycle that can never finish
+evaluating. A definition with parameters contributes no edges here, because
+its body runs only when it is called. A definition without parameters
+contributes the names its body uses directly. Any cycle left is reported as
+`RecursiveDecl`, so only a cycle of zero-argument values referring to one
+another directly is an error.
 
 
 # Results
@@ -50,7 +79,9 @@ import Utils.Crash exposing (crash)
 -- ====== RESULT ======
 
 
-{-| Type alias for canonicalization results that can accumulate errors and warnings.
+{-| A canonicalization computation: a `Compiler.Reporting.Result.RResult` whose
+errors are canonicalization errors, with `i` the info it carries and `w` the
+warnings it collects.
 -}
 type alias MResult i w a =
     ReportingResult.RResult i w Error.Error a
@@ -60,15 +91,14 @@ type alias MResult i w a =
 -- ====== MODULES ======
 
 
-{-| Canonicalize an entire source module into a canonical module.
+{-| Returns the canonical form of `modul`, a module of package `pkg`, resolving
+its imports against `ifaces`, which is keyed by raw module name.
 
-Transforms a source AST module into a canonical AST module by:
-
-  - Creating the initial environment from imported interfaces
-  - Adding local declarations to the environment
-  - Canonicalizing all value declarations with cycle detection
-  - Canonicalizing effects (ports, managers)
-  - Canonicalizing and validating exports
+The steps run in order: the environment from the imports, the module's own
+types and values, the top-level values, the effects, and the export list. The
+first step that fails ends the computation, so errors from later steps are not
+reported. The top-level values are in dependency order, as the module
+documentation describes.
 
 -}
 canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
@@ -115,11 +145,8 @@ canonicalize pkg ifaces ((Src.Module srcData) as modul) =
 -- ====== CANONICALIZE BINOP ======
 
 
-{-| Convert a source infix operator declaration to a canonical binop.
-
-Extracts the operator name, associativity, precedence, and implementing function name
-from the source infix declaration.
-
+{-| Returns the operator name of an infix declaration, paired with its
+associativity, precedence and the name of the function that implements it.
 -}
 canonicalizeBinop : A.Located Src.Infix -> ( Name, Can.Binop )
 canonicalizeBinop (A.At _ (Src.Infix data)) =
@@ -141,19 +168,13 @@ canonicalizeBinop (A.At _ (Src.Infix data)) =
 
 
 -- ====== DECLARATIONS CYCLE DETECTION ======
-{- There are two phases of cycle detection:
-
-   1. Detect cycles using ALL dependencies => needed for type inference
-   2. Detect cycles using DIRECT dependencies => nonterminating recursion
--}
 
 
-{-| Canonicalize all value declarations in a module with two-phase cycle detection.
+{-| Returns the top-level `values` canonicalized in `env` and ordered into
+`Can.Decls` by the two phases the module documentation describes.
 
-First converts each value to a dependency graph node, then detects strongly connected
-components to identify mutually recursive definitions.
-
-IdState is threaded through all definitions to ensure globally unique expression IDs.
+Node ids are numbered from `Ids.initialIdState`, through the values in source
+order.
 
 -}
 canonicalizeValues : Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
@@ -162,10 +183,9 @@ canonicalizeValues env values =
         |> ReportingResult.andThen (\( nodes, _ ) -> detectCycles (Graph.stronglyConnComp nodes))
 
 
-{-| Traverse value declarations threading IdState through each one.
-
-This ensures all expressions across all definitions get unique IDs within the module.
-
+{-| Returns the phase-one node of each of `values`, in source order, and the id
+state after the last of them, numbering each value's nodes from where the
+previous value stopped.
 -}
 traverseValuesWithState :
     Env.Env
@@ -189,11 +209,11 @@ traverseValuesWithState env state values =
                     )
 
 
-{-| Detect cycles in phase one of cycle detection using all dependencies.
-
-Processes strongly connected components to identify mutually recursive definitions
-that form valid recursive groups for type inference.
-
+{-| Returns the declarations for phase-one components `sccs`, in the order
+given. An acyclic component becomes `Can.Declare`. A cyclic one is checked by
+phase two and becomes `Can.DeclareRec`. Every bad cycle within the first
+phase-one component that has one is reported, and later components are not
+checked.
 -}
 detectCycles : List (Graph.SCC NodeTwo) -> MResult i w Can.Decls
 detectCycles sccs =
@@ -219,10 +239,11 @@ detectCycles sccs =
                             )
 
 
-{-| Detect bad cycles in phase two using direct dependencies.
+{-| Returns the definition of a phase-two component that has no cycle, and
+throws `RecursiveDecl` naming every definition of one that has.
 
-Checks for cycles that represent nonterminating recursion (direct recursive calls
-without intervening function boundaries). Reports an error for any such cycles.
+A phase-two edge is a direct use by a zero-argument definition, so a cycle here
+is a set of values whose evaluation would need one another's values first.
 
 -}
 detectBadCycles : Graph.SCC Can.Def -> MResult i w Can.Def
@@ -246,7 +267,7 @@ detectBadCycles scc =
             ReportingResult.throw (Error.RecursiveDecl region name names)
 
 
-{-| Extract the name from a canonical definition for error reporting.
+{-| Returns the located name of a definition, typed or not.
 -}
 extractDefName : Can.Def -> A.Located Name
 extractDefName def =
@@ -260,44 +281,32 @@ extractDefName def =
 
 
 -- ====== CYCLE DETECTION SETUP ======
-{- toNodeOne and toNodeTwo set up nodes for the two cycle detection phases.
-
-   Phase one nodes track ALL dependencies.
-   This allows us to find cyclic values for type inference.
--}
 
 
-{-| Phase one dependency graph node tracking all dependencies.
+{-| A node of the phase-one graph: the definition's phase-two node, its name,
+and every name its body uses, directly or delayed.
 
-Contains the phase two node, the definition name, and all transitive dependencies.
-Used for type inference cycle detection.
+The names are the ones the body mentions, not their transitive closure.
 
 -}
 type alias NodeOne =
     ( NodeTwo, Name.Name, List Name.Name )
 
 
-
--- Phase two nodes track DIRECT dependencies.
--- This allows us to detect cycles that definitely do not terminate.
-
-
-{-| Phase two dependency graph node tracking only direct dependencies.
-
-Contains the canonical definition, the definition name, and direct dependencies only.
-Used for detecting nonterminating recursion.
-
+{-| A node of the phase-two graph: the canonical definition, its name, and the
+names it depends on directly. A definition with parameters has none, as
+`toNodeTwo` decides.
 -}
 type alias NodeTwo =
     ( Can.Def, Name, List Name )
 
 
-{-| Convert a source value declaration to a phase one dependency graph node.
+{-| Returns the phase-one node for the top-level `value` canonicalized in `env`,
+with the id state after it, numbering its nodes from `idState`.
 
-Canonicalizes the value declaration (handling both typed and untyped definitions),
-tracks all free variables as dependencies, and constructs a NodeOne for cycle detection.
-
-Now also threads IdState through to ensure unique IDs across all definitions.
+It throws `TooLarge` when the definition has more parameters than
+`Compiler.Data.HeapLimits.maxStageArity`. A top-level definition captures
+nothing, so its parameters alone decide this.
 
 -}
 toNodeOne : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
@@ -306,7 +315,6 @@ toNodeOne env idState ((A.At _ (Src.Value valueData)) as value) =
         ( _, A.At nameRegion name ) =
             valueData.name
     in
-    -- HEAP_078: a top-level function captures nothing, so only its parameters count.
     case Expr.tooManyParams nameRegion (Error.TooManyParams name) valueData.args of
         Just err ->
             ReportingResult.throw err
@@ -315,8 +323,13 @@ toNodeOne env idState ((A.At _ (Src.Value valueData)) as value) =
             toNodeOneHelp env idState value
 
 
-{-| `toNodeOne` once the definition's parameter count is known to be within
-`Compiler.Data.HeapLimits.maxStageArity`.
+{-| Returns what `toNodeOne` returns, for a definition whose parameter count is
+within the limit.
+
+An annotated definition becomes `Can.TypedDef`, its parameters typed from the
+annotation, and an unannotated one becomes `Can.Def`. The parameters' bindings
+are checked for unused names, which come back as warnings.
+
 -}
 toNodeOneHelp : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
 toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
@@ -392,12 +405,9 @@ toNodeOneHelp env idState (A.At _ (Src.Value valueData)) =
                     )
 
 
-{-| Convert a canonical definition to a phase two dependency graph node.
-
-For functions (definitions with arguments), direct dependencies are empty because the
-function body doesn't execute until called. For values (no arguments), direct dependencies
-are extracted from free variables that are used directly (not in closures).
-
+{-| Returns the phase-two node for `def`. When `args` is empty, its edges are
+the names in `freeLocals` with at least one direct use; otherwise it has none,
+because a function's body runs only when the function is called.
 -}
 toNodeTwo : Name -> List arg -> Can.Def -> Expr.FreeLocals -> NodeTwo
 toNodeTwo name args def freeLocals =
@@ -409,11 +419,8 @@ toNodeTwo name args def freeLocals =
             ( def, name, [] )
 
 
-{-| Add a name to the direct dependencies list if it has direct uses.
-
-A direct use means the variable is referenced at the top level of the expression,
-not within a nested function or closure.
-
+{-| Returns `directDeps` with `name` added in front when its uses include at
+least one direct use.
 -}
 addDirects : Name -> Expr.Uses -> List Name -> List Name
 addDirects name (Expr.Uses { direct }) directDeps =
@@ -428,11 +435,10 @@ addDirects name (Expr.Uses { direct }) directDeps =
 -- ====== CANONICALIZE EXPORTS ======
 
 
-{-| Canonicalize the module's export list, validating all exported items exist.
-
-Handles explicit exports (validating each item) and open exports (exposing everything).
-Checks that exported values, types, operators, and ports are actually defined in the module.
-
+{-| Returns the module's exports. `exposing (..)` exports everything. An explicit
+list is checked item by item against the module's `values`, `unions`,
+`aliases`, `binops` and ports, and naming the same item twice is
+`ExportDuplicate`.
 -}
 canonicalizeExports :
     List (A.Located Src.Value)
@@ -461,7 +467,8 @@ canonicalizeExports values unions aliases binops effects (A.At region exposing_)
                     )
 
 
-{-| Extract the name from a source value declaration for export validation.
+{-| Returns the name of a top-level value declaration, as a key for a set of
+names.
 -}
 valueToName : A.Located Src.Value -> ( Name, () )
 valueToName (A.At _ (Src.Value v)) =
@@ -472,15 +479,12 @@ valueToName (A.At _ (Src.Value v)) =
     ( name, () )
 
 
-{-| Validate that an exposed item exists in the module.
+{-| Returns the export for one item of an explicit exposing list, or the error
+that rejects it.
 
-Checks that the exposed item (value, type, operator, or port) is actually defined
-in the module and creates the appropriate canonical export. Reports errors for:
-
-  - Values/ports that don't exist
-  - Operators that don't exist
-  - Types that don't exist
-  - Type aliases exposed with (..) syntax
+A lower-case name must be a value or a port, and the error for one that is
+neither suggests both. An operator must be declared infix in the module. A type
+name must be a union or an alias, and `Alias(..)` is `ExportOpenAlias`.
 
 -}
 checkExposed :
@@ -533,11 +537,9 @@ checkExposed values unions aliases binops effects exposed =
                 ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys unions ++ Dict.keys aliases))
 
 
-{-| Check if a name is a port in the module's effects.
-
-Returns Nothing if the name is a port, or Just a list of all port names if it's not.
-This allows distinguishing between values and ports in export validation.
-
+{-| Returns `Nothing` when `name` is a port of `effects`, and otherwise `Just`
+the module's port names, as suggestions for an error. The sense is inverted on
+purpose: `Nothing` is the success.
 -}
 checkPorts : Can.Effects -> Name -> Maybe (List Name)
 checkPorts effects name =
@@ -556,10 +558,8 @@ checkPorts effects name =
             Just []
 
 
-{-| Create a successful export result with duplicate tracking.
-
-Wraps the export in a duplicate tracker to detect multiple exports of the same name.
-
+{-| Returns a successful check of one exported item, recorded under `name` for
+duplicate detection.
 -}
 ok : Name -> A.Region -> Can.Export -> MResult i w (Dups.Tracker (A.Located Can.Export))
 ok name region export =

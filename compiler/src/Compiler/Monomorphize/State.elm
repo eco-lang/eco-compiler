@@ -7,10 +7,25 @@ module Compiler.Monomorphize.State exposing
     , MVarEnv, initMVarEnv, freshMVar, isNumberVar, taintNumber
     )
 
-{-| State types and utilities for monomorphization.
+{-| The state that monomorphization threads through every specialization step,
+defined once so that every module taking part agrees on its shape.
 
-This module contains the core state threading types used throughout
-the monomorphization process.
+Monomorphization turns each polymorphic global into one copy, a
+_specialization_, per concrete type it is used at. Each specialization has a
+`SpecId`, an index the registry hands out. Work proceeds from a worklist: a
+specialization is enqueued when first needed and processed later, and
+processing it can enqueue more.
+
+The state therefore has two halves. `SpecAccum` is what the whole run builds
+up: the worklist, the finished nodes, and the bookkeeping that keeps a
+specialization from being scheduled or entered twice. `SpecContext` is where
+the traversal currently is: which global it is inside, which local names are in
+scope and at what types, and which let-bound definitions are being copied once
+per use type.
+
+Type variables are identified by `MVarId`s. `MVarEnv` hands out fresh ones and
+records which variables are known to be numbers, which is what later lets an
+unresolved number variable be closed to `Int`.
 
 
 # Types
@@ -62,9 +77,13 @@ import Dict exposing (Dict)
 import Set
 
 
-{-| Precomputed metadata about a polymorphic function's type scheme.
-Cached per top-level callee to avoid repeated TLambda traversal and
-var collection at every call site.
+{-| A callee's type scheme, prepared once for instantiation at call sites: its
+type with every variable given a fresh `MVarId`, and that type split into
+argument types and a result type.
+
+`varIds` lists the fresh variables, and `numberVarKeys` holds the comparable
+keys of those that are numbers. `schemeType` is the whole renamed type.
+
 -}
 type alias SchemeInfo =
     { varIds : List MVarId
@@ -76,25 +95,28 @@ type alias SchemeInfo =
     }
 
 
-{-| Cache of SchemeInfo per top-level global, keyed by TOpt.toComparableGlobal.
+{-| The `SchemeInfo` already built for each top-level global.
 -}
 type alias SchemeInfoCache =
     DataMap.Dict String TOpt.Global SchemeInfo
 
 
-{-| Environment for tracking MVarIds during monomorphization.
-Uses a sequential allocator with a side table of super-constrained vars
-(number/comparable/appendable/compappend), exported from the solver by
-`AssignMVarIds` rather than derived from variable names.
-All MVarIds are globally unique sequential Ints from a single supplier.
+{-| The supply of fresh type variables, together with what is known about each
+variable's super constraint (number, comparable, appendable or compappend).
+
+`nextId` is the next id to hand out. The table of super constraints comes
+from whoever builds the environment with `initMVarEnv`; afterwards this module
+only ever adds `Number` entries to it, through `freshMVar` and `taintNumber`.
+
 -}
 type alias MVarEnv =
     { nextId : MVarId
-    , superVars : Dict Int Vars.SuperType -- MVarIds with a super constraint
+    , superVars : Dict Int Vars.SuperType -- keyed by Id.toComparable
     }
 
 
-{-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
+{-| Builds an environment whose next fresh id is `nextId` and whose super
+constraints are `superVars`.
 -}
 initMVarEnv : MVarId -> Dict Int Vars.SuperType -> MVarEnv
 initMVarEnv nextId superVars =
@@ -103,8 +125,11 @@ initMVarEnv nextId superVars =
     }
 
 
-{-| Allocate a fresh MVarId with the given constraint.
-Returns the new id and updated environment.
+{-| Returns the next fresh id and the environment after it.
+
+A `CNumber` constraint is recorded as a `Number` super constraint; a
+`CEcoValue` constraint records nothing.
+
 -}
 freshMVar : Mono.Constraint -> MVarEnv -> ( MVarId, MVarEnv )
 freshMVar constraint env =
@@ -127,13 +152,12 @@ freshMVar constraint env =
     )
 
 
-{-| Check whether an MVarId has the CNumber (Number super) constraint.
+{-| Tells whether a variable is recorded as a number. A variable recorded as
+comparable, appendable or compappend is not.
 -}
 isNumberVar : MVarId -> MVarEnv -> Bool
 isNumberVar mvarId env =
-    -- Direct case-match avoids allocating the `Just Vars.Number` box that
-    -- `== Just Vars.Number` builds on every probe — this is the highest-frequency
-    -- side-table lookup in monomorphization (constraintOf / refreshConstraints).
+    -- A case match, not `== Just Vars.Number`, so no `Just` is allocated per probe.
     case Dict.get (Id.toComparable mvarId) env.superVars of
         Just Vars.Number ->
             True
@@ -142,14 +166,12 @@ isNumberVar mvarId env =
             False
 
 
-{-| Record that an MVarId belongs to a Number-constrained equivalence class.
+{-| Records a variable as a number, replacing any super constraint it had.
 
-Join-R (symmetric constraint join): when a number var unifies with a boxed
-(CEcoValue) var, the boxed var's id is tainted Number here so that copies of its
-type stamped BEFORE the merge — which the per-work-item substitution can no
-longer heal — still resolve to Int at the closing pass, and so key-time
-`constraintOf` routes its demands to the concrete Int specialization. Mirrors
-`freshMVar`'s CNumber branch; the taint is monotonic (never removed).
+This is for a variable found to be equal to a number variable after copies of
+its type were already made. Recording it here means those copies are also
+treated as numbers wherever this table is consulted. Nothing in this module
+removes the mark.
 
 -}
 taintNumber : MVarId -> MVarEnv -> MVarEnv
@@ -157,8 +179,12 @@ taintNumber mvarId env =
     { env | superVars = Dict.insert (Id.toComparable mvarId) Vars.Number env.superVars }
 
 
-{-| Global accumulator fields that grow monotonically during monomorphization.
-Updated by enqueueSpec, processWorklist completion, and scheme cache lookups.
+{-| What a monomorphization run builds up across all its work items.
+
+`nodes` is indexed by `SpecId`, with `Nothing` for a specialization not yet
+built. `scheduled` holds every `SpecId` ever put on the worklist, and
+`inProgress` those currently being processed.
+
 -}
 type alias SpecAccum =
     { worklist : List WorkItem
@@ -166,14 +192,20 @@ type alias SpecAccum =
     , inProgress : BitSet
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
-    , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
-    , ports : List Mono.PortRegistration -- Ports reached during specialization (PORT_003)
-    , intern : Intern -- Hash-consing table for constructed MonoTypes (K6)
+    , schemeCache : SchemeInfoCache
+    , ports : List Mono.PortRegistration -- ports reached so far
+    , intern : Intern
     }
 
 
-{-| Traversal context fields that change on scope entry/exit during tree traversal.
-Updated by varEnv push/pop, localMulti push/pop, currentGlobal set.
+{-| Where the traversal currently is, together with the read-only inputs it
+consults.
+
+`currentGlobal` is the global being specialized, and `currentFreeVars` the
+free type variables of its annotation. `localMulti` and `valueMulti` are
+stacks, one entry per enclosing let whose definition is being copied once per
+use type. `lambdaCounter` numbers anonymous lambdas.
+
 -}
 type alias SpecContext =
     { currentModule : ModuleName.Canonical
@@ -190,8 +222,8 @@ type alias SpecContext =
     }
 
 
-{-| State maintained during monomorphization, split into accumulator and context
-to reduce _Utils_update overhead (each update copies ~9 fields instead of 17).
+{-| The whole monomorphization state. It is split in two so that an update to
+either half copies only that half's fields.
 -}
 type alias MonoState =
     { accum : SpecAccum
@@ -199,40 +231,47 @@ type alias MonoState =
     }
 
 
-{-| Work item representing a function specialization to be processed.
+{-| One entry on the worklist: the specialization to build.
 -}
 type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
-{-| Substitution mapping MVarIds (as Int keys) to their concrete monomorphic types.
+{-| A mapping from type variables to the types they stand for, keyed by
+`Id.toComparable` of the `MVarId`.
+
+This is a name for a `Dict`, so nothing checks that a key came from an
+`MVarId`, and the types it maps to may themselves contain variables.
+
 -}
 type alias Substitution =
     Dict Int Mono.MonoType
 
 
-{-| Layered environment for variable type lookups. Uses a stack of frames
-so that inner scopes (let, lambda, case) can be cheaply pushed/popped
-without copying the entire environment.
+{-| The types of the local names in scope, as a stack of frames, one per
+nested scope. An inner binding hides an outer one of the same name, and leaving
+a scope drops its bindings at once.
 -}
 type VarEnv
     = VarEnv (List (Dict Name Mono.MonoType))
 
 
-{-| An empty variable environment with a single empty frame.
+{-| An environment with no bindings and one frame.
 -}
 emptyVarEnv : VarEnv
 emptyVarEnv =
     VarEnv [ Dict.empty ]
 
 
-{-| Look up a variable's type in the environment, searching from innermost to outermost frame.
+{-| Returns the type of `name` in the innermost frame that binds it.
 -}
 lookupVar : Name -> VarEnv -> Maybe Mono.MonoType
 lookupVar name (VarEnv frames) =
     lookupVarHelp name frames
 
 
+{-| Returns the type of `name` in the first of `frames` that binds it.
+-}
 lookupVarHelp : Name -> List (Dict Name Mono.MonoType) -> Maybe Mono.MonoType
 lookupVarHelp name frames =
     case frames of
@@ -248,7 +287,7 @@ lookupVarHelp name frames =
                     lookupVarHelp name rest
 
 
-{-| Insert a variable binding into the current (innermost) frame.
+{-| Binds `name` in the innermost frame, creating a frame if there is none.
 -}
 insertVar : Name -> Mono.MonoType -> VarEnv -> VarEnv
 insertVar name t (VarEnv frames) =
@@ -260,21 +299,23 @@ insertVar name t (VarEnv frames) =
             VarEnv (Dict.insert name t frame :: rest)
 
 
-{-| Get all variable names in the environment (for debugging).
+{-| Returns every bound name, innermost frame first, with a name repeated if
+several frames bind it.
 -}
 varEnvKeys : VarEnv -> List Name
 varEnvKeys (VarEnv frames) =
     List.concatMap Dict.keys frames
 
 
-{-| Push a new empty frame onto the environment stack for a nested scope.
+{-| Opens a new, empty innermost frame.
 -}
 pushFrame : VarEnv -> VarEnv
 pushFrame (VarEnv frames) =
     VarEnv (Dict.empty :: frames)
 
 
-{-| Pop the innermost frame from the environment stack.
+{-| Drops the innermost frame and its bindings. An environment with no frames
+is returned unchanged.
 -}
 popFrame : VarEnv -> VarEnv
 popFrame (VarEnv frames) =
@@ -286,8 +327,11 @@ popFrame (VarEnv frames) =
             VarEnv rest
 
 
-{-| Information about a single local function instance discovered during
-specialization of a particular let-bound function.
+{-| One copy of a let-bound function, made for one type it is used at.
+
+`freshName` is the name the copy is bound under, and `subst` the substitution
+that turns the function's type into `monoType`.
+
 -}
 type alias LocalInstanceInfo =
     { freshName : Name
@@ -296,11 +340,10 @@ type alias LocalInstanceInfo =
     }
 
 
-{-| Per-let state for local multi-specialization.
+{-| The copies made so far of one let-bound function, `defName`, which is
+copied once per type it is used at.
 
-    - defName  : the let-bound function we're currently multi-specializing
-    - instances: all discovered (typeKey -> instance) mappings for this let,
-                 keyed by the instance MonoType itself, under spec-key semantics (K4).
+`instances` is keyed by the use type, compared as `Mono.SpecMap` compares keys.
 
 -}
 type alias LocalMultiState =
@@ -309,18 +352,12 @@ type alias LocalMultiState =
     }
 
 
-{-| Information about a single value-multi instance discovered during
-specialization of a let-bound value whose type contains lambdas.
+{-| One copy of a let-bound value that is not a function, made for one type it
+is used at.
 
-    - freshName              : the generated name for the specialized def
-    - monoType               : the root container MonoType used as the instance key
-    - subst                  : accumulated substitution; refined by destructor
-                               call-site unification so emit-time specialization
-                               sees concrete field/lambda types
-    - derivedDestructorNames : set of local names introduced by destructors
-                               over this instance (e.g. `getter`/`setter`).
-                               Used at call sites to thread call-site
-                               refinements back into `subst`.
+`monoType` is the type the copy is keyed by. `subst` can be refined after the
+copy is first made, as uses of the value pin down more of its type.
+`derivedDestructorNames` are the local names bound by destructuring this copy.
 
 -}
 type alias ValueInstanceInfo =
@@ -331,13 +368,10 @@ type alias ValueInstanceInfo =
     }
 
 
-{-| Per-let state for value-level multi-specialization.
+{-| The copies made so far of one let-bound value that is not a function, with
+the original definition and its type, from which each copy is made.
 
-    - defName    : the let-bound value we're multi-specializing
-    - defCanType : the canonical type of the value
-    - def        : the original TOpt.Def MVarId
-    - instances  : all discovered (typeKey -> instance) mappings,
-                   keyed by the instance MonoType itself, under spec-key semantics (K4).
+`instances` is keyed by the use type, compared as `Mono.SpecMap` compares keys.
 
 -}
 type alias ValueMultiState =
@@ -348,7 +382,9 @@ type alias ValueMultiState =
     }
 
 
-{-| Initialize the monomorphization state.
+{-| Builds the state at the start of a run in `currentModule`: an empty
+worklist, registry and scheme cache, no current global, and an empty variable
+environment.
 -}
 initState : ModuleName.Canonical -> DataMap.Dict String TOpt.Global (TOpt.Node MVarId) -> TOpt.AnnotationsByGlobal MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
 initState currentModule toptNodes annotations globalTypeEnv mvarEnv =

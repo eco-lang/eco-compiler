@@ -3,77 +3,71 @@ module Compiler.GlobalOpt.PreMono.EtaExpand exposing
     , run
     )
 
-{-| PRE-MONOMORPHIZATION η-expansion to DECLARED arity
-(`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md`).
+{-| Rewrites definitions and callback lambdas written at a type alias's arity
+into their full declared arity before monomorphization, so the calls they make
+are saturated rather than partial applications.
 
-**The problem.** `System.TypeCheck.IO` is 55.3 % of the self-compile's generic
-dispatch, and it fails for a purely SYNTACTIC reason. `IO a` is a type ALIAS for
-`State -> ( State, a )`, so `andThen` and `map` are already SATURATED in their
-definitions (`IO.elm:239,254` — three parameters each), while every one of the
-169 callers writes the chain at the ALIAS arity:
+The motivating case is a state monad. With `IO a` an alias for
+`State -> ( State, a )`, `andThen` and `map` are defined with all three
+parameters, but a caller writes `prog = tick |> IO.andThen k` at the alias's
+arity. Its body is then a call of `andThen` with two of three arguments, a
+partial application (PAP), and every bind in the chain is finally applied
+through one generic dispatch on a call result. Written at declared arity, the
+same program has a lambda literal in the callback position and a global in the
+action position of a saturated call, which later passes can resolve statically.
 
-    prog : IO Int
-    prog = tick |> IO.andThen (\a -> …)
+Three terms are used throughout. The _declared arity_ of a type is the number
+of arrows in its spine once aliases are expanded; it is read off the alias's
+structure, so a type variable in result position does not change it. The
+_syntactic arity_ of a body is the number of parameters it actually writes. The
+_deficit_ is declared minus syntactic.
 
-`applyOneMore` (`LocalOpt/Typed/Expression.elm:123`) merges `x |> f a` into
-`Call f [a, x]`, so `prog`'s body is `Call andThen [k, tick]` — TWO of three
-arguments, a PAP. The continuation returns another PAP. Inside `andThen`'s own
-body, `f a s1` therefore applies a CALL RESULT, for which no member channel
-exists (LSS\_006: arrows have no identity), and every bind in the chain funnels
-through that one generic dispatch.
+There are two rules.
 
-**The fix is saturation, not inlining.** Written out at declared arity the same
-program has, at every site, a lambda LITERAL in the callback position (an `l|`
-member, singleton) and a GLOBAL in the action position (a `g|` member,
-singleton). MEASURED on the `SeqM`/`SeqEta`/`StateEta2` probes: 5 live generic
-sites → 1 → 0, output identical. The pre-mono inliner declined `andThen`
-(`hofParam`) in the same probe and the expanded arm still reached 0, so the
-mechanism is the arity, not the copy.
+  - The definition rule: a `Define`, `TrackedDefine` or Cycle `Def` whose node
+    type has a deficit gains that many fresh `_eta<n>` parameters (appended to
+    its lambda, or in a new wrapper lambda around a bare value), and its body is
+    applied to them.
+  - The continuation rule: inside every body, bottom up, a lambda literal in
+    argument position of a call to a global, cycle member or kernel gains the
+    deficit between its own parameters and the parameter type the callee's
+    reference type expects at that position. The lambda keeps its
+    `SrcLambdaId`.
 
-**Two rules.**
+The new application is then normalised by `apply`: merged into an
+under-applied call to a known global, pushed through `Let`, `Destruct`, `If`
+and `Case`, and beta-reduced into a lambda head by let-binding.
 
-  - DEFINITIONS (§2.2): a `Define`/`TrackedDefine`/Cycle-`Def` whose type
-    declares `k` parameters once aliases are expanded but whose body writes only
-    `j < k` of them gains `k - j` parameters and applies its body to them.
-  - CONTINUATIONS (§2.3): a lambda LITERAL in argument position whose expected
-    parameter type (read off the callee's own spine at that position) declares
-    more parameters than the lambda writes gains the difference. Its
-    `SrcLambdaId` is KEPT — it is the same source lambda with more parameters,
-    and that id is the future member key.
+Both rules are guarded by a cheapness gate, `cheap`. Expansion moves the work
+done before the new binders from once (a CAF's evaluation, or one closure
+creation) to once per call. That is harmless when the work only builds the PAP
+or closure that would be applied anyway, and costly for
+`d = let big = expensive in \s -> ...`, so only bodies whose pre-binder work is
+construction, a PAP, or a cheap call are expanded.
 
-Both then NORMALISE the new application (§2.4): merge into an under-applied call
-to a known global, push through `Let`/`Destruct`/`If`/`Case` to where the call
-actually is, beta a lambda head by LET-BINDING (never substitution).
+Some definitions are never expanded. A body that is a bare `VarKernel` is a
+kernel alias, and later passes recognise a kernel alias by exactly that shape.
+A body that is a bare constructor reference is a constructor alias, and
+expanding it would hide the global's name from later passes that match on it.
+Also left alone are the flags decoder (`EntryPrep.flagsDecoderName`),
+`TailDef`s and Cycle values (both only counted), ports and other non-definition
+nodes, globals outside the `etaOnly` allow-list, and any expansion whose
+declared arity exceeds `HeapLimits.maxStageArity`.
 
-**Why this survives the pre-mono type-precision ceiling.** Arity is read off the
-alias's STRUCTURE, never off a solved type: `IO b = State -> ( State, b )` has
-arity 1 whether or not `b` is known. That is why this transform is not capped
-the way the inliner's `determines` guard is (864 declined for want of ground
-types).
+How far new arguments may be merged into a call is the subtle part. A callee's
+type cannot say where its first stage ends, because an arrow chain also counts
+the arrows of the result. So the bound is the callee's parameter count in the
+graph after this pass (`Gate`), computed once before rewriting, capped by the
+arity of the reference's own type.
 
-**The cheapness gate (§2.5)** is the whole safety argument. η-expansion moves
-everything LEFT of the new binders from once (a memoised CAF slot, or one
-closure creation) to once PER CALL. That is free exactly when the work is
-building the PAP/closure the call was about to apply anyway, and a disaster for
-`d = let big = expensive in \s -> …`. Only bodies whose pre-binder work is
-construction, a partial application, a sub-threshold saturated call or a
-gc-leaf kernel are expanded.
+Every node this pass builds is passed through `Fresh.mintNewNode`. An
+`ArrowId` names one syntactic occurrence of an arrow, so a type this pass puts
+at a new position has its arrow slots cleared first and is given fresh ids;
+new wrapper lambdas get a fresh lambda id, and rebuilt existing lambdas keep
+theirs.
 
-**Two exclusions that are not obvious and are both load-bearing.** A node whose
-whole body is a bare `VarKernel` is a kernel ALIAS, and `LssInfer.kernelAliasOf`
-recognises it by exactly that shape to fold the `g|` and `k|` identities into one
-(LSS\_016); expanding it splits them into a 2-set and kills every singleton
-consumer. And a callee's arity is read from the GRAPH, never from its type: an
-arrow chain counts the arrows of its RESULT too, so a combinator's type says six
-where the definition writes three — see `calleeArity`.
-
-**Identity discipline (§2.7, item 0's contract).** Every type this pass puts at
-a NEW position has its arrow slots CLEARED and is minted by
-`Fresh.mintNewNode`: an `ArrowId` is per syntactic OCCURRENCE (LSS\_027), and
-splicing a sub-term of an existing type verbatim would put one id at two
-occurrences — which `Fresh.assertMinted` rejects as the LSS\_009 impersonation
-shape. New wrapper lambdas carry `Nothing` and are minted by the same call;
-rebuilt EXISTING lambdas keep the id they had.
+`run` returns the original graph when `etaExpand` is off, but still walks it
+and returns the metrics.
 
 @docs Metrics, emptyMetrics
 @docs run
@@ -103,9 +97,18 @@ import Dict as CoreDict
 -- ============================================================================
 
 
-{-| Census counters. `bodiesSeen` is the denominator whose zero is impossible —
-the pre-mono inliner's first `buildCandidates` matched almost no node shape and
-reported `candidates = 0`, which reads identically to "refused everything".
+{-| Counters describing what one run of the pass found and did, reported whether
+or not the rewrite is kept.
+
+`bodiesSeen` counts the bodies walked, so a zero there means the pass reached
+nothing, as distinct from refusing everything. `defs` and `cycleDefs` count
+definition-rule expansions at top level and in cycles, `conts` continuation
+expansions, `merged` and `pushed` the normalisation steps of `apply`, and the
+most of the remaining plain counters the reasons a site was declined. `byName` and
+`notCheapByName` are keyed by the definition being expanded (its comparable
+global, or its bare name for a cycle member) or, for a continuation, by the
+callee whose argument it is.
+
 -}
 type alias Metrics =
     { defs : Int
@@ -119,39 +122,32 @@ type alias Metrics =
     , tailDef : Int
     , cycleValue : Int
     , kernelAlias : Int
-    , ctorAlias : Int -- a bare constructor reference (`unsignedInt8 = U8`): expanding it buys no arity and only hides the constructor from later recognisers (bytes fusion)
+    , ctorAlias : Int
     , bodiesSeen : Int
 
-    -- deficit histogram over the sites that FIRED plus those refused only by
-    -- the cheapness gate: 1, 2, 3-or-more.
+    -- Deficit histogram (1, 2, 3 or more) over the sites that passed the
+    -- arity tests, whether or not they were then expanded.
     , deficit1 : Int
     , deficit2 : Int
     , deficit3 : Int
 
-    -- `cheapShare` numerator/denominator: how much of what the arity test
-    -- admitted the cheapness gate then refused. If the gate refuses most of
-    -- the 55 %, the gate is wrong, not the idea (R1).
+    -- Sites the cheapness gate admitted, out of those it judged.
     , cheapYes : Int
     , cheapSeen : Int
-
-    -- expansions attributed by name: a definition by its own global, a
-    -- continuation by the CALLEE whose argument position it sits in.
     , byName : CoreDict.Dict String Int
     , notCheapByName : CoreDict.Dict String Int
 
-    -- a spine that did not peel where the arity test said it should. Zero is
-    -- the expected value; a nonzero one means the node meta and the body type
-    -- disagree, and the site is declined rather than mis-typed.
+    -- Definitions whose body type has fewer arrows than the node type's
+    -- deficit; declined rather than mis-typed.
     , noPeel : Int
 
-    -- a site whose expanded parameter count would exceed the closure stage
-    -- arity limit (`HeapLimits.maxStageArity`, HEAP_078). Compiler-generated
-    -- arity never produces a user-visible limit error; the pass declines.
+    -- Sites whose expanded parameter count would exceed
+    -- `HeapLimits.maxStageArity`.
     , declinedArityCap : Int
     }
 
 
-{-| All-zero metrics — what `run` reports when the pass is off.
+{-| Metrics with every counter zero and both name tallies empty.
 -}
 emptyMetrics : Metrics
 emptyMetrics =
@@ -180,20 +176,18 @@ emptyMetrics =
     }
 
 
+{-| The state threaded through the rewrite: the id-minting state, the metrics,
+the next `_eta<n>` number, the read-only `Gate`, the name definition-rule
+expansions are attributed to, and the `etaOnly` allow-list.
+-}
 type alias Ctx =
     { state : AssignMVarIds.GlobalMVarState
     , metrics : Metrics
     , fresh : Int
 
-    -- What the cheapness gate and the merge rule read. A global with no entry
-    -- answers "unknown", which refuses both — the conservative direction in
-    -- each.
+    -- A global with no entry here is neither judged cheap nor merged into.
     , gate : Gate
-
-    -- the name currently being rewritten, for `byName` attribution.
     , who : String
-
-    -- DIAGNOSTIC module allow-list (`InlineConfig.etaOnly`); [] = every module.
     , only : List String
     }
 
@@ -204,12 +198,12 @@ type alias Ctx =
 -- ============================================================================
 
 
-{-| η-expand definitions and continuation lambdas to declared arity.
+{-| Eta-expands the definitions and continuation lambdas of `graph` to their
+declared arity, returning the rewritten graph, the advanced id-minting state
+and the metrics.
 
-Returns the ORIGINAL graph and state untouched when `inline.etaExpand` is off,
-so `inline.report` alone gives the census (`pre-eta-census:`) with no rewrite —
-Step 1 of the plan, and the measurement that decides whether the gate is tuned
-before a run is spent on it.
+When `etaExpand` is off the rewrite is still computed for its metrics, but the
+original `graph` and `state` are returned.
 
 -}
 run :
@@ -223,7 +217,7 @@ run cfg state graph =
         index =
             buildIndex graph
 
-        -- Round 0: syntactic arities, straight off the graph.
+        -- Syntactic arities, straight off the graph.
         gate0 : Gate
         gate0 =
             { threshold = cfg.etaThreshold
@@ -233,7 +227,7 @@ run cfg state graph =
             , ctors = buildCtorSet graph
             }
 
-        -- Round 1: the arity each definition will HAVE once this pass is done.
+        -- The arity each definition will have once this pass is done.
         gate1 : Gate
         gate1 =
             { gate0 | arity = buildPostArity gate0 graph }
@@ -258,19 +252,23 @@ run cfg state graph =
         ( graph, state, ctx1.metrics )
 
 
-{-| DIAGNOSTIC: `etaOnly` allow-list — a global is rewritten only when its
-`Module.name` starts with one of the configured prefixes. An empty list admits everything.
+{-| Tells whether a global may be rewritten under the `etaOnly` allow-list
+`only`: true when the list is empty or the global's `Module.name` starts with
+one of its prefixes.
 -}
 moduleAllowed : List String -> TOpt.Global -> Bool
 moduleAllowed only (TOpt.Global (ModuleName.Canonical _ moduleName) name) =
     let
-        -- `Module.Name.def`, so a prefix can name a module OR a definition.
+        -- A prefix can name a module or a single definition.
         qualified =
             moduleName ++ "." ++ name
     in
     List.isEmpty only || List.any (\prefix -> String.startsWith prefix qualified) only
 
 
+{-| Rewrites every node of the graph whose global the allow-list admits, leaving
+the other nodes and the rest of the graph as they are.
+-}
 rewriteGraph : Ctx -> TOpt.GlobalGraph TypeIds.MVarId -> ( TOpt.GlobalGraph TypeIds.MVarId, Ctx )
 rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSupers) =
     let
@@ -293,13 +291,11 @@ rewriteGraph ctx (TOpt.GlobalGraph nodes fields annotations schemeRoots varSuper
     ( TOpt.GlobalGraph newNodes fields annotations schemeRoots varSupers, ctx1 )
 
 
-{-| `Define`/`TrackedDefine` bodies and Cycle FUNCTION defs get both rules;
-Cycle VALUE defs and `TailDef`s get neither and are counted.
-
-Ports, `Ctor`/`Enum`/`Box`/`Link`/`Manager`/`Kernel` nodes and the synthesized
-flags decoder are not touched at all (§2.6). `main` needs no special case: its
-type has no arrow spine, so the arity test declines it as `noSpine`.
-
+{-| Rewrites one node. `Define` and `TrackedDefine` bodies and Cycle `Def`s get
+both rules. Cycle values and `TailDef`s get only the continuation rule inside
+them, and a deficit there is counted (`cycleValue`, `tailDef`) but not
+expanded. The flags decoder and every other kind of node are returned as they
+are.
 -}
 rewriteNode : Ctx -> TOpt.Global -> TOpt.Node TypeIds.MVarId -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx (TOpt.Global _ nodeName) node =
@@ -334,9 +330,6 @@ rewriteNode ctx (TOpt.Global _ nodeName) node =
                         List.foldl
                             (\( n, e ) ( acc, c ) ->
                                 let
-                                    -- A recursive CAF. The continuation rule
-                                    -- still applies inside it; the definition
-                                    -- rule does not (§2.6).
                                     ( e1, c1 ) =
                                         rewriteExpr (seeBody c) e
 
@@ -370,14 +363,10 @@ rewriteNode ctx (TOpt.Global _ nodeName) node =
                 ( node, ctx )
 
 
-{-| A Cycle member. `sequence` and every recursive `unify`-style caller lives
-here, so the `Def` arm is not optional (§2.6).
-
-`TailDef` is OUT in v1: its `TailCall` sites carry exactly the syntactic
-parameters, so adding one means threading it through every jump. The cheapness
-gate would refuse the shape anyway (`TailCall` is never cheap) — this arm exists
-to COUNT it rather than to rely on that.
-
+{-| Rewrites one function definition of a cycle. A `Def` gets both rules,
+attributed to its bare name. A `TailDef` gets only the continuation rule, and
+a deficit is counted as `tailDef`: its `TailCall`s carry exactly the written
+parameters, so adding one would mean changing every jump.
 -}
 rewriteCycleDef : Ctx -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteCycleDef ctx def =
@@ -409,21 +398,20 @@ rewriteCycleDef ctx def =
 
 
 -- ============================================================================
--- ====== RULE 1: DEFINITIONS (§2.2) ======
+-- ====== RULE 1: DEFINITIONS ======
 -- ============================================================================
 
 
-{-| Give a definition body the parameters its type declares and apply it to
-them.
+{-| Returns a definition body expanded by the definition rule to the declared
+arity of `declType`, the definition node's own type, or the body unchanged with
+the reason counted.
 
-`declType` is the DEFINITION NODE's own type — the inferred node type, which is
-always present and equals the annotation after solving. `AnnotationsByGlobal` is
-deliberately not consulted (§8).
-
-The new parameters take the LAST `n` spine types. When the body is already a
-`Function` with `j` parameters they are appended to it and the args are applied
-to its BODY (which is where the under-applied call is); when it is not a
-function, `j = 0` and the two coincide.
+The new parameters take the spine types after the ones already written. When
+the body is a lambda they are appended to it and its inner body is applied to
+them; otherwise the body is wrapped in a new lambda, tracked when
+`maybeRegion` is given. The checks run in order: kernel alias, constructor
+alias, no spine, no deficit, the stage-arity cap, a body type that does not
+peel, and the cheapness gate.
 
 -}
 expandDefinition : Ctx -> Site -> Maybe A.Region -> Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
@@ -450,23 +438,14 @@ expandDefinition ctx site maybeRegion declType body =
             declared - syntactic
     in
     if isKernelAlias body then
-        -- LSS_016: a kernel-ALIAS node (`cons = Elm.Kernel.List.cons`) IS the
-        -- kernel value, and `LssInfer.kernelAliasOf` recognises it by EXACTLY
-        -- this shape — `Define (VarKernel …)`. η-expanding it to
-        -- `\a b -> Elm_Kernel_List_cons a b` hides the alias, splits the `g|`
-        -- and `k|` identities, and joins them to a 2-set that kills every
-        -- singleton consumer. elm/core is full of these (`List.cons`,
-        -- `List.map2`, …), so this arm is load-bearing, not defensive.
+        -- Later passes treat a node whose body is exactly a `VarKernel` as the
+        -- kernel itself; expanding it would hide that.
         ( body, bump (\m -> { m | kernelAlias = m.kernelAlias + 1 }) ctx )
 
     else if isCtorAlias ctx.gate body then
-        -- A constructor ALIAS (`unsignedInt8 = U8`, elm/bytes). A constructor
-        -- is already saturated-call shaped at every use, so expansion buys no
-        -- arity; what it DOES do is turn a non-inlinable CAF-alias call into a
-        -- one-line function the post-mono inliner replaces by the bare
-        -- constructor, which downstream recognisers keyed on the GLOBAL's name
-        -- (bytes fusion's `reifyBytesEncodeCall`) no longer see — the
-        -- `FusionGlobalMapFnTest` regression when η shipped default-on.
+        -- Expanding a constructor alias (`unsignedInt8 = U8`) would let
+        -- later inlining replace the global by the bare constructor,
+        -- hiding the global's name from passes that match on it.
         ( body, bump (\m -> { m | ctorAlias = m.ctorAlias + 1 }) ctx )
 
     else if declared == 0 then
@@ -527,20 +506,10 @@ expandDefinition ctx site maybeRegion declType body =
                                         meta
 
                                 _ ->
-                                    -- A bare value: the wrapper IS the new node,
-                                    -- and the body it wraps STAYS IN THE TREE
-                                    -- underneath it. Its type is therefore the
-                                    -- same type at TWO occurrences, so the
-                                    -- wrapper's copy must have its arrow slots
-                                    -- cleared: reusing the value verbatim puts
-                                    -- one `ArrowId` at both, which is exactly
-                                    -- what `Fresh.assertMinted` rejects (and did
-                                    -- reject, at `Bytes.Encode.bytes`, before
-                                    -- this clear existed).
-                                    --
-                                    -- The NODE's own meta is untouched, so the
-                                    -- signature-source type LSS_006 reads its
-                                    -- arrow ordinals off does not move.
+                                    -- The wrapped body stays in the tree, so
+                                    -- the wrapper's copy of its type is a
+                                    -- second occurrence and gets fresh arrow
+                                    -- ids. The node's own meta is untouched.
                                     let
                                         wrapperMeta =
                                             { tipe = clearArrows (TOpt.typeOf body)
@@ -577,8 +546,8 @@ expandDefinition ctx site maybeRegion declType body =
                     )
 
 
-{-| A node whose whole body is a bare kernel reference — the eta-free kernel
-alias shape `LssInfer.kernelAliasOf` matches.
+{-| Tells whether a definition body is a bare kernel reference, which makes
+the definition a kernel alias.
 -}
 isKernelAlias : TOpt.Expr TypeIds.MVarId -> Bool
 isKernelAlias body =
@@ -590,8 +559,8 @@ isKernelAlias body =
             False
 
 
-{-| A node whose whole body is a bare constructor reference — `VarBox` (a
-boxed constructor used as a function) or `VarEnum`.
+{-| Tells whether a definition body is a bare constructor reference: a
+`VarBox`, a `VarEnum`, or a `VarGlobal` naming a global in `gate.ctors`.
 -}
 isCtorAlias : Gate -> TOpt.Expr TypeIds.MVarId -> Bool
 isCtorAlias gate body =
@@ -609,7 +578,8 @@ isCtorAlias gate body =
             False
 
 
-{-| Every `TOpt.Ctor` global in the graph, keyed like `buildIndex`.
+{-| Returns the set of `Ctor` globals in the graph, keyed by comparable global
+as `buildIndex` is.
 -}
 buildCtorSet : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String ()
 buildCtorSet (TOpt.GlobalGraph nodes _ _ _ _) =
@@ -626,8 +596,7 @@ buildCtorSet (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
-{-| Does this definition have a deficit at all? Used only to COUNT the shapes
-v1 declines (Cycle values), so it must not build anything.
+{-| Tells whether a body writes fewer parameters than `declType` declares.
 -}
 hasDeficit : Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Bool
 hasDeficit declType body =
@@ -648,18 +617,17 @@ hasDeficit declType body =
 
 
 -- ============================================================================
--- ====== RULE 2: CONTINUATION LAMBDAS (§2.3) ======
+-- ====== RULE 2: CONTINUATION LAMBDAS ======
 -- ============================================================================
 
 
-{-| Walk a body BOTTOM-UP, η-expanding every lambda literal in argument
-position whose expected type declares more parameters than it writes.
+{-| Returns an expression with the continuation rule applied throughout it.
 
-Bottom-up is load-bearing. `andThen (\x -> andThen (\xs -> …) (sequence rest)) m`
-expands the INNER continuation first, so by the time the outer one is rebuilt
-its body is already `andThen (\xs s2 -> …) (sequence rest)` — two of three — and
-the `s1` this rule appends merges straight into it. Top-down would have to
-revisit.
+The walk is bottom up, and that matters. In
+`andThen (\x -> andThen (\xs -> ...) (sequence rest)) m` the inner continuation
+is expanded first, so when the outer one is expanded its body is already an
+under-applied call of `andThen`, and the parameter added to the outer lambda
+merges into it.
 
 -}
 rewriteExpr : Ctx -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
@@ -825,6 +793,8 @@ rewriteExpr ctx expr =
             ( expr, ctx )
 
 
+{-| Applies the continuation rule inside a `let` definition.
+-}
 rewriteDef : Ctx -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteDef ctx def =
     case def of
@@ -843,6 +813,8 @@ rewriteDef ctx def =
             ( TOpt.TailDef region name args b tipe tvar, ctx1 )
 
 
+{-| Applies the continuation rule inside every `Inline` leaf of a decision tree.
+-}
 rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 rewriteDecider ctx decider =
     case decider of
@@ -873,27 +845,17 @@ rewriteDecider ctx decider =
             ( TOpt.FanOut path newBranches newFallback, ctx2 )
 
 
-{-| The continuation rule. `expected` is the callee's OWN parameter type at this
-position, aliases expanded: `andThen`'s first parameter `a -> IO b` expands to
-`a -> State -> ( State, b )`, arity 2, so a one-parameter callback has a deficit
-of 1.
+{-| Returns the arguments of a call with the continuation rule applied to each
+lambda literal among them.
 
-The lambda's `SrcLambdaId` is KEPT (§2.3): it is the same source lambda with
-more parameters, no member exists for it yet, and the id stays the future member
-key. Only what is BUILT around it is minted.
-
-Over-applied calls have argument positions past the callee's spine; those index
-to `Nothing` and are left alone.
-
-**Here the TYPE's full arrow spine is the right answer**, unlike in `calleeArity`.
-Adding binders to a lambda is η, which is type-safe at any depth: if the expected
-type's result is itself a function, the callback really does take those arguments
-too. What `calleeArity` must not do is change a CALL's staging, which is a
-different question with a different answer.
-
-Only lambda LITERALS are touched. A PAP in argument position (`applyI (add 5)`)
-is deliberately left alone — expanding those MEASURED negative, 17 → 12 stamps,
-because LSS\_040 already stamps `p|` members and an `l|` lands in `g1absentl`.
+The expected type at each position is read off the spine of the callee
+reference's own type, with aliases expanded: `andThen`'s first parameter
+`a -> IO b` expands to `a -> State -> ( State, b )`, so a one-parameter callback
+has a deficit of 1. Here the full arrow spine is the right measure, unlike in
+`calleeArity`: adding parameters to a lambda is type-safe at any depth, while
+merging arguments into a call changes its staging. Arguments past the spine,
+arguments that are not lambda literals (a PAP such as `add 5` included), and
+calls whose head is not a global, cycle member or kernel are left alone.
 
 -}
 expandArgLambdas : Ctx -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), Ctx )
@@ -925,6 +887,11 @@ expandArgLambdas ctx func args =
                 |> Tuple.mapFirst List.reverse
 
 
+{-| Returns `arg` expanded to the arity of `expected` when it is a lambda literal
+with a deficit that passes the stage-arity cap and the cheapness gate, or
+unchanged otherwise. The lambda keeps its `SrcLambdaId`; new tracked
+parameters take the region of its first parameter.
+-}
 expandOneLambda : Ctx -> String -> Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 expandOneLambda ctx callee expected arg =
     let
@@ -1010,33 +977,29 @@ expandOneLambda ctx callee expected arg =
 
 
 -- ============================================================================
--- ====== NORMALISING THE NEW APPLICATION (§2.4) ======
+-- ====== NORMALISING THE NEW APPLICATION ======
 -- ============================================================================
 
 
-{-| Apply `e` to `args` (always plain `VarLocal` references to the freshly bound
-η parameters) and normalise, so the arguments reach the call that was under
-applied instead of stacking an outer application on top of the PAP it built.
+{-| Returns `e` applied to `args`, normalised so the arguments reach the call
+that was under-applied instead of being stacked on top of the PAP it builds.
 
-  - MERGE into `Call (VarGlobal|VarCycle) as` while the callee's own arity has
-    room (`calleeArity` — the GRAPH's parameter count, not the type's arrow
-    count; kernels have no graph node and are not merged into). This is the step that pays: `Call andThen [k, tick]`
-    plus `[s0]` collapses to the three-argument call, where `f` is a lambda
-    literal and `ma` a global — two singleton members instead of a PAP applied
-    through `generic_apply`. Past the arity the call is saturated exactly and
-    the remainder becomes an outer `Call` (mono handles over-application; LSS
-    wants the exact call).
-  - PUSH through `Let`/`Destruct`, into every `If` branch, and into BOTH the
-    decider's `Inline` choices and every `jumps` entry of a `Case`. Missing
-    `jumps` would leave a shared branch holding the un-applied PAP while its
-    siblings are saturated (R8). Duplicating a VARIABLE reference is free, which
-    is why the arguments are required to be variables.
-  - BETA a lambda head by LET-BINDING the arguments, never by substitution —
-    the same discipline `InlineSimplify.doInline` uses.
+`args` are references to the fresh `_eta<n>` parameters. Being variables, they
+can be copied into several branches at no cost.
 
-`resultType` is the type after ALL of `args` have been applied; every rebuilt
-node in the push rules has exactly that type, because a `Let`/`Case`/`If` has
-the type of its branches.
+  - A `Call` of a global or cycle member takes the arguments into its own
+    argument list while `calleeArity` has room. Past that bound the callee is
+    given exactly its arity and the remaining arguments are applied to the
+    result by an outer `Call`. With no known arity, or no room, an outer `Call`
+    is built.
+  - `Let`, `Destruct`, every `If` branch, and both the `Inline` leaves and the
+    `jumps` of a `Case` have the application pushed inside them.
+  - A lambda is beta-reduced by `betaLambda`.
+  - Anything else gets an outer `Call`.
+
+`resultType` is the type after all of `args` have been applied, and the
+outermost node returned is given it. An inner saturated call built for an
+over-application gets the callee's type peeled by its arity.
 
 -}
 apply : Ctx -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
@@ -1068,15 +1031,9 @@ apply ctx e args resultType =
                         else
                             case ( arity > have, peelType arity (TOpt.typeOf func) ) of
                                 ( True, Just innerType ) ->
-                                    -- More arguments than the callee's first
-                                    -- stage takes: saturate it EXACTLY and make
-                                    -- the remainder an outer application. Mono
-                                    -- handles over-application either way, but
-                                    -- LSS wants the exact call, and the inner
-                                    -- node's type has to be the callee's type
-                                    -- peeled by its own arity — never
-                                    -- `resultType`, which is the type after ALL
-                                    -- the arguments.
+                                    -- The inner call's type is the callee's
+                                    -- type peeled by its arity, not
+                                    -- `resultType`.
                                     let
                                         take =
                                             arity - have
@@ -1092,10 +1049,8 @@ apply ctx e args resultType =
                                     )
 
                                 _ ->
-                                    -- Already saturated, or the callee's type
-                                    -- has fewer arrows than its arity claims.
-                                    -- Stack an outer application rather than
-                                    -- emit something mistyped.
+                                    -- Already saturated, or the type has too
+                                    -- few arrows to peel.
                                     ( TOpt.Call region e args newMeta, ctx )
 
                     Nothing ->
@@ -1151,6 +1106,9 @@ apply ctx e args resultType =
                 ( TOpt.Call (regionOf e) e args newMeta, ctx )
 
 
+{-| Returns a decision tree with `apply` pushed into every `Inline` leaf;
+`Jump` leaves are left for the caller to handle through the `Case`'s `jumps`.
+-}
 applyDecider : Ctx -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 applyDecider ctx decider args resultType =
     case decider of
@@ -1181,14 +1139,12 @@ applyDecider ctx decider args resultType =
             ( TOpt.FanOut path newBranches newFallback, ctx2 )
 
 
-{-| Beta by LET-BINDING. The arguments are `_eta<n>` variable references and the
-binders are the lambda's own parameter names, so there is no capture and no
-scope tracking: `_eta<n>` cannot be written in Elm source and is minted from one
-per-pass counter, so it can be shadowed by nothing.
+{-| Returns a lambda with parameters `params` and body `body` applied to `args`,
+by let-binding each parameter to its argument and applying the body to any
+arguments left over. No substitution is done, so no capture can occur.
 
-Fewer arguments than parameters cannot arise from either rule (a lambda in
-argument position is expanded, not applied), so that case falls back to a plain
-`Call` rather than re-arranging the lambda.
+Given fewer arguments than parameters, it returns a plain `Call` of a rebuilt
+lambda instead.
 
 -}
 betaLambda : Ctx -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Ctx )
@@ -1213,9 +1169,8 @@ betaLambda ctx params body args resultType =
             wrapped =
                 List.foldr
                     (\( ( pname, ptype ), arg ) acc ->
-                        -- Same identity rule as the definition wrapper: the
-                        -- `Let` and the body it wraps are two occurrences of one
-                        -- type, so the `Let`'s copy is cleared and re-minted.
+                        -- The `Let`'s copy of its body's type is a second
+                        -- occurrence, so its arrow slots are cleared.
                         TOpt.Let (TOpt.Def A.zero pname arg ptype)
                             acc
                             { tipe = clearArrows (TOpt.typeOf acc)
@@ -1230,25 +1185,22 @@ betaLambda ctx params body args resultType =
 
 
 -- ============================================================================
--- ====== THE CHEAPNESS GATE (§2.5) ======
+-- ====== THE CHEAPNESS GATE ======
 -- ============================================================================
 
 
-{-| Is everything LEFT of the new binders nothing but construction?
+{-| Tells whether the work an expression does before the new binders would be
+cheap to repeat on every call.
 
-η-expansion moves that work from once — a memoised CAF slot
-(`Generate/MLIR/Expr.elm:707`) or one closure creation — to once per call. For
-an IO action the CAF's VALUE was a PAP, so caching it bought nothing and the
-move is free; for `let big = expensive in \s -> …` it is a per-call recomputation
-of `big`. This predicate is the whole difference.
+Literals, variables, accessors and lambdas (whose bodies are not examined) are
+cheap. Lists, tuples, records, updates, accesses, `let`, `Destruct`, `if` and
+`case` are cheap when all their parts are. A call is cheap when its arguments
+are and `cheapCallee` admits it. `TailCall`, `Shader`, `VarDebug` and anything
+else are not.
 
-What it PERMITS, deliberately: a `crash` or `Debug.log` reachable only through a
-PAP that a cheap body builds fires at application time instead of at CAF init —
-the same observable-ordering class `arityRaise` accepts (H6.2). Nothing else is
-observable in Elm.
-
-`Debug.log` is a `VarDebug` call, which no arm admits, so a body containing one
-is refused. That is also the ordering pin (fixture F8).
+The gate does let a `crash` or `Debug.log` in the body of a saturated callee
+admitted under `etaThreshold` move from one evaluation of the definition to
+every application.
 
 -}
 cheap : Gate -> TOpt.Expr TypeIds.MVarId -> Bool
@@ -1336,21 +1288,13 @@ cheap ctx expr =
             List.all (cheap ctx) args && cheapCallee ctx func (List.length args)
 
         _ ->
-            -- TailCall, Shader, VarDebug, and any head this pass does not
-            -- reason about. A `TailCall` in particular is why `TailDef` needs
-            -- no separate refusal inside a body.
             False
 
 
-{-| A call is cheap when it BUILDS rather than works: an under-applied call to a
-known global is a PAP, and a saturated one is cheap only if the callee's body is
-under `inline.etaThreshold`. A kernel is cheap only in the `gcLeaf` cost class.
-
-The `inline` cost class of `MonoInlineSimplify.kernelCallCost` cannot be read
-here: `KernelIntrinsics.kernelIntrinsic` keys on MONO types, which do not exist yet.
-`CGcLeaf` is the pre-mono approximation and it is conservative in the safe
-direction — it declines sites, never admits extra ones.
-
+{-| Tells whether a call of `func` with `argCount` arguments builds rather than
+works. A kernel is admitted only when `KernelFacts` gives it cost class
+`CGcLeaf`; a global or cycle member is judged by `cheapGlobalCall`; any other
+head is refused.
 -}
 cheapCallee : Gate -> TOpt.Expr TypeIds.MVarId -> Int -> Bool
 cheapCallee ctx func argCount =
@@ -1373,20 +1317,21 @@ cheapCallee ctx func argCount =
             False
 
 
+{-| Tells whether a call of the global keyed `key` with `argCount` arguments is
+cheap: an under-applied call (a PAP) is, a saturated one is when the callee's
+body cost is at most the threshold, and an over-applied one or a call of an
+unknown global is not. A global of arity 0 is cheap only when it is a kernel
+alias whose `aliasCost` is within the threshold.
+-}
 cheapGlobalCall : Gate -> String -> Int -> Bool
 cheapGlobalCall ctx key argCount =
     case CoreDict.get key ctx.arity of
         Nothing ->
-            -- No node in the graph: nothing here knows whether this call does
-            -- work or builds a PAP. Refuse.
             False
 
         Just arity ->
             if arity <= 0 then
-                -- A bare-value body. Only a kernel ALIAS is judged here, by the
-                -- cost of the value it evaluates to — `x :: xs` reaches
-                -- `List.cons` this way and must stay cheap. Anything else with
-                -- no parameters is refused; see `Gate.aliasCost`.
+                -- `x :: xs` reaches the kernel alias `List.cons` this way.
                 case CoreDict.get key ctx.aliasCost of
                     Just c ->
                         c <= ctx.threshold
@@ -1395,7 +1340,6 @@ cheapGlobalCall ctx key argCount =
                         False
 
             else if argCount < arity then
-                -- A PAP: it builds, it does no work.
                 True
 
             else if argCount == arity then
@@ -1405,6 +1349,8 @@ cheapGlobalCall ctx key argCount =
                 False
 
 
+{-| Tells whether a `let` definition's bound expression or body is cheap.
+-}
 cheapDef : Gate -> TOpt.Def TypeIds.MVarId -> Bool
 cheapDef ctx def =
     case def of
@@ -1415,6 +1361,8 @@ cheapDef ctx def =
             cheap ctx body
 
 
+{-| Tells whether every `Inline` leaf of a decision tree is cheap; a `Jump` leaf is.
+-}
 cheapDecider : Gate -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Bool
 cheapDecider ctx decider =
     case decider of
@@ -1437,15 +1385,9 @@ cheapDecider ctx decider =
 -- ============================================================================
 
 
-{-| What the merge rule and the cheapness gate need to know about a callee:
-where its first stage ENDS (`arity`, its syntactic parameter count) and how
-much work its body is (`cost`).
-
-Both are read from the graph, once, before anything is rewritten. Neither can be
-read off a type: an arrow chain counts the arrows of its RESULT too, so a
-combinator's type says six where the definition writes three, and a saturated
-call would be merged into as if it were a partial one.
-
+{-| What the merge and the cheapness gate need to know about a global before
+rewriting: its syntactic parameter count, which is where its first stage ends,
+and the size of its body as `cost` measures it.
 -}
 type alias Callee =
     { arity : Int
@@ -1453,67 +1395,47 @@ type alias Callee =
     }
 
 
-{-| Everything the cheapness gate and the merge rule consult, and nothing else,
-so the "will this definition be expanded?" walk can run BEFORE any `Ctx` exists.
+{-| The per-global facts the cheapness gate and the merge read, built before
+rewriting so that the prediction of which definitions will expand can use them
+too. `threshold` is the `etaThreshold` body-cost budget.
 
-`arity` is where the subtlety lives. It is a per-global parameter count, and it
-is used for TWO questions that want the same answer: "is this call a PAP or does
-it do work?" (the gate) and "how many arguments may one flat call carry?" (the
-merge). Both want the arity the callee has AFTER this pass, which is circular —
-the pass decides it. `run` breaks the circle in one step:
+`arity` answers two questions: whether a call builds a PAP or does work (the
+gate), and how many arguments one call may carry (the merge). Both want the
+callee's arity after this pass, which the pass itself decides. `run` settles
+this in one step. It first fills `arity` with syntactic counts, then replaces
+them with `buildPostArity`'s prediction under those counts: the declared arity
+for a definition predicted to expand, the syntactic count otherwise. The rewrite
+uses the second table.
 
-  - `arity0` = the SYNTACTIC counts read off the graph;
-  - `arity1` = `buildPostArity` under `arity0` — for each definition, its
-    DECLARED arity if the pass will expand it, else its syntactic count;
-  - the rewrite uses `arity1` for both questions.
+`cheap` only gains verdicts as arities grow (a saturated call becomes a PAP, an
+over-applied one becomes saturated), so a definition predicted to expand under
+the first table also passes the gate under the second. A definition the
+prediction misses costs only an unmerged call. A prediction that is too high is
+what must not happen, because the merge would then carry more arguments than
+the callee's first stage takes; `willExpand` must therefore refuse whatever
+`expandDefinition` refuses. It currently omits the constructor-alias, flags
+decoder and `etaOnly` refusals.
 
-That is sound in the direction that matters. `cheap` is monotone in `arity` (a
-larger arity turns saturated calls into PAPs, which only ADDS verdicts), so
-`arity0 ≤ arity1` means every definition `arity1` predicts will expand really
-does expand under `arity1`. The merge therefore never outruns the callee's real
-first stage — the failure that miscompiled `CombinatorTest` — while a definition
-`arity1` missed only costs an unmerged call.
-
-One step and not a fixed point on purpose: a second round could only add
-expansions, and an under-estimate is free.
+`aliasCost` holds the body cost of kernel-alias globals only. Their arity is 0
+in both tables, since they are never expanded; a bare-value definition's arity
+can grow between the tables, and judging it by cost at arity 0 could break the
+growth property above. `ctors` is the set of `Ctor` globals, used to recognise
+constructor aliases.
 
 -}
 type alias Gate =
     { threshold : Int
     , arity : CoreDict.Dict String Int
     , cost : CoreDict.Dict String Int
-
-    -- Body cost of the KERNEL-ALIAS globals only (`cons = Elm.Kernel.List.cons`).
-    -- Their graph arity is 0 — the body is a bare value — which would make the
-    -- gate refuse every call to one, including `x :: xs`. That refusal cost a
-    -- real continuation expansion in the `SeqM` probe (`conts` 2 -> 1), and
-    -- with it the line-for-line match against the hand rewrite.
-    --
-    -- Only aliases, and not bare-value definitions generally, because this map
-    -- must read the SAME in both rounds. A kernel alias is refused by §2.6 in
-    -- every round, so its arity is 0 in both; a bare-value DEFINITION's arity
-    -- grows from 0 to its declared arity between them, and a rule that answered
-    -- "cheap" at arity 0 could answer "not cheap" at the larger one — which
-    -- breaks the monotonicity `Gate.arity`'s soundness argument rests on.
     , aliasCost : CoreDict.Dict String Int
-
-    -- Constructor globals (`TOpt.Ctor` nodes): a definition whose whole body is
-    -- a bare reference to one is a constructor ALIAS and is never expanded.
     , ctors : CoreDict.Dict String ()
     }
 
 
-{-| Per-global `Callee`, `toComparableGlobal`-keyed.
-
-Cycle members are keyed under their OWN `Global` (the `Link` node the graph
-holds for each of them points at the cycle, which is keyed under the joined
-name), so `sequence` and every recursive `unify`-style callee is found by the
-same lookup as a plain `Define`.
-
-`cost` duplicates `InlineSimplify.cost`'s arithmetic rather than importing it:
-that module exposes only `optimize`, and this pass must not depend on the
-inliner having run.
-
+{-| Returns the `Callee` of every `Define`, `TrackedDefine`, `Ctor` and cycle
+function definition, keyed by comparable global. A cycle member is keyed by
+its own name in the cycle's home module, so it is found by the same lookup as a
+plain definition. Cycle values are not indexed.
 -}
 buildIndex : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String Callee
 buildIndex (TOpt.GlobalGraph nodes _ _ _ _) =
@@ -1527,8 +1449,6 @@ buildIndex (TOpt.GlobalGraph nodes _ _ _ _) =
                     CoreDict.insert (TOpt.toComparableGlobal g) (calleeOfBody e) acc
 
                 TOpt.Ctor _ arity _ ->
-                    -- A constructor's arity is stated outright, and its "body"
-                    -- is construction: always under any threshold.
                     CoreDict.insert (TOpt.toComparableGlobal g) { arity = arity, cost = 1 } acc
 
                 TOpt.Cycle _ _ funcDefs _ ->
@@ -1563,22 +1483,15 @@ buildIndex (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
-{-| Per-global arity as this pass will LEAVE it.
+{-| Returns the predicted arity of each global after this pass, judged under
+`gate`: the declared arity of a definition `willExpand` admits, the syntactic
+count otherwise, the stated arity of a `Ctor`, and the written parameter count
+of a `TailDef`.
 
-A definition the pass expands ends up with the declared arity of its own node
-type; everything else keeps the syntactic count. Deciding this needs a walk
-that mirrors `expandDefinition`'s guards WITHOUT building anything, so the
-answer is available before the first rewrite and does not depend on the order
-nodes are visited in.
-
-The `cheap` test here reads whatever `Gate` it is handed; `run` hands it the
-round-0 (syntactic) arities. See `Gate` for why one round is enough and why the
-result can only UNDER-estimate.
-
-Note the callee's OWN node type is what is peeled, never a call site's
-instantiated one: `s bf uf x`'s own type is `(a -> b -> c) -> (a -> b) -> a -> c`
-whose spine is 3, while at `b = s (k s) k` the instantiation makes `c` an arrow
-and the spine 6. That difference is the miscompile in `calleeArity`'s comment.
+The declared arity is that of the definition's own node type, never of a call
+site's instantiation: `s bf uf x : (a -> b -> c) -> (a -> b) -> a -> c` has
+three, although at a site where `c` is instantiated to a function the reference
+type has more arrows.
 
 -}
 buildPostArity : Gate -> TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String Int
@@ -1631,7 +1544,6 @@ buildPostArity gate (TOpt.GlobalGraph nodes _ _ _ _) =
                                         inner
 
                                 TOpt.TailDef _ name args _ _ _ ->
-                                    -- Out of scope in v1, so its arity does not move.
                                     CoreDict.insert
                                         (TOpt.toComparableGlobal (TOpt.Global home name))
                                         (List.length args)
@@ -1647,8 +1559,11 @@ buildPostArity gate (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
-{-| `expandDefinition`'s guards, decided without building. Kept adjacent to it
-so the two cannot drift: if one grows a refusal, so must the other.
+{-| Tells whether the definition rule would expand a body of type `declType`
+under `ctx`, without building anything. It checks the kernel-alias refusal, the
+spine, the deficit, the stage-arity cap, the peel and the cheapness gate; it
+does not check the constructor-alias refusal, the flags decoder or the
+`etaOnly` allow-list, which `expandDefinition` and its callers also apply.
 -}
 willExpand : Gate -> Can.Type TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Bool
 willExpand ctx declType body =
@@ -1670,6 +1585,8 @@ willExpand ctx declType body =
         && cheap ctx inner
 
 
+{-| Returns the number of parameters a body writes: its lambda's parameter count, or 0.
+-}
 syntacticArityOf : TOpt.Expr TypeIds.MVarId -> Int
 syntacticArityOf body =
     case body of
@@ -1683,6 +1600,8 @@ syntacticArityOf body =
             0
 
 
+{-| Returns the body of a lambda, or the expression itself when it is not one.
+-}
 innerBodyOf : TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId
 innerBodyOf body =
     case body of
@@ -1696,8 +1615,8 @@ innerBodyOf body =
             body
 
 
-{-| Body cost of every kernel-ALIAS global — the ones §2.6 refuses to expand and
-whose graph arity is therefore 0 forever. See `Gate.aliasCost`.
+{-| Returns the body cost of every kernel-alias `Define` and `TrackedDefine`,
+keyed by comparable global.
 -}
 buildAliasCost : TOpt.GlobalGraph TypeIds.MVarId -> CoreDict.Dict String Int
 buildAliasCost (TOpt.GlobalGraph nodes _ _ _ _) =
@@ -1725,6 +1644,10 @@ buildAliasCost (TOpt.GlobalGraph nodes _ _ _ _) =
         nodes
 
 
+{-| Returns the `Callee` of a definition body: a lambda's parameter count and
+the cost of its inner body, or arity 0 and the whole body's cost for a bare
+value.
+-}
 calleeOfBody : TOpt.Expr TypeIds.MVarId -> Callee
 calleeOfBody expr =
     case expr of
@@ -1735,12 +1658,14 @@ calleeOfBody expr =
             { arity = List.length ps, cost = cost body }
 
         _ ->
-            -- A bare value. Arity 0 refuses the merge outright, which is right:
-            -- nothing here knows how many arguments the value it evaluates to
-            -- will accept.
+            -- Arity 0 in the syntactic table; calls are merged into it only
+            -- if `buildPostArity` predicts that it will expand.
             { arity = 0, cost = cost expr }
 
 
+{-| Returns a size estimate of an expression, the measure `etaThreshold` bounds:
+a fixed weight per node kind plus the cost of its parts, and 1 for a leaf.
+-}
 cost : TOpt.Expr TypeIds.MVarId -> Int
 cost expr =
     case expr of
@@ -1790,6 +1715,10 @@ cost expr =
             1
 
 
+{-| Returns the `cost` of a decision tree: 1 for each `Chain` or `FanOut` node,
+1 for each test of a `Chain`, 1 for each `Jump` leaf, and the `cost` of each
+`Inline` leaf.
+-}
 costDecider : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Int
 costDecider decider =
     case decider of
@@ -1806,6 +1735,8 @@ costDecider decider =
             1 + sumBy (\( _, d ) -> costDecider d) branches + costDecider fallback
 
 
+{-| Returns the `cost` of a `let` definition's bound expression or body.
+-}
 costDef : TOpt.Def TypeIds.MVarId -> Int
 costDef def =
     case def of
@@ -1816,6 +1747,8 @@ costDef def =
             cost body
 
 
+{-| Returns the sum of `f` over a list.
+-}
 sumBy : (a -> Int) -> List a -> Int
 sumBy f =
     List.foldl (\x acc -> acc + f x) 0
@@ -1823,24 +1756,16 @@ sumBy f =
 
 
 -- ============================================================================
--- ====== TYPES: DECLARED ARITY FROM ALIAS STRUCTURE (§2.1) ======
+-- ====== TYPES: DECLARED ARITY FROM ALIAS STRUCTURE ======
 -- ============================================================================
 
 
-{-| The parameter types of the fully expanded arrow chain, and what is left
-after them.
+{-| Returns the parameter types of a type's arrow chain, with aliases expanded at
+every step, and the type left after them.
 
-Aliases are expanded because that is the WHOLE POINT: `IO a` is
-`State -> ( State, a )` and declares one parameter, which no syntactic reading
-of `prog : IO Int` can see. `Holey` bodies substitute the alias's arguments for
-its parameters — alias parameters are alias-LOCAL and matched by position, the
-same rule `TypeSubst.applySubstPureI` and `InlineSimplify.expandAlias` follow.
-
-The arity is read off STRUCTURE, so it is immune to the pre-mono type-precision
-limit (Fact 2): `a -> b` with `b` a variable has arity exactly 1, and a bare
-variable has arity 0 and is declined as `noSpine` (R3).
-
-Elm forbids recursive aliases, so this terminates.
+Expanding aliases is the point: `IO Int` is `State -> ( State, Int )` and has
+one parameter, which the alias name hides. The count follows structure, so
+`a -> b` with `b` a variable has one parameter and a bare variable has none.
 
 -}
 spine : Can.Type TypeIds.MVarId -> ( List (Can.Type TypeIds.MVarId), Can.Type TypeIds.MVarId )
@@ -1857,12 +1782,15 @@ spine tipe =
             ( [], other )
 
 
+{-| Returns the declared arity of a type: the length of its `spine`.
+-}
 declaredArity : Can.Type TypeIds.MVarId -> Int
 declaredArity tipe =
     List.length (Tuple.first (spine tipe))
 
 
-{-| Expand alias layers until the head is not an alias.
+{-| Returns a type with alias layers removed from its head until it is not an
+alias. A `Holey` body has the alias's arguments substituted for its parameters.
 -}
 unAlias : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 unAlias tipe =
@@ -1881,6 +1809,10 @@ unAlias tipe =
             tipe
 
 
+{-| Returns a type with each type variable that `env` maps (by comparable id)
+replaced, except a record's extension variable, which is kept unchanged. An
+alias's arguments are substituted into, but its body is not.
+-}
 substTypeVars : CoreDict.Dict Int (Can.Type TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 substTypeVars env tipe =
     case tipe of
@@ -1906,8 +1838,9 @@ substTypeVars env tipe =
             Can.TAlias h n (List.map (\( pn, t ) -> ( pn, substTypeVars env t )) args) real
 
 
-{-| The result type after applying `n` arguments, or `Nothing` when the type
-does not have that many arrows once aliases are expanded.
+{-| Returns the result type after applying `n` arguments, with its arrow slots
+cleared, or `Nothing` when the type does not have that many arrows once aliases
+are expanded.
 -}
 peelType : Int -> Can.Type TypeIds.MVarId -> Maybe (Can.Type TypeIds.MVarId)
 peelType n tipe =
@@ -1923,16 +1856,11 @@ peelType n tipe =
                 Nothing
 
 
-{-| Strip every arrow slot, so `Fresh.mintNewNode` assigns a fresh `ArrowId` to
-each one.
-
-An `ArrowId` names one syntactic arrow OCCURRENCE (LSS\_027). A type this pass
-puts at a NEW position — a new parameter's declared type, a rebuilt `Call`'s
-result type — is a new occurrence, so re-minting is the FAITHFUL choice, not a
-loss: keeping the id would place one identity at two occurrences, which is the
-shape `Fresh.assertMinted` rejects and the shape AbiCloning would read as two
-interchangeable instances.
-
+{-| Returns a type with every arrow slot, including those inside alias
+arguments and bodies, set to `Can.noArrow`, so that `Fresh.mintNewNode` gives
+each a fresh `ArrowId`. A type placed at a new position is a new occurrence,
+and keeping the old ids would put one id at two occurrences, which
+`Fresh.assertMinted` rejects.
 -}
 clearArrows : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 clearArrows tipe =
@@ -1974,30 +1902,17 @@ clearArrows tipe =
 -- ============================================================================
 
 
-{-| How many arguments one flat call to this callee may carry.
+{-| Returns how many arguments one call of `func` may carry, or `Nothing` when
+it is not a global or cycle member with a positive arity in `Gate.arity`.
 
-**Not the arrow count of its type.** An arrow chain counts the arrows of the
-RESULT too, and a combinator whose result is itself a function has far more of
-them than it has parameters: at `b = s (k s) k`, `s`'s instantiated type has six
-arrows while `s bf uf x` takes three. Merging to the type's count produced a
-six-argument call to a three-parameter global and MISCOMPILED
-`test/elm/src/CombinatorTest.elm` — `b square inc 4` printed 64 instead of 25.
-
-So the arity is the callee's parameter count AS THIS PASS WILL LEAVE IT
-(`Gate.arity` — the syntactic count, or the DECLARED arity for a definition
-the pass expands; see `Gate` for how that is computed without circularity),
-capped by the number of arrows the site's own reference type
-actually has. The cap matters because the merge must never outrun the type it is
-building a result type from; the graph count matters because it is the only
-thing that says where the callee's first stage ENDS.
-
-The POST-pass count and not the pre-expansion one, because the two differ exactly at
-the definitions this transform is FOR: `sequence` is a Cycle member written at
-alias arity, so the pre-expansion index says 1 while the expanded definition
-takes 2, and merging to 1 leaves `sequence rest` a PAP that the new state
-argument then applies generically — the dispatch this pass exists to remove,
-reintroduced against the pass's own output. The unit suite's R8 fixture caught
-it as an unsaturated branch.
+The bound is the callee's predicted arity after this pass, capped by the
+declared arity of the reference's own type. It is not the type's arrow count
+alone: an arrow chain also counts the arrows of its result, so at
+`b = s (k s) k` the reference to `s` has six arrows while `s bf uf x` takes
+three, and merging six arguments into that call is a miscompile. It is not the
+pre-pass count either: a definition written at an alias's arity, such as a
+recursive `sequence`, takes one more parameter once expanded, and merging only
+to the old count would leave a PAP behind.
 
 -}
 calleeArity : Ctx -> TOpt.Expr TypeIds.MVarId -> Maybe Int
@@ -2023,13 +1938,14 @@ calleeArity ctx func =
             capped (TOpt.toComparableGlobal (TOpt.Global home name)) meta
 
         _ ->
-            -- Kernels included, deliberately. A kernel has no graph node, so
-            -- nothing here knows where its first stage ends, and the same
-            -- result-arrow over-count that broke the combinators would apply.
-            -- Merging into a kernel call is not what this plan is for.
+            -- Kernels included: with no graph node, nothing says where a
+            -- kernel's first stage ends.
             Nothing
 
 
+{-| Returns the attribution key of a call head: the comparable global of a global
+or cycle member, `home.name` for a kernel, or `Nothing` for any other head.
+-}
 calleeName : TOpt.Expr TypeIds.MVarId -> Maybe String
 calleeName func =
     case func of
@@ -2046,12 +1962,12 @@ calleeName func =
             Nothing
 
 
-{-| Fresh `_eta<n>` binders for the given types, with the types' arrow slots
-cleared for `mintNewNode`.
+{-| Returns one fresh `_eta<n>` binder for each of the given types, with the
+types' arrow slots cleared, and the counter advanced.
 
-Elm identifiers cannot begin with `_`, and the counter is per-pass, so these
-names cannot collide with a source binder or with each other and no scope
-tracking is needed.
+Elm source identifiers cannot begin with `_`, and the counter runs through the
+whole pass, so these names collide with no source binder and with no other
+binder this run makes.
 
 -}
 freshBinders : Ctx -> List (Can.Type TypeIds.MVarId) -> ( List ( Name, Can.Type TypeIds.MVarId ), Ctx )
@@ -2068,11 +1984,16 @@ freshBinders ctx types =
     ( List.reverse acc, { ctx | fresh = next } )
 
 
+{-| Returns a `VarLocal` reference to a binder.
+-}
 binderRef : ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId
 binderRef ( name, tipe ) =
     TOpt.VarLocal name { tipe = tipe, tvar = Nothing }
 
 
+{-| Returns the region of a call, global, cycle reference or tracked local, or
+`A.zero` for any other expression.
+-}
 regionOf : TOpt.Expr TypeIds.MVarId -> A.Region
 regionOf expr =
     case expr of
@@ -2092,6 +2013,8 @@ regionOf expr =
             A.zero
 
 
+{-| Returns the region of the first parameter, or `A.zero` for an empty list.
+-}
 locatedRegion : List ( A.Located Name, Can.Type TypeIds.MVarId ) -> A.Region
 locatedRegion params =
     case params of
@@ -2102,11 +2025,15 @@ locatedRegion params =
             A.zero
 
 
+{-| Returns the element at index `i`, counting from 0, if there is one.
+-}
 indexOf : Int -> List a -> Maybe a
 indexOf i xs =
     List.head (List.drop i xs)
 
 
+{-| Returns `f` mapped over a list in order, threading the context through.
+-}
 mapList : Ctx -> List a -> (Ctx -> a -> ( b, Ctx )) -> ( List b, Ctx )
 mapList ctx xs f =
     let
@@ -2125,21 +2052,29 @@ mapList ctx xs f =
     ( List.reverse acc, ctx1 )
 
 
+{-| Returns `rebuild` applied to the expressions after `rewriteExpr`.
+-}
 mapExprs : Ctx -> List (TOpt.Expr TypeIds.MVarId) -> (List (TOpt.Expr TypeIds.MVarId) -> TOpt.Expr TypeIds.MVarId) -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 mapExprs ctx xs rebuild =
     Tuple.mapFirst rebuild (mapList ctx xs rewriteExpr)
 
 
+{-| Returns the context with `f` applied to its metrics.
+-}
 bump : (Metrics -> Metrics) -> Ctx -> Ctx
 bump f ctx =
     { ctx | metrics = f ctx.metrics }
 
 
+{-| Returns the context with `bodiesSeen` increased by one.
+-}
 seeBody : Ctx -> Ctx
 seeBody =
     bump (\m -> { m | bodiesSeen = m.bodiesSeen + 1 })
 
 
+{-| Returns the metrics with the deficit histogram bucket for `n` increased: 1, 2, or 3 and above.
+-}
 countDeficit : Int -> Metrics -> Metrics
 countDeficit n m =
     if n == 1 then
@@ -2152,21 +2087,24 @@ countDeficit n m =
         { m | deficit3 = m.deficit3 + 1 }
 
 
+{-| Returns the counts with the one for `key` increased by one.
+-}
 tally : String -> CoreDict.Dict String Int -> CoreDict.Dict String Int
 tally key d =
     CoreDict.update key (\v -> Just (1 + Maybe.withDefault 0 v)) d
 
 
-{-| Which counter a definition-rule expansion lands in. A Cycle member is
-tallied apart because `sequence` and every recursive `unify`-style caller is
-one, and "the definition rule reached zero recursive definitions" is a distinct
-failure from "it reached none at all".
+{-| Where a definition the definition rule expands sits: a top-level
+`Define` or `TrackedDefine`, or a function definition of a cycle. Each is
+counted separately, as `defs` and `cycleDefs`.
 -}
 type Site
     = TopLevel
     | CycleMember
 
 
+{-| Returns the metrics with the expansion counter for `site` increased by one.
+-}
 countSite : Site -> Metrics -> Metrics
 countSite site m =
     case site of

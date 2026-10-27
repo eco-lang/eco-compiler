@@ -1,10 +1,28 @@
 module Builder.Eco.Config exposing (load)
 
-{-| Read the project's `eco-config.json` (tunable compiler settings) from disk.
+{-| The compiler's tuning settings can be set per project, in a file, and per
+run, in the environment, and this module gathers both into one `EcoConfig`.
+`Compiler.Eco.Config` owns that type: what each setting means, its default, and
+which settings put a token in the `Config.hash` cache key.
 
-The pure data, decoder, and defaults live in `Compiler.Eco.Config`; this module
-only adds the IO: locate the file, read it, decode it, clamp out-of-range
-values (emitting warnings), and surface errors as `Exit.Make`.
+The settings come from two places, applied in this order. The first is a JSON
+file, `eco-config.json` in the project root or a file named explicitly. Values
+read from the file go through `Config.clamp`, which brings out-of-range values
+back within bounds, and a warning is printed for each value it changed. The
+second is a set of `ECO_*` environment variables, each overriding one setting,
+or a few related ones, of whatever the file gave. Because they are applied
+here, an override is part of the returned configuration; `Config.hash` decides
+which of its settings reach the cache key. They are not passed through
+`Config.clamp`; the few that guard their own values say so.
+
+Most of the module is the overrides: one small function per variable. A
+function returns the configuration unchanged when its variable is unset, and
+nearly all of them also when the value is not one they recognize; the
+exceptions say so. Words are matched after trimming whitespace and ignoring
+case, and numbers after trimming. The accepted words are not uniform, so each
+function's docstring lists its own. Where a setting has both a broadcast
+variable that sets several fields and per-field variables, the broadcast is
+read first, so a per-field value wins.
 
 @docs load
 
@@ -20,17 +38,17 @@ import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 
-{-| Load the effective config.
+{-| Returns the configuration for a project rooted at `root`: the settings read from
+a configuration file, with the `ECO_*` environment overrides applied on top.
 
-  - `maybeExplicit` is the `--config <path>` override, if any.
-  - Otherwise the default location `<root>/eco-config.json` is used.
-
-Rules:
-
-  - Default location absent → `Config.default` (silent; the common case).
-  - Explicit path absent → hard error (`Exit.MakeConfigNotFound`).
-  - Present but malformed → hard error (`Exit.MakeBadConfig`).
-  - Out-of-range values are clamped, with a warning printed to stderr.
+The file is `maybeExplicit` when given, and `root/eco-config.json` otherwise. If
+the default file does not exist, the built-in `Config.default` is used without
+comment, but a missing explicit file fails with `Exit.MakeConfigNotFound`. A
+file that cannot be read fails with `Exit.MakeFileIO`, and one that cannot be
+decoded with `Exit.MakeBadConfig`. A decoded file has its out-of-range values
+clamped, with a warning on stderr for each. An unrecognized `ECO_MONO_ENGINE`
+prints a warning on stderr and leaves the engine as it was; no other override
+prints anything.
 
 -}
 load : Maybe FilePath -> FilePath -> Task Exit.Make EcoConfig
@@ -39,7 +57,9 @@ load maybeExplicit root =
         |> Task.andThen applyEnvOverrides
 
 
-{-| Load the effective config from the file (or defaults), before env overrides.
+{-| Returns the configuration read from the file `load` describes, or
+`Config.default` when the default file does not exist, before any environment
+override.
 -}
 loadBase : Maybe FilePath -> FilePath -> Task Exit.Make EcoConfig
 loadBase maybeExplicit root =
@@ -73,50 +93,9 @@ loadBase maybeExplicit root =
             )
 
 
-{-| Apply developer env overrides on top of the file/default config:
-
-  - `ECO_MONO_ENGINE=subst|solver|diff` selects the monomorphizer engine.
-  - `ECO_MONO_DIFF_DUMP=1` makes `EngineDiff` embed full renderings on mismatch.
-  - `ECO_MONO_LSS=0|1` toggles lambda-set specialization (solver engine).
-  - `ECO_MONO_LSS_REPORT=1` renders the LSS census to stderr after mono.
-  - `ECO_INLINE_REPORT=1` renders the inline census to stderr after
-    inline+simplify (HOF-elimination plan H0.2).
-  - `ECO_INLINE_PRESERVE_SETS=1` makes the post-mono inliner decline the
-    strictly-partial inline, the only reshape that clears an LSS member
-    (plans/pre-mono-lss-transforms-02-inline-preserve-sets.md); participates in
-    the hash via the `psets=` token.
-  - `ECO_INLINE_PRUNE_DEAD=0` skips the post-inline dead-spec prune
-    (plans/post-inline-dead-spec-prune.md); default-on, participates in the
-    hash via the `prune=` token.
-  - `ECO_INLINE_HOF_THRESHOLD=<n>` overrides `inline.hofThreshold` (the H2
-    called-function-param inlining budget); experiment/tuning knob.
-  - `ECO_INLINE_FPI=<n>` BROADCASTS to both passes' round counts;
-    `ECO_INLINE_PRE_MONO_FPI` / `ECO_INLINE_POST_MONO_FPI` set one each
-    (deep chains need extra passes to cascade).
-  - `ECO_INLINE_THRESHOLD=<n>` BROADCASTS to all three size budgets;
-    `ECO_INLINE_PRE_MONO_THRESHOLD`, `ECO_INLINE_POST_MONO_THRESHOLD` and
-    `ECO_ETA_THRESHOLD` set one each. Before the 2026-09-15 split one field
-    drove `InlineSimplify`, `MonoInlineSimplify` AND `EtaExpand`, so no A/B
-    could attribute an effect to one pass.
-  - `ECO_INLINE_LOOPIFY=0` disables recursive-HOF loopification (plan H5);
-    escape hatch, participates in the hash via the `loop=` token.
-  - `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>` overrides
-    `inline.raiseAppliedShareMin` (H6.2.5 Lever 2 selective raising);
-    participates in the hash via the `arm=` token when nonzero.
-  - `ECO_CAF_MEMO=0` disables CAF memoization (default-on; per-SpecId lazy
-    once-init `eco.global` slots for nullary value thunks); participates in
-    the hash via the `cafm=` token.
-  - `ECO_CAF_HOIST=1|0`, `ECO_CAF_HOIST_MIN_NODES=<n>`, `ECO_CAF_HOIST_MAX=<n>`:
-    CAF hoisting of closed inner expressions (default-off; hash tokens
-    `cafh=`/`cafhN=`/`cafhM=` when enabled).
-  - `ECO_CAF_DEDUPE=1|0`: merge structurally identical nullary specs onto one
-    canonical spec (default-off; hash token `cafd=` when enabled).
-
-Applied here (not further downstream) so the override participates in
-`Config.hash`, which keys the Details cache. An unrecognized engine value is a
-loud stderr warning that keeps the current engine (rather than a hard failure)
-— this is a dev-only knob.
-
+{-| Returns `cfg` with every `ECO_*` environment override applied, one variable
+after another in a fixed order. Each variable's own function says what it
+accepts and sets.
 -}
 applyEnvOverrides : EcoConfig -> Task Exit.Make EcoConfig
 applyEnvOverrides cfg =
@@ -479,10 +458,8 @@ applyEnvOverrides cfg =
             )
 
 
-{-| `ECO_AGG_PROMOTE=1|true|yes`: U-T1.3.1 aggregate promotion — emit
-`eco.make.tuple2/3` for let-bound tuples the per-def use walk proves
-non-escaping. Artifact-affecting (folded into `Config.hash` as `aggp`), so
-flag-on builds never share flag-off caches. `0`/`off` disables.
+{-| Returns `cfg` with `aggPromote` switched on when `ECO_AGG_PROMOTE` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyAggPromoteOverride : Maybe String -> EcoConfig -> EcoConfig
 applyAggPromoteOverride maybeVal cfg =
@@ -505,9 +482,9 @@ applyAggPromoteOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_KERNEL_COST_CLASSES=1|0`: price kernel calls from their derived
-KernelFacts cost class instead of the flat 6 (kernel-opt-11 (b)).
-Artifact-affecting (hash token `kcc=<i>/<g>/<a>/<h>`). Unknown values ignored.
+{-| Returns `cfg` with `inline.kernelCostClasses` switched on when
+`ECO_KERNEL_COST_CLASSES` is `1`, `true`, `yes` or `on`, and off when it is `0`
+or `off`.
 -}
 applyKernelCostClassesOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostClassesOverride maybeVal cfg =
@@ -533,11 +510,9 @@ applyKernelCostClassesOverride maybeVal cfg =
                 cfg
 
 
-{-| The four cost constants (kernel-opt-11 (b)). Each is A/B'd solo, which is
-why they are config knobs rather than source constants: `Config.hash` keys the
-Details cache, and a source-constant change is invisible to it, so two legs
-would silently share `~/.eco` artifacts. A non-numeric or negative value is
-ignored.
+{-| Returns `cfg` with one of the inliner's kernel-call costs, chosen by `set`, set
+to the integer value of the variable. A value that is not an integer, or is
+negative, is ignored.
 -}
 applyKernelCostIntOverride : (Int -> InlineConfig -> InlineConfig) -> Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostIntOverride set maybeVal cfg =
@@ -553,37 +528,40 @@ applyKernelCostIntOverride set maybeVal cfg =
             cfg
 
 
-{-| `ECO_KERNEL_COST_INLINE=<n>`: cost of a kernel call that lowers to an op.
+{-| Returns `cfg` with `inline.kernelCostInline` set from `ECO_KERNEL_COST_INLINE`,
+a non-negative integer.
 -}
 applyKernelCostInlineOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostInlineOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostInline = n })
 
 
-{-| `ECO_KERNEL_COST_GCLEAF=<n>`: cost of a CGcLeaf kernel call.
+{-| Returns `cfg` with `inline.kernelCostGcLeaf` set from `ECO_KERNEL_COST_GCLEAF`,
+a non-negative integer.
 -}
 applyKernelCostGcLeafOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostGcLeafOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostGcLeaf = n })
 
 
-{-| `ECO_KERNEL_COST_ALLOC=<n>`: cost of a CAlloc kernel call.
+{-| Returns `cfg` with `inline.kernelCostAlloc` set from `ECO_KERNEL_COST_ALLOC`, a
+non-negative integer.
 -}
 applyKernelCostAllocOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostAllocOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostAlloc = n })
 
 
-{-| `ECO_KERNEL_COST_HOF=<n>`: cost of a CHof kernel call.
+{-| Returns `cfg` with `inline.kernelCostHof` set from `ECO_KERNEL_COST_HOF`,
+a non-negative integer.
 -}
 applyKernelCostHofOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelCostHofOverride =
     applyKernelCostIntOverride (\n i -> { i | kernelCostHof = n })
 
 
-{-| `ECO_CALL_PURITY=1|0`: stamp `eco.cse_safe` on droppable direct kernel
-calls (kernel-opt-12). Artifact-affecting (hash token `cpur=1`), so flag-on
-builds never share flag-off caches. Unknown values are ignored.
+{-| Returns `cfg` with `callPurityAttrs` switched on when `ECO_CALL_PURITY` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyCallPurityOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCallPurityOverride maybeVal cfg =
@@ -606,8 +584,9 @@ applyCallPurityOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_GC_PRE_LINK=0|1` and `ECO_GC_REPORT=0|1`. Unknown values are ignored.
-GC settings never affect `hash`.
+{-| Returns `cfg` with the `gc` setting chosen by `set` switched on when the
+variable is `1`, `true`, `yes` or `on`, and off when it is `0`, `false`, `no` or
+`off`. `ECO_GC_PRE_LINK` and `ECO_GC_REPORT` are read through it.
 -}
 applyGcBoolOverride : (Bool -> Config.GcConfig -> Config.GcConfig) -> Maybe String -> EcoConfig -> EcoConfig
 applyGcBoolOverride set maybeVal cfg =
@@ -630,22 +609,26 @@ applyGcBoolOverride set maybeVal cfg =
                 cfg
 
 
-{-| `ECO_CSE=1|0`: run the Mono-level CSE pass (kernel-opt-13).
-Artifact-affecting (hash token `cse=1`). Unknown values are ignored.
+{-| Returns `cfg` with `cse.enabled` set from `ECO_CSE`, which accepts what
+`applyCseBoolOverride` describes.
 -}
 applyCseEnabledOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCseEnabledOverride =
     applyCseBoolOverride (\b c -> { c | enabled = b })
 
 
-{-| `ECO_CSE_REPORT=1|0`: emit the C1 census to stderr. **Output-only** — it
-contributes no hash token, so a census run shares the flag-off caches.
+{-| Returns `cfg` with `cse.report` set from `ECO_CSE_REPORT`, which accepts what
+`applyCseBoolOverride` describes.
 -}
 applyCseReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCseReportOverride =
     applyCseBoolOverride (\b c -> { c | report = b })
 
 
+{-| Returns `cfg` with the `cse` setting chosen by `set` switched on when the
+variable is `1`, `true`, `yes` or `on`, and off when it is `0`, `false`, `no` or
+`off`.
+-}
 applyCseBoolOverride : (Bool -> Config.CseConfig -> Config.CseConfig) -> Maybe String -> EcoConfig -> EcoConfig
 applyCseBoolOverride set maybeVal cfg =
     case maybeVal of
@@ -667,6 +650,9 @@ applyCseBoolOverride set maybeVal cfg =
                 cfg
 
 
+{-| Returns `cfg` with the `cse` limit chosen by `set` set to the integer value of
+the variable. A value that is not an integer, or is negative, is ignored.
+-}
 applyCseIntOverride : (Int -> Config.CseConfig -> Config.CseConfig) -> Maybe String -> EcoConfig -> EcoConfig
 applyCseIntOverride set maybeVal cfg =
     case maybeVal |> Maybe.andThen (String.trim >> String.toInt) of
@@ -681,24 +667,25 @@ applyCseIntOverride set maybeVal cfg =
             cfg
 
 
-{-| `ECO_CSE_MIN_COST=<n>`: cost floor for a CSE candidate.
+{-| Returns `cfg` with `cse.minCost` set from `ECO_CSE_MIN_COST`, a non-negative
+integer.
 -}
 applyCseMinCostOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCseMinCostOverride =
     applyCseIntOverride (\n c -> { c | minCost = n })
 
 
-{-| `ECO_CSE_MAX_PER_DEF=<n>`: cap on merge groups per definition body.
+{-| Returns `cfg` with `cse.maxPerDef` set from `ECO_CSE_MAX_PER_DEF`,
+a non-negative integer.
 -}
 applyCseMaxPerDefOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCseMaxPerDefOverride =
     applyCseIntOverride (\n c -> { c | maxPerDef = n })
 
 
-{-| `ECO_KERNEL_FACTS_DCE=1|0`: let the dead-binding gate in
-`MonoInlineSimplify` drop a dead kernel call whose KernelFacts row is
-`droppable` (kernel-opt-11 (a)). Artifact-affecting (hash token `kfdce=1`), so
-flag-on builds never share flag-off caches. Unknown values are ignored.
+{-| Returns `cfg` with `inline.kernelFactsDce` switched on when
+`ECO_KERNEL_FACTS_DCE` is `1`, `true`, `yes` or `on`, and off when it is `0` or
+`off`.
 -}
 applyKernelFactsDceOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelFactsDceOverride maybeVal cfg =
@@ -724,11 +711,8 @@ applyKernelFactsDceOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_KERNEL_GCLEAF_EMIT=1|0`: force kernel gc-leaf attr emission on/off
-(kernel-opt-08; artifact-affecting, hash token `kgcl=1`). NOTE: this is the
-FRONT-END switch. The backend's independent kill switch is
-`ECO_KERNEL_GCLEAF=0`, which ignores an attr that is already in the `.mlir`.
-Unknown values are ignored.
+{-| Returns `cfg` with `kernelGcLeaf` switched on when `ECO_KERNEL_GCLEAF_EMIT` is
+`1`, `true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyKernelGcLeafEmitOverride : Maybe String -> EcoConfig -> EcoConfig
 applyKernelGcLeafEmitOverride maybeVal cfg =
@@ -751,10 +735,8 @@ applyKernelGcLeafEmitOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_CONST_THUNKS=0|1|2` (CGEN\_082, plans/mlir-split-backend-04-constant-thunks.md):
-constant-thunk folding phase. `0`/`off` disables, `1` folds literal / Unit /
-kernel-constant / alias-chain thunks, `2`/`on` (the default) also closed
-pure-arithmetic bodies. Artifact-affecting (hash token `cthk=N`).
+{-| Returns `cfg` with the `constThunks` level set from `ECO_CONST_THUNKS`: `0` or
+`off` gives 0, `1` gives 1, and `2`, `on`, `true` or `yes` gives 2.
 -}
 applyConstThunksOverride : Maybe String -> EcoConfig -> EcoConfig
 applyConstThunksOverride maybeVal cfg =
@@ -780,8 +762,9 @@ applyConstThunksOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_CONST_THUNK_REPORT=1|true|yes|on`: print the constant-thunk census
-(`ConstThunks.report`) on stderr. Output-only, not hashed.
+{-| Returns `cfg` with `constThunksReport` set from `ECO_CONST_THUNK_REPORT`. Unlike
+the other report variables, any value that is set decides it: `1`, `true`, `yes`
+or `on` switches it on, and anything else switches it off.
 -}
 applyConstThunksReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyConstThunksReportOverride maybeVal cfg =
@@ -797,10 +780,8 @@ applyConstThunksReportOverride maybeVal cfg =
             { cfg | constThunksReport = t == "1" || t == "true" || t == "yes" || t == "on" }
 
 
-{-| `ECO_VALUE_EQ=1|true|yes|on` (`0|off` disables): kernel-opt-03 -- lower boxed
-structural equality to `eco.value.eq`. Artifact-affecting (hash token `veq=1`).
-Bool `==` is deliberately NOT gated by this: it lowers to one `arith.xori` and is
-unconditionally better than the boxed kernel call.
+{-| Returns `cfg` with `valueEq` switched on when `ECO_VALUE_EQ` is `1`, `true`,
+`yes` or `on`, and off when it is `0` or `off`.
 -}
 applyValueEqOverride : Maybe String -> EcoConfig -> EcoConfig
 applyValueEqOverride maybeVal cfg =
@@ -823,10 +804,9 @@ applyValueEqOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_STRING_ORDER_INTRINSIC=1|true|yes|on` (`0|off` disables): kernel-opt-06
--- lower `Utils.lt/le/gt/ge` on two Strings to `eco.string.cmp3` plus a signed
-test against 0, instead of a boxed kernel call whose Bool is immediately
-unboxed. Artifact-affecting (hash token `strord=1` when enabled).
+{-| Returns `cfg` with `stringOrderIntrinsic` switched on when
+`ECO_STRING_ORDER_INTRINSIC` is `1`, `true`, `yes` or `on`, and off when it is
+`0` or `off`.
 -}
 applyStringOrderIntrinsicOverride : Maybe String -> EcoConfig -> EcoConfig
 applyStringOrderIntrinsicOverride maybeVal cfg =
@@ -849,10 +829,8 @@ applyStringOrderIntrinsicOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_APPEND_SPLIT=1|true|yes|on` (`0|off` disables): kernel-opt-05 -- emit
-typed `eco.string.append` / `eco.list.append` at mono sites that statically know
-the operand type, instead of the polymorphic `Elm_Kernel_Utils_append` call.
-Artifact-affecting (hash token `apsplit=1` when enabled).
+{-| Returns `cfg` with `appendSplit` switched on when `ECO_APPEND_SPLIT` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyAppendSplitOverride : Maybe String -> EcoConfig -> EcoConfig
 applyAppendSplitOverride maybeVal cfg =
@@ -875,12 +853,8 @@ applyAppendSplitOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_STRING_LENGTH_OP=1|true|yes|on` (`0|off` disables): kernel-opt-04 —
-emit `eco.string.length` (an inline `header.size` load) instead of calling
-`Elm_Kernel_String_length`. Artifact-affecting (hash token `strlen=1` when
-enabled), so flag-on builds never share flag-off caches. The separate BACKEND
-knob `ECO_STRING_LEN_INLINE=0` chooses a plain kernel call as the lowering and
-needs no compiler rebuild.
+{-| Returns `cfg` with `stringLengthOp` switched on when `ECO_STRING_LENGTH_OP` is
+`1`, `true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyStringLengthOpOverride : Maybe String -> EcoConfig -> EcoConfig
 applyStringLengthOpOverride maybeVal cfg =
@@ -903,10 +877,8 @@ applyStringLengthOpOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_CTOR_INLINE=1|true|yes`: U-T1.3.2c ctor-call inlining — saturated
-direct constructor calls emit `eco.construct.custom` in the caller instead
-of calling the ctor function. Hash-relevant ("ctori"), so flag-on builds
-never share flag-off caches. `0`/`off` disables.
+{-| Returns `cfg` with `ctorInline` switched on when `ECO_CTOR_INLINE` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyCtorInlineOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCtorInlineOverride maybeVal cfg =
@@ -929,10 +901,8 @@ applyCtorInlineOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_SRET_RESULTS=1|true|yes`: U-T1.3.3 result promotion — eligible
-tuple-returning functions gain a multi-result `$sret` worker and
-destructuring call sites migrate to it. Hash-relevant ("sretr").
-`0`/`off` disables.
+{-| Returns `cfg` with `sretResults` switched on when `ECO_SRET_RESULTS` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applySretResultsOverride : Maybe String -> EcoConfig -> EcoConfig
 applySretResultsOverride maybeVal cfg =
@@ -955,10 +925,8 @@ applySretResultsOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_SRET_FRESH=0|off`: U-T1.3.8 — disable the helper-mediated-result
-widening of sret selection (leaf = direct call to a promoted callee with
-identical slots). DEFAULT-ON since 2026-08-04. Hash-relevant when enabled
-("sretf=1").
+{-| Returns `cfg` with `sretFresh` switched on when `ECO_SRET_FRESH` is `1`, `true`,
+`yes` or `on`, and off when it is `0` or `off`.
 -}
 applySretFreshOverride : Maybe String -> EcoConfig -> EcoConfig
 applySretFreshOverride maybeVal cfg =
@@ -981,11 +949,8 @@ applySretFreshOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_SRET_TAILFUNC=0|off`: U-T1.3.6 — disable the tail-func widening of
-sret result promotion. DEFAULT-ON since 2026-08-04 by user decision,
-accepting the measured ~+4% self-compile wall regression that cancels
-T1.3.3's win (see the tier-1 plan's T1.3.6 as-built). Hash-relevant when
-enabled ("srtf=1").
+{-| Returns `cfg` with `sretTailFuncs` switched on when `ECO_SRET_TAILFUNC` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applySretTailFuncOverride : Maybe String -> EcoConfig -> EcoConfig
 applySretTailFuncOverride maybeVal cfg =
@@ -1008,10 +973,8 @@ applySretTailFuncOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_PSPLIT_PARAMS=1|true|yes`: U-T1.3.5 param-side promotion —
-projection-only aggregate params gain a `$psplit` scalar-params worker;
-free-slot call sites migrate. Hash-relevant ("psplit"). `0`/`off`
-disables.
+{-| Returns `cfg` with `psplitParams` switched on when `ECO_PSPLIT_PARAMS` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyPsplitParamsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyPsplitParamsOverride maybeVal cfg =
@@ -1034,10 +997,9 @@ applyPsplitParamsOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_BORROW=off|1|rc`: run the borrow-inference analysis (GlobalOpt
-Phase 6). `1`/`true`/`yes`/`on` ⇒ census oracle (enabled, reify=ROff, graph
-unchanged); `rc` ⇒ enabled + reify=RRc (RRc is a no-op until B4); `off`/`0` ⇒
-disabled. Unknown values are ignored.
+{-| Returns `cfg` with borrow inference set from `ECO_BORROW`. `1`, `true`, `yes` or
+`on` enables it with `reify` set to `ROff`, and `rc` enables it with `reify` set
+to `RRc`. `0` or `off` disables it and leaves `reify` as it was.
 -}
 applyBorrowOverride : Maybe String -> EcoConfig -> EcoConfig
 applyBorrowOverride maybeVal cfg =
@@ -1066,9 +1028,10 @@ applyBorrowOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_BORROW_REPORT=1|true|yes`: emit the borrow census to stderr after
-GlobalOpt. Also enables the pass (so the census actually runs even if
-`ECO_BORROW` was not set). Output-only, excluded from `Config.hash`.
+{-| Returns `cfg` with `borrow.report` switched on when `ECO_BORROW_REPORT` is `1`,
+`true` or `yes`. It also switches on `borrow.enabled`, and since it is read
+after `ECO_BORROW`, it does so even when `ECO_BORROW` disabled the analysis. No
+value turns either off.
 -}
 applyBorrowReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyBorrowReportOverride maybeVal cfg =
@@ -1096,9 +1059,8 @@ applyBorrowReportOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_LIST_CHUNKS=1|0`: force chunked-list codegen on/off
-(plans/chunked-list-representation.md; artifact-affecting, hash token
-`lchunks=1`). Unknown values are ignored.
+{-| Returns `cfg` with `list.chunks` switched on when `ECO_LIST_CHUNKS` is `1`,
+`true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyListChunksOverride : Maybe String -> EcoConfig -> EcoConfig
 applyListChunksOverride maybeVal cfg =
@@ -1124,9 +1086,9 @@ applyListChunksOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_LIST_CONS_INTRINSIC=1|true|yes|on` (`0|off` disables): lower saturated
-`x :: xs` to `eco.construct.list` instead of `Elm_Kernel_List_cons*`
-(kernel-opt-01). Artifact-affecting — hash token `lcons=1` when enabled.
+{-| Returns `cfg` with `list.consIntrinsic` switched on when
+`ECO_LIST_CONS_INTRINSIC` is `1`, `true`, `yes` or `on`, and off when it is `0`
+or `off`.
 -}
 applyListConsIntrinsicOverride : Maybe String -> EcoConfig -> EcoConfig
 applyListConsIntrinsicOverride maybeVal cfg =
@@ -1152,11 +1114,8 @@ applyListConsIntrinsicOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_LIST_MAP_TEMPLATE=1|true|yes|on` (`0|off` disables): replace the body
-of a licensed `List.map` specialization with a forward-iterating
-`eco.list.map` op (plans/list-map-mlir-template.md). DEFAULT OFF.
-Artifact-affecting — hash token `lmapt=1` when enabled. Inert unless
-`list.chunks` is also on.
+{-| Returns `cfg` with `list.mapTemplate` switched on when `ECO_LIST_MAP_TEMPLATE`
+is `1`, `true`, `yes` or `on`, and off when it is `0` or `off`.
 -}
 applyListMapTemplateOverride : Maybe String -> EcoConfig -> EcoConfig
 applyListMapTemplateOverride maybeVal cfg =
@@ -1182,8 +1141,8 @@ applyListMapTemplateOverride maybeVal cfg =
                 cfg
 
 
-{-| `ECO_LIST_REPORT=1|true|yes`: emit the List-combinator recognition
-census to stderr after GlobalOpt (output-only, excluded from `hash`).
+{-| Returns `cfg` with `list.report` switched on when `ECO_LIST_REPORT` is `1`,
+`true` or `yes`. No value turns it off.
 -}
 applyListReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyListReportOverride maybeVal cfg =
@@ -1211,6 +1170,10 @@ applyListReportOverride maybeVal cfg =
         cfg
 
 
+{-| Returns `cfg` with the monomorphizer engine that `ECO_MONO_ENGINE` names, as
+`Config.monoEngineFromString` reads it. A blank value is ignored, and any other
+value it does not recognize prints a warning on stderr and keeps the engine.
+-}
 applyEngineOverride : Maybe String -> EcoConfig -> Task Exit.Make EcoConfig
 applyEngineOverride maybeVal cfg =
     case maybeVal of
@@ -1235,6 +1198,9 @@ applyEngineOverride maybeVal cfg =
                             |> Task.map (\_ -> cfg)
 
 
+{-| Returns `cfg` with `mono.diffDump` switched on when `ECO_MONO_DIFF_DUMP` is `1`,
+`true` or `yes`. No value turns it off.
+-}
 applyDumpOverride : Maybe String -> EcoConfig -> EcoConfig
 applyDumpOverride maybeVal cfg =
     let
@@ -1261,9 +1227,8 @@ applyDumpOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_MONO_VALIDATE=1`: run the MONO\_029 layout-agreement validator
-(Compiler.Monomorphize.ValidateLayout) after monomorphization and fail the
-compile on violations. Output-only debug/CI knob, never from JSON.
+{-| Returns `cfg` with `mono.validate` switched on when `ECO_MONO_VALIDATE` is `1`,
+`true` or `yes`. No value turns it off.
 -}
 applyValidateOverride : Maybe String -> EcoConfig -> EcoConfig
 applyValidateOverride maybeVal cfg =
@@ -1291,12 +1256,9 @@ applyValidateOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_MONO_LSS=0|1`: toggle lambda-set specialization. Unknown values are
-ignored (dev-only knob; silence beats failure here since `0` must always be a
-safe escape hatch). `keyed` and `unkeyed` are accepted as no-ops for existing
-scripts: all-globals keying became unconditional under LSS when `lss.keyed`
-was fixed at its default and removed (2026-09-18), so there is no longer an
-unkeyed mode to select.
+{-| Returns `cfg` with lambda-set specialization switched off when `ECO_MONO_LSS` is
+`0`, and on when it is `1`, `keyed` or `unkeyed`. The last two mean the same as
+`1`.
 -}
 applyLssOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssOverride maybeVal cfg =
@@ -1317,13 +1279,9 @@ applyLssOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_MAX_SPECS=<n>`: override `mono.lss.maxSpecsPerGlobal`
-(the keyed-mode spec budget, design §8.5). **0 = UNLIMITED — the default
-since 2026-08-29.** Test/tuning knob — a tiny value (1, not 0) forces the
-budget-exhausted widened-key + LSS\_010-join fallback so the mixed-mode
-path can be exercised deliberately. Non-numeric values are ignored.
-Participates in the config hash via the `lssB=` token, so eco-stuff
-artifacts never alias across budgets.
+{-| Returns `cfg` with `mono.lss.maxSpecsPerGlobal` set from
+`ECO_MONO_LSS_MAX_SPECS`. Any integer is taken, including zero or a negative
+number, which mean no limit.
 -}
 applyLssBudgetOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssBudgetOverride maybeVal cfg =
@@ -1335,11 +1293,8 @@ applyLssBudgetOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_MAX_SET_SIZE=<n>`: override `mono.lss.maxSetSize` (a zonked
-set larger than this widens to `LTop`). **0 = UNLIMITED — the default since
-2026-08-29** (plans/lss-provenance-join-and-demand-sigs.md §4.7). Non-numeric
-values are ignored. Participates in the config hash via the existing
-non-default `maxSetSize` token, so eco-stuff artifacts never alias.
+{-| Returns `cfg` with `mono.lss.maxSetSize` set from `ECO_MONO_LSS_MAX_SET_SIZE`.
+Any integer is taken, including zero or a negative number, which mean no limit.
 -}
 applyLssMaxSetSizeOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssMaxSetSizeOverride maybeVal cfg =
@@ -1351,12 +1306,8 @@ applyLssMaxSetSizeOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_CAF_MEMO=1|true|yes / 0|false|no`: CAF memoization — per-SpecId
-lazy once-init `eco.global` slots for nullary value thunks
-(plans/caf-memoization-implementation.md). DEFAULT-ON, so the override is
-bidirectional: `0|false|no` is the escape hatch (compile-time only — the
-guard is baked into generated code). Unset or unrecognized leaves the
-config/default value. Participates in the hash via the `cafm=` token.
+{-| Returns `cfg` with `cafMemo.enabled` switched on when `ECO_CAF_MEMO` is `1`,
+`true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyCafMemoOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafMemoOverride maybeVal cfg =
@@ -1375,9 +1326,8 @@ applyCafMemoOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_CAF_CENSUS=1|true|yes`: render the inner-CAF opportunity census
-(Compiler.GlobalOpt.CafCensus) over the final MonoGraph to stderr after
-GlobalOpt. Output-only debug knob, never affects artifacts or the hash.
+{-| Returns `cfg` with `cafMemo.census` switched on when `ECO_CAF_CENSUS` is `1`,
+`true` or `yes`. No value turns it off.
 -}
 applyCafCensusOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafCensusOverride maybeVal cfg =
@@ -1401,10 +1351,8 @@ applyCafCensusOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_CAF_DEDUPE=1|true|yes / 0|false|no`: CAF spec dedupe — merge
-structurally identical nullary `MonoDefine` specs onto one canonical spec
-(Compiler.GlobalOpt.CafDedupe). Default-off pending Run Y. Artifact-affecting;
-participates in the hash via the `cafd=` token.
+{-| Returns `cfg` with `cafMemo.dedupe` switched on when `ECO_CAF_DEDUPE` is `1`,
+`true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyCafDedupeOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafDedupeOverride maybeVal cfg =
@@ -1423,10 +1371,8 @@ applyCafDedupeOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_CAF_HOIST=1|true|yes / 0|false|no`: CAF hoisting — closed
-expressions inside function bodies get per-SpecId slots
-(plans/caf-hoist-closed-expressions.md). Default-off during bring-up.
-Participates in the hash via the `cafh=` token.
+{-| Returns `cfg` with `cafMemo.hoist.enabled` switched on when `ECO_CAF_HOIST` is
+`1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyCafHoistOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafHoistOverride maybeVal cfg =
@@ -1449,8 +1395,8 @@ applyCafHoistOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_CAF_HOIST_MIN_NODES=<n>`: original-subtree size floor for hoisting
-(plan DQ1). Tuning/sweep knob; hash token `cafhN=` when non-default.
+{-| Returns `cfg` with `cafMemo.hoist.minNodes` set from `ECO_CAF_HOIST_MIN_NODES`.
+Any integer is taken, including a negative one.
 -}
 applyCafHoistMinNodesOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafHoistMinNodesOverride maybeVal cfg =
@@ -1462,8 +1408,8 @@ applyCafHoistMinNodesOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_CAF_HOIST_MAX=<n>`: global mint budget safety valve (plan DQ1).
-Tuning/sweep knob; hash token `cafhM=` when non-default.
+{-| Returns `cfg` with `cafMemo.hoist.maxHoists` set from `ECO_CAF_HOIST_MAX`. Any
+integer is taken, including a negative one.
 -}
 applyCafHoistMaxOverride : Maybe String -> EcoConfig -> EcoConfig
 applyCafHoistMaxOverride maybeVal cfg =
@@ -1475,6 +1421,8 @@ applyCafHoistMaxOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `f` applied to its CAF hoisting settings.
+-}
 updateCafHoist : (Config.CafHoistConfig -> Config.CafHoistConfig) -> EcoConfig -> EcoConfig
 updateCafHoist f cfg =
     let
@@ -1484,11 +1432,8 @@ updateCafHoist f cfg =
     { cfg | cafMemo = { cafMemo | hoist = f cafMemo.hoist } }
 
 
-{-| `ECO_STAGING_REPORT=1|true|yes`: print the staging and generic-call census
-after global optimization and tag generic calls with their reason
-(plans/staging-honesty-and-production-test-pipeline.md P0). Separate from
-`ECO_MONO_LSS_REPORT`, whose own census aborts the self-compile on a
-shadow-root-stack overflow in `List.sortBy`.
+{-| Returns `cfg` with `mono.stagingReport` switched on when `ECO_STAGING_REPORT` is
+`1`, `true` or `yes`. No value turns it off.
 -}
 applyStagingReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyStagingReportOverride maybeVal cfg =
@@ -1508,7 +1453,8 @@ applyStagingReportOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_REPORT=1|true|yes`: render the LSS census after mono.
+{-| Returns `cfg` with `mono.lss.report` switched on when `ECO_MONO_LSS_REPORT` is
+`1`, `true` or `yes`. No value turns it off.
 -}
 applyLssReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssReportOverride maybeVal cfg =
@@ -1532,10 +1478,8 @@ applyLssReportOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_INLINE_HOF_THRESHOLD=<n>`: override `inline.hofThreshold` (the H2
-called-function-param budget). Participates in the config hash via the
-`hthr=` token, so eco-stuff artifacts never alias across budgets.
-Non-numeric values are ignored.
+{-| Returns `cfg` with `inline.hofThreshold` set from `ECO_INLINE_HOF_THRESHOLD`.
+Any integer is taken, including a negative one.
 -}
 applyHofThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyHofThresholdOverride maybeVal cfg =
@@ -1551,8 +1495,8 @@ applyHofThresholdOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_LOOPIFY=0|false|no`: disable recursive-HOF loopification
-(plan H5 escape hatch). Any other value leaves the config untouched.
+{-| Returns `cfg` with `inline.loopify` switched off when `ECO_INLINE_LOOPIFY` is
+`0`, `false` or `no`. No value turns it on.
 -}
 applyLoopifyOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLoopifyOverride maybeVal cfg =
@@ -1580,9 +1524,8 @@ applyLoopifyOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_ARITY_RAISE=1|true|yes`: enable H6.2 U2b staged-spec arity
-raising (experimental, default off). Participates in the config hash via
-the `ar=` token (present only when enabled).
+{-| Returns `cfg` with `inline.arityRaise` switched on when `ECO_ARITY_RAISE` is
+`1`, `true` or `yes`. No value turns it off.
 -}
 applyArityRaiseOverride : Maybe String -> EcoConfig -> EcoConfig
 applyArityRaiseOverride maybeVal cfg =
@@ -1610,12 +1553,9 @@ applyArityRaiseOverride maybeVal cfg =
         cfg
 
 
-{-| `ECO_ARITY_RAISE_MIN_APPLIED=<0..100>`: override
-`inline.raiseAppliedShareMin` (H6.2.5 Lever 2 — raise a staged spec only
-when at least this percent of its saturated-call results are applied).
-Participates in the config hash via the `arm=` token (present only when
-nonzero and raising is enabled). Non-numeric values are ignored; values
-are clamped to [0,100].
+{-| Returns `cfg` with `inline.raiseAppliedShareMin` set from
+`ECO_ARITY_RAISE_MIN_APPLIED`, an integer brought within 0 to 100 without a
+warning.
 -}
 applyRaiseMinAppliedOverride : Maybe String -> EcoConfig -> EcoConfig
 applyRaiseMinAppliedOverride maybeVal cfg =
@@ -1631,13 +1571,9 @@ applyRaiseMinAppliedOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_PRESERVE_SETS=1|true|yes`: make `MonoInlineSimplify` decline
-the strictly-partial inline — the one reshape that clears an LSS member
-identity — so the callee's PAP (a stampable `p|` member) is left in place
-(plans/pre-mono-lss-transforms-02-inline-preserve-sets.md). Beats
-`ECO_INLINE_PARTIAL_HOF`, which exists to force that same arm, and applies to
-whitelisted candidates too. Artifact-affecting; hash token `psets=`. DEFAULT-ON
-since 2026-09-12 (`=0` turns it off; benchmarks/call-stats.md Runs 7/8).
+{-| Returns `cfg` with `inline.preserveSets` switched on when
+`ECO_INLINE_PRESERVE_SETS` is `1`, `true` or `yes`, and off when it is `0`,
+`false` or `no`.
 -}
 applyInlinePreserveSetsOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreserveSetsOverride maybeVal cfg =
@@ -1660,18 +1596,8 @@ applyInlinePreserveSetsOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_PRUNE_DEAD=0|false|no`: skip the post-inline dead-spec prune
-(plans/post-inline-dead-spec-prune.md).
-
-`MonoInlineSimplify` orphans a specialization whenever it inlines the only
-reference to it; nothing removed those before this pass, because `Prune` runs
-at the end of monomorphization and the inliner returns empty `callEdges`.
-MEASURED: 6,608 unreferenced code-bearing functions on the self-compile,
-4.86 % of the emitted text, and every `g1absentl` AbiCloning decline. ON by
-default; `=0` is for the byte-identity gate and for bisecting a dangling
-reference if a later pass ever introduces one. Artifact-affecting; hash token
-`prune=`.
-
+{-| Returns `cfg` with `inline.pruneDead` switched on when `ECO_INLINE_PRUNE_DEAD`
+is `1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyInlinePruneDeadOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePruneDeadOverride maybeVal cfg =
@@ -1694,21 +1620,8 @@ applyInlinePruneDeadOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_PARTIAL_HOF=1|true|yes`: let a candidate admitted via
-`inline.hofThreshold` inline at a STRICTLY-PARTIAL call site too, instead of
-only at exact (saturated) ones.
-
-This is the single gate keeping the IO monad's bind out of the inliner:
-`andThen f ma` supplies 2 of 3 arguments at all 367 of its sites, so it is
-never an exact call. Forcing it in via the whitelist measured **-8.77 %**
-generic dispatch (plans/over-application-re-entry.md, appendix), and this is the
-general, non-codebase-specific form of that.
-
-The refusal it lifts exists because a partial rebuild's re-staged closure once
-tripped the runtime typed-apply arity assert when a caller over-applied it —
-so treat a crash or a wrong answer under this flag as that class, not as a new
-bug. Artifact-affecting; hash token `phof=`. DEFAULT-OFF.
-
+{-| Returns `cfg` with `inline.partialHof` switched on when `ECO_INLINE_PARTIAL_HOF`
+is `1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyInlinePartialHofOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePartialHofOverride maybeVal cfg =
@@ -1731,21 +1644,10 @@ applyInlinePartialHofOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_THRESHOLD=<n>`: BROADCAST — sets `preMonoThreshold`,
-`postMonoThreshold` AND `etaThreshold` together. Kept because
-`ECO_INLINE_THRESHOLD=0` ("no inlining anywhere") is a standing test leg; the
-per-pass variables below are read AFTER it in the chain, so each one overrides
-the broadcast for its own pass. Was the only knob for all three passes until
-the 2026-09-15 split.
-
-Legacy note — the general
-inlining cost budget (default 10).
-
-Raising it past a spec's cost flips that spec out of `exactOnly`, which
-permits PARTIAL inlining — so this is the blunt instrument whose targeted
-sibling is `ECO_INLINE_PARTIAL_HOF`. Already in the config hash as `thr=`, so
-each value is cache-disjoint without a new token. Experiment/tuning knob.
-
+{-| Returns `cfg` with all three size budgets, `inline.preMonoThreshold`,
+`inline.postMonoThreshold` and `inline.etaThreshold`, set from
+`ECO_INLINE_THRESHOLD`. A negative integer is taken as 0. The per-budget
+variables are read after this one, so each overrides it for its own budget.
 -}
 applyInlineThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlineThresholdOverride maybeVal cfg =
@@ -1768,13 +1670,8 @@ applyInlineThresholdOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_PRE_MONO=0|1`: run `InlineSimplify` BEFORE monomorphization
-(plans/pre-mono-inline-simplify.md). Artifact-affecting; hash token `preInl=`.
-**DEFAULT-OFF since 2026-09-15** (`=1` turns it on), reversing the 2026-09-11
-flip: `aliasForward` took over the alias-wrapper population this pass served,
-and call-stats Runs 17-20 price the remainder at +0.29 % generic dispatch for
-484 bytes of artifact. Gates ONLY `InlineSimplify` — `AliasForward` and
-`EtaExpand` are separate passes with their own flags and still run.
+{-| Returns `cfg` with `inline.preMono` switched on when `ECO_INLINE_PRE_MONO` is
+`1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyInlinePreMonoOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreMonoOverride maybeVal cfg =
@@ -1797,9 +1694,10 @@ applyInlinePreMonoOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_ETA_ONLY=Mod.A,Mod.B`: DIAGNOSTIC — restrict `PreMono.EtaExpand`
-to globals whose module name starts with one of the listed prefixes (the
-2026-09-11 bootstrap fixed-point bisect). Empty/unset = every module.
+{-| Returns `cfg` with `inline.etaOnly` set from `ECO_INLINE_ETA_ONLY`,
+a comma-separated list of module-name prefixes, trimmed, with empty entries
+dropped. Whenever the variable is set, its list replaces the file's, so an empty value
+clears the restriction.
 -}
 applyInlineEtaOnlyOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlineEtaOnlyOverride maybeVal cfg =
@@ -1820,24 +1718,8 @@ applyInlineEtaOnlyOverride maybeVal cfg =
             cfg
 
 
-{-| Per-pass size budgets and round counts (2026-09-15 split). Each reads its
-own environment variable and is applied AFTER the `ECO_INLINE_THRESHOLD` /
-`ECO_INLINE_FPI` broadcasts, so a per-pass value always wins.
-
-`ECO_INLINE_PRE_MONO_THRESHOLD` — `InlineSimplify`'s candidate size gate
-(`cost body > preMonoThreshold` refuses the DEFINITION, so none of its call
-sites is considered). Hash token `preThr=`.
-
-`ECO_INLINE_POST_MONO_THRESHOLD` — `MonoInlineSimplify`'s budget; the effective
-HOF budget is `max postMonoThreshold hofThreshold`. Hash token `postThr=`.
-
-`ECO_ETA_THRESHOLD` — `PreMono.EtaExpand`'s CHEAPNESS gate, which is not an
-inlining budget at all: it decides whether the work left of a new binder is
-cheap enough to move from once-per-CAF to once-per-call. Hash token `etaThr=`.
-
-`ECO_INLINE_PRE_MONO_FPI` / `ECO_INLINE_POST_MONO_FPI` — per-pass round counts.
-Hash tokens `preFpi=` / `postFpi=`.
-
+{-| Returns `cfg` with `inline.preMonoThreshold` set from
+`ECO_INLINE_PRE_MONO_THRESHOLD`. A negative integer is taken as 0.
 -}
 applyInlinePreMonoThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreMonoThresholdOverride maybeVal cfg =
@@ -1853,6 +1735,9 @@ applyInlinePreMonoThresholdOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `inline.postMonoThreshold` set from
+`ECO_INLINE_POST_MONO_THRESHOLD`. A negative integer is taken as 0.
+-}
 applyInlinePostMonoThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePostMonoThresholdOverride maybeVal cfg =
     case Maybe.andThen (String.toInt << String.trim) maybeVal of
@@ -1867,6 +1752,9 @@ applyInlinePostMonoThresholdOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `inline.etaThreshold` set from `ECO_ETA_THRESHOLD`. A
+negative integer is taken as 0.
+-}
 applyEtaThresholdOverride : Maybe String -> EcoConfig -> EcoConfig
 applyEtaThresholdOverride maybeVal cfg =
     case Maybe.andThen (String.toInt << String.trim) maybeVal of
@@ -1881,6 +1769,9 @@ applyEtaThresholdOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `inline.preMonoFixpointIterations` set from
+`ECO_INLINE_PRE_MONO_FPI`. Any integer is taken, including a negative one.
+-}
 applyInlinePreMonoFpiOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePreMonoFpiOverride maybeVal cfg =
     case Maybe.andThen (String.trim >> String.toInt) maybeVal of
@@ -1895,6 +1786,9 @@ applyInlinePreMonoFpiOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `inline.postMonoFixpointIterations` set from
+`ECO_INLINE_POST_MONO_FPI`. Any integer is taken, including a negative one.
+-}
 applyInlinePostMonoFpiOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePostMonoFpiOverride maybeVal cfg =
     case Maybe.andThen (String.trim >> String.toInt) maybeVal of
@@ -1909,10 +1803,9 @@ applyInlinePostMonoFpiOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_ALIAS_FORWARD=1|true|yes`: run `PreMono.AliasForward` before
-monomorphization (plans/pre-mono-lss-transforms-04-alias-forwarding.md).
-Artifact-affecting; hash token `afwd=`. DEFAULT-ON since 2026-09-14 (`=0` turns
-it off).
+{-| Returns `cfg` with `inline.aliasForward` switched on when
+`ECO_INLINE_ALIAS_FORWARD` is `1`, `true` or `yes`, and off when it is `0`,
+`false` or `no`.
 -}
 applyInlineAliasForwardOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlineAliasForwardOverride maybeVal cfg =
@@ -1935,11 +1828,8 @@ applyInlineAliasForwardOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_ETA_EXPAND=1|true|yes`: run `PreMono.EtaExpand` before
-monomorphization
-(plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md).
-Artifact-affecting; hash token `eta=`. DEFAULT-ON since 2026-09-11 (`=0`
-turns it off).
+{-| Returns `cfg` with `inline.etaExpand` switched on when `ECO_INLINE_ETA_EXPAND`
+is `1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyInlineEtaExpandOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlineEtaExpandOverride maybeVal cfg =
@@ -1962,10 +1852,8 @@ applyInlineEtaExpandOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_POST_MONO=0|false|no`: skip `MonoInlineSimplify`, the existing
-inliner that runs AFTER monomorphization. Artifact-affecting; hash token
-`postInl=`. DEFAULT-ON, so `=0` is the interesting setting — it is the EARLY arm
-of the position A/B (plans/pre-mono-inline-simplify.md §7).
+{-| Returns `cfg` with `inline.postMono` switched on when `ECO_INLINE_POST_MONO` is
+`1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyInlinePostMonoOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlinePostMonoOverride maybeVal cfg =
@@ -1988,10 +1876,11 @@ applyInlinePostMonoOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_FPI=<n>`: BROADCAST — sets `preMonoFixpointIterations` AND
-`postMonoFixpointIterations`. The per-pass variables are read after it and
-override it. Participates in the config hash via the `preFpi=`/`postFpi=`
-tokens. Non-numeric values are ignored.
+{-| Returns `cfg` with both inliners' round counts,
+`inline.preMonoFixpointIterations` and `inline.postMonoFixpointIterations`, set
+from `ECO_INLINE_FPI`. Any integer is taken, including a negative one.
+The per-pass variables are read after this one, so each overrides it for its
+own pass.
 -}
 applyFpiOverride : Maybe String -> EcoConfig -> EcoConfig
 applyFpiOverride maybeVal cfg =
@@ -2013,8 +1902,8 @@ applyFpiOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_INLINE_REPORT=1|true|yes`: render the inline census after
-inline+simplify. Output-only, never affects `Config.hash`.
+{-| Returns `cfg` with `inline.report` switched on when `ECO_INLINE_REPORT` is `1`,
+`true` or `yes`. No value turns it off.
 -}
 applyInlineReportOverride : Maybe String -> EcoConfig -> EcoConfig
 applyInlineReportOverride maybeVal cfg =
@@ -2042,6 +1931,8 @@ applyInlineReportOverride maybeVal cfg =
         cfg
 
 
+{-| Returns `cfg` with `f` applied to its lambda-set specialization settings.
+-}
 updateLss : (Config.LssConfig -> Config.LssConfig) -> EcoConfig -> EcoConfig
 updateLss f cfg =
     let
@@ -2051,6 +1942,8 @@ updateLss f cfg =
     { cfg | mono = { mono | lss = f mono.lss } }
 
 
+{-| Returns `cfg` with `f` applied to its monomorphization watchdog limits.
+-}
 updateLimits : (Config.SpecLimits -> Config.SpecLimits) -> EcoConfig -> EcoConfig
 updateLimits f cfg =
     let
@@ -2060,11 +1953,8 @@ updateLimits f cfg =
     { cfg | mono = { mono | limits = f mono.limits } }
 
 
-{-| `ECO_SPEC_TYPE_NODE_LIMIT=<n>` / `ECO_SPEC_BREADTH_LIMIT=<n>` (MONO\_030
-watchdogs): override the spec key-size / per-global breadth limits. `0`
-disables the check. Non-numeric values are ignored (dev knob). Failure-only —
-never participates in `Config.hash` (a failed compile is never cached; a
-passing compile is limit-invisible).
+{-| Returns `cfg` with `mono.limits.specTypeNodes` set from
+`ECO_SPEC_TYPE_NODE_LIMIT`. Any integer is taken; zero or less means no limit.
 -}
 applySpecTypeNodeLimitOverride : Maybe String -> EcoConfig -> EcoConfig
 applySpecTypeNodeLimitOverride maybeVal cfg =
@@ -2076,6 +1966,9 @@ applySpecTypeNodeLimitOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `cfg` with `mono.limits.specBreadth` set from `ECO_SPEC_BREADTH_LIMIT`.
+Any integer is taken; zero or less means no limit.
+-}
 applySpecBreadthLimitOverride : Maybe String -> EcoConfig -> EcoConfig
 applySpecBreadthLimitOverride maybeVal cfg =
     case Maybe.andThen (String.trim >> String.toInt) maybeVal of
@@ -2086,23 +1979,24 @@ applySpecBreadthLimitOverride maybeVal cfg =
             cfg
 
 
+{-| Returns `c` with its instance-qualification cap set to `n`.
+-}
 setStampMax : Int -> Config.LssStampConfig -> Config.LssStampConfig
 setStampMax n c =
     { c | maxInstances = n }
 
 
-{-| Record UPDATE, never a literal: a literal here silently stops compiling the
-moment `LssStampConfig` gains a field, and `elm-test-rs` will NOT catch it
-because nothing under `TestLogic` imports `Builder.*`.
+{-| Returns `c` with its census switch set to `v`. Being a record update, it keeps
+compiling if `LssStampConfig` gains fields.
 -}
 setStampCensus : Bool -> Config.LssStampConfig -> Config.LssStampConfig
 setStampCensus v c =
     { c | census = v }
 
 
-{-| `ECO_MONO_LSS_INSTANCE_QUAL_MAX=<int>`: the §3.3 hard cap on how many
-local-multi instances of one let-function get distinct member ids. 0 =
-unlimited (unbounded fan-out risk — measurement only). Hash token `lssIQM=`.
+{-| Returns `cfg` with `mono.lss.stamp.maxInstances` set from
+`ECO_MONO_LSS_INSTANCE_QUAL_MAX`. A negative integer is ignored; zero means no
+cap.
 -}
 applyLssInstanceQualMaxOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssInstanceQualMaxOverride maybeVal cfg =
@@ -2118,11 +2012,8 @@ applyLssInstanceQualMaxOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_QCENSUS=1|true|yes / 0|false|no` (§5.1/§5.6 shadow `Q`): record
-every inclusion constraint the solver emits, solve it at the inference boundary
-and score it against the store. Split from `lss.report` because the benchmark
-protocol mandates the latter and this is not free. DEFAULT-OFF. Hash token
-`lssQC=`.
+{-| Returns `cfg` with `mono.lss.qCensus` switched on when `ECO_MONO_LSS_QCENSUS` is
+`1`, `true` or `yes`, and off when it is `0`, `false` or `no`.
 -}
 applyLssQCensusOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssQCensusOverride maybeVal cfg =
@@ -2141,19 +2032,9 @@ applyLssQCensusOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_CENSUS=1|true|yes / 0|false|no`: collect the AbiCloning
-per-site census Dicts (`byHost`, `niGuard`, `shape`, `papSites`) — the join
-keys against the caller-attributed runtime dispatch census.
-
-Split from `lss.report` for `qCensus`'s reason: the benchmark protocol mandates
-`ECO_MONO_LSS_REPORT=1`, so anything under `report` is billed to every timed
-run, and this one builds a String key plus a Dict insert at ~43,000 sites per
-self-compile. The scalar counters are unaffected and stay on.
-
-With this OFF the census Dicts read empty, so a census binary must be built and
-run with it ON — see plans/lss-body-mismatch-declines.md §8.4 for the join
-error this prevents. DEFAULT-OFF. Hash token `lssCen=`.
-
+{-| Returns `cfg` with `mono.lss.stamp.census` switched on when
+`ECO_MONO_LSS_CENSUS` is `1`, `true` or `yes`, and off when it is `0`, `false`
+or `no`.
 -}
 applyLssCensusOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssCensusOverride maybeVal cfg =
@@ -2172,14 +2053,9 @@ applyLssCensusOverride maybeVal cfg =
             cfg
 
 
-{-| `ECO_MONO_LSS_ARROW_CENSUS=1|true|yes / 0|false|no`
-(plans/lss-provenance-ratio-census.md §7): mark every arrow peeled by an
-argument, so `var`/`set` arrows split into applied and never-applied. Costs a
-union-find `repr` and two counter bumps PER APPLICATION, which is why it is not
-under `report` — the benchmark protocol mandates `report`, and `qCensus` was
-split out for exactly this reason. REQUIRES `report` as well: the `ArrowId`
-comes from `arrowOfSlot`, which only exists under `report`. DEFAULT-OFF. Hash
-token `lssAC=`.
+{-| Returns `cfg` with `mono.lss.arrowCensus` switched on when
+`ECO_MONO_LSS_ARROW_CENSUS` is `1`, `true` or `yes`, and off when it is `0`,
+`false` or `no`.
 -}
 applyLssArrowCensusOverride : Maybe String -> EcoConfig -> EcoConfig
 applyLssArrowCensusOverride maybeVal cfg =
@@ -2198,7 +2074,7 @@ applyLssArrowCensusOverride maybeVal cfg =
             cfg
 
 
-{-| Clamp out-of-range values and print any resulting warnings to stderr.
+{-| Returns `cfg` after `Config.clamp`, printing each of its warnings on stderr.
 -}
 finishWithWarnings : EcoConfig -> Task Exit.Make EcoConfig
 finishWithWarnings cfg =

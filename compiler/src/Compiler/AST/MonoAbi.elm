@@ -11,8 +11,7 @@ Int, Float, Char and a number type variable (`MVar _ CNumber`, which is `i64`)
 are unboxed there, and everything else, Bool included, is `!eco.value`.
 
 This module holds only that mapping and the four MLIR types it produces, so that
-passes below the MLIR back end, such as the inliner's cost model in
-`Compiler.GlobalOpt.KernelIntrinsics`, can use it without depending on
+passes before the MLIR back end can use it without depending on
 `Compiler.Generate`. `Compiler.Generate.MLIR.Types` exposes the same functions,
 and describes the operand and heap rules that complete the picture.
 

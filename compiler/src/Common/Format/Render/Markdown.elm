@@ -3,11 +3,27 @@ module Common.Format.Render.Markdown exposing
     , formatMarkdown
     )
 
-{-| Markdown rendering and formatting utilities.
+{-| The formatter rewrites a doc comment by parsing its Markdown and printing
+it back, and this module is the printer.
 
-This module converts parsed Markdown AST structures back into formatted Markdown text.
-It handles proper spacing, indentation, escaping of special characters, and formatting
-of various block and inline elements including lists, code blocks, links, and emphasis.
+`formatMarkdown` turns the blocks of `Common.Format.Cheapskate.Types` into
+Markdown text in one fixed layout, whatever the source spelled. Emphasis is
+written with `_`, strong emphasis with `**`, a rule as `---`, a bullet item with
+a `-` after two spaces, and a numbered item with its number and a period. Text
+is escaped by putting a backslash before `\`, `` ` ``, `_` and `*`, and before
+no other character.
+
+Code blocks are the one place the output depends on more than the block itself.
+A block tagged `elm`, or with no tag, is offered to the code formatter the caller
+supplies, and kept as written when that returns `Nothing`. Such a block is
+written indented by four spaces, except straight after a list, where an
+indented block would read as part of the last item, so it is fenced instead.
+Code in any other language is always fenced.
+
+The text is framed for the inside of a doc comment: two newlines go before the
+first block unless the comment is empty or starts with a paragraph that does not
+begin `@docs`, and one more newline follows the last block when there are two or
+more blocks, or one block that got the leading newlines.
 
 @docs Context, LongestSpanResult
 @docs formatMarkdown
@@ -20,8 +36,14 @@ import Url
 import Utils.Main as Utils
 
 
-{-| Format a list of blocks as Markdown text.
-Takes a code formatter function for formatting code blocks.
+{-| Returns `blocks` as Markdown text, with Elm code blocks reformatted by
+`formatCode`.
+
+The text starts with two newlines unless `blocks` is empty or starts with a
+paragraph whose first two pieces of text are not `@` and `docs`. It ends with
+one extra newline when there are two or more blocks, or one block that also
+gets the leading newlines.
+
 -}
 formatMarkdown : (String -> Maybe String) -> Blocks -> String
 formatMarkdown formatCode blocks =
@@ -58,7 +80,8 @@ formatMarkdown formatCode blocks =
     formatMarkdown_ formatCode False needsInitialBlanks needsTrailingBlanks blocks
 
 
-{-| Map over a list with access to the previous element.
+{-| Applies `f` to each element of `list` together with the element before it,
+which is `Nothing` for the first.
 -}
 mapWithPrev : (Maybe a -> a -> b) -> List a -> List b
 mapWithPrev f list =
@@ -70,7 +93,14 @@ mapWithPrev f list =
             f Nothing first :: List.map2 (\prev next -> f (Just prev) next) (first :: rest) rest
 
 
-{-| Internal formatting function with control over blank lines and list context.
+{-| Returns `blocks` as Markdown text, with the leading two newlines and the
+trailing newline each switched on or off by its flag.
+
+Blocks are separated by a blank line, except in a list item (`isListItem`) made
+of exactly a paragraph followed by a list, which are written with no line
+between them. A block after a list is formatted in the `AfterIndentedList`
+context.
+
 -}
 formatMarkdown_ : (String -> Maybe String) -> Bool -> Bool -> Bool -> List Block -> String
 formatMarkdown_ formatCode isListItem needsInitialBlanks needsTrailingBlanks blocks =
@@ -108,14 +138,25 @@ formatMarkdown_ formatCode isListItem needsInitialBlanks needsTrailingBlanks blo
            )
 
 
-{-| Context for formatting decisions, tracking what came before.
+{-| What the block before a block was, as far as formatting it is concerned.
+
+`AfterIndentedList` means the previous block was a list, so an Elm code block
+here is fenced rather than indented. Every other position is `Normal`.
+
 -}
 type Context
     = Normal
     | AfterIndentedList
 
 
-{-| Format a single Markdown block.
+{-| Returns one block as Markdown text, given what came before it; non-empty
+output ends in a newline.
+
+A header is preceded by an extra newline. An `@docs` block writes one `@docs`
+line per group of names. A loose list puts a blank line between items; a tight
+one does not. A numbered list is renumbered from the item's position in the
+list, starting at 0, whatever numbers the source used.
+
 -}
 formatMardownBlock : (String -> Maybe String) -> Context -> Block -> String
 formatMardownBlock formatCode context block =
@@ -202,7 +243,8 @@ formatMardownBlock formatCode context block =
             List.map formatRef refs |> String.concat
 
 
-{-| Split a string into lines, removing a trailing empty line if present.
+{-| Splits a string into lines, dropping the one empty line that a final
+newline leaves at the end.
 -}
 lines : String -> List String
 lines str =
@@ -214,7 +256,8 @@ lines str =
             List.reverse result
 
 
-{-| Format a numbered list item with its index.
+{-| Returns a numbered list item, numbered `i`, with its continuation lines
+indented by four spaces.
 -}
 formatListItem : (String -> Maybe String) -> ( Int, Blocks ) -> String
 formatListItem formatCode ( i, item ) =
@@ -230,7 +273,8 @@ formatListItem formatCode ( i, item ) =
     formatMarkdown_ formatCode True False False item |> prefix_ pref "    "
 
 
-{-| Format a link reference definition.
+{-| Returns a link reference definition line, `[label]: url "title"`, leaving
+out the title when it is empty.
 -}
 formatRef : ( String, String, String ) -> String
 formatRef ( label, url, title ) =
@@ -247,14 +291,15 @@ formatRef ( label, url, title ) =
         ++ "\n"
 
 
-{-| Add a prefix to the first line and a different prefix to subsequent lines.
+{-| Prefixes the first line of a text with `preFirst` and every later line with
+`preRest`, and ends the result with a newline.
 -}
 prefix_ : String -> String -> String -> String
 prefix_ preFirst preRest =
     lines >> prefix preFirst preRest >> Utils.unlines
 
 
-{-| Add prefixes to a list of lines.
+{-| Prefixes the first of `list` with `preFirst` and the rest with `preRest`.
 -}
 prefix : String -> String -> List String -> List String
 prefix preFirst preRest list =
@@ -266,7 +311,15 @@ prefix preFirst preRest list =
             (preFirst ++ first) :: List.map (\next -> preRest ++ next) rest
 
 
-{-| Format an inline element, optionally escaping special characters.
+{-| Returns one inline element as Markdown text.
+
+When `fixSpecialChars` is set, text is escaped with a backslash before `\`,
+`` ` ``, `_` and `*`. Text inside emphasis and strong emphasis is always escaped.
+A link whose text is its URL, with no title, and whose URL `Url.fromString`
+accepts is written as an autolink, `<url>`, or as the bare URL when escaping is
+off. Inline code is fenced with one backtick more than the longest run of
+backticks it contains, padded with a space on each side when it contains any.
+
 -}
 formatMarkdownInline : Bool -> Inline -> String
 formatMarkdownInline fixSpecialChars inline =
@@ -277,7 +330,6 @@ formatMarkdownInline fixSpecialChars inline =
                 '\\' ->
                     "\\\\"
 
-                -- TODO: only at the beginning of words
                 '`' ->
                     "\\`"
 
@@ -287,14 +339,6 @@ formatMarkdownInline fixSpecialChars inline =
                 '*' ->
                     "\\*"
 
-                -- TODO: {}  curly braces (when?)
-                -- TODO: []  square brackets (when?)
-                -- TODO: ()  parentheses (when?)
-                -- TODO: #   hash mark (only at the beginning of lines, and within header lines?)
-                -- TODO: -   minus sign (hyphen) (only at the beginning of lines?)
-                -- TODO: +   plus sign (when?)
-                -- TODO: .   dot (when?)
-                -- TODO: !   exclamation mark (when?)
                 _ ->
                     String.fromChar c
     in
@@ -320,11 +364,9 @@ formatMarkdownInline fixSpecialChars inline =
         Emph inlines ->
             "_" ++ (inlines |> List.map (formatMarkdownInline True) |> String.concat) ++ "_"
 
-        -- TODO: escaping
         Strong inlines ->
             "**" ++ (inlines |> List.map (formatMarkdownInline True) |> String.concat) ++ "**"
 
-        -- TODO: escaping
         Code text ->
             case longestSpanOf '`' text of
                 NoSpan ->
@@ -409,19 +451,15 @@ formatMarkdownInline fixSpecialChars inline =
 -- ====== TEXT EXTRA ======
 
 
-{-| Result of searching for the longest span of a character.
+{-| The length of the longest run of one character in a string: `NoSpan` when
+the character does not occur, otherwise `Span` with a length of at least 1.
 -}
 type LongestSpanResult
     = NoSpan
     | Span Int
 
 
-
-{- >= 1 -}
-
-
-{-| Find the longest consecutive run of a character in a string.
-Returns NoSpan if the character doesn't appear, or Span n where n is the length of the longest run.
+{-| Returns the length of the longest run of `char` in `input`.
 -}
 longestSpanOf : Char -> String -> LongestSpanResult
 longestSpanOf char input =
@@ -434,10 +472,8 @@ longestSpanOf char input =
                 )
 
             else
-                ( -- clear the current span
-                  Nothing
-                , -- and update the longest
-                  endCurrentSpan ( currentSpan, longest )
+                ( Nothing
+                , endCurrentSpan ( currentSpan, longest )
                 )
 
         endCurrentSpan : ( Maybe Int, Int ) -> Int

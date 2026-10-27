@@ -1,11 +1,26 @@
 module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds, constrainWithIdsDetailed, constrainErased)
 
-{-| Generates type constraints for Elm modules during type checking (Typed pathway).
+{-| The type checker needs one constraint for a whole module, and this module
+builds it, optionally recording which solver variable stands for each
+expression and pattern.
 
-This is the entry point for constraint generation with ID tracking. It traverses
-the module's declarations, effects (ports, managers), and builds a constraint tree
-while tracking node IDs to solver variables for later type retrieval. The node-id
-state lives in `IO.State` and is seeded/collected here via `IO.withNodeIds`.
+A _constraint_ is the tree of type facts that `Compiler.Type.Solve` makes true;
+its constructors are described in `Compiler.Type.Type`. The _node-id record_ is
+the side table, kept in the type checker's state, that maps expression and
+pattern ids to solver variables so that types can be read back after solving;
+`Compiler.Type.Constrain.Typed.NodeIds` describes it. Each of the three entry
+points runs the same generator, inside `IO.withNodeIds`, and they differ only in
+whether that record is kept and how much of it is returned.
+
+The shape of the tree follows from one fact: a top-level declaration can use
+the declarations before it, and the solver reports as the module's annotations
+the names in scope at the `CSaveTheEnvironment` leaf. So the declarations are
+nested in source order, the first outermost, and the leaf sits inside all of
+them. Ports wrap the declarations from outside, each bound in a `CLet` with its
+annotation's type variables as rigid variables. In an effect module the checks
+on `init`, `onEffects`, `onSelfMsg`, `cmdMap` and `subMap` sit inside the
+declarations, around the leaf, so that they can refer to them, and `command`
+and `subscription` are bound outside the declarations.
 
 
 # Constraint Generation with ID Tracking
@@ -33,12 +48,9 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- ====== Constraint Generation with ID Tracking ======
 
 
-{-| Generate type constraints for a canonical module, tracking node IDs.
-
-Handles regular declarations, ports, and effect managers by traversing the
-module's structure and producing a constraint tree. Also builds a mapping
-from expression/pattern IDs to solver variables for later type retrieval.
-
+{-| Returns the constraint for `canonical`, the map from expression and pattern
+ids to their solver variables, and the scheme binder variables recorded for
+annotated definitions.
 -}
 constrainWithIds : Can.Module -> IO ( Constraint, NodeIds.NodeVarMap, NodeIds.SchemeBinderVars )
 constrainWithIds canonical =
@@ -46,12 +58,14 @@ constrainWithIds canonical =
         |> IO.map (\( con, state ) -> ( con, state.mapping, state.schemeBinderVars ))
 
 
-{-| Generate type constraints with full node ID state including synthetic expr tracking.
+{-| Returns the constraint for a module together with the whole node-id record,
+recording on.
 
-This is the detailed version of `constrainWithIds` that returns the full `NodeIdState`,
-including `syntheticExprIds` which tracks which expression IDs had synthetic placeholder
-variables allocated (remaining Group B expressions: Str, Chr, Float, Unit, Shader). This metadata is useful for testing invariants
-like POST\_001 and POST\_003.
+Beyond what `constrainWithIds` returns, the record carries `syntheticExprIds`:
+the expressions given a placeholder variable rather than one their constraint
+produced, which lets a caller tell a placeholder from a real polymorphic
+variable. `Compiler.Type.Constrain.Typed.Expression` says which expressions
+get one.
 
 -}
 constrainWithIdsDetailed : Can.Module -> IO ( Constraint, NodeIds.NodeIdState )
@@ -59,12 +73,11 @@ constrainWithIdsDetailed =
     constrainWithIdsDetailedFrom NodeIds.emptyNodeIdState
 
 
-{-| Erased (type-check-only) pathway.
+{-| Returns the constraint for a module with recording off, for checking types
+without reading them back.
 
-Runs the shared generator with node recording disabled
-(`NodeIds.erasedNodeIdState`), producing the same constraints as the standalone
-erased generator did — without building the id→var side table or the Group B
-synthetic placeholder vars — then discards the (empty) state.
+The tree is not identical to the one `constrainWithIds` builds: the placeholder
+variables of `syntheticExprIds` are not made, but checking is equivalent.
 
 -}
 constrainErased : Can.Module -> IO Constraint
@@ -73,11 +86,18 @@ constrainErased canonical =
         |> IO.map Tuple.first
 
 
+{-| Runs the generator on `canonical` starting from the node-id record
+`initState`, and returns the constraint with the record as it ends.
+-}
 constrainWithIdsDetailedFrom : NodeIds.NodeIdState -> Can.Module -> IO ( Constraint, NodeIds.NodeIdState )
 constrainWithIdsDetailedFrom initState canonical =
     IO.withNodeIds initState (constrainModule canonical)
 
 
+{-| Builds the constraint for a module: its declarations, wrapped by its ports
+or by its effect manager's checks and bindings, as the module docstring
+describes.
+-}
 constrainModule : Can.Module -> IO Constraint
 constrainModule (Can.Module canData) =
     case canData.effects of
@@ -110,11 +130,17 @@ constrainModule (Can.Module canData) =
 -- ====== Declaration Constraints with ID Tracking ======
 
 
+{-| One top-level declaration of the canonical declaration list: a single
+definition, or a group of mutually recursive definitions.
+-}
 type DeclItem
     = Single Can.Def
     | Rec Can.Def (List Can.Def)
 
 
+{-| Returns the declarations of `decls` as a list in source order, after those
+already in `acc` in reverse.
+-}
 flattenDecls : Can.Decls -> List DeclItem -> List DeclItem
 flattenDecls decls acc =
     case decls of
@@ -128,16 +154,21 @@ flattenDecls decls acc =
             List.reverse acc
 
 
-{-| The module declaration spine: an explicit loop over the (unbounded)
-declaration list, one declaration per iteration.
+{-| Returns `finalConstraint` nested inside the constraints of every declaration
+in `decls`, the first declaration outermost.
 -}
 constrainDeclsWithVars : Can.Decls -> Constraint -> IO Constraint
 constrainDeclsWithVars decls finalConstraint s0 =
-    -- A5: direct tail-recursion (TCO → while-loop; stack-safe) replacing the
-    -- `IO.loop`/`Step` trampoline; no per-decl Step/loop-tuple/closure.
     constrainDeclsGo (List.reverse (flattenDecls decls [])) finalConstraint s0
 
 
+{-| Wraps `bodyCon` in the constraint of each of `items` in turn, so the last
+item becomes the outermost.
+
+It is tail-recursive, so the module's number of declarations does not deepen
+the stack.
+
+-}
 constrainDeclsGo : List DeclItem -> Constraint -> IO.State -> ( IO.State, Constraint )
 constrainDeclsGo items bodyCon s0 =
     case items of
@@ -163,6 +194,10 @@ constrainDeclsGo items bodyCon s0 =
 -- ====== Port Constraints with ID Tracking ======
 
 
+{-| Wraps the constraint `makeConstraint` produces in a `CLet` binding the port
+`name` to its annotated type, with the annotation's type variables made rigid.
+Incoming and outgoing ports are treated alike.
+-}
 letPortWithVars : Name -> Can.Port -> IO Constraint -> IO Constraint
 letPortWithVars name port_ makeConstraint =
     case port_ of
@@ -205,6 +240,9 @@ letPortWithVars name port_ makeConstraint =
 -- ====== Effect Manager Helpers with ID Tracking ======
 
 
+{-| Wraps `constraint` in a `CLet` binding `command` to a function from the
+module's command type `tipe` to `Cmd`, polymorphic in the message type.
+-}
 letCmdWithVars : ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 letCmdWithVars home tipe constraint =
     mkFlexVar
@@ -227,6 +265,10 @@ letCmdWithVars home tipe constraint =
             )
 
 
+{-| Wraps `constraint` in a `CLet` binding `subscription` to a function from
+the module's subscription type `tipe` to `Sub`, polymorphic in the message
+type.
+-}
 letSubWithVars : ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 letSubWithVars home tipe constraint =
     mkFlexVar
@@ -249,6 +291,15 @@ letSubWithVars home tipe constraint =
             )
 
 
+{-| Returns the checks an effect manager's definitions must pass, ending in a
+`CSaveTheEnvironment` leaf.
+
+`init`, `onEffects` and `onSelfMsg` (at regions `r0`, `r1` and `r2`) must have
+the shapes `Platform` requires of them, with one state type shared by all three
+and one self-message type shared by `onEffects` and `onSelfMsg`. Inside those
+checks, `checkMapWithIds` adds the checks on `cmdMap` and `subMap`.
+
+-}
 constrainEffectsWithIds : ModuleName.Canonical -> A.Region -> A.Region -> A.Region -> Can.Manager -> IO Constraint
 constrainEffectsWithIds home r0 r1 r2 manager =
     mkFlexVar
@@ -351,6 +402,10 @@ constrainEffectsWithIds home r0 r1 r2 manager =
             )
 
 
+{-| Wraps `effectCons` and the `cmdMap` or `subMap` checks that `manager` needs
+(both for a manager of commands and subscriptions) in a `CLet` introducing
+`vars` as flexible variables.
+-}
 checkMapWithIds : Can.Manager -> ModuleName.Canonical -> List Vars.Variable -> Constraint -> IO Constraint
 checkMapWithIds manager home vars effectCons =
     case manager of
@@ -368,6 +423,9 @@ checkMapWithIds manager home vars effectCons =
                 |> IO.map (CLet [] vars Dict.empty effectCons)
 
 
+{-| Wraps `constraint` in a check that the local value `name` has the type of a
+map over the effect type `tipe`, polymorphic in both of its type variables.
+-}
 checkMapHelperWithIds : Name -> ModuleName.Canonical -> Name -> Constraint -> IO Constraint
 checkMapHelperWithIds name home tipe constraint =
     mkFlexVar
@@ -390,21 +448,32 @@ checkMapHelperWithIds name home tipe constraint =
             )
 
 
+{-| Returns the type of a list of the effect type `name` of module `home`,
+applied to `msg`.
+-}
 effectList : ModuleName.Canonical -> Name -> Type -> Type
 effectList home name msg =
     AppN ModuleName.list Name.list [ AppN home name [ msg ] ]
 
 
+{-| Returns the type of a `Platform.Task` that cannot fail and succeeds with
+`answer`.
+-}
 task : Type -> Type
 task answer =
     AppN ModuleName.platform Name.task [ Type.never, answer ]
 
 
+{-| Returns the type `Platform.Router msg self`.
+-}
 router : Type -> Type -> Type
 router msg self =
     AppN ModuleName.platform Name.router [ msg, self ]
 
 
+{-| Returns the type `(a -> b) -> tipe a -> tipe b` for the type `tipe` of
+module `home`.
+-}
 toMapType : ModuleName.Canonical -> Name -> Type -> Type -> Type
 toMapType home tipe a b =
     Type.funType (Type.funType a b) (Type.funType (AppN home tipe [ a ]) (AppN home tipe [ b ]))

@@ -5,11 +5,18 @@ module Compiler.Generate.CodeGen exposing
     , CodeGen
     )
 
-{-| Backend interface definitions for code generation.
+{-| The contract between the builder and the JavaScript code generator: the
+builder drives the backend through a record of functions.
 
-This module defines the interface the JavaScript backend implements over the
-optimized AST. The MLIR backend streams its output instead
-(`Compiler.Generate.MLIR.Backend`).
+A backend is a `CodeGen` value: a record of three functions, each taking the
+optimized program graph and returning `Output`. One generates a whole program,
+one generates the code that evaluates and prints a single value for the
+terminal REPL, and one generates code that sends a value to a browser REPL. The
+remaining types describe what the whole-program function is given: the `Mains`
+to start from and whether to emit `SourceMaps`.
+
+The MLIR backend does not implement this interface; it streams its output
+through its own entry points in `Compiler.Generate.MLIR.Backend`.
 
 
 # Output Types
@@ -46,13 +53,14 @@ import Data.Map exposing (Dict)
 -- ====== OUTPUT ======
 
 
-{-| Output from code generation: currently always text (`TextOutput`).
+{-| What a backend produces. `TextOutput` is the only kind, and carries the
+generated code as one string.
 -}
 type Output
     = TextOutput String
 
 
-{-| Extract the string content from an Output value.
+{-| Returns the generated code held by `output`.
 -}
 outputToString : Output -> String
 outputToString output =
@@ -61,11 +69,25 @@ outputToString output =
             s
 
 
-{-| The CodeGen interface that standard backends must implement for full program generation, REPL evaluation, and browser REPL endpoints.
+{-| A code generator, as the three functions a builder calls on it.
+
+`generate` produces a whole program that starts from `mains`. Its
+`leadingLines` is the number of lines the caller will place before the
+generated code; it is added to every generated line number in the source map,
+and is unused when `sourceMaps` is `NoSourceMaps`.
+
+`generateForRepl` produces code for the terminal REPL that evaluates `name` in
+module `home` and prints it, with type `annotation`; `ansi` asks for coloured
+output.
+
+`generateForReplEndpoint` produces code for a REPL running in a browser that
+sends the value's name, rendered value and type with `self.postMessage`.
+When `maybeName` is `Nothing`, the value posted is the one the REPL binds to
+`Name.replValueToPrint` and the message's name is null.
+
 -}
 type alias CodeGen =
-    { -- Generate a complete program from the optimized global graph
-      generate :
+    { generate :
         { sourceMaps : SourceMaps
         , leadingLines : Int
         , mode : Mode.Mode
@@ -73,8 +95,6 @@ type alias CodeGen =
         , mains : Mains
         }
         -> Output
-
-    -- Generate code for REPL evaluation
     , generateForRepl :
         { ansi : Bool
         , localizer : L.Localizer
@@ -84,8 +104,6 @@ type alias CodeGen =
         , annotation : Can.Annotation Name
         }
         -> Output
-
-    -- Generate code for browser-based REPL endpoint
     , generateForReplEndpoint :
         { localizer : L.Localizer
         , graph : Opt.GlobalGraph
@@ -101,7 +119,8 @@ type alias CodeGen =
 -- ====== MAINS ======
 
 
-{-| Map from module names to their main entry points for standard optimized AST.
+{-| The program's entry points: the `main` of each root module that defines one,
+keyed by module name.
 -}
 type alias Mains =
     Dict String ModuleName.Canonical Opt.Main
@@ -111,9 +130,12 @@ type alias Mains =
 -- ====== SOURCE MAPS ======
 
 
-{-| Configuration for source map generation - either disabled or enabled with module source content.
+{-| Whether to append a source map to generated JavaScript.
+
+`SourceMaps` carries the source text of each module, keyed by module name,
+which is embedded in the map.
+
 -}
 type SourceMaps
     = NoSourceMaps
     | SourceMaps (Dict String ModuleName.Canonical String)
-

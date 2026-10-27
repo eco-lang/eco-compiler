@@ -7,7 +7,22 @@ module Builder.Http exposing
     , Error(..), errorEncoder, errorDecoder
     )
 
-{-| HTTP client utilities for the Elm package manager.
+{-| Gives the package-manager code one way to make HTTP requests, and one
+error type for their failures.
+
+The requests themselves are made by `Eco.Http`, whose docstring says which
+failures come back as an `Err` and which crash the program. This module adds
+two request headers to every `get` and `post`, hands the response body to the
+caller's continuation, and turns a failure into an `Error`. `get`, `post` and
+`getArchive` return `Task Never (Result e a)`. `get` and `post` take a
+function from `Error` to the caller's error type, while `getArchive` takes a
+fixed error value that it returns for any failure.
+
+A _manager_ is the value a caller threads through to every request. It carries
+nothing, and no function here reads it.
+
+Archives are fetched by `getArchive`, which returns the archive's SHA and its
+entries as a `Codec.Archive.Zip.Archive`.
 
 @docs Manager, getManager, managerEncoder, managerDecoder
 @docs get, post
@@ -36,20 +51,22 @@ import Utils.Main as Utils exposing (SomeException)
 -- ====== MANAGER ======
 
 
-{-| Represents an HTTP client manager for making requests.
+{-| A handle that requests are made through. Every manager is the same, and
+holding one gives no capability: the functions that take one ignore it.
 -}
 type Manager
     = Manager
 
 
-{-| Encodes an HTTP manager to bytes for serialization.
+{-| Encodes a manager as the single byte 0.
 -}
 managerEncoder : Manager -> Bytes.Encode.Encoder
 managerEncoder _ =
     Bytes.Encode.unsignedInt8 0
 
 
-{-| Decodes an HTTP manager from bytes.
+{-| A decoder for a manager as `managerEncoder` writes it. Any byte other
+than 0 fails.
 -}
 managerDecoder : Bytes.Decode.Decoder Manager
 managerDecoder =
@@ -65,11 +82,10 @@ managerDecoder =
             )
 
 
-{-| Creates a new HTTP manager for making requests.
+{-| A task that gives a manager. It always succeeds and does nothing else.
 -}
 getManager : Task Never Manager
 getManager =
-    -- TODO newManager tlsManagerSettings
     Task.succeed Manager
 
 
@@ -77,7 +93,11 @@ getManager =
 -- ====== URL ======
 
 
-{-| Constructs a URL with query parameters from a base URL and parameter list.
+{-| Returns `url` with `params` appended as a percent-encoded query string
+beginning with `?`, or `url` unchanged when `params` is empty.
+
+`url` is expected to have no query string of its own; one is not detected.
+
 -}
 toUrl : String -> List ( String, String ) -> String
 toUrl url params =
@@ -89,9 +109,11 @@ toUrl url params =
             url ++ urlEncodeVars params
 
 
+{-| Returns `params` as a percent-encoded query string, including the leading
+`?`.
+-}
 urlEncodeVars : List ( String, String ) -> String
 urlEncodeVars params =
-    -- includes the `?`
     Url.Builder.toQuery (List.map (uncurry Url.Builder.string) params)
 
 
@@ -99,26 +121,39 @@ urlEncodeVars params =
 -- ====== FETCH ======
 
 
-{-| Represents an HTTP header as a name-value pair.
+{-| An HTTP request header: its name, then its value.
 -}
 type alias Header =
     ( String, String )
 
 
-{-| Performs an HTTP GET request with the given headers and result handler.
+{-| Sends a GET request to the URL with `headers`, and runs the continuation
+on the response body.
+
+A `User-Agent` of `elm/` and the compiler's version and an `Accept-Encoding`
+of `gzip` are added in front of `headers`. A failure gives `Err` of the
+`Error`, converted by the caller's function: a failure `Eco.Http` reports as
+a bad URL gives `BadUrl`, and every other failure gives `BadHttp` with a
+`StatusCodeException` whose status is the response's, or code 0 with the
+failure's detail as its text when no status was received. The exception's
+headers and body are always empty.
+
 -}
 get : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 get =
     fetch "GET"
 
 
-{-| Performs an HTTP POST request with the given headers and result handler.
+{-| Sends a POST request with no body, otherwise exactly as `get` does.
 -}
 post : Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 post =
     fetch "POST"
 
 
+{-| Sends a request with `method`, adding the default headers, and returns
+the continuation's result on success or the converted `Error` on failure.
+-}
 fetch : String -> Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
 fetch method _ url headers onError onSuccess =
     Eco.Http.fetch method url (addDefaultHeaders headers)
@@ -133,10 +168,13 @@ fetch method _ url headers onError onSuccess =
             )
 
 
-{-| Map the kernel-level `Eco.Http.Error.HttpError` into this module's existing
-`Error` type (consumed by `Exit.RegistryProblem` / `Exit.Solver`). Transport
-errors (network/timeout/tls/body) are represented as a status-0 response, the
-convention this codebase already uses for "no HTTP response".
+{-| Converts a failure of the request to `url` into an `Error`.
+
+`BadUrl` stays `BadUrl`. A bad status keeps its code and text. Every other kind
+of failure, network, timeout, TLS, body decoding or other, becomes status code
+0 with the failure's detail or message as the status text, meaning that no
+HTTP response was received.
+
 -}
 fromHttpError : String -> HttpError -> Error
 fromHttpError url httpErr =
@@ -163,6 +201,9 @@ fromHttpError url httpErr =
             statusException url 0 r.message
 
 
+{-| Builds a `BadHttp` error for `url` as a status-code exception with the
+given code and text, no headers and an empty body.
+-}
 statusException : String -> Int -> String -> Error
 statusException url statusCode statusText =
     BadHttp url
@@ -176,11 +217,17 @@ statusException url statusCode statusText =
         )
 
 
+{-| Returns `headers` with the `User-Agent` and `Accept-Encoding: gzip`
+headers in front.
+-}
 addDefaultHeaders : List Header -> List Header
 addDefaultHeaders headers =
     ( "User-Agent", userAgent ) :: ( "Accept-Encoding", "gzip" ) :: headers
 
 
+{-| The `User-Agent` header value: `elm/` followed by the compiler's
+user-facing version.
+-}
 userAgent : String
 userAgent =
     "elm/" ++ Version_Build.userFacing
@@ -190,7 +237,16 @@ userAgent =
 -- ====== EXCEPTIONS ======
 
 
-{-| Represents HTTP request errors including URL problems, HTTP errors, and unexpected failures.
+{-| Why a request failed, each case carrying the URL that was requested.
+
+`BadUrl` carries the URL and the reason it was rejected.
+
+`BadHttp` carries the failure as an `HttpExceptionContent`. This module builds
+it only as a status-code exception, where code 0 means no response arrived.
+
+`BadMystery` carries an exception of unknown kind. Nothing in this module
+produces one.
+
 -}
 type Error
     = BadUrl String String
@@ -202,13 +258,17 @@ type Error
 -- ====== SHA ======
 
 
-{-| Represents a SHA hash as a string for package integrity verification.
+{-| The SHA hash of a downloaded archive, as text.
+
+This is a name for `String`, not a new type: any string is accepted where a
+`Sha` is expected.
+
 -}
 type alias Sha =
     String
 
 
-{-| Converts a SHA hash to its string representation.
+{-| Returns the hash as text, unchanged.
 -}
 shaToChars : Sha -> String
 shaToChars =
@@ -219,7 +279,13 @@ shaToChars =
 -- ====== FETCH ARCHIVE ======
 
 
-{-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
+{-| Downloads the ZIP archive at `url` and runs the continuation on its SHA
+and its entries.
+
+Any failure gives `Err defaultError`; the cause of the failure is discarded.
+No headers are added. The meaning of the SHA is as `Eco.Http.getArchive`
+describes.
+
 -}
 getArchive : String -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
 getArchive url defaultError onSuccess =
@@ -242,7 +308,8 @@ getArchive url defaultError onSuccess =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encodes an HTTP error to bytes for serialization.
+{-| Encodes an error as a tag byte, 0, 1 or 2 in constructor order, then its
+URL and payload.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -269,7 +336,8 @@ errorEncoder error =
                 ]
 
 
-{-| Decodes an HTTP error from bytes.
+{-| A decoder for an error as `errorEncoder` writes it. An unknown tag byte
+fails.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =

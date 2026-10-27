@@ -3,11 +3,29 @@ module Compiler.Parse.Declaration exposing
     , declaration, infix_
     )
 
-{-| Parser for top-level declarations in Elm modules.
+{-| Parses one top-level declaration of a module at a time, so that the module
+parser can collect them into a module.
 
-This module handles parsing of value definitions, type aliases, custom type
-declarations, and port declarations. It supports doc comments, type annotations,
-and function definitions with pattern arguments.
+A declaration is a value definition, a custom type, a type alias or a port,
+optionally preceded by a doc comment (a `{-| -}` comment). `declaration` parses
+one of these; `infix_` parses the `infix` declaration that only kernel modules
+use. Which of the two is tried, and that each declaration starts on a fresh
+line, is decided by `Compiler.Parse.Module`.
+
+Two facts shape the file. The first is layout: a declaration starts in column
+1, and every later token of it must be indented, which at the top level means
+not in column 1 (`Space.chompAndCheckIndent` and `Space.checkIndent`). That is
+how a declaration ends where the next begins. The second is comments: the
+formatter puts back the comments between the tokens, so most gaps are read with
+`Space.chomp` or `Space.chompAndCheckIndent` and their comments are stored in a
+`Src.C1` or `Src.C2` group. Two are dropped: the comments after a type alias's
+body, and the comments after the doc comment of a custom type, alias or port.
+Which gap a group holds is decided here, site by site, and is said at each
+function. Most of the file is that bookkeeping.
+
+A value may have a type annotation, `name : type`, on the lines before its
+definition. The definition must then start on a fresh line and repeat the same
+name.
 
 
 # Declaration Types
@@ -41,7 +59,12 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== DECLARATION ======
 
 
-{-| Represents a top-level declaration in an Elm module.
+{-| One top-level declaration, with the doc comment that precedes it, if any.
+
+`Value` is a value definition, with its annotation if it has one; its region
+starts at the annotation when there is one. `Union` is a custom type, `Alias` a
+type alias and `Port` a port declaration.
+
 -}
 type Decl
     = Value (Maybe Src.Comment) (A.Located Src.Value)
@@ -50,8 +73,15 @@ type Decl
     | Port (Maybe Src.Comment) Src.Port
 
 
-{-| Parses a top-level declaration including doc comments, type annotations, and definitions.
-Handles value declarations, type aliases, custom types, and port declarations.
+{-| A parser for one top-level declaration: an optional doc comment, then a
+custom type or type alias, a port, or a value definition with its optional
+annotation.
+
+The result's comment group is empty for a custom type or a type alias. For a
+value its second part holds the comments read after the body, and for a port
+the comments read after its type. The position returned with it is where the
+declaration ends.
+
 -}
 declaration : Space.Parser E.Decl (Src.C2 Decl)
 declaration =
@@ -74,6 +104,11 @@ declaration =
 -- ====== DOC COMMENT ======
 
 
+{-| A parser for an optional doc comment, followed by the comments after it.
+After a doc comment the next token must start on a fresh line
+(`E.DeclFreshLineAfterDocComment`). Without a doc comment it consumes nothing
+and returns no comments.
+-}
 chompDocComment : P.Parser E.Decl (Src.C1 (Maybe Src.Comment))
 chompDocComment =
     P.oneOfWithFallback
@@ -95,6 +130,16 @@ chompDocComment =
 -- ====== DEFINITION and ANNOTATION ======
 
 
+{-| Produces a parser for a value definition, with or without an annotation.
+`docComments` are the comments after the doc comment, and `start` is where the
+declaration starts.
+
+With an annotation, the definition must start on a fresh line with the same
+name, and the result's `tipe` holds the type with three groups of comments:
+the outer group is those after the type, and the inner pair those before and
+after the `:`.
+
+-}
 valueDecl : Maybe Src.Comment -> Src.FComments -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
 valueDecl maybeDocs docComments start =
     Var.lower E.DeclStart
@@ -145,6 +190,15 @@ valueDecl maybeDocs docComments start =
             )
 
 
+{-| Produces a parser for a definition's argument patterns, `=` and body, given
+the parts already read. `revArgs` holds the arguments read so far, newest
+first.
+
+Each argument is paired with the comments before it, so the comments just after
+the name go to the first argument. The name keeps `preArgComments` as they
+stand when `=` is reached: the comments just before the `=`.
+
+-}
 chompDefArgsAndBody :
     Maybe Src.Comment
     -> Src.FComments
@@ -187,6 +241,10 @@ chompDefArgsAndBody maybeDocs docComments start name tipe preArgComments revArgs
         ]
 
 
+{-| Produces a parser for a lower-case name that must equal `expectedName`,
+returning it with its region. A different name fails with `E.DeclDefNameMatch`
+at the position where the name starts.
+-}
 chompMatchingName : Name -> P.Parser E.DeclDef (A.Located Name)
 chompMatchingName expectedName =
     let
@@ -221,6 +279,11 @@ chompMatchingName expectedName =
 -- ====== TYPE DECLARATIONS ======
 
 
+{-| Produces a parser for a declaration starting with `type`: a type alias when
+`alias` follows, otherwise a custom type. The comments between `type` and the
+next word become the alias's `comments`, or the comments before a custom
+type's name.
+-}
 typeDecl : Maybe Src.Comment -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
 typeDecl maybeDocs start =
     P.inContext E.DeclType (Keyword.type_ E.DeclStart) <|
@@ -285,6 +348,10 @@ typeDecl maybeDocs start =
 -- ====== TYPE ALIASES ======
 
 
+{-| A parser for a type alias's name, its type variables and the `=`. The
+result holds the name, the variables each with the comments before it, the
+comments just before the `=`, and then the comments after the `=`.
+-}
 chompAliasNameToEquals : P.Parser E.TypeAlias ( ( A.Located Name, List (Src.C1 (A.Located Name)), Src.FComments ), Src.FComments )
 chompAliasNameToEquals =
     P.addLocation (Var.upper E.AliasName)
@@ -298,6 +365,10 @@ chompAliasNameToEquals =
             )
 
 
+{-| Produces a parser for the rest of a type alias's variables and its `=`.
+`comments` are those read since the previous token; they go with the next
+variable, or, at the `=`, into the result.
+-}
 chompAliasNameToEqualsHelp :
     A.Located Name
     -> List (Src.C1 (A.Located Name))
@@ -324,6 +395,11 @@ chompAliasNameToEqualsHelp name args comments =
 -- ====== CUSTOM TYPES ======
 
 
+{-| Produces a parser for a custom type's name, its type variables and the `=`,
+given the comments before the name. The name is returned with those comments
+and the comments just before the `=`, each variable with the comments before
+it, and all of it with the comments after the `=`.
+-}
 chompCustomNameToEquals : Src.FComments -> P.Parser E.CustomType (Src.C1 ( Src.C2 (A.Located Name), List (Src.C1 (A.Located Name)) ))
 chompCustomNameToEquals preNameComments =
     P.addLocation (Var.upper E.CT_Name)
@@ -334,6 +410,10 @@ chompCustomNameToEquals preNameComments =
             )
 
 
+{-| Produces a parser for the rest of a custom type's variables and its `=`.
+`trailingComments` are those read since the previous token; they go with the
+next variable, or, at the `=`, with the name.
+-}
 chompCustomNameToEqualsHelp : Src.FComments -> Src.C1 (A.Located Name) -> List (Src.C1 (A.Located Name)) -> P.Parser E.CustomType (Src.C1 ( Src.C2 (A.Located Name), List (Src.C1 (A.Located Name)) ))
 chompCustomNameToEqualsHelp trailingComments (( preNameComments, name_ ) as name) args =
     P.oneOf E.CT_Equals
@@ -349,6 +429,11 @@ chompCustomNameToEqualsHelp trailingComments (( preNameComments, name_ ) as name
         ]
 
 
+{-| Produces a parser for any further `| Variant` alternatives of a custom type,
+given the variants read so far, newest first, and where the last one ended.
+Each `|` must be indented. It returns the variants in source order and where
+the last one ends.
+-}
 chompVariants : List (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) )) -> A.Position -> Space.Parser E.CustomType (List (Src.C2Eol ( A.Located Name, List (Src.C1 Src.Type) )))
 chompVariants variants end =
     P.oneOfWithFallback
@@ -365,6 +450,9 @@ chompVariants variants end =
 -- ====== PORT ======
 
 
+{-| Produces a parser for `port name : type`. The result's comment group holds
+the comments read after the type.
+-}
 portDecl : Maybe Src.Comment -> Space.Parser E.Decl (Src.C2 Decl)
 portDecl maybeDocs =
     P.inContext E.Port (Keyword.port_ E.DeclStart) <|
@@ -402,8 +490,11 @@ portDecl maybeDocs =
 -- ====== INFIX ======
 
 
-{-| Parses an infix operator declaration with associativity, precedence, and function binding.
-Always consumes input up to a fresh line.
+{-| A parser for `infix left|right|non N (op) = name`.
+
+It reads the comments after `name` and then requires a fresh line, returning
+those comments with the declaration. Every failure is reported as `E.Infix`.
+
 -}
 infix_ : P.Parser E.Module (Src.C1 (A.Located Src.Infix))
 infix_ =

@@ -6,12 +6,57 @@ module Builder.Build exposing
     , getRootNames, cachedInterfaceDecoder
     )
 
-{-| Parallel compilation and incremental build orchestration for Elm projects.
+{-| Compiles a project's own modules, reusing what earlier builds left on disk
+wherever it can. Packages are compiled elsewhere: this module starts from the
+project details that `Builder.Elm.Details` loads, which hold the dependencies'
+interfaces and an entry for each project module recording what the last build
+that compiled it saw.
 
-This module implements the core build system that compiles Elm modules in parallel,
-tracks dependencies between modules, performs incremental compilation based on
-modification times and interface changes, and manages build artifacts. It handles
-both application and package builds.
+A build is asked for in one of two ways. `fromExposed` names modules and
+produces their documentation, or nothing; it always uses the erased pipeline
+and always writes caches. `fromPaths` and `fromPathsWith` name `.elm` files and
+produce `Artifacts` for code generation. A file named this way is a _root_. An
+_inside root_ lies in one of the project's source directories and is the module
+its path there names. An _outside root_ lies outside every source directory: it
+is compiled on its own in every build, and nothing about it is cached.
+
+Every build has two phases, and each forks one thread per module.
+
+The _crawl_ discovers the modules. Starting from the roots, it finds each
+module's file in the source directories, decides the module's `Status`, and
+crawls the modules it imports. A module that no source directory has is looked
+for among the _foreign_ modules, those a direct dependency exposes, and, in a
+kernel project, among kernel `.js` files. Between the phases the build stops on
+an import cycle, or when the dependency interfaces could not be loaded.
+
+The _check_ decides each module's `BResult` once its imports have theirs. A
+module's details entry records its file's path and modification time, and two
+`BuildID`s, which number builds: `lastChange`, the build at which its interface
+last changed, and `lastCompile`, the build at which it was last compiled. A
+module is reused from disk when all of these hold:
+
+  - its file has the recorded path and the recorded modification time,
+    compared for equality, so an older file counts as changed too;
+  - no documentation is needed for it;
+  - no import's `lastChange` is later than its `lastCompile`;
+  - the artifact this kind of build reads is on disk: the `.ecot` file for a
+    typed build, the `.eco` file for an untyped one.
+
+Otherwise it is compiled. If its new interface differs from its `.eci` file on
+disk, its `lastChange` becomes the current build. If not, it keeps its
+`lastChange`, except that a module whose file had not changed is compiled with
+a `lastChange` of 0 and records that. A module is _blocked_, and not compiled,
+when one of its imports failed or a cached import's interface could not be
+read.
+
+A build that writes caches writes each compiled module's `.eci` file when its
+interface changed, then its `.eco` or `.ecot` file, and finally `d.dat` with
+the compiled modules' new entries. A `OneShot` build writes none of them.
+
+Threads hand values to each other through MVars (see `Utils.Main`). Every take,
+read and put passes a byte encoder or decoder for the value, which only the XHR
+runtime uses, and an MVar keeps its value alive until it is dropped, so the
+status, result and root MVars are dropped once their values have been read.
 
 
 # Build Results
@@ -88,6 +133,16 @@ import Utils.Main as Utils
 -- ====== ENVIRONMENT ======
 
 
+{-| Everything the threads of one build share: where the project is, how it is
+laid out, what its details record, and the options the build was started with.
+
+`projectType` is a `KernelApplication` when an application was built with a
+kernel package name. `needsTypedOpt` selects the typed pipeline, whose
+per-module artifact is `.ecot`, over the erased one, whose artifact is `.eco`.
+`locals` and `foreigns` are the details' entries for the project's modules and
+for the modules the direct dependencies expose.
+
+-}
 type alias EnvData =
     { key : Reporting.BKey
     , root : String
@@ -103,20 +158,31 @@ type alias EnvData =
     }
 
 
+{-| The shared settings of one build (see `EnvData`), made by `makeEnv`.
+-}
 type Env
     = Env EnvData
 
 
-{-| Whether a build persists its per-module caches. `OneShot` (`eco make
---no-cache`) writes no `.eci`/`.eco`/`.ecot` and no local `d.dat`, so a later
-build sees exactly what it would have seen had this one never run
-(cache-serialization plan S4).
+{-| Whether a build writes its per-module caches.
+
+`WriteCaches` writes each compiled module's `.eci` when its interface changed,
+then its `.eco` or `.ecot`, and records the compiled modules in `d.dat`.
+`OneShot` writes none of these, so a later build finds the caches as they were
+before this one ran. The returned artifacts are the same in either mode.
+
 -}
 type CacheMode
     = WriteCaches
     | OneShot
 
 
+{-| Builds the `Env` for one build from the project details, resolving the
+source directories against `root` and canonicalizing them. A package's only
+source directory is `src`. An application becomes a kernel application, with
+its modules belonging to that package, when `maybeKernelPackage` names one; for
+a package `maybeKernelPackage` is ignored.
+-}
 makeEnv : CacheMode -> Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> Task Never Env
 makeEnv cacheMode key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt stats =
     case detailsData.outline of
@@ -169,10 +235,17 @@ makeEnv cacheMode key root maybeBuildDir maybeKernelPackage (Details.Details det
 -- ====== SOURCE DIRECTORY ======
 
 
+{-| A source directory as a canonical absolute path. Values are made by
+`toAbsoluteSrcDir`, and `dropPrefix` relies on the canonical form to compare a
+root's path with the directory.
+-}
 type AbsoluteSrcDir
     = AbsoluteSrcDir FilePath
 
 
+{-| Resolves a source directory from the outline against the project `root` and
+canonicalizes it.
+-}
 toAbsoluteSrcDir : FilePath -> Outline.SrcDir -> Task Never AbsoluteSrcDir
 toAbsoluteSrcDir root srcDir =
     Task.map AbsoluteSrcDir
@@ -187,6 +260,8 @@ toAbsoluteSrcDir root srcDir =
         )
 
 
+{-| Returns `path` inside the source directory.
+-}
 addRelative : AbsoluteSrcDir -> FilePath -> FilePath
 addRelative (AbsoluteSrcDir srcDir) path =
     Utils.fpCombine srcDir path
@@ -196,9 +271,8 @@ addRelative (AbsoluteSrcDir srcDir) path =
 -- ====== FORK ======
 
 
-{-| PERF try using IORef semephore on file crawl phase?
-described in Chapter 13 of Parallel and Concurrent Programming in Haskell by Simon Marlow
-<https://www.oreilly.com/library/view/parallel-and-concurrent/9781449335939/ch13.html#sec_conc-par-overhead>
+{-| Starts `work` on a thread of its own and returns at once with the MVar its
+result will be put into, written with `encoder`.
 -}
 fork : (a -> Bytes.Encode.Encoder) -> Task Never a -> Task Never (MVar a)
 fork encoder work =
@@ -210,6 +284,9 @@ fork encoder work =
             )
 
 
+{-| Forks `func` for every entry of `dict` and returns the MVars their results
+will arrive in, under the same keys.
+-}
 dictForkWithKey : (b -> Bytes.Encode.Encoder) -> (comparable -> a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable (MVar b))
 dictForkWithKey encoder func dict =
     Utils.dictTraverseWithKey (\k v -> fork encoder (func k v)) dict
@@ -219,11 +296,15 @@ dictForkWithKey encoder func dict =
 -- ====== FROM EXPOSED ======
 
 
-{-| Build a project by compiling a specific list of exposed modules (e.g., for package builds).
+{-| Compiles the named modules and everything they import, then produces what
+`docsGoal` asks for.
 
-This entry point compiles the given modules and their dependencies, respecting the
-documentation goal (keep, write, or ignore). It performs parallel compilation with
-incremental rebuilding based on modification times and interface changes.
+Documentation is generated only for the named modules, and when the goal needs
+it each of them is compiled even if its cached artifacts could be reused. The
+build fails with `BP_MissingExposed` when a named module cannot be found, with
+an import cycle or a dependency loading failure, and otherwise with every
+module that has errors. It always uses the erased pipeline and always writes
+caches.
 
 -}
 fromExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> FEStats.Handle -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
@@ -235,7 +316,9 @@ fromExposed style root maybeBuildDir maybeKernelPackage details docsGoal stats (
                 |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
 
-{-| Crawl phase for exposed modules: discover all dependencies and their statuses.
+{-| Starts loading the dependency interfaces and crawls from `modules`, which
+need documentation when `docsGoal` does, and returns every crawled module's
+status with the MVar the interfaces will arrive in.
 -}
 crawlExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env }
 crawlExposed root maybeBuildDir details docsGoal modules env =
@@ -249,6 +332,8 @@ crawlExposed root maybeBuildDir details docsGoal modules env =
         |> Task.map (buildCrawlResult env)
 
 
+{-| Crawls from `modules` and pairs every crawled module's status with `dmvar`.
+-}
 crawlExposedModules : Env -> DocsNeed -> List ModuleName.Raw -> MVar (Maybe Dependencies) -> Task Never ( MVar (Maybe Dependencies), Dict ModuleName.Raw Status )
 crawlExposedModules env docsNeed modules dmvar =
     Utils.newEmptyMVar
@@ -256,12 +341,24 @@ crawlExposedModules env docsNeed modules dmvar =
         |> Task.map (\statuses -> ( dmvar, statuses ))
 
 
+{-| Forks a crawler for each of `modules` and returns the status of every
+module crawled, the named ones and all they import.
+
+The status dict MVar is still empty while the crawlers start, so any crawler
+that reaches an import waits until the named modules' own MVars are in the
+dict, and none of them is crawled a second time.
+
+-}
 crawlAndCollectStatuses : Env -> DocsNeed -> List ModuleName.Raw -> MVar StatusDict -> Task Never (Dict ModuleName.Raw Status)
 crawlAndCollectStatuses env docsNeed modules mvar =
     Utils.dictFromKeysA (fork statusEncoder << crawlModule env mvar docsNeed) modules
         |> Task.andThen (waitForCrawlResults mvar)
 
 
+{-| Puts `roots` into the status dict MVar, waits for each of their statuses,
+and returns every status in the dict, dropping the MVars (see
+`takeAndDropStatuses`).
+-}
 waitForCrawlResults : MVar StatusDict -> StatusDict -> Task Never (Dict ModuleName.Raw Status)
 waitForCrawlResults mvar roots =
     Utils.putMVar statusDictEncoder mvar roots
@@ -269,16 +366,17 @@ waitForCrawlResults mvar roots =
         |> Task.andThen (\_ -> takeAndDropStatuses mvar)
 
 
-{-| Read every crawl status and release the crawl MVars
-(plans/frontend-heap-release.md §7.2 row 1). An `SChanged` status holds the
-module's source text and parsed AST, and an MVar is an off-heap GC root until
-dropped (HEAP\_005), so without this they stay live until exit.
+{-| Takes the status dict out of `smvar`, reads every status in it, then drops
+every status MVar and `smvar` itself, and returns the statuses.
 
-Only call this once every root's status has been read: each module is forked by
-exactly one crawler, and each crawler waits for its forks before its own `put`,
-so by then no crawl is still running and nothing else reads these MVars. The
-roots are in the status dict too, so they are dropped here as well (a drop is
-idempotent).
+An `SChanged` status holds a module's source text and parsed module, and an
+MVar keeps its value alive until it is dropped, so without this they would stay
+alive for the rest of the run. The roots' MVars are in the dict too and are
+dropped with the rest.
+
+Call this only once every root's status has been read. Each crawler waits for
+the statuses of the crawlers it forks before putting its own, so by then no
+crawl is still running and nothing reads these MVars again.
 
 -}
 takeAndDropStatuses : MVar StatusDict -> Task Never (Dict ModuleName.Raw Status)
@@ -296,12 +394,16 @@ takeAndDropStatuses smvar =
             )
 
 
+{-| Packages the outcome of a crawl with `env` for the compile phase.
+-}
 buildCrawlResult : Env -> ( MVar (Maybe Dependencies), Dict ModuleName.Raw Status ) -> { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env }
 buildCrawlResult env ( dmvar, statuses ) =
     { dmvar = dmvar, statuses = statuses, env = env }
 
 
-{-| Compile phase for exposed modules: check midpoint and compile all modules.
+{-| Checks the crawl for an import cycle and for the dependency interfaces and,
+if neither fails, compiles every crawled module and produces the result for
+`exposed`.
 -}
 compileExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> { dmvar : MVar (Maybe Dependencies), statuses : Dict ModuleName.Raw Status, env : Env } -> Task Never (Result Exit.BuildProblem docs)
 compileExposed root maybeBuildDir details docsGoal exposed { dmvar, statuses, env } =
@@ -309,6 +411,9 @@ compileExposed root maybeBuildDir details docsGoal exposed { dmvar, statuses, en
         |> Task.andThen (handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env)
 
 
+{-| Returns the problem the midpoint check found, or compiles every crawled
+module, writes the details, and produces the result for `exposed`.
+-}
 handleExposedMidpoint : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict ModuleName.Raw Status -> Env -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem docs)
 handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env midpoint =
     case midpoint of
@@ -320,7 +425,9 @@ handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env m
                 |> Task.andThen (finalizeExposed root docsGoal exposed)
 
 
-{-| Compile all modules and write details.
+{-| Compiles every crawled module, writes `d.dat` with the compiled modules'
+new entries, and returns every module's result. The details are written
+whatever the build's `CacheMode`.
 -}
 compileAndFinalize : FilePath -> Maybe String -> Details.Details -> Dependencies -> Dict ModuleName.Raw Status -> Env -> Task Never (Dict ModuleName.Raw BResult)
 compileAndFinalize root maybeBuildDir details foreigns statuses env =
@@ -329,12 +436,19 @@ compileAndFinalize root maybeBuildDir details foreigns statuses env =
         |> Task.andThen (collectResultsAndWriteDetails root maybeBuildDir details)
 
 
+{-| Forks a check of every crawled module and returns their result MVars,
+together with `rmvar`, the MVar the checks read them from, which is still
+empty.
+-}
 compileAllModules : Env -> Dependencies -> Dict ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Dict ModuleName.Raw (MVar BResult) )
 compileAllModules env foreigns statuses rmvar =
     dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
         |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
 
 
+{-| Gives the checks the result MVars, waits for every result, drops the MVars,
+then writes the details and returns the results.
+-}
 collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Dict ModuleName.Raw (MVar BResult)), Dict ModuleName.Raw (MVar BResult) ) -> Task Never (Dict ModuleName.Raw BResult)
 collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) =
     Utils.putMVar dictRawMVarBResultEncoder rmvar resultMVars
@@ -347,6 +461,9 @@ collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) 
             )
 
 
+{-| Writes `d.dat` with the entries of the modules compiled in `results` and
+returns `results`.
+-}
 writeDetailsAndReturn : FilePath -> Maybe String -> Details.Details -> Dict ModuleName.Raw BResult -> Task Never (Dict ModuleName.Raw BResult)
 writeDetailsAndReturn root maybeBuildDir details results =
     writeDetails root maybeBuildDir details results
@@ -357,7 +474,14 @@ writeDetailsAndReturn root maybeBuildDir details results =
 -- ====== FROM PATHS ======
 
 
-{-| Data contained within build artifacts.
+{-| What a build from paths hands on: the package the project's modules belong
+to, the dependency interfaces, the roots in the order they were given, and the
+compiled modules.
+
+`pkg` is a placeholder name for an application that is not a kernel
+application. `modules` holds the project's modules and the outside roots, not
+foreign or kernel modules.
+
 -}
 type alias ArtifactsData =
     { pkg : Pkg.Name
@@ -367,29 +491,51 @@ type alias ArtifactsData =
     }
 
 
-{-| Complete build artifacts including compiled modules, dependency interfaces, and root modules.
+{-| The result of a successful build from paths (see `ArtifactsData`).
 -}
 type Artifacts
     = Artifacts ArtifactsData
 
 
-{-| Represents a compiled module, either freshly compiled or loaded from cache.
+{-| One compiled project module, as the artifacts carry it.
+
+`Fresh` is a module compiled in this build, including an outside root. It
+carries its interface and its erased graph, which on a typed build is the
+presence-only stub `Compiler.AST.Optimized` describes, and its typed graph and
+type environment, which are `Nothing` on an untyped build.
+
+`Cached` is a module reused from disk without compiling. Its `Bool` says
+whether it defines `main`, and its MVar holds its interface once some module
+has needed it read from the `.eci` file (see `CachedInterface`).
+
 -}
 type Module
     = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
-{-| Map of dependency module interfaces needed for type checking.
+{-| The interfaces of the modules the project's dependencies provide, keyed by
+canonical module name.
+
+Modules that a direct dependency does not expose, and every module of an
+indirect dependency, have private interfaces holding only their types;
+`Builder.Elm.Details` decides which. This is a name for a `Data.Map.Dict`, not
+a new type.
+
 -}
 type alias Dependencies =
     Data.Map.Dict String ModuleName.Canonical I.DependencyInterface
 
 
-{-| Build a project by compiling modules from specific file paths (e.g., for application builds).
+{-| Compiles the modules at `paths` and everything they import, writing caches,
+and returns the artifacts. `needsTypedOpt` selects the typed pipeline over the
+erased one.
 
-This entry point discovers modules from the given file paths, crawls their dependencies,
-and performs parallel incremental compilation.
+The build fails when a path cannot be a root: there is no file at it, it does
+not end in `.elm`, it lies in two source directories, its path below a source
+directory is not a module name, or another source directory has the same
+module. It also fails on an import cycle, when the dependency interfaces cannot
+be loaded, and with every module and outside root that has errors.
 
 -}
 fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
@@ -397,7 +543,8 @@ fromPaths =
     fromPathsWith WriteCaches
 
 
-{-| `fromPaths` with an explicit `CacheMode`.
+{-| Does what `fromPaths` does, writing caches only when `cacheMode` is
+`WriteCaches`.
 -}
 fromPathsWith : CacheMode -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> FEStats.Handle -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
 fromPathsWith cacheMode style root maybeBuildDir maybeKernelPackage details needsTypedOpt stats paths =
@@ -407,12 +554,18 @@ fromPathsWith cacheMode style root maybeBuildDir maybeKernelPackage details need
                 |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
 
 
+{-| Locates the roots at `paths` and, when they are all valid, crawls and
+compiles from them.
+-}
 findAndBuildFromPaths : FilePath -> Maybe String -> Details.Details -> NE.Nonempty FilePath -> Env -> Task Never (Result Exit.BuildProblem Artifacts)
 findAndBuildFromPaths root maybeBuildDir details paths env =
     findRoots env paths
         |> Task.andThen (handleFoundRoots root maybeBuildDir details env)
 
 
+{-| Returns the problem found while locating the roots, or crawls and compiles
+from them.
+-}
 handleFoundRoots : FilePath -> Maybe String -> Details.Details -> Env -> Result Exit.BuildProjectProblem (NE.Nonempty RootLocation) -> Task Never (Result Exit.BuildProblem Artifacts)
 handleFoundRoots root maybeBuildDir details env elroots =
     case elroots of
@@ -424,7 +577,9 @@ handleFoundRoots root maybeBuildDir details env elroots =
                 |> Task.andThen (compilePaths root maybeBuildDir details env)
 
 
-{-| Context passed between crawl and compile phases for path-based builds.
+{-| What the crawl of a build from paths passes to its compile phase: the MVar
+the dependency interfaces will arrive in, every crawled module's status, and
+each root's status in the order the roots were given.
 -}
 type alias PathsBuildContext =
     { dmvar : MVar (Maybe Dependencies)
@@ -433,7 +588,7 @@ type alias PathsBuildContext =
     }
 
 
-{-| Crawl phase for path-based builds: discover all module statuses and root statuses.
+{-| Starts loading the dependency interfaces and crawls from the roots.
 -}
 crawlPaths : FilePath -> Maybe String -> Details.Details -> Env -> NE.Nonempty RootLocation -> Task Never PathsBuildContext
 crawlPaths root maybeBuildDir details env lroots =
@@ -441,12 +596,17 @@ crawlPaths root maybeBuildDir details env lroots =
         |> Task.andThen (crawlPathRoots env lroots)
 
 
+{-| Crawls from the roots, starting from an empty status dict.
+-}
 crawlPathRoots : Env -> NE.Nonempty RootLocation -> MVar (Maybe Dependencies) -> Task Never PathsBuildContext
 crawlPathRoots env lroots dmvar =
     Utils.newMVar statusDictEncoder Dict.empty
         |> Task.andThen (crawlRootsAndCollect env lroots dmvar)
 
 
+{-| Forks a crawler for each root and returns the roots' statuses and every
+crawled module's status, dropping their MVars once read.
+-}
 crawlRootsAndCollect : Env -> NE.Nonempty RootLocation -> MVar (Maybe Dependencies) -> MVar StatusDict -> Task Never PathsBuildContext
 crawlRootsAndCollect env lroots dmvar smvar =
     Utils.nonEmptyListTraverse (fork rootStatusEncoder << crawlRoot env smvar) lroots
@@ -454,8 +614,9 @@ crawlRootsAndCollect env lroots dmvar smvar =
         |> Task.andThen (collectPathStatuses dmvar smvar)
 
 
-{-| Read the root statuses, then drop their MVars (§7.2 row 1): an
-`SOutsideOk` root status holds the root's source text and parsed AST.
+{-| Waits for every root's status, then drops the roots' MVars and returns the
+statuses. An `SOutsideOk` status holds the root's source text and parsed
+module, which the MVar would otherwise keep alive.
 -}
 readAndDropRootStatuses : NE.Nonempty (MVar RootStatus) -> Task Never (NE.Nonempty RootStatus)
 readAndDropRootStatuses rootMVars =
@@ -467,13 +628,18 @@ readAndDropRootStatuses rootMVars =
             )
 
 
+{-| Reads every crawled module's status (see `takeAndDropStatuses`) and returns
+it with `dmvar` and `sroots` for the compile phase.
+-}
 collectPathStatuses : MVar (Maybe Dependencies) -> MVar StatusDict -> NE.Nonempty RootStatus -> Task Never PathsBuildContext
 collectPathStatuses dmvar smvar sroots =
     takeAndDropStatuses smvar
         |> Task.map (\statuses -> { dmvar = dmvar, statuses = statuses, sroots = sroots })
 
 
-{-| Compile phase for path-based builds: check midpoint, compile modules, and build artifacts.
+{-| Checks the crawl for an import cycle, for two roots with one module name and
+for the dependency interfaces and, if none fails, compiles and returns the
+artifacts.
 -}
 compilePaths : FilePath -> Maybe String -> Details.Details -> Env -> PathsBuildContext -> Task Never (Result Exit.BuildProblem Artifacts)
 compilePaths root maybeBuildDir details env { dmvar, statuses, sroots } =
@@ -481,6 +647,9 @@ compilePaths root maybeBuildDir details env { dmvar, statuses, sroots } =
         |> Task.andThen (handlePathsMidpoint root maybeBuildDir details env statuses sroots)
 
 
+{-| Returns the problem the midpoint check found, or compiles every crawled
+module and root and returns the artifacts.
+-}
 handlePathsMidpoint : FilePath -> Maybe String -> Details.Details -> Env -> Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem Artifacts)
 handlePathsMidpoint root maybeBuildDir details env statuses sroots midpoint =
     case midpoint of
@@ -491,7 +660,8 @@ handlePathsMidpoint root maybeBuildDir details env statuses sroots midpoint =
             compilePathModules root maybeBuildDir details env foreigns statuses sroots
 
 
-{-| Compile all modules for path-based builds and produce artifacts.
+{-| Compiles every crawled module and every outside root, writes the details
+unless the build is `OneShot`, and turns the results into artifacts.
 -}
 compilePathModules : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProblem Artifacts)
 compilePathModules root maybeBuildDir details env foreigns statuses sroots =
@@ -500,12 +670,18 @@ compilePathModules root maybeBuildDir details env foreigns statuses sroots =
         |> Task.andThen (finalizePathBuild root maybeBuildDir details env foreigns)
 
 
+{-| Forks a check of every crawled module, then a check of every root.
+-}
 compilePathsWithMVar : Env -> Dependencies -> Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> MVar ResultDict -> Task Never PathCompileState
 compilePathsWithMVar env foreigns statuses sroots rmvar =
     dictForkWithKey bResultEncoder (checkModule env foreigns rmvar) statuses
         |> Task.andThen (checkRootsAndCollect env sroots rmvar)
 
 
+{-| The MVars the compile phase of a build from paths waits on: the one the
+checks read the result MVars from, each module's result MVar, and each root's
+result MVar.
+-}
 type alias PathCompileState =
     { rmvar : MVar ResultDict
     , resultsMVars : Dict ModuleName.Raw (MVar BResult)
@@ -513,6 +689,8 @@ type alias PathCompileState =
     }
 
 
+{-| Gives the module checks the result MVars, then forks a check of every root.
+-}
 checkRootsAndCollect : Env -> NE.Nonempty RootStatus -> MVar ResultDict -> Dict ModuleName.Raw (MVar BResult) -> Task Never PathCompileState
 checkRootsAndCollect env sroots rmvar resultsMVars =
     Utils.putMVar resultDictEncoder rmvar resultsMVars
@@ -520,14 +698,14 @@ checkRootsAndCollect env sroots rmvar resultsMVars =
         |> Task.map (\rrootMVars -> { rmvar = rmvar, resultsMVars = resultsMVars, rrootMVars = rrootMVars })
 
 
-{-| Read every module result and root result, then drop all of those MVars and
-`rmvar` (plans/frontend-heap-release.md §7.2 row 3).
+{-| Waits for every module's result and every root's result, writes the details
+unless the build is `OneShot`, drops all those MVars and `rmvar`, and builds
+the artifacts.
 
-The result MVars are dropped only AFTER the root results are read: a forked
-`checkRoot` for an `Outside` root reads them in `checkDeps`, and one that has
-not yet run would otherwise fail with "MVar not found" (this order was the
-other way round before). Once every root result is in, every `checkModule` and
-`checkRoot` has finished, so nothing reads `rmvar` or the result MVars again.
+The module result MVars are dropped only after every root's result has been
+read, because the check of an outside root reads them and would fail to find
+one that had already been dropped. Once every root's result is in, every check
+has finished and nothing reads these MVars again.
 
 -}
 finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> PathCompileState -> Task Never (Result Exit.BuildProblem Artifacts)
@@ -544,6 +722,9 @@ finalizePathBuild root maybeBuildDir details env foreigns { rmvar, resultsMVars,
         |> Task.map (toArtifactsFromResults env foreigns)
 
 
+{-| Writes `d.dat` with the entries of the modules compiled in `results`, unless
+`cacheMode` is `OneShot`, then waits for every root's result.
+-}
 writeDetailsAndCollectRoots : CacheMode -> FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict ModuleName.Raw BResult -> Task Never ( Dict ModuleName.Raw BResult, NE.Nonempty RootResult )
 writeDetailsAndCollectRoots cacheMode root maybeBuildDir details rrootMVars results =
     (case cacheMode of
@@ -558,11 +739,16 @@ writeDetailsAndCollectRoots cacheMode root maybeBuildDir details rrootMVars resu
         |> Task.map (\rroots -> ( results, rroots ))
 
 
+{-| Returns the build's `CacheMode`.
+-}
 envCacheMode : Env -> CacheMode
 envCacheMode (Env envData) =
     envData.cacheMode
 
 
+{-| Builds the artifacts, or the errors, from the module results and the root
+results (see `toArtifacts`).
+-}
 toArtifactsFromResults : Env -> Dependencies -> ( Dict ModuleName.Raw BResult, NE.Nonempty RootResult ) -> Result Exit.BuildProblem Artifacts
 toArtifactsFromResults env foreigns ( results, rroots ) =
     toArtifacts env foreigns results rroots
@@ -572,13 +758,15 @@ toArtifactsFromResults env foreigns ( results, rroots ) =
 -- ====== GET ROOT NAMES ======
 
 
-{-| Extract the module names of all root modules from the build artifacts.
+{-| Returns the module name of every root, in the order the roots were given.
 -}
 getRootNames : Artifacts -> NE.Nonempty ModuleName.Raw
 getRootNames (Artifacts a) =
     NE.map getRootName a.roots
 
 
+{-| Returns the module name of a root.
+-}
 getRootName : Root -> ModuleName.Raw
 getRootName root =
     case root of
@@ -593,10 +781,41 @@ getRootName root =
 -- ====== CRAWL ======
 
 
+{-| The crawl's shared table: for each module a crawler has taken on, the MVar
+its status will arrive in.
+
+A crawler takes the table's MVar, forks a crawl for each import not yet in it,
+and puts the table back with those imports added, so no import is forked twice.
+`crawlRoot` adds an inside root without that check.
+
+-}
 type alias StatusDict =
     Dict ModuleName.Raw (MVar Status)
 
 
+{-| What the crawl found out about one module.
+
+`SCached` is a module whose file has the path and modification time its
+details entry records, and which needs no documentation. It carries that entry.
+
+`SChanged` is a module that must be compiled. It carries a new details entry,
+the source text, the parsed module, and whether it needs documentation. The
+entry's `lastCompile` is the current build, and its `lastChange` is the old
+entry's, or the current build for a module with no entry.
+
+`SBadImport` is a module that cannot be found, or that is ambiguous: two
+source directories have it, a source directory has it and a direct dependency
+exposes it, or two direct dependencies expose it.
+
+`SBadSyntax` is a module that does not parse, or whose header names no module
+or a different module from the one its path names.
+
+`SForeign` is a module that one direct dependency exposes, the one named.
+
+`SKernel` is a kernel module whose `.js` file a source directory of a kernel
+project has.
+
+-}
 type Status
     = SCached Details.Local
     | SChanged Details.Local String Src.Module DocsNeed
@@ -606,6 +825,9 @@ type Status
     | SKernel
 
 
+{-| Forks a crawler for each of `deps` that no crawler has yet taken on, waits
+for the statuses of those it forked, and then returns `blockedValue`.
+-}
 crawlDeps : Env -> MVar StatusDict -> List ModuleName.Raw -> a -> Task Never a
 crawlDeps env mvar deps blockedValue =
     Utils.takeMVar statusDictDecoder mvar
@@ -613,6 +835,10 @@ crawlDeps env mvar deps blockedValue =
         |> Task.map (\_ -> blockedValue)
 
 
+{-| Forks a crawler for each of `deps` not already in `statusDict`, puts the
+enlarged dict back into `mvar`, and waits for the new crawls. The imports are
+crawled without documentation.
+-}
 crawlNewDeps : Env -> MVar StatusDict -> List ModuleName.Raw -> StatusDict -> Task Never ()
 crawlNewDeps env mvar deps statusDict =
     let
@@ -632,12 +858,19 @@ crawlNewDeps env mvar deps statusDict =
         |> Task.andThen (updateStatusDictAndWait mvar statusDict)
 
 
+{-| Puts `statusDict` with `statuses` added back into `mvar` and waits until
+each MVar in `statuses` has its status.
+-}
 updateStatusDictAndWait : MVar StatusDict -> StatusDict -> StatusDict -> Task Never ()
 updateStatusDictAndWait mvar statusDict statuses =
     Utils.putMVar statusDictEncoder mvar (Dict.union statuses statusDict)
         |> Task.andThen (\_ -> Utils.dictMapM__ (Utils.readMVar statusDecoder) statuses)
 
 
+{-| Crawls the module `name`: finds its file in the source directories, decides
+its status, and crawls its imports. The time taken, including waiting for
+those imports, is recorded under the crawl stage of `FEStats`.
+-}
 crawlModule : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Task Never Status
 crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name =
     let
@@ -651,11 +884,18 @@ crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name 
         )
 
 
+{-| Returns the paths of the source directories' files named `elmFileName` that
+exist.
+-}
 findModulePaths : List AbsoluteSrcDir -> String -> Task Never (List FilePath)
 findModulePaths srcDirs elmFileName =
     Utils.filterM File.exists (List.map (flip addRelative elmFileName) srcDirs)
 
 
+{-| Returns the status of `name` given the files found for it. One file is
+crawled; two or more are an ambiguous import, with paths relative to `root`;
+none means the module is looked for among foreign and kernel modules.
+-}
 crawlFoundPaths : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> FilePath -> Parse.ProjectType -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Foreign -> List FilePath -> Task Never Status
 crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals foreigns paths =
     case paths of
@@ -673,6 +913,10 @@ crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals
             crawlNoLocalPath name projectType foreigns envData.srcDirs
 
 
+{-| Returns the status of a module whose file is at `path`. When a direct
+dependency also exposes the name, the import is ambiguous; otherwise the file's
+modification time decides whether the module is cached.
+-}
 crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Foreign -> FilePath -> Task Never Status
 crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
     case Dict.get name foreigns of
@@ -684,6 +928,10 @@ crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
                 |> Task.andThen (crawlWithTime env mvar docsNeed name needsDocs buildID locals path)
 
 
+{-| Returns `SCached`, after crawling the recorded imports, when the module's
+details entry has `path` and `newTime` and no documentation is needed;
+otherwise reads and parses the file (see `crawlFile`).
+-}
 crawlWithTime : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> FilePath -> File.Time -> Task Never Status
 crawlWithTime env mvar docsNeed name needsDocs buildID locals path newTime =
     case Dict.get name locals of
@@ -698,6 +946,11 @@ crawlWithTime env mvar docsNeed name needsDocs buildID locals path newTime =
                 crawlDeps env mvar localData.deps (SCached local)
 
 
+{-| Returns the status of a module that no source directory has: `SForeign`
+when exactly one direct dependency exposes it, an ambiguous import when several
+do, and, for a kernel module name in a kernel project, whatever
+`checkKernelExistsInDirs` finds. Anything else is not found.
+-}
 crawlNoLocalPath : ModuleName.Raw -> Parse.ProjectType -> Dict ModuleName.Raw Details.Foreign -> List AbsoluteSrcDir -> Task Never Status
 crawlNoLocalPath name projectType foreigns srcDirs =
     case Dict.get name foreigns of
@@ -725,6 +978,13 @@ crawlNoLocalPath name projectType foreigns srcDirs =
                 SBadImport Import.NotFound |> Task.succeed
 
 
+{-| Returns `SKernel` when one of `srcDirs` has the kernel module's `.js` file,
+and a not-found import otherwise.
+
+The file is read and parsed, but the result is `SKernel` whether or not it
+parses.
+
+-}
 checkKernelExistsInDirs : ModuleName.Raw -> Pkg.Name -> Dict ModuleName.Raw Pkg.Name -> List AbsoluteSrcDir -> Task Never Status
 checkKernelExistsInDirs name pkg foreignHomes srcDirs =
     case srcDirs of
@@ -756,6 +1016,11 @@ checkKernelExistsInDirs name pkg foreignHomes srcDirs =
                     )
 
 
+{-| Reads and parses the module file at `path`. Returns `SChanged`, with a new
+details entry carrying `lastChange` and the current build as `lastCompile`,
+after crawling the module's imports. Returns `SBadSyntax` when the file does
+not parse or its header names no module or a module other than `expectedName`.
+-}
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
 crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange =
     File.readUtf8 (Utils.fpCombine envData.root path)
@@ -795,6 +1060,8 @@ crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange
             )
 
 
+{-| Tells whether a top-level value is named `main`.
+-}
 isMain : A.Located Src.Value -> Bool
 isMain (A.At _ (Src.Value v)) =
     let
@@ -808,13 +1075,39 @@ isMain (A.At _ (Src.Value v)) =
 -- ====== CHECK MODULE ======
 
 
+{-| For each crawled module, the MVar its check result will arrive in. The
+checks read this dict from an MVar that is filled only after every check has
+been forked.
+-}
 type alias ResultDict =
     Dict ModuleName.Raw (MVar BResult)
 
 
-{-| Build result for a single module after compilation or cache lookup.
+{-| The outcome of checking one module.
 
-Tracks whether the module was freshly compiled, unchanged from cache, or encountered errors.
+`RNew` and `RSame` are modules compiled in this build. Each carries the new
+details entry, the interface, the erased graph, the typed graph and type
+environment (`Nothing` on an untyped build) and the documentation (`Nothing`
+unless it was needed). `RNew` means the interface differs from the `.eci` file
+on disk, or none could be read; `RSame` means it is the same.
+
+`RCached` is a module reused from disk. It carries whether the module defines
+`main`, its `lastChange`, and the MVar its interface is read through.
+
+`RNotFound` is a module that cannot be found or is ambiguous.
+
+`RProblem` is a module with errors.
+
+`RBlocked` is a module that was not compiled because of its imports: one
+failed, a cached interface could not be read, or, for a module whose file did
+not change, an import could not be found.
+
+`RForeign` is a module a direct dependency provides, with its interface.
+
+`RKernel` is a kernel module.
+
+`RKernelLocal` is never produced by this module; it is only encoded and
+decoded.
 
 -}
 type BResult
@@ -829,7 +1122,15 @@ type BResult
     | RKernelLocal (List Kernel.Chunk)
 
 
-{-| State of a cached module interface: unneeded, successfully loaded, or corrupted.
+{-| The interface of a cached module, as far as this build has needed it.
+
+`Unneeded` means its `.eci` file has not been read. `Loaded` carries the
+interface read from it. `Corrupted` means the file was missing or could not be
+decoded, and every module that needs it is blocked.
+
+The MVar holding it is created full, and each reader takes it and puts it back,
+so the file is read at most once in a build.
+
 -}
 type CachedInterface
     = Unneeded
@@ -837,6 +1138,13 @@ type CachedInterface
     | Corrupted
 
 
+{-| Returns the result for one crawled module from its crawl status, waiting
+for its imports' results where they matter. The time taken is recorded under
+the check stage of `FEStats`.
+
+A foreign module whose interface is private crashes the compiler.
+
+-}
 checkModule : Env -> Dependencies -> MVar ResultDict -> ModuleName.Raw -> Status -> Task Never BResult
 checkModule ((Env envData) as env) foreigns resultsMVar name status =
     FEStats.withModuleStage envData.stats FEStats.Check name <|
@@ -865,6 +1173,10 @@ checkModule ((Env envData) as env) foreigns resultsMVar name status =
                 Task.succeed RKernel
 
 
+{-| Returns the result for a module whose file has not changed: reused if its
+imports allow it, otherwise compiled again from its file (see
+`handleCachedDepsStatus`).
+-}
 checkCachedModule :
     Env
     -> FilePath
@@ -884,6 +1196,18 @@ checkCachedModule ((Env envData) as env) root projectType resultsMVar name path 
         |> Task.andThen (handleCachedDepsStatus env root projectType name path time deps hasMain lastChange)
 
 
+{-| Decides the result of a module whose file has not changed from its imports'
+`DepsStatus`.
+
+With no import changed, the module is reused only if the artifact this build
+reads is on disk, `.ecot` on a typed build and `.eco` on an untyped one. A
+module last compiled for the other kind of build looks unchanged, but may lack
+that artifact, and is compiled again when it is missing. With a changed import
+the module is compiled again. A failed import blocks it, and so does an import
+that cannot be found, since the module's source has not been read to report
+the error against.
+
+-}
 handleCachedDepsStatus :
     Env
     -> FilePath
@@ -899,12 +1223,6 @@ handleCachedDepsStatus :
 handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange depsStatus =
     case depsStatus of
         DepsSame same cached ->
-            -- A cached module is only reusable if the artifact for THIS backend
-            -- is present on disk: .ecot for the typed/native path, .eco for the
-            -- untyped/JS path. The upstream source-mtime check cannot tell the
-            -- two forms apart, so a module compiled for the other backend looks
-            -- "cached" but is missing the artifact this build needs (e.g. a
-            -- native build skips writing .eco, then a JS build cannot load it).
             let
                 artifactPath : FilePath
                 artifactPath =
@@ -918,7 +1236,6 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
                 |> Task.andThen (handleCachedWithArtifactCheck env root projectType name path time deps hasMain lastChange same cached)
 
         DepsChange ifaces ->
-            -- Dependencies changed, need to read source and recompile
             File.readUtf8 (Utils.fpCombine root path)
                 |> Task.andThen (recompileCachedModule env projectType name path time deps ifaces)
 
@@ -926,10 +1243,14 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
             Task.succeed RBlocked
 
         DepsNotFound _ ->
-            -- Can't provide proper import errors without source, just block
             Task.succeed RBlocked
 
 
+{-| Returns `RCached` when `artifactExists`, with the interface MVar created
+full, holding `Unneeded`: `loadInterface` takes that MVar and puts it back, and
+would wait forever on an empty one. Otherwise loads the imports' interfaces and
+compiles the module again, or blocks it when one cannot be read.
+-}
 handleCachedWithArtifactCheck :
     Env
     -> FilePath
@@ -946,20 +1267,17 @@ handleCachedWithArtifactCheck :
     -> Task Never BResult
 handleCachedWithArtifactCheck ((Env envData) as env) root projectType name path time deps hasMain lastChange same cached artifactExists =
     if artifactExists then
-        -- This backend's artifact exists, can use cached. The CachedInterface
-        -- MVar starts as `Unneeded` (interface bytes not yet read from disk).
-        -- loadInterface takes-then-puts this slot, so it MUST be filled here —
-        -- leaving it empty deadlocks any later changed module that tries to
-        -- load this dep's interface.
         Utils.newMVar cachedInterfaceEncoder Unneeded
             |> Task.map (\mvar -> RCached hasMain lastChange mvar)
 
     else
-        -- Artifact missing (e.g. compiled for the other backend); recompile.
         loadInterfaces root envData.maybeBuildDir same cached
             |> Task.andThen (recompileIfInterfacesLoaded env root projectType name path time deps)
 
 
+{-| Compiles a module whose file has not changed again, from its file, when its
+imports' interfaces were loaded, and blocks it otherwise.
+-}
 recompileIfInterfacesLoaded :
     Env
     -> FilePath
@@ -980,6 +1298,14 @@ recompileIfInterfacesLoaded env root projectType name path time deps maybeIfaces
                 |> Task.andThen (recompileCachedModule env projectType name path time deps ifaces)
 
 
+{-| Parses `source` and compiles it, without documentation, for a module whose
+file has not changed.
+
+The new details entry starts with `lastChange` and `lastCompile` at 0, so if
+the interface turns out unchanged the module records a `lastChange` of 0 rather
+than the build at which its interface last changed.
+
+-}
 recompileCachedModule :
     Env
     -> Parse.ProjectType
@@ -1010,6 +1336,9 @@ recompileCachedModule env projectType name path time deps ifaces source =
             compile env (DocsNeed False) local source ifaces modul
 
 
+{-| Returns the result for a module the crawl found changed: waits for its
+imports' results and compiles it unless they prevent it.
+-}
 checkChangedModule :
     Env
     -> FilePath
@@ -1031,6 +1360,10 @@ checkChangedModule ((Env envData) as env) root resultsMVar name path time deps l
         |> Task.andThen (\( resultDict, depsStatus ) -> handleChangedDepsStatus env resultDict root name path time local source imports modul docsNeed depsStatus)
 
 
+{-| Compiles a changed module against its imports' interfaces, reading the
+cached ones when no import changed. It is blocked when an import failed, and
+an import that cannot be found is reported against its source.
+-}
 handleChangedDepsStatus :
     Env
     -> ResultDict
@@ -1048,7 +1381,6 @@ handleChangedDepsStatus :
 handleChangedDepsStatus ((Env envData) as env) resultDict root name path time local source imports modul docsNeed depsStatus =
     case depsStatus of
         DepsSame same cached ->
-            -- Source changed, need to compile even if deps are same
             loadInterfaces root envData.maybeBuildDir same cached
                 |> Task.andThen (compileIfInterfacesLoaded env local source modul docsNeed)
 
@@ -1062,6 +1394,9 @@ handleChangedDepsStatus ((Env envData) as env) resultDict root name path time lo
             makeImportError env resultDict name path time source imports problems
 
 
+{-| Compiles the module when its imports' interfaces were loaded, and blocks it
+otherwise.
+-}
 compileIfInterfacesLoaded :
     Env
     -> Details.Local
@@ -1079,6 +1414,9 @@ compileIfInterfacesLoaded env local source modul docsNeed maybeIfaces =
             compile env docsNeed local source ifaces modul
 
 
+{-| Returns an `RProblem` reporting each import in `problems`, located at its
+import line in `source`.
+-}
 makeImportError :
     Env
     -> ResultDict
@@ -1097,6 +1435,25 @@ makeImportError env resultDict name path time source imports problems =
 -- ====== CHECK DEPS ======
 
 
+{-| What the results of a module's imports say about it, compared with the
+module's `lastCompile`.
+
+`DepsNotFound` lists the imports that cannot be found or are ambiguous, in
+import order. It wins over everything else.
+
+`DepsBlock` means an import has errors or is blocked, or a cached import's
+interface could not be read.
+
+`DepsSame` means no import was compiled with a new interface in this build and
+no import's `lastChange` is later than `lastCompile`. It carries the
+interfaces already in memory and the MVars of the cached ones, which are read
+only if the module is compiled after all.
+
+`DepsChange` is the remaining case, and carries every import's interface.
+
+Kernel imports count for nothing, and foreign imports never make a change.
+
+-}
 type DepsStatus
     = DepsChange (Dict ModuleName.Raw I.Interface)
     | DepsSame (List Dep) (List CDep)
@@ -1104,19 +1461,31 @@ type DepsStatus
     | DepsNotFound (NE.Nonempty ( ModuleName.Raw, Import.Problem ))
 
 
+{-| Waits for the result of each of `deps` and returns their `DepsStatus`
+against `lastCompile`.
+-}
 checkDeps : FilePath -> Maybe String -> ResultDict -> List ModuleName.Raw -> Details.BuildID -> Task Never DepsStatus
 checkDeps root maybeBuildDir results deps lastCompile =
     checkDepsHelp root maybeBuildDir results deps [] [] [] [] False 0 lastCompile
 
 
+{-| An imported module with its interface in memory.
+-}
 type alias Dep =
     ( ModuleName.Raw, I.Interface )
 
 
+{-| A cached imported module, with the MVar its interface is read through.
+-}
 type alias CDep =
     ( ModuleName.Raw, MVar CachedInterface )
 
 
+{-| Sorts each import's result into the interfaces of imports compiled with a
+new interface (`new`), the other interfaces in memory (`same`), the cached
+ones, and the import problems, noting whether any import blocks the module and
+the latest `lastChange` among imports, then decides the `DepsStatus`.
+-}
 checkDepsHelp :
     FilePath
     -> Maybe String
@@ -1194,6 +1563,10 @@ checkDepsHelp root maybeBuildDir results deps new same cached importProblems isB
 -- ====== TO IMPORT ERROR ======
 
 
+{-| Turns import problems into import errors located at their import lines.
+Each error carries the modules the project knows of that this module does not
+import, which the report uses for suggestions.
+-}
 toImportErrors : Env -> ResultDict -> List Src.Import -> NE.Nonempty ( ModuleName.Raw, Import.Problem ) -> NE.Nonempty Import.Error
 toImportErrors (Env envData) results imports problems =
     let
@@ -1231,6 +1604,9 @@ toImportErrors (Env envData) results imports problems =
 -- ====== LOAD CACHED INTERFACES ======
 
 
+{-| Returns every interface in `same` and `cached`, reading the cached ones in
+parallel, or `Nothing` when any cached interface cannot be read.
+-}
 loadInterfaces : FilePath -> Maybe String -> List Dep -> List CDep -> Task Never (Maybe (Dict ModuleName.Raw I.Interface))
 loadInterfaces root maybeBuildDir same cached =
     Utils.listTraverse (fork maybeDepEncoder << loadInterface root maybeBuildDir) cached
@@ -1249,6 +1625,10 @@ loadInterfaces root maybeBuildDir same cached =
             )
 
 
+{-| Returns a cached import's interface, reading its `.eci` file the first time
+and leaving the outcome in its MVar for later readers. Gives `Nothing` when the
+file is missing or cannot be decoded.
+-}
 loadInterface : FilePath -> Maybe String -> CDep -> Task Never (Maybe Dep)
 loadInterface root maybeBuildDir ( name, ciMvar ) =
     Utils.takeMVar cachedInterfaceDecoder ciMvar
@@ -1283,9 +1663,8 @@ loadInterface root maybeBuildDir ( name, ciMvar ) =
 -- ====== CHECK PROJECT ======
 
 
-{-| `dmvar` has a single reader (one of `checkMidpoint`/`checkMidpointAndRoots`'
-read paths, each run once per build), so take its value and drop the MVar
-(plans/frontend-heap-release.md §7.2 row 3): an MVar is a GC root until dropped.
+{-| Takes the dependency interfaces out of `dmvar` and drops it. The midpoint
+check is its only reader, once per build.
 -}
 takeAndDropDependencies : MVar (Maybe Dependencies) -> Task Never (Maybe Dependencies)
 takeAndDropDependencies dmvar =
@@ -1293,6 +1672,10 @@ takeAndDropDependencies dmvar =
         |> Task.andThen (\deps -> Utils.dropMVar dmvar |> Task.map (\_ -> deps))
 
 
+{-| Checks the crawled modules for an import cycle, then returns the dependency
+interfaces, or `BP_CannotLoadDependencies` when they could not be loaded. The
+interfaces' MVar is dropped either way.
+-}
 checkMidpoint : MVar (Maybe Dependencies) -> Dict ModuleName.Raw Status -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpoint dmvar statuses =
     case checkForCycles statuses of
@@ -1313,6 +1696,9 @@ checkMidpoint dmvar statuses =
                 |> Task.map (\_ -> Err (Exit.BP_Cycle name names))
 
 
+{-| Does what `checkMidpoint` does, and also checks for two roots with one
+module name (see `checkUniqueRoots`) before taking the interfaces.
+-}
 checkMidpointAndRoots : MVar (Maybe Dependencies) -> Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpointAndRoots dmvar statuses sroots =
     case checkForCycles statuses of
@@ -1343,6 +1729,9 @@ checkMidpointAndRoots dmvar statuses sroots =
 -- ====== CHECK FOR CYCLES ======
 
 
+{-| Returns the modules of one import cycle among the crawled modules, if there
+is one. A module that imports itself is such a cycle.
+-}
 checkForCycles : Dict ModuleName.Raw Status -> Maybe (NE.Nonempty ModuleName.Raw)
 checkForCycles modules =
     let
@@ -1357,6 +1746,8 @@ checkForCycles modules =
     checkForCyclesHelp sccs
 
 
+{-| Returns the members of the first cyclic component of `sccs`, if any.
+-}
 checkForCyclesHelp : List (Graph.SCC ModuleName.Raw) -> Maybe (NE.Nonempty ModuleName.Raw)
 checkForCyclesHelp sccs =
     case sccs of
@@ -1375,10 +1766,16 @@ checkForCyclesHelp sccs =
                     Just (NE.Nonempty m ms)
 
 
+{-| A module in the import graph: its name, as both the node and its key, and
+the modules it imports.
+-}
 type alias Node =
     ( ModuleName.Raw, ModuleName.Raw, List ModuleName.Raw )
 
 
+{-| Adds a crawled module to the import graph. Only cached and changed modules
+have edges.
+-}
 addToGraph : ModuleName.Raw -> Status -> List Node -> List Node
 addToGraph name status graph =
     let
@@ -1410,6 +1807,15 @@ addToGraph name status graph =
 -- ====== CHECK UNIQUE ROOTS ======
 
 
+{-| Looks for an outside root whose module name another outside root, or a
+module the crawl found in a source directory, also has, and returns
+`BP_RootNameDuplicate` for it.
+
+The outside roots are grouped by name with `Utils.dictFromListWith`, which
+returns an empty dict for any input, so as written this always returns
+`Nothing`.
+
+-}
 checkUniqueRoots : Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
 checkUniqueRoots insides sroots =
     let
@@ -1430,6 +1836,9 @@ checkUniqueRoots insides sroots =
                     Just problem
 
 
+{-| Returns the module name and path of an outside root that parsed, and
+`Nothing` for any other root.
+-}
 rootStatusToNamePathPair : RootStatus -> Maybe ( ModuleName.Raw, OneOrMore.OneOrMore FilePath )
 rootStatusToNamePathPair sroot =
     case sroot of
@@ -1443,6 +1852,9 @@ rootStatusToNamePathPair sroot =
             Nothing
 
 
+{-| Returns the path of the outside root named `name`, or `BP_RootNameDuplicate`
+with two of the paths when several outside roots have that name.
+-}
 checkOutside : ModuleName.Raw -> OneOrMore.OneOrMore FilePath -> Result Exit.BuildProjectProblem FilePath
 checkOutside name paths =
     case OneOrMore.destruct NE.Nonempty paths of
@@ -1453,6 +1865,9 @@ checkOutside name paths =
             Err (Exit.BP_RootNameDuplicate name p1 p2)
 
 
+{-| Fails with `BP_RootNameDuplicate` when the module `name`, which the outside
+root at `p1` also defines, is one the crawl found in a source directory.
+-}
 checkInside : ModuleName.Raw -> FilePath -> Status -> Result Exit.BuildProjectProblem ()
 checkInside name p1 status =
     case status of
@@ -1479,6 +1894,11 @@ checkInside name p1 status =
 -- ====== COMPILE MODULE ======
 
 
+{-| Compiles a module from `source` against `ifaces` and returns `RNew`,
+`RSame` or `RProblem`, writing its artifacts as the build's `CacheMode`
+allows. The typed pipeline is used when the build needs it. The time taken is
+recorded under the build stage of `FEStats`.
+-}
 compile : Env -> DocsNeed -> Details.Local -> String -> Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
 compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
     let
@@ -1498,7 +1918,9 @@ compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
             compileWithoutTypedOpt envData.key envData.root envData.maybeBuildDir envData.cacheMode pkg envData.buildID docsNeed localData.path localData.time localData.deps localData.hasMain localData.lastChange source ifaces modul
 
 
-{-| Context for compilation results, carrying all the values needed for finalization.
+{-| Everything needed to write a compiled module's artifacts and build its
+result. `buildID` is the current build, `lastChange` the module's value before
+this compilation, and `main` whether it defines `main`.
 -}
 type alias CompileResultContext =
     { key : Reporting.BKey
@@ -1520,6 +1942,9 @@ type alias CompileResultContext =
     }
 
 
+{-| Compiles a module through the erased pipeline and handles the outcome (see
+`handleCompileResult`).
+-}
 compileWithoutTypedOpt :
     Reporting.BKey
     -> FilePath
@@ -1542,6 +1967,10 @@ compileWithoutTypedOpt key root maybeBuildDir cacheMode pkg buildID docsNeed pat
         |> Task.andThen (handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul Nothing)
 
 
+{-| Turns the outcome of compiling a module into its result. Errors, and
+documentation errors when documentation is needed, give `RProblem`; otherwise
+the artifacts are written (see `writeObjectsAndFinalizeCompile`).
+-}
 handleCompileResult :
     Reporting.BKey
     -> FilePath
@@ -1594,12 +2023,19 @@ handleCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path t
                     writeObjectsAndFinalizeCompile ctx
 
 
+{-| Writes a compiled module's artifacts, reports one module done, and returns
+`RNew` when its interface differs from the `.eci` file on disk, or none could
+be read, and `RSame` otherwise.
+
+Nothing is written in `OneShot` mode, and otherwise the `.eci` file is written
+only when the interface changed. It is written before the `.eco` or `.ecot`
+file: a later build reuses the module once that file exists, so a crash in
+between may leave an interface without its object but never an object without
+its interface.
+
+-}
 writeObjectsAndFinalizeCompile : CompileResultContext -> Task Never BResult
 writeObjectsAndFinalizeCompile ctx =
-    -- The .eci goes FIRST: a later build treats the module as cached when its
-    -- .ecot/.eco exists (handleCachedDepsStatus), so the gating artifact is
-    -- written last and a crash in between never leaves an object without its
-    -- interface (cache-serialization plan S12c).
     let
         eciPath : FilePath
         eciPath =
@@ -1633,6 +2069,9 @@ writeObjectsAndFinalizeCompile ctx =
             )
 
 
+{-| Writes the module's `.eco` file on an untyped build that writes caches. A
+typed build, one with typed objects, writes none.
+-}
 writeUntypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeUntypedObjectsIfNeeded ctx =
     case ( ctx.cacheMode, ctx.typedObjects ) of
@@ -1640,16 +2079,15 @@ writeUntypedObjectsIfNeeded ctx =
             Task.succeed ()
 
         ( WriteCaches, Just _ ) ->
-            -- MLIR/ELF target: the typed graph (.ecot) is the sole input to
-            -- monomorphization. The untyped Opt IR is never read on this
-            -- path (see stripUntypedGraph in Builder/Generate.elm), so skip
-            -- the .eco write to save I/O on bootstrap-scale builds.
             Task.succeed ()
 
         ( WriteCaches, Nothing ) ->
             File.writeBinary Opt.localGraphEncoder (Stuff.ecoWithBuildDir ctx.root ctx.maybeBuildDir ctx.name) ctx.objects
 
 
+{-| Writes the module's `.ecot` file, holding its typed graph and type
+environment, on a typed build that writes caches.
+-}
 writeTypedObjectsIfNeeded : CompileResultContext -> Task Never ()
 writeTypedObjectsIfNeeded ctx =
     case ( ctx.cacheMode, ctx.typedObjects, ctx.typeEnv ) of
@@ -1664,10 +2102,12 @@ writeTypedObjectsIfNeeded ctx =
             File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.ecotWithBuildDir ctx.root ctx.maybeBuildDir ctx.name) artifact
 
         _ ->
-            -- One-shot, or no typed info / type env (erased build): no .ecot
             Task.succeed ()
 
 
+{-| Returns `RSame` with a details entry that keeps the module's `lastChange`
+and records the current build as `lastCompile`.
+-}
 buildRSame : CompileResultContext -> BResult
 buildRSame ctx =
     let
@@ -1684,6 +2124,9 @@ buildRSame ctx =
     RSame local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
 
 
+{-| Returns `RNew` with a details entry that records the current build as both
+`lastChange` and `lastCompile`.
+-}
 buildRNew : CompileResultContext -> BResult
 buildRNew ctx =
     let
@@ -1700,6 +2143,9 @@ buildRNew ctx =
     RNew local ctx.iface ctx.objects ctx.typedObjects ctx.typeEnv ctx.docs
 
 
+{-| Compiles a module through the typed pipeline and handles the outcome (see
+`handleTypedCompileResult`).
+-}
 compileWithTypedOpt :
     Reporting.BKey
     -> FilePath
@@ -1722,6 +2168,9 @@ compileWithTypedOpt key root maybeBuildDir cacheMode pkg buildID docsNeed path t
         |> Task.andThen (handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed path time deps main lastChange source modul)
 
 
+{-| Does what `handleCompileResult` does for the outcome of a typed compile,
+whose result also carries the typed graph and type environment.
+-}
 handleTypedCompileResult :
     Reporting.BKey
     -> FilePath
@@ -1773,6 +2222,10 @@ handleTypedCompileResult key root maybeBuildDir cacheMode pkg buildID docsNeed p
                     writeObjectsAndFinalizeCompile ctx
 
 
+{-| Returns the package the project's modules belong to: the package's own name,
+the kernel package of a kernel application, or `Pkg.dummyName` for any other
+application.
+-}
 projectTypeToPkg : Parse.ProjectType -> Pkg.Name
 projectTypeToPkg projectType =
     case projectType of
@@ -1790,11 +2243,16 @@ projectTypeToPkg projectType =
 -- ====== WRITE DETAILS ======
 
 
+{-| Writes `d.dat` with the entries of the modules compiled in `results`
+replaced. Every other entry is kept as it was.
+-}
 writeDetails : FilePath -> Maybe String -> Details.Details -> Dict ModuleName.Raw BResult -> Task Never ()
 writeDetails root maybeBuildDir (Details.Details detailsData) results =
     Details.Details { detailsData | locals = Dict.foldr addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.detailsWithBuildDir root maybeBuildDir)
 
 
+{-| Records a module's new details entry when it was compiled in this build.
+-}
 addNewLocal : ModuleName.Raw -> BResult -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Local
 addNewLocal name result locals =
     case result of
@@ -1830,6 +2288,10 @@ addNewLocal name result locals =
 -- ====== FINALIZE EXPOSED ======
 
 
+{-| Produces the result of a build from exposed modules: `BP_MissingExposed`
+for the named modules that cannot be found, else `BuildBadModules` with every
+module that has errors, else what the docs goal asks for.
+-}
 finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict ModuleName.Raw BResult -> Task Never (Result Exit.BuildProblem docs)
 finalizeExposed root docsGoal exposed results =
     case List.foldr (addImportProblems results) [] (NE.toList exposed) of
@@ -1845,6 +2307,8 @@ finalizeExposed root docsGoal exposed results =
                     Exit.BuildBadModules root e es |> Err |> Task.succeed
 
 
+{-| Adds a module's errors to `errors` when its result is `RProblem`.
+-}
 addErrors : BResult -> List Error.Module -> List Error.Module
 addErrors result errors =
     case result of
@@ -1876,6 +2340,9 @@ addErrors result errors =
             errors
 
 
+{-| Adds the problem of the module `name` to `problems` when its result is
+`RNotFound`.
+-}
 addImportProblems : Dict ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
     case Utils.dictFind name results of
@@ -1911,9 +2378,14 @@ addImportProblems results name problems =
 -- ====== DOCS ======
 
 
-{-| Specifies how to handle documentation during compilation.
+{-| What a build from exposed modules does with documentation, which decides
+what the build returns: the documentation itself (`keepDocs`), the outcome of
+writing it to a file (`writeDocs`), or nothing, with no documentation
+generated (`ignoreDocs`). These three are the only ways to make one.
 
-Can keep docs in memory, write to a file, or ignore them entirely.
+Any goal but `ignoreDocs` makes the build generate documentation for the
+modules it names, and a module whose documentation cannot be generated fails
+the build.
 
 -}
 type DocsGoal docs
@@ -1922,31 +2394,37 @@ type DocsGoal docs
     | IgnoreDocs docs
 
 
-{-| Keep generated documentation in memory as a dictionary.
+{-| A docs goal that returns the documentation of every module that has some,
+keyed by module name.
 -}
 keepDocs : DocsGoal (Dict ModuleName.Raw Docs.Module)
 keepDocs =
     KeepDocs (\results -> Utils.dictMapMaybe toDocs results)
 
 
-{-| Write generated documentation to a JSON file at the specified path.
+{-| Produces a docs goal that writes the documentation of every module that has
+some to `path`, as JSON.
 -}
 writeDocs : FilePath -> DocsGoal ()
 writeDocs path =
     WriteDocs (\results -> E.writeUgly path (Docs.encode (Utils.dictMapMaybe toDocs results)))
 
 
-{-| Ignore documentation generation during compilation.
+{-| A docs goal that generates no documentation.
 -}
 ignoreDocs : DocsGoal ()
 ignoreDocs =
     IgnoreDocs ()
 
 
+{-| Whether a module's documentation must be generated.
+-}
 type DocsNeed
     = DocsNeed Bool
 
 
+{-| Returns whether a docs goal needs documentation.
+-}
 toDocsNeed : DocsGoal a -> DocsNeed
 toDocsNeed goal =
     case goal of
@@ -1960,6 +2438,9 @@ toDocsNeed goal =
             DocsNeed True
 
 
+{-| Returns the module's documentation, or the error that prevents it, when it
+is needed, and `Nothing` when it is not.
+-}
 makeDocs : DocsNeed -> Can.Module -> Result EDocs.Error (Maybe Docs.Module)
 makeDocs (DocsNeed isNeeded) modul =
     if isNeeded then
@@ -1974,6 +2455,8 @@ makeDocs (DocsNeed isNeeded) modul =
         Ok Nothing
 
 
+{-| Produces the docs goal's result from the module results.
+-}
 finalizeDocs : DocsGoal docs -> Dict ModuleName.Raw BResult -> Task Never docs
 finalizeDocs goal results =
     case goal of
@@ -1987,6 +2470,8 @@ finalizeDocs goal results =
             Task.succeed val
 
 
+{-| Returns the documentation in a module's result, if it has any.
+-}
 toDocs : BResult -> Maybe Docs.Module
 toDocs result =
     case result of
@@ -2027,11 +2512,18 @@ toDocs result =
 -- ====== FIND ROOT ======
 
 
+{-| Where a root given by path lies. `LInside` is a file in a source directory,
+named by its module name. `LOutside` is a file outside every source directory,
+by its path as given.
+-}
 type RootLocation
     = LInside ModuleName.Raw
     | LOutside FilePath
 
 
+{-| Locates every root path in parallel. Fails with the problem of an invalid
+path, or when two paths lead to the same file (see `checkRoots`).
+-}
 findRoots : Env -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProjectProblem (NE.Nonempty RootLocation))
 findRoots env paths =
     Utils.nonEmptyListTraverse (fork resultBuildProjectProblemRootInfoEncoder << getRootInfo env) paths
@@ -2045,6 +2537,13 @@ findRoots env paths =
             )
 
 
+{-| Returns each root's location after checking that no two paths lead to the
+same file (`BP_MainPathDuplicate`).
+
+The paths are grouped with `Utils.dictFromListWith`, which returns an empty
+dict for any input, so as written this check never fails.
+
+-}
 checkRoots : NE.Nonempty RootInfo -> Result Exit.BuildProjectProblem (NE.Nonempty RootLocation)
 checkRoots infos =
     let
@@ -2068,10 +2567,15 @@ checkRoots infos =
 -- ====== ROOT INFO ======
 
 
+{-| A root path: canonical and absolute, as it was given, and where it lies.
+-}
 type RootInfo
     = RootInfo FilePath FilePath RootLocation
 
 
+{-| Locates one root path, failing with `BP_PathUnknown` when there is no file
+at it.
+-}
 getRootInfo : Env -> FilePath -> Task Never (Result Exit.BuildProjectProblem RootInfo)
 getRootInfo env path =
     File.exists path
@@ -2085,6 +2589,16 @@ getRootInfo env path =
             )
 
 
+{-| Decides where a root lies from `absolutePath`, its canonical form.
+
+A path not ending in `.elm` fails with `BP_WithBadExtension`. A file outside
+every source directory is an outside root. A file in exactly one is an inside
+root named by its path below that directory, unless a part of that path is not
+a valid module name part (`BP_RootNameInvalid`) or another source directory
+also has the module (`BP_RootNameDuplicate`). A file in two source directories
+fails with `BP_WithAmbiguousSrcDir`.
+
+-}
 getRootInfoHelp : Env -> FilePath -> FilePath -> Task Never (Result Exit.BuildProjectProblem RootInfo)
 getRootInfoHelp (Env envData) path absolutePath =
     let
@@ -2140,11 +2654,17 @@ getRootInfoHelp (Env envData) path absolutePath =
         Exit.BP_WithBadExtension path |> Err |> Task.succeed
 
 
+{-| Tells whether `srcDir` has the module file whose path parts are `names`.
+-}
 isInsideSrcDirByName : List String -> String -> AbsoluteSrcDir -> Task Never Bool
 isInsideSrcDirByName names extension srcDir =
     File.exists (addRelative srcDir (Utils.fpJoinPath names ++ extension))
 
 
+{-| Returns, when the path `segments` lies under `srcDir`, the directory and
+the segments below it: `Ok` when each is a valid module name part, `Err`
+otherwise.
+-}
 isInsideSrcDirByPath : List String -> AbsoluteSrcDir -> Maybe ( FilePath, Result (List String) (List String) )
 isInsideSrcDirByPath segments (AbsoluteSrcDir srcDir) =
     dropPrefix (Utils.fpSplitDirectories srcDir) segments
@@ -2158,6 +2678,9 @@ isInsideSrcDirByPath segments (AbsoluteSrcDir srcDir) =
             )
 
 
+{-| Tells whether a path segment can be part of a module name: an ASCII
+upper-case letter followed by ASCII letters, digits or underscores.
+-}
 isGoodName : String -> Bool
 isGoodName name =
     case String.toList name of
@@ -2168,8 +2691,9 @@ isGoodName name =
             Char.isUpper char && List.all (\c -> Char.isAlphaNum c || c == '_') chars
 
 
-{-| Drops the common prefix from two canonicalized paths.
-INVARIANT: Dir.canonicalizePath has been run on both inputs.
+{-| Returns `paths` with `roots` removed from its front, or `Nothing` when
+`roots` is not a prefix of it. Segments are compared as text, so both must come
+from canonicalized paths.
 -}
 dropPrefix : List FilePath -> List FilePath -> Maybe (List FilePath)
 dropPrefix roots paths =
@@ -2194,12 +2718,29 @@ dropPrefix roots paths =
 -- ====== CRAWL ROOTS ======
 
 
+{-| What the crawl found out about one root.
+
+`SInside` names an inside root, whose status is in the status dict like any
+other module's.
+
+`SOutsideOk` is an outside root that parsed. It carries a details entry whose
+`lastChange` and `lastCompile` are the current build, the source text, and the
+parsed module.
+
+`SOutsideErr` is an outside root that did not parse, reported under the module
+name `???`.
+
+-}
 type RootStatus
     = SInside ModuleName.Raw
     | SOutsideOk Details.Local String Src.Module
     | SOutsideErr Error.Module
 
 
+{-| Crawls one root. An inside root is put into the status dict, replacing any
+entry already there for its name, and crawled like a module. An outside root
+is read and parsed, and its imports are crawled.
+-}
 crawlRoot : Env -> MVar StatusDict -> RootLocation -> Task Never RootStatus
 crawlRoot ((Env envData) as env) mvar root =
     case root of
@@ -2256,6 +2797,20 @@ crawlRoot ((Env envData) as env) mvar root =
 -- ====== CHECK ROOTS ======
 
 
+{-| The outcome of checking one root.
+
+`RInside` names an inside root, whose result is among the module results.
+
+`ROutsideOk` is an outside root that compiled, with its interface, its erased
+graph, and its typed graph and type environment (`Nothing` on an untyped
+build).
+
+`ROutsideErr` is an outside root with errors.
+
+`ROutsideBlocked` is an outside root that was not compiled because an import
+failed or a cached interface could not be read.
+
+-}
 type RootResult
     = RInside ModuleName.Raw
     | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
@@ -2263,6 +2818,9 @@ type RootResult
     | ROutsideBlocked
 
 
+{-| Checks one root. An outside root is compiled whenever its imports allow,
+even if nothing changed, without documentation.
+-}
 checkRoot : Env -> ResultDict -> RootStatus -> Task Never RootResult
 checkRoot ((Env envData) as env) results rootStatus =
     case rootStatus of
@@ -2300,6 +2858,9 @@ checkRoot ((Env envData) as env) results rootStatus =
                     )
 
 
+{-| Compiles an outside root against `ifaces`, and reports one module done when
+it succeeds. Nothing is written to disk.
+-}
 compileOutside : Env -> Details.Local -> String -> Dict ModuleName.Raw I.Interface -> Src.Module -> Task Never RootResult
 compileOutside (Env envData) (Details.Local localData) source ifaces modul =
     let
@@ -2345,13 +2906,26 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
 -- ====== TO ARTIFACTS ======
 
 
-{-| Represents a root module, either from within the project or from a dependency.
+{-| A root of a build from paths, in the artifacts.
+
+`Inside` is an inside root: a project module, named by its path in a source
+directory.
+
+`Outside` is an outside root: a file outside every source directory, compiled
+in this build and never cached. It carries the module's interface, its erased
+graph, and, on a typed build, its typed graph and type environment.
+
+Each root's module is also among the artifacts' `modules`.
+
 -}
 type Root
     = Inside ModuleName.Raw
     | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
 
 
+{-| Returns the artifacts of a build from paths, or the errors of every module
+and root that has them.
+-}
 toArtifacts : Env -> Dependencies -> Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
 toArtifacts (Env envData) foreigns results rootResults =
     case gatherProblemsOrMains results rootResults of
@@ -2368,6 +2942,11 @@ toArtifacts (Env envData) foreigns results rootResults =
                     }
 
 
+{-| Returns the roots, in the order given, when no module and no root has
+errors, and the errors otherwise. A blocked outside root is left out of the
+roots. The compiler crashes, with a message blaming a corrupted `eco-stuff/`
+directory, only when the first root is blocked and nothing has errors.
+-}
 gatherProblemsOrMains : Dict ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty Error.Module) (NE.Nonempty Root)
 gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
     let
@@ -2413,6 +2992,15 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
             Err (NE.Nonempty e es)
 
 
+{-| Adds a project module to `modules`: `Fresh` when it was compiled in this
+build, `Cached` when it was reused. Foreign and kernel modules are skipped.
+
+A module that was not found, has errors or is blocked crashes the compiler,
+which expects such a result to have failed the build already. A module blocked
+only by a cached interface that could not be read gets here with no module
+error reported.
+
+-}
 addInside : ModuleName.Raw -> BResult -> List Module -> List Module
 addInside name result modules =
     case result of
@@ -2444,11 +3032,16 @@ addInside name result modules =
             modules
 
 
+{-| Returns the crash message for a module whose failure should already have
+been reported.
+-}
 badInside : ModuleName.Raw -> String
 badInside name =
     "Error from `" ++ name ++ "` should have been reported already."
 
 
+{-| Adds an outside root that compiled to `modules`, as `Fresh`.
+-}
 addOutside : RootResult -> List Module -> List Module
 addOutside root modules =
     case root of
@@ -2469,11 +3062,15 @@ addOutside root modules =
 -- ====== ENCODERS and DECODERS ======
 
 
+{-| Encodes the module result MVars, for the MVar the checks read them from.
+-}
 dictRawMVarBResultEncoder : Dict ModuleName.Raw (MVar BResult) -> Bytes.Encode.Encoder
 dictRawMVarBResultEncoder =
     BE.stdDict ModuleName.rawEncoder Utils.mVarEncoder
 
 
+{-| Encodes a module result, tagged 0 to 8 in constructor order.
+-}
 bResultEncoder : BResult -> Bytes.Encode.Encoder
 bResultEncoder bResult =
     case bResult of
@@ -2538,6 +3135,8 @@ bResultEncoder bResult =
                 ]
 
 
+{-| A decoder for what `bResultEncoder` writes.
+-}
 bResultDecoder : Bytes.Decode.Decoder BResult
 bResultDecoder =
     Bytes.Decode.unsignedInt8
@@ -2591,16 +3190,22 @@ bResultDecoder =
             )
 
 
+{-| Encodes the status dict, for its MVar.
+-}
 statusDictEncoder : StatusDict -> Bytes.Encode.Encoder
 statusDictEncoder =
     BE.stdDict ModuleName.rawEncoder Utils.mVarEncoder
 
 
+{-| A decoder for what `statusDictEncoder` writes.
+-}
 statusDictDecoder : Bytes.Decode.Decoder StatusDict
 statusDictDecoder =
     BD.stdDict ModuleName.rawDecoder Utils.mVarDecoder
 
 
+{-| Encodes a crawl status, tagged 0 to 5 in constructor order.
+-}
 statusEncoder : Status -> Bytes.Encode.Encoder
 statusEncoder status =
     case status of
@@ -2644,6 +3249,8 @@ statusEncoder status =
             Bytes.Encode.unsignedInt8 5
 
 
+{-| A decoder for what `statusEncoder` writes.
+-}
 statusDecoder : Bytes.Decode.Decoder Status
 statusDecoder =
     Bytes.Decode.unsignedInt8
@@ -2681,6 +3288,8 @@ statusDecoder =
             )
 
 
+{-| Encodes a root's crawl status, tagged 0 to 2 in constructor order.
+-}
 rootStatusEncoder : RootStatus -> Bytes.Encode.Encoder
 rootStatusEncoder rootStatus =
     case rootStatus of
@@ -2705,6 +3314,8 @@ rootStatusEncoder rootStatus =
                 ]
 
 
+{-| A decoder for what `rootStatusEncoder` writes.
+-}
 rootStatusDecoder : Bytes.Decode.Decoder RootStatus
 rootStatusDecoder =
     Bytes.Decode.unsignedInt8
@@ -2728,16 +3339,22 @@ rootStatusDecoder =
             )
 
 
+{-| Encodes the module result MVars, for the MVar the checks read them from.
+-}
 resultDictEncoder : ResultDict -> Bytes.Encode.Encoder
 resultDictEncoder =
     BE.stdDict ModuleName.rawEncoder Utils.mVarEncoder
 
 
+{-| A decoder for what `resultDictEncoder` writes.
+-}
 resultDictDecoder : Bytes.Decode.Decoder ResultDict
 resultDictDecoder =
     BD.stdDict ModuleName.rawDecoder Utils.mVarDecoder
 
 
+{-| Encodes a root's result, tagged 0 to 3 in constructor order.
+-}
 rootResultEncoder : RootResult -> Bytes.Encode.Encoder
 rootResultEncoder rootResult =
     case rootResult of
@@ -2767,6 +3384,8 @@ rootResultEncoder rootResult =
             Bytes.Encode.unsignedInt8 3
 
 
+{-| A decoder for what `rootResultEncoder` writes.
+-}
 rootResultDecoder : Bytes.Decode.Decoder RootResult
 rootResultDecoder =
     Bytes.Decode.unsignedInt8
@@ -2795,41 +3414,58 @@ rootResultDecoder =
             )
 
 
+{-| Encodes a loaded import interface, or its absence.
+-}
 maybeDepEncoder : Maybe Dep -> Bytes.Encode.Encoder
 maybeDepEncoder =
     BE.maybe depEncoder
 
 
+{-| A decoder for what `maybeDepEncoder` writes.
+-}
 maybeDepDecoder : Bytes.Decode.Decoder (Maybe Dep)
 maybeDepDecoder =
     BD.maybe depDecoder
 
 
+{-| Encodes an import's name and interface as a pair.
+-}
 depEncoder : Dep -> Bytes.Encode.Encoder
 depEncoder =
     BE.jsonPair ModuleName.rawEncoder I.interfaceEncoder
 
 
+{-| A decoder for what `depEncoder` writes.
+-}
 depDecoder : Bytes.Decode.Decoder Dep
 depDecoder =
     BD.jsonPair ModuleName.rawDecoder I.interfaceDecoder
 
 
+{-| A decoder for the dependency interfaces, or their absence, as
+`Builder.Elm.Details.loadInterfaces` puts them into their MVar.
+-}
 maybeDependenciesDecoder : Bytes.Decode.Decoder (Maybe Dependencies)
 maybeDependenciesDecoder =
     BD.maybe (BD.assocListDict ModuleName.toComparableCanonical ModuleName.canonicalDecoder I.dependencyInterfaceDecoder)
 
 
+{-| Encodes the outcome of locating one root.
+-}
 resultBuildProjectProblemRootInfoEncoder : Result Exit.BuildProjectProblem RootInfo -> Bytes.Encode.Encoder
 resultBuildProjectProblemRootInfoEncoder =
     BE.result Exit.buildProjectProblemEncoder rootInfoEncoder
 
 
+{-| A decoder for what `resultBuildProjectProblemRootInfoEncoder` writes.
+-}
 resultBuildProjectProblemRootInfoDecoder : Bytes.Decode.Decoder (Result Exit.BuildProjectProblem RootInfo)
 resultBuildProjectProblemRootInfoDecoder =
     BD.result Exit.buildProjectProblemDecoder rootInfoDecoder
 
 
+{-| Encodes a `CachedInterface`, tagged 0 to 2 in constructor order.
+-}
 cachedInterfaceEncoder : CachedInterface -> Bytes.Encode.Encoder
 cachedInterfaceEncoder cachedInterface =
     case cachedInterface of
@@ -2846,7 +3482,8 @@ cachedInterfaceEncoder cachedInterface =
             Bytes.Encode.unsignedInt8 2
 
 
-{-| Decode a cached interface from bytes.
+{-| A decoder for a `CachedInterface` as it is stored in its MVar: tag 0 is
+`Unneeded`, 1 is `Loaded` followed by the interface, and 2 is `Corrupted`.
 -}
 cachedInterfaceDecoder : Bytes.Decode.Decoder CachedInterface
 cachedInterfaceDecoder =
@@ -2868,16 +3505,22 @@ cachedInterfaceDecoder =
             )
 
 
+{-| Encodes whether documentation is needed.
+-}
 docsNeedEncoder : DocsNeed -> Bytes.Encode.Encoder
 docsNeedEncoder (DocsNeed isNeeded) =
     BE.bool isNeeded
 
 
+{-| A decoder for what `docsNeedEncoder` writes.
+-}
 docsNeedDecoder : Bytes.Decode.Decoder DocsNeed
 docsNeedDecoder =
     Bytes.Decode.map DocsNeed BD.bool
 
 
+{-| Encodes a root's absolute path, given path and location.
+-}
 rootInfoEncoder : RootInfo -> Bytes.Encode.Encoder
 rootInfoEncoder (RootInfo absolute relative location) =
     Bytes.Encode.sequence
@@ -2887,6 +3530,8 @@ rootInfoEncoder (RootInfo absolute relative location) =
         ]
 
 
+{-| A decoder for what `rootInfoEncoder` writes.
+-}
 rootInfoDecoder : Bytes.Decode.Decoder RootInfo
 rootInfoDecoder =
     Bytes.Decode.map3 RootInfo
@@ -2895,6 +3540,8 @@ rootInfoDecoder =
         rootLocationDecoder
 
 
+{-| Encodes a root's location, tagged 0 for inside and 1 for outside.
+-}
 rootLocationEncoder : RootLocation -> Bytes.Encode.Encoder
 rootLocationEncoder rootLocation =
     case rootLocation of
@@ -2911,6 +3558,8 @@ rootLocationEncoder rootLocation =
                 ]
 
 
+{-| A decoder for what `rootLocationEncoder` writes.
+-}
 rootLocationDecoder : Bytes.Decode.Decoder RootLocation
 rootLocationDecoder =
     Bytes.Decode.unsignedInt8

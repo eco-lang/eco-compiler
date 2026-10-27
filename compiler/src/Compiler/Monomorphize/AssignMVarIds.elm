@@ -3,12 +3,45 @@ module Compiler.Monomorphize.AssignMVarIds exposing
     , freshMVarId, mintLamId, mintArrowId
     )
 
-{-| Assign globally unique MVarIds to all type variables in a TypedOptimized GlobalGraph.
+{-| Monomorphization needs each type variable of the whole program to have one
+identity, unique across the program, where the type checker gave it only a name
+that means something inside one annotation. This module gives every type
+variable, lambda and arrow of a merged typed graph such an identity, turning a
+`TOpt.GlobalGraph Name` into a `TOpt.GlobalGraph MVarId`.
 
-This pass runs once at the start of monomorphization, converting
-`GlobalGraph Name` to `GlobalGraph MVarId`. After this pass, all type
-variables carry sequential Int-based IDs instead of string names, and
-constraint information is recorded in a side table.
+Three supplies of ids are drawn from as the graph is walked. An _MVarId_ names a
+type variable. A source-lambda id is stamped onto every `Function` and
+`TrackedFunction`, replacing whatever id it had. An _ArrowId_ is put into the
+slot of every `Can.TLambda`, so every arrow of the output carries an `Arrow`
+slot. The three id types are described in `Compiler.AST.TypeIds`.
+
+A type variable's super-type, such as `number` or `comparable`, is not kept in
+the type. It is recorded in a side table, the _super table_ (`superVars`),
+keyed by the MVarId, and a variable with no super-type has no entry. In
+`assignIds` the super-type is read from the graph's scheme roots or its
+var-supers table; `assignIds` never infers a super-type from how a name is
+spelled.
+
+Names are resolved within a _scope_, in which one name means one MVarId. Each
+global's annotation and each global's node starts a new scope, and so does each
+local definition and each value of a `Cycle`; a scope's names are dropped when
+it ends, while the supplies carry on. A name that the global's scheme roots
+(`SolverRoots.SchemeRootsForDef`) map to a solver root is resolved through that
+root instead: every name of one module whose variable the type checker put in
+one class gets one MVarId, in every scope of that module, and its super-type is
+the one recorded on the root. A root index is numbered from zero in each
+module's solve, so roots are keyed by the pair of home module and index; an
+unscoped index would join unrelated variables of different modules.
+
+Arrows are resolved the same way when `assignIds` is asked to use solver roots:
+every arrow stamped with one `SolverRoot` of one module gets one `ArrowId`.
+Otherwise, and for any arrow without a `SolverRoot` stamp, each occurrence gets
+a fresh `ArrowId`.
+
+The walk visits the annotations and then the nodes, each in key order, so the
+ids are the same every time a given graph is processed. The returned state
+holds the supplies where the walk left them; `freshMVarId`, `mintLamId` and
+`mintArrowId` draw further ids from it that collide with none assigned here.
 
 @docs GlobalMVarState, assignIds, assignIdsToType
 @docs freshMVarId, mintLamId, mintArrowId
@@ -28,41 +61,57 @@ import Data.Map as DMap
 import Dict exposing (Dict)
 
 
-{-| Global state threaded through the entire ID assignment pass.
+{-| The id supplies and side tables of one assignment, together with the
+counts of an optional census.
+
+`superVars` is the super table, keyed by `Id.toComparable` of an MVarId.
+`lamLabels` has one key per source-lambda id minted, each with the value `""`;
+only its size is meaningful. `rootEnv` and `arrowRootEnv` map a pair of home
+module and solver root index to the MVarId or `ArrowId` given to that root, and
+are empty in the state `assignIds` returns.
+
+The census, kept only when `stampCensusOn` is set, classifies each type the walk
+starts on (not each subtree) by the number of new `ArrowId`s it drew from the
+supply: all of them stamped (`typesAll`), none (`typesNone`, with
+`arrowsInNone`), or some (`typesPartial`, with `arrowsUnstampedInPartial`). A
+type that draws no new `ArrowId` (no arrows, or every arrow reusing a root's id)
+is not counted. Nothing increments `arrowsStamped`, so every counted type is
+counted in `typesNone`.
+
 -}
 type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
     , superVars : Dict Int Vars.SuperType
     , rootEnv : Dict ( String, Int ) TypeIds.MVarId
-    , nextLam : TypeIds.SrcLambdaId -- LSS: source-lambda id supply; seeds the engine's member interning
-    , lamLabels : Dict Int String -- LSS: member id -> "defKey#id" (census rendering only)
-    , nextArrow : TypeIds.ArrowId -- Phase 2a: per-OCCURRENCE arrow identity supply (plans/lss-unknown-elimination.md §4.2). No side table: `lamLabels` exists only for census rendering and has no arrow analogue.
-    , arrowRootEnv : Dict ( String, Int ) TypeIds.ArrowId -- Phase 2b: (moduleKey, solver root index) -> global ArrowId. EXACT mirror of `rootEnv`, and module-scoped for the same reason: each module's solve numbers its `Pt` from zero, so a raw index is only meaningful with its home module.
+    , nextLam : TypeIds.SrcLambdaId
+    , lamLabels : Dict Int String
+    , nextArrow : TypeIds.ArrowId
+    , arrowRootEnv : Dict ( String, Int ) TypeIds.ArrowId
 
-    -- STAMPING-WALK CENSUS (plans/lss-provenance-ratio-census.md §8). The walk
-    -- in `SolverRoots.stampArrowRoots` abandons a WHOLE SUBTREE on a lockstep
-    -- mismatch, so "23,670 arrows lost" could be a few big abandonments or
-    -- twenty thousand small ones. These classify each TOP-LEVEL type by whether
-    -- the walk stamped all / none / some of its arrows — and "some" is
-    -- unambiguous proof the walk ran, descended, and then broke.
-    , stampCensusOn : Bool -- §8: gates the per-type classification below (cheap, but not free: two record updates per top-level type)
-    , arrowsStamped : Int -- arrows that took the SolverRoot arm
-    , typesAll : Int -- every arrow stamped
-    , typesNone : Int -- no arrow stamped: never walked, or failed at the root
-    , typesPartial : Int -- MID-WALK ABANDONMENT, provably
+    -- The census
+    , stampCensusOn : Bool
+    , arrowsStamped : Int -- arrows with a SolverRoot stamp; nothing increments it
+    , typesAll : Int
+    , typesNone : Int
+    , typesPartial : Int
     , arrowsInNone : Int
     , arrowsUnstampedInPartial : Int
     }
 
 
-{-| Per-scheme mapping from type variable names to their assigned MVarIds.
-Reset for each top-level definition; grows lazily as new names are encountered.
+{-| The MVarIds given to the type variable names of one scope, as the module
+docstring defines a scope. A name is added when it is first met.
+
+This is a name for a `Dict`, not a new type.
+
 -}
 type alias SchemeEnv =
     Dict Name TypeIds.MVarId
 
 
-{-| Combined context threaded through the rewrite.
+{-| The current scope, the state being threaded, and what the walk knows about
+the global it is inside: its scheme roots, the super-types of names without a
+root, and its home module's key.
 -}
 type alias Ctx =
     { env : SchemeEnv
@@ -70,15 +119,13 @@ type alias Ctx =
     , schemeRootsForDef : SolverRoots.SchemeRootsForDef
     , varSupers : Dict Name Vars.SuperType
     , moduleKey : String
-    , defKey : String -- enclosing global's comparable key (lambda-label rendering)
-    , useSolverRoots : Bool -- Phase 2b: resolve `SolverRoot` slots through `arrowRootEnv` instead of minting a fresh occurrence id. True for the SOLVER engine (the flag was fixed at its default 2026-09-18); the subst and diff engines pass False — changing that would move their output. OFF = exactly Phase 2a.
+    , defKey : String -- the enclosing global's key; nothing reads it
+    , useSolverRoots : Bool -- one ArrowId per SolverRoot, rather than one per arrow
     }
 
 
-{-| Mint a fresh source-lambda id (LSS member identity), labeling it with the
-enclosing def for census rendering. Because `AssignMVarIds` runs on the
-merged whole-program graph with a deterministic walk, ids are per-run stable
-(LSS\_003) — the same stability class as `MVarId`s.
+{-| Returns the next source-lambda id and the context with the supply advanced
+and the id added to `lamLabels`.
 -}
 freshLamId : Ctx -> ( TypeIds.SrcLambdaId, Ctx )
 freshLamId ctx =
@@ -97,26 +144,16 @@ freshLamId ctx =
         | state =
             { st
                 | nextLam = Id.succ lamId
-
-                -- Perf (#6): the value is census-rendering only and is read solely
-                -- via `Dict.size` (behind `if lssConfig.report`, default off), so the
-                -- per-lambda string build (`defKey ++ "#" ++ fromInt`) was pure garbage.
-                -- Keep the key (so the count is unchanged) with a constant value.
                 , lamLabels = Dict.insert key "" st.lamLabels
             }
       }
     )
 
 
-{-| Mint a fresh source-lambda id from the STATE, for the pre-mono passes.
-
-`freshLamId` below is the `Ctx`-level form this pass uses internally; the
-pre-mono transforms (`Compiler.GlobalOpt.PreMono.Fresh`) hold only a
-`GlobalMVarState`, and they must mint from the SAME supply so that
-`Engine.initState`'s `nextMemberId = Id.toComparable state.nextLam` stays past
-every id ever minted (LSS\_003). The `lamLabels` key is inserted with the same
-constant value `freshLamId` uses, so the census `Dict.size` is unchanged.
-
+{-| Returns the next source-lambda id and the state with the supply advanced
+and the id added to `lamLabels`, for code that holds a `GlobalMVarState` after
+assignment. Drawing every later lambda id from this supply keeps it clear of
+every id already given.
 -}
 mintLamId : GlobalMVarState -> ( TypeIds.SrcLambdaId, GlobalMVarState )
 mintLamId st =
@@ -132,23 +169,15 @@ mintLamId st =
     )
 
 
-{-| Mint a fresh arrow identity from the STATE. The `Ctx`-level `freshArrowId`
-below is this pass's internal form; see `mintLamId` for why the pre-mono passes
-need the state-level one.
+{-| Returns the next `ArrowId` and the state with the supply advanced, for
+code that holds a `GlobalMVarState` after assignment.
 -}
 mintArrowId : GlobalMVarState -> ( TypeIds.ArrowId, GlobalMVarState )
 mintArrowId st =
     ( st.nextArrow, { st | nextArrow = Id.succ st.nextArrow } )
 
 
-{-| Mint a fresh arrow identity (Phase 2a,
-`plans/lss-unknown-elimination.md` §4.2).
-
-Same `Ctx`-in/`Ctx`-out shape as `freshLamId` so the consuming arm stays a plain
-state thread. **This is the ONLY site that mints an `ArrowId`** — every
-`Can.Type Name` therefore carries `TypeIds.NoArrow`, which is what makes
-`PostSolve`'s whole-tree `existing == t` safe (§4.6c).
-
+{-| Returns the next `ArrowId` and the context with the supply advanced.
 -}
 freshArrowId : Ctx -> ( TypeIds.ArrowId, Ctx )
 freshArrowId ctx =
@@ -162,18 +191,12 @@ freshArrowId ctx =
     ( arrowId, { ctx | state = { st | nextArrow = Id.succ arrowId } } )
 
 
-{-| Phase 2b: look up or allocate the global `ArrowId` for a solver-rooted
-arrow. **Exact mirror of `ensureMVarIdForRoot`, including the module scoping.**
+{-| Returns the `ArrowId` of the solver root `rootIdx` of the current module,
+giving the root a fresh one the first time it is met.
 
-Two arrows the type checker UNIFIED share a union-find root and therefore get
-the same `ArrowId` — which is the whole point: a def's annotation arrow and its
-body node's arrow are structurally-equal DISTINCT objects (measured: 97.5% of
-the time, `plans/lss-unknown-elimination.md` §10.4), so per-occurrence ids
-cannot tie them and solver identity can.
-
-`( moduleKey, rootIdx )` because each module's solve numbers its `Pt` from zero;
-without scoping, unrelated arrows in different modules collide on a raw index —
-which would be a FALSE union of two lambda sets, not merely lost sharing.
+Arrows stamped with the same root share an `ArrowId` even where they are
+separate occurrences, such as an annotation's arrow and the matching arrow of
+the body.
 
 -}
 ensureArrowIdForRoot : Int -> Ctx -> ( TypeIds.ArrowId, Ctx )
@@ -197,8 +220,8 @@ ensureArrowIdForRoot rootIdx ctx =
             ( arrowId, { ctx1 | state = { st | arrowRootEnv = Dict.insert key arrowId st.arrowRootEnv } } )
 
 
-{-| Run a function with a fresh binding-local SchemeEnv, then discard the
-binding-local env and restore the outer env, keeping only the evolved global state.
+{-| Runs `work` in a new, empty scope and returns its result with the outer
+scope restored and the state `work` left behind.
 -}
 withFreshBinding : Ctx -> (Ctx -> ( a, Ctx )) -> ( a, Ctx )
 withFreshBinding outerCtx work =
@@ -218,8 +241,13 @@ withFreshBinding outerCtx work =
 -- ============================================================================
 
 
-{-| Assign globally unique MVarIds to all type variables in a GlobalGraph.
-Returns the rewritten graph and the final allocator state (for initializing MVarEnv).
+{-| Returns `graph` with an identity given to every type variable, lambda and
+arrow, as the module docstring describes, and the state the supplies ended in.
+
+The first flag makes arrows stamped with the same `SolverRoot` share an `ArrowId`; the
+second turns the census on. The output graph's scheme-roots and var-supers
+tables are empty, and so are `rootEnv` and `arrowRootEnv` in the returned state.
+
 -}
 assignIds : Bool -> Bool -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
 assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations allSchemeRoots varSupers) =
@@ -247,20 +275,17 @@ assignIds useSolverRoots censusOn (TOpt.GlobalGraph nodes fields annotations all
         ( newNodes, state2 ) =
             rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state1
     in
-    -- Row 6 (plans/frontend-heap-release.md §7.3): `allSchemeRoots` and
-    -- `varSupers` are consumed HERE (they seeded every binder above) and every
-    -- later consumer of the assigned graph matches them as `_` (the engines'
-    -- entries, the pre-mono passes only pass them through); `rootEnv` and
-    -- `arrowRootEnv` are read only by the `ensure*Root` helpers of this pass.
-    -- Emitting them would keep them live to the end of monomorphization.
-    -- `lamLabels` is still read (census `Dict.size`) and is kept.
     ( TOpt.GlobalGraph newNodes fields newAnnotations DMap.empty Dict.empty
     , { state2 | rootEnv = Dict.empty, arrowRootEnv = Dict.empty }
     )
 
 
-{-| Assign MVarIds to a single canonical type. Useful for testing.
-Returns the rewritten type and the final state.
+{-| Returns `canType` with ids assigned as for one annotation, and the state
+the supplies ended in.
+
+There are no solver roots here, so every arrow gets a fresh `ArrowId`, and each
+variable's super-type is taken from its name by `TOpt.varSupersOfType`.
+
 -}
 assignIdsToType : Can.Type Name -> ( Can.Type TypeIds.MVarId, GlobalMVarState )
 assignIdsToType canType =
@@ -287,9 +312,8 @@ assignIdsToType canType =
 -- ============================================================================
 
 
-{-| Allocate a fresh MVarId, recording its super constraint (if any) in the
-side table. The super comes from the solver (via `RootedVar.super` for rooted
-vars, or the `varSupers` export for non-rooted names) — never from a name here.
+{-| Returns the next MVarId and the state with the supply advanced and
+`maybeSuper`, when present, recorded for it in the super table.
 -}
 freshMVarId : Maybe Vars.SuperType -> GlobalMVarState -> ( TypeIds.MVarId, GlobalMVarState )
 freshMVarId maybeSuper state =
@@ -313,8 +337,9 @@ freshMVarId maybeSuper state =
     )
 
 
-{-| Look up or allocate an MVarId for a plain (non-root-backed) type variable
-name. Its constraint comes from the `varSupers` export, not the name.
+{-| Returns the MVarId of `name` in the current scope, giving it a fresh one
+the first time it is met. A fresh id takes the super-type the context's
+`varSupers` records for the name.
 -}
 ensureMVarId : Name -> Ctx -> ( TypeIds.MVarId, Ctx )
 ensureMVarId name ctx =
@@ -332,15 +357,12 @@ ensureMVarId name ctx =
             )
 
 
-{-| Look up or allocate an MVarId for a solver-root-backed type variable.
+{-| Returns the MVarId of `rooted`'s solver root in the current module, giving
+the root a fresh one, with the super-type recorded on `rooted`, the first time
+it is met.
 
-Two type-variable names backed by the same solver root get the same MVarId.
-The root's super is read from `RootedVar.super` (solver truth about the root),
-so a second name claiming the same root cannot disagree — the CNumber
-join-upgrade patch that this code used to carry is no longer needed. The
-rootEnv key is module-scoped (`(moduleKey, rootIdx)`) because each module's
-solve numbers its `Pt` indices from zero; without scoping, unrelated
-definitions in different modules could collide on a raw index.
+All names backed by one root share the id, and the super-type of whichever name
+reaches the root first is the one recorded.
 
 -}
 ensureMVarIdForRoot : Vars.RootedVar -> Ctx -> ( TypeIds.MVarId, Ctx )
@@ -371,10 +393,8 @@ ensureMVarIdForRoot rooted ctx =
             )
 
 
-{-| Resolve a type-variable name to an MVarId, dispatching to the root-backed
-path when the name has a recorded solver root, else the plain path. This is the
-single point of root-vs-plain dispatch (previously duplicated in
-`rewriteAnnotation`, which dropped the root super — Bug A).
+{-| Returns the MVarId of the type variable `name`: through its solver root when
+the global's scheme roots record one, and through the current scope otherwise.
 -}
 ensureBinder : Name -> Ctx -> ( TypeIds.MVarId, Ctx )
 ensureBinder name ctx =
@@ -392,7 +412,8 @@ ensureBinder name ctx =
 -- ============================================================================
 
 
-{-| Rewrite annotations keyed by Global (for GlobalGraph).
+{-| Returns every global's annotation with ids assigned, in key order, each in
+its own scope.
 -}
 rewriteAnnotationsByGlobal :
     Bool
@@ -418,8 +439,7 @@ rewriteAnnotationsByGlobal useSolverRoots varSupers allSchemeRoots annotations s
         annotations
 
 
-{-| The module-scoping key for a Global's home, used to key the solver-root
-environment so per-module `Pt` indices cannot collide across modules.
+{-| Returns the key of `global`'s home module, which scopes solver root indices.
 -}
 moduleKeyOf : TOpt.Global -> String
 moduleKeyOf global =
@@ -428,6 +448,9 @@ moduleKeyOf global =
             ModuleName.toComparableCanonical home
 
 
+{-| Returns the annotation with ids assigned in a new scope. Its declared
+variables are bound first, in name order, before the type is walked.
+-}
 rewriteAnnotation :
     Bool
     -> Dict Name Vars.SuperType
@@ -444,12 +467,12 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
             , schemeRootsForDef = schemeRootsForDef
             , varSupers = varSupers
             , moduleKey = moduleKey
-            , defKey = "" -- annotations contain no lambdas; label context unused
+            , defKey = ""
             , useSolverRoots = useSolverRoots
             }
 
-        -- Pre-seed the binder env (and rootEnv) via the shared dispatch so the
-        -- annotation and this def's nodes agree on every binder's MVarId.
+        -- A rooted variable bound here keeps its id in this global's node, which
+        -- has its own scope.
         ctxSeeded =
             Dict.foldl (\name _ c -> Tuple.second (ensureBinder name c)) ctx0 freeVars
 
@@ -465,6 +488,9 @@ rewriteAnnotation useSolverRoots varSupers moduleKey schemeRootsForDef (Can.Fora
 -- ============================================================================
 
 
+{-| Returns every global's node with ids assigned, in key order, each in its own
+scope.
+-}
 rewriteNodes :
     Bool
     -> Dict Name Vars.SuperType
@@ -476,12 +502,10 @@ rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state =
     DMap.foldl
         (\global node ( acc, st ) ->
             let
-                -- Look up scheme roots for this definition by Global key
                 schemeRootsForDef =
                     DMap.get TOpt.toComparableGlobal global allSchemeRoots
                         |> Maybe.withDefault Dict.empty
 
-                -- Fresh SchemeEnv per node, with solver roots
                 ctx =
                     { env = Dict.empty
                     , state = st
@@ -501,6 +525,9 @@ rewriteNodes useSolverRoots varSupers allSchemeRoots nodes state =
         nodes
 
 
+{-| Returns `node` with ids assigned. `Link`, `Manager` and `Kernel` nodes carry
+no types and are returned unchanged.
+-}
 rewriteNode : Ctx -> TOpt.Node Name -> ( TOpt.Node TypeIds.MVarId, Ctx )
 rewriteNode ctx node =
     case node of
@@ -591,6 +618,8 @@ rewriteNode ctx node =
 -- ============================================================================
 
 
+{-| Returns `meta` with ids assigned in its type; its `tvar` is kept.
+-}
 rewriteMeta : Ctx -> TOpt.Meta Name -> ( TOpt.Meta TypeIds.MVarId, Ctx )
 rewriteMeta ctx meta =
     let
@@ -606,6 +635,9 @@ rewriteMeta ctx meta =
 -- ============================================================================
 
 
+{-| Returns `expr` with ids assigned throughout, each function getting a fresh
+source-lambda id. Types are walked before subexpressions, in source order.
+-}
 rewriteExpr : Ctx -> TOpt.Expr Name -> ( TOpt.Expr TypeIds.MVarId, Ctx )
 rewriteExpr ctx expr =
     case expr of
@@ -904,6 +936,8 @@ rewriteExpr ctx expr =
 -- ============================================================================
 
 
+{-| Returns the expressions with ids assigned, in order.
+-}
 rewriteExprList : Ctx -> List (TOpt.Expr Name) -> ( List (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteExprList ctx exprs =
     List.foldl
@@ -919,6 +953,8 @@ rewriteExprList ctx exprs =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the named expressions with ids assigned, in order.
+-}
 rewriteNamedExprList : Ctx -> List ( Name, TOpt.Expr Name ) -> ( List ( Name, TOpt.Expr TypeIds.MVarId ), Ctx )
 rewriteNamedExprList ctx pairs =
     List.foldl
@@ -934,6 +970,8 @@ rewriteNamedExprList ctx pairs =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the `if` branches with ids assigned, each condition before its body.
+-}
 rewriteBranches : Ctx -> List ( TOpt.Expr Name, TOpt.Expr Name ) -> ( List ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ), Ctx )
 rewriteBranches ctx branches =
     List.foldl
@@ -952,6 +990,8 @@ rewriteBranches ctx branches =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the function arguments with ids assigned in their types.
+-}
 rewriteTypedArgs : Ctx -> List ( Name, Can.Type Name ) -> ( List ( Name, Can.Type TypeIds.MVarId ), Ctx )
 rewriteTypedArgs ctx args =
     List.foldl
@@ -967,6 +1007,8 @@ rewriteTypedArgs ctx args =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the located function arguments with ids assigned in their types.
+-}
 rewriteTrackedArgs : Ctx -> List ( A.Located Name, Can.Type Name ) -> ( List ( A.Located Name, Can.Type TypeIds.MVarId ), Ctx )
 rewriteTrackedArgs ctx args =
     List.foldl
@@ -982,6 +1024,8 @@ rewriteTrackedArgs ctx args =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the record fields with ids assigned, in field-name order.
+-}
 rewriteDictExprs : Ctx -> Dict Name (TOpt.Expr Name) -> ( Dict Name (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteDictExprs ctx dict =
     Dict.foldl
@@ -996,6 +1040,8 @@ rewriteDictExprs ctx dict =
         dict
 
 
+{-| Returns the located record fields with ids assigned, in field-name order.
+-}
 rewriteDataMapExprs : Ctx -> DMap.Dict String (A.Located Name) (TOpt.Expr Name) -> ( DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId), Ctx )
 rewriteDataMapExprs ctx dmap =
     let
@@ -1014,6 +1060,8 @@ rewriteDataMapExprs ctx dmap =
         dmap
 
 
+{-| Returns a `Cycle`'s value definitions with ids assigned, each in a new scope.
+-}
 rewriteValueDefs : Ctx -> List ( Name, TOpt.Expr Name ) -> ( List ( Name, TOpt.Expr TypeIds.MVarId ), Ctx )
 rewriteValueDefs ctx defs =
     List.foldl
@@ -1029,6 +1077,8 @@ rewriteValueDefs ctx defs =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the definitions with ids assigned, in order.
+-}
 rewriteDefs : Ctx -> List (TOpt.Def Name) -> ( List (TOpt.Def TypeIds.MVarId), Ctx )
 rewriteDefs ctx defs =
     List.foldl
@@ -1044,6 +1094,9 @@ rewriteDefs ctx defs =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the local definition with ids assigned in a new scope: its type
+first, then any arguments, then its body. A `TailDef`'s `tvar` is kept.
+-}
 rewriteDef : Ctx -> TOpt.Def Name -> ( TOpt.Def TypeIds.MVarId, Ctx )
 rewriteDef outerCtx def =
     case def of
@@ -1077,6 +1130,8 @@ rewriteDef outerCtx def =
                 )
 
 
+{-| Returns the destructor with ids assigned in its type.
+-}
 rewriteDestructor : Ctx -> TOpt.Destructor Name -> ( TOpt.Destructor TypeIds.MVarId, Ctx )
 rewriteDestructor ctx (TOpt.Destructor name path meta) =
     let
@@ -1086,6 +1141,8 @@ rewriteDestructor ctx (TOpt.Destructor name path meta) =
     ( TOpt.Destructor name path newMeta, ctx1 )
 
 
+{-| Returns the decision tree with ids assigned in its inline branches.
+-}
 rewriteDecider : Ctx -> TOpt.Decider (TOpt.Choice Name) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), Ctx )
 rewriteDecider ctx decider =
     case decider of
@@ -1127,6 +1184,8 @@ rewriteDecider ctx decider =
             ( TOpt.FanOut path newOptions newFallback, ctx2 )
 
 
+{-| Returns the choice with ids assigned; a jump is unchanged.
+-}
 rewriteChoice : Ctx -> TOpt.Choice Name -> ( TOpt.Choice TypeIds.MVarId, Ctx )
 rewriteChoice ctx choice =
     case choice of
@@ -1141,6 +1200,8 @@ rewriteChoice ctx choice =
             ( TOpt.Jump idx, ctx )
 
 
+{-| Returns the jump targets with ids assigned, in order.
+-}
 rewriteJumps : Ctx -> List ( Int, TOpt.Expr Name ) -> ( List ( Int, TOpt.Expr TypeIds.MVarId ), Ctx )
 rewriteJumps ctx jumps =
     List.foldl
@@ -1162,24 +1223,13 @@ rewriteJumps ctx jumps =
 -- ============================================================================
 
 
-{-| Stamping-walk census (plans/lss-provenance-ratio-census.md §8): classify one
-TOP-LEVEL type by how much of it `SolverRoots.stampArrowRoots` managed to stamp.
+{-| Returns `canType` with ids assigned, and, when the census is on, counts it
+in the census by how many new `ArrowId`s it drew from the supply.
 
-The walk returns a node unstamped AND unrecursed on a lockstep mismatch, so a
-single failure sheds an entire subtree. Reading the stamped OUTPUT recovers the
-split that matters without any cross-phase plumbing:
-
-  - some stamped, some not => the walk RAN, DESCENDED, and then BROKE. Provable
-    mid-walk abandonment.
-  - none stamped => never walked, or failed at the very root. No repair to the
-    walk can help this population.
-
-Deltas come from `nextArrow` and `arrowsStamped`, never a `Dict.size` — that is
-O(n) in Elm and would make the pass quadratic.
-
-MUST wrap only the EXTERNAL call sites. Wrapping the recursive calls inside
-`rewriteCanType` would count every subtree as its own "type" and the
-`RECONCILES` check would still pass, silently measuring the wrong population.
+Only a type the walk starts on is counted, not its subtrees, so this is called
+for each such type and `rewriteCanType` recurses without it. The arrow count is
+the advance of the `ArrowId` supply during the call, and the stamped count the
+advance of `arrowsStamped`, which nothing increments.
 
 -}
 rewriteCanTypeTop : Ctx -> Can.Type Name -> ( Can.Type TypeIds.MVarId, Ctx )
@@ -1204,7 +1254,7 @@ rewriteCanTypeTop ctx canType =
             st.arrowsStamped - stampedBefore
     in
     if not st.stampCensusOn || arrows == 0 then
-        -- Census off, or no arrows at all: not part of the population.
+        -- Census off, or no new ArrowId drawn: not counted.
         ( out, ctx1 )
 
     else if stamped == arrows then
@@ -1234,6 +1284,10 @@ rewriteCanTypeTop ctx canType =
         )
 
 
+{-| Returns `canType` with every variable resolved by `ensureBinder` and every
+arrow given an `ArrowId`. An alias's parameter names are resolved like any
+other variable.
+-}
 rewriteCanType : Ctx -> Can.Type Name -> ( Can.Type TypeIds.MVarId, Ctx )
 rewriteCanType ctx canType =
     case canType of
@@ -1245,32 +1299,18 @@ rewriteCanType ctx canType =
             ( Can.TVar mvarId, ctx1 )
 
         Can.TLambda slot from to ->
-            -- Resolve this arrow's identity in PRE-order (before descending).
-            -- `Store.loadTypeC` consumes its SLOTS post-order; the two orders
-            -- are independent — the ordinal contract is defined by
-            -- `arrowSlots`, not by id order — but one is picked deliberately
-            -- and written down, because an id-keyed `ArrowFact` wants a stable
-            -- walkable order.
+            -- The arrow's id is taken before its children's.
             let
                 ( arrowId, ctx0 ) =
                     case slot of
                         TypeIds.SolverRoot rootIdx ->
-                            -- Phase 2b: the type checker's own identity. Two
-                            -- arrows it unified land on one ArrowId.
                             if ctx.useSolverRoots then
                                 ensureArrowIdForRoot rootIdx ctx
 
                             else
-                                -- Phase 2b off: per syntactic OCCURRENCE, the
-                                -- Phase 2a identity.
                                 freshArrowId ctx
 
                         _ ->
-                            -- Phase 2a fallback: per syntactic OCCURRENCE.
-                            -- Also the only path for types built after the
-                            -- solve (they carry `NoArrow`), and the reason
-                            -- 2b degrades rather than breaks where the
-                            -- lockstep stamp walk lost the solver var.
                             freshArrowId ctx
 
                 ( newFrom, ctx1 ) =
@@ -1329,7 +1369,6 @@ rewriteCanType ctx canType =
                     List.foldl
                         (\( argName, t ) ( acc, c ) ->
                             let
-                                -- Convert alias parameter name to MVarId, using root if available
                                 ( paramId, c0 ) =
                                     ensureBinder argName c
 
@@ -1348,6 +1387,8 @@ rewriteCanType ctx canType =
             ( Can.TAlias canonical name newArgs newAliasType, ctx2 )
 
 
+{-| Returns the types with ids assigned, in order.
+-}
 rewriteCanTypeList : Ctx -> List (Can.Type Name) -> ( List (Can.Type TypeIds.MVarId), Ctx )
 rewriteCanTypeList ctx types =
     List.foldl
@@ -1363,6 +1404,8 @@ rewriteCanTypeList ctx types =
         |> Tuple.mapFirst List.reverse
 
 
+{-| Returns the record field types with ids assigned, in field-name order.
+-}
 rewriteFieldTypes : Ctx -> Dict Name (Can.FieldType Name) -> ( Dict Name (Can.FieldType TypeIds.MVarId), Ctx )
 rewriteFieldTypes ctx fields =
     Dict.foldl
@@ -1377,6 +1420,8 @@ rewriteFieldTypes ctx fields =
         fields
 
 
+{-| Returns the alias's expansion with ids assigned.
+-}
 rewriteAliasType : Ctx -> Can.AliasType Name -> ( Can.AliasType TypeIds.MVarId, Ctx )
 rewriteAliasType ctx aliasType =
     case aliasType of

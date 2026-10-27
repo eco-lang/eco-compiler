@@ -6,32 +6,31 @@ module Compiler.Pipeline.Steps exposing
     , GlobalOptResult, globalOptCore, cse, dedupe, hoist, globalOpt, checkClosureStaging
     )
 
-{-| The compiler's middle end as plain functions: every step a build takes
-between the typed global graph and the graph MLIR is generated from, in the
-order `Builder.Generate` runs them
-(plans/staging-honesty-and-production-test-pipeline.md P1).
+{-| The compiler's middle end as plain functions, so that anything that
+compiles a program can run the same steps under the same configuration.
 
-`Builder.Generate` calls these inside its `Task` steps, adding reports, phase
-timers and the heap-release step boundaries. The test harness
-(`TestLogic.TestPipeline`) calls the same functions, so a test compiles a
-program exactly the way `eco make` does under the same `EcoConfig`. Nothing in
+The middle end is every step between the typed global graph that local
+optimization produces and the monomorphized graph that MLIR is generated from.
+Each step here is a pure function of an `EcoConfig` and a graph. Nothing in
 this module reads the environment or writes output: configuration arrives as
-an `EcoConfig`, and every report is built by the caller from the metrics
-returned here.
+an `EcoConfig`, and the metrics, statistics and census text each step returns
+are left for the caller to report.
 
 The steps, in order:
 
-1.  `prepare` gives the typed graph its ids (`EntryPrep.assign`).
-2.  `preMono` runs the pre-monomorphization passes each behind its flag: alias
-    forwarding, η-expansion to declared arity, the pre-mono inliner.
+1.  `prepare` gives the typed graph its ids and the entry's flags decoder.
+2.  `preMono` runs the pre-monomorphization passes, each behind its flag:
+    alias forwarding, η-expansion to declared arity, and the pre-mono inliner.
 3.  `monomorphize` runs the configured engine.
 4.  `inline` runs the post-monomorphization inliner, then `prune` removes the
-    specializations it orphaned.
-5.  `globalOpt` runs global optimization, then CSE, CAF dedupe and CAF hoisting,
-    each behind its flag (`globalOptCore`, `cse`, `dedupe`, `hoist`).
+    specializations it left unreferenced.
+5.  `globalOpt` runs global optimization, then CSE, CAF dedupe and CAF
+    hoisting, each behind its flag. `globalOptCore`, `cse`, `dedupe` and
+    `hoist` are the same four pieces taken one at a time.
 
-The `check*` functions are the validators a build runs between steps; they
-return `Err` with the message a build reports.
+The `check*` functions are validators to run between steps. Each returns `Err`
+with a message to report when it finds a violation; most of them check only
+under `mono.validate`.
 
 
 # Preparation
@@ -94,9 +93,12 @@ import Compiler.Monomorphize.ValidateLimits as ValidateLimits
 -- ============================================================================
 
 
-{-| The assignment flags for the selected engine. The solver passes its
-`LssConfig`'s; the subst and diff engines pass `( False, False )` — changing
-those would move their output.
+{-| Returns the `( useSolverRoots, censusOn )` flags that id assignment
+(`Compiler.Monomorphize.EntryPrep.assign`) takes for the configured engine.
+
+The solver engine gets `True` and `mono.lss.arrowCensus`. The subst and diff
+engines get `( False, False )`.
+
 -}
 assignFlagsFor : Config.EcoConfig -> ( Bool, Bool )
 assignFlagsFor ecoConfig =
@@ -111,21 +113,21 @@ assignFlagsFor ecoConfig =
             ( False, False )
 
 
-{-| PHASE 0 — `AssignMVarIds`, in front of the pre-mono passes, so they operate
-on `MVarId`s rather than on names
-(`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md`). It also
-synthesizes the entry's flags decoder. Identity therefore EXISTS during the
-pre-mono passes: anything they create or copy must mint through
-`PreMono.Fresh`, and `checkMinted` checks that under `mono.validate`.
+{-| Returns the typed graph with its ids assigned and, when `main` is a
+`Program`, its flags decoder added, as `Compiler.Monomorphize.EntryPrep.assign`
+describes.
+
+Ids exist from here on, so a pre-mono pass that creates or copies a node must
+mint fresh ids for it through `Compiler.GlobalOpt.PreMono.Fresh`.
+
 -}
 prepare : Config.EcoConfig -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
 prepare ecoConfig typedGraph =
     prepareEntry ecoConfig "main" typedGraph
 
 
-{-| `prepare` from the top-level value `entry` instead of `main`. A build
-always starts from `main`; a test harness that compiles library modules names
-its own entry.
+{-| Returns what `prepare` does, but taking the top-level value named `entry`
+as the entry point instead of `main`.
 -}
 prepareEntry : Config.EcoConfig -> Name -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
 prepareEntry ecoConfig entry typedGraph =
@@ -138,8 +140,8 @@ prepareEntry ecoConfig entry typedGraph =
 -- ============================================================================
 
 
-{-| What `preMono` returns: the rewritten graph and each pass's metrics.
-A pass that did not run reports its `emptyMetrics`.
+{-| What `preMono` returns: the rewritten graph with its id state, and each
+pass's metrics. A pass that was not run reports its `emptyMetrics`.
 -}
 type alias PreMono =
     { assigned : EntryPrep.Assigned
@@ -149,22 +151,24 @@ type alias PreMono =
     }
 
 
-{-| The pre-monomorphization passes, in build order.
+{-| Returns the prepared graph after the pre-monomorphization passes, with
+each pass's metrics.
 
-  - **Alias forwarding** (`plans/pre-mono-lss-transforms-04-alias-forwarding.md`
-    §3.6): FIRST after assignment, before η-expansion — η reads the callee's
-    declared arity, and after forwarding that is the target's. With the flag
-    off and `inline.report` on it runs as a CENSUS and returns the graph
-    untouched; with both off it is not called. It mints nothing.
-  - **η-expansion** to declared arity
-    (`plans/pre-mono-lss-transforms-01-eta-expand-to-declared-arity.md`): with
-    the flag off and `inline.report` on it runs as a CENSUS and returns the
-    graph and the id allocator UNTOUCHED; with both off it is not called.
-    Placed BEFORE the pre-mono inliner (that plan's §2.8) so the inliner sees
-    SATURATED calls, and before monomorphization because LSS runs inside the
-    solver.
-  - **The pre-mono inliner** (`plans/pre-mono-inline-simplify.md`), behind
-    `inline.preMono`.
+The passes run in this order, each on the output of the one before:
+
+  - Alias forwarding (`Compiler.GlobalOpt.PreMono.AliasForward`), which points
+    references to a definition that only names another global at that global.
+    It runs first because η-expansion reads a callee's declared arity, and
+    after forwarding that is the target's arity.
+  - η-expansion to declared arity (`Compiler.GlobalOpt.PreMono.EtaExpand`).
+    It runs before the inliner, so that the inliner sees saturated calls.
+  - The pre-mono inliner (`Compiler.GlobalOpt.InlineSimplify`), run only when
+    `inline.preMono` is on.
+
+Alias forwarding runs when `inline.aliasForward` or `inline.report` is on, and
+η-expansion when `inline.etaExpand` or `inline.report` is on. With only
+`inline.report` on, the pass is run for its metrics and leaves the graph and
+id state unchanged.
 
 -}
 preMono : Config.EcoConfig -> EntryPrep.Assigned -> PreMono
@@ -210,11 +214,14 @@ preMono ecoConfig assignedRaw =
     }
 
 
-{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`), check that every pre-mono
-pass minted identity for what it created and copied.
+{-| Under `mono.validate`, checks the bodies of the `Define`, `TrackedDefine`
+and port nodes for missing or repeated lambda and arrow ids, with
+`Compiler.GlobalOpt.PreMono.Fresh.assertMinted`. Returns `Ok ()` when
+`mono.validate` is off.
 
-The DUPLICATE-id half is the one that earns its keep: a missing id declines
-visibly, a repeated one is two bodies under a single member and is silent.
+A repeated id is the failure this exists for: a copy that kept its ids leaves
+two bodies under one id. `Cycle` nodes are not checked, and arrows that share
+a solver root, and so one arrow id, also fail.
 
 -}
 checkMinted : Config.EcoConfig -> EntryPrep.Assigned -> Result String ()
@@ -233,17 +240,22 @@ checkMinted ecoConfig assigned =
 -- ============================================================================
 
 
-{-| Choose the monomorphizer engine per `mono.engine`. `EngineSubst` is the
-original engine; `EngineSolver` the solver-based one (the default);
-`EngineDiff` runs both and asserts their output matches. The `Maybe String` is
-the LSS census, present when the solver ran with `lss.report`.
+{-| Returns the monomorphized graph for the program whose entry is `main`,
+using the engine `mono.engine` selects, together with the LSS census text.
+
+`EngineSubst` and `EngineSolver` each run one engine. `EngineDiff` runs both
+and fails if their outputs differ; it does not use `mono.limits` or
+`mono.lss` (see `Compiler.MonoSolver.Diff`). The census is present only when
+the solver engine ran and produced one, which `mono.lss.report` controls.
+
 -}
 monomorphize : Config.EcoConfig -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
 monomorphize ecoConfig globalTypeEnv assigned =
     monomorphizeEntry ecoConfig "main" globalTypeEnv assigned
 
 
-{-| `monomorphize` from the top-level value `entry`; see `prepareEntry`.
+{-| Returns what `monomorphize` does, but taking the top-level value named
+`entry` as the entry point instead of `main`.
 -}
 monomorphizeEntry : Config.EcoConfig -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String ( Mono.MonoGraph, Maybe String )
 monomorphizeEntry ecoConfig entry globalTypeEnv assigned =
@@ -255,14 +267,15 @@ monomorphizeEntry ecoConfig entry globalTypeEnv assigned =
             MonoSolver.monomorphizeWithReportAssigned ecoConfig.mono.lss ecoConfig.mono.limits entry globalTypeEnv assigned
 
         Config.EngineDiff ->
-            -- Diff forces lss off internally; no census.
             Result.map (\g -> ( g, Nothing )) (MonoDiff.runAssigned ecoConfig.mono.diffDump entry globalTypeEnv assigned)
 
 
-{-| HEAP\_078 backstop (`Compiler.Monomorphize.ValidateLimits`): `Err` with a
-located `STAGE ARITY LIMIT` message when some closure has more parameters plus
-captured variables than a closure stage can hold. A build runs it after
-monomorphization and again after inlining and global optimization.
+{-| Returns the graph unchanged, or `Err` with a `STAGE ARITY LIMIT` message
+listing every closure whose parameters plus captured variables are more than a
+closure stage can hold (`Compiler.Monomorphize.ValidateLimits.check`).
+
+Unlike the other validators, this check is not behind `mono.validate`.
+
 -}
 checkStageArity : Mono.MonoGraph -> Result String Mono.MonoGraph
 checkStageArity g =
@@ -274,9 +287,9 @@ checkStageArity g =
             Err ("STAGE ARITY LIMIT\n" ++ String.join "\n" violations)
 
 
-{-| MONO\_029 layout-agreement validator, under `mono.validate`
-(`ECO_MONO_VALIDATE=1`): engine-agnostic, fails on any layout-disagreeing
-views.
+{-| Under `mono.validate`, returns the graph unchanged or `Err` with every
+layout disagreement `Compiler.Monomorphize.ValidateLayout.validate` finds.
+Returns the graph unchanged when `mono.validate` is off.
 -}
 checkLayout : Config.EcoConfig -> Mono.MonoGraph -> Result String Mono.MonoGraph
 checkLayout ecoConfig g =
@@ -303,25 +316,17 @@ checkLayout ecoConfig g =
 -- ============================================================================
 
 
-{-| The post-monomorphization inliner under the build's effective inline
-configuration.
+{-| Returns the graph after the post-monomorphization inliner
+(`Compiler.GlobalOpt.MonoInlineSimplify`), with its metrics, or the graph
+unchanged and empty metrics when `inline.postMono` is off.
 
-`list.chunks` keeps the shunted combinators' call sites intact: their tiny
-delegate bodies (reverse = foldl cons [] etc.) are otherwise threshold-inlined
-everywhere, and the generation-time kernel shunt
-(`Generate.MLIR.Functions.listChunksShunt`) only rewrites the spec definitions,
-not pasted copies.
-
-`list.mapTemplate` does the same one rung up: the template replaces the
-`List.map` spec DEFINITION at generation time, so a foldr body already pasted
-into a caller would keep the old lowering and silently escape the template.
-Blacklisting is name-level and wholesale by necessity: this pass runs BEFORE
-GlobalOpt/AbiCloning, so the licensed SET does not exist yet. With the flag on,
-UNLICENSED map sites are behaviourally identical but not necessarily
-byte-identical — their specs stop being inline candidates.
-
-`inline.postMono` (`ECO_INLINE_POST_MONO=0`) is the EARLY arm of the position
-A/B (plans/pre-mono-inline-simplify.md §7): off, the pass is skipped.
+Two list options add names to the inliner's blacklist, because generation
+later replaces those functions' specialization definitions, and a copy of a
+body already pasted into a caller would escape the replacement. With
+`list.chunks` on, `List.reverse`, `List.append`, `List.concat`, `List.take` and
+`List.drop` are not inlined. With `list.mapTemplate` on, `List.map` is not
+inlined. The blacklist is by name and covers every specialization of each
+function.
 
 -}
 inline : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, MonoInlineSimplify.Metrics )
@@ -360,12 +365,13 @@ inline ecoConfig monoGraph0 =
         ( monoGraph0, MonoInlineSimplify.emptyMetrics )
 
 
-{-| POST-INLINE DEAD-SPEC PRUNE (plans/post-inline-dead-spec-prune.md), behind
-`inline.pruneDead`. The inliner orphans a specialization whenever it inlines
-the only reference to it. HERE is the only position where a
-`MonoVarGlobal`-reachability is exact — everything that references a spec by
-another route (AbiCloning's `fastEvaluatorSpec`, post-settle devirt targets,
-CafHoist's mints) runs after global optimization.
+{-| Returns the graph with the specializations that nothing reachable still
+references removed (`Compiler.Monomorphize.Prune.pruneAfterInline`), when
+`inline.pruneDead` is on; otherwise the graph unchanged.
+
+Inlining leaves a specialization unreferenced when it inlines the only call to
+it. Reachability is computed from the references in the current bodies.
+
 -}
 prune : Config.EcoConfig -> Mono.MonoGraph -> Mono.MonoGraph
 prune ecoConfig inlinedGraph =
@@ -376,11 +382,16 @@ prune ecoConfig inlinedGraph =
         inlinedGraph
 
 
-{-| Under `mono.validate` (`ECO_MONO_VALIDATE=1`) with the prune on, check that
-the prune left the graph CLOSED: every `MonoVarGlobal` in a live node names a
-live node (`plans/post-inline-dead-spec-prune.md` §4 R1, MONO\_011).
-Reachability is only as good as the adjacency it walks, and an adjacency that
-misses a reference shape prunes a live spec silently.
+{-| Under `mono.validate` with `inline.pruneDead` on, checks that the graph is
+closed: that every specialization a live node references is itself live.
+Returns `Ok ()` when either flag is off.
+
+The references are collected by `Compiler.Monomorphize.MonoTraverse.collectSpecEdges`,
+the same collector the prune walks, so it catches a prune that removed a
+specialization still referenced through a shape the collector sees; a
+reference shape the collector misses goes undetected here too. The `Err`
+message names the first dangling reference found and the total count.
+
 -}
 checkPruned : Config.EcoConfig -> Mono.MonoGraph -> Result String ()
 checkPruned ecoConfig (Mono.MonoGraph record) =
@@ -455,9 +466,10 @@ checkPruned ecoConfig (Mono.MonoGraph record) =
 -- ============================================================================
 
 
-{-| What global optimization returns besides the final graph: each step's
-stats and the census lines rendered from graphs that are dead by the time a
-report is written.
+{-| What the global optimization step returns besides the final graph: each
+piece's statistics, and the census texts, which are taken from intermediate
+graphs. A piece that was not run reports empty statistics, and a census that
+was not asked for is `Nothing`.
 -}
 type alias GlobalOptResult =
     { goStats : MonoGlobalOptimize.GlobalOptStats
@@ -469,8 +481,10 @@ type alias GlobalOptResult =
     }
 
 
-{-| `MonoGlobalOptimize.globalOptimizeWithStats` under the build's
-configuration.
+{-| Returns the graph after `Compiler.GlobalOpt.MonoGlobalOptimize` global
+optimization, with its statistics, under the configuration's
+`mono.lss.stamp.census`, `mono.stagingReport`, `borrow` and `list.mapTemplate`
+settings.
 -}
 globalOptCore : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats )
 globalOptCore ecoConfig simplifiedGraph =
@@ -482,11 +496,13 @@ globalOptCore ecoConfig simplifiedGraph =
         simplifiedGraph
 
 
-{-| kernel-opt-13 C2: bounded-scope CSE of pure calls (`cse.enabled`), with
-its C1 census under `cse.report` taken on the same input graph. Runs
-post-annotation, because it adds MonoLet bindings and annotateCallStaging is
-O(2^let-depth); and BEFORE CafDedupe, so CSE never has to reason about specs
-dedupe is about to merge away.
+{-| Returns the graph after common subexpression elimination of pure calls
+(`Compiler.GlobalOpt.MonoCse`) when `cse.enabled` is on, and starts the
+`GlobalOptResult` with the global optimization statistics it is given.
+
+Under `cse.report`, the CSE census is taken of the input graph, before
+elimination. This piece comes after `globalOptCore` and before `dedupe`.
+
 -}
 cse : Config.EcoConfig -> ( Mono.MonoGraph, MonoGlobalOptimize.GlobalOptStats ) -> ( Mono.MonoGraph, GlobalOptResult )
 cse ecoConfig ( goGraph, goStats ) =
@@ -521,9 +537,13 @@ cse ecoConfig ( goGraph, goStats ) =
     )
 
 
-{-| CAF spec dedupe (`cafMemo.dedupe`): merge structurally identical nullary
-specs BEFORE census/hoist so downstream counts see the deduped graph; then the
-inner-CAF opportunity census (`cafMemo.census`) over the PRE-hoist graph.
+{-| Returns the graph with structurally identical nullary specializations
+merged (`Compiler.GlobalOpt.CafDedupe`) when `cafMemo.dedupe` is on, recording
+the statistics in the result.
+
+Under `cafMemo.census`, the CAF census is then taken of the deduplicated
+graph, so before `hoist` runs.
+
 -}
 dedupe : Config.EcoConfig -> ( Mono.MonoGraph, GlobalOptResult ) -> ( Mono.MonoGraph, GlobalOptResult )
 dedupe ecoConfig ( cseGraph, carry ) =
@@ -548,7 +568,8 @@ dedupe ecoConfig ( cseGraph, carry ) =
     ( optimizedGraph, { carry | dedupeStats = dedupeStats, cafCensusPre = cafCensusPre } )
 
 
-{-| CAF hoisting (`cafMemo.hoist.enabled`; plans/caf-hoist-closed-expressions.md).
+{-| Returns the graph after CAF hoisting (`Compiler.GlobalOpt.CafHoist`) when
+`cafMemo.hoist.enabled` is on, recording the statistics in the result.
 -}
 hoist : Config.EcoConfig -> ( Mono.MonoGraph, GlobalOptResult ) -> ( Mono.MonoGraph, GlobalOptResult )
 hoist ecoConfig ( optimizedGraph, carry ) =
@@ -570,9 +591,8 @@ hoist ecoConfig ( optimizedGraph, carry ) =
     ( hoistedGraph, { carry | hoistStats = hoistStats } )
 
 
-{-| The whole global optimization step: `globalOptCore`, then `cse`, `dedupe`
-and `hoist`. A build runs the four as separate `Task` steps; the result is
-the same.
+{-| Returns the graph after the whole global optimization step:
+`globalOptCore`, then `cse`, `dedupe` and `hoist`.
 -}
 globalOpt : Config.EcoConfig -> Mono.MonoGraph -> ( Mono.MonoGraph, GlobalOptResult )
 globalOpt ecoConfig g =
@@ -583,10 +603,11 @@ globalOpt ecoConfig g =
 
 
 
-{-| GOPT\_001 under `mono.validate` (`ECO_MONO_VALIDATE=1`): every closure has
-as many parameters as its type's first stage
-(`Compiler.GlobalOpt.Staging.checkClosureStaging`). A build runs it after
-global optimization.
+{-| Under `mono.validate`, returns the graph unchanged or `Err` with every
+violation that
+`Compiler.GlobalOpt.Staging.checkClosureStaging` finds: a closure or tail
+function whose parameter count differs from its type's first stage. Returns
+the graph unchanged when `mono.validate` is off.
 -}
 checkClosureStaging : Config.EcoConfig -> Mono.MonoGraph -> Result String Mono.MonoGraph
 checkClosureStaging ecoConfig g =

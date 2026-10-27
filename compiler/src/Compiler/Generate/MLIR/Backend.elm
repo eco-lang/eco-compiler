@@ -3,11 +3,49 @@ module Compiler.Generate.MLIR.Backend exposing
     , constThunkReport
     )
 
-{-| MLIR code generation backend for the Monomorphized IR.
+{-| The entry point of MLIR generation: it turns a whole monomorphized program
+into one MLIR module, as text or as bytecode.
 
-This backend generates MLIR from fully specialized, monomorphic code.
-All polymorphism has been resolved and layout information is embedded
-in the types.
+Most of the work of generating code for one function is done elsewhere, in
+`Compiler.Generate.MLIR.Functions` and `Compiler.Generate.MLIR.Expr`. What
+belongs here is what no single function can decide: tables about the whole
+program that every function's code must agree on. They are computed once,
+before any code is generated, and put into the code generator context
+(`Compiler.Generate.MLIR.Context`). Result and parameter promotion and the
+constant-constructor tables are decided in this module, and promotion takes up
+most of the file.
+
+_Result promotion_ (sret) gives a function that returns a 2- or 3-tuple a
+`$sret` worker that returns the tuple's fields as separate results, so a caller
+that only takes the tuple apart never allocates it. _Parameter promotion_
+(psplit) gives a function a `$psplit` worker that takes a tuple or
+single-constructor parameter as its separate fields. Parameter promotion, and
+result promotion when `sretFresh` is on, are chosen by repeated passes over the
+whole program that stop at a fixpoint or after a fixed number of passes,
+because whether one function qualifies can depend on whether the functions it
+calls or is called by qualify. The table the passes settle on must be
+self-consistent: code generation reads the same table, and a call emitted as
+a multi-result call to a function that has no worker is a miscompile. A
+function is never given both.
+
+The other tables say which nullary constructors are emitted as constants
+instead of calls: null-cons constructors (a nullary constructor whose value is
+an `eco.constant.null_cons` carrying its tag) and `Maybe`'s `Nothing`, whose
+value is a fixed constant word. `Compiler.Data.CtorTag` owns which
+constructors are which.
+
+The streaming writers emit the module in a fixed order: every node of the graph
+in SpecId order, then the lifted lambdas, then the main entry, then the kernel
+declarations collected along the way, then the type table. The type table is
+built from the context as it stands after the lambdas, before the main entry
+and kernel declarations are generated. Between nodes the function-local fields
+of the context are cleared.
+
+The three entry points generate the same ops. `generateMlirModule` builds the
+module in memory, with the lambdas placed before the nodes;
+`streamMlirToWriter` writes its text a node at a time; and
+`streamMlirBytecode` encodes it a batch of nodes at a time, so that the nodes
+already emitted can be garbage-collected while the rest are generated.
 
 @docs generateMlirModule, generateProgram, streamMlirToWriter, streamMlirBytecode
 @docs constThunkReport
@@ -46,10 +84,10 @@ import Utils.Main as Utils
 -- ====== GENERATE WHOLE PROGRAM ======
 
 
-{-| Generate the whole program as one `MlirModule`, through the same code
-generator context and per-node reset the streaming writers use, so the module
-holds exactly the ops a build streams (plans/staging-honesty-and-production-
-test-pipeline.md P1). Used by the test harness.
+{-| Generates the whole program as one in-memory `MlirModule`. It uses the same
+context and the same clearing between nodes as the streaming writers, so it
+holds the ops they write, except that the lambdas come first, before the
+nodes.
 -}
 generateMlirModule : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> MlirModule
 generateMlirModule ecoConfig mode monoGraph0 =
@@ -92,7 +130,6 @@ generateMlirModule ecoConfig mode monoGraph0 =
                 Nothing ->
                     ( [], finalCtx )
 
-        -- Generate kernel function declarations from tracked calls
         ( kernelDeclOps, _ ) =
             Dict.foldl
                 (\_ info ( accOps, accCtx ) ->
@@ -105,7 +142,6 @@ generateMlirModule ecoConfig mode monoGraph0 =
                 ( [], ctxAfterMain )
                 ctxAfterMain.kernelDecls
 
-        -- Generate the type table op for debug printing
         typeTableOp : MlirOp
         typeTableOp =
             TypeTable.generateTypeTable finalCtx
@@ -115,17 +151,18 @@ generateMlirModule ecoConfig mode monoGraph0 =
     }
 
 
-{-| The printed text of `generateMlirModule`.
+{-| Returns the printed text of the module `generateMlirModule` builds.
 -}
 generateProgram : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> String
 generateProgram ecoConfig mode monoGraph =
     Pretty.ppModule (generateMlirModule ecoConfig mode monoGraph)
 
 
-{-| The code generator context every MLIR entry point starts from: signatures,
-inline bodies, the build's configuration and the per-program tables
-(constructors, null-cons, constant constructors, constant thunks, sret and
-psplit promotion, List.map templates).
+{-| Builds the code generator context every entry point starts from: the
+functions' signatures, the bodies available for inlining, the configuration,
+and the whole-program tables (constructors by SpecId, null-cons constructors,
+constant constructors, constant thunks, result and parameter promotion, and
+`List.map` templates).
 -}
 buildContext : Config.EcoConfig -> Mode.Mode -> Mono.MonoGraph -> Ctx.Context
 buildContext ecoConfig mode monoGraph0 =
@@ -156,10 +193,9 @@ buildContext ecoConfig mode monoGraph0 =
         |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
 
 
-{-| Clears the per-function fields after a node, so they do not accumulate
-across nodes: `decoderExprs` caches let-bound decoder expressions for
-BytesFusion, and `localEvaluatorParams` tracks function aliases — both are
-function-local.
+{-| Returns the context with its function-local fields, `decoderExprs` and
+`localEvaluatorParams`, emptied, so that what one node recorded in them is not
+seen by the next.
 -}
 resetNodeCtx : Ctx.Context -> Ctx.Context
 resetNodeCtx newCtx =
@@ -173,8 +209,9 @@ resetNodeCtx newCtx =
 -- ====== STREAMING ======
 
 
-{-| Stream MLIR text output to a writer function, emitting the module header,
-each top-level operation, and footer sequentially.
+{-| Writes the module's MLIR text through `writeChunk`: the header, then one
+chunk per node that produces ops, then the lambdas, main entry, kernel
+declarations and type table, then the footer.
 -}
 streamMlirToWriter :
     Config.EcoConfig
@@ -193,17 +230,14 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
         nodesList =
             Array.toIndexedList nodes
     in
-    -- 1. Header
     writeChunk Pretty.ppModuleHeader
         |> Task.andThen (\_ -> streamNodesList ctx nodesList writeChunk)
         |> Task.andThen
             (\ctxAfterNodes ->
-                -- 2. Lambdas
                 let
                     ( lambdaOps, finalCtx ) =
                         Lambdas.processLambdas ctxAfterNodes
 
-                    -- 3. Main + kernel decls + type table
                     ( mainOps, ctxAfterMain ) =
                         case main of
                             Just mainInfo ->
@@ -235,6 +269,9 @@ streamMlirToWriter ecoConfig mode monoGraph0 writeChunk =
             )
 
 
+{-| Writes the text of each node in `remaining`, in order, and returns the
+context after the last one. Empty slots are skipped.
+-}
 streamNodesList :
     Ctx.Context
     -> List ( Int, Maybe Mono.MonoNode )
@@ -246,7 +283,6 @@ streamNodesList ctx0 remaining writeChunk =
             Task.succeed ctx0
 
         ( _, Nothing ) :: rest ->
-            -- Empty slot
             streamNodesList ctx0 rest writeChunk
 
         ( specId, Just node ) :: rest ->
@@ -254,9 +290,6 @@ streamNodesList ctx0 remaining writeChunk =
                 ( nodeOps, newCtx ) =
                     Functions.generateNode ctx0 specId node
 
-                -- Clear per-function fields to avoid accumulating across nodes.
-                -- decoderExprs caches let-bound decoder expressions for BytesFusion;
-                -- localEvaluatorParams tracks function aliases — both are function-local.
                 cleanCtx =
                     resetNodeCtx newCtx
             in
@@ -264,6 +297,9 @@ streamNodesList ctx0 remaining writeChunk =
                 |> Task.andThen (\_ -> streamNodesList cleanCtx rest writeChunk)
 
 
+{-| Writes the printed text of `ops` as one chunk, or writes nothing when there
+are none.
+-}
 writeOps : List MlirOp -> (String -> Task Never ()) -> Task Never ()
 writeOps ops writeChunk =
     case ops of
@@ -281,17 +317,15 @@ writeOps ops writeChunk =
 -- ====== BYTECODE OUTPUT ======
 
 
-{-| Generate MLIR bytecode using the streaming encoder.
+{-| Generates the module as MLIR bytecode and writes it to the file `target`,
+creating its directory if it is missing.
 
-The node loop runs as a chain of Task steps, `codegenBatchSize` nodes per
-step (plans/frontend-heap-release.md §7.6 row 12). Calling this function only
-builds the codegen context and the node list (step A); after it returns, the
-`MonoGraph` itself is no longer referenced (the continuations capture `main`,
-`ports` and `flagsDecoder` separately), and each step's root is just
-`( ctx, remaining nodes, tables )`, so the nodes already emitted become
-garbage while the rest are generated. Ops, ctx and tables are threaded in
-exactly the order of the former pure recursion, so the output is
-byte-identical.
+The nodes are generated in a chain of Task steps, `codegenBatchSize` nodes per
+step. Calling this function only builds the context and the list of nodes. The
+pending steps hold `main`, `ports` and `flagsDecoder` rather than the
+`MonoGraph`, and each step holds only the context, the nodes not yet generated
+and the encoder's tables, so the nodes already emitted can be garbage-collected
+while the rest are generated. The batch size does not change the output.
 
 -}
 streamMlirBytecode :
@@ -314,23 +348,23 @@ streamMlirBytecode ecoConfig mode monoGraph0 target =
         initTables =
             StreamEncode.emptyStreamTables
     in
-    -- Phase 1: Stream node functions — collect tables + encode per func, in
-    -- batches, each batch its own step.
     Task.succeed ( ctx, nodesList, initTables )
         |> Task.andThen streamNodesStep
         |> Task.andThen (finishBytecode main ports flagsDecoder target)
 
 
-{-| Nodes generated per Task step. Any value gives the same output; it only
-bounds how many already-emitted nodes a step keeps rooted.
+{-| The number of node slots, empty ones included, generated in one Task step
+of `streamMlirBytecode`. Any positive value gives the same output; it bounds
+how long the nodes a step generates stay reachable.
 -}
 codegenBatchSize : Int
 codegenBatchSize =
     256
 
 
-{-| One step of the node loop: emit a batch, then continue in a NEW step whose
-root no longer holds the emitted nodes.
+{-| Generates and encodes the remaining nodes, one batch per Task step, and
+returns the context and encoder tables after the last. Each batch starts a new
+step, which holds only what is left.
 -}
 streamNodesStep :
     ( Ctx.Context, List ( Int, Maybe Mono.MonoNode ), StreamEncode.StreamTables )
@@ -345,9 +379,9 @@ streamNodesStep ( ctx0, remaining, tables ) =
                 |> Task.andThen streamNodesStep
 
 
-{-| Generate and encode up to `budget` node-list entries (pure, tail
-recursive). Same per-node work, in the same order, as the former
-`streamNodesCollectEncode`.
+{-| Generates and encodes the first `budget` entries of `remaining`, and returns
+the context, the entries not yet reached and the encoder tables. An empty slot
+counts against `budget`.
 -}
 encodeNodeBatch :
     Int
@@ -381,9 +415,14 @@ encodeNodeBatch budget ctx0 remaining tables =
                 encodeNodeBatch (budget - 1) cleanCtx rest newTables
 
 
-{-| After the node loop: lambdas, main entry, kernel declarations, type table,
-then assemble and write the module. A top-level function so the pending
-continuation captures exactly these arguments, never the MonoGraph.
+{-| Encodes what follows the nodes (the lambdas, the main entry, the kernel
+declarations and the type table), assembles the bytecode module and writes it to
+`target`, creating its directory if it is missing. It crashes on a write
+error.
+
+It is a top-level function so that the step waiting on the node loop holds
+only these arguments, not the `MonoGraph`.
+
 -}
 finishBytecode :
     Maybe Mono.MainInfo
@@ -394,14 +433,12 @@ finishBytecode :
     -> Task Never ()
 finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes ) =
     let
-        -- Process lambdas
         ( lambdaOps, finalCtx ) =
             Lambdas.processLambdas ctxAfterNodes
 
         tablesAfterLambdas =
             StreamEncode.collectAndEncodeOps lambdaOps tablesAfterNodes
 
-        -- Main entry
         ( mainOps, ctxAfterMain ) =
             case main of
                 Just mainInfo ->
@@ -413,7 +450,6 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
         tablesAfterMain =
             StreamEncode.collectAndEncodeOps mainOps tablesAfterLambdas
 
-        -- Kernel declarations
         ( kernelDeclOps, _ ) =
             Dict.foldl
                 (\_ info ( accOps, accCtx ) ->
@@ -429,14 +465,12 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
         tablesAfterKernels =
             StreamEncode.collectAndEncodeOps (List.reverse kernelDeclOps) tablesAfterMain
 
-        -- Type table
         typeTableOp =
             TypeTable.generateTypeTable finalCtx
 
         finalTables =
             StreamEncode.collectAndEncodeOps [ typeTableOp ] tablesAfterKernels
 
-        -- Assemble final bytecode
         bytecodeBytes =
             StreamEncode.assembleModule finalTables Loc.unknown
     in
@@ -444,17 +478,30 @@ finishBytecode main ports flagsDecoder target ( ctxAfterNodes, tablesAfterNodes 
         |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes |> IO.crashOnError)
 
 
-{-| U-T1.3.3 result-promotion selection (census-revised rule,
-plans/opt-tier1-aggregate-promotion.md): a spec is promoted iff
-(a) it is a zero-capture function whose result is a tuple2/3,
-(b) every RESULT-spine leaf of its body is a tuple literal of that
-arity (spine = let/destruct bodies + case branches + if branches, the
-last admitted by step 10a), and
-(c) at least one LET-BOUND direct call site exists somewhere in the
-graph (otherwise the worker+shim would be pure overhead).
-Leaf-ness is NOT required — the census measured it empty and it buys no
-soundness. Workers/shims emit in `Functions.generateSretWorkerAndShim`;
-sites migrate per-site in `Expr.trySretLetBinding`.
+{-| Returns the result-promotion table: the specs that get a `$sret` worker,
+by SpecId, each with its tuple layout and slot types. It is empty when
+`sretResults` is off.
+
+A spec is a base member when all of these hold:
+
+  - it is a function with no captures and at least one parameter, whose result
+    is a 2- or 3-tuple;
+  - every leaf of its _result spine_ is a tuple literal with the same slot types
+    as the result. The result spine is the body, followed through the bodies of
+    `let` and destructuring and into every branch of an `if` or `case`;
+  - somewhere in the graph a `let` binds the result of a direct call to it.
+    Without such a call the worker would only add a hop.
+
+When `sretTailFuncs` is on, a tail-recursive function whose residual result is
+a 2- or 3-tuple qualifies on the leaf and call-site terms, with a tail call
+counting as a leaf.
+
+When `sretFresh` is on, a leaf may also be a direct call to a member (itself
+included) with the same slot types. That table is the greatest fixpoint, computed by
+`sretFreshGreatest` from the base members and every define of the right shape
+that has a let-bound call site; if it does not settle in time, the least
+fixpoint grown from the base members is used instead.
+
 -}
 buildSretPromoted : Config.EcoConfig -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.SretInfo
 buildSretPromoted config nodes =
@@ -499,11 +546,6 @@ buildSretPromoted config nodes =
                                         ( specId + 1, acc )
 
                                 Just (Mono.MonoTailFunc tparams tbody monoType) ->
-                                    -- U-T1.3.6: tail funcs promote too — the loop
-                                    -- carries DECOMPOSED result columns; a
-                                    -- MonoTailCall leaf is a continue, not a result.
-                                    -- Independently gated (ECO_SRET_TAILFUNC=0) so
-                                    -- the widening can be A/B'd apart from T1.3.3.
                                     case Ctx.residualResultType (List.length tparams) monoType of
                                         Mono.MTuple _ ts ->
                                             let
@@ -557,8 +599,7 @@ buildSretPromoted config nodes =
             base =
                 Dict.filter (\specId _ -> Set.member specId calledInLetPosition) candidates
 
-            -- Step 10g: the OPTIMISTIC start set for the greatest fixpoint —
-            -- every SHAPE-eligible zero-capture tuple2/3 define with a
+            -- The base members plus every define of the right shape with a
             -- let-bound call site, admitted without looking at its body.
             optimistic =
                 Tuple.second
@@ -602,43 +643,32 @@ buildSretPromoted config nodes =
                     settled
 
                 Nothing ->
-                    -- Did not converge inside the round budget: the table would
-                    -- not be self-consistent, and an inconsistent table is a
-                    -- MISCOMPILE (emission feeds a multi-result call to a
-                    -- callee that has no worker). Fall back to the least
-                    -- fixpoint, which is always consistent.
+                    -- A least fixpoint only ever adds members whose call leaves
+                    -- are already members, so it is consistent at every round.
                     sretFreshFixpoint calledInLetPosition nodes 0 base
 
         else
             base
 
 
-{-| Step 10g: the GREATEST fixpoint of the same admission rule.
+{-| Returns the greatest fixpoint of the `sretFresh` admission rule, starting
+from `table`, or `Nothing` if it has not settled after 31 passes.
 
-`sretFreshFixpoint` below is a LEAST fixpoint over an already-admitted table,
-so a group of functions whose result leaves are calls to EACH OTHER can never
-bootstrap: each one is waiting for the other to be admitted first, and neither
-ever is. That is not a rare shape — it is the normal shape of a recursive
-descent over a syntax tree, where `translate` and `translateDispatch` and the
-twenty `translateX` arms all tail-call one another. Under the least fixpoint
-only the functions whose every leaf is a literal tuple get promoted, which in
-`MonoSolver` was 16 of about 95.
+Each pass drops every define whose result spine fails `sretFreshTailOk` against
+the current table, and the passes stop when one drops nothing. The table only
+shrinks, and at the fixpoint every surviving member's call leaves are surviving
+members, which is the consistency code generation needs. Tail-recursive
+functions in `table` are never re-checked or dropped.
 
-The greatest fixpoint answers the question the least one cannot: start with
-every SHAPE-eligible spec assumed promoted, then repeatedly DROP any whose
-body fails the check against the current table. Removal only ever shrinks the
-table, so the iteration terminates, and at the fixpoint every surviving
-member's call leaves point at surviving members — exactly the self-consistency
-`trySretFreshLeaf` needs at emission.
+A least fixpoint cannot admit a group of functions whose result leaves are
+calls to each other, as in a recursive descent where each case calls the next:
+each waits for another to be admitted first. Starting from every candidate and
+removing failures admits them. It would also admit a cycle with no tuple
+literal anywhere in it, but such functions agree with each other, so the table
+is still consistent.
 
-The one thing the greatest fixpoint could admit that the least cannot justify
-is a cycle with NO tuple literal anywhere in it (`f` yields `g`, `g` yields
-`f`). Such a function has no result leaf at all and cannot terminate, so it
-cannot occur in a program that runs; and were it to occur, the members agree
-with each other, so emission stays consistent.
-
-Returns `Nothing` if the round budget runs out, because a table left mid-cascade
-is NOT self-consistent and using it would be a miscompile.
+A table left part-way through the drops may not be consistent, hence `Nothing`
+rather than the last table.
 
 -}
 sretFreshGreatest : Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Maybe (Dict.Dict Int Ctx.SretInfo)
@@ -656,9 +686,6 @@ sretFreshGreatest nodes iter table =
                                 ( sid + 1, True, Dict.remove sid acc )
 
                         _ ->
-                            -- Not a define, or already dropped. Tail-func
-                            -- entries admitted by `sretTailFuncOk` are not
-                            -- table-relative and are never revisited here.
                             ( sid + 1, shrank, acc )
                 )
                 ( 0, False, table )
@@ -674,21 +701,20 @@ sretFreshGreatest nodes iter table =
         sretFreshGreatest nodes (iter + 1) next
 
 
-{-| U-T1.3.8 (`ECO_SRET_FRESH`): widen selection to helper-mediated
-results — a leaf that IS a direct call to a table member with identical
-slot types is fresh by construction (the member's worker constructs it,
-and emission feeds the multi-result call straight through,
-`trySretFreshLeaf`). Iterated on the FILTERED (site-gated) table so
-admission stays self-consistent with emission — the T1.3.7 discipline.
-MonoDefine only in v1: tail-func bases stay under `sretTailFuncs`.
+{-| Returns `table` grown by the `sretFresh` admission rule: each pass adds every
+define with no captures, at least one parameter, a let-bound call site in
+`letPos` and a 2- or 3-tuple result whose result spine passes `sretFreshTailOk`
+against the table so far. It stops after a pass that adds nothing, or after
+seven passes.
+
+Members are only added, and only when their call leaves are already members,
+so the table is consistent after any number of passes.
+
 -}
 sretFreshFixpoint : Set.Set Int -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict Int Ctx.SretInfo
 sretFreshFixpoint letPos nodes iter table =
     let
-        -- The admission guard already requires `not (Dict.member sid acc)`, so
-        -- an insert is always a new key and "did this round add anything" is
-        -- exactly the flag below. Comparing `Dict.size` against the previous
-        -- table walked both trees to recover the same bit.
+        -- The guard excludes members already in `acc`, so every insert adds one.
         ( _, added, next ) =
             Array.foldl
                 (\maybeNode ( sid, grew, acc ) ->
@@ -732,6 +758,10 @@ sretFreshFixpoint letPos nodes iter table =
         sretFreshFixpoint letPos nodes (iter + 1) next
 
 
+{-| Tells whether every leaf of the result spine of `e` is either a tuple literal
+with slot types `slotTys` or a direct call to a member of `table` with those
+slot types. Any other leaf fails.
+-}
 sretFreshTailOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.MonoExpr -> Bool
 sretFreshTailOk table slotTys e =
     case e of
@@ -748,9 +778,6 @@ sretFreshTailOk table slotTys e =
             sretFreshTailOk table slotTys b
 
         Mono.MonoIf brs fin _ ->
-            -- Step 10a: without this the fresh fixpoint rejects an if-spine
-            -- whose leaves are calls to promoted callees, and the whole
-            -- function falls back to a heap tuple.
             List.all (sretFreshTailOk table slotTys) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
@@ -761,6 +788,9 @@ sretFreshTailOk table slotTys e =
             False
 
 
+{-| Applies `sretFreshTailOk` to every inline leaf of a `case` decision tree. A
+jump leaf passes here; its target is checked with the `case`'s jumps.
+-}
 sretFreshDeciderOk : Dict.Dict Int Ctx.SretInfo -> List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
 sretFreshDeciderOk table slotTys d =
     case d of
@@ -778,6 +808,10 @@ sretFreshDeciderOk table slotTys d =
                 && sretFreshDeciderOk table slotTys fb
 
 
+{-| Returns the result type of the outermost stage of a function type (which
+may itself be a function type), or the type itself when it is not a function
+type.
+-}
 closureResultType : Mono.MonoType -> Mono.MonoType
 closureResultType monoType =
     case monoType of
@@ -788,6 +822,9 @@ closureResultType monoType =
             monoType
 
 
+{-| Returns the body of a define or a tail-recursive function, and nothing for
+any other kind of node.
+-}
 nodeExprs : Mono.MonoNode -> List Mono.MonoExpr
 nodeExprs node =
     case node of
@@ -801,6 +838,9 @@ nodeExprs node =
             []
 
 
+{-| Adds to `acc` the SpecId of the callee when `e` is a `let` whose value is a
+direct call to a global, and returns `acc` unchanged otherwise.
+-}
 collectSretSites : Mono.MonoExpr -> Set.Set Int -> Set.Set Int
 collectSretSites e acc =
     case e of
@@ -811,11 +851,9 @@ collectSretSites e acc =
             acc
 
 
-{-| U-T1.3.6: the result-spine walk for TAIL FUNCS — `MonoTailCall` is a
-loop CONTINUE (not a result leaf). `MonoIf` was admissible here before it
-was admissible anywhere else, because TailRec's `compileIfStep` threads the
-spine flag through `compileStep`; step 10a taught `Expr.generateIf` the same
-protocol, so `sretTailOk` and `sretFreshTailOk` now admit it too.
+{-| Tells whether every leaf of the result spine of a tail-recursive function's
+body `e` is a tuple literal with slot types `slotTys` or a tail call. A tail
+call goes round the loop again rather than returning, so it passes.
 -}
 sretTailFuncOk : List MlirType -> Mono.MonoExpr -> Bool
 sretTailFuncOk slotTys e =
@@ -843,6 +881,9 @@ sretTailFuncOk slotTys e =
             False
 
 
+{-| Applies `sretTailFuncOk` to every inline leaf of a `case` decision tree. A
+jump leaf passes here; its target is checked with the `case`'s jumps.
+-}
 sretTailFuncDeciderOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
 sretTailFuncDeciderOk slotTys d =
     case d of
@@ -860,11 +901,13 @@ sretTailFuncDeciderOk slotTys d =
                 && sretTailFuncDeciderOk slotTys fb
 
 
-{-| Leaf check compares the leaf tuple's SLOT TYPES against the
-function's result plan — arity alone is unsound: node-level result
-types can be differently specialized than the body's tuples (the
-stale-MVar hazard the TailRec destructor path documents), and a
-boxed-slot make where the plan says unboxed crashes emission.
+{-| Tells whether a tuple literal of type `leafMonoType` has exactly the slot
+types `slotTys`.
+
+Comparing arity is not enough: a tuple in the body may be specialized
+differently from the function's declared result type, and a tuple whose slot is
+boxed where the result's is unboxed cannot be returned through the worker.
+
 -}
 sretLeafMatches : List MlirType -> Mono.MonoType -> Bool
 sretLeafMatches slotTys leafMonoType =
@@ -877,6 +920,9 @@ sretLeafMatches slotTys leafMonoType =
             False
 
 
+{-| Tells whether every leaf of the result spine of `e` is a tuple literal with
+slot types `slotTys`.
+-}
 sretTailOk : List MlirType -> Mono.MonoExpr -> Bool
 sretTailOk slotTys e =
     case e of
@@ -890,11 +936,6 @@ sretTailOk slotTys e =
             sretTailOk slotTys b
 
         Mono.MonoIf brs fin _ ->
-            -- Step 10a: `if` joins the result spine, exactly as `sretTailFuncOk`
-            -- already admits it. `Expr.generateIf` now implements the same
-            -- spine-yield protocol `generateCase` does (decomposed
-            -- `eco.yieldMany` per branch, `eco.caseMany` at the join), so an
-            -- if-shaped tail is a result producer like any other.
             List.all (sretTailOk slotTys) (fin :: List.map Tuple.second brs)
 
         Mono.MonoCase _ _ decider jumps _ ->
@@ -905,6 +946,9 @@ sretTailOk slotTys e =
             False
 
 
+{-| Applies `sretTailOk` to every inline leaf of a `case` decision tree. A jump
+leaf passes here; its target is checked with the `case`'s jumps.
+-}
 sretDeciderTailOk : List MlirType -> Mono.Decider Mono.MonoChoice -> Bool
 sretDeciderTailOk slotTys d =
     case d of
@@ -922,16 +966,26 @@ sretDeciderTailOk slotTys d =
                 && sretDeciderTailOk slotTys fb
 
 
-{-| U-T1.3.5 param-side promotion selection
-(plans/opt-tier1-aggregate-promotion.md): a spec gains a `$psplit`
-worker iff it is a zero-capture non-tail function, NOT sret-promoted
-(v1 mutual exclusion), with ≥1 param whose shape is tuple2/3 or a
-single-ctor custom (2–6 fields) and whose EVERY body use is a
-projection (`Expr.paramSplitAdmissible` — the T1.3.3L walk, so worker
-bodies can never materialize), and ≥1 direct call site somewhere in the
-graph passes a CONSTRUCTISH argument at an eligible position (inline
-matching construct, or a var let-bound to one) — the win pre-check:
-without such a site the worker+shim pair is pure shim-hop overhead.
+{-| Returns the parameter-promotion table: the specs that get a `$psplit` worker,
+by SpecId, each with a plan for every parameter. It is empty when
+`psplitParams` is off.
+
+A spec is a member when all of these hold:
+
+  - it is a define (not a tail-recursive function) with no captures and at
+    least one parameter, and is not in `sretPromoted`;
+  - at least one parameter is a 2- or 3-tuple, or a custom type with one
+    constructor of 2 to 6 fields, and `Expr.paramSplitAdmissible` accepts every
+    use of it in the body, so the worker never has to rebuild it;
+  - somewhere in the graph a direct call to it passes, at such a position, an
+    argument already in pieces: a matching tuple literal or constructor call, a
+    variable `let`-bound to one, one of the caller's own split parameters, or,
+    at a tuple position, a call to a result-promoted function of the same
+    arity or a variable `let`-bound to such a call.
+    Without such a call the worker would only add a hop.
+
+The table is computed by `psplitFixpoint`.
+
 -}
 buildPsplitPromoted : Config.EcoConfig -> Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo
 buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
@@ -942,17 +996,16 @@ buildPsplitPromoted config ctorShapes ctorBySpec sretPromoted nodes =
         psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes 0 Dict.empty
 
 
-{-| U-T1.3.7: iterate selection to a fixpoint. Round N runs with round
-N-1's RESULT as the walker's pass-through allowance and the site scan's
-forwarded-param seed, so a param forwarded to an already-promoted callee
-position no longer vetoes, and a call inside a promoted worker justifies
-its callee. Both uses of `prev` are monotone (allowances only admit
-more, seeds only justify more), so the table only grows and the
-iteration terminates; the cap is a safety net, not a tuning knob. The
-fixpoint table is self-consistent — every member's admissibility and
-justification hold under the FINAL table, which is exactly what emission
-requires (it consults the same table via `ctx.psplitPromoted`), so no
-admitted pass-through ever rematerializes in a worker body.
+{-| Returns the parameter-promotion table, by repeating `psplitOnePass` from
+`prev` until a pass returns its input unchanged, or after five passes.
+
+Each pass judges against the previous pass's table, which lets a parameter be
+passed whole to a member's split position without disqualifying it, and lets a
+call made inside a member's body, with one of the member's own split
+parameters, justify its callee. A larger previous table only admits more, so
+the table grows from pass to pass. Code generation consults the same table, so
+it needs every member to qualify against the final one.
+
 -}
 psplitFixpoint : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Int -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
 psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
@@ -967,6 +1020,9 @@ psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes iter prev =
         psplitFixpoint ctorShapes ctorBySpec sretPromoted nodes (iter + 1) next
 
 
+{-| Returns the members chosen by one pass of the parameter-promotion rule, judged
+against `prev`, the table from the pass before.
+-}
 psplitOnePass : Mono.LayoutMap (List Mono.CtorShape) -> Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int Ctx.PsplitInfo
 psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
     let
@@ -1052,10 +1108,8 @@ psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
                     nodes
                 )
 
-        -- U-T1.3.7: seed the binder-shape dict with the node's own
-        -- params that round N-1 already split — inside the (future)
-        -- worker they are slot-form, so passing one to a callee's
-        -- admitted position is a free, migrating site.
+        -- The node's own parameters that `prev` splits are already in pieces
+        -- inside its worker, so passing one on counts like a literal.
         seedShapes specId node =
             case ( Dict.get specId prev, node ) of
                 ( Just info, Mono.MonoDefine (Mono.MonoClosure cinfo _ _) _ ) ->
@@ -1100,6 +1154,9 @@ psplitOnePass ctorShapes ctorBySpec sretPromoted nodes prev =
     Dict.filter (\specId _ -> Set.member specId justified) candidates
 
 
+{-| Returns the shape key of the value a parameter plan splits: `"t"` for a tuple,
+or `"c:"` followed by the constructor name, paired with the number of fields.
+-}
 psplitPlanShape : Ctx.SlotPlan -> ( String, Int )
 psplitPlanShape plan =
     case plan.spec of
@@ -1110,14 +1167,18 @@ psplitPlanShape plan =
             ( "c:" ++ clayout.name, List.length clayout.fields )
 
 
-{-| U-T1.3.7: PRE-ORDER site scan. The previous `MonoTraverse.foldExpr`
-driver was BOTTOM-UP (children before parent), so a binder registered at
-a `MonoLet` was never visible to the call sites inside its body — the
-binder-shape channel was dead from v1 (masked by inline-construct
-justifications). This walker threads `shapes` lexically: let RHS first,
-then the registered binder, then the body. Scope is otherwise ignored
-(overapproximate — a win pre-check, not a soundness gate; emission's
-`psplitArgFree` is the exact per-site check).
+{-| Walks `e` and adds to the justified set every candidate called with an
+argument already in pieces at a split position (`psplitSiteHit`), returning the
+updated shapes and justified set.
+
+`shapes` maps a variable name to the shape key of the value it is bound to.
+The walk is pre-order: a `let`'s value is scanned first, then its name is
+recorded, then its body is scanned, so the calls in the body see the binding.
+Otherwise scope is ignored, and a binding recorded in one branch stays visible
+after it. This can only over-count, which is safe because the scan only decides
+whether a worker is worth having; each call is checked exactly when it is
+generated.
+
 -}
 psplitScanExpr :
     Dict.Dict Int Mono.CtorShape
@@ -1146,10 +1207,8 @@ psplitScanExpr ctorBySpec sretPromoted candidates e (( shapes, justified ) as ac
                             Just sh
 
                         Nothing ->
-                            -- an sret-promoted call result is slot-form at
-                            -- emission (trySretLetBinding migrates through
-                            -- the same walker/allowances), so it justifies
-                            -- a matching admitted position too
+                            -- The result of a call to a result-promoted function
+                            -- is bound as separate slots, so it counts too.
                             case rhs of
                                 Mono.MonoCall _ (Mono.MonoVarGlobal _ sid _) _ _ _ ->
                                     Dict.get sid sretPromoted
@@ -1241,6 +1300,8 @@ psplitScanExpr ctorBySpec sretPromoted candidates e (( shapes, justified ) as ac
             acc
 
 
+{-| Applies `psplitScanExpr` to every inline leaf of a `case` decision tree.
+-}
 psplitScanDecider :
     Dict.Dict Int Mono.CtorShape
     -> Dict.Dict Int Ctx.SretInfo
@@ -1271,10 +1332,11 @@ psplitScanDecider ctorBySpec sretPromoted candidates decider acc =
                 (List.foldl (\( _, d ) a -> psplitScanDecider ctorBySpec sretPromoted candidates d a) acc edges)
 
 
-{-| Does one call site justify its candidate callee? ≥1 admitted position
-receives a free-slot arg: a matching inline construct, a tracked binder,
-or (U-T1.3.7) a direct sret-promoted call feeding slots straight through
-(arity-level here; `psplitArgFree` rechecks slot-type-exact at emission).
+{-| Tells whether a call passing `args` to a candidate with plans `info` justifies
+it: at least one split position receives a matching tuple literal or
+constructor call, a variable whose entry in `shapes` matches, or, for a tuple
+position, a direct call to a result-promoted function of the same arity. The
+last compares arity only.
 -}
 psplitSiteHit : Dict.Dict Int Mono.CtorShape -> Dict.Dict Int Ctx.SretInfo -> Dict.Dict String ( String, Int ) -> Ctx.PsplitInfo -> List Mono.MonoExpr -> Bool
 psplitSiteHit ctorBySpec sretPromoted shapes info args =
@@ -1310,6 +1372,9 @@ psplitSiteHit ctorBySpec sretPromoted shapes info args =
             )
 
 
+{-| Returns the shape key of `e` when it is a tuple literal, or a call to a
+constructor in `ctorBySpec` passing all its fields; otherwise `Nothing`.
+-}
 psplitConstructShape : Dict.Dict Int Mono.CtorShape -> Mono.MonoExpr -> Maybe ( String, Int )
 psplitConstructShape ctorBySpec e =
     case e of
@@ -1332,6 +1397,9 @@ psplitConstructShape ctorBySpec e =
             Nothing
 
 
+{-| Tells whether a shape key is the shape `plan` splits: the same kind, the same
+constructor name for a constructor, and the same number of fields.
+-}
 psplitShapeMatches : Ctx.SlotPlan -> ( String, Int ) -> Bool
 psplitShapeMatches plan ( tag, n ) =
     case plan.spec of
@@ -1342,8 +1410,8 @@ psplitShapeMatches plan ( tag, n ) =
             tag == ("c:" ++ clayout.name) && n == List.length clayout.fields
 
 
-{-| U-T1.3.2: SpecId → CtorShape for every `MonoCtor` node (aggregate
-promotion recognises saturated ctor calls at let bindings through this).
+{-| Returns the shape of every `MonoCtor` node (enum nodes are not included), by
+SpecId.
 -}
 buildCtorBySpec : Array (Maybe Mono.MonoNode) -> Dict.Dict Int Mono.CtorShape
 buildCtorBySpec nodes =
@@ -1362,8 +1430,8 @@ buildCtorBySpec nodes =
         )
 
 
-{-| The constant-thunk census (`ECO_CONST_THUNK_REPORT=1`, CGEN\_082) over the
-graph codegen is about to emit.
+{-| Returns `ConstThunks.report` for this graph, computed from the same inputs
+code generation gives `ConstThunks.build`.
 -}
 constThunkReport : Config.EcoConfig -> Mono.MonoGraph -> String
 constThunkReport ecoConfig (Mono.MonoGraph { nodes, main, registry }) =
@@ -1376,21 +1444,14 @@ constThunkReport ecoConfig (Mono.MonoGraph { nodes, main, registry }) =
         (buildConstCtorBySpec registry nodes)
 
 
-{-| SpecId -> ctor name for nullary specs that embed as a WELL-KNOWN constant.
+{-| Returns the specs of `Maybe`'s `Nothing`, by SpecId, each mapped to the name
+`"Nothing"`, so that a reference to one can be emitted as the constant instead
+of a call.
 
-`CtorTag.embedsAsNullCons` excludes `Nothing` / `True` / `False` from
-`buildNullConsBySpec` because they predate the null-cons mechanism and carry no
-declaration-index tag — `Nothing` IS the merged Empty (REP\_CONSTANT\_001,
-`eco.constant` kind 2). Their spec still compiles to a func.func whose whole
-body is that constant, so every reference paid an arity-0 CALL to fetch a
-compile-time constant (7,913 call sites across 436 duplicate `Maybe_Nothing`
-specs on the self-compile). This map lets `generateVarGlobal` emit the constant
-directly, exactly as it already does for null-cons ctors.
-
-Scoped to `Nothing`: its result is a custom type, so the ABI is always
-`!eco.value` and the folded constant matches the call's result type. `True` /
-`False` are Bool-typed and reach codegen through `Test.IsBool` paths with their
-own ABI handling (CGEN\_009), so they are deliberately left alone.
+`Nothing` is not a null-cons constructor (see `Compiler.Data.CtorTag`), so
+`buildNullConsBySpec` leaves it out, but its spec's whole body is a constant
+all the same. `True` and `False`, the other fixed constants, are left
+out.
 
 -}
 buildConstCtorBySpec : Mono.SpecializationRegistry -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int String
@@ -1423,9 +1484,9 @@ buildConstCtorBySpec registry nodes =
         )
 
 
-{-| Whether the spec `specId` is `elm/core`'s `Maybe.Nothing`, by its
-registry key (module and name), not by its name alone: a program's own
-`Nothing` constructor is an ordinary null-cons constructor.
+{-| Tells whether the spec `specId` is `Maybe`'s `Nothing`, judged by the module
+and name in its registry key, so that a program's own constructor named
+`Nothing` does not count.
 -}
 isMaybeNothing : Mono.SpecializationRegistry -> Int -> Bool
 isMaybeNothing registry specId =
@@ -1437,14 +1498,14 @@ isMaybeNothing registry specId =
             False
 
 
-{-| HEAP\_044/CGEN\_079: SpecId → effective tag for every spec that embeds as
-a null-cons constant — nullary `MonoCtor`s and `MonoEnum`s, excluding the
-legacy elm/core True/False/Nothing set (their bit patterns predate the
-mechanism; a program's own constructors of those names are ordinary).
-`Expr.generateVarGlobal` consults this to emit the constant directly instead
-of an arity-0 call. Tags are already effective (CtorShape.tag / MonoEnum's
-tag are minted through `CtorTag.effective`); the capacity check runs at the
-emission sites.
+{-| Returns the tag of every spec that is a null-cons constant, by SpecId: each
+nullary constructor node and each enum node that `CtorTag.embedsAsNullCons`
+accepts, judged by the module in its registry key and the constructor's name.
+A reference to one can then be emitted as the constant instead of a call.
+
+The tag is taken from the node as it is. Whether it fits in a null-cons
+constant is not checked here.
+
 -}
 buildNullConsBySpec : Mono.SpecializationRegistry -> Array (Maybe Mono.MonoNode) -> Dict.Dict Int Int
 buildNullConsBySpec registry nodes =

@@ -1,13 +1,40 @@
 module Compiler.Canonicalize.Environment.Local exposing (LResult, add)
 
-{-| Add locally-defined declarations to the canonicalization environment.
+{-| Before the bodies of a module can be canonicalized, the module's own
+top-level values, types and constructors have to be in scope, and this module
+puts them there. Adding them is also where a module's declarations are checked
+against each other: names declared twice, badly formed type parameters,
+recursive type aliases, and types too large for the runtime's heap objects.
 
-This module processes declarations within the current module to add:
+`add` extends an environment, which already holds whatever the imports bring
+in (see `Compiler.Canonicalize.Environment`), in three steps.
 
-  - Top-level value declarations
-  - Type aliases and union types
-  - Constructors for unions and record type aliases
-  - Validation for duplicate names and cyclic type aliases
+Types come first. Two types of one name are an error, whether each is a union
+or an alias. Each union is entered with its arity once its parameters are
+checked: no parameter may be named twice, and every type variable its
+constructors use must be a parameter, though a parameter may go unused. Aliases
+are canonicalized and entered in dependency order, so an alias can refer to one
+declared after it; the order comes from the strongly connected components of
+the graph in which an alias points at each unqualified type name in its body.
+A component holding more than one alias, or an alias that names itself, is
+reported as `RecursiveAlias`. An alias's parameters must be exactly the type
+variables its body uses, and an alias of a record type may have at most
+`HeapLimits.maxRecordFields` fields.
+
+Values come second: the top-level values, plus the ports of a port module or
+the `command` and `subscription` names of an effect module.
+
+Constructors come last: those of every union, and one for each alias of a
+closed record type, which is a function from the record's fields to the record.
+A union constructor may have at most `HeapLimits.maxCtorFields` arguments.
+Each union also gets its _constructor options_ (`Can.CtorOpts`) here: `Unbox`
+for exactly one constructor with exactly one argument, `Enum` when every
+constructor has no arguments, and `Normal` otherwise.
+
+Values, types and constructors are three separate namespaces, each checked
+for duplicates on its own, so a type and a constructor may share a name. A
+local value or constructor replaces an imported one of the same name rather
+than making it ambiguous.
 
 @docs LResult, add
 
@@ -34,33 +61,36 @@ import Utils.Main as Utils
 -- ====== RESULT ======
 
 
-{-| Result type for local environment operations that can fail with canonicalization errors.
+{-| The result of a step that can fail with a canonicalization error.
+
+This is a name for `ReportingResult.RResult` with the error type fixed, not a
+new type.
+
 -}
 type alias LResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
-{-| Canonicalized union type definitions.
+{-| The module's canonical union types, keyed by type name.
 -}
 type alias Unions =
     Dict Name Can.Union
 
 
-{-| Canonicalized type alias definitions.
+{-| The module's canonical type aliases, keyed by alias name.
 -}
 type alias Aliases =
     Dict Name Can.Alias
 
 
-{-| Add all local declarations from a module to the environment.
+{-| Returns `env` extended with the types, values and constructors that
+`module_` declares, together with the module's canonical unions and aliases, or
+the errors of the first step that fails.
 
-Processes the module's declarations in order:
-
-1.  Types (unions and aliases) - validates names and detects cycles
-2.  Values (top-level declarations and ports)
-3.  Constructors (from unions and record aliases)
-
-Returns the updated environment along with canonicalized unions and aliases.
+Types are added first, then values, then constructors, and a local value or
+constructor replaces an imported one of the same name. The checks made on the
+way are the ones the module documentation lists: duplicate types, values and
+constructors, type parameters, recursive aliases, and the field limits.
 
 -}
 add : Src.Module -> Env.Env -> LResult i w ( Env.Env, Unions, Aliases )
@@ -74,6 +104,10 @@ add module_ env =
 -- ====== ADD VARS ======
 
 
+{-| Returns `env` with the module's top-level values, ports and effect-manager
+names added as top-level variables, replacing any imported variable of the same
+name, or fails with `DuplicateDecl`.
+-}
 addVars : Src.Module -> Env.Env -> LResult i w Env.Env
 addVars module_ env =
     collectVars module_
@@ -84,11 +118,15 @@ addVars module_ env =
                     vs2 =
                         Dict.union topLevelVars env.vars
                 in
-                -- Use union to overwrite foreign stuff.
+                -- The local map is the first argument, so a local name replaces an imported one.
                 { env | vars = vs2 }
             )
 
 
+{-| Returns the module's top-level values together with its ports or
+effect-manager names, each mapped to `TopLevel` at its region, or fails with
+`DuplicateDecl` for a name that occurs twice among them.
+-}
 collectVars : Src.Module -> LResult i w (Dict Name.Name Env.Var)
 collectVars (Src.Module srcData) =
     let
@@ -103,6 +141,10 @@ collectVars (Src.Module srcData) =
     List.foldl addDecl (toEffectDups srcData.effects) srcData.values |> Dups.detect Error.DuplicateDecl
 
 
+{-| Returns a tracker of the names a module's effects declare: each port's
+name, or for an effect module `command` and/or `subscription` at the region of
+the manager's corresponding type, or nothing for a module without effects.
+-}
 toEffectDups : Src.Effects -> Dups.Tracker Env.Var
 toEffectDups effects =
     case effects of
@@ -135,6 +177,13 @@ toEffectDups effects =
 -- ====== ADD TYPES ======
 
 
+{-| Returns `env` with the module's unions and aliases added to its types, or
+fails with `DuplicateType` when two of them share a name, or with the errors of
+the first union or alias that fails.
+
+Unions are added before any alias, so an alias body can name any local union.
+
+-}
 addTypes : Src.Module -> Env.Env -> LResult i w Env.Env
 addTypes (Src.Module srcData) env =
     let
@@ -162,6 +211,9 @@ addTypes (Src.Module srcData) env =
             )
 
 
+{-| Returns `types` with the union added under its name, with its arity, once
+its parameters pass `checkUnionFreeVars`.
+-}
 addUnion : ModuleName.Canonical -> Env.Exposed Env.Type -> A.Located Src.Union -> LResult i w (Env.Exposed Env.Type)
 addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _)) as union) =
     ReportingResult.map
@@ -180,6 +232,10 @@ addUnion home types ((A.At _ (Src.Union ( _, A.At _ name ) _ _)) as union) =
 -- ====== ADD TYPE ALIASES ======
 
 
+{-| Returns `env` with every alias in `aliases` added, taken in the order of
+the strongly connected components of their dependency graph, so that each alias
+is canonicalized after the aliases it names.
+-}
 addAliases : List (A.Located Src.Alias) -> Env.Env -> LResult i w Env.Env
 addAliases aliases env =
     let
@@ -194,6 +250,16 @@ addAliases aliases env =
     Utils.foldM addAlias env sccs
 
 
+{-| Returns `env` with one strongly connected component of the alias graph
+added.
+
+A single alias that does not name itself is checked for its parameters and
+record size, canonicalized against `env`, and entered. A cyclic component fails
+with `RecursiveAlias`, naming one of its aliases and the others in it, once
+that alias's parameters have been checked. An empty cyclic component adds
+nothing.
+
+-}
 addAlias : Env.Env -> Graph.SCC (A.Located Src.Alias) -> LResult i w Env.Env
 addAlias ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env) scc =
     case scc of
@@ -253,9 +319,9 @@ addAlias ({ home, vars, types, ctors, binops, q_vars, q_types, q_ctors } as env)
 
 
 {-| Fails with `TooLarge` (`TooManyRecordFields (Just name)`) at the alias name
-when the alias names a record type with more than `HeapLimits.maxRecordFields`
-fields (HEAP\_019). It runs before the body is canonicalized, which would report
-the same record anonymously.
+when the alias's body is a record type, possibly in parentheses, with more than
+`HeapLimits.maxRecordFields` fields, and succeeds otherwise. It runs before the
+body is canonicalized, so the error names the alias.
 -}
 checkAliasRecordSize : A.Region -> Name -> Src.Type -> LResult i w ()
 checkAliasRecordSize nameRegion name tipe =
@@ -271,8 +337,8 @@ checkAliasRecordSize nameRegion name tipe =
             ReportingResult.ok ()
 
 
-{-| The number of fields of a source record type, looking through parentheses,
-or `Nothing` if the type is not a record.
+{-| Returns the number of fields of a source record type, looking through
+parentheses, or `Nothing` if the type is not a record.
 -}
 recordFieldCount : Src.Type -> Maybe Int
 recordFieldCount (A.At _ tipe) =
@@ -291,6 +357,9 @@ recordFieldCount (A.At _ tipe) =
 -- ====== DETECT TYPE ALIAS CYCLES ======
 
 
+{-| Returns an alias as a node of the alias dependency graph: the alias, its
+name as the key, and the type names its body uses as edges.
+-}
 toNode : A.Located Src.Alias -> ( A.Located Src.Alias, Name.Name, List Name.Name )
 toNode ((A.At _ (Src.Alias aliasData)) as alias) =
     let
@@ -303,6 +372,13 @@ toNode ((A.At _ (Src.Alias aliasData)) as alias) =
     ( alias, name, getEdges tipe [] )
 
 
+{-| Returns `edges` with every unqualified type name used in a type added.
+
+Qualified names are left out, because a module cannot name its own types
+qualified. Names that are not local aliases are kept, and the graph ignores
+them.
+
+-}
 getEdges : Src.Type -> List Name.Name -> List Name.Name
 getEdges (A.At _ tipe) edges =
     case tipe of
@@ -335,6 +411,11 @@ getEdges (A.At _ tipe) edges =
 -- ====== CHECK FREE VARIABLES ======
 
 
+{-| Returns the number of parameters of a union, or fails with
+`DuplicateUnionArg` when a parameter is named twice, or with
+`TypeVarsUnboundInUnion` when a constructor uses a type variable that is not a
+parameter. An unused parameter is allowed.
+-}
 checkUnionFreeVars : A.Located Src.Union -> LResult i w Int
 checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) =
     let
@@ -363,6 +444,11 @@ checkUnionFreeVars (A.At unionRegion (Src.Union ( _, A.At _ name ) args ctors)) 
             )
 
 
+{-| Returns the parameter names of an alias, in order, or fails with
+`DuplicateAliasArg` when one is named twice, or with `TypeVarsMessedUpInAlias`
+when the parameters are not exactly the type variables the body uses, which
+lists the unused parameters and the unbound variables.
+-}
 checkAliasFreeVars : A.Located Src.Alias -> LResult i w (List Name.Name)
 checkAliasFreeVars (A.At aliasRegion (Src.Alias aliasData)) =
     let
@@ -384,11 +470,7 @@ checkAliasFreeVars (A.At aliasRegion (Src.Alias aliasData)) =
                     freeVars =
                         addFreeVars tipe Dict.empty
 
-                    -- "The bound vars and the free vars are the same set."
-                    -- Sizing `Dict.intersect boundVars freeVars` answered that
-                    -- by building a third dict and then walking three; with
-                    -- unique keys, equal cardinality plus one-way containment
-                    -- says the same thing and allocates nothing.
+                    -- Set equality as equal sizes plus one-way containment, which builds no new dict.
                     sameVars : Bool
                     sameVars =
                         (Dict.size boundVars == Dict.size freeVars)
@@ -407,6 +489,9 @@ checkAliasFreeVars (A.At aliasRegion (Src.Alias aliasData)) =
             )
 
 
+{-| Returns `freeVars` with every type variable in a type added, including a
+record's extension variable, each mapped to the region of an occurrence.
+-}
 addFreeVars : Src.Type -> Dict Name.Name A.Region -> Dict Name.Name A.Region
 addFreeVars (A.At region tipe) freeVars =
     case tipe of
@@ -449,6 +534,12 @@ addFreeVars (A.At region tipe) freeVars =
 -- ====== ADD CTORS ======
 
 
+{-| Returns `env` with the module's union and record-alias constructors added,
+replacing imported constructors of the same name, together with the module's
+canonical unions and aliases, or fails: first with the errors from
+canonicalizing the unions, then with those from the aliases, and, once both
+succeed, with `DuplicateCtor`.
+-}
 addCtors : Src.Module -> Env.Env -> LResult i w ( Env.Env, Unions, Aliases )
 addCtors (Src.Module srcData) env =
     ReportingResult.traverse (canonicalizeUnion env) srcData.unions
@@ -479,6 +570,8 @@ addCtors (Src.Module srcData) env =
             )
 
 
+{-| A tracker of constructor names, each with the environment entry it adds.
+-}
 type alias CtorDups =
     Dups.Tracker (Env.Info Env.Ctor)
 
@@ -487,6 +580,9 @@ type alias CtorDups =
 -- ====== CANONICALIZE ALIAS ======
 
 
+{-| Returns an alias's canonical form under its name, and a tracker holding its
+record constructor when the body is a closed record, or nothing otherwise.
+-}
 canonicalizeAlias : Env.Env -> A.Located Src.Alias -> LResult i w ( ( Name.Name, Can.Alias ), CtorDups )
 canonicalizeAlias ({ home } as env) (A.At _ (Src.Alias aliasData)) =
     let
@@ -515,6 +611,10 @@ canonicalizeAlias ({ home } as env) (A.At _ (Src.Alias aliasData)) =
             )
 
 
+{-| Returns the constructor of a record alias. Its type is a curried function
+taking the record's fields in `Can.fieldsToList` order and returning the alias
+applied to its own parameters, with the record as its body.
+-}
 toRecordCtor : ModuleName.Canonical -> Name.Name -> List Name.Name -> Dict Name.Name (Can.FieldType Name) -> Env.Ctor
 toRecordCtor home name vars fields =
     let
@@ -536,6 +636,9 @@ toRecordCtor home name vars fields =
 -- ====== CANONICALIZE UNION ======
 
 
+{-| Returns a union's canonical form under its name, and a tracker of its
+constructors, which are numbered from zero in declaration order.
+-}
 canonicalizeUnion : Env.Env -> A.Located Src.Union -> LResult i w ( ( Name.Name, Can.Union ), CtorDups )
 canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars ctors)) =
     ReportingResult.indexedTraverse (canonicalizeCtor env) (List.map (Tuple.mapSecond (List.map Src.c1Value)) (List.map Src.c2EolValue ctors))
@@ -558,10 +661,14 @@ canonicalizeUnion ({ home } as env) (A.At _ (Src.Union ( _, A.At _ name ) avars 
             )
 
 
+{-| Returns a constructor with its argument types canonicalized and `index` as
+its position in the union, or fails with `TooLarge` at the constructor when it
+has more than `HeapLimits.maxCtorFields` arguments.
+-}
 canonicalizeCtor : Env.Env -> Index.ZeroBased -> ( A.Located Name.Name, List Src.Type ) -> LResult i w (A.Located Can.Ctor)
 canonicalizeCtor env index ( A.At region ctor, tipes ) =
     if List.length tipes > HeapLimits.maxCtorFields then
-        -- HEAP_019: a Custom object holds at most maxCtorFields fields.
+        -- A custom-type value holds at most maxCtorFields fields on the heap.
         ReportingResult.throw (Error.TooLarge region (Error.TooManyCtorFields ctor) (List.length tipes) HeapLimits.maxCtorFields)
 
     else
@@ -572,6 +679,10 @@ canonicalizeCtor env index ( A.At region ctor, tipes ) =
                 )
 
 
+{-| Returns a union's constructor options: `Unbox` for exactly one constructor
+with exactly one argument, `Enum` when no constructor has an argument, and
+`Normal` otherwise.
+-}
 toOpts : List (Src.C2Eol ( A.Located Name.Name, List (Src.C1 Src.Type) )) -> Can.CtorOpts
 toOpts ctors =
     case ctors of
@@ -586,6 +697,9 @@ toOpts ctors =
                 Can.Normal
 
 
+{-| Returns a tracker holding one union constructor under its name, with the
+environment entry that refers to it.
+-}
 toCtor : ModuleName.Canonical -> Name.Name -> Can.Union -> A.Located Can.Ctor -> CtorDups
 toCtor home typeName union (A.At region (Can.Ctor c)) =
     Env.Ctor home typeName union c.index c.args |> Env.Specific home |> Dups.one c.name region

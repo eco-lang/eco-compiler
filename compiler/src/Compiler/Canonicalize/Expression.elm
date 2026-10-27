@@ -5,12 +5,60 @@ module Compiler.Canonicalize.Expression exposing
     , tooManyParams
     )
 
-{-| Canonicalize Elm expressions from source AST to canonical AST.
+{-| Turns the parsed form of an expression into its canonical form, in which
+every name is resolved to what it refers to, every operator chain is grouped by
+precedence, every `let` is split into the groups of bindings that depend on one
+another, and every node carries an id.
 
-This module handles the transformation of all expression forms including literals,
-variables, function applications, let bindings, case expressions, records, and more.
-It tracks free variable usage to detect unused bindings and recursive definitions,
-performs binary operator precedence resolution, and validates pattern bindings.
+The walk also records each expression's _free locals_: the local and top-level
+value names it mentions (not constructors or operators), each with how often it
+is used. References to imported, kernel and `Debug` values are not recorded. A
+use is either _direct_, evaluated when the enclosing definition is evaluated,
+or _delayed_, inside a lambda or inside the body of a `let` definition that has
+parameters, and so evaluated only when that function is called. Free locals
+are what an unused-variable warning is decided from, what the dependencies
+between `let` bindings are read from, and, through the split into direct and
+delayed uses, what tells a recursive value that can never be computed from a
+recursive function. They travel in the info slot of the `EResult`. An
+expression that binds names (a lambda, a case branch, a `let`, a definition's
+parameters) runs its body from an empty map, warns about the bound names its
+body never uses, removes them, and adds what is left to the enclosing map.
+
+Name resolution follows `env`. A reference to a value whose home is `Debug`
+becomes `VarDebug`, carrying the home of the module being canonicalized. A
+qualified reference whose qualifier is no import but the name of a kernel
+module (`Elm.Kernel.X` or `Eco.Kernel.X`) becomes `VarKernel` when the module
+being canonicalized belongs to a kernel package (`Pkg.isKernel`), without any
+check that the name exists; anywhere else it is `NotFoundVar`.
+
+The parser leaves an operator chain such as `a + b * c` flat. Each operator is
+looked up for its precedence and associativity and the chain is regrouped:
+higher precedence binds tighter, and two operators of equal precedence group to
+the left when both are left-associative and to the right when both are
+right-associative. Any other pair of equal precedence is an `Error.Binop`.
+
+The names one `let` binds must be distinct. Each binding becomes a node of a
+dependency graph, keyed by its name and depending on its free locals. A
+destructuring such as `( a, b ) = e` binds several names, so its node is keyed
+by `Name.fromManyNames` of them, and each name it binds gets a stand-in node, an
+_edge_, that depends on that key. The strongly connected components of the
+graph, dependencies first, become nested `Let`, `LetDestruct` and `LetRec`
+nodes with the first outermost. A recursive group is accepted only when every
+member is a definition with parameters; a member without parameters, or a
+destructuring, makes it a `RecursiveLet` error.
+
+Each node takes its id from the `IdState` threaded through the walk, and not
+always in pre-order. Most nodes take theirs before their children. An operator
+node takes its id when its chain is regrouped, after every operand, and `Let`,
+`LetDestruct` and `LetRec` take theirs after the definitions and the body,
+innermost first. Parentheses produce no node.
+
+Some expressions exceed what Eco's heap can represent (see
+`Compiler.Data.HeapLimits`) and are `TooLarge` errors: a record with more than
+`maxRecordFields` fields, a function or lambda with more than `maxStageArity`
+parameters, and a closure whose parameters and captured locals together exceed
+`maxStageArity`. A tuple of more than three elements is a
+`TupleLargerThanThree` error.
 
 
 # Results and Tracking
@@ -61,31 +109,30 @@ import Utils.Main as Utils
 -- ====== RESULTS ======
 
 
-{-| Result type for expression canonicalization that tracks free variable usage.
+{-| A reporting result whose errors are canonicalization errors.
 
-The info parameter `i` is typically `FreeLocals` during expression canonicalization,
-allowing the result to accumulate information about which local variables are referenced.
+While expressions are canonicalized, the info slot `i` holds the `FreeLocals`
+gathered so far. This is a name for `ReportingResult.RResult`, not a new type.
 
 -}
 type alias EResult i w a =
     ReportingResult.RResult i w Error.Error a
 
 
-{-| Dictionary tracking which local variables are used and how they are used.
-
-Maps variable names to their usage counts (direct vs delayed). Used to detect
-unused bindings and recursive definitions during canonicalization.
-
+{-| The free locals of an expression: each local or top-level value name it
+mentions, with its `Uses`; constructors and operators are not recorded. A name
+that is not used is absent rather than mapped to zero uses.
 -}
 type alias FreeLocals =
     Dict Name.Name Uses
 
 
-{-| Tracks how many times a variable is used, distinguishing direct from delayed usage.
+{-| How many times a name is used, counted separately as direct and delayed
+uses in the sense of the module docstring.
 
-Direct usage occurs when a variable is referenced in an immediately-evaluated context.
-Delayed usage occurs when a variable is captured in a lambda or other delayed context.
-This distinction helps detect problematic recursive definitions.
+When an expression is wrapped in a lambda, or becomes the body of a `let`
+definition with parameters, all its uses become delayed, so a use counts as
+direct only when no function stands between it and the enclosing definition.
 
 -}
 type Uses
@@ -95,14 +142,15 @@ type Uses
         }
 
 
-{-| State for tracking expression IDs during canonicalization.
-Re-exported from Compiler.Canonicalize.Ids for convenience.
+{-| The counter that hands out node ids, `Compiler.Canonicalize.Ids.IdState`
+under this module's name.
 -}
 type alias IdState =
     Ids.IdState
 
 
-{-| Create a canonical expression with an ID.
+{-| Returns `node` at `region` with the next id from `state`, and the state
+after it.
 -}
 makeExpr : A.Region -> IdState -> Can.Expr_ -> ( Can.Expr, IdState )
 makeExpr region state node =
@@ -117,32 +165,25 @@ makeExpr region state node =
 -- ====== CANONICALIZE ======
 
 
-{-| Transform a source expression with ID state threading.
-
-Like canonicalize but also threads an IdState through to assign unique IDs
-to each expression. Returns both the canonical expression and the updated state.
-
+{-| Canonicalizes an expression in `env`, giving its nodes ids from `state`
+onwards, and returns it with the state after the last id it used. Its free
+locals are added to the result's info.
 -}
 canonicalizeWithIds : Env.Env -> IdState -> Src.Expr -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
 canonicalizeWithIds env state (A.At region expression) =
     canonicalizeNode env state region expression
 
 
-{-| Helper to canonicalize the inner expression node and wrap with ID.
-
-This converts the old-style canonicalization (returning Expr\_) to the new style
-(returning Expr with ID). For now, uses the passed state for ID assignment.
-
+{-| Canonicalizes one source node found at `region`, as `canonicalizeWithIds`
+does.
 -}
 canonicalizeNode : Env.Env -> IdState -> A.Region -> Src.Expr_ -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
 canonicalizeNode env state0 region expression =
     let
-        -- Helper to wrap an Expr_ result with an ID
         wrapNode : Can.Expr_ -> ( Can.Expr, IdState )
         wrapNode node =
             makeExpr region state0 node
 
-        -- Helper to wrap an Expr_ RResult with ID
         wrapResult : EResult FreeLocals (List W.Warning) Can.Expr_ -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
         wrapResult =
             ReportingResult.map wrapNode
@@ -213,7 +254,6 @@ canonicalizeNode env state0 region expression =
             canonicalizeBinopsWithIds region env state0 (List.map (Tuple.mapSecond Src.c2Value) ops) final
 
         Src.Lambda ( _, srcArgs ) ( _, body ) ->
-            -- Allocate the Lambda's ID first, then use remaining state for patterns and body
             let
                 ( lambdaId, stateAfterLambda ) =
                     Ids.allocId state0
@@ -287,7 +327,6 @@ canonicalizeNode env state0 region expression =
             canonicalizeLetWithIds region env state0 (List.map Src.c2Value defs) expr
 
         Src.Case expr branches ->
-            -- Allocate the Case's ID first, then thread state through scrutinee and branches
             let
                 ( caseId, stateAfterCase ) =
                     Ids.allocId state0
@@ -350,7 +389,6 @@ canonicalizeNode env state0 region expression =
                     Ids.allocId state0
             in
             if List.length fields > HeapLimits.maxRecordFields then
-                -- HEAP_019: a Record object holds at most maxRecordFields fields.
                 ReportingResult.throw (Error.TooLarge region (Error.TooManyRecordFields Nothing) (List.length fields) HeapLimits.maxRecordFields)
 
             else
@@ -401,7 +439,8 @@ canonicalizeNode env state0 region expression =
             canonicalizeWithIds env state0 expr
 
 
-{-| Canonicalize extra tuple elements (3rd, 4th, etc.) while threading IdState.
+{-| Canonicalizes the elements of a tuple after its second: none, or a third
+alone. Any more is a `TupleLargerThanThree` error at `region`, the tuple's.
 -}
 canonicalizeTupleExtrasWithIds : A.Region -> Env.Env -> IdState -> List Src.Expr -> EResult FreeLocals (List W.Warning) ( List Can.Expr, IdState )
 canonicalizeTupleExtrasWithIds region env state extras =
@@ -417,8 +456,9 @@ canonicalizeTupleExtrasWithIds region env state extras =
             ReportingResult.throw (Error.TupleLargerThanThree region)
 
 
-{-| Traverse a list of expressions while threading IdState through each.
-Uses ReportingResult.loop for stack safety on long expression lists.
+{-| Canonicalizes each expression in turn, in order, threading the id state
+from one to the next. It runs as a `ReportingResult.loop`, so a long list does
+not deepen the stack.
 -}
 traverseExprsWithIds : Env.Env -> IdState -> List Src.Expr -> EResult FreeLocals (List W.Warning) ( List Can.Expr, IdState )
 traverseExprsWithIds env state0 exprs =
@@ -438,8 +478,8 @@ traverseExprsWithIds env state0 exprs =
         ( exprs, [], state0 )
 
 
-{-| Traverse a dict of expressions while threading IdState through each.
-The dict is converted to a list, traversed, then converted back.
+{-| Canonicalizes the field values of a record, in the dict's key order,
+threading the id state from one to the next.
 -}
 traverseDictWithIds :
     Env.Env
@@ -459,6 +499,9 @@ traverseDictWithIds env state dict =
             )
 
 
+{-| Canonicalizes the value of each entry in turn and returns the entries,
+after those already in `acc0`, in order. `acc0` is held in reverse order.
+-}
 traverseDictEntriesWithIds :
     Env.Env
     -> IdState
@@ -482,7 +525,9 @@ traverseDictEntriesWithIds env state0 entries acc0 =
         ( entries, acc0, state0 )
 
 
-{-| Traverse update fields while threading IdState through each, producing FieldUpdate values.
+{-| Canonicalizes the new field values of a record update, in the dict's key
+order, threading the id state from one to the next. Each becomes a
+`FieldUpdate` carrying the region of the field's name.
 -}
 traverseUpdateFieldsWithIds :
     Env.Env
@@ -502,6 +547,9 @@ traverseUpdateFieldsWithIds env state dict =
             )
 
 
+{-| Does what `traverseDictEntriesWithIds` does for the fields of a record
+update, wrapping each value in a `FieldUpdate` at the region of its field name.
+-}
 traverseUpdateEntriesWithIds :
     Env.Env
     -> IdState
@@ -529,7 +577,7 @@ traverseUpdateEntriesWithIds env state0 entries acc0 =
 -- ====== CANONICALIZE IF BRANCH ======
 
 
-{-| Canonicalize an if branch (condition and body) while threading IdState.
+{-| Canonicalizes one condition and the branch it guards, condition first.
 -}
 canonicalizeIfBranchWithIds : Env.Env -> IdState -> ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( ( Can.Expr, Can.Expr ), IdState )
 canonicalizeIfBranchWithIds env state ( condition, branch ) =
@@ -544,7 +592,8 @@ canonicalizeIfBranchWithIds env state ( condition, branch ) =
             )
 
 
-{-| Traverse if branches while threading IdState through each.
+{-| Canonicalizes each condition and branch of an `if` in order, threading the
+id state from one to the next. The final `else` branch is not among them.
 -}
 traverseIfBranchesWithIds : Env.Env -> IdState -> List ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( List ( Can.Expr, Can.Expr ), IdState )
 traverseIfBranchesWithIds env state0 branches =
@@ -568,7 +617,13 @@ traverseIfBranchesWithIds env state0 branches =
 -- ====== CANONICALIZE CASE BRANCH ======
 
 
-{-| Canonicalize a case branch while threading IdState through pattern and expression.
+{-| Canonicalizes one case branch: its pattern, then its body with the
+pattern's names in scope.
+
+A name bound twice in the pattern is a `DuplicatePattern` error, and a bound
+name the body never uses gets an unused-variable warning. The body's other free
+locals are added to the enclosing map with the kind of use they had there.
+
 -}
 canonicalizeCaseBranchWithIds : Env.Env -> IdState -> ( Src.Pattern, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( Can.CaseBranch, IdState )
 canonicalizeCaseBranchWithIds env state ( pattern, expr ) =
@@ -590,7 +645,8 @@ canonicalizeCaseBranchWithIds env state ( pattern, expr ) =
         )
 
 
-{-| Traverse case branches while threading IdState through each branch.
+{-| Canonicalizes each case branch in order, threading the id state from one to
+the next.
 -}
 traverseCaseBranchesWithIds :
     Env.Env
@@ -618,8 +674,12 @@ traverseCaseBranchesWithIds env state0 branches =
 -- ====== CANONICALIZE BINOPS ======
 
 
-{-| Canonicalize binary operators with proper precedence and associativity,
-threading IdState through all expressions.
+{-| Canonicalizes the operator chain `ops` followed by `final` and groups it
+by precedence and associativity, as the module docstring describes. Each operand
+is canonicalized whole, left to right, before any operator node is made, so an
+operand that is itself a parenthesised chain stays one unit. An operator that is
+not in scope fails at its own region; two operators that cannot be grouped fail
+with `Error.Binop` at `overallRegion`, the region of the whole chain.
 -}
 canonicalizeBinopsWithIds :
     A.Region
@@ -667,18 +727,38 @@ canonicalizeBinopsWithIds overallRegion env state ops final =
             )
 
 
+{-| The state of regrouping an operator chain.
+
+`DoneWithIds` is the finished expression and the id state after it.
+
+`MoreWithIds` is a chain still to be regrouped: its id state, the operands
+paired with the operator that follows each, and the last operand. The first
+operand may already be an operator node built from part of the original chain.
+
+`ErrorWithIds` holds two operators of equal precedence that cannot be grouped,
+because their associativities differ or neither associates.
+
+-}
 type StepWithIds
     = DoneWithIds Can.Expr IdState
     | MoreWithIds IdState (List ( Can.Expr, Env.Binop )) Can.Expr
     | ErrorWithIds Env.Binop Env.Binop
 
 
-{-| A function that, given state and a right operand, produces a binop expression and updated state.
+{-| An operator node waiting for its right operand: given the id state and that
+operand, it returns the node and the state after its id.
+
+This is a name for a function type, not a new type.
+
 -}
 type alias MakeBinopFn =
     IdState -> Can.Expr -> ( Can.Expr, IdState )
 
 
+{-| Regroups the chain in `step` until it is finished, and returns the
+expression, or the `Error.Binop` for the first pair that cannot be grouped, at
+`overallRegion`.
+-}
 runBinopStepperWithIds : A.Region -> StepWithIds -> EResult FreeLocals w ( Can.Expr, IdState )
 runBinopStepperWithIds overallRegion step =
     case step of
@@ -696,6 +776,16 @@ runBinopStepperWithIds overallRegion step =
             ReportingResult.throw (Error.Binop overallRegion binopData1.op binopData2.op)
 
 
+{-| Regroups a chain that starts with `makeBinop`, the operator `rootOp` already
+applied to its left operand, followed by `middle` and `final`.
+
+An operator of higher precedence than `rootOp` is grouped into its right
+operand first. One of equal precedence groups with it to the left or to the
+right by their associativity. The first operator of lower precedence ends it:
+the result is `MoreWithIds`, with the node built so far as the first operand of
+the rest of the chain. Reaching the end of the chain gives `DoneWithIds`.
+
+-}
 toBinopStepWithIds :
     IdState
     -> MakeBinopFn
@@ -728,7 +818,6 @@ toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) 
                     opBinopData.precedence
             in
             if precedence < rootPrecedence then
-                -- Lower precedence: apply makeBinop first, then return More for caller to handle
                 let
                     ( combined, newState ) =
                         makeBinop currentState expr
@@ -736,7 +825,6 @@ toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) 
                 MoreWithIds newState (( combined, op ) :: rest) final
 
             else if precedence > rootPrecedence then
-                -- Higher precedence: process inner operators first, then apply makeBinop
                 case toBinopStepWithIds currentState (toBinopWithIds op expr) op rest final of
                     DoneWithIds newLast innerState ->
                         let
@@ -752,10 +840,8 @@ toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) 
                         ErrorWithIds a b
 
             else
-                -- Same precedence: check associativity
                 case ( rootAssociativity, associativity ) of
                     ( Binop.Left, Binop.Left ) ->
-                        -- Left associative: apply makeBinop first, then continue with result
                         let
                             ( combined, newState ) =
                                 makeBinop currentState expr
@@ -763,23 +849,16 @@ toBinopStepWithIds currentState makeBinop ((Env.Binop rootBinopData) as rootOp) 
                         toBinopStepWithIds newState (toBinopWithIds op combined) op rest final
 
                     ( Binop.Right, Binop.Right ) ->
-                        -- Right associative: compose makeBinop with toBinopWithIds
-                        -- First apply inner (toBinopWithIds op expr), then outer (makeBinop)
-                        -- Use composeBinopStep helper to ensure JavaScript captures makeBinop's
-                        -- VALUE, not the variable reference. Without this, JavaScript's function-scoped
-                        -- `var` causes all closures to share the same variable, leading to infinite
-                        -- recursion when the loop variable is reassigned.
+                        -- Not an inline lambda: see composeBinopStep.
                         toBinopStepWithIds currentState (composeBinopStep makeBinop op expr) op rest final
 
                     _ ->
                         ErrorWithIds rootOp op
 
 
-{-| Create a MakeBinopFn that builds a binary operator expression.
-
-Given an operator and left operand, returns a function that takes state and
-right operand to produce the complete binop expression.
-
+{-| Returns the operator node for `left`, the given operator and a right operand
+still to come. The node spans from the start of `left` to the end of the right
+operand, and takes its id only when the right operand is supplied.
 -}
 toBinopWithIds : Env.Binop -> Can.Expr -> MakeBinopFn
 toBinopWithIds (Env.Binop binopData) left =
@@ -796,16 +875,16 @@ toBinopWithIds (Env.Binop binopData) left =
         )
 
 
-{-| Compose a binop step by wrapping an outer MakeBinopFn with an inner toBinopWithIds.
+{-| Returns an operator node waiting for its right operand that groups to the
+right: it first makes `expr op right`, then gives that to `outerMakeBinop` as
+its right operand.
 
-This helper function is crucial for correct JavaScript code generation. When the Elm compiler
-generates a tail-recursive loop with closures, JavaScript's function-scoped `var` causes all
-closures in the loop to share the same variable binding. By extracting the composition into
-a separate function, we force JavaScript to capture the CURRENT VALUE of outerMakeBinop as
-a function parameter, rather than capturing a shared variable that gets overwritten.
-
-Without this pattern, the closures would all reference the same `outerMakeBinop` variable,
-which after the loop points to the last closure, causing infinite self-recursion.
+It is a separate function, not a lambda written inside `toBinopStepWithIds`,
+because the JavaScript generated for that tail-recursive function turns it into
+a loop that reassigns its parameters. A lambda written in the loop captures the
+variable rather than its current value, so every such lambda would call the
+last one and recurse forever on a right-associative chain. As a parameter here,
+`outerMakeBinop` is fixed when the closure is made.
 
 -}
 composeBinopStep : MakeBinopFn -> Env.Binop -> Can.Expr -> MakeBinopFn
@@ -818,7 +897,16 @@ composeBinopStep outerMakeBinop op expr =
         outerMakeBinop state1 inner
 
 
-{-| Canonicalize a let expression, detecting cycles and threading IdState.
+{-| Canonicalizes a `let` found at `letRegion` and returns the nested `Let`,
+`LetDestruct` and `LetRec` nodes it becomes, each at `letRegion`.
+
+The definitions are canonicalized first, in order, then the body, all with
+every name the `let` binds in scope. A name bound twice is a `DuplicatePattern`
+error, and a bound name nothing uses gets an unused-variable warning. Free
+locals of the definitions and the body, apart from the bound names, are added
+to the enclosing map with the kind of use they had there; every use inside a
+definition with parameters is delayed.
+
 -}
 canonicalizeLetWithIds : A.Region -> Env.Env -> IdState -> List (A.Located Src.Def) -> Src.Expr -> EResult FreeLocals (List W.Warning) ( Can.Expr, IdState )
 canonicalizeLetWithIds letRegion env state defs body =
@@ -846,7 +934,8 @@ canonicalizeLetWithIds letRegion env state defs body =
         )
 
 
-{-| Fold over def nodes while threading IdState through each.
+{-| Canonicalizes each `let` definition in order, threading the id state, and
+adds its graph nodes to `acc0`.
 -}
 foldDefNodesWithIds :
     Env.Env
@@ -871,6 +960,10 @@ foldDefNodesWithIds env state0 acc0 defs =
         ( defs, acc0, state0 )
 
 
+{-| Adds the names a `let` definition binds, each with its region, to the
+tracker of duplicates: the defined name, or every name a destructuring pattern
+binds.
+-}
 addBindings : A.Located Src.Def -> Dups.Tracker A.Region -> Dups.Tracker A.Region
 addBindings (A.At _ def) andThenings =
     case def of
@@ -881,6 +974,9 @@ addBindings (A.At _ def) andThenings =
             addBindingsHelp andThenings pattern
 
 
+{-| Adds every name `pattern` binds, each with its region, to the tracker of
+duplicates.
+-}
 addBindingsHelp : Dups.Tracker A.Region -> Src.Pattern -> Dups.Tracker A.Region
 addBindingsHelp andThenings (A.At region pattern) =
     case pattern of
@@ -932,17 +1028,40 @@ addBindingsHelp andThenings (A.At region pattern) =
             addBindingsHelp andThenings parensPattern
 
 
+{-| A node of the `let` dependency graph: the binding, the key that names it,
+and the keys of the names it depends on, which include names that are not
+bindings of this `let`.
+-}
 type alias Node =
     ( Binding, Name.Name, List Name.Name )
 
 
+{-| What a node of the `let` dependency graph stands for.
+
+`Define` is a definition, with or without parameters.
+
+`Destruct` is a destructuring: the pattern and the expression it matches.
+
+`Edge` is the stand-in node for one name a destructuring binds, carrying that
+name and its region. It produces no code; it lets a reference to the name reach
+the destructuring that binds it.
+
+-}
 type Binding
     = Define Can.Def
     | Edge (A.Located Name.Name)
     | Destruct Can.Pattern Can.Expr
 
 
-{-| Process a definition node while threading IdState through pattern canonicalization.
+{-| Canonicalizes one `let` definition and adds its graph nodes to `nodes`.
+
+A definition gives one `Define` node; one with more than
+`HeapLimits.maxStageArity` parameters is a `TooLarge` error. A destructuring
+gives a `Destruct` node, keyed by `Name.fromManyNames` of the names it binds,
+and an `Edge` node for each of those names. Its pattern is checked for a name
+bound twice, and the free locals of its expression are added to the enclosing
+map as they are.
+
 -}
 addDefNodesWithIds : Env.Env -> IdState -> List Node -> A.Located Src.Def -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
 addDefNodesWithIds env state nodes (A.At _ def) =
@@ -990,8 +1109,15 @@ addDefNodesWithIds env state nodes (A.At _ def) =
                     )
 
 
-{-| The `Src.Define` arm of `addDefNodesWithIds`, once the definition's
-parameter count is known to be within `HeapLimits.maxStageArity`.
+{-| Canonicalizes a `let` definition whose parameter count is within
+`HeapLimits.maxStageArity` and adds its `Define` node to `nodes`.
+
+With an annotation the result is a `TypedDef` whose parameters are paired with
+the annotation's argument types; without one it is a `Def`. A parameter name
+the body never uses gets an unused-variable warning. The body's free locals,
+less the parameters, are added to the enclosing map: as they are when there
+are no parameters, all as delayed uses otherwise.
+
 -}
 addDefineNodesWithIds : Env.Env -> IdState -> List Node -> A.Located Name -> List (Src.C1 Src.Pattern) -> Src.Expr -> Maybe (Src.C1 (Src.C2 Src.Type)) -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
 addDefineNodesWithIds env state nodes ((A.At nameRegion name) as aname) srcArgs body maybeType =
@@ -1026,8 +1152,7 @@ addDefineNodesWithIds env state nodes ((A.At nameRegion name) as aname) srcArgs 
             Type.toAnnotation env tipe
                 |> ReportingResult.andThen
                     (\(Can.Forall freeVars ctipe) ->
-                        -- Use Pattern.verify (not verifyWithIds) because gatherTypedArgsWithIds
-                        -- already threads IdState internally and returns it in the result tuple
+                        -- Pattern.verify, not verifyWithIds: the id state is inside the value.
                         Pattern.verify (Error.DPFuncArgs name)
                             (gatherTypedArgsWithIds env name state (List.map Src.c1Value srcArgs) ctipe Index.first [])
                             |> ReportingResult.andThen
@@ -1055,9 +1180,9 @@ addDefineNodesWithIds env state nodes ((A.At nameRegion name) as aname) srcArgs 
                     )
 
 
-{-| The `TooLarge` error for a function or lambda whose parameter list
-`srcArgs` is longer than `HeapLimits.maxStageArity` (HEAP\_078), located at
-`region` and describing it as `what`; `Nothing` when it is within the limit.
+{-| Returns the `TooLarge` error, at `region` and describing the function as
+`what`, when the parameter list `srcArgs` is longer than
+`HeapLimits.maxStageArity`, and `Nothing` when it is within the limit.
 -}
 tooManyParams : A.Region -> Error.TooLargeWhat -> List arg -> Maybe Error.Error
 tooManyParams region what srcArgs =
@@ -1072,14 +1197,17 @@ tooManyParams region what srcArgs =
         Nothing
 
 
-{-| Passes `value` through when a closure with the parameters `srcArgs` and
-the free locals `freeLocals` (its own parameters already removed) fits in a
-closure stage, and throws `TooLarge region (TooManyClosureSlots name)`
-otherwise. Its captured variables are the free locals that `env`, the scope
-around the closure, binds as locals (`Env.Local`), so top-level values do not
-count; a local function's own name counts when it is free (self-recursion),
-which overcounts by one at most. A definition with no parameters is not a
-closure and always passes.
+{-| Returns `value` when a closure with the parameters `srcArgs` and the free
+locals `freeLocals` (its own parameters already removed) fits within
+`HeapLimits.maxStageArity` slots, and fails with
+`TooLarge region (TooManyClosureSlots name)` otherwise.
+
+Its slots are its parameters plus its captured variables, which are the free
+locals that `env`, the scope around the closure, binds as `Env.Local`, so
+top-level values do not count. A `let` function's own name is in scope as a
+local, so it counts when the function refers to itself, which overcounts by one
+at most. A definition with no parameters is not a closure and always passes.
+
 -}
 checkClosureSlots : Env.Env -> A.Region -> Maybe Name -> List arg -> FreeLocals -> a -> EResult i w a
 checkClosureSlots env region name srcArgs freeLocals value =
@@ -1105,7 +1233,9 @@ checkClosureSlots env region name srcArgs freeLocals value =
         ReportingResult.ok value
 
 
-{-| Like logLetLocals but preserves IdState in the result.
+{-| Returns `( value, idState )` unchanged, adding `letLocals`, the free locals
+of a `let` definition's body, to the enclosing map: as they are when `args` is
+empty, and all as delayed uses otherwise.
 -}
 logLetLocalsWithIds : List arg -> FreeLocals -> ( value, IdState ) -> EResult FreeLocals w ( value, IdState )
 logLetLocalsWithIds args letLocals ( value, idState ) =
@@ -1128,11 +1258,16 @@ logLetLocalsWithIds args letLocals ( value, idState ) =
         )
 
 
+{-| Adds to `nodes` the `Edge` node for the name `aname`, depending on `edges`.
+-}
 addEdge : List Name.Name -> A.Located Name.Name -> List Node -> List Node
 addEdge edges ((A.At _ name) as aname) nodes =
     ( Edge aname, name, edges ) :: nodes
 
 
+{-| Returns every name the pattern binds, with its region, added to the front of
+`names`.
+-}
 getPatternNames : List (A.Located Name.Name) -> Src.Pattern -> List (A.Located Name.Name)
 getPatternNames names (A.At region pattern) =
     case pattern of
@@ -1179,18 +1314,17 @@ getPatternNames names (A.At region pattern) =
             getPatternNames names parensPattern
 
 
-{-| Match function argument patterns against a type signature, producing typed arguments.
+{-| Canonicalizes the parameter patterns `srcArgs` of the annotated definition
+`name`, pairing each with the next argument type of `tipe`, and returns the
+pairs after those already in `revTypedArgs` (held in reverse), the type left
+once every parameter has taken its argument, and the id state.
 
-This function processes a type-annotated function definition by pairing each argument
-pattern with its corresponding type from the signature. It:
-
-  - Iterates through the function type, extracting argument types from nested lambdas
-  - Canonicalizes each argument pattern with IdState threading
-  - Pairs each pattern with its type annotation
-  - Returns the list of typed argument patterns, the final return type, and updated IdState
-  - Reports an error if there are more patterns than types in the signature
-
-This is used when processing function definitions with explicit type annotations.
+Type aliases are seen through to find each arrow, so an annotation that
+reaches a function type through an alias still supplies argument types. When
+the type runs out of arrows before the parameters run out, the result is an
+`AnnotationTooShort` error covering the parameters left over, with `index`
+counting the parameters already paired. The names the patterns bind are
+gathered in the info slot, for the caller to check for duplicates.
 
 -}
 gatherTypedArgsWithIds :
@@ -1224,6 +1358,14 @@ gatherTypedArgsWithIds env name state srcArgs tipe index revTypedArgs =
                     ReportingResult.throw (Error.AnnotationTooShort (A.mergeRegions start end) name index (List.length srcArgs))
 
 
+{-| Returns the definitions of a recursive group of `let` bindings, in reverse
+order in front of those already in `defs`, when every member is a definition
+with parameters.
+
+The first member without parameters, or the first `Edge`, makes the group a
+`RecursiveLet` error naming that member and the other members.
+
+-}
 checkCycle : List Binding -> List Can.Def -> EResult i w (List Can.Def)
 checkCycle andThenings defs =
     case andThenings of
@@ -1250,11 +1392,14 @@ checkCycle andThenings defs =
                     ReportingResult.throw (Error.RecursiveLet name (toNames otherBindings defs))
 
                 Destruct _ _ ->
-                    -- a Destruct cannot appear in a cycle without any Edge values
-                    -- so we just keep going until we get to the edges
+                    -- A cycle through a destructuring passes through one of its
+                    -- Edge nodes, which reports it.
                     checkCycle otherBindings defs
 
 
+{-| Returns the names of the bindings in `andThenings`, skipping destructurings,
+followed by the names of `revDefs` in reverse.
+-}
 toNames : List Binding -> List Can.Def -> List Name.Name
 toNames andThenings revDefs =
     case andThenings of
@@ -1273,6 +1418,8 @@ toNames andThenings revDefs =
                     toNames otherBindings revDefs
 
 
+{-| Returns the name a definition defines.
+-}
 getDefName : Can.Def -> Name.Name
 getDefName def =
     case def of
@@ -1283,7 +1430,13 @@ getDefName def =
             name
 
 
-{-| Like detectCycles but threads IdState and allocates IDs for Let/LetDestruct/LetRec nodes.
+{-| Wraps `body` in one node per component of a `let` dependency graph, the
+first component outermost, and gives each node its id after those inside it.
+
+A definition becomes `Let`, a destructuring `LetDestruct`, and a recursive
+group `LetRec` once `checkCycle` accepts it. An `Edge` alone produces no node.
+Every node is at `letRegion`.
+
 -}
 detectCyclesWithIds : A.Region -> IdState -> List (Graph.SCC Binding) -> Can.Expr -> EResult i w ( Can.Expr, IdState )
 detectCyclesWithIds letRegion state sccs body =
@@ -1336,6 +1489,8 @@ detectCyclesWithIds letRegion state sccs body =
                             )
 
 
+{-| Returns `value`, recording one direct use of `name` in the free locals.
+-}
 logVar : Name.Name -> a -> EResult FreeLocals w a
 logVar name value =
     ReportingResult.RResult <|
@@ -1343,6 +1498,8 @@ logVar name value =
             ReportingResult.ROk (Utils.dictInsertWith combineUses name oneDirectUse freeLocals) warnings value
 
 
+{-| A single direct use.
+-}
 oneDirectUse : Uses
 oneDirectUse =
     Uses
@@ -1351,6 +1508,9 @@ oneDirectUse =
         }
 
 
+{-| Returns the uses of both arguments added together, direct to direct and
+delayed to delayed.
+-}
 combineUses : Uses -> Uses -> Uses
 combineUses (Uses ab) (Uses xy) =
     Uses
@@ -1359,6 +1519,8 @@ combineUses (Uses ab) (Uses xy) =
         }
 
 
+{-| Returns the same total number of uses, all counted as delayed.
+-}
 delayUse : Uses -> Uses
 delayUse (Uses { direct, delayed }) =
     Uses
@@ -1371,16 +1533,17 @@ delayUse (Uses { direct, delayed }) =
 -- ====== MANAGING BINDINGS ======
 
 
+{-| Adds an unused-variable warning for `name`, bound at `region` in `context`,
+to the front of `warnings`.
+-}
 addUnusedWarning : W.Context -> Name.Name -> A.Region -> List W.Warning -> List W.Warning
 addUnusedWarning context name region warnings =
     W.UnusedVariable region context name :: warnings
 
 
-{-| Like directUsage but also threads IdState through the result.
-
-Used for Let and Case expressions where pattern canonicalization
-needs to share the ID space with expressions.
-
+{-| Runs a computation that reports its own free locals in its value, and adds
+them to the enclosing map as they are. On failure, the enclosing map is kept
+unchanged.
 -}
 directUsageWithIds : EResult () w ( ( expr, IdState ), FreeLocals ) -> EResult FreeLocals w ( expr, IdState )
 directUsageWithIds (ReportingResult.RResult k) =
@@ -1395,11 +1558,9 @@ directUsageWithIds (ReportingResult.RResult k) =
         )
 
 
-{-| Like delayedUsage but also threads IdState through the result.
-
-Used for Lambda expressions where pattern canonicalization
-needs to share the ID space with expressions.
-
+{-| Runs a computation that reports its own free locals in its value, and adds
+them to the enclosing map as delayed uses, as a lambda's body does. On failure,
+the enclosing map is kept unchanged.
 -}
 delayedUsageWithIds : EResult () w ( ( expr, IdState ), FreeLocals ) -> EResult FreeLocals w ( expr, IdState )
 delayedUsageWithIds (ReportingResult.RResult k) =
@@ -1419,12 +1580,15 @@ delayedUsageWithIds (ReportingResult.RResult k) =
         )
 
 
-{-| Like verifyBindings but handles a result containing ( expr, IdState ).
+{-| Runs the canonicalization of a body in which the names
+`andThenings` are bound, from an empty map of free locals, and returns its
+value together with its free locals less those names.
 
-The info type parameter allows this to be used in different contexts:
-
-  - With info = () when wrapped with directUsageWithIds/delayedUsageWithIds
-  - With info = FreeLocals when used directly in addDefNodesWithIds
+Each bound name the body never uses gets an unused-variable warning in
+`context`. The caller's info slot is passed through unchanged, so the returned
+free locals reach the enclosing map only through what the caller does with
+them. If the body fails, its errors and warnings are returned with the caller's
+info and no unused-variable warnings.
 
 -}
 verifyBindingsWithIds :
@@ -1460,6 +1624,14 @@ verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
 -- ====== FIND VARIABLE ======
 
 
+{-| Resolves an unqualified lowercase name found at `region`.
+
+A local or top-level name is recorded as one direct use. A name imported from
+`Debug` becomes `VarDebug` carrying the home of the module being
+canonicalized, and any other imported name `VarForeign`. A name more than one
+import provides is an `AmbiguousVar` error, and an unknown one `NotFoundVar`.
+
+-}
 findVar : A.Region -> Env.Env -> Name -> EResult FreeLocals w Can.Expr_
 findVar region env name =
     case Dict.get name env.vars of
@@ -1487,6 +1659,15 @@ findVar region env name =
             ReportingResult.throw (Error.NotFoundVar region Nothing name (toPossibleNames env.vars env.q_vars))
 
 
+{-| Resolves the lowercase name `name` qualified by `prefix`, found at `region`.
+
+When `prefix` is an import, the name resolves as an imported name does in
+`findVar`. When it is not, and it is the name of a kernel module (`Elm.Kernel.X`
+or `Eco.Kernel.X`) while the module being canonicalized belongs to a kernel
+package, the result is `VarKernel` for the name, whatever it is. Otherwise the
+name is not found. A qualified name is never recorded as a use.
+
+-}
 findVarQual : A.Region -> Env.Env -> Name -> Name -> EResult FreeLocals w Can.Expr_
 findVarQual region env prefix name =
     case Dict.get prefix env.q_vars of
@@ -1522,6 +1703,9 @@ findVarQual region env prefix name =
                 ReportingResult.throw (Error.NotFoundVar region (Just prefix) name (toPossibleNames env.vars env.q_vars))
 
 
+{-| Returns the names in scope, unqualified and by qualifier, that a
+`NotFoundVar` error offers as suggestions.
+-}
 toPossibleNames : Dict Name Env.Var -> Env.Qualified (Can.Annotation Name) -> Error.PossibleNames
 toPossibleNames exposed qualified =
     Error.PossibleNames (EverySet.fromList identity (Dict.keys exposed)) (Dict.map (\_ -> Dict.keys >> EverySet.fromList identity) qualified)
@@ -1531,6 +1715,14 @@ toPossibleNames exposed qualified =
 -- ====== FIND CTOR ======
 
 
+{-| Returns the reference to the constructor `name`, with its type as a
+function from its arguments to the type it builds, generalised over the type's
+variables.
+
+A record alias's constructor is given the type the environment holds for it,
+and is treated as a `Normal` constructor at index zero.
+
+-}
 toVarCtor : Name -> Env.Ctor -> Can.Expr_
 toVarCtor name ctor =
     case ctor of

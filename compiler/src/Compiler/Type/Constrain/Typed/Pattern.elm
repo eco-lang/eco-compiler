@@ -1,34 +1,28 @@
 module Compiler.Type.Constrain.Typed.Pattern exposing (addWithIds)
 
-{-| Type constraint generation for pattern matching (Typed pathway).
+{-| Type inference must know what a pattern says about the value it matches
+and which names it binds, and later stages must be able to read back the type
+the solver found for each pattern node. This module produces both.
 
-This module generates type constraints for patterns while also tracking node IDs
-to solver variables (via `NodeIds`, whose state lives in `IO.State`), enabling
-later retrieval of pattern types from the solver.
+`addWithIds` walks a canonical pattern against an _expectation_, the type the
+matched value is expected to have together with the context it came from, used
+in error messages. It adds to a `Common.State`: the pattern's _header_ (the
+names it binds, each with its type and region), the flexible type variables it
+creates, and the `CPattern` constraints it emits. `Compiler.Type.Constrain.Common`
+owns `State`; the constraints are held newest first. Alongside, it records in
+`NodeIds` one solver variable for each pattern node id, which is how a pattern
+node's type is found after solving. Whether anything is recorded is decided by
+`NodeIds`.
 
-The generator is written as ordinary recursive `IO` functions (Design B).
-Stack safety relies on the axis classification below: the only pattern axis
-whose nesting depth is unbounded in practice is walked with an explicit
-`IO.loop` spine; everything else recurses directly on the JS stack.
-
-
-## Pattern axis classification (the stack-safety argument)
-
-Linear-unbounded (spine loop required):
-
-  - `PCons` tail chains — `a :: b :: c :: ... :: t` nests `PCons` down the
-    tail one level per element, so machine-generated patterns can nest
-    arbitrarily deep. Walked by `addConsWithIds` (explicit `IO.loop` descent
-    over the tail spine, heads constrained on the fold-up).
-
-Bounded (direct recursion OK):
-
-  - `PCtor` / `PTuple` / `PList` / `PRecord` — children are width-bounded
-    argument/element/field lists; each child's own depth is again one of the
-    classified axes.
-  - `PAlias` — alias chains (`(p as a) as b`) require explicit parentheses
-    per level, so their depth is bounded by written source, not data size.
-  - `PAnything`, `PVar`, `PUnit`, `PInt`, `PStr`, `PChr`, `PBool` — leaves.
+Most patterns are walked by direct recursion, which is safe because their
+nesting depth is bounded by what was written in the source: constructor, tuple,
+list and record patterns have a written number of children, and an alias chain
+such as `((p as a) as b)` needs parentheses at every level. A `::` chain is the
+exception. `a :: b :: c :: t` nests one `PCons` per element down its tail, so
+a pattern can nest as deeply as it has elements. That tail chain, the _cons
+spine_, is walked by a self-tail-recursive function that builds a list of
+_frames_ on the way down, one deferred level each, and the heads are
+constrained as the frames are folded back up.
 
 
 # Constraint Generation with ID Tracking
@@ -56,22 +50,23 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- ===== PUBLIC API =====
 
 
-{-| Generate type constraints for a pattern, tracking node IDs.
+{-| Returns `state` extended with what `pattern` binds, the variables it
+creates and the constraints it imposes when matched against `expectation`, and
+records a solver variable for the pattern's node id and for each node inside
+it.
 
-Like the erased `add` but also tracks pattern node IDs to solver variables
-(in `IO.State`), enabling later retrieval of pattern types from the solver.
-
-IMPORTANT: This function matches `add` in constraint generation behavior.
-For patterns that don't need constraints (PAnything, PVar, PAlias), we do NOT
-add extra CPattern constraints or flex variables to the state. We only record
-the pattern's type variable in NodeIds for later type retrieval.
+A pattern other than `_`, a variable or an alias gets a fresh variable, recorded
+for its node, and a `CPattern` constraint tying that variable to `expectation`.
+A `_`, variable or alias pattern adds no constraint of its own when the
+expectation's type is a bare type variable: that variable is recorded for the
+node instead. When the expectation's type is anything else, such a pattern too
+gets a fresh variable and a `CPattern` constraint, reported under the `PRecord`
+category that `Common.patternToCategory` gives it.
 
 -}
 addWithIds : Can.Pattern -> E.PExpected Type -> State -> IO State
 addWithIds (A.At region patternInfo) expectation state =
     if patternNeedsConstraint patternInfo.node then
-        -- CONSTRAINED path: create patVar, add CPattern constraint, add to state
-        -- This matches the behavior of `add` for patterns like PUnit, PTuple, etc.
         Type.mkFlexVar
             |> IO.andThen
                 (\patVar ->
@@ -84,7 +79,6 @@ addWithIds (A.At region patternInfo) expectation state =
                         eqCon =
                             Type.CPattern region (patternToCategory patternInfo.node) patType expectation
 
-                        -- extend the pattern state with this new variable + constraint
                         (State headers vars revCons) =
                             state
 
@@ -92,34 +86,25 @@ addWithIds (A.At region patternInfo) expectation state =
                         stateWithPatVar =
                             State headers (patVar :: vars) (eqCon :: revCons)
                     in
-                    -- record ID → variable mapping, then generate the pattern constraints
                     NodeIds.recordNodeVar patternInfo.id patVar
                         |> IO.andThen
                             (\() -> addHelpWithIds region patternInfo.node expectation stateWithPatVar)
                 )
 
     else
-        -- UNCONSTRAINED path: just record in NodeIds, no extra constraint or var in state
-        -- This matches the behavior of `add` for PAnything, PVar, PAlias
         let
-            -- Try to extract the variable directly from the expectation type
-            -- For function args, expectation is typically PNoExpectation (VarN argVar)
-            -- so we can record argVar directly - it will have the correct type after solving
             expectedType : Type
             expectedType =
                 getType expectation
         in
         case extractVarFromType expectedType of
             Just existingVar ->
-                -- Record the existing variable from expectation
                 NodeIds.recordNodeVar patternInfo.id existingVar
                     |> IO.andThen
                         (\() -> addHelpWithIds region patternInfo.node expectation state)
 
             Nothing ->
-                -- Concrete type path: expectedType is a concrete type (e.g., AppN "Int")
-                -- rather than a VarN that we could directly record.
-                -- Create a fresh variable and constrain it to equal the expected type.
+                -- No variable to record: make one and tie it to the expected type.
                 Type.mkFlexVar
                     |> IO.andThen
                         (\patVar ->
@@ -128,12 +113,10 @@ addWithIds (A.At region patternInfo) expectation state =
                                 patType =
                                     Type.VarN patVar
 
-                                -- Constrain patVar to equal the expected type
                                 eqCon : Type.Constraint
                                 eqCon =
                                     Type.CPattern region (patternToCategory patternInfo.node) patType expectation
 
-                                -- Add the variable and constraint to state
                                 (State headers vars revCons) =
                                     state
 
@@ -147,6 +130,19 @@ addWithIds (A.At region patternInfo) expectation state =
                         )
 
 
+{-| Returns `state` extended with what the pattern node `patternNode`, found at
+`region`, binds and imposes when matched against `expectation`, recursing into
+its children.
+
+This covers the node's own kind only; the variable and `CPattern` that
+`addWithIds` adds for the node as a whole are added there. A variable or alias
+binds its name to the expectation's type. A literal or `()` is constrained to
+its built-in type. A list pattern gets one fresh entry variable that every
+element is checked against. A record pattern binds each field name to a fresh
+variable, located at the whole record pattern, and has a fresh extension
+variable, so it matches any record with at least those fields.
+
+-}
 addHelpWithIds : A.Region -> Can.Pattern_ -> E.PExpected Type -> State -> IO State
 addHelpWithIds region patternNode expectation state =
     case patternNode of
@@ -292,8 +288,11 @@ addHelpWithIds region patternNode expectation state =
 -- ===== CONS SPINE LOOP =====
 
 
-{-| One deferred level of a `::`-chain: everything needed to constrain the
-head pattern and close the level once the deeper tail is done.
+{-| One deferred level of a cons spine: what is needed to constrain the
+level's head pattern and add its list constraint once the deeper tail is done.
+
+`expectation` is the one the level itself was matched against.
+
 -}
 type alias ConsFrame =
     { entryVar : Vars.Variable
@@ -305,27 +304,21 @@ type alias ConsFrame =
     }
 
 
-{-| Walk a `PCons` tail chain iteratively (constant JS stack).
+{-| Returns `state` extended with what the cons pattern `headPattern :: tailPattern`
+at `region` binds and imposes when matched against `expectation`, using
+constant stack depth however long the `::` chain is.
 
-Descend: at each cons level allocate the entry var, push a frame with the
-head pattern, and — when the tail is itself a cons — inline the constrained
-wrapper prefix (`patVar` + `CPattern` + record) that `addWithIds` would have
-applied to it, then continue down the tail. The first non-cons tail is
-constrained via the ordinary re-entrant `addWithIds`.
-
-Fold up: constrain each level's head pattern (innermost first) and extend the
-state with that level's entry var and list constraint — exactly the wrap the
-recursive arm performed.
-
-The IO operation order (var allocations, recordings) is identical to the
-recursive formulation's.
+Each level gets a fresh element variable and is constrained to be a list of it,
+with the head expected to have the element type and the tail, under a `PTail`
+context, the list type. On the way down, every tail that is itself a cons gets
+the fresh variable, `CPattern` and node recording that `addWithIds` gives a
+constrained pattern. The first tail that is not a cons is walked by
+`addWithIds`. The heads are then walked innermost first, each level adding its
+element variable and list constraint after its head.
 
 -}
 addConsWithIds : A.Region -> Can.Pattern -> Can.Pattern -> E.PExpected Type -> State -> IO State
 addConsWithIds region headPattern tailPattern expectation state s0 =
-    -- A5: direct self-tail-recursive spine (TCO → while-loop; stack-safe) replacing
-    -- the `IO.loop`/`Step` trampoline. The PCons arm ends in a DIRECT self-tail-call
-    -- of `consSpineGo`. Byte-identical var-alloc/recording order sans trampoline.
     let
         ( s1, ( finalState, frames ) ) =
             consSpineGo region headPattern tailPattern expectation state [] s0
@@ -333,6 +326,14 @@ addConsWithIds region headPattern tailPattern expectation state s0 =
     IO.foldM applyConsFrame finalState frames s1
 
 
+{-| Returns, threading the `IO.State` by hand, the pattern state after the
+descent of a cons spine together with the frames still to be applied, innermost
+first.
+
+`frames` holds the levels already passed. The function calls itself only in
+tail position, so Elm compiles it to a loop.
+
+-}
 consSpineGo : A.Region -> Can.Pattern -> Can.Pattern -> E.PExpected Type -> State -> List ConsFrame -> IO.State -> ( IO.State, ( State, List ConsFrame ) )
 consSpineGo region headPattern tailPattern expectation state frames s0 =
     let
@@ -367,9 +368,8 @@ consSpineGo region headPattern tailPattern expectation state frames s0 =
     in
     case tailInfo.node of
         Can.PCons nextHead nextTail ->
-            -- The tail is another cons level: inline the constrained wrapper prefix
-            -- addWithIds would apply (PCons always takes the constrained path), then
-            -- keep descending via a self-tail-call.
+            -- What addWithIds would add for this constrained tail node, done here
+            -- so the descent stays a tail call.
             let
                 ( s2, patVar ) =
                     Type.mkFlexVar s1
@@ -391,7 +391,6 @@ consSpineGo region headPattern tailPattern expectation state frames s0 =
             consSpineGo tailRegion nextHead nextTail tailExpectation stateWithPatVar newFrames s3
 
         _ ->
-            -- Non-cons tail: the spine ends here; constrain it normally.
             let
                 ( s2, newState ) =
                     addWithIds tailPattern tailExpectation state s1
@@ -399,6 +398,10 @@ consSpineGo region headPattern tailPattern expectation state frames s0 =
             ( s2, ( newState, newFrames ) )
 
 
+{-| Returns `state` extended with the head pattern of `frame`, expected to have
+the element type, then with the frame's element variable and the constraint
+that the level is a list matching the frame's expectation.
+-}
 applyConsFrame : State -> ConsFrame -> IO State
 applyConsFrame state frame =
     addWithIds frame.headPattern (E.PNoExpectation frame.entryType) state
@@ -417,6 +420,9 @@ applyConsFrame state frame =
 -- ===== BOUNDED HELPERS (direct recursion; width-bounded) =====
 
 
+{-| Returns `state` extended with each of `patterns`, every one expected to have
+`entryType` under a `PListEntry` context numbered from `index`.
+-}
 addListEntriesWithIds : A.Region -> Type -> Index.ZeroBased -> List Can.Pattern -> State -> IO State
 addListEntriesWithIds region entryType index patterns state =
     case patterns of
@@ -433,6 +439,10 @@ addListEntriesWithIds region entryType index patterns state =
                 |> IO.andThen (addListEntriesWithIds region entryType (Index.next index) rest)
 
 
+{-| Returns `state` extended with the tuple pattern of `a`, `b` and the further
+elements `cs`, each element checked against its own fresh variable, and with the
+constraint that the tuple of those variables matches `expectation`.
+-}
 addTupleWithIds : A.Region -> Can.Pattern -> Can.Pattern -> List Can.Pattern -> E.PExpected Type -> State -> IO State
 addTupleWithIds region a b cs expectation state =
     Type.mkFlexVar
@@ -469,6 +479,12 @@ addTupleWithIds region a b cs expectation state =
             )
 
 
+{-| Returns the fresh variables made for the tuple elements `cs`, in element
+order after any in `accVars`, with `state` extended by those elements.
+
+`accVars` holds the variables already made, newest first.
+
+-}
 addTupleRestWithIds : List Can.Pattern -> List Vars.Variable -> State -> IO ( List Vars.Variable, State )
 addTupleRestWithIds cs accVars state =
     case cs of
@@ -484,11 +500,22 @@ addTupleRestWithIds cs accVars state =
                     )
 
 
+{-| Returns `state` extended with `pattern` expected to have `patternType`, with
+no context for error messages.
+-}
 simpleAddWithIds : Can.Pattern -> Type -> State -> IO State
 simpleAddWithIds pattern patternType state =
     addWithIds pattern (E.PNoExpectation patternType) state
 
 
+{-| Returns `state` extended with a constructor pattern: its arguments `args`,
+and the constraint that the union type `typeName` from module `home`, applied
+to fresh variables for its parameters `typeVarNames`, matches `expectation`.
+
+The same parameter variables are used for every argument's declared type, so
+two arguments that share a type parameter get the same type.
+
+-}
 addCtorWithIds : A.Region -> ModuleName.Canonical -> Name.Name -> List Name.Name -> Name.Name -> List Can.PatternCtorArg -> E.PExpected Type -> State -> IO State
 addCtorWithIds region home typeName typeVarNames ctorName args expectation state =
     IO.traverseList (\name -> IO.map (Tuple.pair name) (Type.nameToFlex name)) typeVarNames
@@ -522,6 +549,10 @@ addCtorWithIds region home typeName typeVarNames ctorName args expectation state
             )
 
 
+{-| Returns `state` extended with each constructor argument pattern, expected to
+have its declared type with the union's parameters replaced from `freeVarDict`,
+under a `PCtorArg` context naming `ctorName` and the argument's index.
+-}
 addCtorArgsWithIds : A.Region -> Name.Name -> Dict Name.Name Type -> List Can.PatternCtorArg -> State -> IO State
 addCtorArgsWithIds region ctorName freeVarDict args state =
     case args of

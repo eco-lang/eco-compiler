@@ -1,11 +1,14 @@
 module Compiler.Nitpick.Debug exposing (hasDebugUses)
 
-{-| Debug usage detection for optimized Elm code.
+{-| Finds whether a module uses `Debug`, so that a build which forbids `Debug`
+can reject it.
 
-This module traverses the optimized AST to determine whether any Debug functions
-(like Debug.log, Debug.todo) are referenced in the code. This is used to enforce
-the prohibition of Debug calls in production builds and to guide code generation
-optimizations.
+A use of a `Debug` function survives optimization as a `VarDebug` expression
+(see `Compiler.AST.Optimized`). `hasDebugUses` searches one module's local
+graph for such an expression, looking inside every definition, port, recursive
+group, nested expression and pattern-match decision tree. Nothing else counts:
+kernel references, shaders and the nodes that carry no expression are never
+reported.
 
 
 # Detection
@@ -24,14 +27,18 @@ import Dict
 -- ====== HAS DEBUG USES ======
 
 
-{-| Check whether the optimized code contains any references to Debug functions.
-Returns true if any Debug.log, Debug.todo, or other Debug functions are found.
+{-| Returns whether any node of the module's local graph contains a `VarDebug`
+expression, that is, a use of any `Debug` function.
 -}
 hasDebugUses : Opt.LocalGraph -> Bool
 hasDebugUses (Opt.LocalGraph _ graph _) =
     Map.any nodeHasDebug graph
 
 
+{-| Returns whether a graph node contains a `VarDebug` expression. Constructor,
+enum, box, link, effect manager and kernel nodes hold no expression and are
+always `False`.
+-}
 nodeHasDebug : Opt.Node -> Bool
 nodeHasDebug node =
     case node of
@@ -69,6 +76,9 @@ nodeHasDebug node =
             hasDebug expr
 
 
+{-| Returns whether an expression contains a `VarDebug` anywhere inside it.
+A shader is never searched.
+-}
 hasDebug : Opt.Expr -> Bool
 hasDebug expression =
     case expression of
@@ -163,6 +173,8 @@ hasDebug expression =
             False
 
 
+{-| Returns whether the body of a definition contains a `VarDebug`.
+-}
 defHasDebug : Opt.Def -> Bool
 defHasDebug def =
     case def of
@@ -173,6 +185,10 @@ defHasDebug def =
             hasDebug expr
 
 
+{-| Returns whether a decision tree contains a `VarDebug` in a branch body
+written inline at a leaf. Jump leaves are `False` here; the bodies they jump to
+are searched by `hasDebug` at the enclosing `Case`.
+-}
 deciderHasDebug : Opt.Decider Opt.Choice -> Bool
 deciderHasDebug decider =
     case decider of

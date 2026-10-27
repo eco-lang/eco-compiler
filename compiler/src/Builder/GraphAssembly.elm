@@ -3,11 +3,24 @@ module Builder.GraphAssembly exposing
     , addTypedGlobalGraph, addTypedLocalGraph
     )
 
-{-| Graph assembly utilities for merging dependency graphs during build.
+{-| A program is compiled one module at a time, but is linked as one graph;
+this module joins the per-module and per-package graphs into that one graph.
 
-This module provides functions to combine and merge the various graph types
-used by the compiler during the build phase. These are "linking" operations
-that assemble multiple compiled modules into a single program graph.
+A _local graph_ is what compiling one module yields: its definitions as nodes
+keyed by global name, its record field counts and, on the typed path, its type
+information. A _global graph_ is the same information for any number of modules
+merged together. Both come in two kinds, the erased graphs of
+`Compiler.AST.Optimized` and the typed graphs of `Compiler.AST.TypedOptimized`,
+and each kind has its own functions here. A kernel module is added to an erased
+global graph from its parsed chunks rather than from a local graph, by
+`addOptKernel`.
+
+Every merge is a left-biased union: where both sides hold an entry under the same
+key, the entry from the first argument is kept and the other is dropped. That
+holds for nodes, type information and field counts alike, so a field counted by
+both sides keeps the first side's count rather than the sum. Adding a local
+graph to a global graph therefore lets the local graph's entries win. A local
+graph's `main` is not carried into the global graph.
 
 
 # Optimized Graph Operations
@@ -35,7 +48,8 @@ import Dict
 -- ====== OPTIMIZED GRAPH OPERATIONS ======
 
 
-{-| Merge two global graphs by combining their nodes and fields.
+{-| Returns one global graph holding the nodes and field counts of both,
+keeping the first graph's entry where both have one.
 -}
 addOptGlobalGraph : Opt.GlobalGraph -> Opt.GlobalGraph -> Opt.GlobalGraph
 addOptGlobalGraph (Opt.GlobalGraph nodes1 fields1) (Opt.GlobalGraph nodes2 fields2) =
@@ -44,7 +58,9 @@ addOptGlobalGraph (Opt.GlobalGraph nodes1 fields1) (Opt.GlobalGraph nodes2 field
         (Dict.union fields1 fields2)
 
 
-{-| Add a local graph to a global graph by merging nodes and fields.
+{-| Returns the global graph with the local graph's nodes and field counts
+added, the local graph's entries replacing any under the same key. The local
+graph's `main` is dropped.
 -}
 addOptLocalGraph : Opt.LocalGraph -> Opt.GlobalGraph -> Opt.GlobalGraph
 addOptLocalGraph (Opt.LocalGraph _ nodes1 fields1) (Opt.GlobalGraph nodes2 fields2) =
@@ -53,12 +69,16 @@ addOptLocalGraph (Opt.LocalGraph _ nodes1 fields1) (Opt.GlobalGraph nodes2 field
         (Dict.union fields1 fields2)
 
 
-{-| Add a kernel definition to the global graph, given the kernel module's
-name (`Elm.Kernel.File`, `Eco.Kernel.File`) and its parsed chunks.
+{-| Returns the global graph with a node added for the kernel module named
+`moduleName` (such as `Elm.Kernel.File` or `Eco.Kernel.File`), built from its
+parsed chunks. `Name.getKernel` crashes on a name that is neither kind of
+kernel module name.
 
-The node is keyed by `Opt.toKernelGlobal`, which keeps the kernel prefix of an
-`Eco` kernel, so a package's `Eco.Kernel.File` and another's `Elm.Kernel.File`
-stay two nodes when the graphs are merged.
+The node is keyed as `Opt.toKernelGlobal` describes, so `Elm.Kernel.File` and
+`Eco.Kernel.File` stay two nodes. It replaces any node already under that key.
+Its dependencies are the Elm values and kernel modules the chunks refer to.
+The kernel's field counts, from `K.countFields`, are added to the graph's,
+replacing the graph's count for a field both hold.
 
 -}
 addOptKernel : ModuleName.Raw -> List K.Chunk -> Opt.GlobalGraph -> Opt.GlobalGraph
@@ -80,6 +100,10 @@ addOptKernel moduleName chunks (Opt.GlobalGraph nodes fields) =
         (Dict.union (K.countFields chunks) fields)
 
 
+{-| Returns `deps` with the global that `chunk` refers to added: the Elm value
+of an `ElmVar`, or the kernel module of a `JsVar`. Any other chunk refers to no
+global and leaves `deps` unchanged.
+-}
 addKernelDep : K.Chunk -> EverySet.EverySet String Opt.Global -> EverySet.EverySet String Opt.Global
 addKernelDep chunk deps =
     case chunk of
@@ -112,7 +136,9 @@ addKernelDep chunk deps =
 -- ====== TYPED OPTIMIZED GRAPH OPERATIONS ======
 
 
-{-| Merge two typed global graphs by unioning their nodes, fields, and annotations.
+{-| Returns one typed global graph holding the nodes, field counts, type
+schemes, scheme roots and varSupers (see `TOpt.GlobalGraph`) of both, keeping
+the first graph's entry where both have one.
 -}
 addTypedGlobalGraph : TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1 roots1 varSupers1) (TOpt.GlobalGraph nodes2 fields2 ann2 roots2 varSupers2) =
@@ -124,16 +150,19 @@ addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1 roots1 varSupers1) (TO
         (Dict.union varSupers1 varSupers2)
 
 
-{-| Add a typed local graph's definitions to a typed global graph.
+{-| Returns the typed global graph with the local graph's nodes, field counts,
+type schemes, scheme roots and varSupers added, the local graph's entries
+replacing any under the same key. The local graph's `main` is dropped.
 
-Annotations and scheme roots in the LocalGraph are keyed by bare Name (per-module).
-We re-key them by Global using the nodes map to find the full identity for each name.
+A local graph keys its type schemes and scheme roots by bare name, and a global
+graph keys them by global. Each is re-keyed by going through the local graph's
+nodes and taking, for each node, the entry under that node's name. An entry
+whose name has no node is therefore not carried over.
 
 -}
 addTypedLocalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 roots2 varSupers2) =
     let
-        -- Re-key annotations from bare Name to Global by iterating through nodes
         globalAnnotations =
             Data.Map.foldl
                 (\global _ acc ->
@@ -153,7 +182,6 @@ addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 
                 Data.Map.empty
                 data.nodes
 
-        -- Re-key scheme roots from bare Name to Global similarly
         globalSchemeRoots =
             Data.Map.foldl
                 (\global _ acc ->

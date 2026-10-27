@@ -7,9 +7,61 @@ module Compiler.Generate.MLIR.Expr exposing
     , aggBinderPromotableWith, lambdaIdToString, paramSplitAdmissible, scanChainForwardRefs, tupleBinderPromotable
     )
 
-{-| Expression generation for the MLIR backend.
+{-| Every function body the MLIR back end emits is made of expressions, and
+this module turns one monomorphized expression into the MLIR ops that compute
+it. `generateExpr` is that translation; nearly everything else in the file is
+a case of it or a helper to one.
 
-This module handles generation of MLIR code for all Elm expressions.
+The translation keeps track of the type each SSA value actually has, which is
+not always the type its Elm type maps to. `Compiler.Generate.MLIR.Types`
+defines the two mappings: the _ABI type_ a value has at a boundary between
+pieces of code, where Bool is `!eco.value`, and the _operand type_ inside a
+function, where Bool is `i1`. A value can also be a _value aggregate_, a tuple
+or constructor held as one SSA value of type `!eco.tuple2<..>`,
+`!eco.tuple3<..>` or `!eco.custom<..>` instead of on the heap. So every
+`ExprResult` carries the SSA type of its value, and wherever a value meets a
+place that expects a particular type it is converted: boxed with `eco.box`,
+put on the heap with `eco.to_heap`, unboxed with `eco.unbox`, or read back
+from the heap with `eco.from_heap` (`coerceResultToType`, `boxToEcoValue`).
+
+Calls are most of the file. How a call is made is decided mostly by the
+optimizer, which attaches a `CallInfo` to it, and by tables in the context.
+A function value is a closure that takes its arguments in _stages_, groups
+that it takes one after another. A call to a global or kernel that supplies
+all it takes is ordinarily an `eco.call`; most other calls are applications
+through the closure, `eco.papExtend`, made stage by stage where the stages are
+known and left to the runtime where they are not. Some
+calls avoid the closure altogether: a constructor call can be built in place,
+a call the optimizer has proved to reach one particular closure calls that
+closure's code directly (a _fast dispatch_), some library functions become
+single ops (intrinsics), and calls to `Bytes.Encode.encode` and
+`Bytes.Decode.decode` can be compiled into straight-line reading and writing
+(_bytes fusion_, `Compiler.Generate.MLIR.BytesFusion.Emit`).
+
+Closures are created with `eco.papCreate` and their bodies are queued in the
+context to be emitted as functions of their own. Bindings in a let chain can
+refer to bindings later in the chain, through closures, so before a chain is
+generated each of its names is given a _placeholder_, an SSA name a closure
+can capture before anything defines it; the binding's value is later renamed
+onto it. Closures at the head of a let chain that capture one another are
+created together by one `eco.papCreateGroup`.
+
+An `if` becomes a value-producing `eco.case` whose alternatives end in
+`eco.yield`; so does a case's decision tree with at least one test, as
+`eco.case` ops nested where a test may only run after another has passed. A
+branch shared by several leaves is copied into each.
+
+A large part of the file serves one optimization: keeping tuples and constructors
+off the heap. A tuple literal or constructor call bound by a let can be built
+as a value aggregate when every use of it only reads its fields; an _escape
+walk_ (`walkPromo`) checks that. Two kinds of worker, prepared elsewhere and
+listed in the context, extend the same idea across calls. A `$psplit` worker
+takes a tuple or constructor parameter as its fields; a `$sret` worker returns
+the fields of its tuple result as separate results. Inside a `$sret` worker the
+expressions whose value is the function's result form its _result spine_,
+which the context's `sretTailLayout` marks; on the spine a tuple is built as an
+aggregate, and a case yields one value per field (a _decomposed yield_) and
+rebuilds the tuple after the case.
 
 
 # Result Type
@@ -20,9 +72,6 @@ This module handles generation of MLIR code for all Elm expressions.
 # Expression Generation
 
 @docs generateExpr, unscopedTailCallError
-
-
-# Data Structure Generation
 
 
 # Boxing and Coercion
@@ -75,39 +124,39 @@ import Utils.Crash exposing (crash)
 -- ====== EXPRESSION RESULT ======
 
 
-{-| Result of generating MLIR code for an expression.
+{-| The MLIR for one expression: the ops that compute it, the SSA value that
+holds it, and the context to carry on with.
+
+`resultType` is the type the SSA value actually has, which can differ from
+what the expression's Mono type maps to at an ABI boundary (a Bool is `i1`
+here, a promoted tuple is a value aggregate). A caller that needs a particular
+type coerces with `coerceResultToType`.
+
+`isTerminated` is `True` when `ops` already ends with the `eco.yield` that
+closes a case alternative, so nothing may be appended after it.
+
 -}
 type alias ExprResult =
     { ops : List MlirOp
     , resultVar : String
     , resultType : MlirType
     , ctx : Ctx.Context
-    , isTerminated : Bool -- True if ops end with a terminator (eco.case, eco.jump)
+    , isTerminated : Bool
     }
 
 
-{-| Create an empty expression result with no ops.
+{-| Returns a result with no ops whose value is the existing SSA value `var` of
+type `ty`.
 -}
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
 
 
-{-| Rename an SSA variable in a list of MlirOps, recursing into nested regions.
-
-Replaces all occurrences of `fromVar` with `toVar` in:
-
-  - op.id (the result SSA name)
-  - op.operands (input SSA names)
-  - Nested regions, blocks, body ops and terminators (recursive)
-
-Block arguments are NOT renamed because they define new SSA bindings in their
-own scope, distinct from the enclosing let-binding scope.
-
-This is used by generateLet to force the result SSA id to match a pre-installed
-placeholder (e.g., "%helper") so that mutually recursive closures can safely
-capture each other via currentLetSiblings.
-
+{-| Returns `ops` with every occurrence of the SSA name `fromVar` replaced by
+`toVar`: in each op's id, operands and results, and in the ops and terminators
+of nested regions. Block arguments are left alone, because they bind names of
+their own.
 -}
 renameSsaVarInOps : String -> String -> List MlirOp -> List MlirOp
 renameSsaVarInOps fromVar toVar ops =
@@ -132,6 +181,9 @@ renameSsaVarInOps fromVar toVar ops =
     List.map renameOp ops
 
 
+{-| Returns the region with `fromVar` renamed to `toVar` in every block, as
+`renameSsaVarInOps` does for a list of ops.
+-}
 renameSsaVarInRegion : String -> String -> MlirRegion -> MlirRegion
 renameSsaVarInRegion fromVar toVar (MlirRegion r) =
     MlirRegion
@@ -140,6 +192,9 @@ renameSsaVarInRegion fromVar toVar (MlirRegion r) =
         }
 
 
+{-| Returns the block with `fromVar` renamed to `toVar` in its body and its
+terminator, leaving its arguments unchanged.
+-}
 renameSsaVarInBlock : String -> String -> MlirBlock -> MlirBlock
 renameSsaVarInBlock fromVar toVar block =
     { block
@@ -148,6 +203,9 @@ renameSsaVarInBlock fromVar toVar block =
     }
 
 
+{-| Returns the one op with `fromVar` renamed to `toVar`, as
+`renameSsaVarInOps` does for a list.
+-}
 renameSsaVarInSingleOp : String -> String -> MlirOp -> MlirOp
 renameSsaVarInSingleOp fromVar toVar op =
     let
@@ -167,15 +225,9 @@ renameSsaVarInSingleOp fromVar toVar op =
     }
 
 
-{-| Force an ExprResult to use a specific SSA id as its resultVar.
-
-If the expression's resultVar already matches `desiredVar`, this is a no-op.
-Otherwise it renames all uses/defs of the old resultVar to `desiredVar` throughout
-the ops (including nested regions), and updates resultVar accordingly.
-
-Used by generateLet to ensure that let-bound names in a recursive group define
-the same SSA var that closures captured via currentLetSiblings' placeholders.
-
+{-| Returns the result with its value renamed to `desiredVar`, throughout its
+ops and nested regions. This is how a let binding's value is made to define
+the placeholder name that sibling closures have already captured.
 -}
 forceResultVar : String -> ExprResult -> ExprResult
 forceResultVar desiredVar exprResult =
@@ -193,11 +245,19 @@ forceResultVar desiredVar exprResult =
         }
 
 
+{-| Tells whether one of the top-level `ops` (not a nested region) lists `var`
+among its results.
+-}
 isVarDefinedInOps : String -> List MlirOp -> Bool
 isVarDefinedInOps var ops =
     List.any (\op -> List.any (\( name, _ ) -> name == var) op.results) ops
 
 
+{-| Rewrites each top-level `eco.papCreate` in `result` that captures
+`placeholderVar`, the closure's own not-yet-defined name: the operand becomes
+`unitVar`, and the operand positions it occupied are listed in a
+`self_capture_indices` attribute. The context is returned unchanged.
+-}
 fixSelfCaptures : String -> String -> Ctx.Context -> ExprResult -> ( ExprResult, Ctx.Context )
 fixSelfCaptures placeholderVar unitVar ctx result =
     let
@@ -245,6 +305,9 @@ fixSelfCaptures placeholderVar unitVar ctx result =
     ( { result | ops = List.map fixOp result.ops }, ctx )
 
 
+{-| Tells whether a top-level `eco.papCreate` in `ops` captures
+`placeholderVar`.
+-}
 hasSelfCapture : String -> List MlirOp -> Bool
 hasSelfCapture placeholderVar ops =
     List.any
@@ -256,20 +319,21 @@ hasSelfCapture placeholderVar ops =
 -- ====== HELPER FUNCTIONS ======
 
 
-{-| LSS\_031: which SYMBOL the stamped fast evaluator was emitted under.
+{-| A reference to the function a fast-dispatch stamp names: the closure's
+lambda id, and the specialization whose top-level closure it is, if it is one.
 
-A node's TOP-LEVEL closure is emitted by `Functions.generateNode` under
-`specIdToFuncName registry specId` and never under its own `lambdaId`; every
-other closure is emitted by `Lambdas.elm` under `lambdaIdToString lambdaId`.
-The stamp carries both so the `_fast_evaluator` symbol names something that
-actually exists.
+The two are needed because the function is emitted under different names. A
+specialization's top-level closure is emitted under the specialization's
+function name, never under its lambda id; every other closure is emitted under
+`lambdaIdToString` of its lambda id.
 
 -}
 type alias FastRef =
     ( Mono.LambdaId, Maybe Mono.SpecId )
 
 
-{-| LSS\_031: resolve a stamped fast evaluator to its emitted base symbol.
+{-| Returns the symbol the function `FastRef` names was emitted under: the
+specialization's function name when there is one, otherwise the lambda's name.
 -}
 fastRefBaseName : Ctx.Context -> FastRef -> String
 fastRefBaseName ctx ( lambdaId, maybeSpec ) =
@@ -281,6 +345,11 @@ fastRefBaseName ctx ( lambdaId, maybeSpec ) =
             lambdaIdToString lambdaId
 
 
+{-| Returns the MLIR function name of a specialization: the global's mangled
+home and name (or `accessor_` and the field name), then `_$_` and the
+specialization id. An id missing from the registry gives `unknown_$_` and the
+id.
+-}
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
     case Registry.lookupSpecKey specId registry of
@@ -294,8 +363,11 @@ specIdToFuncName registry specId =
             "unknown_$_" ++ String.fromInt specId
 
 
-{-| Create a dummy value of the given MLIR type. Used when a value of a
-specific type is needed but the actual value is irrelevant (e.g., unreachable code paths).
+{-| Creates a placeholder value of `mlirType`, for a place that needs a value
+whose contents do not matter, such as a path that is never reached. It is a
+zero constant for `i64`, `f64`, `i1` and `i16`, and the Unit constant for every
+other type, so its type is `!eco.value` whenever `mlirType` is not one of those
+four.
 -}
 createDummyValue : Ctx.Context -> MlirType -> ( List MlirOp, String, Ctx.Context )
 createDummyValue ctx mlirType =
@@ -333,7 +405,6 @@ createDummyValue ctx mlirType =
             ( [ op ], resultVar, ctx2 )
 
         _ ->
-            -- For Types.ecoValue and other types, return Unit
             let
                 ( ctx2, op ) =
                     Ops.ecoConstantUnit ctx1 resultVar
@@ -345,14 +416,20 @@ createDummyValue ctx mlirType =
 -- ====== GENERATE EXPRESSION ======
 
 
-{-| Generate MLIR code for a monomorphic expression.
+{-| Generates the MLIR for one monomorphized expression in the context `ctx0`,
+returning its ops, its value and the context to continue with.
 
-U-T1.3.3/6 result-spine hygiene: `sretTailLayout` is a RESULT-position
-flag. Only the spine arms (tuple literal, let/destruct bodies, case, if)
-may see it; every other node CLEARS it before compiling its subtree —
-emitted bodies contain inline-grafted code the selection walk never saw,
-and a leaked flag would make-promote a tuple whose consumer is a boxed
-sink (the `eco.papExtend` aggregate-operand incident).
+The context's `sretTailLayout` marks the result spine, and only a tuple
+literal, let, destructuring, case or if keeps it for its own generation; every
+other expression clears it first, so that nothing off the spine is built as an
+aggregate. A call is first tried as a `$sret` call on the spine
+(`trySretFreshLeaf`), and a let as an inlined bytes decode
+(`tryInlinedDecodeFusion`). A record's fields are put in layout order, and a
+record access or update takes its layout from the type of the record it reads.
+
+A `MonoTailCall` crashes the compiler with `unscopedTailCallError`. A
+`MonoAccessorValue`, which earlier passes are expected to have removed,
+crashes it too.
 
 -}
 generateExpr : Ctx.Context -> Mono.MonoExpr -> ExprResult
@@ -390,9 +467,9 @@ generateExpr ctx0 expr =
         Mono.MonoVarLocal name _ ->
             case Dict.get name ctx.splitAggParams of
                 Just splitInfo ->
-                    -- U-T1.3.3L: whole-value use of a scalar-split loop param —
-                    -- materialize from the current slot vars (Elm values are
-                    -- immutable, so reconstruction is semantically transparent).
+                    -- A whole-value use of a name held as scalar slots: rebuild
+                    -- the value from the current slots. Elm values are
+                    -- immutable, so the rebuilt value is indistinguishable.
                     let
                         ( matOps, matVar, ctxM ) =
                             Patterns.materializeSplitParam ctx splitInfo
@@ -435,10 +512,9 @@ generateExpr ctx0 expr =
             crash (unscopedTailCallError name)
 
         Mono.MonoIf branches final monoType ->
-            -- Step 10a: `if` IS part of the result spine now. The flag is
-            -- passed through (`generateIf` clears it for the condition and
-            -- restores it for the branches itself), and the returned ctx must
-            -- still carry the caller's flag, as the tuple arm does.
+            -- `if` is on the result spine: `generateIf` clears the flag for
+            -- the condition and keeps it for the branches, and the returned
+            -- ctx carries the caller's flag, as the tuple arm does.
             let
                 res =
                     generateIf ctx branches final monoType
@@ -467,7 +543,6 @@ generateExpr ctx0 expr =
                 layout =
                     Types.computeRecordLayout (getRecordFields monoType)
 
-                -- Reorder fields according to layout order
                 orderedExprs =
                     List.map
                         (\fieldInfo ->
@@ -518,20 +593,16 @@ generateExpr ctx0 expr =
         Mono.MonoTupleCreate _ elements monoType ->
             case ctx.sretTailLayout of
                 Just tailLayout ->
-                    -- U-T1.3.3: a tuple literal on an sret worker's RESULT
-                    -- spine emits the SSA make-form — the allocation is what
-                    -- the whole promotion removes. Elements compile with the
-                    -- flag cleared (they are not result positions), but the
-                    -- RETURNED ctx must carry the flag onward: the leaf
-                    -- machinery consults it to DECOMPOSE the yield (a leaked
-                    -- clear here made emitSpineYield fall back to a single
-                    -- aggregate yield — the block-crossing FCA crash).
+                    -- A tuple literal on the result spine is built as a value
+                    -- aggregate, with no allocation. Its elements compile with
+                    -- the flag cleared, but the returned ctx carries the flag
+                    -- on, because the case leaf that yields this value reads
+                    -- it to yield one value per slot.
                     let
                         res =
-                            -- SLOT-TYPE-EXACT, not arity: emitted bodies can
-                            -- contain inline-grafted tuples the selection walk
-                            -- never saw; a mismatching layout stays BOXED (the
-                            -- leaf coercion bridges via eco.from_heap).
+                            -- The slot types must match the layout exactly, not
+                            -- just the arity; a tuple of another layout is built
+                            -- boxed and converted by the leaf's coercion.
                             if
                                 Types.tupleSlotTypes (Types.computeTupleLayout (getTupleElements monoType))
                                     == Types.tupleSlotTypes tailLayout
@@ -568,6 +639,11 @@ generateExpr ctx0 expr =
 -- ====== LITERAL GENERATION ======
 
 
+{-| Generates a literal as one constant op. Bool, Int, Float and Char literals
+are unboxed constants (`i1`, `i64`, `f64`, `i16`); a Char literal's source text
+is decoded to its code point first. A String literal is an `!eco.value`: the
+embedded empty-string constant for `""`, otherwise an `eco.string_literal`.
+-}
 generateLiteral : Ctx.Context -> Mono.Literal -> ExprResult
 generateLiteral ctx lit =
     case lit of
@@ -640,9 +716,6 @@ generateLiteral ctx lit =
                 ( var, ctx1 ) =
                     Ctx.freshVar ctx
 
-                -- Empty strings use the EmptyString embedded constant; non-empty
-                -- literals lower to a call to eco_alloc_string_literal whose
-                -- statepoint RS4GC inserts directly.
                 ( ctx2, op ) =
                     if value == "" then
                         Ops.ecoConstantEmptyString ctx1 var
@@ -662,18 +735,19 @@ generateLiteral ctx lit =
 -- ====== VARIABLE GENERATION ======
 
 
-{-| CGEN\_082 (plans/mlir-split-backend-04-constant-thunks.md T3): emit a
-constant thunk's body at a reference. Exactly what `Functions.generateDefine`
-emits for the thunk itself, minus the call: `generateExpr` on the body, then a
-coercion to the thunk's ABI return type, so no consumer can observe the change.
+{-| Generates a reference to a constant thunk by emitting the thunk's `body` in
+place of a call to it, coerced to the ABI type of `sig`'s return type, so that
+the value is the one the call would have returned.
 
-The body is emitted under a FRESH LEXICAL SCOPE: every name-keyed scope field
-is reset (a substituted `let base = …` must neither see the caller's `base`
-nor reuse a same-named entry of the caller's `currentLetSiblings`, which
-`addPlaceholderMappings` would otherwise write), and restored afterwards. The
-accumulators (`nextVar`, `nextOpId`, pending lambdas/func ops, kernel decls,
-the type registry) thread through, and `definedSsaVars` is kept and grows:
-the new SSA values are defined in the caller's function.
+A constant thunk is a zero-argument global listed, with its body, in the
+context's `constThunkBySpec` table. Emitting the body lets later passes fold
+the constant.
+
+The body is generated in a fresh lexical scope: every name-keyed field of the
+context is emptied, so that a name bound in the body cannot see or overwrite
+one of the caller's, and restored afterwards. Everything else threads through,
+including the set of defined SSA values, which grows because the new values
+are defined in the caller's function.
 
 -}
 generateConstThunkRef : Ctx.Context -> Ctx.FuncSignature -> Mono.MonoExpr -> ExprResult
@@ -718,6 +792,22 @@ generateConstThunkRef ctx sig body =
     }
 
 
+{-| Generates a reference to a global specialization as a value.
+
+The arity comes from the specialization's signature, because `monoType` can be
+a type variable even when the global is a function. A global with parameters
+becomes an `eco.papCreate` with no captures. A global with none is looked up in
+the context's constant tables, in this order: a nullary constructor with a
+null-cons tag becomes that `eco.constant`; one whose value is the embedded
+`Nothing` constant becomes that constant; a constant thunk has its body emitted
+in place (`generateConstThunkRef`); anything else is an `eco.call` with no
+arguments. These tables change only references made here: the global's own
+function is still emitted.
+
+A global with no signature is called with no arguments, typed by `monoType`;
+if `monoType` is a function type, compilation crashes.
+
+-}
 generateVarGlobal : Ctx.Context -> Mono.SpecId -> Mono.MonoType -> ExprResult
 generateVarGlobal ctx specId monoType =
     let
@@ -728,9 +818,6 @@ generateVarGlobal ctx specId monoType =
         funcName =
             specIdToFuncName ctx.registry specId
 
-        -- Use the signature table to determine arity, not just monoType.
-        -- This is more reliable because monoType might be a type variable (MVar)
-        -- even though the underlying function has parameters.
         maybeSig : Maybe Ctx.FuncSignature
         maybeSig =
             Array.get specId ctx.signatures |> Maybe.andThen identity
@@ -745,11 +832,6 @@ generateVarGlobal ctx specId monoType =
             if arity == 0 then
                 case Dict.get specId ctx.nullConsBySpec of
                     Just nullConsTag ->
-                        -- Nullary ctor/enum spec: emit the embedded null-cons
-                        -- constant directly (HEAP_044/CGEN_079) — no call, no
-                        -- CAF-guarded load. A perf layer, not a correctness
-                        -- layer: the spec's func.func still returns the same
-                        -- constant for any reference path not routed here.
                         let
                             ( ctx2, constOp ) =
                                 Ops.ecoConstantNullCons ctx1 var nullConsTag
@@ -764,16 +846,6 @@ generateVarGlobal ctx specId monoType =
                     Nothing ->
                         case Dict.get specId ctx.constCtorBySpec of
                             Just _ ->
-                                -- Nullary ctor whose value is a WELL-KNOWN embedded
-                                -- constant (`Nothing` = the merged Empty,
-                                -- REP_CONSTANT_001 / CGEN_019). Excluded from
-                                -- `nullConsBySpec` because it carries no null-cons
-                                -- tag, so without this arm every reference paid an
-                                -- arity-0 CALL to a func.func whose entire body is
-                                -- that constant. Same perf layer as the null-cons
-                                -- arm above: the spec's func.func still exists and
-                                -- still returns the same value for any path not
-                                -- routed here.
                                 let
                                     ( ctx2, constOp ) =
                                         Ops.ecoConstantNothing ctx1 var
@@ -788,17 +860,11 @@ generateVarGlobal ctx specId monoType =
                             Nothing ->
                                 case Dict.get specId ctx.constThunkBySpec of
                                     Just thunkBody ->
-                                        -- CGEN_082: a constant thunk (literal, alias
-                                        -- chain, or closed pure-arithmetic body) —
-                                        -- emit its OWN body here instead of the call,
-                                        -- so LLVM folds the constant and the call
-                                        -- disappears. Same perf layer as the two arms
-                                        -- above.
                                         generateConstThunkRef ctx sig thunkBody
 
                                     Nothing ->
-                                        -- Zero-arity function (thunk): call directly instead of creating a PAP.
-                                        -- papCreate requires arity > 0 (num_captured < arity invariant).
+                                        -- Called, not wrapped: papCreate needs an
+                                        -- arity above zero.
                                         let
                                             resultMlirType =
                                                 Types.monoTypeToAbi sig.returnType
@@ -814,11 +880,9 @@ generateVarGlobal ctx specId monoType =
                                         }
 
             else
-                -- Function-typed global with arity > 0: create a closure (papCreate) with no captures
-                -- With typed closure ABI, we use the actual function name directly (no wrapper needed)
                 let
-                    -- _result_kind = the function's saturated return kind so the
-                    -- wrapper's return ABI matches what the function actually returns.
+                    -- _result_kind is the kind of the function's own return
+                    -- type, omitted when boxed.
                     globalResultKind =
                         Types.mlirTypeToKind (Types.monoTypeToAbi sig.returnType)
 
@@ -852,8 +916,6 @@ generateVarGlobal ctx specId monoType =
                 }
 
         Nothing ->
-            -- No signature found - fall back to monoType-based logic
-            -- This should only happen for constants, not functions.
             case monoType of
                 Mono.MFunction _ _ _ _ ->
                     Utils.Crash.crash
@@ -862,7 +924,6 @@ generateVarGlobal ctx specId monoType =
                         )
 
                 _ ->
-                    -- Non-function type: call the function directly (e.g., zero-arg constructors)
                     let
                         resultMlirType =
                             Types.monoTypeToAbi monoType
@@ -878,6 +939,16 @@ generateVarGlobal ctx specId monoType =
                     }
 
 
+{-| Generates a reference to a kernel value.
+
+A kernel that `KernelIntrinsics` classifies as a float constant (such as `pi`)
+becomes an `arith.constant`. Otherwise a function type whose flattened arity is
+above zero becomes an `eco.papCreate` with no captures through
+`instanceClosureResult`, naming the symbol `Context.registerKernelInstance`
+chooses, and any other kernel is an `eco.call` with no arguments to the symbol
+`<kernelPrefix>_Kernel_<home>_<name>`, typed by the ABI of `monoType`.
+
+-}
 generateVarKernel : Ctx.Context -> Name.Name -> Name.Name -> Name.Name -> Mono.MonoType -> ExprResult
 generateVarKernel ctx kernelPrefix home name monoType =
     let
@@ -888,7 +959,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
         kernelName =
             kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
     in
-    -- Check for intrinsic constants (pi, e)
     case KernelIntrinsics.kernelIntrinsic home name [] monoType of
         Just (KernelIntrinsics.ConstantFloat { value }) ->
             let
@@ -903,7 +973,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
             }
 
         Just _ ->
-            -- Other intrinsic matched with zero args - but check if it's function-typed
             case monoType of
                 Mono.MFunction _ _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
@@ -913,9 +982,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.countTotalArity monoType
                     in
                     if arity == 0 then
-                        -- Zero-arity function (thunk): call directly
-                        -- The result ABI comes from monoTypeToAbi, matching the
-                        -- ElmDerived kernelBackendAbiPolicy (KERN_006).
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -931,18 +997,9 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         }
 
                     else
-                        -- Function-typed kernel with arity > 0: create a closure (papCreate)
-                        -- Register kernel call so func.func declaration is emitted,
-                        -- enabling the closure wrapper to know parameter types.
-                        --
-                        -- Phase B: route symbol-name selection through registerKernelInstance
-                        -- so Utils.compare on primitive comparables gets the typed
-                        -- _Int / _Float / _Char variant. Kernels with only boxed
-                        -- parameters get the root symbol with all-!eco.value ABI.
                         instanceClosureResult ctx1 var kernelPrefix home name monoType arity
 
                 _ ->
-                    -- Non-function type: call directly
                     let
                         resultMlirType =
                             Types.monoTypeToAbi monoType
@@ -958,7 +1015,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     }
 
         Nothing ->
-            -- No intrinsic match - check if this is a function type
             case monoType of
                 Mono.MFunction _ _ _ _ ->
                     -- Kernels use total ABI arity (flattened), not stage arity
@@ -968,9 +1024,6 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             Types.countTotalArity monoType
                     in
                     if arity == 0 then
-                        -- Zero-arity function (thunk): call directly
-                        -- The result ABI comes from monoTypeToAbi, matching the
-                        -- ElmDerived kernelBackendAbiPolicy (KERN_006).
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -986,12 +1039,9 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         }
 
                     else
-                        -- Function-typed kernel with arity > 0: create a closure (papCreate)
-                        -- (Phase B: see instanceClosureResult helper.)
                         instanceClosureResult ctx1 var kernelPrefix home name monoType arity
 
                 _ ->
-                    -- Non-function type: call the kernel directly
                     let
                         resultMlirType =
                             Types.monoTypeToAbi monoType
@@ -1007,13 +1057,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     }
 
 
-{-| Build a no-capture papCreate for a function-typed kernel referenced as a
-value, routing the symbol-name decision through `registerKernelInstance`
-(per-instance kernel ABI rollout, Phase B).
+{-| Generates a kernel function used as a value: an `eco.papCreate` with no
+captures and the given `arity`, defining `var`.
 
-The kernel's monomorphized function type drives both the ABI types
-(via `KernelBackendAbiPolicy` + `monoTypeToAbi`) and the symbol suffix
-(e.g. `_Int` for `Utils.compare` on `Int -> Int -> Order`).
+The kernel is registered with `Context.registerKernelInstance` under its
+argument and result types, which chooses the symbol the closure names
+(possibly with a type suffix, as `Compiler.Generate.MLIR.KernelAbi` describes)
+and makes sure the kernel is declared.
 
 -}
 instanceClosureResult : Ctx.Context -> String -> Name.Name -> Name.Name -> Name.Name -> Mono.MonoType -> Int -> ExprResult
@@ -1071,18 +1121,20 @@ instanceClosureResult ctx var kernelPrefix home name monoType arity =
 -- ====== LIST GENERATION ======
 
 
-{-| Generate MLIR code for a list literal.
+{-| Generates a list literal. `[]` is the embedded Nil constant. A longer list
+is built from the last element forwards, one `eco.construct.list` per element
+onto the Nil constant; an element whose SSA type is unboxable is stored
+unboxed, and any other is boxed first. The list's type is registered in the
+type table either way.
 -}
 generateList : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateList ctx items listType =
-    -- Register the list type for the type graph
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType listType ctx
     in
     case items of
         [] ->
-            -- Empty list: use eco.constant Nil (embedded constant, not heap-allocated)
             let
                 ( var, ctx1 ) =
                     Ctx.freshVar ctxWithType
@@ -1098,9 +1150,6 @@ generateList ctx items listType =
             }
 
         _ ->
-            -- Non-empty list: use eco.constant Nil for tail, eco.construct.list for cons cells.
-            -- Now that MonoPath carries ContainerKind, projection ops (eco.project.list_head/tail)
-            -- match the Cons layout created by eco.construct.list.
             let
                 ( nilVar, ctx1 ) =
                     Ctx.freshVar ctxWithType
@@ -1116,14 +1165,13 @@ generateList ctx items listType =
                                 result =
                                     generateExpr accCtx item
 
-                                -- Check if element can be stored unboxed based on ACTUAL SSA type
-                                -- (not MonoType, which may not match SSA type in all cases)
+                                -- Decided by the SSA type, which can differ
+                                -- from what the Mono type maps to.
                                 headUnboxed : Bool
                                 headUnboxed =
                                     Types.isUnboxable result.resultType
                             in
                             if headUnboxed then
-                                -- Store element unboxed directly (no boxing needed)
                                 let
                                     ( consVar, ctx3 ) =
                                         Ctx.freshVar result.ctx
@@ -1134,7 +1182,6 @@ generateList ctx items listType =
                                 ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
 
                             else
-                                -- Box element before storing in the list
                                 let
                                     ( boxOps, boxedVar, ctx3 ) =
                                         boxToEcoValue result.ctx result.resultVar result.resultType
@@ -1162,12 +1209,25 @@ generateList ctx items listType =
 -- ====== CLOSURE GENERATION ======
 
 
-{-| Generate MLIR code for a closure.
+{-| Generates a closure value and queues its body, as a `PendingLambda`, to be
+emitted as a function of its own.
+
+The captures are generated first, and a Bool capture is boxed
+(`boxArgsForClosureBoundary`); other captures keep their SSA type. With no
+captures and no parameters the closure is a thunk and is called at once, with
+an `eco.call`. Otherwise the value is an `eco.papCreate` whose `arity` counts
+captures plus parameters. Without captures its `function` is the lambda's own
+name; with captures both `function` and `_fast_evaluator` name the lambda's
+`$cap` clone, which takes the captures then the parameters.
+
+The queued lambda sees the enclosing let's sibling placeholders, so that
+mutually recursive local closures can name each other; it does not see any
+other outer variable, which must be captured explicitly.
+
 -}
 generateClosure : Ctx.Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateClosure ctx closureInfo body monoType =
     let
-        -- Generate expressions and track ACTUAL SSA types, not Mono types
         ( captureOpsReversed, captureVarsWithTypesReversed, ctx1 ) =
             List.foldl
                 (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
@@ -1190,7 +1250,6 @@ generateClosure ctx closureInfo body monoType =
         captureVarsWithTypes =
             List.reverse captureVarsWithTypesReversed
 
-        -- Box Bool (i1) captures at closure boundary per REP_CLOSURE_001 / FORBID_CLOSURE_001
         ( boxOps, boxedCaptureVarsWithTypes, ctx1a ) =
             boxArgsForClosureBoundary ctx1 captureVarsWithTypes
 
@@ -1217,9 +1276,6 @@ generateClosure ctx closureInfo body monoType =
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
 
-        -- Use currentLetSiblings only for mutually recursive let bindings.
-        -- Do NOT fall back to varMappings; non-recursive closures must capture
-        -- all free variables explicitly (CGEN_CLOSURE_003).
         baseSiblings : Dict.Dict String Ctx.VarInfo
         baseSiblings =
             ctx.currentLetSiblings
@@ -1237,8 +1293,7 @@ generateClosure ctx closureInfo body monoType =
             }
     in
     if arity == 0 then
-        -- Zero-arity closure (thunk with no captures): call the lambda directly.
-        -- papCreate requires arity > 0 (num_captured < arity invariant).
+        -- Called, not wrapped: papCreate needs an arity above zero.
         let
             ctx3 : Ctx.Context
             ctx3 =
@@ -1258,7 +1313,6 @@ generateClosure ctx closureInfo body monoType =
         }
 
     else
-        -- Non-zero arity: create a PAP with captures (typed closure ABI)
         let
             hasCaptures =
                 not (List.isEmpty closureInfo.captures)
@@ -1266,8 +1320,6 @@ generateClosure ctx closureInfo body monoType =
             baseFuncName =
                 lambdaIdToString closureInfo.lambdaId
 
-            -- For closures with captures, reference the fast clone ($cap),
-            -- the only function emitted for them; otherwise the original.
             functionName =
                 if hasCaptures then
                     baseFuncName ++ "$cap"
@@ -1280,11 +1332,9 @@ generateClosure ctx closureInfo body monoType =
                     Dict.empty
 
                 else
-                    -- Use actual capture types (not all !eco.value)
                     Dict.singleton "_operand_types"
                         (ArrayAttr Nothing (List.map TypeAttr captureTypesList))
 
-            -- Add _fast_evaluator attribute for closures with captures
             fastEvaluatorAttr =
                 if hasCaptures then
                     Dict.singleton "_fast_evaluator" (SymbolRefAttr (baseFuncName ++ "$cap"))
@@ -1292,7 +1342,6 @@ generateClosure ctx closureInfo body monoType =
                 else
                     Dict.empty
 
-            -- Add _closure_kind attribute if available
             closureKindAttr =
                 case closureInfo.closureKind of
                     Just (Mono.Known (Mono.ClosureKindId kindId)) ->
@@ -1301,12 +1350,9 @@ generateClosure ctx closureInfo body monoType =
                     Nothing ->
                         Dict.empty
 
-            -- _result_kind matches the closure evaluator's real C-ABI return
-            -- kind (ParamKind: 0=Boxed, 1=Int, 2=Float, 3=Char). Derived
-            -- from the lambda body's Mono type via Types.monoTypeToAbi +
-            -- mlirTypeToKind. For multi-stage closures the body returns a
-            -- function (boxed), so this naturally collapses to PK_Boxed.
-            -- Omitted when 0 to keep diffs minimal in the dialect.
+            -- _result_kind is the slot kind of the body's ABI type (0 boxed,
+            -- 1 Int, 2 Float, 3 Char), omitted when 0. A body that returns a
+            -- further stage returns a function, which is boxed.
             bodyResultKind =
                 Types.mlirTypeToKind (Types.monoTypeToAbi (Mono.typeOf body))
 
@@ -1317,7 +1363,6 @@ generateClosure ctx closureInfo body monoType =
                 else
                     Dict.singleton "_result_kind" (IntAttr (Just I8) bodyResultKind)
 
-            -- slot_kinds: one kind per capture, from the capture SSA types (S.5).
             papAttrs =
                 Dict.union resultKindAttr
                     (Dict.union closureKindAttr
@@ -1353,8 +1398,8 @@ generateClosure ctx closureInfo body monoType =
         }
 
 
-{-| The MLIR function name of an anonymous lambda: its home module's MLIR name,
-then `_lambda_` and the lambda's unique id.
+{-| Returns the MLIR function name of an anonymous lambda: its home module's
+MLIR name, then `_lambda_` and the lambda's unique id.
 -}
 lambdaIdToString : Mono.LambdaId -> String
 lambdaIdToString lambdaId =
@@ -1367,8 +1412,9 @@ lambdaIdToString lambdaId =
 -- ====== CALL GENERATION ======
 
 
-{-| Box a value to !eco.value given its MlirType.
-If already !eco.value, returns unchanged.
+{-| Boxes `var`, whose SSA type is `mlirTy`, to an `!eco.value`. A value that
+is already one is returned with no ops; a value aggregate is put on the heap
+with `eco.to_heap`; anything else is wrapped with `eco.box`.
 -}
 boxToEcoValue : Ctx.Context -> String -> MlirType -> ( List MlirOp, String, Ctx.Context )
 boxToEcoValue ctx var mlirTy =
@@ -1376,8 +1422,6 @@ boxToEcoValue ctx var mlirTy =
         ( [], var, ctx )
 
     else if Types.isAggValueType mlirTy then
-        -- U-T1.3.3: an SSA value aggregate boxes via eco.to_heap (an
-        -- allocating construct-equivalent), never via eco.box.
         let
             ( heapVar, ctx1 ) =
                 Ctx.freshVar ctx
@@ -1405,23 +1449,19 @@ boxToEcoValue ctx var mlirTy =
         ( [ boxOp ], boxedVar, ctx2 )
 
 
-{-| Config gate for flag-gated intrinsics, applied AFTER `KernelIntrinsics.kernelIntrinsic`
-has classified the call. `Intrinsics` itself stays config-free — it answers "what
-op could this be", this answers "may we emit it here" — so a declining gate always
-falls through to today's kernel-call path (whitelist discipline).
+{-| Returns `intrinsic` if it may be emitted at this call, or `Nothing` to
+make the call an ordinary kernel call. `KernelIntrinsics.kernelIntrinsic`
+decides what op a call could become; this decides whether to use it, given the
+configuration and the arguments' SSA types.
 
-`ConstructList` (kernel-opt-01) additionally carries an SSA-type admissibility test:
-it declines when a primitive head slot is fed by a DIFFERENT primitive SSA type, a
-layout disagreement we must never freeze into `head_kind`. Aggregate heads are
-admitted only into a BOXED slot, where `boxToEcoValue` emits `eco.to_heap`. That is
-a deliberate divergence from the kernel path it replaces: `boxToMatchSignatureTyped`'s
-final arm silently passes a mismatched primitive through ("no boxing solution
-(e.g. i64 vs f64) — use actual type for now"); declining is safer.
-
-`StringLength` (kernel-opt-04) and `AppendString`/`AppendList` (kernel-opt-05) are
-plain flag checks — their classifiers already pinned the saturated mono shapes, and
-String and List both cross every ABI as `!eco.value`, so there is no SSA-type
-disagreement to test for.
+`StringLength`, `AppendString`, `AppendList` and `StringOrderCompare` are
+admitted when their configuration flag is on. `ValueEq` also needs every
+argument to be an `!eco.value` already, because the intrinsic path can unbox
+but not box, and an argument may arrive as a value aggregate. `ConstructList`
+needs its flag and exactly two arguments, and admits a primitive head slot only
+when the head's SSA type is `!eco.value` or the slot's own type, so that a
+mismatched primitive is never written under the wrong head kind; a boxed head
+slot is always admitted. Every other intrinsic is admitted unconditionally.
 
 -}
 gateIntrinsic : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> Maybe KernelIntrinsics.Intrinsic
@@ -1456,13 +1496,6 @@ gateIntrinsic ctx argsWithTypes intrinsic =
                 Nothing
 
         KernelIntrinsics.ValueEq _ ->
-            -- Two conditions, and the SSA one is why this cannot live in
-            -- Intrinsics: eco.value.eq needs BOTH operands to already be
-            -- !eco.value, but aggregate promotion / psplit can hand a tuple or
-            -- single-ctor custom to a call site as loose scalar slots, and the
-            -- intrinsic path only ever UNBOXES -- it has no boxing step, so it
-            -- would emit an ill-typed op. Declining routes the call back to the
-            -- untouched kernel branch.
             if ctx.ecoConfig.valueEq && List.all (Tuple.second >> Types.isEcoValueType) argsWithTypes then
                 Just intrinsic
 
@@ -1488,10 +1521,10 @@ gateIntrinsic ctx argsWithTypes intrinsic =
             Just intrinsic
 
 
-{-| Coerce actual SSA args to an intrinsic's expected operand types. Only
-`ConstructList` needs the box direction (`unboxArgsForIntrinsic` only ever
-unboxes); every other intrinsic keeps exactly today's behaviour, so output is
-byte-identical when the flag is off and for all non-cons intrinsics when it is on.
+{-| Converts the arguments of an admitted intrinsic to the operand types it
+expects. For `ConstructList` the tail is boxed, and the head is boxed into a
+boxed slot or unboxed into a primitive one. Every other intrinsic goes through
+`Intrinsics.unboxArgsForIntrinsic`, which only unboxes.
 -}
 coerceIntrinsicArgs : Ctx.Context -> List ( String, MlirType ) -> KernelIntrinsics.Intrinsic -> ( List MlirOp, List String, Ctx.Context )
 coerceIntrinsicArgs ctx argsWithTypes intrinsic =
@@ -1517,8 +1550,11 @@ coerceIntrinsicArgs ctx argsWithTypes intrinsic =
             Intrinsics.unboxArgsForIntrinsic ctx argsWithTypes intrinsic
 
 
-{-| Box or unbox arguments (based on ACTUAL SSA types) to match the
-function's expected Mono types.
+{-| Converts each argument to the ABI type of the matching entry of
+`expectedTypes`, judging by the argument's SSA type: a primitive is boxed where
+`!eco.value` is expected, and an `!eco.value` is unboxed where a primitive is.
+Any other mismatch, such as `i64` against `f64`, is passed through unchanged.
+Arguments beyond the length of `expectedTypes` are dropped.
 -}
 boxToMatchSignatureTyped :
     Ctx.Context
@@ -1540,7 +1576,6 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                 ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
 
             else if Types.isEcoValueType expectedMlirTy && not (Types.isEcoValueType actualTy) then
-                -- Function expects boxed, we have primitive -> box using actual SSA type
                 let
                     ( boxOps, boxedVar, ctx1 ) =
                         boxToEcoValue ctxAcc var actualTy
@@ -1551,7 +1586,6 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                 )
 
             else if not (Types.isEcoValueType expectedMlirTy) && Types.isEcoValueType actualTy then
-                -- Function expects primitive, we have boxed -> unbox to expected primitive type
                 let
                     ( unboxOps, unboxedVar, ctx1 ) =
                         Intrinsics.unboxToType ctxAcc var expectedMlirTy
@@ -1562,7 +1596,6 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                 )
 
             else
-                -- No boxing solution (e.g. i64 vs f64) - use actual type for now
                 ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
 
         ( opsReversed, pairsReversed, ctxFinal ) =
@@ -1571,27 +1604,26 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
     ( List.reverse opsReversed, List.reverse pairsReversed, ctxFinal )
 
 
-{-| Coerce an expression result to a desired MLIR type by inserting
-boxing/unboxing ops when the difference is only boxed vs unboxed.
-Handles both directions:
+{-| Converts `var` from its SSA type `actualTy` to `expectedTy`, returning the
+ops and the converted value.
 
-  - primitive -> !eco.value (box)
-  - !eco.value -> primitive (unbox)
+Equal types need nothing. A primitive is converted to `!eco.value` with
+`eco.box`, and a value aggregate with `eco.to_heap`, which puts it on the heap.
+An `!eco.value` is converted to a value aggregate with
+`eco.from_heap`, and to a primitive by unboxing. Any other pair, such as `i64`
+to `f64` or one aggregate type to another, crashes the compiler, because such a
+mismatch should have been resolved before code generation.
 
 -}
 coerceResultToType : Ctx.Context -> String -> MlirType -> MlirType -> ( List MlirOp, String, Ctx.Context )
 coerceResultToType ctx var actualTy expectedTy =
     if actualTy == expectedTy then
-        -- No coercion needed
         ( [], var, ctx )
 
     else if Types.isEcoValueType expectedTy && not (Types.isEcoValueType actualTy) then
-        -- Need primitive -> boxed
         boxToEcoValue ctx var actualTy
 
     else if Types.isAggValueType expectedTy && Types.isEcoValueType actualTy then
-        -- U-T1.3.3: boxed -> SSA value aggregate (pure field loads); bridges
-        -- a boxed tuple onto an sret worker's aggregate result spine.
         let
             ( aggVar, ctx1 ) =
                 Ctx.freshVar ctx
@@ -1602,13 +1634,9 @@ coerceResultToType ctx var actualTy expectedTy =
         ( [ fromHeapOp ], aggVar, ctx2 )
 
     else if not (Types.isEcoValueType expectedTy) && Types.isEcoValueType actualTy then
-        -- Need boxed -> primitive
         Intrinsics.unboxToType ctx var expectedTy
 
     else
-        -- Types don't match and no boxing/unboxing solution
-        -- This indicates a monomorphization bug - primitive type mismatches
-        -- (e.g., i64 vs f64) should have been resolved upstream
         crash <|
             "coerceResultToType: cannot coerce "
                 ++ Types.mlirTypeToString actualTy
@@ -1618,8 +1646,36 @@ coerceResultToType ctx var actualTy expectedTy =
                 ++ var
 
 
-{-| Generate MLIR code for a function call.
-Uses precomputed CallInfo from GlobalOpt instead of re-deriving staging.
+{-| Generates a call, choosing the kind of op from the `CallInfo` the optimizer
+attached to it rather than from the callee's type. A call through a closure
+value is coerced to the ABI type of `resultType`; a direct call to a global or
+kernel has the result type of what it calls (see
+`generateSaturatedCallNoFusion`).
+
+A _fast-dispatch stamp_ is the optimizer's finding that the callee value can
+only be one particular closure (`fastEvaluator` with its `captureAbi`). Only
+`CallGenericApply`, `CallSegmentationUnknown` and
+`CallDirectKnownSegmentation` consult it, except a single-stage saturated
+`CallDirectKnownSegmentation` whose callee is a global or kernel reference;
+`CallDirectFlat` never does. When such a call carries one and supplies
+exactly the closure's next stage of arguments, it becomes a fast dispatch
+(`generateFastDispatchCall`) that calls that closure's code directly; when it
+supplies more, the first stage is a fast dispatch and the rest is applied
+generically (`generateStagedFastDispatchCall`). Without a usable stamp:
+
+  - `CallGenericApply` becomes a generic `eco.papExtend`
+    (`generateGenericApply`).
+  - `CallSegmentationUnknown` becomes an `eco.papExtend` without
+    `remaining_arity` whose arguments are boxed to what the callee's evaluator
+    takes, if that is known (`generateUnknownSegmentationCall`). With no
+    arguments it is just the callee's value, which need not be a closure.
+  - `CallDirectFlat` is a saturated call (`generateSaturatedCall`), or a
+    partial application when `resultType` is a function.
+  - `CallDirectKnownSegmentation` is a saturated call when it saturates one
+    stage, and a stage-by-stage application otherwise. A saturated call whose
+    callee is a global or kernel reference never consults the stamp, because
+    a direct `eco.call` to it is cheaper than any closure dispatch.
+
 -}
 generateCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateCall ctx func args resultType callInfo =
@@ -1627,17 +1683,11 @@ generateCall ctx func args resultType callInfo =
         Mono.CallGenericApply ->
             case fastDispatchStamp callInfo args of
                 Just ( fastLambdaId, fastAbi, papPrefix ) ->
-                    -- LSS singleton upgrade (AbiCloning stamp, design §9.2):
-                    -- the callee value is provably one specific closure
-                    -- instance (or its k-arg PAP, E2); call its fast clone
-                    -- directly.
                     generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
                     case fastDispatchStampStaged callInfo args of
                         Just ( fastLambdaId, fastAbi ) ->
-                            -- E2.7: over-applying stamped site — fast batch 1,
-                            -- generic remainder.
                             generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
                         Nothing ->
@@ -1646,23 +1696,17 @@ generateCall ctx func args resultType callInfo =
         Mono.CallSegmentationUnknown ->
             case fastDispatchStamp callInfo args of
                 Just ( fastLambdaId, fastAbi, papPrefix ) ->
-                    -- LSS singleton upgrade — same as the generic-apply case.
                     generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
 
                 Nothing ->
                     case fastDispatchStampStaged callInfo args of
                         Just ( fastLambdaId, fastAbi ) ->
-                            -- E2.7: over-applying stamped site — fast batch 1,
-                            -- generic remainder.
                             generateStagedFastDispatchCall ctx func args resultType fastLambdaId fastAbi
 
                         Nothing ->
-                            -- Known ABI + unknown staging: typed papExtend without remaining_arity.
-                            -- Runtime reads closure header for saturation decisions.
-                            -- Result is always !eco.value, so coerce back to expected ABI type.
-                            -- A call with no arguments applies nothing: its value is the
-                            -- callee's value, which need not be a closure (it may be an i1
-                            -- Bool), so no papExtend is emitted for it.
+                            -- A call with no arguments applies nothing: its value
+                            -- is the callee's, which may not be a closure (an i1
+                            -- Bool, say), so no papExtend is emitted.
                             let
                                 unkRes =
                                     if List.isEmpty args then
@@ -1688,7 +1732,6 @@ generateCall ctx func args resultType callInfo =
                             }
 
         Mono.CallDirectFlat ->
-            -- Kernels / externs: use ABI-flattened model.
             if Types.isFunctionType resultType then
                 generateClosureApplication ctx func args resultType callInfo
 
@@ -1697,32 +1740,9 @@ generateCall ctx func args resultType callInfo =
 
         Mono.CallDirectKnownSegmentation ->
             if callInfo.isSingleStageSaturated then
-                -- Single-stage saturated call: consult the AbiCloning stamp
-                -- FIRST (plans/pre-mono-lss-transforms-04-alias-forwarding.md
-                -- §7.1). A closure VALUE whose construction is visible in the
-                -- same function — a captured PAP after the post-mono inliner
-                -- copied a HOF body into its caller — is classified
-                -- known-segmentation by `annotateExprCalls`, and this branch
-                -- used to route it straight to the typed saturated helper
-                -- (`eco_closure_call_saturated`), silently discarding the
-                -- `PsStampPap`/`Stamp` the pass had placed: the SAME site
-                -- inside the un-inlined `List_map` spec is `CallGenericApply`
-                -- and took the fast path. MEASURED on the self-compile
-                -- (call-stats Runs 11/12): 21 M dispatches per compile fell
-                -- from `fast` to `typed` through this gap once alias
-                -- forwarding made `List.map` cheap enough to inline. A
-                -- direct-global callee never carries a stamp (its member has
-                -- no closure instance), so the intrinsic logic below is
-                -- reached exactly as before for those.
-                --
-                -- NARROWED the same day: with LSS_031 a global's own spec IS
-                -- an instance, so a `MonoVarGlobal` callee CAN carry a stamp
-                -- — and `generateSaturatedCallNoFusion` calls it DIRECTLY
-                -- (`eco.call @spec`), which beats any papExtend. Consulting
-                -- the stamp for those diverted 4,691 direct calls per
-                -- self-compile into papCreate + fast papExtend. Only a
-                -- closure VALUE (a local, a call result, a literal) has no
-                -- direct form; the two direct-call shapes keep their path.
+                -- A global or kernel callee may carry a stamp too, but it is
+                -- called directly with eco.call, which beats any papExtend;
+                -- only a closure value consults the stamp.
                 case func of
                     Mono.MonoVarGlobal _ _ _ ->
                         generateSaturatedCall ctx func args resultType callInfo
@@ -1739,12 +1759,6 @@ generateCall ctx func args resultType callInfo =
                                 generateSaturatedCall ctx func args resultType callInfo
 
             else
-                -- Multi-stage call or partial application: use closure path.
-                -- E2.7: consult the stamps FIRST — multi-stage dispatched
-                -- calls route here and previously never consulted them (the
-                -- 1,571-of-2,397 emission gap). A direct-global callee can't
-                -- carry a stamp (its member has no closure instance), so
-                -- these hits are genuine closure-value applications.
                 case fastDispatchStamp callInfo args of
                     Just ( fastLambdaId, fastAbi, papPrefix ) ->
                         generateFastDispatchCall ctx func args resultType fastLambdaId fastAbi papPrefix
@@ -1758,13 +1772,15 @@ generateCall ctx func args resultType callInfo =
                                 generateClosureApplication ctx func args resultType callInfo
 
 
-{-| The `_gencall_reason` attribute of a generic papExtend, under the census
-flag (`mono.stagingReport`, ECO_STAGING_REPORT=1) only
-(plans/staging-honesty-and-production-test-pipeline.md P0.4; the
-lowering counts it under ECO_GENCALL_COUNTERS). Reasons: 1 local variable,
-2 call result, 3 record field, 4 case/if join, 5 global, 6 other callee,
-7 a cross-stage batch, 8 a generic kind routed through applyByStages, 9 the
-rest of a stamped over-applied call, 10 (lowering) a generic PAP fusion.
+{-| Returns the `_gencall_reason` attribute recording why a papExtend is
+generic, or nothing when the configuration's `mono.stagingReport` census flag
+is off.
+
+The reasons written here are 1 to 6 for the shape of the callee
+(`gencallCalleeReason`), 7 for a batch after the first in a stage-by-stage
+application, 8 for a generic call kind applied stage by stage, and 9 for the
+arguments beyond the first stage of a stamped call.
+
 -}
 gencallReasonAttr : Ctx.Context -> Int -> List ( String, MlirAttr )
 gencallReasonAttr ctx reason =
@@ -1775,7 +1791,9 @@ gencallReasonAttr ctx reason =
         []
 
 
-{-| The callee-shape reason for `gencallReasonAttr`.
+{-| Returns the `_gencall_reason` number for a callee's shape: 1 a local
+variable, 2 a call result, 3 a record field, 4 a case or if, 5 a global, and 6
+anything else.
 -}
 gencallCalleeReason : Mono.MonoExpr -> Int
 gencallCalleeReason func =
@@ -1802,6 +1820,9 @@ gencallCalleeReason func =
             6
 
 
+{-| Returns the `_call_kind` attribute text for a call kind, the kind's name in
+snake case.
+-}
 callKindToAttrString : Mono.CallKind -> String
 callKindToAttrString callKind =
     case callKind of
@@ -1818,16 +1839,15 @@ callKindToAttrString callKind =
             "segmentation_unknown"
 
 
-{-| Generate a generic apply call: eco.papExtend without remaining\_arity.
+{-| Generates a generic application of the callee value to `args`: one
+`eco.papExtend` with `_call_kind` `generic_apply` and no `remaining_arity`, so
+that the runtime decides from the closure whether the call is saturated.
 
-Saturation is determined at runtime from the closure header. The result type
-follows the call's Mono result type: when that is a primitive, the op's SSA
-result is that primitive and carries a matching non-zero `_result_kind`;
-otherwise (function-type result, boxed Custom, etc.) it is !eco.value.
-
-Only Bool (i1) arguments are boxed to !eco.value here; Int, Float and Char
-stay primitive. EcoToLLVM's lowerGenericApply passes them unboxed, with their
-kinds in an EvalParamLayout, and the runtime re-boxes per slot (CGEN_059).
+Only Bool arguments are boxed; Int, Float and Char arguments are passed
+unboxed, with their kinds in `slot_kinds`. The op's result type follows the ABI
+of `resultType`: a primitive, with the matching `_result_kind`, when that is
+`i64`, `f64` or `i16`, and `!eco.value` otherwise. The result is not coerced
+further.
 
 -}
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -1837,46 +1857,30 @@ generateGenericApply ctx func args resultType =
         funcResult =
             generateExpr ctx func
 
-        -- Generate all argument expressions
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Only box Bool (i1) to !eco.value; Int/Float/Char stay as primitives,
-        -- passed unboxed with their kinds; the runtime re-boxes (CGEN_059).
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsForClosureBoundary ctx1 argsWithTypes
 
-        -- Build operand list: closure + all args
         allOperandNames =
             funcResult.resultVar :: List.map Tuple.first argsForClosure
 
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
         newargsSlotKinds =
             Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        -- _result_kind matches the closure evaluator's real C-ABI return
-        -- kind. Derived from the call's Mono result type — Mono types the
-        -- call as the saturated outcome (primitive when the call applies
-        -- enough args to land on a primitive return, function type for
-        -- under-saturation). When primitive, propagate the kind both as
-        -- the op's SSA result type AND as the `_result_kind` attribute so
-        -- `lowerGenericApply` can pass the matching `desired_kind` to
-        -- `eco_apply_closure_eval` and skip the wrapper-side return box
-        -- in `invokeSaturatedTyped`.
         callResultMlirType =
             Types.monoTypeToAbi resultType
 
         genericApplyResultKind =
             Types.mlirTypeToKind callResultMlirType
 
-        -- SSA result type: primitive when _result_kind is non-zero,
-        -- !eco.value otherwise (function-type result, boxed Custom, etc.).
         resultMlirType =
             if genericApplyResultKind == 0 then
                 Types.ecoValue
@@ -1891,7 +1895,6 @@ generateGenericApply ctx func args resultType =
             else
                 [ ( "_result_kind", IntAttr (Just I8) genericApplyResultKind ) ]
 
-        -- Build eco.papExtend WITHOUT remaining_arity (generic mode).
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
@@ -1920,18 +1923,16 @@ generateGenericApply ctx func args resultType =
     }
 
 
-{-| Generate a segmentation-unknown call: eco.papExtend without remaining\_arity,
-but with typed boxing (args boxed to the callee evaluator's param ABI, `boxArgsToEvaluatorParams`).
+{-| Generates an application of the callee value to `args` when the callee's
+stages are not known: one `eco.papExtend` with `_call_kind`
+`segmentation_unknown` and no `remaining_arity`.
 
-This is the "known ABI + unknown staging" path. Generic\_apply boxes only
-Bool (i1) and passes Int, Float and Char unboxed in a typed args buffer, so
-that `eco_apply_closure_eval` reboxes them as the closure needs (CGEN\_059);
-this path instead uses the callee's signature to determine boxing policy,
-preserving typed ABI through the closure boundary.
-
-As in `generateGenericApply`, the result type follows the call's Mono result
-type: a primitive (with a matching non-zero `_result_kind`) when that type is
-primitive, !eco.value otherwise.
+Apart from its call kind, it differs from `generateGenericApply` only in how
+arguments are prepared:
+a primitive argument is boxed when the matching parameter of the callee's
+evaluator, if that is known, is `!eco.value`, and a Bool argument always is
+(`boxArgsToEvaluatorParams`). The result type follows
+the ABI of `resultType` as in `generateGenericApply`.
 
 -}
 generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -1941,45 +1942,30 @@ generateUnknownSegmentationCall ctx func args resultType =
         funcResult =
             generateExpr ctx func
 
-        -- Generate all argument expressions
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Box args to the callee evaluator's param ABI (typed boxing, not all-boxed)
         ( boxOps, argsForClosure, ctx2 ) =
             boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-        -- Build operand list: closure + all args
         allOperandNames =
             funcResult.resultVar :: List.map Tuple.first argsForClosure
 
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
         newargsSlotKinds =
             Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
 
-        -- _result_kind matches the closure evaluator's real C-ABI return
-        -- kind. Derived from the call's Mono result type — Mono types
-        -- the call as the saturated outcome (primitive when the call
-        -- applies enough args to land on a primitive return; function
-        -- type for under-saturation). When primitive, propagate the
-        -- kind both as the op's SSA result type AND as `_result_kind`
-        -- so `lowerSegmentationUnknown` passes the matching
-        -- `desired_kind` to `eco_apply_closure_eval`, skipping the
-        -- wrapper-side return box in `invokeSaturatedTyped`.
         callResultMlirType =
             Types.monoTypeToAbi resultType
 
         unknownSegResultKind =
             Types.mlirTypeToKind callResultMlirType
 
-        -- SSA result type: primitive when _result_kind is non-zero,
-        -- !eco.value otherwise (function-type result, boxed Custom, etc.).
         resultMlirType =
             if unknownSegResultKind == 0 then
                 Types.ecoValue
@@ -1994,7 +1980,6 @@ generateUnknownSegmentationCall ctx func args resultType =
             else
                 [ ( "_result_kind", IntAttr (Just I8) unknownSegResultKind ) ]
 
-        -- Build eco.papExtend WITHOUT remaining_arity, with _call_kind = "segmentation_unknown".
         papExtendAttrs =
             Dict.fromList
                 ([ ( "_operand_types"
@@ -2023,10 +2008,10 @@ generateUnknownSegmentationCall ctx func args resultType =
     }
 
 
-{-| E2.7 (LSS\_014): the staged-stamp match. `Just` iff the call carries an
-exact-instance stamp (`fastEvaluator` + `captureAbi`, `fastPapPrefix`
-ABSENT — staged PAPs are v3) and applies MORE args than the instance's
-first stage. Emission then splits: fast batch 1, generic remainder.
+{-| Returns the fast-dispatch stamp of a call that supplies more arguments than
+the stamped closure's next stage takes, or `Nothing`. Only a stamp on the
+closure itself qualifies, not one on a partial application of it
+(`fastPapPrefix` set), and the stage must take at least one argument.
 -}
 fastDispatchStampStaged : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( FastRef, Mono.CaptureABI )
 fastDispatchStampStaged callInfo args =
@@ -2042,14 +2027,12 @@ fastDispatchStampStaged callInfo args =
             Nothing
 
 
-{-| E2.7 (LSS\_014): staged fast dispatch. The site applies more args than
-the stamped instance's first stage: emit the EXACT fast dispatch for batch 1
-(exactly `|abi.paramTypes|` args — saturating the instance's own stage, the
-same `remaining_arity` truthfulness contract as v1), then apply the
-remaining args to the intermediate (the instance's staged return — a
-runtime-computed closure) with ONE generic segmentation-unknown papExtend,
-per the H6.2-L1 cross-stage doctrine. The tail coerces to the site's
-expected ABI result.
+{-| Generates a stamped call that supplies more arguments than the stamped
+closure's next stage takes. The first stage's arguments go to a fast dispatch
+(`generateFastDispatchCall`), whose result is a closure computed at run time;
+the remaining arguments are applied to it with one `segmentation_unknown`
+`eco.papExtend` (`applySegUnknownToVar`), and the value is coerced to the ABI of
+`resultType`.
 -}
 generateStagedFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> FastRef -> Mono.CaptureABI -> ExprResult
 generateStagedFastDispatchCall ctx func args resultType fastRef abi =
@@ -2063,9 +2046,8 @@ generateStagedFastDispatchCall ctx func args resultType fastRef abi =
         rest =
             List.drop stage1Count args
 
-        -- Batch 1: the v1 exact fast dispatch, typed at the instance's own
-        -- return (an arrow -> !eco.value) so the internal coercion is a
-        -- no-op and the result is the intermediate closure.
+        -- Typed at the closure's own return type, a function, so that the
+        -- inner coercion does nothing and the result is the next closure.
         innerRes =
             generateFastDispatchCall ctx func batch1 abi.returnType fastRef abi 0
 
@@ -2080,12 +2062,10 @@ generateStagedFastDispatchCall ctx func args resultType fastRef abi =
     }
 
 
-{-| Apply `args` to an already-computed closure VALUE with one generic
-segmentation-unknown `eco.papExtend` (no `remaining_arity`; the runtime
-drives multi-stage saturation from the closure header), then coerce to the
-site's expected ABI result. Var-level sibling of
-`generateUnknownSegmentationCall` — the callee here is a runtime-computed
-intermediate, so the per-callee boxing policy is the generic `False`.
+{-| Generates the application of `args` to the closure already held in
+`funcVar`: one `eco.papExtend` with `_call_kind` `segmentation_unknown` and no
+`remaining_arity`, coerced to the ABI of `resultType`. Nothing is known about
+the closure, so only Bool arguments are boxed.
 -}
 applySegUnknownToVar : Ctx.Context -> String -> MlirType -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 applySegUnknownToVar ctx funcVar funcMlirType args resultType =
@@ -2102,7 +2082,6 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
         allOperandTypes =
             funcMlirType :: List.map Tuple.second argsForClosure
 
-        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
         newargsSlotKinds =
             Ops.slotKindsAttr (List.map Tuple.second argsForClosure)
 
@@ -2160,9 +2139,8 @@ applySegUnknownToVar ctx funcVar funcMlirType args resultType =
     }
 
 
-{-| Generic apply plus the result coercion `generateCall` owes its caller.
-Extracted so the CallGenericApply arm can gate on the LSS fast-dispatch
-stamp first.
+{-| Generates a generic application (`generateGenericApply`) and coerces its
+value to the ABI of `resultType`.
 -}
 generateGenericApplyCoerced : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateGenericApplyCoerced ctx func args resultType =
@@ -2187,21 +2165,17 @@ generateGenericApplyCoerced ctx func args resultType =
     }
 
 
-{-| The AbiCloning singleton-upgrade stamp, if usable at this site.
-
-Both fields are stamped together by `AbiCloning.abiCloningPass`; the
-arg-count re-check mirrors the pass's own shape guard (belt and braces —
-the stamp is only ever placed on exactly-stage-saturating calls).
-
+{-| Returns the call's fast-dispatch stamp when the call supplies exactly the
+arguments the stamped closure's next stage takes, at least one: the reference
+to the closure, its `CaptureABI`, and the number of arguments a stamped partial
+application already holds (`fastPapPrefix`, 0 when the stamp is on the closure
+itself).
 -}
 fastDispatchStamp : Mono.CallInfo -> List Mono.MonoExpr -> Maybe ( FastRef, Mono.CaptureABI, Int )
 fastDispatchStamp callInfo args =
     case ( callInfo.fastEvaluator, callInfo.captureAbi ) of
         ( Just fastLambdaId, Just abi ) ->
             if not (List.isEmpty abi.paramTypes) && List.length args == List.length abi.paramTypes then
-                -- Third component: the E2 PAP-prefix k (0 for an exact
-                -- instance stamp). The emission needs it to pick the
-                -- bare-vs-$cap symbol from the REAL capture count.
                 Just ( ( fastLambdaId, callInfo.fastEvaluatorSpec ), abi, Maybe.withDefault 0 callInfo.fastPapPrefix )
 
             else
@@ -2211,27 +2185,23 @@ fastDispatchStamp callInfo args =
             Nothing
 
 
-{-| Singleton fast dispatch (LSS M3, design §9.2): the callee value is
-provably ONE specific closure instance, so emit a SATURATED typed
-eco.papExtend carrying `_fast_evaluator` + `_capture_abi`. The C++
-lowering (PapExtendOpLowering saturated branch -> emitFastClosureCall)
-then loads the captures with typed offsets and calls the instance's fast
-clone directly — no closure-header dispatch at all.
+{-| Generates a call through a callee value that the fast-dispatch stamp says
+can only be one particular closure, given exactly that closure's next stage of
+arguments. The result is one saturating `eco.papExtend` with `_call_kind`
+`singleton_fast`, `remaining_arity` equal to the number of arguments, and
+`_fast_evaluator` naming the closure's code, which lets the lowering call that
+code directly instead of dispatching through the closure.
 
-Contract (established by AbiCloning's guards, design §9.3):
+Each argument is coerced to the ABI of the matching parameter type in `abi`,
+and `_capture_abi` lists the ABI types of `abi.captureTypes`. The symbol is the
+closure's `$cap` clone when the closure has captures of its own, and its plain
+name when it has none; when the stamp is on a partial application holding
+`papPrefix` arguments, those arguments are counted in `captureTypes` but not
+as captures, and `_pap_prefix` records them. The op's result has the ABI of
+`abi.returnType` and is coerced to the ABI of `resultType`.
 
-  - the runtime value IS the instance (unique reachable instance of the
-    singleton member; PAP forms excluded by the first-stage arity check);
-  - `remaining_arity == List.length args` — the call exactly saturates
-    the instance's stage, so CGEN\_052's truthfulness obligation is met by
-    the instance's own shape;
-  - args are passed at the fast clone's param ABI
-    (`monoTypeToAbi abi.paramTypes`), captures load per
-    `monoTypeToAbi abi.captureTypes` — same derivation Lambdas.elm uses
-    for the clone's signature;
-  - fast-clone symbol: `lambdaIdToString id ++ "$cap"` when the instance
-    has captures, the base lambda symbol otherwise (captureless lambdas
-    ARE their own fast evaluator — Lambdas.elm emits them un-suffixed).
+The stamp is trusted: nothing here checks that the callee value really is that
+closure.
 
 -}
 generateFastDispatchCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> FastRef -> Mono.CaptureABI -> Int -> ExprResult
@@ -2241,11 +2211,9 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
         funcResult =
             generateExpr ctx func
 
-        -- Generate all argument expressions
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Coerce each arg to the fast clone's param ABI
         paramAbiTypes =
             List.map Types.monoTypeToAbi abi.paramTypes
 
@@ -2265,19 +2233,15 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
             List.reverse coercedArgsRev
 
         fastSymbol =
-            -- The bare-vs-$cap choice keys on the instance's REAL capture
-            -- count: under an E2 PAP stamp (papPrefix = k > 0) captureTypes
-            -- carries k merged prefix params on top of the real captures,
-            -- and a captureless member has no $cap clone (Lambdas.elm emits
-            -- it un-suffixed with signature = its params).
+            -- captureTypes includes the papPrefix arguments a stamped
+            -- partial application holds; they are not the closure's own
+            -- captures, and a closure without captures has no $cap clone.
             if List.length abi.captureTypes - papPrefix <= 0 then
                 fastRefBaseName ctx fastRef
 
             else
                 fastRefBaseName ctx fastRef ++ "$cap"
 
-        -- The fast clone's return ABI = the papExtend op's SSA result type
-        -- (the C++ saturated branch builds the call with exactly this type).
         retAbiType =
             Types.monoTypeToAbi abi.returnType
 
@@ -2287,7 +2251,6 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second coercedArgs
 
-        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
         newargsSlotKinds =
             Ops.slotKindsAttr (List.map Tuple.second coercedArgs)
 
@@ -2309,9 +2272,6 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
                    )
                  ]
                     ++ (if papPrefix > 0 then
-                            -- E2 audit marker (LSS_011): k merged prefix
-                            -- params ride at the tail of _capture_abi. No
-                            -- C++ consumer — documentation/verifier hook.
                             [ ( "_pap_prefix", IntAttr Nothing papPrefix ) ]
 
                         else
@@ -2326,7 +2286,6 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
 
-        -- Coerce to the ABI type the caller expects for this call's result
         expectedType =
             Types.monoTypeToAbi resultType
 
@@ -2341,7 +2300,8 @@ generateFastDispatchCall ctx func args resultType fastRef abi papPrefix =
     }
 
 
-{-| Result of applying arguments by stages.
+{-| The ops and final value of a stage-by-stage application, as
+`applyByStages` returns them: an `ExprResult` without `isTerminated`.
 -}
 type alias ApplyByStagesResult =
     { ops : List MlirOp
@@ -2351,56 +2311,52 @@ type alias ApplyByStagesResult =
     }
 
 
-{-| Apply arguments to a closure by stages, emitting a chain of papExtend operations.
+{-| Applies `args` to the closure `funcVar` one stage at a time, as a chain of
+`eco.papExtend` ops, each taking at most the arguments its closure still needs.
 
-This is now metadata-driven: it uses `sourceRemaining` (numeric arity from GlobalOpt)
-instead of calling staging helpers on MonoTypes directly.
+`sourceRemaining` is the number of arguments the closure still takes in its
+current stage, and becomes each op's `remaining_arity`. When a batch completes
+a stage, the result is the closure the stage returns, and the next batch is
+sized from `remainingStageArities`. Only the op that completes the last stage
+with no arguments left over has the type `saturatedReturnType`, with the
+matching `_result_kind`; every other op returns a closure of type
+`funcMlirType`. `saturatedReturnType` must be the return type of the function
+that last op actually runs, which for a call supplying more than one stage is
+not the type of the call itself.
 
-Each papExtend consumes up to `sourceRemaining` arguments. When the stage is fully
-applied and returns another closure, `remainingStageArities` provides the sequence
-of subsequent stage arities.
+Only the first batch carries `remaining_arity` and the `callKindAttr` call
+kind. A later batch is applied to a closure computed at run time, about which
+nothing is known, so it is a `segmentation_unknown` op without
+`remaining_arity`.
 
-This implements the stage-curried closure model required by MONO\_016 and CGEN\_052.
-
-For partial applications, result type is `!eco.value` per CGEN\_034 (PAPs are boxed closures).
-For fully saturated calls, result type is `saturatedReturnType` (the actual ABI return type).
-
-CGEN\_056: `saturatedReturnType` must equal the callee's `func.func` result type. The
-caller passes `Types.monoTypeToAbi callInfo.evaluatorReturnType`, derived from the
-evaluator's Mono body return type recorded in CallInfo by GlobalOpt. This is NOT
-the same as `Types.monoTypeToAbi resultType` (`MonoCall.resultType`), which differs
-on over-saturated calls where the evaluator body returns a closure but the caller
-expects a primitive.
+If `sourceRemaining` is zero or less while arguments remain, those arguments
+are dropped and the current value is returned.
 
 -}
 applyByStages :
     Ctx.Context
-    -> String -- funcVar: the closure variable
-    -> MlirType -- funcMlirType: the closure's MLIR type (always !eco.value)
-    -> Int -- sourceRemaining: the source PAP's remaining arity (CGEN_052)
-    -> List Int -- remainingStageArities: arities of subsequent stages after saturation
-    -> MlirType -- saturatedReturnType: callee's ABI return type (CGEN_056: must equal func.func result type)
-    -> Maybe String -- callKindAttr: _call_kind attribute for first papExtend only
-    -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
-    -> List MlirOp -- accumulated ops (in reverse order)
-    -> List MlirType -- accCaptureTypes: accumulated arg types from previous stages (captures of current callee)
+    -> String -- funcVar: the closure
+    -> MlirType -- funcMlirType: the closure's type
+    -> Int -- sourceRemaining: arguments the closure takes in its current stage
+    -> List Int -- remainingStageArities: arities of the stages after it
+    -> MlirType -- saturatedReturnType: ABI result of the last stage's function
+    -> Maybe String -- callKindAttr: _call_kind of the first op only
+    -> List ( String, MlirType ) -- args: arguments still to apply
+    -> List MlirOp -- accumulated ops, in reverse order
+    -> List MlirType -- accCaptureTypes: types of arguments already applied; [] on the first batch
     -> ApplyByStagesResult
 applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType callKindAttr args accOps accCaptureTypes =
     case args of
         [] ->
-            -- Base case: no more args to apply
             { ops = List.reverse accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
 
         _ ->
             if sourceRemaining <= 0 then
-                -- Defensive: zero-arity stage shouldn't happen with remaining args
-                -- (zero-arity functions use direct calls, not PAPs)
-                -- Return current value (treat as fully applied)
+                -- The remaining args are dropped here.
                 { ops = List.reverse accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
 
             else
                 let
-                    -- Take at most sourceRemaining args in this batch
                     batchSize =
                         min sourceRemaining (List.length args)
 
@@ -2410,7 +2366,6 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     rest =
                         List.drop batchSize args
 
-                    -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
                     newargsSlotKinds =
                         Ops.slotKindsAttr (List.map Tuple.second batch)
 
@@ -2423,36 +2378,26 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     allOperandTypes =
                         funcMlirType :: List.map Tuple.second batch
 
-                    -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
+                    -- remaining_arity counts what the closure takes before this
+                    -- op, not what the result takes.
                     remainingArity =
                         sourceRemaining
 
-                    -- The result's remaining for the next iteration.
-                    -- When a stage is fully applied but returns another function,
-                    -- the result is a NEW closure, so reset to the next stage's arity.
                     rawResultRemaining =
                         sourceRemaining - batchSize
 
                     ( resultRemaining, nextStageArities ) =
                         if rawResultRemaining <= 0 then
-                            -- Stage fully applied - result is a new closure
-                            -- Use next arity from remainingStageArities if available
                             case remainingStageArities of
                                 nextArity :: restArities ->
                                     ( nextArity, restArities )
 
                                 [] ->
-                                    -- No more stages - result is the final value
                                     ( 0, [] )
 
                         else
-                            -- Still within current stage
                             ( rawResultRemaining, remainingStageArities )
 
-                    -- Result type depends on whether this is a fully saturated call or partial application.
-                    -- For FULLY saturated calls (no more stages, no more args), use the actual return type.
-                    -- For partial applications OR multi-stage calls that return closures, use !eco.value.
-                    -- Key insight: if there are remaining stage arities, the result is still a closure.
                     isSaturatedCall =
                         rawResultRemaining <= 0 && List.isEmpty rest && List.isEmpty remainingStageArities
 
@@ -2463,13 +2408,8 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             funcMlirType
 
-                    -- _result_kind matches the closure evaluator's real C-ABI
-                    -- return kind at THIS stage. For non-last stages the
-                    -- evaluator returns the next-stage closure (boxed); only
-                    -- the LAST stage's evaluator returns the saturated value.
-                    -- Setting K=saturatedResultKind on intermediate stages
-                    -- would mis-cast a boxed closure HPtr as a primitive at
-                    -- runtime.
+                    -- An earlier stage returns a boxed closure, so only the last
+                    -- stage may carry a primitive _result_kind.
                     saturatedResultKind =
                         if isSaturatedCall then
                             Types.mlirTypeToKind saturatedReturnType
@@ -2484,22 +2424,10 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             [ ( "_result_kind", IntAttr (Just I8) saturatedResultKind ) ]
 
-                    -- H6.2 layer 1 (unconditional): a batch PAST the first
-                    -- stage boundary extends a RUNTIME-COMPUTED value — the
-                    -- callee's stage-1 result — not the callee itself. The old
-                    -- claims here (`_capture_abi` = prior-stage arg types,
-                    -- typed `remaining_arity`, direct-known `_call_kind`)
-                    -- assumed that value is the callee's own staged wrapper
-                    -- capturing the prior args. That contract holds only for
-                    -- compiler-materialized wrapper chains; for any source
-                    -- function whose staged type's stage-1 result is an
-                    -- arbitrary function (StagedResultProbe flag-off,
-                    -- RaiseProbe under ECO_ARITY_RAISE) the backend re-boxed
-                    -- foreign closure/PAP slots through the claimed layout —
-                    -- garbage or a lowering type mismatch. Cross-stage
-                    -- batches are now fully GENERIC (runtime derives arity
-                    -- from the closure header); the self-compile contains
-                    -- ZERO of the old stamps, so nothing measurable is lost.
+                    -- A batch after the first extends whatever closure the
+                    -- previous stage returned at run time, which can be any
+                    -- function, so nothing about its layout or arity is
+                    -- claimed.
                     isCrossStage =
                         not (List.isEmpty accCaptureTypes)
 
@@ -2519,15 +2447,8 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                             ++ resultKindAttrs
 
                     callKindAttrs =
-                        -- The cross-stage downgrade must apply regardless of
-                        -- callKindAttr: later batches recurse with Nothing
-                        -- (only the first batch carries the site's kind), so
-                        -- gating the tag on `Just` left every cross-stage
-                        -- batch with NEITHER remaining_arity NOR _call_kind —
-                        -- lowered via the boxing lowerGenericApply instead of
-                        -- the typed-buffer lowerSegmentationUnknown (CGEN_060
-                        -- no-boxing mandate), and flagged by the CGEN_052
-                        -- checkers. Pin: CrossStageCallKindTest.elm.
+                        -- Later batches recurse with callKindAttr = Nothing, so
+                        -- the cross-stage kind is set here regardless of it.
                         if isCrossStage then
                             ( "_call_kind", StringAttr "segmentation_unknown" ) :: gencallReasonAttr ctx 7
 
@@ -2558,42 +2479,38 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     nextOps =
                         papExtendOp :: accOps
 
-                    -- Accumulate this batch's arg types as captures for the next stage's callee.
                     nextCaptureTypes =
                         accCaptureTypes ++ List.map Tuple.second batch
                 in
                 if List.isEmpty rest then
-                    -- No more args to apply after this batch.
                     { ops = List.reverse nextOps, resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
 
                 else
-                    -- More args to apply in later batches (no _call_kind on subsequent stages).
                     applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType Nothing rest nextOps nextCaptureTypes
 
 
-{-| Partial-apply a flattened external function (MonoExtern or kernel).
-
-Uses total ABI arity for remaining\_arity, not stage arity.
-
+{-| Generates a partial application of an external or kernel function, which
+takes all its arguments in one flat call: the function's closure value, then
+one `eco.papExtend` whose `remaining_arity` is the function's total number of
+parameters over all stages. Arguments are boxed to the function's parameter
+types as `boxArgsToEvaluatorParams` does, and the result has the ABI type of
+`resultType`.
 -}
 generateFlattenedPartialApplication :
     Ctx.Context
-    -> Mono.MonoExpr -- func (MonoVarGlobal to MonoExtern, or MonoVarKernel)
-    -> List Mono.MonoExpr -- args
-    -> Mono.MonoType -- resultType (post-application)
+    -> Mono.MonoExpr
+    -> List Mono.MonoExpr
+    -> Mono.MonoType
     -> ExprResult
 generateFlattenedPartialApplication ctx func args resultType =
     let
-        -- 1. Generate the function value (creates PAP with total arity)
         funcResult : ExprResult
         funcResult =
             generateExpr ctx func
 
-        -- 2. Generate argument expressions
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- 3. Get total ABI arity from signature
         totalArity =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
@@ -2610,13 +2527,9 @@ generateFlattenedPartialApplication ctx func args resultType =
                 _ ->
                     Types.countTotalArity (Mono.typeOf func)
 
-        -- 4. Box args for closure boundary to the evaluator's param ABI
-        -- (CGEN_003): a primitive arg whose evaluator param is !eco.value is
-        -- boxed; Bool (i1) always is (REP_CLOSURE_001).
         ( boxOps, boxedArgsWithTypes, ctx1b ) =
             boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-        -- 5. Build eco.papExtend with total arity
         ( resVar, ctx2 ) =
             Ctx.freshVar ctx1b
 
@@ -2626,11 +2539,9 @@ generateFlattenedPartialApplication ctx func args resultType =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
 
-        -- slot_kinds: one kind per newarg, from the newarg SSA types (S.5).
         newargsSlotKinds =
             Ops.slotKindsAttr (List.map Tuple.second boxedArgsWithTypes)
 
-        -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
         remainingArity =
             totalArity
 
@@ -2674,55 +2585,46 @@ generateFlattenedPartialApplication ctx func args resultType =
     }
 
 
-{-| MLIR ABI result type of the evaluator func.func at this call site.
-
-CGEN\_056 requires saturating typed papExtends to use the evaluator's func.func
-result type, not the caller's `MonoCall.resultType`. The two diverge for
-over-saturated calls (evaluator body returns a closure, caller expects a primitive).
-
+{-| Returns the ABI type of `evaluatorReturnType`, the result of the function
+a saturating call actually runs. For a call that supplies more than one stage
+of arguments this differs from the ABI type of the call's own result.
 -}
 evaluatorAbiResultType : Mono.CallInfo -> MlirType
 evaluatorAbiResultType callInfo =
     Types.monoTypeToAbi callInfo.evaluatorReturnType
 
 
-{-| Generate a partial application where the result is still a closure.
-This creates a closure via papExtend rather than attempting a direct call.
-Uses precomputed CallInfo from GlobalOpt.
+{-| Generates an application through a closure by `eco.papExtend`, for a
+partial application or a call spanning several stages.
+
+An external or kernel callee (`FlattenedExternal`) goes to
+`generateFlattenedPartialApplication`. Any other callee has its arguments boxed
+to the callee's known parameter types (`boxArgsToEvaluatorParams`) and applied
+stage by stage from the `CallInfo` arities (`applyByStages`); the value is
+then coerced to the ABI of `resultType`. A callee whose value is not
+`!eco.value`, applied to no arguments, is already the call's value and is only
+coerced.
+
 -}
 generateClosureApplication : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateClosureApplication ctx func args resultType callInfo =
     case callInfo.callModel of
         Mono.FlattenedExternal ->
-            -- External/kernel: use total ABI arity
             generateFlattenedPartialApplication ctx func args resultType
 
         Mono.StageCurried ->
-            -- User closure: use stage-curried applyByStages
             let
                 funcResult : ExprResult
                 funcResult =
                     generateExpr ctx func
 
-                -- ABI type of the whole call expression (MonoCall.resultType).
-                -- Used only for the zero-arg "already evaluated" fast path,
-                -- which emits no papExtend.
                 callResultMlirType =
                     Types.monoTypeToAbi resultType
 
-                -- CGEN_056: ABI result type of the evaluator func.func we are
-                -- calling. Passed as saturatedReturnType to applyByStages so
-                -- the saturating papExtend's SSA result type matches the
-                -- callee's func.func declaration even on over-saturated calls.
                 evaluatorResultMlirType =
                     evaluatorAbiResultType callInfo
             in
-            -- If the function result is not a closure (e.g., a zero-arity thunk was
-            -- already evaluated), and we're calling with no args, just return the value.
-            -- This handles: let f = \() -> 42 in f
-            -- where f is already evaluated to i64, and "calling" with no args is a no-op.
             if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
-                -- Already evaluated - just return the value, coercing if needed
                 let
                     ( coerceOps, finalVar, ctx1 ) =
                         coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType callResultMlirType
@@ -2735,39 +2637,24 @@ generateClosureApplication ctx func args resultType callInfo =
                 }
 
             else
-                -- Normal partial application via papExtend (typed closure ABI)
-                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
                 let
-                    -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box args for closure boundary to the callee evaluator's
-                    -- param ABI (CGEN_003; Bool always boxed, REP_CLOSURE_001).
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
                         boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-                    -- Use precomputed staging metadata from CallInfo (CGEN_052)
-                    -- initialRemaining = stage arity at this call site (sourceRemaining for applyByStages)
-                    -- remainingStageArities = subsequent stage arities
                     initialRemaining =
                         callInfo.initialRemaining
 
                     remainingStageArities =
                         callInfo.remainingStageArities
 
-                    -- Apply arguments by stages, emitting a chain of papExtend operations
-                    -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                    -- CGEN_056: pass evaluatorResultMlirType (from CallInfo.evaluatorReturnType),
-                    -- not the over-saturated callResultMlirType.
                     papResult =
                         applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
 
-                    -- When the saturating papExtend's evaluator returns a
-                    -- different ABI type than the call's MonoCall.resultType
-                    -- (e.g. CEcoValue-erased polymorphic return → eco.value,
-                    -- but caller expects monomorphic i64), coerce so consumers
-                    -- receive callResultMlirType.
+                    -- The last stage's function may return a different ABI type
+                    -- from the call's own, e.g. a boxed polymorphic result.
                     ( coerceOps, finalVar, ctxFinal ) =
                         coerceResultToType papResult.ctx papResult.resultVar papResult.resultType callResultMlirType
                 in
@@ -2779,8 +2666,9 @@ generateClosureApplication ctx func args resultType callInfo =
                 }
 
 
-{-| Box arguments for closure boundary: only i1 (Bool) is boxed, per
-REP\_CLOSURE\_001, leaving i64/f64/i16 as they are.
+{-| Boxes the Bool (`i1`) values among `argsWithTypes` and leaves every other
+value, including Int, Float and Char, as it is. This is the preparation for
+passing values into a closure when nothing is known about what it takes.
 -}
 boxArgsForClosureBoundary : Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 boxArgsForClosureBoundary ctx argsWithTypes =
@@ -2804,19 +2692,13 @@ boxArgsForClosureBoundary ctx argsWithTypes =
     ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
 
 
-{-| Box closure-boundary args to the param ABI of the evaluator the closure
-will run (CGEN\_003). `paramAbis` are the evaluator's leading param ABI
-types (from `knownEvaluatorParamAbi`; `[]` when the callee is unknown). Arg i
-is boxed when it is a primitive and param i is `!eco.value` (an erased
-type variable, e.g. a kernel alias like `Task.succeed` whose spec keeps
-`a` as `CEcoValue` while the call site instantiates it to `Int`); Bool (i1)
-is always boxed (REP\_CLOSURE\_001). Args past the known params (later stages
-of an over-saturated call) get the i1-only rule.
-
-This replaces an all-or-nothing `evaluatorBoxesAll` flag, which a MIXED
-evaluator (some boxed, some unboxed params) defeated, and which the
-saturated local-call arm never consulted at all.
-
+{-| Boxes each argument that the closure's function takes as `!eco.value`,
+given `paramAbis`, the ABI types of that function's leading parameters (`[]`
+when they are not known). Argument _i_ is boxed when it is not already an
+`!eco.value` and parameter _i_ is one, as happens when the function keeps a
+type variable boxed that the call site has made an Int. A Bool argument is
+always boxed. Arguments beyond `paramAbis` are treated as
+`boxArgsForClosureBoundary` treats them.
 -}
 boxArgsToEvaluatorParams : List MlirType -> Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 boxArgsToEvaluatorParams paramAbis ctx argsWithTypes =
@@ -2850,10 +2732,10 @@ boxArgsToEvaluatorParams paramAbis ctx argsWithTypes =
     ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
 
 
-{-| ABI param types of the evaluator a closure-valued callee expression runs,
-when the callee is statically known: a global spec (its signature), a kernel
-(its kernel signature), or a let-bound local aliasing one of those
-(`localEvaluatorParams`). `[]` when unknown.
+{-| Returns the ABI parameter types of the function a callee expression
+names, when that is known: a global specialization's signature, a kernel's
+signature, or, for a local variable, what `trackLocalEvaluatorParams` recorded
+for it. Any other callee, or a global without a signature, gives `[]`.
 -}
 knownEvaluatorParamAbi : Ctx.Context -> Mono.MonoExpr -> List MlirType
 knownEvaluatorParamAbi ctx func =
@@ -2876,10 +2758,11 @@ knownEvaluatorParamAbi ctx func =
             []
 
 
-{-| Record (or clear) the evaluator param ABI of a let-bound local, so calls
-through it box args exactly as calls through the aliased function would
-(see `boxArgsToEvaluatorParams`). Every binding overwrites the entry, so a
-shadowing re-binding never inherits a stale one.
+{-| Returns the context with the ABI parameter types of the function `expr`
+names recorded for the let-bound local `name`, so that calls through the local
+box their arguments as calls through that function would. When `expr` names no
+known function, any entry for `name` is removed, so a rebinding of the same
+name never inherits an old one.
 -}
 trackLocalEvaluatorParams : String -> Mono.MonoExpr -> Ctx.Context -> Ctx.Context
 trackLocalEvaluatorParams name expr ctx =
@@ -2895,40 +2778,40 @@ trackLocalEvaluatorParams name expr ctx =
             { ctx | localEvaluatorParams = Dict.insert name paramAbis ctx.localEvaluatorParams }
 
 
-{-| Detect inlined Bytes.Decode.decode pattern:
+{-| Tries to generate the let `def` with `body` as a fused bytes decode, and
+returns `Nothing` when it is not one or the decoder cannot be fused.
+
+An inlined `Bytes.Decode.decode` has this shape: one or more let bindings, one
+of which holds the decoder, then a destructuring, then a kernel `Bytes.decode`
+call with the bytes as its second argument.
 
     MonoLet (MonoDef name decoderExpr)
         (MonoDestruct ...
-            (MonoCall (MonoVarKernel "Bytes" "decode") [_, bytesExpr] ...))
+            (MonoCall (MonoVarKernel "Bytes" "decode") [ _, bytesExpr ] ...))
 
-When the monomorphizer inlines Bytes.Decode.decode, it produces a let binding for
-the decoder value, a destructuring to extract the inner step function, and a kernel
-call. We intercept this pattern to try fusion on the original decoder expression.
+Unlike encoder fusion, this is attempted whatever the configuration's
+`bytesFusion` flag says.
 
 -}
 tryInlinedDecodeFusion : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> Maybe ExprResult
 tryInlinedDecodeFusion ctx def body =
     case def of
         Mono.MonoDef defName decoderExpr ->
-            -- Collect this binding and search for the decode pattern in the body
             tryDecodeFusionWithBindings ctx [ ( defName, decoderExpr ) ] body
 
         Mono.MonoTailDef _ _ _ ->
             Nothing
 
 
-{-| E9.1 seam fix: BytesFusion reification walks PAST `MonoLet` bindings
-(caching name→bound in its `exprCache`) and structurally consumes most
-references — but a reference surviving into a RESIDUAL `MonoExpr` inside an
-Encoder/DecoderNode is compiled by the emit callback in the ops stream,
-where the walked-past binding was never compiled → `lookupVar: unbound
-variable mono_inline_N`. Historically no reachable shape did this;
-fn-global devirtualization (E9.1) lets the inliner plant
-`mono_inline_N` lets inside encoder trees, minting the shape. Fix: the
-shared BF expr-compiler substitutes a binding ONLY when the name is absent
-from `varMappings` — every working path resolves through `varMappings`
-exactly as before; only the would-crash case changes. Let chains are
-non-recursive (`MonoDef` only), so substitution terminates.
+{-| Produces the callback bytes fusion uses to compile an ordinary expression
+left inside a fused encoder or decoder.
+
+Reification walks past let bindings without compiling them, so such an
+expression can name a variable that was never given an SSA value. Before
+compiling, each variable that is not in the context's `varMappings` is
+replaced by the expression `fusedLets` binds it to (see `resolveFusedLets`).
+A variable that is in `varMappings` is left alone.
+
 -}
 bfExprCompiler : Dict.Dict Name.Name Mono.MonoExpr -> BFEmit.ExprCompiler
 bfExprCompiler fusedLets monoExpr compilerCtx =
@@ -2943,6 +2826,11 @@ bfExprCompiler fusedLets monoExpr compilerCtx =
     }
 
 
+{-| Returns `expr` with each local variable that has no entry in `varMappings`
+replaced by the expression it is bound to, recursively: first from
+`fusedLets`, then from a let anywhere in the context's inlined bodies
+(`findLetInInlineBodies`). A variable found in neither is left as it is.
+-}
 resolveFusedLets : Dict.Dict Name.Name Mono.MonoExpr -> Ctx.Context -> Mono.MonoExpr -> Mono.MonoExpr
 resolveFusedLets fusedLets ctx expr =
     MonoTraverse.mapExpr
@@ -2958,11 +2846,9 @@ resolveFusedLets fusedLets ctx expr =
                                 Just (resolveFusedLets fusedLets ctx bound)
 
                             Nothing ->
-                                -- Reification also PULLS IN inlined spec
-                                -- bodies (`reifyEncoderWith ctx.inlineBodies`)
-                                -- and walks past lets INSIDE them — trees the
-                                -- site-local collection never sees. Search
-                                -- them only on this rare miss path.
+                                -- Reification also walks past lets inside the
+                                -- inlined bodies it pulls in, which fusedLets
+                                -- does not contain.
                                 case findLetInInlineBodies name ctx of
                                     Just bound ->
                                         Just (resolveFusedLets fusedLets ctx bound)
@@ -2976,6 +2862,9 @@ resolveFusedLets fusedLets ctx expr =
         expr
 
 
+{-| Returns the expression bound to `name` by a non-recursive let somewhere in
+one of the context's `inlineBodies`, the first one found, if any.
+-}
 findLetInInlineBodies : Name.Name -> Ctx.Context -> Maybe Mono.MonoExpr
 findLetInInlineBodies name ctx =
     Dict.foldl
@@ -3010,8 +2899,8 @@ findLetInInlineBodies name ctx =
         ctx.inlineBodies
 
 
-{-| Every non-recursive let binding anywhere in a fused expression tree
-(the reifier may walk past any of them).
+{-| Returns every non-recursive let binding anywhere in `expr`, by name.
+Where a name is bound twice, the binding the fold visits last wins.
 -}
 collectFusedLets : Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
 collectFusedLets expr =
@@ -3028,6 +2917,9 @@ collectFusedLets expr =
         expr
 
 
+{-| Returns the bindings of `chain`, those inside their bound expressions, and
+those inside `body`, by name, for `bfExprCompiler`.
+-}
 fusedLetsFromChain : List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
 fusedLetsFromChain chain body =
     List.foldl
@@ -3036,25 +2928,32 @@ fusedLetsFromChain chain body =
         chain
 
 
+{-| Returns the non-recursive let bindings inside any of `exprs`, by name.
+-}
 fusedLetsFromExprs : List Mono.MonoExpr -> Dict.Dict Name.Name Mono.MonoExpr
 fusedLetsFromExprs exprs =
     List.foldl (\e acc -> Dict.union (collectFusedLets e) acc) Dict.empty exprs
 
 
-{-| Search for the decode fusion pattern through nested MonoLet bindings.
-Accumulates let bindings to resolve the decoder expression when found.
+{-| Looks through a chain of lets, collecting their bindings in `bindings`
+(innermost first), for a destructuring whose body is a kernel `Bytes.decode`
+call, and generates a fused decode when the decoder can be found among the
+bindings and reified.
+
+On success the collected bindings are compiled first, so that expressions
+inside the fused decoder can refer to them, and the result is the fused
+decoder's `!eco.value`. Otherwise it returns `Nothing` and the let is compiled
+normally.
+
 -}
 tryDecodeFusionWithBindings : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoExpr -> Maybe ExprResult
 tryDecodeFusionWithBindings ctx bindings body =
     case body of
         Mono.MonoDestruct _ innerBody _ ->
-            -- Found a destruct - check if its body is a kernel decode call
             case findKernelDecodeCall innerBody of
                 Just bytesExpr ->
-                    -- Found the decode pattern - resolve the decoder from accumulated bindings
                     case resolveDecoderExpr ctx.registry ctx.decoderExprs bindings of
                         Just decoderNode ->
-                            -- Fusion successful - compile skipped let-bindings to register variables
                             let
                                 ( bindingOps, ctx0 ) =
                                     compileSkippedBindings ctx (List.reverse bindings)
@@ -3090,22 +2989,22 @@ tryDecodeFusionWithBindings ctx bindings body =
                                 }
 
                         Nothing ->
-                            -- Reification failed - fall back to normal compilation
                             Nothing
 
                 Nothing ->
                     Nothing
 
         Mono.MonoLet (Mono.MonoDef innerName innerExpr) innerBody _ ->
-            -- Accumulate this binding and continue searching
             tryDecodeFusionWithBindings ctx (( innerName, innerExpr ) :: bindings) innerBody
 
         _ ->
             Nothing
 
 
-{-| Resolve a decoder expression from accumulated let bindings.
-Follows MonoVarLocal references through the binding chain.
+{-| Returns the first of `bindings` (innermost first) whose expression reifies
+as a decoder. A binding that is a variable is followed: to an outer binding of
+that name in the chain (`resolveDecoderByName`), then to the context's cache of
+decoder expressions.
 -}
 resolveDecoderExpr : Mono.SpecializationRegistry -> Dict.Dict String Mono.MonoExpr -> List ( Name.Name, Mono.MonoExpr ) -> Maybe BFReify.DecoderNode
 resolveDecoderExpr registry decoderExprs bindings =
@@ -3119,9 +3018,6 @@ resolveDecoderExpr registry decoderExprs bindings =
                     Just node
 
                 Nothing ->
-                    -- If this binding's expression is a local variable reference,
-                    -- try to find the original expression in earlier bindings,
-                    -- then check the context's cached decoder expressions from outer scopes.
                     case expr of
                         Mono.MonoVarLocal name _ ->
                             case resolveDecoderByName registry decoderExprs name rest of
@@ -3129,7 +3025,6 @@ resolveDecoderExpr registry decoderExprs bindings =
                                     Just node
 
                                 Nothing ->
-                                    -- Check outer scope decoder cache
                                     case Dict.get name decoderExprs of
                                         Just outerExpr ->
                                             case BFReify.reifyDecoder registry decoderExprs outerExpr of
@@ -3143,11 +3038,11 @@ resolveDecoderExpr registry decoderExprs bindings =
                                             resolveDecoderExpr registry decoderExprs rest
 
                         _ ->
-                            -- Try the next binding
                             resolveDecoderExpr registry decoderExprs rest
 
 
-{-| Find a binding by name and try to reify its expression as a decoder.
+{-| Returns the decoder that the binding of `targetName` in `bindings`
+reifies to, following a chain of variable-to-variable bindings outwards.
 -}
 resolveDecoderByName : Mono.SpecializationRegistry -> Dict.Dict String Mono.MonoExpr -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> Maybe BFReify.DecoderNode
 resolveDecoderByName registry decoderExprs targetName bindings =
@@ -3162,7 +3057,6 @@ resolveDecoderByName registry decoderExprs targetName bindings =
                         Just node
 
                     Nothing ->
-                        -- Follow another level of indirection
                         case expr of
                             Mono.MonoVarLocal innerName _ ->
                                 resolveDecoderByName registry decoderExprs innerName rest
@@ -3174,16 +3068,19 @@ resolveDecoderByName registry decoderExprs targetName bindings =
                 resolveDecoderByName registry decoderExprs targetName rest
 
 
-{-| Try to resolve a decoder node from an expression, falling back to the
-context's decoderExprs cache when the expression is a local variable reference.
-This handles the case where D.decode is called with a let-bound decoder variable
-that was already cached during decoder-skipping in generateLet.
+{-| Returns `expr` reified as a decoder, if it can be. Reification can see
+through a variable to a decoder expression recorded in the context's
+`decoderExprs`.
 -}
 resolveDecoderNode : Ctx.Context -> Mono.MonoExpr -> Maybe BFReify.DecoderNode
 resolveDecoderNode ctx expr =
     BFReify.reifyDecoder ctx.registry ctx.decoderExprs expr
 
 
+{-| Generates each of `bindings` in order and maps its name to the value, so
+that later code, including expressions inside a fused encoder or decoder, can
+refer to it. The mappings are left in the returned context.
+-}
 compileSkippedBindings : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> ( List MlirOp, Ctx.Context )
 compileSkippedBindings ctx bindings =
     case bindings of
@@ -3204,21 +3101,14 @@ compileSkippedBindings ctx bindings =
             ( exprResult.ops ++ restOps, ctxFinal )
 
 
-{-| Encoder-side mirror of `tryDecodeFusionWithBindings`. Walks down the
-encoder argument's `MonoLet` chain, accumulating bindings, then attempts
-fusion on the non-`MonoLet` body. On success, compiles the accumulated
-bindings via `compileSkippedBindings` so each `mono_inline_N` SSA var
-lands in `varMappings` and the BF emit's `exprCompiler` can resolve any
-`MonoVarLocal` references inside `EncoderNodes`.
+{-| Generates a fused encode of `encoderExpr`, or returns `Nothing` when the
+configuration's `bytesFusion` flag is off or the encoder cannot be reified.
 
-Without this, the let-bindings would be compiled via `generateLet`'s
-`scopedCtx`, which restores `varMappings` to the outer scope's keys
-when the let-group finishes — leaving the BF emit with `lookupVar:
-unbound variable mono_inline_N` crashes downstream.
-
-Returns `Nothing` when the inner body doesn't reify as an encoder; the
-caller then falls through to the kernel-call fallback (which computes
-`argOps` and emits a `Elm_Kernel_Bytes_encode` call).
+The lets at the head of `encoderExpr` are collected into `accumulated` and
+the expression under them is reified, with the collected bindings visible to
+reification. On success the bindings are compiled first
+(`compileSkippedBindings`), so that expressions left inside the fused encoder
+can refer to them, and the result is the encoded bytes as an `!eco.value`.
 
 -}
 tryEncoderFusionWithBindings :
@@ -3276,19 +3166,10 @@ tryEncoderFusionWithBindings ctx accumulated encoderExpr =
                     Nothing
 
 
-{-| If `func args` is a saturated call to `Bytes.Encode.encode` (either
-the `MonoVarGlobal` spec form or the post-inline `MonoVarKernel "Bytes"
-"encode"` form), attempt encoder fusion with binding walking. Returns
-`Nothing` otherwise so the caller falls through to its regular
-saturated-call dispatch.
-
-This pre-empts the in-line fusion attempts in `generateSaturatedCall`'s
-two encoder paths (the `MonoVarGlobal` arm and the `MonoVarKernel
-"Bytes" "encode"` arm). Those in-line attempts only see the un-walked
-`encoderExpr` and cannot resolve `MonoVarLocal` references — when
-called on a let-hoisted encoder they either bail (and waste the chance
-to fuse) or succeed and crash at emit. The pre-check supersedes both.
-
+{-| Generates a fused encode when `func` applied to `args` is
+`Bytes.Encode.encode` (as a global of elm/bytes, or as the kernel
+`Bytes.encode`) with one argument, as `tryEncoderFusionWithBindings` does.
+Returns `Nothing` for any other call, or when fusion fails.
 -}
 tryBytesEncodeFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
 tryBytesEncodeFusion ctx func args =
@@ -3332,7 +3213,8 @@ tryBytesEncodeFusion ctx func args =
             Nothing
 
 
-{-| Find a kernel Bytes.decode call and return the bytes argument.
+{-| Returns the bytes argument of a two-argument kernel `Bytes.decode` call,
+found at `expr` or under any number of lets.
 -}
 findKernelDecodeCall : Mono.MonoExpr -> Maybe Mono.MonoExpr
 findKernelDecodeCall expr =
@@ -3345,7 +3227,6 @@ findKernelDecodeCall expr =
                 _ ->
                     Nothing
 
-        -- The kernel decode call might be nested in more let bindings
         Mono.MonoLet _ innerBody _ ->
             findKernelDecodeCall innerBody
 
@@ -3353,7 +3234,11 @@ findKernelDecodeCall expr =
             Nothing
 
 
-{-| Generate a saturated function call where all arguments are provided.
+{-| Generates a call that supplies all the arguments its callee takes. The
+first of these that applies is used: a constructor call built in place
+(`tryCtorInline`), a call to the callee's `$psplit` worker (`tryPsplitCall`), a
+fused bytes encode (`tryBytesEncodeFusion`), and otherwise
+`generateSaturatedCallNoFusion`.
 -}
 generateSaturatedCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateSaturatedCall ctx func args resultType callInfo =
@@ -3370,6 +3255,9 @@ generateSaturatedCall ctx func args resultType callInfo =
                     generateSaturatedCallFusionGate ctx func args resultType callInfo
 
 
+{-| Generates a saturated call as a fused bytes encode when it is one, and
+through `generateSaturatedCallNoFusion` otherwise.
+-}
 generateSaturatedCallFusionGate : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateSaturatedCallFusionGate ctx func args resultType callInfo =
     case () of
@@ -3382,15 +3270,15 @@ generateSaturatedCallFusionGate ctx func args resultType callInfo =
                     generateSaturatedCallNoFusion ctx func args resultType callInfo
 
 
-{-| U-T1.3.5 per-site call migration (plans/opt-tier1-aggregate-promotion.md):
-a saturated direct call to a `$psplit`-promoted callee migrates iff EVERY
-promoted position's argument is slot-available FOR FREE — an inline
-matching construct (elements compile straight into the slot args; the
-container never exists), a var already carried as slots
-(`ctx.splitAggParams`), or a make-promoted aggregate var (slot
-projections fold under SROA). Any other arg shape at a promoted position
-aborts migration and the site calls the boxed shim unchanged — the
-T1.3.3L rule: never migrate via eager heap projection (a loss).
+{-| Generates a saturated call to a global that has a `$psplit` worker as a
+call to that worker, or returns `Nothing` to leave it an ordinary call.
+
+A `$psplit` worker takes some tuple or constructor parameters as their fields,
+one argument per field (see `Context.PsplitInfo`). The call is redirected only
+when the argument at every such position can supply its fields without
+reading them from a heap object (`psplitArgFree`); otherwise the ordinary
+function, which takes the boxed value, is called.
+
 -}
 tryPsplitCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
 tryPsplitCall ctx func args resultType =
@@ -3427,6 +3315,13 @@ tryPsplitCall ctx func args resultType =
                 Nothing
 
 
+{-| Tells whether `arg` can supply the slots of `plan` without a heap read: a
+tuple literal of the plan's arity; a call to the constructor the plan splits
+with one argument per field; a call to a global whose `$sret` worker returns
+exactly the plan's tuple slots; a variable already held as slots of the
+plan's types; or a variable holding a value aggregate of the plan's type.
+`emitPsplitSlotArg` must accept exactly these shapes.
+-}
 psplitArgFree : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> Bool
 psplitArgFree ctx plan arg =
     case arg of
@@ -3444,11 +3339,6 @@ psplitArgFree ctx plan arg =
                     shape.name == clayout.name && List.length cargs == List.length clayout.fields
 
                 _ ->
-                    -- U-T1.3.7 nested composition: the arg IS a direct call to
-                    -- an sret-promoted callee with this exact slot plan — the
-                    -- site emits the multi-result `$sret` call and feeds its
-                    -- scalars straight into the `$psplit` worker; no container
-                    -- exists on either side of the hop.
                     case ( plan.spec, Dict.get sid ctx.sretPromoted ) of
                         ( Ctx.SplitTuple _, Just sinfo ) ->
                             sinfo.slotTypes == plan.slotTypes
@@ -3473,6 +3363,9 @@ psplitArgFree ctx plan arg =
             False
 
 
+{-| Returns the value-aggregate type, tuple or constructor, whose fields are
+the plan's slots.
+-}
 psplitAggType : Ctx.SlotPlan -> MlirType
 psplitAggType plan =
     case plan.spec of
@@ -3483,6 +3376,12 @@ psplitAggType plan =
             Ops.aggCustomType plan.slotTypes
 
 
+{-| Generates the call to the `$psplit` worker of `specId`: each promoted
+argument contributes its slots (`emitPsplitSlotArg`), and every other argument
+is coerced to the ABI of the matching parameter in the function's signature.
+The result has the ABI of the signature's return type, or of `resultType` when
+there is no signature.
+-}
 emitPsplitCall : Ctx.Context -> Int -> Ctx.PsplitInfo -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 emitPsplitCall ctx specId info args resultType =
     let
@@ -3551,8 +3450,11 @@ emitPsplitCall ctx specId info args resultType =
     }
 
 
-{-| Produce the slot operands for one promoted position (mirror of the
-free-check; keep the two in sync).
+{-| Generates the slot values `arg` supplies for one promoted parameter, for
+exactly the shapes `psplitArgFree` admits: the elements of a literal or
+constructor call, each coerced to its slot type; the results of a `$sret`
+call; the slots of a variable already held as slots; or projections from a
+value-aggregate variable. Any other shape crashes the compiler.
 -}
 emitPsplitSlotArg : Ctx.Context -> Ctx.SlotPlan -> Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 emitPsplitSlotArg ctx plan arg =
@@ -3628,17 +3530,12 @@ emitPsplitSlotArg ctx plan arg =
             crash "emitPsplitSlotArg: arg admitted by psplitArgFree but not emittable"
 
 
-{-| U-T1.3.2c ctor-call inlining (plans/opt-tier1-aggregate-promotion.md):
-a SATURATED direct call to a constructor emits `eco.construct.custom`
-directly in the caller — the call overhead vanishes and the construct
-gains the caller's HEAP\_034 inline-alloc diamond. Slot preparation is the
-same per-field ABI coercion the ctor function's own body performs
-(`Functions.generateCtor`), so tag, slot kinds, and heap layout are identical
-(CGEN\_020/026). Nullary ctors are EXCLUDED: their calls resolve to
-CAF-memoized / interned singletons (CGEN\_068) — a fresh construct would
-ADD allocation. Applies at every saturated call position; promotable
-LET-BOUND candidates never reach here (the T1.3.1 hook intercepts them
-upstream and emits `eco.make.custom`).
+{-| Generates a saturated call to a constructor with fields as an
+`eco.construct.custom` in the caller, instead of a call to the constructor's
+function, when the configuration's `ctorInline` flag is on. The value is still
+allocated on the heap. Returns `Nothing` for a nullary constructor, whose
+value is a shared constant, for a call whose result is a function, and for
+any other callee.
 -}
 tryCtorInline : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Maybe ExprResult
 tryCtorInline ctx func args resultType =
@@ -3646,7 +3543,6 @@ tryCtorInline ctx func args resultType =
         Nothing
 
     else if isFunctionMonoType resultType then
-        -- staged result: not a saturated construction
         Nothing
 
     else
@@ -3670,12 +3566,45 @@ tryCtorInline ctx func args resultType =
                 Nothing
 
 
+{-| Generates a call that supplies all its callee's arguments, by the shape of
+the callee.
+
+A global is first checked against a few elm/bytes functions.
+`Bytes.Encode.encode` becomes a fused encode when the `bytesFusion` flag is on
+and the encoder reifies, and otherwise a call to the kernel symbol
+`Elm_Kernel_Bytes_encode`. `Bytes.Decode.decode` becomes a fused decode when
+the decoder reifies, whatever the flag, and otherwise a call to
+`Elm_Kernel_Bytes_decode` with field 0 of the `Decoder` value, its inner
+function, because that is what the kernel takes. A global of elm/core is
+replaced by an intrinsic op when `KernelIntrinsics` recognises it and
+`gateIntrinsic` admits it. Every other global is an `eco.call` to its function;
+when it has a signature, arguments are converted by `boxToMatchSignatureTyped`
+and the call is typed by the signature's return type, and without one,
+arguments are passed as they are and the call is typed by the ABI of
+`resultType`.
+
+A kernel is checked in the same spirit. `Basics.logBase` becomes two
+`eco.float.log` ops and a division. A two-argument `Debug.log` becomes an
+`eco.dbg` op on the label and the boxed value, carrying type ids for both,
+and its value is the boxed value. `Debug.toString` becomes a call to
+`Elm_Kernel_Debug_toString_typed` with the boxed value and its type id.
+`Bytes.encode` and `Bytes.decode` are fused when possible, as for the
+globals, and otherwise call their kernel symbols. Any other kernel is an
+intrinsic when admitted, and otherwise an `eco.call` to the symbol
+`Context.registerKernelInstance` chooses for its argument and result types.
+
+A local variable or any other callee expression is applied by `eco.papExtend`
+stage by stage, as in `generateClosureApplication`, and its value is coerced
+to the ABI of `resultType`. The global and kernel arms are not coerced: their
+value has the type of what they call: the function's signature (or
+`resultType` without one), the kernel instance or the intrinsic.
+
+-}
 generateSaturatedCallNoFusion : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateSaturatedCallNoFusion ctx func args resultType callInfo =
     case func of
         Mono.MonoVarGlobal _ specId funcType ->
             let
-                -- Use generateExprListTyped to get actual SSA types
                 ( argOps, argsWithTypes, ctx1 ) =
                     generateExprListTyped ctx args
 
@@ -3683,7 +3612,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 argTypes =
                     List.map Mono.typeOf args
 
-                -- Check if this is a call to a core module function
                 maybeCoreInfo : Maybe ( String, String )
                 maybeCoreInfo =
                     case Registry.lookupSpecKey specId ctx.registry of
@@ -3695,13 +3623,11 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 Nothing
 
                         Just ( Mono.Accessor _, _ ) ->
-                            -- Accessors are not core functions
                             Nothing
 
                         Nothing ->
                             Nothing
 
-                -- Check if this is Bytes.Encode.encode for fusion
                 maybeBytesEncodeArg : Maybe Mono.MonoExpr
                 maybeBytesEncodeArg =
                     case Registry.lookupSpecKey specId ctx.registry of
@@ -3720,7 +3646,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         _ ->
                             Nothing
 
-                -- Check if this is Bytes.Decode.decode for fusion
                 maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
                 maybeBytesDecodeArgs =
                     case Registry.lookupSpecKey specId ctx.registry of
@@ -3739,10 +3664,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         _ ->
                             Nothing
             in
-            -- Try byte fusion first, then fall back to regular dispatch
             case maybeBytesEncodeArg of
                 Just encoderExpr ->
-                    -- Attempt to fuse the encoder
                     case
                         if ctx.ecoConfig.bytesFusion.enabled then
                             BFReify.reifyEncoderWith ctx.inlineBodies ctx.registry ctx.decoderExprs encoderExpr
@@ -3751,12 +3674,10 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             Nothing
                     of
                         Just nodes ->
-                            -- Fusion successful - emit fused byte encoding ops
                             let
                                 loopOps =
                                     BFReify.nodesToOps nodes
 
-                                -- Wrap generateExpr to match ExprCompiler type
                                 exprCompiler : BFEmit.ExprCompiler
                                 exprCompiler =
                                     bfExprCompiler (fusedLetsFromExprs args)
@@ -3772,7 +3693,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             }
 
                         Nothing ->
-                            -- Fusion failed - fall back to kernel call
                             let
                                 sig : Ctx.FuncSignature
                                 sig =
@@ -3784,13 +3704,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
-                                -- The kernel symbol exported by the C++ runtime is
-                                -- `Elm_Kernel_Bytes_encode` (mangled from
-                                -- `Elm.Kernel.Bytes.encode`). The earlier
-                                -- `_Bytes_Encode_encode` form was a latent typo
-                                -- in the bytes-fusion fall-back path that pre-Fix-1
-                                -- was never reached because `Bytes.Encode.encode`
-                                -- was always inlined before the fusion entry fired.
                                 kernelName : String
                                 kernelName =
                                     "Elm_Kernel_Bytes_encode"
@@ -3809,15 +3722,11 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             }
 
                 Nothing ->
-                    -- Not a bytes encode call - check for bytes decode fusion
                     case maybeBytesDecodeArgs of
                         Just ( decoderExpr, _ ) ->
-                            -- Attempt to fuse the decoder (also resolves local var refs via decoderExprs cache)
                             case resolveDecoderNode ctx decoderExpr of
                                 Just decoderNode ->
-                                    -- Fusion successful - emit fused byte decoding ops
                                     let
-                                        -- Get the bytesVar from argsWithTypes (second argument)
                                         bytesVar : String
                                         bytesVar =
                                             case argsWithTypes of
@@ -3825,19 +3734,15 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                     bVar
 
                                                 _ ->
-                                                    -- Should not happen for valid Decode.decode call
                                                     "invalid_bytes"
 
-                                        -- Compile decoder node to Loop IR
                                         ( decoderOps, _ ) =
                                             BFReify.decoderNodeToOps decoderNode
 
-                                        -- Wrap generateExpr to match ExprCompiler type
                                         exprCompiler : BFEmit.ExprCompiler
                                         exprCompiler =
                                             bfExprCompiler (fusedLetsFromExprs args)
 
-                                        -- Emit the fused decoder operations
                                         ( mlirOps, resultVar, ctx2 ) =
                                             BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
                                     in
@@ -3849,17 +3754,10 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                                 Nothing ->
-                                    -- Fusion failed - fall back to kernel call.
-                                    --
-                                    -- Bytes.Decode.decode in elm/bytes is defined as
-                                    --     decode (Decoder f) bs = Elm.Kernel.Bytes.decode f bs
-                                    -- so the kernel receives the *inner closure*, not the
-                                    -- `Decoder` Custom wrapper. Substituting a direct kernel
-                                    -- call for the function call elides the `Decoder`
-                                    -- destructure, so we must re-introduce it here by
-                                    -- projecting field 0 of the decoder argument.
+                                    -- The kernel takes the function inside the
+                                    -- Decoder, not the Decoder, so field 0 is
+                                    -- projected out of it here.
                                     let
-                                        -- Box both arguments to eco.value regardless of their current types
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
 
@@ -3888,7 +3786,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                         kernelName =
                                             "Elm_Kernel_Bytes_decode"
 
-                                        -- Result is always eco.value (Maybe a)
                                         callResultType =
                                             Types.ecoValue
 
@@ -3903,17 +3800,13 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                         Nothing ->
-                            -- Not a bytes decode call - check for core intrinsics
                             case maybeCoreInfo of
                                 Just ( moduleName, name ) ->
-                                    -- This is a core module function - check for intrinsic
                                     case
                                         KernelIntrinsics.kernelIntrinsic moduleName name argTypes resultType
                                             |> Maybe.andThen (gateIntrinsic ctx1 argsWithTypes)
                                     of
                                         Just intrinsic ->
-                                            -- Generate intrinsic operation directly
-                                            -- First unbox arguments if needed (e.g., eco.value -> i1 for Bool)
                                             let
                                                 ( unboxOps, unboxedArgVars, ctx1b ) =
                                                     coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
@@ -3935,15 +3828,14 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                             }
 
                                         Nothing ->
-                                            -- No intrinsic match - check if we should use kernel or compiled function
+                                            -- hasKernelImplementation is False, so the
+                                            -- compiled function is always called.
                                             if Ctx.hasKernelImplementation then
-                                                -- Fall back to kernel call (e.g., negate with boxed values)
                                                 let
                                                     sig : Ctx.FuncSignature
                                                     sig =
                                                         Ctx.kernelFuncSignatureFromType funcType
 
-                                                    -- Use boxToMatchSignatureTyped with actual SSA types
                                                     ( boxOps, argVarPairs, ctx1b ) =
                                                         boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
@@ -3968,7 +3860,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                 }
 
                                             else
-                                                -- Fall back to compiled function call (e.g., min, max, abs, compare)
                                                 let
                                                     funcName : String
                                                     funcName =
@@ -3981,11 +3872,9 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                     ( boxOps, argVarPairs, ctx1b ) =
                                                         case maybeSig of
                                                             Just sig ->
-                                                                -- Use boxToMatchSignatureTyped with actual SSA types
                                                                 boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                                             Nothing ->
-                                                                -- No signature: use actual SSA types
                                                                 ( [], argsWithTypes, ctx1 )
 
                                                     ( resultVar, ctx2 ) =
@@ -4010,25 +3899,21 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                                 }
 
                                 Nothing ->
-                                    -- Regular function call (not a core module)
                                     let
                                         funcName : String
                                         funcName =
                                             specIdToFuncName ctx.registry specId
 
-                                        -- Look up the function signature to determine expected parameter types
                                         maybeSig : Maybe Ctx.FuncSignature
                                         maybeSig =
                                             Array.get specId ctx.signatures |> Maybe.andThen identity
 
-                                        -- Use boxToMatchSignatureTyped with actual SSA types
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             case maybeSig of
                                                 Just sig ->
                                                     boxToMatchSignatureTyped ctx1 argsWithTypes sig.paramTypes
 
                                                 Nothing ->
-                                                    -- No signature: use actual SSA types
                                                     ( [], argsWithTypes, ctx1 )
 
                                         ( resultVar, ctx2 ) =
@@ -4054,7 +3939,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
 
         Mono.MonoVarKernel _ kernelPrefix home name funcType ->
             let
-                -- Use generateExprListTyped to get actual SSA types
                 ( argOps, argsWithTypes, ctx1 ) =
                     generateExprListTyped ctx args
 
@@ -4065,7 +3949,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
             case ( home, name, argsWithTypes ) of
                 ( "Basics", "logBase", [ ( baseVar, baseType ), ( xVar, xType ) ] ) ->
                     let
-                        -- Unbox baseVar if needed
                         ( unboxBaseOps, unboxedBaseVar, ctx1a ) =
                             if Types.isEcoValueType baseType then
                                 Intrinsics.unboxToType ctx1 baseVar F64
@@ -4073,7 +3956,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             else
                                 ( [], baseVar, ctx1 )
 
-                        -- Unbox xVar if needed
                         ( unboxXOps, unboxedXVar, ctx1b ) =
                             if Types.isEcoValueType xType then
                                 Intrinsics.unboxToType ctx1a xVar F64
@@ -4107,10 +3989,7 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     }
 
                 ( "Debug", "log", [ ( labelVar, _ ), ( valueVar, valueType ) ] ) ->
-                    -- Special handling for Debug.log with typed output
-                    -- Emit eco.dbg with arg_type_ids, then return the value
                     let
-                        -- Get the type of the value being logged
                         valueMonoType : Mono.MonoType
                         valueMonoType =
                             case args of
@@ -4120,15 +3999,12 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 _ ->
                                     Mono.MUnit
 
-                        -- Get or create a type ID for the string label
                         ( labelTypeId, ctx1a_ ) =
                             Ctx.getOrCreateTypeIdForMonoType Mono.MString ctx1
 
-                        -- Get or create a type ID for this type
                         ( typeId, ctx1b ) =
                             Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1a_
 
-                        -- Box the value if needed for eco.dbg
                         ( boxOps, boxedValueVar, ctx1c ) =
                             if Types.isEcoValueType valueType then
                                 ( [], valueVar, ctx1b )
@@ -4150,9 +4026,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 in
                                 ( [ boxOp ], boxVar, ctx1c__ )
 
-                        -- Create eco.dbg op with arg_type_ids
-                        -- We only pass the value with its type_id
-                        -- The label is printed separately by the runtime
                         ( ctx2, dbgOp ) =
                             Ops.mlirOp ctx1c "eco.dbg"
                                 |> Ops.opBuilder.withOperands [ labelVar, boxedValueVar ]
@@ -4163,8 +4036,8 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                           )
                                         , ( "arg_type_ids"
                                           , ArrayAttr (Just I64)
-                                                [ IntAttr Nothing labelTypeId -- typeId for string label
-                                                , IntAttr Nothing typeId -- typeId for value
+                                                [ IntAttr Nothing labelTypeId
+                                                , IntAttr Nothing typeId
                                                 ]
                                           )
                                         ]
@@ -4172,16 +4045,16 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 |> Ops.opBuilder.build
                     in
                     { ops = argOps ++ boxOps ++ [ dbgOp ]
-                    , resultVar = boxedValueVar -- Return the value (boxed)
+                    , resultVar = boxedValueVar
                     , resultType = Types.ecoValue
                     , ctx = ctx2
                     , isTerminated = False
                     }
 
                 ( "Debug", "toString", [ ( valueVar, valueType ) ] ) ->
-                    -- Special handling for Debug.toString: pass type_id for constructor names
-                    -- (Elm_Kernel_Debug_toString_typed; the one-parameter Elm_Kernel_Debug_toString
-                    -- is the kernel a Debug.toString closure value calls)
+                    -- The type id lets the typed kernel print constructor
+                    -- names. A Debug.toString closure value calls the
+                    -- one-parameter Elm_Kernel_Debug_toString instead.
                     let
                         valueMonoType : Mono.MonoType
                         valueMonoType =
@@ -4195,7 +4068,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         ( typeId, ctx1b ) =
                             Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1
 
-                        -- Box the value if needed
                         ( boxOps, boxedValueVar, ctx1c ) =
                             if Types.isEcoValueType valueType then
                                 ( [], valueVar, ctx1b )
@@ -4217,7 +4089,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                 in
                                 ( [ boxOp ], boxVar, ctx1c__ )
 
-                        -- Create the type_id constant
                         ( typeIdVar, ctx2a ) =
                             Ctx.freshVar ctx1c
 
@@ -4243,7 +4114,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     , isTerminated = False
                     }
 
-                -- BytesFusion: intercept Bytes.encode kernel call
                 ( "Bytes", "encode", [ _ ] ) ->
                     case args of
                         [ encoderExpr ] ->
@@ -4255,7 +4125,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     Nothing
                             of
                                 Just nodes ->
-                                    -- Fusion successful - emit fused byte encoding ops
                                     let
                                         loopOps =
                                             BFReify.nodesToOps nodes
@@ -4275,7 +4144,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                                 Nothing ->
-                                    -- Fusion failed - fall back to kernel call
                                     let
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
@@ -4294,7 +4162,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                         _ ->
-                            -- Should not happen for valid Bytes.encode call
                             let
                                 ( boxOps, argVarPairs, ctx1b ) =
                                     boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
@@ -4312,13 +4179,11 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             , isTerminated = False
                             }
 
-                -- BytesFusion: intercept Bytes.decode kernel call
                 ( "Bytes", "decode", [ _, _ ] ) ->
                     case args of
                         [ decoderExpr, _ ] ->
                             case resolveDecoderNode ctx decoderExpr of
                                 Just decoderNode ->
-                                    -- Fusion successful - emit fused byte decoding ops
                                     let
                                         bytesVar : String
                                         bytesVar =
@@ -4347,7 +4212,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                                 Nothing ->
-                                    -- Fusion failed - fall back to kernel call
                                     let
                                         ( boxOps, argVarPairs, ctx1b ) =
                                             boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
@@ -4366,7 +4230,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                                     }
 
                         _ ->
-                            -- Should not happen for valid Bytes.decode call
                             let
                                 ( boxOps, argVarPairs, ctx1b ) =
                                     boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
@@ -4391,7 +4254,6 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                     of
                         Just intrinsic ->
                             let
-                                -- Unbox arguments if needed (e.g., !eco.value -> i64)
                                 ( unboxOps, unboxedArgVars, ctx1b ) =
                                     coerceIntrinsicArgs ctx1 argsWithTypes intrinsic
 
@@ -4419,17 +4281,9 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                             in
                             case policy of
                                 KernelAbi.ElmDerived ->
-                                    -- ABI derived from the Elm wrapper's funcType.
-                                    -- Polymorphic kernels have MVar in their funcType, which
-                                    -- Types.monoTypeToAbi maps to !eco.value, so they naturally
-                                    -- get all-boxed ABI without name-based checks.
-                                    --
-                                    -- Phase B: route the symbol-name decision through
-                                    -- registerKernelInstance so per-instance suffixes
-                                    -- (e.g. "_Int" for Utils.compare on Int args) take
-                                    -- effect. The decl ABI types come from monoTypeToAbi
-                                    -- of the Mono types, which agrees with
-                                    -- boxToMatchSignatureTyped's coercion below.
+                                    -- The declared ABI and boxToMatchSignatureTyped
+                                    -- both come from monoTypeToAbi of the same
+                                    -- types, so the arguments match the declaration.
                                     let
                                         elmSig : Ctx.FuncSignature
                                         elmSig =
@@ -4476,27 +4330,21 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 ( funcVarName, funcVarType ) =
                     Ctx.lookupVar ctx name
 
-                -- ABI type of the whole call expression (MonoCall.resultType).
                 callResultMlirType =
                     Types.monoTypeToAbi resultType
 
-                -- CGEN_056: evaluator func.func result type for typed papExtend.
                 evaluatorResultMlirType =
                     evaluatorAbiResultType callInfo
             in
             case callInfo.callModel of
                 Mono.FlattenedExternal ->
-                    -- Local alias of a flattened external (e.g. let f = List.map in f x xs)
-                    -- Reuse the flattened external machinery
+                    -- A local naming an external or kernel function.
                     generateFlattenedPartialApplication ctx func args resultType
 
                 Mono.StageCurried ->
-                    -- If the function variable is not a closure (e.g., a zero-arity thunk was
-                    -- already evaluated), and we're calling with no args, just return the value.
-                    -- This handles: let f = \() -> 42 in f()
-                    -- where f is already evaluated to i64, not a closure.
+                    -- A variable that is not a closure, applied to nothing, is
+                    -- already the value.
                     if not (Types.isEcoValueType funcVarType) && List.isEmpty args then
-                        -- Already evaluated - just return the value, coercing if needed
                         let
                             ( coerceOps, finalVar, ctx1 ) =
                                 coerceResultToType ctx funcVarName funcVarType callResultMlirType
@@ -4509,33 +4357,19 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                         }
 
                     else
-                        -- Normal closure call via papExtend (typed closure ABI)
-                        -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
                         let
-                            -- Use generateExprListTyped to get actual SSA types
                             ( argOps, argsWithTypes, ctx1 ) =
                                 generateExprListTyped ctx args
 
-                            -- Box args to the evaluator's param ABI when the local
-                            -- aliases a known function (CGEN_003: e.g. an inliner-bound
-                            -- `let f = Task.succeed in f 7` whose evaluator takes
-                            -- !eco.value); Bool (i1) always (REP_CLOSURE_001).
                             ( boxOps, boxedArgsWithTypes, ctx1b ) =
                                 boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-                            -- CGEN_052: Use precomputed staging metadata from CallInfo.
-                            -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
-                            -- remainingStageArities = subsequent stage arities
                             initialRemaining =
                                 callInfo.initialRemaining
 
                             remainingStageArities =
                                 callInfo.remainingStageArities
 
-                            -- Apply arguments by stages, emitting a chain of papExtend operations
-                            -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                            -- CGEN_056: pass evaluatorResultMlirType, not the over-saturated
-                            -- callResultMlirType.
                             papResult =
                                 applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
 
@@ -4558,14 +4392,10 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 callResultMlirType =
                     Types.monoTypeToAbi resultType
 
-                -- CGEN_056: evaluator func.func result type for typed papExtend.
                 evaluatorResultMlirType =
                     evaluatorAbiResultType callInfo
             in
-            -- If the function result is not a closure (e.g., a zero-arity thunk was
-            -- already evaluated), and we're calling with no args, just return the value.
             if not (Types.isEcoValueType funcResult.resultType) && List.isEmpty args then
-                -- Already evaluated - just return the value, coercing if needed
                 let
                     ( coerceOps, finalVar, ctx1 ) =
                         coerceResultToType funcResult.ctx funcResult.resultVar funcResult.resultType callResultMlirType
@@ -4578,31 +4408,21 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 }
 
             else
-                -- Normal closure call via papExtend (typed closure ABI)
-                -- Apply arguments by stages to handle stage-curried closures (CGEN_052)
                 let
-                    -- Use generateExprListTyped to get actual SSA types
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
-                    -- (callee evaluator unknown here: knownEvaluatorParamAbi gives [])
+                    -- knownEvaluatorParamAbi gives [] for these callees, so
+                    -- only Bool is boxed.
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
                         boxArgsToEvaluatorParams (knownEvaluatorParamAbi ctx func) ctx1 argsWithTypes
 
-                    -- CGEN_052: Use precomputed staging metadata from CallInfo.
-                    -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
-                    -- remainingStageArities = subsequent stage arities
                     initialRemaining =
                         callInfo.initialRemaining
 
                     remainingStageArities =
                         callInfo.remainingStageArities
 
-                    -- Apply arguments by stages, emitting a chain of papExtend operations
-                    -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
-                    -- CGEN_056: pass evaluatorResultMlirType, not the over-saturated
-                    -- callResultMlirType.
                     papResult =
                         applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities evaluatorResultMlirType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
 
@@ -4617,9 +4437,9 @@ generateSaturatedCallNoFusion ctx func args resultType callInfo =
                 }
 
 
-{-| Generate expressions and return their ACTUAL MLIR types (not from Mono.typeOf).
-This is important when the Mono types may be incorrect/stale, but the generated
-SSA values have correct types.
+{-| Generates `exprs` in order, threading the context, and returns their ops
+with each value and the SSA type it actually has, which is the type to box or
+unbox from rather than what the expression's Mono type maps to.
 -}
 generateExprListTyped : Ctx.Context -> List Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 generateExprListTyped ctx exprs =
@@ -4647,16 +4467,15 @@ generateExprListTyped ctx exprs =
 -- ====== TAIL CALL GENERATION ======
 
 
-{-| The message `generateExpr` crashes with when it is handed a
+{-| Returns the message `generateExpr` crashes with when it is handed a
 `MonoTailCall` to function `name`.
 
-`TailRec.compileTailFuncToWhile` lowers every tail-recursive function to an
-`scf.while` loop, and its `compileStep` turns each `MonoTailCall` in tail
-position into a "continue" step, so none reaches `generateExpr`. The code
-generator never emits an `eco.joinpoint`, so there is nothing an `eco.jump`
-could target: a jump built here would be unscoped and break CGEN\_030. A
-`MonoTailCall` that does reach `generateExpr` is therefore a compiler bug,
-reported rather than lowered.
+`Compiler.Generate.MLIR.TailRec.compileTailFuncToWhile` lowers a
+tail-recursive function to a loop, turning each `MonoTailCall` into a step to
+the next iteration, so none should reach `generateExpr`. No `eco.joinpoint` is
+ever emitted, so an `eco.jump` built here would have nothing to target. A
+`MonoTailCall` that does reach `generateExpr` is therefore a compiler bug, and
+compilation stops with this message.
 
 -}
 unscopedTailCallError : Name.Name -> String
@@ -4671,10 +4490,16 @@ unscopedTailCallError name =
 -- ====== IF GENERATION ======
 
 
-{-| Generate if expressions using eco.case on Bool.
+{-| Generates `if c1 then t1 else if c2 then t2 else ... final` as nested
+value-producing `eco.case` ops on `i1` conditions, with `case_kind` `bool` and
+tags 1 for the then branch and 0 for the else branch. A condition that arrives
+as `!eco.value` is unboxed first.
 
-Compiles `if c1 then t1 else if c2 then t2 else ... final` to nested
-eco.case operations on boolean conditions.
+The case's result type is the then branch's SSA type, and the else branch is
+coerced to it; on the result spine it is the spine's type instead
+(`spineResultMlirType`), and both branches yield through `emitSpineYield`. The
+condition is generated off the spine. A branch that is already terminated
+goes to `generateIfWithTerminatedBranch` or `generateIfWithTerminatedElse`.
 
 -}
 generateIf : Ctx.Context -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
@@ -4685,20 +4510,11 @@ generateIf ctx branches final resultMonoType =
 
         ( condExpr, thenExpr ) :: restBranches ->
             let
-                -- Evaluate condition to Bool.
-                --
-                -- Step 10a, MANDATORY HYGIENE: the condition is NOT on the
-                -- result spine, so `sretTailLayout` is cleared for it. A
-                -- condition can itself be a `MonoCase` — a spine arm — and a
-                -- leaked flag there would make-promote a Bool-typed case,
-                -- which is the `eco.papExtend` aggregate-operand incident the
-                -- Backend docstring records.
+                -- The condition is not on the result spine; a case used as a
+                -- condition would otherwise be built as an aggregate.
                 condRes =
                     generateExpr { ctx | sretTailLayout = Nothing } condExpr
 
-                -- Ensure condition is i1 for scf.if/eco.case
-                -- If the condition is eco.value (e.g., from a function call returning Bool),
-                -- we need to unbox it to i1
                 ( condUnboxOps, condVar, condCtx ) =
                     if Types.isEcoValueType condRes.resultType then
                         Intrinsics.unboxToType condRes.ctx condRes.resultVar I1
@@ -4706,33 +4522,21 @@ generateIf ctx branches final resultMonoType =
                     else
                         ( [], condRes.resultVar, condRes.ctx )
 
-                -- All condition ops including any unboxing
                 condOpsAll =
                     condRes.ops ++ condUnboxOps
 
-                -- The flag was cleared on the ctx that flowed through the
-                -- condition; put it back for the branches, which ARE the spine.
+                -- The branches are on the spine if the if is.
                 condCtxSpine =
                     { condCtx | sretTailLayout = ctx.sretTailLayout }
 
-                -- Generate then branch first to get its actual result type
                 thenRes =
                     generateExpr condCtxSpine thenExpr
             in
-            -- Check if then branch is terminated (e.g., tail call with eco.jump).
-            -- If so, we can't use scf.if which requires both branches to yield.
-            -- Fall back to eco.case which supports terminated regions.
             if thenRes.isTerminated then
                 generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOpsAll
 
             else
-                -- Then branch produces a value, check else branch
                 let
-                    -- Off the spine this is exactly today's rule — the then
-                    -- branch's own SSA type — so the non-promoted path stays
-                    -- byte-identical by construction. On the spine the join
-                    -- declares the AGGREGATE type, the same rule
-                    -- `generateCase` uses (step 10a).
                     resultMlirType =
                         case ctx.sretTailLayout of
                             Nothing ->
@@ -4741,12 +4545,10 @@ generateIf ctx branches final resultMonoType =
                             Just _ ->
                                 spineResultMlirType ctx resultMonoType
 
-                    -- Coerce then result to target type if needed
                     ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
                         coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
-                    -- Generate else branch (recursive if or final)
-                    -- Use ctxForSiblingRegion to avoid leaking varMappings from then-branch
+                    -- Names bound in the then branch are not visible in the else.
                     elseCtx =
                         let
                             sibling =
@@ -4758,40 +4560,25 @@ generateIf ctx branches final resultMonoType =
                         generateIf elseCtx restBranches final resultMonoType
                 in
                 if elseRes.isTerminated then
-                    -- Else branch is terminated - use eco.case instead
                     generateIfWithTerminatedElse condRes.ctx condVar thenRes elseRes resultMlirType condRes.ops
 
                 else
-                    -- Normal case: both branches produce values, use eco.case.
-                    -- The C++ EcoControlFlowToSCF pass converts eligible eco.case
-                    -- ops to scf.if. Generating eco.case avoids issues with
-                    -- nested eco.case(str) ops inside scf.if regions.
                     let
-                        -- Coerce else result to match then branch's type
                         ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
                             coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
-                        -- Step 10a: decomposed yields on the spine, the plain
-                        -- `eco.yield` off it. `emitSpineYield` IS
-                        -- `Ops.ecoYield` when the flag is Nothing, and the
-                        -- fresh-name order below is the order this code used
-                        -- before — else yield, then yield (ctx discarded),
-                        -- case result var, case op — so flag-off emission is
-                        -- unchanged token for token.
                         ( elseProjOps, elseYieldOp, ctx2 ) =
                             emitSpineYield elseFinalCtx elseFinalVar resultMlirType
 
                         elseRegion =
                             Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps ++ elseProjOps) elseYieldOp
 
-                        -- Build then region with eco.yield
                         ( thenProjOps, thenEcoYield, _ ) =
                             emitSpineYield thenFinalCtx thenFinalVar resultMlirType
 
                         thenRegionEco =
                             Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps ++ thenProjOps) thenEcoYield
 
-                        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
                         spineCase =
                             finishSpineCase ctx2
                                 resultMlirType
@@ -4806,27 +4593,23 @@ generateIf ctx branches final resultMonoType =
                     }
 
 
-{-| Generate if-then-else using eco.case when the then branch is terminated.
+{-| Generates an `if` whose then branch, `thenRes`, already ends in its own
+terminator, which is used as it is. The remaining branches are generated off
+the result spine, and the case's type is the else branch's SSA type, or
+`!eco.value` when the else branch is terminated too.
 -}
 generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> Mono.MonoType -> List MlirOp -> ExprResult
 generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final resultMonoType condOps =
     let
-        -- Build then region - it already has a terminator (should be eco.yield)
         thenRegion =
             mkRegionFromOps thenRes.ops
 
-        -- Generate else branch: use condCtx varMappings (not then-branch's)
         elseCtx =
             Ctx.ctxForSiblingRegion condCtx thenRes.ctx
 
         elseRes =
-            -- Step 10a: a terminated branch is unreachable on a promoted spine
-            -- (selection rejects MonoTailCall leaves for closures, and case
-            -- jumps are inlined in yield mode), so this path only threads the
-            -- parameter — it keeps treating the flag as Nothing.
             generateIf elseCtx restBranches final resultMonoType
 
-        -- Determine result type from else branch (then is terminated)
         resultMlirType =
             if elseRes.isTerminated then
                 Types.ecoValue
@@ -4834,7 +4617,6 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final result
             else
                 elseRes.resultType
 
-        -- Build else region
         ( elseRegion, ctxAfterElse ) =
             if elseRes.isTerminated then
                 ( mkRegionFromOps elseRes.ops, elseRes.ctx )
@@ -4844,21 +4626,17 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final result
                     ( coerceOps, finalVar, coerceCtx ) =
                         coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
-                    -- Use eco.yield for case alternatives
                     ( yieldCtx, yieldOp ) =
                         Ops.ecoYield coerceCtx finalVar resultMlirType
                 in
                 ( Ops.mkRegion [] (elseRes.ops ++ coerceOps) yieldOp, yieldCtx )
 
-        -- Allocate result variable for eco.case
         ( caseResultVar, ctxWithResult ) =
             Ctx.freshVar ctxAfterElse
 
-        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
         ( ctxFinal, caseOp ) =
             Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
     in
-    -- eco.case produces an SSA result
     { ops = condOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultMlirType
@@ -4867,13 +4645,13 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final result
     }
 
 
-{-| Generate if-then-else using eco.case when the else branch is terminated.
-The then branch has already been processed and yields a value.
+{-| Generates an `if` whose else branch, `elseRes`, already ends in its own
+terminator, which is used as it is; the then branch is coerced to
+`resultMlirType` and yielded. `condOps` are the ops placed before the case.
 -}
 generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
 generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType condOps =
     let
-        -- Build then region with eco.yield (not terminated)
         ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
             coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
@@ -4883,19 +4661,15 @@ generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType cond
         thenRegion =
             Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
 
-        -- Else region already has a terminator (should be eco.yield)
         elseRegion =
             mkRegionFromOps elseRes.ops
 
-        -- Allocate result variable for eco.case
         ( caseResultVar, ctxWithResult ) =
             Ctx.freshVar elseRes.ctx
 
-        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
         ( ctxFinal, caseOp ) =
             Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultMlirType
     in
-    -- eco.case produces an SSA result
     { ops = condOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultMlirType
@@ -4908,13 +4682,11 @@ generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType cond
 -- ====== LET GENERATION ======
 
 
-{-| Approximate reverse mapping from MlirType to MonoType.
-Used for PendingLambda capture types where only MlirType is available.
-Correctly round-trips: monoTypeToAbi (mlirTypeToApproxMonoType t) == t
-for all ABI types (I64, F64, I16, ecoValue). Char is I16 (NOT I32 — a
-stale pre-i16-Char arm here typed escaped-taildef Char captures as boxed
-while the papCreate slot kinds said i16, splitting the capture ABI of the
-outlined shell from its creation site).
+{-| Returns a Mono type whose ABI type is `mlirType`, for a capture of which
+only the MLIR type is known: Int for `i64`, Float for `f64`, Char for `i16`,
+Bool for `i1` (whose ABI type is `!eco.value`, as a captured Bool is boxed),
+and Unit for anything else. `Types.monoTypeToAbi` of the result gives back
+`mlirType` for `i64`, `f64`, `i16` and `!eco.value`.
 -}
 mlirTypeToApproxMonoType : MlirType -> Mono.MonoType
 mlirTypeToApproxMonoType mlirType =
@@ -4929,17 +4701,14 @@ mlirTypeToApproxMonoType mlirType =
             Mono.MChar
 
         I1 ->
-            -- A Bool capture is boxed at the papCreate (REP_CLOSURE_001), so
-            -- the lambda takes it as !eco.value = monoTypeToAbi MBool.
             Mono.MBool
 
         _ ->
             Mono.MUnit
 
 
-{-| Collect all names bound in a chain of nested Let expressions.
-This is used to add placeholder mappings for mutually recursive definitions
-before generating any closures.
+{-| Returns the names bound by the chain of lets at the head of `expr`, outermost
+first, stopping at the first expression that is not a let.
 -}
 collectLetBoundNames : Mono.MonoExpr -> List Name.Name
 collectLetBoundNames expr =
@@ -4960,17 +4729,16 @@ collectLetBoundNames expr =
             []
 
 
-{-| Add placeholder mappings for a list of names.
-These placeholders allow closures to reference sibling functions
-in mutually recursive let-rec definitions.
+{-| Returns the context with a _placeholder_ for each of `names`: a fresh SSA
+name of type `!eco.value`, mapped to the name before anything defines it, so
+that a closure in a let chain can capture a binding that comes later in the
+chain. The placeholder is not counted as defined here; it is defined only if
+the binding's value is later renamed onto it.
 
-If a name already has a placeholder in currentLetSiblings (from an outer
-let-rec group that created placeholders for the full chain), reuse that
-mapping. This prevents orphaned SSA vars when nested generateLet calls
-would otherwise create new placeholders for names already allocated by
-the outer group. Only currentLetSiblings entries are reused, not
-arbitrary varMappings (which could be from unrelated scopes like
-function parameters or prior let bindings).
+A name that already has an entry in `currentLetSiblings`, because an enclosing
+call made placeholders for the whole chain, keeps that entry and gets no new
+placeholder. Other existing mappings of the name, such as a parameter of the
+same name, are overridden.
 
 -}
 addPlaceholderMappings : List Name.Name -> Ctx.Context -> Ctx.Context
@@ -4979,7 +4747,6 @@ addPlaceholderMappings names ctx =
         (\name acc ->
             case Dict.get name acc.currentLetSiblings of
                 Just _ ->
-                    -- Already has a placeholder from outer let-rec group; reuse it
                     acc
 
                 Nothing ->
@@ -4990,19 +4757,14 @@ addPlaceholderMappings names ctx =
                         acc2 =
                             Ctx.addVarMapping name ssaVar Types.ecoValue acc1
                     in
-                    -- Don't mark placeholder as defined yet.
-                    -- The placeholder SSA var has no defining op yet; it will be
-                    -- defined when forceResultVar renames the RHS result op.
-                    -- addVarMapping at line ~3440 re-adds it after the RHS is complete.
                     { acc2 | definedSsaVars = Set.remove ssaVar acc2.definedSsaVars }
         )
         ctx
         names
 
 
-{-| Closure-binding view of a MonoDef. Collected for each candidate SCC
-member so that group codegen can see the binding name, closure info,
-lambda body, and overall result type together.
+{-| A let binding whose value is a closure literal, taken apart: the bound
+name, the closure's information and body, and the closure's type.
 -}
 type alias ClosureBinding =
     { name : Name.Name
@@ -5012,8 +4774,8 @@ type alias ClosureBinding =
     }
 
 
-{-| Classify a MonoDef as a closure binding. Returns a `ClosureBinding`
-record when the RHS is a `Mono.MonoClosure`; otherwise Nothing.
+{-| Returns the definition as a `ClosureBinding` when it binds a closure
+literal, and `Nothing` otherwise, including for a tail-recursive definition.
 -}
 classifyClosureDef : Mono.MonoDef -> Maybe ClosureBinding
 classifyClosureDef def =
@@ -5030,13 +4792,8 @@ classifyClosureDef def =
             Nothing
 
 
-{-| Extract the set of sibling names directly referenced by a closure
-binding's captures (ignoring self-references). This is used to build the
-mutual-recursion capture graph.
-
-Each capture entry in `ClosureInfo.captures` carries the capture expression;
-a capture referencing sibling `B` reads `MonoVarLocal B _`.
-
+{-| Returns the names in `boundSet`, other than `selfName`, that the closure
+captures directly as a plain variable.
 -}
 closureSiblingRefs :
     Set.Set Name.Name
@@ -5061,13 +4818,10 @@ closureSiblingRefs boundSet selfName info =
         info.captures
 
 
-{-| Compute the SCC of the capture graph containing `startName`, using
-iterative DFS to avoid deep recursion. Only names in `closureNames` (the
-contiguous-closure window) are considered reachable.
-
-This is a simple meet-in-the-middle: forward reachable from startName,
-backward reachable from startName, and the intersection is the SCC.
-
+{-| Returns the strongly connected component of `forwardGraph` that contains
+`startName`: the names reachable from it that can also reach it, moving only
+through names in `closureNames`. Both reachabilities are found by an iterative
+breadth-first search. The result always contains `startName`.
 -}
 computeSCC :
     Set.Set Name.Name
@@ -5139,14 +4893,16 @@ computeSCC closureNames forwardGraph startName =
     Set.intersect forward backward
 
 
-{-| Detect a contiguous mutual-recursion closure SCC of size >= 2 starting
-at `def`. Returns the SCC members (in let-chain order) paired with the
-let-chain body following them. Returns Nothing when:
+{-| Finds a group of mutually recursive closures that starts at `def`: two or
+more closure bindings at the head of the let chain that capture one another.
+Returns the members in chain order with the rest of the chain rebuilt as the
+body after them.
 
-  - the starting def is not a closure binding
-  - the SCC containing it has size 1 (self-recursion or no recursion)
-  - the SCC members are not contiguous and adjacent in the let-chain
-  - any SCC member is not a closure binding (v1 constraint)
+Only the run of closure bindings at the head of the chain is considered, and
+the group is the strongly connected component of their capture graph that
+contains `def`. Returns `Nothing` when `def` is not a closure binding, when
+that component has one member, or when it is not exactly the first bindings
+of the run.
 
 -}
 detectMutualRecGroup :
@@ -5163,9 +4919,6 @@ detectMutualRecGroup def body =
                 ( followingDefs, finalBody ) =
                     splitLetChain body
 
-                -- Collect the maximal contiguous prefix of closure bindings
-                -- starting with `def`; a non-closure binding terminates the
-                -- window.
                 ( closureWindow, tailAfterWindow ) =
                     collectClosurePrefix (def :: followingDefs)
 
@@ -5175,7 +4928,6 @@ detectMutualRecGroup def body =
                 boundSet =
                     Set.fromList windowNames
 
-                -- Build capture graph over the window.
                 forwardGraph =
                     List.foldl
                         (\cb acc ->
@@ -5189,9 +4941,6 @@ detectMutualRecGroup def body =
                 scc =
                     computeSCC boundSet forwardGraph firstClosure.name
 
-                -- `Set.size` is a full tree walk, and `scc` does not change
-                -- below this point; three separate calls measured the same set
-                -- three times.
                 sccSize =
                     Set.size scc
             in
@@ -5199,7 +4948,6 @@ detectMutualRecGroup def body =
                 Nothing
 
             else
-                -- SCC must be a contiguous prefix of the window for v1.
                 let
                     windowWithIdx =
                         List.indexedMap Tuple.pair closureWindow
@@ -5232,9 +4980,6 @@ detectMutualRecGroup def body =
                         ( members, rest ) =
                             splitAtIndex sccSize closureWindow
 
-                        -- Re-wrap any remaining closure-prefix defs that are
-                        -- after the SCC as regular MonoLets, then splice on
-                        -- the tail of non-closure defs + final body.
                         restAsDefs =
                             List.map closureBindingToDef rest
 
@@ -5246,12 +4991,17 @@ detectMutualRecGroup def body =
                     Just ( members, bodyAfterGroup )
 
 
+{-| Returns the closure binding as the let definition it came from.
+-}
 closureBindingToDef : ClosureBinding -> Mono.MonoDef
 closureBindingToDef cb =
     Mono.MonoDef cb.name
         (Mono.MonoClosure cb.closureInfo cb.lambdaBody cb.monoType)
 
 
+{-| Returns a chain of lets binding `defs` in order around `finalBody`. Every
+let is given the type of `finalBody`.
+-}
 rebuildLetChainFromDefs : List Mono.MonoDef -> Mono.MonoExpr -> Mono.MonoExpr
 rebuildLetChainFromDefs defs finalBody =
     case defs of
@@ -5264,9 +5014,8 @@ rebuildLetChainFromDefs defs finalBody =
                 (Mono.typeOf finalBody)
 
 
-{-| Split a list of MonoDefs into a prefix of closure bindings and the
-remaining non-closure MonoDefs (which become the tail of the let chain).
-The prefix stops at the first non-closure binding or when the chain ends.
+{-| Splits `defs` into the run of closure bindings at its head and the
+definitions from the first other binding onwards.
 -}
 collectClosurePrefix :
     List Mono.MonoDef
@@ -5289,13 +5038,15 @@ collectClosurePrefix defs =
                     ( [], d :: rest )
 
 
+{-| Returns the first `n` elements of `xs` and the rest.
+-}
 splitAtIndex : Int -> List a -> ( List a, List a )
 splitAtIndex n xs =
     ( List.take n xs, List.drop n xs )
 
 
-{-| Split a MonoLet chain into its list of defs and the final body. Mirrors
-`Closure.collectLetChain` (not exposed from that module).
+{-| Returns the definitions of the chain of lets at the head of `expr`, in
+order, and the expression under the last of them.
 -}
 splitLetChain : Mono.MonoExpr -> ( List Mono.MonoDef, Mono.MonoExpr )
 splitLetChain expr =
@@ -5311,22 +5062,19 @@ splitLetChain expr =
             ( [], expr )
 
 
-{-| Generate MLIR code for a let expression.
+{-| Generates a let and its body.
+
+At the head of a let chain (a binding not already among `currentLetSiblings`),
+and when the configuration's `aggPromote` flag is on, the chain is scanned once
+for forward references (`scanChainForwardRefs`), and the result is kept in the
+context's `fwdRefdLetNames` while the chain is generated, then restored. A
+group of mutually recursive closures at the head goes to `generateLetGroup`;
+anything else to `generateLetSingle`.
+
 -}
 generateLet : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
     let
-        -- U-T1.3.2 precise sibling recovery: at each chain HEAD (first
-        -- binding of a MonoLet spine — detected because ancestors have not
-        -- listed it in currentLetSiblings), scan the whole chain once for
-        -- CLOSURE-MEDIATED FORWARD REFERENCES (an earlier sibling's RHS
-        -- mentioning a later binding). A direct value use-before-def is
-        -- impossible (canonicalization sorts value deps), so any such
-        -- occurrence is deferred/captured — fatal for promotion (the
-        -- capture would receive the aggregate). The set threads to every
-        -- descendant binding's hook via the context and is restored on
-        -- chain exit. Flag-gated and skipped for candidate-free chains, so
-        -- flag-off pays nothing.
         headName =
             case def of
                 Mono.MonoDef n _ ->
@@ -5353,17 +5101,22 @@ generateLet ctx def body =
                 Nothing ->
                     generateLetSingle ctxScanned def body
 
-        -- restore on chain exit (mirror the currentLetSiblings discipline)
         resCtx =
             result.ctx
     in
     { result | ctx = { resCtx | fwdRefdLetNames = ctx.fwdRefdLetNames } }
 
 
-{-| Collect the chain's (binder, rhs) links along the MonoLet spine (the
-same spine `collectLetBoundNames` walks), then compute which binders are
-referenced by an EARLIER link's RHS. Skips the walk entirely when the
-chain holds no promotion candidate (tuple literal / saturated ctor call).
+{-| Returns the names bound by the let chain that starts with `def` and
+continues through `body` which are referred to by an earlier binding of the
+same chain.
+
+Such a reference can only be made from inside a closure, which captures the
+later name; a promoted aggregate cannot be captured, so a name in this set is
+never promoted. The scan is skipped, giving the empty set, when the chain has
+fewer than two bindings or no binding that could be promoted: a tuple literal
+or a call to a constructor's global.
+
 -}
 scanChainForwardRefs : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> Set.Set Name.Name
 scanChainForwardRefs ctx def body =
@@ -5389,8 +5142,7 @@ scanChainForwardRefs ctx def body =
         Set.empty
 
     else
-        -- For link i, every name bound at links > i that occurs in rhs_i is
-        -- forward-referenced. Walk back-to-front carrying the later-name set.
+        -- Back to front, carrying the names bound later in the chain.
         List.foldr
             (\( name, rhs ) ( laterNames, acc ) ->
                 ( Set.insert name laterNames
@@ -5406,6 +5158,10 @@ scanChainForwardRefs ctx def body =
             |> Tuple.second
 
 
+{-| Returns each binding of the let chain that starts with `def` and continues
+through `body`, as its name and bound expression, in order. A tail-recursive
+definition gives its body.
+-}
 chainLinks : Mono.MonoDef -> Mono.MonoExpr -> List ( Name.Name, Mono.MonoExpr )
 chainLinks def body =
     let
@@ -5427,10 +5183,9 @@ chainLinks def body =
            )
 
 
-{-| Which of `targets` occur (in ANY reference form — var use, case
-scrutinee, destructure root, closure capture name) in `expr`.
-`MonoTraverse.foldExpr` visits every subexpression including closure
-capture exprs, decider inlines and jump bodies.
+{-| Returns those of `targets` that `expr` refers to anywhere: as a variable,
+as either name of a case scrutinee, as the root of a destructuring path, or as
+the name of a closure capture.
 -}
 occursAnyNames : Set.Set Name.Name -> Mono.MonoExpr -> Set.Set Name.Name
 occursAnyNames targets expr =
@@ -5469,6 +5224,8 @@ occursAnyNames targets expr =
         expr
 
 
+{-| Returns the variable a destructuring path starts from.
+-}
 pathRootName : Mono.MonoPath -> Maybe Name.Name
 pathRootName path =
     case path of
@@ -5485,27 +5242,50 @@ pathRootName path =
             pathRootName sub
 
 
+{-| Generates one let binding and then its body.
+
+Every name of the chain from `def` on is first given a placeholder
+(`addPlaceholderMappings`), and those names alone become `currentLetSiblings`,
+so that a closure can capture a later sibling but sees no other outer
+variable through its siblings. The bound expression is generated off the
+result spine; the body is generated with the caller's spine flag, and
+`currentLetSiblings` is restored afterwards.
+
+For a plain definition, a `$sret` binding is tried first (`trySretLetBinding`).
+Otherwise a tuple literal or constructor call may be built as a value
+aggregate, when the `aggPromote` flag is on, the name is not forward-referenced
+and every use of it in the body only projects fields (`tupleBinderPromotable`,
+`promotableCtorCall`). When the binding's own ops define its value, the value
+is renamed onto the placeholder (`forceResultVar`), after a capture of the
+placeholder by the binding's own closure is replaced by a Unit constant
+(`fixSelfCaptures`). When the bound expression emits no ops, or its value is
+defined outside its own ops, the name is mapped to that value and the
+placeholder is left undefined. A placeholder that is already defined, meaning
+the same name was bound twice on the chain, crashes the compiler. Names bound
+only inside the bound expression are dropped from the context afterwards.
+
+A tail-recursive definition is queued as a tail-recursive `PendingLambda`
+named `_tail_<name>_<n>`, and its value is an `eco.papCreate` defining the
+placeholder. Its captures are the free locals of its body that are not
+siblings; one held as scalar slots is rebuilt as a value first, a Bool is
+boxed, and a free local with no mapping is left out.
+
+The result is terminated when the body is, or when the bound expression is and
+the body emits no ops.
+
+-}
 generateLetSingle : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLetSingle ctx def body =
-    -- For mutually recursive definitions, add placeholder mappings for all
-    -- names in the Let chain before generating any closures.
-    -- We also set currentLetSiblings so that closures created in this group
-    -- capture the correct sibling environment.
     let
         boundNames =
             collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
 
-        -- Save outer siblings for restoration on exit (lexical scoping)
         outerSiblings =
             ctx.currentLetSiblings
 
-        -- Build placeholder mappings for the whole let-group
         groupVarMappings =
             addPlaceholderMappings boundNames ctx
 
-        -- Only include the let-bound names in currentLetSiblings (not all varMappings).
-        -- This prevents outer-scope variables from leaking into lambda siblingMappings,
-        -- which would cause cross-function SSA references (CGEN_CLOSURE_003).
         letBoundSiblings =
             List.foldl
                 (\name acc ->
@@ -5520,53 +5300,25 @@ generateLetSingle ctx def body =
                 boundNames
 
         ctxWithPlaceholders =
-            -- tailRecLetBody is consumed by THIS binding's promotion hook
-            -- (from the incoming ctx); cleared here so nested emission
-            -- (RHS sub-lets etc.) can never misread it. sretTailLayout is a
-            -- RESULT-spine flag: the RHS is not a result position, so it is
-            -- cleared too (the let BODY restores it below).
+            -- tailRecLetBody belongs to this binding only, so lets nested in
+            -- the bound expression must not see it.
             { groupVarMappings | currentLetSiblings = letBoundSiblings, tailRecLetBody = Nothing, sretTailLayout = Nothing }
     in
     case def of
         Mono.MonoDef name expr ->
-            -- U-T1.3.3 per-site migration: a let-bound SATURATED direct
-            -- call to a result-promoted callee whose binder is consumed
-            -- only by destructure projections calls the $sret WORKER
-            -- (multi-result) and carries the fields as scalar slots — the
-            -- container never exists on this path.
             case trySretLetBinding ctx ctxWithPlaceholders name expr body of
                 Just sretResult ->
                     sretResult
 
                 Nothing ->
                     let
-                        -- Look up the placeholder SSA var installed by addPlaceholderMappings.
-                        -- This is "%name" with type !eco.value for each let-bound name.
                         ( placeholderVar, _ ) =
                             Ctx.lookupVar ctxWithPlaceholders name
 
-                        -- Generate the bound expression with placeholders in scope.
-                        -- U-T1.3.1: a let-bound tuple literal whose every use in the
-                        -- body is a direct destructure projection is emitted in the
-                        -- VALUE-aggregate form (eco.make.tuple2/3 — no allocation);
-                        -- the binding's mapping then carries the aggregate type, so
-                        -- destructure reads route through the dual-form projection.
-                        -- U-T1.3.2 soundness guard (precise recovery): Elm
-                        -- let-siblings are mutually visible — an EARLIER sibling's
-                        -- closure RHS can capture a LATER binding, invisible to the
-                        -- body-suffix escape walk. generateLet scans each chain once
-                        -- (closure-mediated forward refs are the ONLY legal
-                        -- use-before-def form) into ctx.fwdRefdLetNames; a candidate
-                        -- may promote iff nothing earlier references it. The walker
-                        -- applies the same test to every alias it sanctions.
-                        -- U-T1.3.2t: TailRec.compileLetStep emits each loop-body
-                        -- let through a SYNTHETIC `MonoLet def MonoUnit` (the real
-                        -- body is compiled separately via compileStep) — walking the
-                        -- unit body would approve anything (the T1.3.2 incident).
-                        -- TailRec now hands the REAL loop-body suffix through
-                        -- `ctx.tailRecLetBody`; the walk runs on that. A unit body
-                        -- with NO real body attached is an unknown synthetic —
-                        -- never promote.
+                        -- A Unit body may be a stand-in for a loop body generated
+                        -- elsewhere, which tailRecLetBody then holds; the escape
+                        -- walk must see the real body, and with none it cannot
+                        -- approve promotion.
                         ( analysisBody, promotionBodyOk ) =
                             case body of
                                 Mono.MonoUnit ->
@@ -5597,13 +5349,6 @@ generateLetSingle ctx def body =
                                     else
                                         generateExpr ctxWithPlaceholders expr
 
-                                -- U-T1.3.2: a saturated DIRECT ctor call bound by a let
-                                -- whose value never escapes is emitted as a VALUE-level
-                                -- eco.make.custom — the call AND the allocation both
-                                -- disappear. Safety falls out of the walker: any
-                                -- multi-ctor consumer needs tag dispatch on the root,
-                                -- which the decider rules reject, so admitted
-                                -- candidates are projection-only (single-ctor shapes).
                                 Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) cargs callResultType callInfo ->
                                     case
                                         if chainHeadSafe then
@@ -5621,18 +5366,6 @@ generateLetSingle ctx def body =
                                 _ ->
                                     generateExpr ctxWithPlaceholders expr
 
-                        -- Force the bound expression's result SSA id to be the placeholder var.
-                        -- When the RHS produces ops, forceResultVar renames the result to the
-                        -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
-                        -- the placeholder SSA var that sibling closures captured.
-                        --
-                        -- When the RHS produces NO ops (e.g. a simple variable reference),
-                        -- there is no defining op to rename, so we alias the let-bound name
-                        -- to the existing SSA var instead.
-                        -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
-                        -- If a papCreate uses the placeholder var as a capture operand,
-                        -- replace it with a Unit constant and mark the self-capture index.
-                        -- The C++ lowering will patch the closure to point to itself.
                         ( fixedResult, _ ) =
                             if hasSelfCapture placeholderVar rawResult.ops then
                                 let
@@ -5655,18 +5388,14 @@ generateLetSingle ctx def body =
                                 ( fixedResult, fixedResult.resultVar )
 
                             else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
-                                -- The result var is from an outer scope (not defined by this
-                                -- expression's ops), e.g. Debug.log returning an already-boxed
-                                -- value. Renaming would break SSA references, so just alias.
+                                -- Such as Debug.log returning a value it was
+                                -- given: renaming it would break its other uses.
                                 ( fixedResult, fixedResult.resultVar )
 
                             else if Set.member placeholderVar fixedResult.ctx.definedSsaVars then
-                                -- The placeholder was already force-defined by an earlier
-                                -- same-named let on this chain. Forcing again would emit a
-                                -- second definition of the same SSA id (invalid MLIR:
-                                -- "redefinition of SSA value"). Fail loudly: an upstream
-                                -- pass duplicated a let-bound name without alpha-renaming
-                                -- (see MonoInlineSimplify.freshenLetBoundNames).
+                                -- Renaming again would define the SSA name twice.
+                                -- Let-bound names on a chain are expected to be
+                                -- unique by this point.
                                 crash
                                     ("generateLetSingle: SSA placeholder "
                                         ++ placeholderVar
@@ -5678,19 +5407,10 @@ generateLetSingle ctx def body =
                             else
                                 ( forceResultVar placeholderVar fixedResult, placeholderVar )
 
-                        -- Scope varMappings back to the outer let group's keys.
-                        -- Inner let-bindings from inlined functions (e.g., identity x => let _v0 = x in _v0)
-                        -- add entries to varMappings that must not leak into the outer scope.
-                        -- We also clean definedSsaVars of any SSA vars that only the inner entries referenced.
+                        -- Names bound inside the bound expression go out of scope,
+                        -- and so do the SSA values only they named.
                         scopedCtx : Ctx.Context
                         scopedCtx =
-                            -- Perf (#4): RHS evaluation only ADDS varMappings on top of
-                            -- ctxWithPlaceholders, so scoping back to the outer group = removing
-                            -- exactly the inner-only keys. The old code rebuilt the entire outer
-                            -- map from Dict.empty on every let (O(scope^2) down a let chain).
-                            -- Collect the inner-only entries; if there are none (the common case)
-                            -- share exprCtx unchanged, otherwise Dict.remove just those keys
-                            -- (structure-sharing). Equivalent because outerKeys ⊆ exprCtx keys.
                             let
                                 exprCtx =
                                     exprResult.ctx
@@ -5720,8 +5440,6 @@ generateLetSingle ctx def body =
                                                 (List.foldl (\( _, sv ) acc -> Set.insert sv acc) Set.empty innerOnly)
                                     }
 
-                        -- Update varMappings for this name to use the effective SSA var,
-                        -- with the actual result type.
                         ctx1 : Ctx.Context
                         ctx1 =
                             Ctx.addVarMapping name effectiveVar exprResult.resultType scopedCtx
@@ -5730,12 +5448,8 @@ generateLetSingle ctx def body =
 
                         bodyResult : ExprResult
                         bodyResult =
-                            -- the let BODY is a result position when the let is on the
-                            -- sret worker's result spine — restore the flag the RHS
-                            -- compilation cleared.
                             generateExpr { ctx1 | sretTailLayout = ctx.sretTailLayout } body
 
-                        -- Restore outer siblings on exit from the let-rec group
                         bodyCtx : Ctx.Context
                         bodyCtx =
                             bodyResult.ctx
@@ -5744,11 +5458,6 @@ generateLetSingle ctx def body =
                         ctxOut =
                             { bodyCtx | currentLetSiblings = outerSiblings }
 
-                        -- Propagate isTerminated when:
-                        -- 1. The bound expression is terminated (eco.case, eco.jump), AND
-                        --    the body is trivial (just returning the let-bound variable, so no body ops)
-                        -- 2. OR the body itself is terminated
-                        -- In these cases, the case alternatives already contain the correct returns.
                         finalIsTerminated =
                             (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
                     in
@@ -5760,19 +5469,10 @@ generateLetSingle ctx def body =
                     }
 
         Mono.MonoTailDef name params tailBody ->
-            -- For local tail-recursive functions:
-            -- 1. Find free variables of the body (captures)
-            -- 2. Create a PendingLambda with isTailRecursive=True
-            -- 3. Generate eco.papCreate to define %name
-            -- 4. Apply forceResultVar to match the placeholder
-            -- 5. Generate the let body
             let
-                -- Look up the placeholder SSA var
                 ( placeholderVar, _ ) =
                     Ctx.lookupVar ctxWithPlaceholders name
 
-                -- Find free variables in the tail body.
-                -- Exclude params and function name (they are bound, not captured).
                 paramNames =
                     List.map Tuple.first params
 
@@ -5782,7 +5482,6 @@ generateLetSingle ctx def body =
                 freeVarNames =
                     Closure.findFreeLocals boundSet tailBody
 
-                -- Separate free vars into siblings (in currentLetSiblings) and captures
                 captureNames =
                     List.filter
                         (\n -> not (Dict.member n ctxWithPlaceholders.currentLetSiblings))
@@ -5790,11 +5489,8 @@ generateLetSingle ctx def body =
                         |> Set.fromList
                         |> Set.toList
 
-                -- Look up capture SSA vars and MlirTypes. A scalar-split loop
-                -- param has NO varMapping (TailRec.setupVarMappings removes it):
-                -- materialize it from its slot vars, as a whole-value
-                -- MonoVarLocal use does. Looking only in varMappings dropped
-                -- such a capture, and the lambda body's lookupVar crashed.
+                -- A name held as scalar slots has no var mapping, so it is
+                -- rebuilt from its slots, as a whole-value use of it would be.
                 ( captureMaterializeOpsRev, captureInfosRev, ctxCaptured ) =
                     List.foldl
                         (\capName ( opsAcc, infosAcc, ctxAcc ) ->
@@ -5823,16 +5519,13 @@ generateLetSingle ctx def body =
                 captureInfos =
                     List.reverse captureInfosRev
 
-                -- Convert captures to PendingLambda format (name, approxMonoType)
                 captureTypes =
                     List.map
                         (\( capName, _, mlirTy ) -> ( capName, mlirTypeToApproxMonoType mlirTy ))
                         captureInfos
 
-                -- Box Bool (i1) captures at the closure boundary per
-                -- REP_CLOSURE_001 / FORBID_CLOSURE_001, as generateClosure does.
-                -- The lambda side already takes them as !eco.value
-                -- (mlirTypeToApproxMonoType I1 = MBool).
+                -- The lambda takes a Bool capture as !eco.value
+                -- (mlirTypeToApproxMonoType gives MBool for i1).
                 ( captureBoxOps, boxedCaptures, ctxBoxed ) =
                     boxArgsForClosureBoundary
                         ctxCaptured
@@ -5844,11 +5537,9 @@ generateLetSingle ctx def body =
                 captureMlirTypes =
                     List.map Tuple.second boxedCaptures
 
-                -- Generate a unique function name using the opId counter
                 tailFuncName =
                     "_tail_" ++ name ++ "_" ++ String.fromInt ctxWithPlaceholders.nextOpId
 
-                -- Create the PendingLambda (isTailRecursive = True)
                 pendingLambda : Ctx.PendingLambda
                 pendingLambda =
                     { name = tailFuncName
@@ -5866,7 +5557,6 @@ generateLetSingle ctx def body =
                         | pendingLambdas = pendingLambda :: ctxBoxed.pendingLambdas
                     }
 
-                -- Generate eco.papCreate to define the closure value
                 hasCaptures =
                     not (List.isEmpty captureInfos)
 
@@ -5901,11 +5591,7 @@ generateLetSingle ctx def body =
                     else
                         Dict.empty
 
-                -- _result_kind: tail-rec body's saturated return ABI
-                -- (REP_ABI_001 — primitive returns MUST be unboxed). Drives
-                -- both the wrapper's compiled return type and the closure
-                -- header's `result_kind`. Omitted when 0 to keep MLIR diffs
-                -- minimal.
+                -- The slot kind of the body's ABI type, omitted when boxed.
                 tailResultKind =
                     Types.mlirTypeToKind (Types.monoTypeToAbi (Mono.typeOf tailBody))
 
@@ -5937,7 +5623,6 @@ generateLetSingle ctx def body =
                         |> Ops.opBuilder.withAttrs papAttrs
                         |> Ops.opBuilder.build
 
-                -- Force result to placeholder var
                 rawResult =
                     { ops = captureMaterializeOps ++ captureBoxOps ++ [ papOp ]
                     , resultVar = resultVar
@@ -5949,11 +5634,9 @@ generateLetSingle ctx def body =
                 exprResult =
                     forceResultVar placeholderVar rawResult
 
-                -- Update varMappings for the let body
                 ctx4 =
                     Ctx.addVarMapping name placeholderVar exprResult.resultType exprResult.ctx
 
-                -- Generate the let body
                 bodyResult =
                     generateExpr { ctx4 | sretTailLayout = ctx.sretTailLayout } body
 
@@ -5974,13 +5657,22 @@ generateLetSingle ctx def body =
             }
 
 
-{-| Generate a `eco.papCreateGroup` op for a mutually-recursive SCC of
-closure bindings. This replaces per-sibling `papCreate` + placeholder/
-`fixSelfCaptures` for true mutual let-rec (SCC size >= 2): all siblings
-are allocated in one runtime call, so cross-sibling captures can be
-written after all HPointers are known — eliminating the
-"operand #0 does not dominate this use" dominance hazard without adding
-a GC write barrier.
+{-| Generates a group of mutually recursive closures, `members`, as one
+`eco.papCreateGroup` op, and then `body`.
+
+Separate `eco.papCreate` ops cannot express closures that capture each other,
+because whichever is built first would capture a value not yet defined. The
+group op creates all the closures together, and the captures between them are
+given as cross edges rather than as operands. Each member's capture slots
+hold its other captures first, which may be unboxed, then its captures of
+members, which are boxed; each capture of a member is a _cross edge_
+(producer, consumer, slot). Each member is created under the name of its
+`$cap` clone, defines its own placeholder, and is queued as a `PendingLambda`
+whose captures follow the same order.
+
+Placeholders are made for every name of the chain, including those bound
+after the group, and the body is generated with the caller's spine flag.
+
 -}
 generateLetGroup :
     Ctx.Context
@@ -5989,13 +5681,9 @@ generateLetGroup :
     -> ExprResult
 generateLetGroup ctx members body =
     let
-        -- Stable sibling indices (let-chain order).
         memberNames =
             List.map .name members
 
-        -- Install placeholder mappings for the full let-chain (including
-        -- post-group bindings) so downstream ops can reference them; also
-        -- put sibling names into currentLetSiblings for nested closures.
         boundNames =
             collectLetBoundNames (wrapDefsIntoLet members body)
 
@@ -6028,11 +5716,6 @@ generateLetGroup ctx members body =
         memberIndex =
             List.indexedMap (\i n -> ( n, i )) memberNames |> Dict.fromList
 
-        -- For each sibling, split its captures into (non-sibling, sibling),
-        -- preserving the original capture order (slot layout). Non-sibling
-        -- captures get generated into operand ops; sibling captures become
-        -- cross-edges. Slot indices in the resulting Closure.values[] are
-        -- `[non-sibling captures..., sibling captures...]` for each sibling.
         buildSiblingData ( consumerIdx, member ) acc =
             let
                 closureInfo =
@@ -6050,7 +5733,6 @@ generateLetGroup ctx members body =
                         )
                         closureInfo.captures
 
-                -- Generate non-sibling capture operand ops.
                 ( captureOpsRev, captureVarsRev, ctxAfter ) =
                     List.foldl
                         (\( _, expr, _ ) ( ops, vars, ctx2 ) ->
@@ -6069,7 +5751,7 @@ generateLetGroup ctx members body =
                 capVars0 =
                     List.reverse captureVarsRev
 
-                -- Box primitives at the closure boundary (REP_CLOSURE_001).
+                -- Only Bool is boxed here.
                 ( boxOps, capVarsBoxed, ctxAfterBox ) =
                     boxArgsForClosureBoundary ctxAfter capVars0
 
@@ -6107,20 +5789,12 @@ generateLetGroup ctx members body =
                 numCaptured =
                     nonSiblingCount + List.length siblingCaptures
 
-                -- slot_kinds: one kind per values[] slot. Only non-sibling
-                -- slots may be unboxed; the sibling (cross-edge consumer)
-                -- slots after them stay boxed (kind 0).
                 slotKinds =
                     captureTypes ++ List.repeat (List.length siblingCaptures) Types.ecoValue
 
                 baseFuncName =
                     lambdaIdToString closureInfo.lambdaId
 
-                -- Sibling's saturated return ABI kind (REP_ABI_001).
-                -- Derived from the lambda body's MonoType — primitive when
-                -- the body evaluates to Int/Float/Char, boxed otherwise
-                -- (including multi-stage closures whose body is itself a
-                -- function value).
                 bodyAbi =
                     Types.monoTypeToAbi (Mono.typeOf member.lambdaBody)
 
@@ -6169,8 +5843,6 @@ generateLetGroup ctx members body =
         captureOpsAll =
             List.reverse groupAcc.opsRev
 
-        -- Result SSA vars bind to each sibling's placeholder so downstream
-        -- code references them via varMappings without needing rename.
         resultVars =
             List.map
                 (\m -> Ctx.lookupVar ctxAfterSiblings m.name |> Tuple.first)
@@ -6183,10 +5855,6 @@ generateLetGroup ctx members body =
                 crossEdges
                 resultVars
 
-        -- Register pending lambdas for each sibling (one per member) so
-        -- the lambda bodies get compiled. Capture types and sibling
-        -- mappings mirror what generateClosure sets up; isTailRecursive is
-        -- False — the group op handles mutual-rec through cross-edges.
         pendingLambdas =
             List.map
                 (\member ->
@@ -6194,10 +5862,7 @@ generateLetGroup ctx members body =
                         closureInfo =
                             member.closureInfo
 
-                        -- PendingLambda's captures list uses the ordered
-                        -- Name/MonoType pairs so lambda codegen projects
-                        -- them from the right positions. Slot layout is
-                        -- non-sibling captures first, then sibling captures.
+                        -- In slot order: other captures, then members.
                         ( nonSibCapEntries, sibCapEntries ) =
                             List.partition
                                 (\( _, captureExpr, _ ) ->
@@ -6234,10 +5899,7 @@ generateLetGroup ctx members body =
                 | pendingLambdas = pendingLambdas ++ ctxWithGroupOp.pendingLambdas
             }
 
-        -- Re-register each sibling's name so varMappings contains the real
-        -- result type (ecoValue) for downstream references. These were already
-        -- mapped to the placeholder var by addPlaceholderMappings; we just
-        -- mark those SSA vars as defined (by the group op).
+        -- Mapping each name again marks its placeholder as defined.
         ctxReady =
             List.foldl
                 (\member c ->
@@ -6270,6 +5932,9 @@ generateLetGroup ctx members body =
     }
 
 
+{-| Returns a chain of lets binding the closure `members` in order around
+`tail`, every let given the type of `tail`.
+-}
 wrapDefsIntoLet : List ClosureBinding -> Mono.MonoExpr -> Mono.MonoExpr
 wrapDefsIntoLet members tail =
     case members of
@@ -6289,30 +5954,20 @@ wrapDefsIntoLet members tail =
 -- ====== DESTRUCT GENERATION ======
 
 
+{-| Generates a destructuring, `name` bound to the value at the end of `path`,
+and then `body`.
+
+The value is read at the ABI type of the path's result type
+(`Patterns.resolvePathResultType`), which is the type computed from the
+containers along the path. The destructor's own type is used instead only
+when the path's type still contains a type variable and the destructor's does
+not. The binding of `name` lasts for `body` only: afterwards any earlier
+mapping of the name is restored.
+
+-}
 generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> ExprResult
 generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
     let
-        -- Use the path's actual result type for generating the destructor.
-        -- The path's MonoIndex/MonoField/etc. nodes carry the correctly-specialized
-        -- result type (e.g., MInt), whereas the destructor's monoType may be an
-        -- unsubstituted type variable (MVar) due to type variable name mismatches
-        -- between the function signature and the type definition.
-        --
-        -- For example, in Result.andThen:
-        --   - Function signature uses type vars: a, b, x
-        --   - Result type definition uses: error, value
-        --   - The destructor's monoType may be MVar "value" (not in substitution)
-        --   - But the path's resultType is correctly MInt
-        --
-        -- If the path itself still has an unresolved MVar at its top (e.g.
-        -- polymorphic `Done a` partially specialized), fall back to the ctor
-        -- shape registry so the destructor type matches the constructor
-        -- wrapper's actual heap layout. As a further fallback, the destructor's
-        -- own monoType is sometimes pinned by the outer subst even when the
-        -- containerType at the scrutinee left the relevant type argument as a
-        -- free MVar (e.g. `loop`'s `a` resolved from the callback's return type,
-        -- while the scrutinee's Step type arg stayed polymorphic). Prefer that
-        -- concrete answer over a still-polymorphic path result.
         pathResultRaw =
             Patterns.resolvePathResultType ctx path
 
@@ -6323,24 +5978,18 @@ generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
             else
                 pathResultRaw
 
-        -- Convert to MLIR type
         destructorMlirType =
             Types.monoTypeToAbi pathResultType
 
-        -- Use the path's type for path generation
         targetType =
             destructorMlirType
 
         ( pathOps, pathVar, ctx1 ) =
             Patterns.generateMonoPath ctx path targetType
 
-        -- Save the previous mapping for this name (if any) so we can restore it
-        -- after the body. MonoDestruct introduces a scoped binding that should not
-        -- leak into sibling expressions.
         previousMapping =
             Dict.get name ctx1.varMappings
 
-        -- Use mapping with the path's type
         ctx2 : Ctx.Context
         ctx2 =
             Ctx.addVarMapping name pathVar targetType ctx1
@@ -6349,9 +5998,6 @@ generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
         bodyResult =
             generateExpr ctx2 body
 
-        -- Restore the previous variable mapping for 'name' so that sibling
-        -- expressions (processed after this destruct) see the outer binding,
-        -- not the destructured one.
         bodyCtx =
             bodyResult.ctx
 
@@ -6375,10 +6021,11 @@ generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body =
 -- ====== CASE GENERATION ======
 
 
-{-| Generate the decision tree with jump expression inlining (yield-based mode).
-Instead of generating eco.jump to joinpoints, this version inlines branch bodies
-directly when encountering Mono.Jump. This enables single-block alternative regions
-required for SCF lowering.
+{-| Generates a case's decision tree, whose leaves each end in an `eco.yield`
+of a `resultTy` value. A leaf that jumps to a shared branch gets its own copy
+of that branch's body, looked up in `jumpLookup`, so no `eco.joinpoint` is
+emitted and every alternative is a single block. A `Leaf` emits no test; a
+`Chain` and a `FanOut` emit `eco.case` ops.
 -}
 generateDeciderWithJumps : Ctx.Context -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateDeciderWithJumps ctx decider jumpLookup resultTy =
@@ -6393,34 +6040,33 @@ generateDeciderWithJumps ctx decider jumpLookup resultTy =
             generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy
 
 
-{-| Generate code for a Leaf node with jump inlining (yield-based mode).
-Instead of emitting eco.jump to joinpoints, this looks up the branch expression
-and inlines it directly. This enables single-block alternative regions.
+{-| Generates a leaf of a decision tree: the branch body, inline or copied
+from `jumpLookup`, coerced to `resultTy` and yielded (`emitSpineYield`).
+
+A body that is already terminated is kept as it is when it ends in an
+`eco.yield`, or when it has no result value (which `mkCaseRegionFromDecider`
+then reports); one that ends in another terminator but has a value gets the
+yield appended. A jump index missing from `jumpLookup` crashes the compiler.
+
 -}
 generateLeafWithJumps : Ctx.Context -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateLeafWithJumps ctx choice jumpLookup resultTy =
     case choice of
         Mono.Inline branchExpr ->
-            -- Same as generateLeaf - evaluate and yield
             let
                 branchRes =
                     generateExpr ctx branchExpr
             in
             if branchRes.isTerminated then
-                -- Only short-circuit if already terminated with eco.yield
                 case List.reverse branchRes.ops of
                     lastOp :: _ ->
                         if isValidCaseTerminator lastOp then
                             branchRes
 
                         else if branchRes.resultVar == "" then
-                            -- Non-yield terminator with no result value - deep codegen bug,
-                            -- let mkCaseRegionFromDecider crash with a good message
                             branchRes
 
                         else
-                            -- Non-yield terminator (e.g., eco.return) but we have a resultVar,
-                            -- wrap with eco.yield to ensure valid case alternative
                             let
                                 actualTy =
                                     branchRes.resultType
@@ -6460,29 +6106,22 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                 }
 
         Mono.Jump index ->
-            -- Yield-based mode: inline the branch body instead of jumping
             case Array.get index jumpLookup |> Maybe.andThen identity of
                 Just branchExpr ->
-                    -- Inline the branch expression and yield
                     let
                         branchRes =
                             generateExpr ctx branchExpr
                     in
                     if branchRes.isTerminated then
-                        -- Only short-circuit if already terminated with eco.yield
                         case List.reverse branchRes.ops of
                             lastOp :: _ ->
                                 if isValidCaseTerminator lastOp then
                                     branchRes
 
                                 else if branchRes.resultVar == "" then
-                                    -- Non-yield terminator with no result value - deep codegen bug,
-                                    -- let mkCaseRegionFromDecider crash with a good message
                                     branchRes
 
                                 else
-                                    -- Non-yield terminator (e.g., eco.return) but we have a resultVar,
-                                    -- wrap with eco.yield to ensure valid case alternative
                                     let
                                         actualTy =
                                             branchRes.resultType
@@ -6522,11 +6161,13 @@ generateLeafWithJumps ctx choice jumpLookup resultTy =
                         }
 
                 Nothing ->
-                    -- Jump index not found - this shouldn't happen with valid IR
                     crash ("generateLeafWithJumps: Jump index " ++ String.fromInt index ++ " not found in jumpLookup")
 
 
-{-| Generate code for a Chain node with jump inlining (yield-based mode).
+{-| Generates a `Chain` node: the tests, then `success` if all pass and
+`failure` otherwise. A chain of the single test that a Bool is `True` goes to
+`generateChainForBoolADTWithJumps`, any other to
+`generateChainGeneralWithJumps`.
 -}
 generateChainWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainWithJumps ctx testChain success failure jumpLookup resultTy =
@@ -6538,7 +6179,10 @@ generateChainWithJumps ctx testChain success failure jumpLookup resultTy =
             generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy
 
 
-{-| Special handling for Bool ADT pattern matching with jump inlining.
+{-| Generates a chain that tests one Bool for `True`: the Bool is read at
+`path` as an `i1`, and one `eco.case` of `case_kind` `bool` has `success` under
+tag 1 and `failure` under tag 0. The failure branch does not see names bound in
+the success branch.
 -}
 generateChainForBoolADTWithJumps : Ctx.Context -> Mono.MonoDtPath -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
@@ -6575,20 +6219,19 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
     }
 
 
-{-| General chain case with jump inlining.
-For multi-test chains, we use short-circuit evaluation: the first test guards
-the remaining tests. This prevents unsafe operations (e.g. eco.project.list\_head
-on Nil) from executing before the prerequisite guard (e.g. IsCons) has passed.
+{-| Generates a chain of tests as nested `eco.case` ops, so that each test
+runs only after every earlier one has passed. This matters because a later
+test may read a value that exists only when an earlier one holds, such as the
+head of a list that must first be tested to be non-empty. An empty chain is
+just `success`.
 -}
 generateChainGeneralWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy =
     case testChain of
         [] ->
-            -- No tests: go directly to success
             generateDeciderWithJumps ctx success jumpLookup resultTy
 
         [ singleTest ] ->
-            -- Single test: no short-circuit needed, emit flat
             let
                 ( condOps, condVar, ctx1 ) =
                     Patterns.generateMonoTest ctx singleTest
@@ -6622,14 +6265,10 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
             }
 
         firstTest :: restTests ->
-            -- Multi-test chain: short-circuit by nesting remaining tests
-            -- inside the first test's "then" branch. This ensures path
-            -- navigations in later tests only execute after earlier guards pass.
             let
                 ( firstOps, firstVar, ctx1 ) =
                     Patterns.generateMonoTest ctx firstTest
 
-                -- "then" branch: evaluate remaining tests (recurse)
                 thenRes =
                     generateChainGeneralWithJumps ctx1 restTests success failure jumpLookup resultTy
 
@@ -6639,7 +6278,6 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
                 ctxForElse =
                     Ctx.ctxForSiblingRegion ctx1 ctx1a
 
-                -- "else" branch: first test failed, go to failure
                 elseRes =
                     generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
 
@@ -6660,7 +6298,8 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
             }
 
 
-{-| Check if FanOut is a Bool pattern match (has IsBool True or IsBool False tests).
+{-| Tells whether a `FanOut`'s first edge tests a Bool, which makes it a
+fan-out on a Bool.
 -}
 isBoolFanOut : List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Bool
 isBoolFanOut edges =
@@ -6677,7 +6316,8 @@ isBoolFanOut edges =
                     False
 
 
-{-| Find True and False branches from Bool FanOut edges.
+{-| Returns the subtrees for `True` and for `False` among the edges of a Bool
+fan-out, each falling back to `fallback` when no edge tests for it.
 -}
 findBoolBranches : List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, Mono.Decider Mono.MonoChoice )
 findBoolBranches edges fallback =
@@ -6700,8 +6340,8 @@ findBoolBranches edges fallback =
     ( findBranch True, findBranch False )
 
 
-{-| Extract string pattern strictly - crash if not IsStr.
-This ensures we never silently drop patterns in string fanouts.
+{-| Returns the string a string-equality test compares with, and crashes the
+compiler on any other test, so that a string fan-out never loses an edge.
 -}
 extractStringPatternStrict : DT.Test -> String
 extractStringPatternStrict test =
@@ -6713,7 +6353,9 @@ extractStringPatternStrict test =
             crash "CGEN: expected Test.IsStr in string fanout, but got non-string test"
 
 
-{-| Generate code for a FanOut node with jump inlining (yield-based mode).
+{-| Generates a `FanOut` node, a test of one value against several
+alternatives, through `generateBoolFanOutWithJumps` for a Bool and
+`generateFanOutGeneralWithJumps` otherwise.
 -}
 generateFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
@@ -6724,7 +6366,9 @@ generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
         generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy
 
 
-{-| Bool FanOut with jump inlining.
+{-| Generates a fan-out on a Bool as one `eco.case` of `case_kind` `bool` on the
+`i1` read at `path`, with the `True` subtree under tag 1 and the `False`
+subtree under tag 0.
 -}
 generateBoolFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
@@ -6764,7 +6408,16 @@ generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
     }
 
 
-{-| General FanOut with jump inlining.
+{-| Generates a fan-out as one `eco.case` with an alternative per edge and a
+last one for `fallback`.
+
+The case kind and the scrutinee's type come from the first edge's test
+(`Patterns.caseKindFromTest`), `ctor` when there are no edges. A string
+fan-out is an `eco.case` carrying the edges' strings, with alternatives
+numbered from 0; any other carries each edge's tag and a fallback tag from
+`Patterns.computeFallbackTag`. Each alternative starts from the context after
+the scrutinee, so no alternative sees names bound in another.
+
 -}
 generateFanOutGeneralWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
@@ -6876,13 +6529,13 @@ generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
     }
 
 
-{-| Helper to build a region from a list of ops (where the last op is the terminator).
+{-| Returns a one-block region whose last op of `ops` is the terminator and
+the rest the body. Crashes the compiler when `ops` is empty.
 -}
 mkRegionFromOps : List MlirOp -> MlirRegion
 mkRegionFromOps ops =
     case List.reverse ops of
         [] ->
-            -- Empty region - crash, this indicates a codegen bug
             crash "mkRegionFromOps: empty ops - region must have terminator"
 
         terminator :: restReversed ->
@@ -6892,26 +6545,19 @@ mkRegionFromOps ops =
                 }
 
 
-{-| Check if an op is a valid terminator for eco.case alternative regions.
-eco.case alternatives must terminate with eco.yield (not eco.return).
+{-| Tells whether `op` is an `eco.yield`, the only op that may end an
+`eco.case` alternative.
 -}
 isValidCaseTerminator : MlirOp -> Bool
 isValidCaseTerminator op =
     op.name == "eco.yield"
 
 
-{-| Create a region from an ExprResult for eco.case alternatives.
-
-This is the single choke-point that ensures all case alternatives end with eco.yield.
-If the ExprResult is already terminated (ends with eco.yield), use it directly.
-Otherwise, wrap the value-producing expression with eco.yield.
-
-This handles:
-
-  - Leaf expressions that already have eco.yield
-  - Nested eco.case (value-producing) that needs wrapping
-  - Any other value-producing expression
-
+{-| Returns the region for one `eco.case` alternative from the result of
+generating it. Ops that already end in an `eco.yield` are used as they are.
+Otherwise the value, such as that of a nested `eco.case`, is coerced to
+`resultTy` and yielded (`emitSpineYield`). Ops that are empty, or that end in
+something other than a yield with no result value, crash the compiler.
 -}
 mkCaseRegionFromDecider : ExprResult -> MlirType -> ( MlirRegion, Ctx.Context )
 mkCaseRegionFromDecider exprRes resultTy =
@@ -6921,12 +6567,9 @@ mkCaseRegionFromDecider exprRes resultTy =
 
         lastOp :: _ ->
             if isValidCaseTerminator lastOp then
-                -- Already terminated with eco.yield, use as-is
                 ( mkRegionFromOps exprRes.ops, exprRes.ctx )
 
             else if exprRes.resultVar == "" then
-                -- Defensive: non-yield terminator with empty resultVar indicates
-                -- a control-flow op (e.g., eco.jump) that shouldn't be wrapped
                 crash
                     ("mkCaseRegionFromDecider: non-yield terminator '"
                         ++ lastOp.name
@@ -6935,29 +6578,21 @@ mkCaseRegionFromDecider exprRes resultTy =
                     )
 
             else
-                -- Value-producing expression (e.g., nested eco.case) - wrap with eco.yield
                 let
-                    -- Coerce result to expected type if needed
                     ( coerceOps, finalVar, ctx1 ) =
                         coerceResultToType exprRes.ctx exprRes.resultVar exprRes.resultType resultTy
 
-                    -- Emit eco.yield to terminate the alternative
-                    -- (decomposed on the sret result spine)
                     ( yieldPreOps, yieldOp, ctx2 ) =
                         emitSpineYield ctx1 finalVar resultTy
                 in
                 ( mkRegionFromOps (exprRes.ops ++ coerceOps ++ yieldPreOps ++ [ yieldOp ]), ctx2 )
 
 
-{-| U-T1.3.3: the result type a branch JOIN declares. On the sret worker's
-result spine it is the AGGREGATE type, so branch leaves coerce to it (make-form
-branches directly, boxed leaves via `eco.from_heap`) and the branches'
-constructions dissolve under SROA; off the spine it is the ordinary ABI type.
-
-Extracted from `generateCase` by step 10a so `generateIf` can use the identical
-rule — the two join shapes must agree or a promoted spine mixing `case` and `if`
-would declare two different result types for one worker.
-
+{-| Returns the result type a `case` or `if` declares for a value of
+`resultMonoType`. On the result spine, for a tuple whose slot types match the
+spine's layout exactly, it is the value-aggregate tuple type, so every branch
+is coerced to that aggregate; otherwise it is the ABI type. `generateCase` and
+`generateIf` both use it, so that a spine mixing the two declares one type.
 -}
 spineResultMlirType : Ctx.Context -> Mono.MonoType -> MlirType
 spineResultMlirType ctx resultMonoType =
@@ -6965,8 +6600,6 @@ spineResultMlirType ctx resultMonoType =
         Just tailLayout ->
             case resultMonoType of
                 Mono.MTuple _ ts ->
-                    -- SLOT-TYPE-EXACT, for the same reason the tuple-literal
-                    -- leaf test is.
                     if
                         Types.tupleSlotTypes (Types.computeTupleLayout ts)
                             == Types.tupleSlotTypes tailLayout
@@ -6983,18 +6616,12 @@ spineResultMlirType ctx resultMonoType =
             Types.monoTypeToAbi resultMonoType
 
 
-{-| Generate case expression control flow.
-
-This is the main entry point for case expressions. It:
-
-1.  Emits joinpoints for shared branches
-2.  Generates the decision tree control flow (eco.case ops)
-3.  Returns ExprResult with the case result (eco.case is value-producing)
-
-eco.case is a value-producing expression that yields results via eco.yield
-inside each alternative. The EcoControlFlowToSCF pass transforms eco.case
-into scf.if/scf.index\_switch.
-
+{-| Generates a `case` (`generateDeciderWithJumps`). A decision tree with at
+least one test becomes value-producing `eco.case` ops whose alternatives end in
+`eco.yield`; a bare leaf is its branch body and that body's `eco.yield`, with
+no `eco.case`. Shared branches, which `jumps` holds by index, are copied into
+every leaf that jumps to them rather than emitted once. The result type is
+`spineResultMlirType` of `resultMonoType`.
 -}
 generateCase : Ctx.Context -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
 generateCase ctx decider jumps resultMonoType =
@@ -7002,17 +6629,12 @@ generateCase ctx decider jumps resultMonoType =
         resultMlirType =
             spineResultMlirType ctx resultMonoType
 
-        -- Build jump lookup for inlining shared branches (yield-based mode)
-        -- Instead of emitting joinpoints, we inline branch bodies directly
         jumpLookup =
             pairsToSparseArray jumps
 
-        -- eco.case is now a value-producing expression
-        -- Pass jumpLookup so Mono.Jump can inline branch bodies
         decisionResult =
             generateDeciderWithJumps ctx decider jumpLookup resultMlirType
     in
-    -- eco.case produces an SSA result through eco.yield in alternatives
     { ops = decisionResult.ops
     , resultVar = decisionResult.resultVar
     , resultType = resultMlirType
@@ -7025,16 +6647,18 @@ generateCase ctx decider jumps resultMonoType =
 -- ====== RECORD GENERATION ======
 
 
-{-| Generate MLIR code to create a record.
+{-| Generates a record from `fields`, which are already in layout order. A
+record with no fields is the embedded empty-record constant; any other is an
+`eco.construct.record`, with each field the layout stores boxed is boxed first.
+A field the layout stores unboxed is passed as it is. The record type is
+registered in the type table either way.
 -}
 generateRecordCreate : Ctx.Context -> List Mono.MonoExpr -> Types.RecordLayout -> Mono.MonoType -> ExprResult
 generateRecordCreate ctx fields layout recordType =
-    -- Register the record type for the type graph
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType recordType ctx
     in
-    -- Empty records must use eco.constant EmptyRec (invariant: never heap-allocated)
     if layout.fieldCount == 0 then
         let
             ( resultVar, ctx1 ) =
@@ -7052,20 +6676,16 @@ generateRecordCreate ctx fields layout recordType =
 
     else
         let
-            -- Use generateExprListTyped to get actual SSA types
             ( fieldsOps, fieldVarsWithTypes, ctx1 ) =
                 generateExprListTyped ctxWithType fields
 
-            -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
             ( boxOpsReversed, boxedFieldVarsReversed, ctx2 ) =
                 List.foldl
                     (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
                         if fieldInfo.isUnboxed then
-                            -- Field is stored unboxed, use as-is
                             ( opsAcc, var :: varsAcc, ctxAcc )
 
                         else
-                            -- Field should be boxed - box using actual SSA type
                             let
                                 ( moreOps, boxedVar, newCtx ) =
                                     boxToEcoValue ctxAcc var ssaType
@@ -7099,7 +6719,6 @@ generateRecordCreate ctx fields layout recordType =
                     boxedFieldVars
                     layout.fields
 
-            -- Use eco.construct.record for records
             ( ctx4, constructOp ) =
                 Ops.ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount (Types.recordSlotKinds layout)
         in
@@ -7111,7 +6730,9 @@ generateRecordCreate ctx fields layout recordType =
         }
 
 
-{-| Generate MLIR code to access a record field.
+{-| Generates a read of the field at layout position `index` of `record`,
+whose value is of the ABI type of `fieldType`. A field stored boxed whose ABI
+type is a primitive is projected as `!eco.value` and then unboxed.
 -}
 generateRecordAccess : Ctx.Context -> Mono.MonoExpr -> Int -> Bool -> Mono.MonoType -> ExprResult
 generateRecordAccess ctx record index isUnboxed fieldType =
@@ -7123,12 +6744,10 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         ( projectVar, ctx1 ) =
             Ctx.freshVar recordResult.ctx
 
-        -- Determine the MLIR type for the field
         fieldMlirType =
             Types.monoTypeToAbi fieldType
     in
     if isUnboxed then
-        -- Field is stored unboxed - project directly to the primitive type
         let
             ( ctx2, projectOp ) =
                 Ops.ecoProjectRecord ctx1 projectVar index fieldMlirType recordResult.resultVar
@@ -7141,7 +6760,6 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         }
 
     else if Types.isEcoValueType fieldMlirType then
-        -- Field is boxed and semantic type is also !eco.value - just project
         let
             ( ctx2, projectOp ) =
                 Ops.ecoProjectRecord ctx1 projectVar index Types.ecoValue recordResult.resultVar
@@ -7154,8 +6772,6 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         }
 
     else
-        -- Field is stored boxed but semantic type is primitive
-        -- Project to get !eco.value, then unbox to primitive type
         let
             ( ctx2, projectOp ) =
                 Ops.ecoProjectRecord ctx1 projectVar index Types.ecoValue recordResult.resultVar
@@ -7171,33 +6787,31 @@ generateRecordAccess ctx record index isUnboxed fieldType =
         }
 
 
-{-| Generate MLIR code to update record fields.
+{-| Generates a record update as a new `eco.construct.record`: the record is
+evaluated once, each updated field (by layout index in `updates`) is generated
+and coerced to its storage type, and every other field is projected from the
+old record. A record with no fields is returned as it is.
 -}
 generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> ExprResult
 generateRecordUpdate ctx record updates layout =
     let
-        -- Step 1: Evaluate the original record once
         recordResult : ExprResult
         recordResult =
             generateExpr ctx record
     in
-    -- Step 2: Handle empty record edge case (CGEN_018)
     if layout.fieldCount == 0 then
         recordResult
 
     else
         let
-            -- Step 3: Build update array (field index -> update expression)
             updateArr : Array (Maybe Mono.MonoExpr)
             updateArr =
                 pairsToSparseArray updates
 
-            -- Step 4: Process each field in layout order
             ( fieldVarsAndTypesReversed, allOpsReversed, finalCtx ) =
                 List.foldl
                     (\fieldInfo ( accVarsTypes, accOps, accCtx ) ->
                         let
-                            -- Determine storage type for this field
                             storageType =
                                 if fieldInfo.isUnboxed then
                                     Types.monoTypeToAbi fieldInfo.monoType
@@ -7207,7 +6821,6 @@ generateRecordUpdate ctx record updates layout =
                         in
                         case Array.get fieldInfo.index updateArr |> Maybe.andThen identity of
                             Just updateExpr ->
-                                -- Field is being updated: evaluate expression and coerce
                                 let
                                     exprResult =
                                         generateExpr accCtx updateExpr
@@ -7221,7 +6834,6 @@ generateRecordUpdate ctx record updates layout =
                                 )
 
                             Nothing ->
-                                -- Field not updated: project from original record
                                 let
                                     ( projectVar, ctxProj1 ) =
                                         Ctx.freshVar accCtx
@@ -7243,7 +6855,6 @@ generateRecordUpdate ctx record updates layout =
             allOps =
                 List.reverse allOpsReversed
 
-            -- Step 5: Construct the new record
             ( resultVar, ctx1 ) =
                 Ctx.freshVar finalCtx
 
@@ -7262,29 +6873,27 @@ generateRecordUpdate ctx record updates layout =
 -- ====== TUPLE GENERATION ======
 
 
-{-| Generate MLIR code to create a tuple.
+{-| Generates a heap tuple, an `eco.construct.tuple2` or `eco.construct.tuple3`,
+with each element the layout stores boxed is boxed first; an element the
+layout stores unboxed is passed as it is. The tuple type is registered in the
+type table.
 -}
 generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Types.TupleLayout -> Mono.MonoType -> ExprResult
 generateTupleCreate ctx elements layout tupleType =
-    -- Register the tuple type for the type graph
     let
         ( _, ctxWithType ) =
             Ctx.getOrCreateTypeIdForMonoType tupleType ctx
 
-        -- Use generateExprListTyped to get actual SSA types
         ( elemOps, elemVarsWithTypes, ctx1 ) =
             generateExprListTyped ctxWithType elements
 
-        -- Box elements that need to be boxed (layout says boxed, but expression is primitive)
         ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
             List.foldl
                 (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if isUnboxed then
-                        -- Element is stored unboxed, use as-is
                         ( opsAcc, var :: varsAcc, ctxAcc )
 
                     else
-                        -- Element should be boxed - box using actual SSA type
                         let
                             ( moreOps, boxedVar, newCtx ) =
                                 boxToEcoValue ctxAcc var ssaType
@@ -7318,20 +6927,16 @@ generateTupleCreate ctx elements layout tupleType =
                 boxedElemVars
                 layout.elements
 
-        -- Use type-specific tuple construction ops.
-        -- Now that MonoPath carries ContainerKind, projection ops match construction layout.
         ( ctx4, constructOp ) =
             case elemVarPairs of
                 [ ( aVar, aType ), ( bVar, bType ) ] ->
-                    -- 2-tuple: use eco.construct.tuple2
                     Ops.ecoConstructTuple2 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
 
                 [ ( aVar, aType ), ( bVar, bType ), ( cVar, cType ) ] ->
-                    -- 3-tuple: use eco.construct.tuple3
                     Ops.ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
 
                 _ ->
-                    -- Elm rejects tuples with >3 elements during canonicalization
+                    -- Elm has no tuples of more than three elements.
                     crash "Compiler.Generate.CodeGen.MLIR" "generateTupleCreate" "unreachable: tuples >3 elements rejected by canonicalization"
     in
     { ops = elemOps ++ boxOps ++ [ constructOp ]
@@ -7343,27 +6948,23 @@ generateTupleCreate ctx elements layout tupleType =
 
 
 
--- ====== VALUE-AGGREGATE TUPLE PROMOTION (U-T1.3.1) ======
+-- ====== VALUE-AGGREGATE PROMOTION ======
 
 
-{-| Escape check for a let-bound tuple literal (U-T1.3.1,
-`plans/opt-tier1-aggregate-promotion.md`): promotable iff every appearance
-of the binder — or of any ALIAS of it (`let a = t` chains, which the
-destructure sugar mints: `let (x,y) = t` compiles to
-`let _v = t; x := _v[0]; y := _v[1]`) — is either the sanctioned aliasing
-binding itself or a destructure PROJECTION (a `MonoDestruct` whose path
-steps through a matching `MonoIndex` immediately above the root). A bare
-value use (`MonoVarLocal` covers call args, returns, stores, captures,
-record bases), a case-scrutinee position, a whole-value destructure, or a
-rebind disqualifies. The walk is Mono-altitude, syntactic, and early-exit
-— deliberately NOT the borrow oracle (T1-R1) and NOT the deleted
-MLIR-level predicate (postmortem: 2/30,910). A dedicated recursion (not
-`MonoTraverse.foldExpr`) so the alias binding's own RHS var read is
-exempted and the alias set threads scope-wise through let bodies.
+{-| Tells whether the tuple of type `tupleType` bound to `name` can be held as
+a value aggregate while `body` runs: whether every use of `name` in `body`
+only reads one of its elements. `tupleType` must be a tuple of two or three
+elements.
 
-Emission needs no alias handling: `generateLetSingle`'s no-ops alias path
-propagates the aggregate result type through `let a = t` bindings, and the
-dual-form projection keys off the root variable's context type.
+The check is an escape walk over `body`. A use is admitted when it is a
+destructuring that projects an element of the tuple; a case whose decision
+tree only reaches the tuple through such projections; an alias `let a = name`,
+whose uses are then checked too, unless an earlier binding of the chain refers
+to the alias (`fwdRefd`); the tuple passed whole at a tail call position whose
+loop parameter is held as slots of the same shape (`splitParams`); or the
+tuple passed whole to a `$psplit` worker at a position split the same way
+(`psplitTable`). Any other use, such as passing it to a function, capturing it,
+returning it or binding the name again, makes the answer `False`.
 
 -}
 tupleBinderPromotable : Dict.Dict Name.Name Ctx.SplitParamInfo -> Dict.Dict Int Ctx.PsplitInfo -> Set.Set Name.Name -> Name.Name -> Mono.MonoType -> Mono.MonoExpr -> Bool
@@ -7392,22 +6993,22 @@ tupleBinderPromotable splitParams psplitTable fwdRefd name tupleType body =
             walkPromo kind fwdRefd (tailSplitAllowSet kind splitParams) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
 
 
-{-| U-T1.3.2: is this let-bound expr a promotable saturated ctor call?
-Conditions: flag on; direct single-stage-saturated call; the callee SpecId
-is a `MonoCtor` (via `ctx.ctorBySpec`); arity matches the shape (and > 0 —
-nullary ctors are constants, not calls); and the escape walk admits every
-use with `CustomContainer <ctor>` as the matching projection kind (which
-also admits `MonoUnbox` steps — the single-field Can.Unbox unwrap).
+{-| Returns the constructor's shape when the call bound to `name` can be built
+as a value aggregate (`eco.make.custom`), and `Nothing` otherwise.
+
+It can when the `aggPromote` flag is on, the call is a saturated direct call to
+a constructor's global with at least one field and one argument per field, and
+every use of `name` in `body` only reads a field, by the same escape walk as
+`tupleBinderPromotable`, where reading the single field of a one-field
+constructor also counts. A use that tests the constructor's tag reads the
+value whole and is refused; nothing else checks how many constructors the
+type has.
+
 -}
 promotableCtorCall : Ctx.Context -> Name.Name -> Int -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> Mono.MonoExpr -> Maybe Mono.CtorShape
 promotableCtorCall ctx name specId cargs resultType callInfo body =
     let
-        -- Mirror generateCall's own saturation criterion: CallDirectFlat
-        -- dispatches to the saturated path whenever the RESULT is not a
-        -- function type (ctor calls carry isSingleStageSaturated = False,
-        -- so the staging flag alone would reject every ctor call);
-        -- KnownSegmentation requires the staging flag. The arity==fields
-        -- check below independently guarantees saturation.
+        -- The test generateCall uses to send a call to the saturated path.
         saturatedDirect =
             case callInfo.callKind of
                 Mono.CallDirectFlat ->
@@ -7442,26 +7043,27 @@ promotableCtorCall ctx name specId cargs resultType callInfo body =
                 Nothing
 
 
-{-| Kind-generic promotability entry (exposed for the unit gate): does the
-escape walk admit every use of `name` in `body` under `kind` as the
-matching projection container?
+{-| Tells whether every use of `name` in `body` only reads an element or field
+of a container of `kind`, by the escape walk of `tupleBinderPromotable`, with
+no forward references, split loop parameters or `$psplit` workers to allow
+for.
 -}
 aggBinderPromotableWith : Mono.ContainerKind -> Name.Name -> Mono.MonoExpr -> Bool
 aggBinderPromotableWith kind name body =
     walkPromo kind Set.empty Set.empty Dict.empty (Set.singleton name) body /= Nothing
 
 
-{-| U-T1.3.3 DECOMPOSED YIELDS (the old pass's proven shape, recorded in
-CGEN\_064 Phase 3.4#1): an aggregate case RESULT would become a
-struct-typed block argument crossing block boundaries — RS4GC rejects
-pointer-carrying first-class aggregates in its liveness sets. So a case
-on the result spine instead declares N SCALAR results: each alternative
-projects its aggregate into slots and multi-yields; a single
-`eco.make.*` right after the merge rebuilds the aggregate BLOCK-LOCALLY
-(dissolved by SROA; never live across a block boundary).
-`emitSpineYield` is the per-alternative half; `finishSpineCase` the
-case-construction half. Both are inert unless `ctx.sretTailLayout` is
-set AND the threaded result type is an aggregate.
+{-| Returns the yield that ends a case alternative whose value is `finalVar`
+of type `resultTy`, with any ops needed before it.
+
+Off the result spine, or when `resultTy` is not a value aggregate, this is one
+`eco.yield` of the value. On the spine an aggregate is instead projected into
+its slots, which are yielded together, a _decomposed yield_, so that the case
+returns one result per slot and never an aggregate; `finishSpineCase` rebuilds
+the aggregate after the case. An aggregate must not cross out of the block
+that made it, because the lowering's GC root tracking cannot follow a pointer
+held inside one.
+
 -}
 emitSpineYield : Ctx.Context -> String -> MlirType -> ( List MlirOp, MlirOp, Ctx.Context )
 emitSpineYield ctx finalVar resultTy =
@@ -7511,6 +7113,9 @@ emitSpineYield ctx finalVar resultTy =
             ( [], yieldOp, ctxA )
 
 
+{-| The ops and value of a case built by `finishSpineCase`, with `newVars`, the
+SSA values the ops define outside the case's regions.
+-}
 type alias SpineCaseResult =
     { ops : List MlirOp
     , resultVar : String
@@ -7520,6 +7125,17 @@ type alias SpineCaseResult =
     }
 
 
+{-| Builds the `eco.case` whose alternatives are already made, from the two
+builders the caller supplies.
+
+Off the result spine, or when `resultTy` is not a value aggregate,
+`buildSingle` builds a case with one result of `resultTy`. On the spine an
+aggregate result is built with `buildMany`, one result per slot of the spine
+layout, matching the decomposed yields of `emitSpineYield`, and an
+`eco.make.tuple2` or `eco.make.tuple3` right after the case rebuilds the
+aggregate from them.
+
+-}
 finishSpineCase :
     Ctx.Context
     -> MlirType
@@ -7591,13 +7207,10 @@ finishSpineCase ctx resultTy buildSingle buildMany =
             singlePath ()
 
 
-{-| U-T1.3.8: a result-spine LEAF that is a direct call to an
-sret-promoted callee with this exact slot plan — emit the multi-result
-`$sret` call and rebuild the spine's make-form aggregate from its
-scalars (the make folds away in LLVM; no box/unbox on the hop). Only
-reachable when selection admitted the call leaf (the `ECO_SRET_FRESH`
-fixpoint): legacy selection rejects call leaves outright, so flag-off
-emission is untouched by construction.
+{-| Generates a call on the result spine to a global that has a `$sret` worker
+returning exactly the spine's slot types, as a multi-result call to the
+worker and an `eco.make.tuple2` or `eco.make.tuple3` that rebuilds the tuple as
+a value aggregate. Returns `Nothing` for any other call, or off the spine.
 -}
 trySretFreshLeaf : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Maybe ExprResult
 trySretFreshLeaf ctx0 func args =
@@ -7647,10 +7260,9 @@ trySretFreshLeaf ctx0 func args =
             Nothing
 
 
-{-| U-T1.3.7: the multi-result `$sret` call core — args boxed per the
-callee signature, one fresh SSA var per result slot. Shared by the
-let-binding migration and the nested psplit-arg composition (keep the
-two consumers' slot-type checks in sync with `psplitArgFree`).
+{-| Generates a call to the `$sret` worker of `specId`: the arguments converted
+to the global's signature (`boxToMatchSignatureTyped`), and one result per slot
+type of `info`. Returns the ops and the result values with their types.
 -}
 emitSretCallMulti : Ctx.Context -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 emitSretCallMulti ctx specId cargs info =
@@ -7693,16 +7305,16 @@ emitSretCallMulti ctx specId cargs info =
     ( argOps ++ boxOps ++ [ callOp ], resultPairs, ctxD )
 
 
-{-| U-T1.3.3 per-site call migration. All conditions LOCAL:
-callee promoted (pre-pass) · saturated direct call · binder admitted by
-the SAME escape walk as tuple promotion (every use a projection; the
-chain-head forward-ref guard applies; TailRec's synthetic unit body
-resolved through `ctx.tailRecLetBody`). On admission: compile the args
-exactly as the plain direct-call path would, emit the multi-result call
-to `name$sret`, and bind the binder as scalar SLOTS in
-`ctx.splitAggParams` (the T1.3.3L consumer machinery — slot-read
-projections, materialize-on-whole-use — does the rest). The binder gets
-NO varMapping, so any bypass read crashes loudly.
+{-| Generates the let binding of `name` to `expr`, and its body, through a
+`$sret` worker when that is possible, and returns `Nothing` otherwise.
+
+A `$sret` worker returns each element of its function's tuple result as a
+separate result (see `Context.SretInfo`). The binding uses it when `expr` is a
+saturated direct call to a global that has one, `name` is not
+forward-referenced, and every use of `name` only reads an element, as
+`tupleBinderPromotable` decides. A Unit body stands for a loop body held in
+`tailRecLetBody`, and without one the binding is refused.
+
 -}
 trySretLetBinding : Ctx.Context -> Ctx.Context -> Name.Name -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe ExprResult
 trySretLetBinding ctx ctxWithPlaceholders name expr body =
@@ -7759,6 +7371,12 @@ trySretLetBinding ctx ctxWithPlaceholders name expr body =
                 Nothing
 
 
+{-| Generates the let binding of `name` as a call to the `$sret` worker of
+`specId`, then `body`. The name is held as the call's results, in
+`splitAggParams`, and has no var mapping. After the body the holding is
+removed again, except when the body is Unit, the stand-in for a loop body
+generated later from the returned context, in which case it is kept.
+-}
 emitSretLetBinding : Ctx.Context -> Ctx.Context -> Name.Name -> Int -> List Mono.MonoExpr -> Ctx.SretInfo -> Mono.MonoExpr -> ExprResult
 emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
     let
@@ -7790,10 +7408,6 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
         ctxOut =
             case body of
                 Mono.MonoUnit ->
-                    -- TailRec's SYNTHETIC def-setup: the REAL loop body is
-                    -- compiled by compileStep from the ctx we return — the
-                    -- slot binding must PERSIST (same function-scoped
-                    -- lifetime as split loop params).
                     { bodyCtx | currentLetSiblings = outerSiblings }
 
                 _ ->
@@ -7811,20 +7425,21 @@ emitSretLetBinding ctx ctxWithPlaceholders name specId cargs info body =
     }
 
 
-{-| U-T1.3.3L: is a tail-func PARAM admissible for scalar splitting? Same
-escape discipline as promotion candidates — every use must be a projection
-(or the param passed at its OWN tail-call position); any whole-value use
-(call arg, capture, return, rebind) vetoes, because it would force a
-per-use rematerialization (an ADDED allocation) inside the loop.
+{-| Tells whether the loop parameter `name` of a tail-recursive function, a
+container of `kind`, can be held as scalar slots: whether every use of it in
+`body` only reads an element or field, or passes it whole to the same
+parameter in a tail call, or to a `$psplit` worker at a position split the same
+way. A use of the whole value would have to rebuild it, allocating inside the
+loop.
 -}
 paramSplitAdmissible : Dict.Dict Int Ctx.PsplitInfo -> Mono.ContainerKind -> Name.Name -> Mono.MonoExpr -> Bool
 paramSplitAdmissible psplitTable kind name body =
     walkPromo kind Set.empty (Set.singleton name) (psplitAllowPositions kind psplitTable) (Set.singleton name) body /= Nothing
 
 
-{-| U-T1.3.3L: the loop params whose scalar-split shape MATCHES this
-candidate kind — the only tail-call positions where a bare tracked var is
-slot-extracted rather than passed (and so does not escape).
+{-| Returns the names, among the values held as scalar slots, whose split is of
+the shape `kind`: the loop parameters a tracked value may be passed to whole
+in a tail call without escaping.
 -}
 tailSplitAllowSet : Mono.ContainerKind -> Dict.Dict Name.Name Ctx.SplitParamInfo -> Set.Set Name.Name
 tailSplitAllowSet kind splitParams =
@@ -7840,11 +7455,16 @@ tailSplitAllowSet kind splitParams =
         splitParams
 
 
+{-| Tells whether a value held as slots is split as a container of `kind`.
+-}
 splitMatchesKind : Mono.ContainerKind -> Ctx.SplitParamInfo -> Bool
 splitMatchesKind kind info =
     specMatchesKind kind info.split
 
 
+{-| Tells whether a split is of a container of `kind`: a tuple of the same
+arity, or the constructor of the same name.
+-}
 specMatchesKind : Mono.ContainerKind -> Ctx.SplitSpec -> Bool
 specMatchesKind kind spec =
     case ( kind, spec ) of
@@ -7861,9 +7481,9 @@ specMatchesKind kind spec =
             False
 
 
-{-| U-T1.3.5: per psplit-promoted callee, the argument POSITIONS whose
-slot plan shape-matches this candidate kind — the only call positions
-where a bare tracked var is slot-projected rather than passed boxed.
+{-| Returns, for each global with a `$psplit` worker, the argument positions
+split as a container of `kind`: the positions a tracked value may be passed to
+whole without escaping. Globals with no such position are left out.
 -}
 psplitAllowPositions : Mono.ContainerKind -> Dict.Dict Int Ctx.PsplitInfo -> Dict.Dict Int (Set.Set Int)
 psplitAllowPositions kind table =
@@ -7897,6 +7517,8 @@ psplitAllowPositions kind table =
         table
 
 
+{-| Tells whether the type is a function type.
+-}
 isFunctionMonoType : Mono.MonoType -> Bool
 isFunctionMonoType ty =
     case ty of
@@ -7907,10 +7529,17 @@ isFunctionMonoType ty =
             False
 
 
-{-| One walk step: `Nothing` = disqualified; `Just s` = fine so far, with
-`s` the (possibly grown) candidate∪alias name set. Aliases only grow
-through `MonoLet (MonoDef a (MonoVarLocal x))` with `x` already in the
-set, and only the LET BODY sees the grown set (scope discipline).
+{-| Checks that `expr` uses the tracked names `s` only in admitted ways, for the
+escape walk of `tupleBinderPromotable`: `Nothing` when some use lets the value
+escape, and `Just` the tracked set otherwise.
+
+The set grows only by an alias `let a = x` of a tracked `x`, and only the let's
+body sees the grown set. `tailSplitOk` and `callSplitOk` are the loop
+parameters and `$psplit` positions at which a tracked name may be passed
+whole. Inside a closure or a nested tail-recursive definition neither applies,
+because tail calls there belong to another loop; and a tracked name among a
+closure's parameters or capture names refuses the value.
+
 -}
 walkPromo : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> Mono.MonoExpr -> Maybe (Set.Set Name.Name)
 walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
@@ -7955,7 +7584,6 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
 
         Mono.MonoDestruct (Mono.MonoDestructor bound path _) inner _ ->
             if Set.member bound s then
-                -- rebind of a tracked name
                 Nothing
 
             else if promoPathOk kind s path then
@@ -7969,13 +7597,6 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
                 Nothing
 
             else if Set.member s2 s then
-                -- T1.3.1b: a tracked tuple AS CASE SCRUTINEE is fine iff the
-                -- decision TREE only reaches it through matching Index
-                -- projections — with one exemption: a bare tracked root under
-                -- `Test.IsTuple` is safe (the emission ignores the path value
-                -- and emits `constant true`). `generateCase` itself never
-                -- touches the scrutinee var; branch-body destructs are walked
-                -- below like any other use.
                 if deciderScrutineeOk kind s decider then
                     walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider
                         |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map Tuple.second jumps))
@@ -7992,7 +7613,6 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
 
         Mono.MonoLet (Mono.MonoDef x rhs) inner _ ->
             if Set.member x s then
-                -- rebind of a tracked name
                 Nothing
 
             else
@@ -8000,15 +7620,9 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
                     Mono.MonoVarLocal y _ ->
                         if Set.member y s then
                             if Set.member x fwdRefd then
-                                -- an EARLIER sibling captures the alias: the
-                                -- alias would carry the aggregate into that
-                                -- capture — do not promote (same rule as the
-                                -- candidate's own guard).
                                 Nothing
 
                             else
-                                -- the sanctioned alias binding: don't walk the
-                                -- RHS (that var read IS the alias), track it.
                                 walkPromo kind fwdRefd tailSplitOk callSplitOk (Set.insert x s) inner
 
                         else
@@ -8023,18 +7637,12 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
                 Nothing
 
             else
-                -- U-T1.3.3L: tail calls inside the NESTED tail def target the
-                -- inner loop — its param names are unrelated to the enclosing
-                -- loop's split params, so the allowance must not leak in.
                 walkPromo kind fwdRefd Set.empty Dict.empty s rhs
                     |> Maybe.andThen (\_ -> walkPromo kind fwdRefd tailSplitOk callSplitOk s inner)
 
         Mono.MonoCall _ f args _ _ ->
-            -- U-T1.3.5: a BARE tracked var at a psplit-PROMOTED position of a
-            -- direct call does NOT escape — the migrated site slot-projects
-            -- the (make-form) aggregate instead of passing the boxed value;
-            -- if migration later aborts, the aggregate coerces through
-            -- eco.to_heap at the shim boundary (sound, allocation as today).
+            -- If the call is not redirected to the worker after all, the
+            -- aggregate is put on the heap at the call (eco.to_heap).
             case f of
                 Mono.MonoVarGlobal _ calleeSid _ ->
                     case Dict.get calleeSid callSplitOk of
@@ -8062,11 +7670,6 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
                         |> Maybe.andThen (\_ -> walkPromoAll kind fwdRefd tailSplitOk callSplitOk s args)
 
         Mono.MonoTailCall _ args _ ->
-            -- U-T1.3.3L: a BARE tracked var passed at a scalar-split loop-param
-            -- position does NOT escape — the tail-call step extracts its slots
-            -- (aggregate projections, folded by SROA) instead of passing the
-            -- boxed value into the next iteration. Any other tracked use in an
-            -- argument still disqualifies.
             let
                 argOk ( pName, argE ) =
                     case argE of
@@ -8090,13 +7693,13 @@ walkPromo kind fwdRefd tailSplitOk callSplitOk s expr =
                 Nothing
 
             else
-                -- Same scoping rule as the nested-tail-def arm: a closure body
-                -- is a different function; the split-position allowance for
-                -- tail-call args does not apply inside it.
                 walkPromoAll kind fwdRefd tailSplitOk callSplitOk s (List.map (\( _, e, _ ) -> e) info.captures)
                     |> Maybe.andThen (\_ -> walkPromo kind fwdRefd Set.empty Dict.empty s inner)
 
 
+{-| Runs `walkPromo` on each of `es` with the same tracked set, stopping at the
+first that refuses.
+-}
 walkPromoAll : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> List Mono.MonoExpr -> Maybe (Set.Set Name.Name)
 walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es =
     List.foldl
@@ -8105,13 +7708,11 @@ walkPromoAll kind fwdRefd tailSplitOk callSplitOk s es =
         es
 
 
-{-| T1.3.1b: check every decision-tree PATH position that can reach a
-tracked root. Chain test paths: a bare tracked root is allowed only under
-`Test.IsTuple` (emission: `constant true`, path value unused); any other
-test must project through a matching `DtIndex` first. FanOut dispatch
-paths must project (the dispatch emits `get_tag` on the path value — a
-bare aggregate there would be ill-typed; type-impossible for tuples, but
-enforced defensively). `DtUnbox` on a tracked root: defensively rejected.
+{-| Tells whether a decision tree reaches the tracked names `s` only through
+element projections of a container of `kind`. In a chain a tracked name may
+be tested whole only by an `IsTuple` test, which reads nothing; every other
+test, and the value a fan-out dispatches on, must project first. A `DtUnbox`
+step directly on a tracked name is accepted only for a constructor `kind`.
 -}
 deciderScrutineeOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.Decider Mono.MonoChoice -> Bool
 deciderScrutineeOk kind s decider =
@@ -8130,6 +7731,10 @@ deciderScrutineeOk kind s decider =
                 && deciderScrutineeOk kind s fallback
 
 
+{-| Tells whether the path of one chain test is acceptable for
+`deciderScrutineeOk`: a tracked root itself only under `IsTuple`, any other
+path as `dtProjectingPathOk` decides.
+-}
 dtTestPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoDtPath -> DT.Test -> Bool
 dtTestPathOk kind s path test =
     case path of
@@ -8149,9 +7754,9 @@ dtTestPathOk kind s path test =
             dtProjectingPathOk kind s path
 
 
-{-| A DtPath whose VALUE is consumed (test other than IsTuple, or FanOut
-dispatch): wherever it reaches a tracked root, the step immediately above
-must be a matching `DtIndex` projection.
+{-| Tells whether a decision-tree path whose value is read reaches a tracked
+root only through a projection: the step directly above the root must be a
+`DtIndex` of `kind`, or a `DtUnbox` when `kind` is a constructor.
 -}
 dtProjectingPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoDtPath -> Bool
 dtProjectingPathOk kind s path =
@@ -8170,13 +7775,15 @@ dtProjectingPathOk kind s path =
         Mono.DtUnbox _ sub ->
             case sub of
                 Mono.DtRoot r _ ->
-                    -- see promoPathOk's MonoUnbox arm.
                     not (Set.member r s) || isCustomKind kind
 
                 _ ->
                     dtProjectingPathOk kind s sub
 
 
+{-| Runs `walkPromo` on every inline leaf of a decision tree. A leaf that jumps
+to a shared branch is checked with the case's branches instead.
+-}
 walkPromoDecider : Mono.ContainerKind -> Set.Set Name.Name -> Set.Set Name.Name -> Dict.Dict Int (Set.Set Int) -> Set.Set Name.Name -> Mono.Decider Mono.MonoChoice -> Maybe (Set.Set Name.Name)
 walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider =
     case decider of
@@ -8198,11 +7805,11 @@ walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s decider =
                 |> Maybe.andThen (\_ -> walkPromoDecider kind fwdRefd tailSplitOk callSplitOk s fallback)
 
 
-{-| A destructure path is compatible with the tracked set iff wherever it
-reaches a tracked `MonoRoot`, the step immediately above the root is a
-`MonoIndex` with the matching tuple ContainerKind (a real projection). A
-bare tracked root (whole-value read), a field/unbox step on a tracked
-root, or a mismatched container kind disqualifies.
+{-| Tells whether a destructuring path reaches a tracked root only through a
+projection: the step directly above the root must be a `MonoIndex` of `kind`,
+or, when `kind` is a constructor, a `MonoUnbox`, which reads the single field
+of a one-field constructor. A path that is just a tracked root, or that steps
+from one by a record field or another container kind, is refused.
 -}
 promoPathOk : Mono.ContainerKind -> Set.Set Name.Name -> Mono.MonoPath -> Bool
 promoPathOk kind s path =
@@ -8229,15 +7836,14 @@ promoPathOk kind s path =
         Mono.MonoUnbox _ sub ->
             case sub of
                 Mono.MonoRoot r _ ->
-                    -- Can.Unbox unwrap (single-ctor single-field): a field-0
-                    -- projection — fine for CUSTOM candidates, never for
-                    -- tuples.
                     not (Set.member r s) || isCustomKind kind
 
                 _ ->
                     promoPathOk kind s sub
 
 
+{-| Tells whether the container kind is a constructor.
+-}
 isCustomKind : Mono.ContainerKind -> Bool
 isCustomKind kind =
     case kind of
@@ -8248,14 +7854,10 @@ isCustomKind kind =
             False
 
 
-{-| Emit a promotable tuple literal in the VALUE-aggregate form:
-`eco.make.tuple2/3` producing `!eco.tuple2/3<...>` — no heap allocation
-(the result is not an `!eco.value`; its boxed elements'
-liveness is handled by RS4GC after SROA scalarises the struct —
-REP\_AGG\_001, pinned by `test/codegen/value_sroa_statepoint_llvm.mlir`).
-Element preparation (ordering, per-slot boxing discipline) mirrors
-`generateTupleCreate` exactly, so slot types agree with what the dual-form
-projection in `Patterns.generateMonoPath` expects.
+{-| Generates a tuple literal as a value aggregate, an `eco.make.tuple2` or
+`eco.make.tuple3` of type `!eco.tuple2<..>` or `!eco.tuple3<..>`, which
+allocates nothing. Elements are prepared as `generateTupleCreate` prepares
+them, so the slots have the types the heap tuple's would.
 -}
 generateTupleCreateValue : Ctx.Context -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateTupleCreateValue ctx elements monoType =
@@ -8328,13 +7930,9 @@ generateTupleCreateValue ctx elements monoType =
     }
 
 
-{-| U-T1.3.2: emit a promotable saturated ctor call as a VALUE-level
-`eco.make.custom` — the ctor call and the heap allocation both vanish.
-Slot preparation mirrors the heap call path's ABI coercion
-(`boxToMatchSignatureTyped` semantics, per-slot): each arg is coerced to
-the ctor layout's slot type (unboxed field ⇒ its ABI primitive, boxed
-field ⇒ `!eco.value`), exactly what the ctor function's own
-`eco.construct.custom` would have received (`Functions.generateCtor`).
+{-| Generates a constructor call as a value aggregate, an `eco.make.custom` of
+type `!eco.custom<..>`, which neither calls the constructor's function nor
+allocates. The fields are prepared by `prepareCtorSlots`.
 -}
 generateCustomCreateValue : Ctx.Context -> Mono.CtorShape -> List Mono.MonoExpr -> ExprResult
 generateCustomCreateValue ctx shape args =
@@ -8359,11 +7957,9 @@ generateCustomCreateValue ctx shape args =
     }
 
 
-{-| U-T1.3.2c: the HEAP twin of `generateCustomCreateValue` — same slot
-preparation, but the terminal op is the allocating `eco.construct.custom`
-(result `!eco.value`, exactly what the ctor function's call would have
-returned). Used by `tryCtorInline` for saturated ctor calls that are NOT
-promotion candidates.
+{-| Generates a constructor call as an `eco.construct.custom` in place, an
+`!eco.value` on the heap, with the fields prepared by `prepareCtorSlots` as
+for `generateCustomCreateValue`.
 -}
 generateCustomCreateHeap : Ctx.Context -> Mono.CtorShape -> List Mono.MonoExpr -> ExprResult
 generateCustomCreateHeap ctx shape args =
@@ -8394,12 +7990,10 @@ generateCustomCreateHeap ctx shape args =
     }
 
 
-{-| Per-slot ABI coercion for a custom construction: each arg is coerced to
-the ctor layout's slot type (unboxed field ⇒ its ABI primitive, boxed
-field ⇒ `!eco.value`) — mirroring `boxToMatchSignatureTyped` semantics and
-the coercion `Functions.generateCtor` applies to its ABI-typed parameters. Shared by the SSA-aggregate
-(`eco.make.custom`) and heap (`eco.construct.custom`) emitters so the two
-forms can never drift.
+{-| Generates the constructor's arguments and converts each to its slot type in
+`layout`: the ABI primitive for a field stored unboxed, `!eco.value` for one
+stored boxed. An argument is boxed or unboxed as needed; one whose primitive
+type differs from its slot's is passed unchanged, labelled with the slot type.
 -}
 prepareCtorSlots : Ctx.Context -> Types.CtorLayout -> List Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 prepareCtorSlots ctx layout args =
@@ -8436,8 +8030,6 @@ prepareCtorSlots ctx layout args =
                         ( List.reverse unboxOps ++ opsAcc, ( unboxedVar, target ) :: pairsAcc, newCtx )
 
                     else
-                        -- primitive-to-primitive mismatch cannot occur under
-                        -- MONO_029 layout connectivity; pass through.
                         ( opsAcc, ( var, target ) :: pairsAcc, ctxAcc )
                 )
                 ( [], [], ctx1 )
@@ -8450,7 +8042,7 @@ prepareCtorSlots ctx layout args =
 -- ====== UNIT GENERATION ======
 
 
-{-| Generate MLIR code for a Unit value.
+{-| Generates Unit as the embedded Unit constant.
 -}
 generateUnit : Ctx.Context -> ExprResult
 generateUnit ctx =
@@ -8458,7 +8050,6 @@ generateUnit ctx =
         ( var, ctx1 ) =
             Ctx.freshVar ctx
 
-        -- Use eco.constant Unit instead of heap-allocating
         ( ctx2, unitOp ) =
             Ops.ecoConstantUnit ctx1 var
     in
@@ -8474,20 +8065,18 @@ generateUnit ctx =
 -- ====== CHARACTER LITERAL DECODING ======
 
 
-{-| Decode a character literal from its JS-escaped string representation.
-
-The parser stores character literals as JS-style escape sequences (e.g., "\\u03BB" for λ).
-This function decodes them back to the actual Unicode code point for MLIR codegen.
-
-Also handles single-character strings (the actual character) for compatibility with
-test code that creates AST nodes directly without going through the parser.
-
+{-| Returns the number a Char literal's text stands for. The text is either one
+character, whose code is returned, or an escape as the parser keeps it: `\n`,
+`\r`, `\t`, `\"`, `\'`, `\\` or `\uXXXX`. A `\uXXXX` that is a high
+surrogate is combined with the `\uXXXX` after it into the code point it
+encodes, which is above `0xFFFF`. Text of more than one unit that does not
+start with a backslash, such as a raw character above `0xFFFF`, returns the
+code of its first character, its full code point. Empty text, an unknown
+escape, a trailing backslash or bad hex digits crash the compiler.
 -}
 decodeCharLiteral : String -> Int
 decodeCharLiteral value =
-    -- If it's a single character, just return its code directly.
-    -- This handles both regular chars and the case where tests pass
-    -- the actual character (e.g., a single backslash) instead of escaped form.
+    -- A lone backslash is the character itself, not an escape.
     if String.length value == 1 then
         case String.uncons value of
             Just ( c, _ ) ->
@@ -8508,6 +8097,9 @@ decodeCharLiteral value =
                 crash "decodeCharLiteral: empty character literal"
 
 
+{-| Returns the character code of the escape whose text after the backslash is
+`rest`, as `decodeCharLiteral` describes.
+-}
 decodeEscape : String -> Int
 decodeEscape rest =
     case String.uncons rest of
@@ -8539,13 +8131,14 @@ decodeEscape rest =
             crash "decodeCharLiteral: trailing backslash"
 
 
+{-| Returns the code of a `\u` escape whose text after the `u` is `hex`,
+combining a high surrogate with the escape that follows it.
+-}
 decodeUnicodeEscape : String -> Int
 decodeUnicodeEscape hex =
-    -- Parse \uXXXX format, handle surrogate pairs
     case Hex.fromString (String.toLower (String.left 4 hex)) of
         Ok code ->
             if code >= 0xD800 && code <= 0xDBFF then
-                -- High surrogate - need to decode pair
                 decodeSurrogatePair code (String.dropLeft 6 hex)
 
             else
@@ -8555,9 +8148,11 @@ decodeUnicodeEscape hex =
             crash ("decodeCharLiteral: invalid hex in \\u" ++ String.left 4 hex)
 
 
+{-| Returns the code point encoded by the high surrogate `hi` and the low
+surrogate whose four hex digits begin `rest`.
+-}
 decodeSurrogatePair : Int -> String -> Int
 decodeSurrogatePair hi rest =
-    -- rest should be "XXXX" (after "\u" has been dropped)
     case Hex.fromString (String.toLower (String.left 4 rest)) of
         Ok lo ->
             0x00010000 + ((hi - 0xD800) * 0x0400) + (lo - 0xDC00)
@@ -8570,7 +8165,7 @@ decodeSurrogatePair hi rest =
 -- ====== SHAPE HELPERS ======
 
 
-{-| Extract record fields Dict from a MonoType.
+{-| Returns a record type's fields by name, or no fields for any other type.
 -}
 getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
@@ -8582,7 +8177,7 @@ getRecordFields monoType =
             Dict.empty
 
 
-{-| Extract tuple element types from a MonoType.
+{-| Returns a tuple type's element types, or none for any other type.
 -}
 getTupleElements : Mono.MonoType -> List Mono.MonoType
 getTupleElements monoType =
@@ -8594,6 +8189,10 @@ getTupleElements monoType =
             []
 
 
+{-| Returns an array indexed by the integers of `pairs`, holding each value at
+its index and `Nothing` at the indices no pair names. A negative index is
+ignored.
+-}
 pairsToSparseArray : List ( Int, a ) -> Array (Maybe a)
 pairsToSparseArray pairs =
     let

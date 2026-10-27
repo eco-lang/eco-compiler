@@ -1,10 +1,31 @@
 module Terminal.Bump exposing (run)
 
-{-| Version bump command for determining semantic versioning changes.
+{-| The `bump` command, which sets the version in a package's `elm.json` to the
+one its API changes call for.
 
-This module implements the `bump` command which analyzes API changes between
-the current package code and the last published version, automatically determining
-the appropriate version number according to semantic versioning rules (MAJOR, MINOR, or PATCH).
+A package's version follows its API: how far the version must rise (MAJOR,
+MINOR or PATCH) is decided by how the exposed API changed, by the rules of
+`Builder.Deps.Diff`. The command therefore compares the API the package has
+now with the documentation published for the version named in `elm.json`, and
+asks before writing the version that the difference requires.
+
+The command works only on a package, and the registry is always refreshed from
+the package server first, so it needs network access. What happens next depends
+on whether the registry knows the package.
+
+A package the registry knows must name in `elm.json` a version that a new
+release may be bumped from, as `Builder.Deps.Bump.getPossibilities` lists them.
+Any other version fails with the list of those that are allowed. Otherwise the
+published documentation of that version is fetched, the package's exposed
+modules are built here to produce their documentation, and `Builder.Deps.Diff`
+compares the two and gives the new version.
+
+A package the registry does not know has never been published, and its version
+is expected to be 1.0.0. When it is not, the command offers to set it to 1.0.0;
+declining leaves the version unchanged and the command still succeeds.
+
+In both cases the version is written only when the user answers yes, and an
+empty answer counts as yes.
 
 
 # Command Entry
@@ -42,7 +63,8 @@ import Utils.Task.Extra as Task
 -- ====== RUN ======
 
 
-{-| Run the version bump command, analyzing API changes and suggesting appropriate version bumps.
+{-| Runs the command in the current directory's project, reporting any failure
+with `Exit.bumpToReport`.
 -}
 run : () -> () -> Task Never ()
 run () () =
@@ -53,6 +75,9 @@ run () () =
 -- ====== ENV ======
 
 
+{-| Everything the command works with: the project root, the package cache, the
+HTTP manager, the freshly refreshed registry, and the package's `elm.json`.
+-}
 type alias EnvData =
     { root : FilePath
     , cache : Stuff.PackageCache
@@ -62,10 +87,15 @@ type alias EnvData =
     }
 
 
+{-| The command's environment, as `getEnv` assembles it. Holding one means the
+project is a package.
+-}
 type Env
     = Env EnvData
 
 
+{-| The part of the environment gathered before the registry is read.
+-}
 type alias EnvSetup =
     { root : FilePath
     , cache : Stuff.PackageCache
@@ -73,6 +103,10 @@ type alias EnvSetup =
     }
 
 
+{-| Assembles the environment, failing when there is no project, the registry
+cannot be refreshed, `elm.json` cannot be read, or the project is an
+application.
+-}
 getEnv : Task Exit.Bump Env
 getEnv =
     Task.io Stuff.findRoot
@@ -83,6 +117,9 @@ getEnv =
         |> Task.andThen readAndValidateOutline
 
 
+{-| Returns the project root, failing with `BumpNoOutline` when no `elm.json`
+was found.
+-}
 requireRoot : Maybe FilePath -> Task Exit.Bump FilePath
 requireRoot maybeRoot =
     case maybeRoot of
@@ -93,30 +130,43 @@ requireRoot maybeRoot =
             Task.succeed root
 
 
+{-| Pairs `root` with the package cache, whose locally linked packages are the
+bundled packages found next to the executable.
+-}
 addPackageCache : FilePath -> Task Exit.Bump ( FilePath, Stuff.PackageCache )
 addPackageCache root =
     Task.io (Stuff.resolveBundledPackages [] |> Task.andThen Stuff.getPackageCache)
         |> Task.map (\cache -> ( root, cache ))
 
 
+{-| Adds an HTTP manager to the root and package cache.
+-}
 addHttpManager : ( FilePath, Stuff.PackageCache ) -> Task Exit.Bump EnvSetup
 addHttpManager ( root, cache ) =
     Task.io Http.getManager
         |> Task.map (\manager -> EnvSetup root cache manager)
 
 
+{-| Pairs `setup` with the registry, refreshed from the package server whatever
+the age of the cached copy. A failed refresh fails the command.
+-}
 addRegistry : EnvSetup -> Task Exit.Bump ( EnvSetup, Registry.Registry )
 addRegistry setup =
     Task.eio Exit.BumpMustHaveLatestRegistry (Registry.latest setup.manager setup.cache Registry.ForceRefresh)
         |> Task.map (\registry -> ( setup, registry ))
 
 
+{-| Reads the project's `elm.json` and builds the environment from it.
+-}
 readAndValidateOutline : ( EnvSetup, Registry.Registry ) -> Task Exit.Bump Env
 readAndValidateOutline ( setup, registry ) =
     Task.eio Exit.BumpBadOutline (Outline.read setup.root)
         |> Task.andThen (validateOutline setup registry)
 
 
+{-| Builds the environment from a package's `outline`, failing with
+`BumpApplication` for an application.
+-}
 validateOutline : EnvSetup -> Registry.Registry -> Outline.Outline -> Task Exit.Bump Env
 validateOutline setup registry outline =
     case outline of
@@ -131,6 +181,13 @@ validateOutline setup registry outline =
 -- ====== BUMP ======
 
 
+{-| Checks the package's version against the registry and continues with the
+path for a published or an unpublished package.
+
+A published package whose version is not one a release may be bumped from fails
+with those versions, sorted and without repeats.
+
+-}
 bump : Env -> Task Exit.Bump ()
 bump ((Env envData) as env) =
     let
@@ -158,12 +215,18 @@ bump ((Env envData) as env) =
 -- ====== CHECK NEW PACKAGE ======
 
 
+{-| Announces that the package is unpublished and checks that its version is
+1.0.0.
+-}
 checkNewPackage : FilePath -> Outline.PkgOutline -> Task Never ()
 checkNewPackage root ((Outline.PkgOutline pkgData) as outline) =
     IO.printLn "This package has not been published before. Let me verify the version number."
         |> Task.andThen (\_ -> validateNewPackageVersion root outline pkgData.version)
 
 
+{-| Confirms `version` when it is 1.0.0, and otherwise asks whether to set the
+version in `elm.json` to 1.0.0.
+-}
 validateNewPackageVersion : FilePath -> Outline.PkgOutline -> V.Version -> Task Never ()
 validateNewPackageVersion root outline version =
     if version == V.one then
@@ -183,6 +246,10 @@ validateNewPackageVersion root outline version =
 -- ====== SUGGEST VERSION ======
 
 
+{-| What is known about the published version while the new documentation is
+being built: `oldVersion` is the version in `elm.json`, and `oldDocs` is the
+documentation published for it.
+-}
 type alias VersionSuggestion =
     { root : FilePath
     , outline : Outline.PkgOutline
@@ -191,6 +258,10 @@ type alias VersionSuggestion =
     }
 
 
+{-| Fetches the documentation published for the package's current version,
+builds the documentation of the package as it is now, and offers the version
+their difference calls for.
+-}
 suggestVersion : Env -> Task Exit.Bump ()
 suggestVersion (Env envData) =
     let
@@ -203,17 +274,24 @@ suggestVersion (Env envData) =
         |> Task.andThen promptVersionChange
 
 
+{-| Collects its arguments into a `VersionSuggestion`.
+-}
 initVersionSuggestion : FilePath -> Outline.PkgOutline -> V.Version -> Docs.Documentation -> Task Exit.Bump VersionSuggestion
 initVersionSuggestion root outline vsn oldDocs =
     Task.succeed (VersionSuggestion root outline vsn oldDocs)
 
 
+{-| Pairs `suggestion` with the documentation of the package as it is now.
+-}
 addNewDocs : VersionSuggestion -> Task Exit.Bump ( VersionSuggestion, Docs.Documentation )
 addNewDocs suggestion =
     generateDocs suggestion.root suggestion.outline
         |> Task.map (\newDocs -> ( suggestion, newDocs ))
 
 
+{-| Shows the magnitude of the API change and the version it leads to, and
+asks whether to write that version to `elm.json`.
+-}
 promptVersionChange : ( VersionSuggestion, Docs.Documentation ) -> Task Exit.Bump ()
 promptVersionChange ( suggestion, newDocs ) =
     let
@@ -257,12 +335,22 @@ promptVersionChange ( suggestion, newDocs ) =
     Task.io (changeVersion suggestion.root suggestion.outline newVersion question)
 
 
+{-| Builds the documentation of the package's exposed modules.
+
+The project details are loaded first, for a JavaScript rather than a typed
+build and with no configuration hash, so this may solve and build the package's
+dependencies.
+
+-}
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
 generateDocs root (Outline.PkgOutline pkgData) =
     Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Stuff.resolveBundledPackages [] |> Task.andThen (\locals -> Details.load Reporting.silent scope root Nothing Nothing False False locals Registry.Normal)))
         |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 
+{-| Builds the modules named in `exposed` and returns their documentation,
+failing with `BumpNoExposed` when no module is exposed.
+-}
 buildDocsFromExposed : FilePath -> Outline.Exposed -> Details.Details -> Task Exit.Bump Docs.Documentation
 buildDocsFromExposed root exposed details =
     case Outline.flattenExposed exposed of
@@ -277,12 +365,18 @@ buildDocsFromExposed root exposed details =
 -- ====== CHANGE VERSION ======
 
 
+{-| Asks `question` and, on a yes, writes `targetVersion` into `elm.json` at
+`root`.
+-}
 changeVersion : FilePath -> Outline.PkgOutline -> V.Version -> D.Doc -> Task Never ()
 changeVersion root outline targetVersion question =
     Reporting.ask question
         |> Task.andThen (applyVersionChange root outline targetVersion)
 
 
+{-| Writes `targetVersion` and reports it when `approved`, and otherwise says
+that nothing changed.
+-}
 applyVersionChange : FilePath -> Outline.PkgOutline -> V.Version -> Bool -> Task Never ()
 applyVersionChange root outline targetVersion approved =
     if not approved then
@@ -293,6 +387,9 @@ applyVersionChange root outline targetVersion approved =
             |> Task.andThen (\_ -> confirmVersionChange targetVersion)
 
 
+{-| Writes `elm.json` at `root` as `outline` with its version replaced by
+`targetVersion`.
+-}
 writeNewOutline : FilePath -> Outline.PkgOutline -> V.Version -> Task Never ()
 writeNewOutline root (Outline.PkgOutline pkgData) targetVersion =
     Outline.write root
@@ -301,6 +398,8 @@ writeNewOutline root (Outline.PkgOutline pkgData) targetVersion =
         )
 
 
+{-| Prints the version that was written.
+-}
 confirmVersionChange : V.Version -> Task Never ()
 confirmVersionChange targetVersion =
     Help.toStdout

@@ -3,16 +3,62 @@ module Compiler.MonoSolver.Translate exposing
     , demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
     )
 
-{-| Translate a TypedOptimized expression into a monomorphized expression for
-the solver engine, originally ported from `Specialize.specializeExpr`.
+{-| The solver engine monomorphizes a program one specialization at a time, and
+this module turns one definition, demanded at one MonoType, into its
+monomorphized node.
 
-Node types are classified through the engine's store (`classifyAs`, i.e.
-`Store.classifyDirect`), with `Zonk.canTypeToMono` used where a type is already
-ground. Kernel-call ABIs use the store (`Store.instantiate`-style fresh load +
-unify param slots with the concrete arg types + zonk) to reproduce
-`deriveKernelAbiType` exactly. Every expression form is translated except
-`TOpt.Shader`, which returns `Engine.crashFailure (Unsupported …)` — never a
-fallback to the subst engine.
+A _demand_ is the MonoType a specialization of a global is requested at. The
+engine gives each work item a union-find store of its own (see
+`Compiler.MonoSolver.Store` for loads, unification and read-back), and every
+type here is decided in that store. The definition's annotation is unified
+with the demand first (`demandUnifyRoot`), so the annotation's type variables,
+which the body shares through the item's memo, take on the demanded types.
+Each expression is then translated (`translate`), and every global it refers
+to is enqueued as a spec of its own at the type this use needs.
+
+A node's type normally comes from classifying its canonical type, which reads
+the store for the type variables the item has bound. Before a child is
+translated, its type is _connected_ to the type its context gives it: the two
+are unified, best effort, so the child sees what the context already knows.
+List elements, tuple slots, record fields, branches of an `if` or `case`, the
+bodies of `let` and destructuring, and tail-call arguments are connected this
+way. A call unifies the callee's freshly instantiated type with its arguments
+and with the call's type before translating the arguments, which is how a
+demand reaches a local's uses. Unsupported expressions and broken invariants
+abort the build (`Engine.crashFailure`).
+
+A `let` that binds a function, or a value with functions inside it and a free
+type variable, is specialized once per type it is used at (or translated once
+under its own name when it is never used): the
+`let` body is translated first, each use recording its type, and each recorded
+type gets its own copy of the definition (`f`, `f$1`, ...), translated again at
+that type in a scratch store. A `let` that binds a value of unresolved `number`
+type is treated the same way, with copies `n$v1`, ... . A local tail-recursive
+function is also translated after the body: once under its own name when it is
+used at one type or none, and once per type otherwise.
+
+Under lambda-set specialization (LSS, `env.lss.enabled`) every arrow in the
+store also carries a _lambda set_: the _members_ that can reach it, each member
+an id for one function value. This module writes the members it can see. A
+lambda gets its own member on the first arrows of its type, one per parameter.
+A reference to a global or constructor gets a `g|` or `c|` member on its head
+arrow, and a reference to a kernel or accessor a `k|` or `a|` member there. A
+partial application of a global gets a
+`p|` member of its own, never the global's, since it is the global with some
+arguments already bound. A kernel's sets are poisoned (made ⊤, meaning
+anything may reach them) unless `KernelSetFacts` says otherwise. Where a
+container or branch has several children, the sets of the result are joined
+over all of them, because one child's set is a claim the others can falsify.
+
+Lambda sets make _devirtualization_ possible: an indirect call through a local
+variable whose set has exactly one member, standing for a constructor, a global
+function or a kernel registered for it, is rewritten into a direct call when
+the call supplies exactly that target's parameters. A set may be
+provisional; when a spec's demand widens later, the engine translates the node
+again and the decision is made again.
+
+Much of the file is census code, gated on `lss.report`, that counts how
+members were written and read without changing what is generated.
 
 @docs translate
 @docs demandUnifyRoot, enumNode, specializeCtorViaScheme, specializeCycle, specializePort, stampSelfSpine
@@ -52,33 +98,36 @@ import Dict
 import Set
 
 
-{-| `classify`, attributing the ⊤s it stamps to a CALLER CLASS
-(plans/lss-ctor-arrow-identity.md §9.3). `classifyGo`'s `Can.TLambda` arm is
-the sole manufacturer of surviving decl ⊤s, but it is shared by ~23 call
-sites; the kind says WHICH of them, which is what decides whether a
-store-aware alternative exists there. Diagnostic only — every semantic reader
-is ⊤-kind-blind.
+{-| Returns the MonoType of `canType` as `Store.classifyDirect` reads it,
+with every arrow ⊤ labelled `topKind`.
+
+The label is one of the `Mono.tkClass*` provenance codes and says which kind of
+expression was being classified. It is diagnostic only: nothing that decides
+code reads a ⊤'s label.
+
 -}
 classifyAs : Int -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyAs topKind canType s =
     Store.classifyDirect topKind canType s
 
 
-{-| Assert a demanded MonoType against a definition's annotation in the store,
-concretizing the annotation's scheme variables (shared with the body via the
-item memo). A no-op when the demand equals the annotation (monomorphic case).
+{-| Unifies a definition's annotation, loaded through the item memo, with a
+demanded MonoType, so that the annotation's type variables, which the body
+shares, become the demand's types. A mismatch aborts the build
+(`Store.unifyStrictS`).
 -}
 demandUnify : Can.Type TypeIds.MVarId -> Mono.MonoType -> Engine.S -> Engine.S
 demandUnify annCanType demand s0 =
     Tuple.second (demandUnifyVar annCanType demand s0)
 
 
-{-| `demandUnify` returning the loaded annotation var. Function-root defs
-stash it (`S.lssRootAnn`) so the root lambda's `classifyLambdaHead` can
-reuse THE seeded var: `Store.loadType` mints fresh arrow structure per load
-(LSS\_006 — only leaf MVarIds are memo-shared), so re-loading a GROUND
-annotation shares nothing and the demand's lambda-set content would be
-unreachable from the def's binder types.
+{-| Does what `demandUnify` does and also returns the variable the annotation
+was loaded as.
+
+The variable is returned because a load mints new arrow structure each time;
+only type variables are shared through the memo. Loading a ground annotation
+again would therefore not see the lambda sets the demand put on its arrows.
+
 -}
 demandUnifyVar : Can.Type TypeIds.MVarId -> Mono.MonoType -> Engine.S -> ( Vars.Variable, Engine.S )
 demandUnifyVar annCanType demand s0 =
@@ -95,20 +144,22 @@ demandUnifyVar annCanType demand s0 =
                     )
 
 
-{-| `demandUnify` for a def root: when the def's expression is syntactically
-a lambda and lss is on, stash the seeded annotation var for the root
-`classifyLambdaHead` to consume (see `demandUnifyVar`). Non-function defs
-and lss-off behave exactly like `demandUnify`.
+{-| Seeds a definition's annotation with its demand before the body is
+translated, as `demandUnify` does.
+
+With lambda-set specialization (LSS) on and a body that is syntactically a
+lambda, the seeded annotation variable is also kept in the item state
+(`lssRootAnn`) so that the body's own lambda takes its type from it rather than
+from a fresh load. With LSS and the `lss.qCensus` setting on, the variable is
+also kept for that census (`qSigRoot`), whatever the body.
+
 -}
 demandUnifyRoot : Can.Type TypeIds.MVarId -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 demandUnifyRoot annCanType demand expr s0 =
     case demandUnifyVar annCanType demand s0 of
         ( annVar, s1 ) ->
             let
-                -- §5.1: stash the def's root type Point for the shadow-`Q`
-                -- partition. Report-gated, and NOT gated on `exprIsLambda` —
-                -- a non-lambda def's type still carries arrows (`fns = [incr,
-                -- decr]`), and those are exactly the σ the partition is about.
+                -- Not limited to lambdas: a value such as `fns = [ incr, decr ]` has arrows too.
                 sQ =
                     if s1.env.lss.enabled && s1.env.lss.qCensus then
                         let
@@ -131,6 +182,8 @@ demandUnifyRoot annCanType demand expr s0 =
                 sQ
 
 
+{-| Tells whether an expression is a lambda literal.
+-}
 exprIsLambda : TOpt.Expr TypeIds.MVarId -> Bool
 exprIsLambda expr =
     case expr of
@@ -144,31 +197,22 @@ exprIsLambda expr =
             False
 
 
-{-| Best-effort in-store unification of two canonical types (child vs parent
-context): loads both through the item memo and unifies, so a child's fresh
-use-var picks up the context's already-concretized demand before the child is
-translated. Never fails — the typechecker already proved these compatible; any
-residual weirdness just leaves vars unbound.
+{-| Connects a child expression's canonical type to the type its context
+gives it: both are loaded through the item memo and unified, so the child's
+type variables take on what the context already knows before the child is
+translated.
+
+The unification is best effort and never fails the build; a mismatch leaves
+the variables as they were. When both types are ground and contain no arrow the
+step is skipped, because the loads would touch no memo and mint no set slot.
+
 -}
 connectTypes : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 connectTypes childCan parentCan s0 =
-    -- Step 9: when BOTH sides are ground and arrow-free there is nothing to
-    -- connect. Such a type has no `TVar`, so it touches neither the var memo
-    -- nor `revMemo`; no `TLambda`, so it mints no set slot and leaves the
-    -- LSS_006 ordinal machinery alone. The two loads would build structures
-    -- nothing else references and the unify would merge them with each other.
-    -- The only reachable change is Points nobody can name, so skipping is
-    -- exact — and it saves two loads, two write-backs and a unify.
-    --
-    -- The predicate answers an alias occurrence from step 4's verdict map, so
-    -- it is O(1) for `S`, `Env` and `ItemAux` after their first classify.
     if Store.groundNoArrowWith s0.monoMemo.aliasMemo childCan && Store.groundNoArrowWith s0.monoMemo.aliasMemo parentCan then
         s0
 
     else
-        -- A1: direct state-passing (desugared andThen) → byte-identical.
-        -- Step 10b: `loadTypeS` never fails, so the two `Err` arms this had
-        -- were dead; the function returns `S` and allocates nothing at all.
         let
             ( parentVar, s1 ) =
                 Store.loadTypeS parentCan s0
@@ -179,10 +223,9 @@ connectTypes childCan parentCan s0 =
         unifyBestEffortS childVar parentVar s2
 
 
-{-| MONO\_029 R1: unify each TailCall argument's canType with the enclosing
-tail-recursive function's matching loop-param canType (frames pushed around
-TailDef bodies, matched by function then arg name). Best-effort like every
-connect.
+{-| Connects each argument of a tail call to `funcName` with the parameter of
+the same name, as `connectTypes` does. The parameters come from the innermost
+loop frame for `funcName` (`withLoopFrame`); with no frame nothing is connected.
 -}
 connectTailCallArgs : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
 connectTailCallArgs funcName args s0 =
@@ -194,6 +237,9 @@ connectTailCallArgs funcName args s0 =
             connectTailArgsGo params args s0
 
 
+{-| Connects each named argument to the parameter of the same name in
+`params`, skipping an argument with no such parameter.
+-}
 connectTailArgsGo : List ( String, Can.Type TypeIds.MVarId ) -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> Engine.S -> Engine.S
 connectTailArgsGo params args s0 =
     case args of
@@ -209,6 +255,8 @@ connectTailArgsGo params args s0 =
                     connectTailArgsGo params rest s0
 
 
+{-| Returns the parameters of the innermost loop frame named `funcName`.
+-}
 lookupLoopFrame : Name -> List ( String, List ( String, Can.Type TypeIds.MVarId ) ) -> Maybe (List ( String, Can.Type TypeIds.MVarId ))
 lookupLoopFrame funcName frames =
     case frames of
@@ -223,8 +271,9 @@ lookupLoopFrame funcName frames =
                 lookupLoopFrame funcName rest
 
 
-{-| Run a step with a tail-recursion loop-param frame pushed (consumed by the
-TailCall arm's `connectTailCallArgs`), restoring the frame stack after.
+{-| Runs a step with a loop frame for the tail-recursive function `name` and
+its parameters pushed, so that tail calls inside it can be connected to those
+parameters (`connectTailCallArgs`). The frame stack is restored afterwards.
 -}
 withLoopFrame : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Step a -> Step a
 withLoopFrame name typedArgs step s0 =
@@ -245,7 +294,8 @@ withLoopFrame name typedArgs step s0 =
             ( a, { s1 | itemAux = { aux1 | loopParams = s0.itemAux.loopParams } } )
 
 
-{-| The element type of a canonical `List a` (through filled aliases).
+{-| Returns the element type of a canonical `List a`, looking through filled
+aliases.
 -}
 listElemCanType : Can.Type TypeIds.MVarId -> Maybe (Can.Type TypeIds.MVarId)
 listElemCanType t =
@@ -260,7 +310,7 @@ listElemCanType t =
             Nothing
 
 
-{-| The slot types of a canonical tuple (through filled aliases).
+{-| Returns the slot types of a canonical tuple, looking through filled aliases.
 -}
 tupleSlotCanTypes : Can.Type TypeIds.MVarId -> Maybe (List (Can.Type TypeIds.MVarId))
 tupleSlotCanTypes t =
@@ -275,13 +325,12 @@ tupleSlotCanTypes t =
             Nothing
 
 
-{-| Connect each record-literal field expr's type to the record type's field
-slot (through filled aliases); fields without a slot are skipped.
+{-| Connects each field expression of a record literal to the record type's
+field of the same name (looking through filled aliases), as `connectTypes`
+does. Fields the type does not name are skipped.
 -}
 connectRecordFields : List ( Name, TOpt.Expr TypeIds.MVarId ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 connectRecordFields fieldExprs recordCanType s0 =
-    -- Step 10b: `List.foldl` visits left-to-right exactly as `traverseGo` did,
-    -- so the unification order — and therefore every Point index — is unchanged.
     case recordFieldCanTypes recordCanType of
         Just fieldCans ->
             List.foldl
@@ -300,6 +349,9 @@ connectRecordFields fieldExprs recordCanType s0 =
             s0
 
 
+{-| Returns the field types of a canonical record type, looking through
+filled aliases.
+-}
 recordFieldCanTypes : Can.Type TypeIds.MVarId -> Maybe (Dict.Dict Name (Can.Type TypeIds.MVarId))
 recordFieldCanTypes t =
     case t of
@@ -313,8 +365,8 @@ recordFieldCanTypes t =
             Nothing
 
 
-{-| Perf (#10): read a SINGLE field's canonical type with one `Dict.get`, without
-`recordFieldCanTypes`' `Dict.map` that allocates a whole fresh field tree per access.
+{-| Returns the type of one field of a canonical record type, looking through
+filled aliases, without building the whole field map.
 -}
 recordFieldCanType : Name -> Can.Type TypeIds.MVarId -> Maybe (Can.Type TypeIds.MVarId)
 recordFieldCanType f t =
@@ -329,35 +381,23 @@ recordFieldCanType f t =
             Nothing
 
 
-{-| Translate one typed optimized expression into a monomorphized expression,
-resolving its types through the engine state.
+{-| Translates one TypedOptimized expression into a monomorphized expression,
+taking every type from the current work item's store.
 -}
 translate : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translate expr s0 =
-    -- Injection-totality census (plans/lss-injection-completeness.md §2.1):
-    -- one report-gated classification per translated node. Behavior-free by
-    -- construction — `censusProducer` only bumps counters, and reads
-    -- signature state without forcing it.
     case translateDispatch expr s0 of
         ( monoExpr, s1 ) ->
             ( monoExpr, censusProducer expr s1 )
 
 
-{-| Injection-totality census (plans/lss-injection-completeness.md §2.1).
-REPORT-GATED; one head-arrow test per node when on, nothing when off.
+{-| Counts `expr` in the census under `inj|` and its producer form
+(`producerKey`), when `lss.report` and LSS are on and the expression's type is
+a function (its head is an arrow). Otherwise returns the state unchanged.
 
-Classifies every expression whose type's HEAD is an arrow — i.e. every
-position holding a function VALUE — by producer form. `inj|papKnown|*` is the
-headline: partial applications of known globals, the one producer form that
-injects no lambda-set member today (the `arrowSolverRoots` false-singleton
-class). Verdicts are FORM-derived, not write-provenance-derived: `papKnown`
-IS the none-population by construction, and `callResult|trivial` is the
-"totality unproven" bucket (a trivial-signature callee carries no fact at its
-result ordinal).
-
-Reads triviality via `Engine.memoizedSignatureTrivial` ONLY — forcing a
-signature here would move member-id allocation order, and `report` is
-excluded from the config hash (the `censusArgs` lesson above).
+It reads signature triviality only from the memo, never computing a signature,
+because computing one here would change the order in which member ids are
+minted.
 
 -}
 censusProducer : TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
@@ -369,9 +409,9 @@ censusProducer expr s =
         Engine.bumpArgFlowCensus ("inj|" ++ producerKey expr s) s
 
 
-{-| Is the HEAD of this canonical type an arrow (following aliases)?
-Head-position only — the type of a value that IS a function — unlike
-`canTypeHasArrow`, which finds arrows anywhere inside.
+{-| Tells whether a canonical type is a function type at its head, looking
+through aliases. Unlike `canTypeHasArrow`, an arrow nested inside the type
+does not count.
 -}
 headIsArrow : Can.Type TypeIds.MVarId -> Bool
 headIsArrow t =
@@ -389,6 +429,10 @@ headIsArrow t =
             False
 
 
+{-| Returns the census label for the form of expression that produces a
+function value: a lambda, a reference, a kernel, a local, a call (labelled by
+`censusCallKey`), a branch, a let, an accessor, a field read, or other.
+-}
 producerKey : TOpt.Expr TypeIds.MVarId -> Engine.S -> String
 producerKey expr s =
     case expr of
@@ -444,6 +488,14 @@ producerKey expr s =
             "other"
 
 
+{-| Returns the census label for a call that supplies `supplied` arguments.
+
+For a known global callee it is `papKnown|d<k>` when the call leaves `k` of its
+declared parameters unsupplied, and otherwise names whether the callee's
+memoized signature is trivial, non-trivial or not yet computed. A kernel callee
+and any other callee get one label each.
+
+-}
 censusCallKey : TOpt.Expr TypeIds.MVarId -> Int -> Engine.S -> String
 censusCallKey func supplied s =
     case censusCallGlobal func of
@@ -475,6 +527,9 @@ censusCallKey func supplied s =
                     "callUnknownCallee"
 
 
+{-| Returns the global a callee expression names, for a global, enum, box or
+cycle reference.
+-}
 censusCallGlobal : TOpt.Expr TypeIds.MVarId -> Maybe TOpt.Global
 censusCallGlobal func =
     case func of
@@ -494,6 +549,15 @@ censusCallGlobal func =
             Nothing
 
 
+{-| Translates one expression by its form; `translate` adds the census on top.
+
+A node's type is normally classified from its canonical type. Where that
+leaves type variables, a container or branch takes its structure from its
+translated children instead, with lambda sets joined over all of them
+(`joinBranchTypes`), because one child's set is a claim that the others can
+falsify. A `TOpt.Shader` aborts the build as unsupported.
+
+-}
 translateDispatch : TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 translateDispatch expr s0 =
     case expr of
@@ -507,7 +571,6 @@ translateDispatch expr s0 =
             ( Mono.MonoLiteral (Mono.LStr v) Mono.MString, s0 )
 
         TOpt.Int _ v meta ->
-            -- M6: direct state-passing (desugared map) → byte-identical.
             case classifyAs Mono.tkClassLit meta.tipe s0 of
                 ( monoType, s1 ) ->
                     ( case monoType of
@@ -520,24 +583,15 @@ translateDispatch expr s0 =
                     )
 
         TOpt.Float _ v meta ->
-            -- M6: direct state-passing (desugared map) → byte-identical.
             case classifyAs Mono.tkClassLit meta.tipe s0 of
                 ( monoType, s1 ) ->
                     ( Mono.MonoLiteral (Mono.LFloat v) monoType, s1 )
 
         TOpt.VarLocal name meta ->
-            -- D9: read localMulti/numberMulti/varEnv in ONE getS (all pure), then
-            -- branch — the former three sequential `getS` andThen-closures on this
-            -- hot node collapse to one. Side effects (record*/classify) are
-            -- unchanged and still occur only in the taken branch → byte-identical.
-            -- M6: direct state-passing (desugared andThen/map). This node fires on
-            -- every local-var reference, so eliminating its per-use bind closures is
-            -- a broad cut; monad-law-preserving → byte-identical.
             case Engine.localVarInfo name s0 of
                 ( ( isLM, isNM, maybeBound ), s1 ) ->
                     if isLM then
-                        -- local-multi FUNCTION target: record this use's applied
-                        -- type and point at its per-type binding (f / f$1 / …).
+                        -- A let-bound function: record this use's type and name its binding (f, f$1, ...).
                         case classifyAs Mono.tkClassLocal meta.tipe s1 of
                             ( resolvedType, s2 ) ->
                                 case Engine.recordLocalInstance name resolvedType s2 of
@@ -545,8 +599,7 @@ translateDispatch expr s0 =
                                         ( Mono.MonoVarLocal freshName instType, s3 )
 
                     else if isNM then
-                        -- number-multi target: record this use's instance and
-                        -- point at its per-type binding (n / n$v1 / …).
+                        -- A let-bound number: record this use's type and name its binding (n, n$v1, ...).
                         case classifyAs Mono.tkClassLocal meta.tipe s1 of
                             ( resolvedType, s2 ) ->
                                 case Engine.recordNumberInstance name resolvedType s2 of
@@ -554,8 +607,7 @@ translateDispatch expr s0 =
                                         ( Mono.MonoVarLocal freshName instType, s3 )
 
                     else
-                        -- Prefer the varEnv-bound type (from an enclosing let/
-                        -- lambda/destructor, may be more concrete than the meta).
+                        -- The type bound by the enclosing let, lambda or destructor can be more concrete than the meta.
                         case maybeBound of
                             Just boundType ->
                                 ( Mono.MonoVarLocal name boundType, s1 )
@@ -591,10 +643,6 @@ translateDispatch expr s0 =
                     ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, s1 )
 
         TOpt.List region exprs meta ->
-            -- Connect every element's type var to the list's element slot (or,
-            -- lacking one, to the first element) before translating: an element
-            -- use of a let-generalized number picks up the shared demand.
-            -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             let
                 connectElems sa =
                     case listElemCanType meta.tipe of
@@ -616,21 +664,10 @@ translateDispatch expr s0 =
                             case Engine.traverse translate exprs s2 of
                                 ( monoExprs, s3 ) ->
                                     let
-                                        -- E15 (`lss.flow.accessFlow`, DEFAULT-ON
-                                        -- 2026-09-16, unconditional 2026-09-18):
-                                        -- a first-element-only element set is a
-                                        -- completeness claim the other elements
-                                        -- can falsify, so join over all of them.
-                                        -- Landing measurement: `var` 852 -> 837,
-                                        -- k1 +26, wall flat.
                                         joinElems =
                                             s3.env.lss.enabled
 
-                                        -- F4-lit-list (plans/lss-container-payload-transport.md
-                                        -- §12.10.1): the element type is the JOIN over every
-                                        -- element (`joinBranchTypes`, the If precedent) — the
-                                        -- first element alone is a completeness claim the
-                                        -- others can falsify.
+                                        -- The first element's lambda sets alone could be falsified by the others.
                                         joinedElem first rest =
                                             if joinElems then
                                                 List.foldl (\e acc -> joinBranchTypes acc (Mono.typeOf e)) (Mono.typeOf first) rest
@@ -642,7 +679,6 @@ translateDispatch expr s0 =
                                             if Mono.containsAnyMVar monoType0 then
                                                 case monoExprs of
                                                     first :: rest ->
-                                                        -- K6: this type is retained on the node.
                                                         Engine.consS (Mono.mList (joinedElem first rest)) s3
 
                                                     [] ->
@@ -666,12 +702,8 @@ translateDispatch expr s0 =
             translateCall region func args meta.tipe s0
 
         TOpt.If branches final meta ->
-            -- Per branch: translate the CONDITION first (a shared number var used
-            -- there stays at its eager type), then connect the branch value's type
-            -- var to the If's own var (so a use of a let-generalized number under a
-            -- Float context picks up the demand), then translate the branch value.
-            -- Interleaved to mirror the original engine's per-use demand recording.
-            -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
+            -- Each condition is translated before its branch value is connected to the If's type,
+            -- so a shared number variable used in the condition keeps its earlier type there.
             case classifyAs Mono.tkClassIf meta.tipe s0 of
                 ( monoType0, s1 ) ->
                     case Engine.traverse (translateIfBranch meta.tipe) branches s1 of
@@ -683,11 +715,6 @@ translateDispatch expr s0 =
                                             let
                                                 monoType =
                                                     if Mono.containsAnyMVar monoType0 then
-                                                        -- Structure from the final branch, lambda-set
-                                                        -- annotations JOINED over every branch — see
-                                                        -- `joinBranchTypes` (adopting one branch's
-                                                        -- annotations verbatim was the 2026-09-11
-                                                        -- false-singleton miscompile).
                                                         List.foldl (\( _, b ) acc -> joinBranchTypes acc (Mono.typeOf b))
                                                             (Mono.typeOf monoFinal)
                                                             monoBranches
@@ -698,10 +725,7 @@ translateDispatch expr s0 =
                                             ( Mono.MonoIf monoBranches monoFinal monoType, s4 )
 
         TOpt.TailCall name args meta ->
-            -- M6: direct state-passing (desugared andThen/map) → byte-identical.
-            -- MONO_029 R1: connect the recursive-call args to the loop params
-            -- first — the TCO transform rebuilds this call chain with a fresh
-            -- id family that otherwise never joins the annotation component.
+            -- The arguments' types are otherwise unconnected to the loop parameters' types.
             case connectTailCallArgs name args s0 of
                 s0c ->
                     case classifyAs Mono.tkClassMisc meta.tipe s0c of
@@ -723,9 +747,6 @@ translateDispatch expr s0 =
             ( Mono.MonoUnit, s0 )
 
         TOpt.Tuple region a b rest meta ->
-            -- Connect each slot's type var to the tuple type's slot before
-            -- translating (demand flow into tuple literals).
-            -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             let
                 connectSlots sa =
                     case tupleSlotCanTypes meta.tipe of
@@ -756,9 +777,6 @@ translateDispatch expr s0 =
                                             ( Mono.MonoTupleCreate region allExprs tupleType, s5 )
 
         TOpt.Record fields meta ->
-            -- Connect each field expr's type var to the record type's field slot
-            -- before translating (demand flow into record literals).
-            -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case connectRecordFields (Dict.toList fields) meta.tipe s0 of
                 s1 ->
                     case
@@ -780,7 +798,6 @@ translateDispatch expr s0 =
                             ( Mono.MonoRecordCreate monoFieldsRev recType, s3 )
 
         TOpt.TrackedRecord _ fields meta ->
-            -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case
                 connectRecordFields
                     (List.map (\( locName, e ) -> ( A.toValue locName, e )) (DMap.toList fields))
@@ -810,22 +827,14 @@ translateDispatch expr s0 =
             translateAccess record fieldName meta s0
 
         TOpt.Update _ record updates meta ->
-            -- MONO_006: a record update has exactly its record's type, so
-            -- connect the two before anything is classified. Without it a
-            -- let-polymorphic record's use-site instance (`{ r | f = … }`)
-            -- keeps its type vars erased while the update is concrete.
+            -- An update has exactly its record's type; unconnected, a let-polymorphic record's variables stay open.
             translateUpdate record updates meta.tipe (connectTypes (TOpt.typeOf record) meta.tipe s0)
 
         TOpt.Let def body meta ->
-            -- Connect the body's type to the Let node's own type before
-            -- translating: the two are one type to the typechecker but carry
-            -- DISTINCT per-occurrence arrow slots (LSS_006), and a branch value
-            -- reached through this wrapper must reach the enclosing join —
-            -- see the `TOpt.Destruct` arm for the miscompile this closes.
+            -- Same type to the type checker, but separate arrow set slots per occurrence; see the Destruct arm.
             translateLet def body meta.tipe (connectTypes (TOpt.typeOf body) meta.tipe s0)
 
         TOpt.Case label root decider jumps meta ->
-            -- M6: direct state-passing (desugared nested andThen/map) → byte-identical.
             case classifyAs Mono.tkClassCase meta.tipe s0 of
                 ( monoTypeFromCan, s1 ) ->
                     case specializeDecider meta.tipe root decider s1 of
@@ -850,21 +859,13 @@ translateDispatch expr s0 =
                 (TOpt.Destructor dname path dmeta) =
                     destructor
             in
-            -- Divert (MONO_028): a scalar-number destructor slot projected from a
-            -- number-multi root is specialized body-FIRST, so its uses drive one
-            -- root instance per demanded numeric type (+ dead-destructor elim).
-            -- A1: direct state-passing (desugared andThen; pure getS inlined) → byte-identical.
+            -- The body is connected to the node's type first, as `specializeChoice` does for an inline leaf.
+            -- In a branch such as `Just x -> f x`, which is a Destruct around the value, the call's result
+            -- set would otherwise never reach the case's set, and a sibling branch's set would read back
+            -- as the case's complete set.
             --
-            -- 2026-09-11 (/work/eta-fixed-point-root-cause.md): connect the
-            -- body's type to the Destruct node's own type FIRST, exactly as
-            -- `specializeChoice` connects an inline leaf to its case. A
-            -- pattern-binding branch (`Just x -> f x`) is `Destruct` around the
-            -- value; without this connect the value's arrow slot (the call's
-            -- result set) never reaches the case's slot, so a sibling branch
-            -- that DOES connect — a PAP of a global, `LSet [p|…]` — read back as
-            -- the case's COMPLETE set: a false singleton that E9.5 fast-stamped,
-            -- running `succeed`'s evaluator on the other branch's closure and
-            -- silently skipping its state effect (`PapStampTest`).
+            -- A scalar number slot projected from a let-bound number root is translated body first by
+            -- `specializeNumberDestruct`, so its uses decide the root's instances.
             case connectTypes (TOpt.typeOf body) meta.tipe s0 of
                 s0d ->
                     case Engine.numberMultiRootType (pathRootName path) s0d of
@@ -883,7 +884,6 @@ translateDispatch expr s0 =
                                     generalDestruct destructor body meta s1
 
         TOpt.Accessor region fieldName meta ->
-            -- M6: direct state-passing (desugared andThen/map) → byte-identical.
             case classifyAs Mono.tkClassMisc meta.tipe s0 of
                 ( monoType, s1 ) ->
                     if ResolveAccessorValues.accessorTypeNeedsDefer monoType then
@@ -900,13 +900,13 @@ translateDispatch expr s0 =
         TOpt.TrackedFunction srcLam trackedParams body meta ->
             specializeLambda srcLam (List.map (\( locName, pt ) -> ( A.toValue locName, pt )) trackedParams) body meta.tipe s0
 
-        -- Deferred to later milestones:
         _ ->
             ( Engine.crashFailure (Unsupported (nodeKind expr)), s0 )
 
 
-{-| Translate one If branch: condition first, then connect the branch value's
-type to the If's type, then the branch value (see the `TOpt.If` arm).
+{-| Translates one condition and branch value of an `if`, connecting the
+branch value's type to the `if`'s type after the condition is translated and
+before the value is.
 -}
 translateIfBranch : Can.Type TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, TOpt.Expr TypeIds.MVarId ) -> Step ( Mono.MonoExpr, Mono.MonoExpr )
 translateIfBranch ifCanType ( cond, bodyExpr ) s0 =
@@ -918,14 +918,17 @@ translateIfBranch ifCanType ( cond, bodyExpr ) s0 =
 
 
 
--- ====== RECURSIVE CYCLES (single-recursion / SCC-of-1) ======
+-- ====== RECURSIVE CYCLES ======
 
 
-{-| Specialize the DEMANDED member of a recursive cycle (self- or mutual-
-recursive). We produce only the node for `name`; its `VarCycle` references to
-itself and to siblings enqueue those members as their own specs (the drain skips
-the in-progress self-spec), so an SCC of any size materializes one node per
-member across separate work items — no single node holds the whole group.
+{-| Specializes the member `name` of a group of mutually recursive definitions
+at `demand`, producing that member's node only.
+
+References from it to itself or to other members enqueue those members as
+specs of their own, so a group of any size becomes one node per member, each
+made in its own work item. When `name` matches no member and the group has
+exactly one definition, that definition is used; otherwise the build aborts.
+
 -}
 specializeCycle : Name -> List ( Name, TOpt.Expr TypeIds.MVarId ) -> List (TOpt.Def TypeIds.MVarId) -> Mono.MonoType -> Step Mono.MonoNode
 specializeCycle name valueDefs funcDefs demand =
@@ -939,8 +942,6 @@ specializeCycle name valueDefs funcDefs demand =
                     specializeCycleValue vexpr demand
 
                 Nothing ->
-                    -- Name didn't match a member (SCC-of-1 whose enqueued name was
-                    -- the group's, not the member's): fall back to the lone def.
                     case ( valueDefs, funcDefs ) of
                         ( [], [ singleDef ] ) ->
                             specializeCycleFuncDef singleDef demand
@@ -952,6 +953,8 @@ specializeCycle name valueDefs funcDefs demand =
                             Engine.crashFailure (EngineBug ("cycle member not found: " ++ name))
 
 
+{-| Returns the name a definition binds.
+-}
 cycleDefName : TOpt.Def TypeIds.MVarId -> Name
 cycleDefName def =
     case def of
@@ -962,11 +965,16 @@ cycleDefName def =
             n
 
 
+{-| Returns the first element that satisfies `pred`.
+-}
 listFind : (a -> Bool) -> List a -> Maybe a
 listFind pred xs =
     List.head (List.filter pred xs)
 
 
+{-| Specializes a value (non-function) member of a recursive group at `demand`
+as a `MonoDefine`.
+-}
 specializeCycleValue : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializeCycleValue vexpr demand s0 =
     case translate vexpr (demandUnifyRoot (TOpt.typeOf vexpr) demand vexpr s0) of
@@ -978,20 +986,28 @@ specializeCycleValue vexpr demand s0 =
 -- ====== PORTS ======
 
 
-{-| Specialize a port node into a `MonoPortIncoming`/`MonoPortOutgoing` wrapper
-closure over `Elm.Platform.leaf name value`. Incoming ports enqueue their decoder
-(recorded as the port's `decoderSpecId`); outgoing ports inline their encoder.
-Mirrors `Specialize.specializePortNode`.
+{-| Specializes a port at `requestedMonoType` as a one-parameter closure that
+calls the kernel `Elm.Platform.leaf` with the port's name and a value.
+
+For an incoming port the value is the closure's argument, and the port's own
+decoder (`expr`) is enqueued as a spec of the port global at the decoder's
+type; its id is recorded with the port. For an outgoing port the value is the
+argument passed through the encoder, which is translated inline. With LSS on,
+every lambda set in the port's type is made ⊤ first, since the port's functions
+are handed to the runtime. When the requested type is not a function type, the
+port's own classified type is used instead. The build aborts when the type
+used is not a one-parameter function.
+
 -}
 specializePort : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializePort incoming expr canType requestedMonoType s0 =
-    -- LSS_004: port payload/encoder arrows are kernel-facing — poison their
-    -- set slots before the body walks/loads them (no-op when lss is off).
     case poisonPortArrowsIfOn canType s0 of
         s1 ->
             specializePortBody incoming expr canType requestedMonoType s1
 
 
+{-| Makes every lambda set in `canType` ⊤ in the store when LSS is on.
+-}
 poisonPortArrowsIfOn : Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 poisonPortArrowsIfOn canType s =
     if s.env.lss.enabled then
@@ -1005,15 +1021,15 @@ poisonPortArrowsIfOn canType s =
         s
 
 
+{-| Builds the port closure that `specializePort` describes.
+-}
 specializePortBody : Bool -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializePortBody incoming expr canType requestedMonoType s0 =
     case classifyAs Mono.tkClassMisc canType (demandUnify canType requestedMonoType s0) of
         ( classifiedCan, s1 ) ->
             case portGlobalContext s1 of
                 ( ( portGlobal, portName ), s2 ) ->
-                    -- Usually the demand is a concrete `p -> r`; if it reached
-                    -- us erased (a bare MVar), recover the shape from the port's
-                    -- own (now-unified) canonical type.
+                    -- A demand that is not a function type is replaced by the port's own classified type.
                     let
                         effectiveType =
                             case requestedMonoType of
@@ -1098,9 +1114,11 @@ specializePortBody incoming expr canType requestedMonoType s0 =
                             ( Engine.crashFailure (EngineBug ("port '" ++ portName ++ "' must have a single-parameter function type; got " ++ monoKind effectiveType)), s2 )
 
 
-{-| Connect an outgoing port's ENCODER reference to `payload -> fresh` so its
-(otherwise free-floating) type var takes the function shape at the payload type
-— an erased encoder VG compiles to a 0-operand llvm.call.
+{-| Connects an outgoing port's encoder expression to the function type
+`payload -> r`, where `payload` is the port's parameter type and `r` is a fresh
+variable, so that the encoder's type is a function at the payload type rather
+than a bare variable. Best effort; a port type that is not a function changes
+nothing.
 -}
 connectEncoderType : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 connectEncoderType expr portCanType s0 =
@@ -1120,6 +1138,9 @@ connectEncoderType expr portCanType s0 =
             s0
 
 
+{-| Returns the global being specialized and its name as a string. Aborts the
+build when the current global is not a plain `Mono.Global`.
+-}
 portGlobalContext : Step ( Mono.Global, String )
 portGlobalContext s =
     case s.currentGlobal of
@@ -1130,6 +1151,8 @@ portGlobalContext s =
             ( Engine.crashFailure (EngineBug "specializePort: currentGlobal must be a Global"), s )
 
 
+{-| Returns a short text rendering of a MonoType, used in crash messages.
+-}
 monoKind : Mono.MonoType -> String
 monoKind mt =
     case mt of
@@ -1176,6 +1199,9 @@ monoKind mt =
             "other"
 
 
+{-| Adds a port registration to the state unless one with the same key is
+already there.
+-}
 recordPort : Mono.PortRegistration -> Engine.S -> Engine.S
 recordPort reg s =
     if List.any (\p -> p.key == reg.key) s.ports then
@@ -1185,6 +1211,16 @@ recordPort reg s =
         { s | ports = reg :: s.ports }
 
 
+{-| Specializes a function member of a recursive group at `demand`.
+
+A plain definition is translated after `demandUnifyRoot` seeds its annotation.
+A tail-recursive definition becomes a `MonoTailFunc`. With LSS on, its type
+takes its structure from classifying the annotation and its lambda sets from
+the seeded annotation in the store, and each parameter is classified and given
+the sets peeled from that type. With LSS off, the parameters and type are
+classified only.
+
+-}
 specializeCycleFuncDef : TOpt.Def TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializeCycleFuncDef def demand =
     case def of
@@ -1197,10 +1233,7 @@ specializeCycleFuncDef def demand =
         TOpt.TailDef _ tailName typedArgs body defType _ ->
             \sIn ->
                 if sIn.env.lss.enabled then
-                    -- lss on: the node/param types must come from a zonk of THE
-                    -- demand-seeded annotation var — a storeless classify (or a
-                    -- fresh re-load) cannot see the transported lambda sets
-                    -- (LSS_006: set slots live on per-load arrow structure).
+                    -- A classify or a fresh load could not see the lambda sets the demand put on the seeded variable.
                     case demandUnifyVar defType demand sIn of
                         ( annVar, s1 ) ->
                             case Store.zonkToMono annVar s1 of
@@ -1208,10 +1241,7 @@ specializeCycleFuncDef def demand =
                                     case classifyAs Mono.tkClassLet defType s1b of
                                         ( classifiedType, s2 ) ->
                                             let
-                                                -- ABI guard (overlayAnnotations doc): classify
-                                                -- structure + zonk annotations. The zonk alone
-                                                -- diverged from the byte path on loop-param
-                                                -- ABIs (eco.case i64 vs !eco.value yields).
+                                                -- Structure from classify, lambda sets from the zonk (see `Mono.overlayAnnotations`).
                                                 funcType =
                                                     Mono.overlayAnnotations classifiedType zonkedType
 
@@ -1219,10 +1249,6 @@ specializeCycleFuncDef def demand =
                                                     extractFieldTypes (List.length typedArgs) funcType
                                             in
                                             case
-                                                -- Params: per-param classify is the byte-path
-                                                -- STRUCTURE truth (peeling defType can diverge on
-                                                -- alias/number resolution); the peeled zonk
-                                                -- contributes only annotations.
                                                 if List.length peeled == List.length typedArgs then
                                                     Engine.traverse
                                                         (\( ( locName, argType ), peeledType ) sx ->
@@ -1234,8 +1260,6 @@ specializeCycleFuncDef def demand =
                                                         s2
 
                                                 else
-                                                    -- Shape fallback: annotation stages don't
-                                                    -- cover the params — classify as before.
                                                     Engine.traverse
                                                         (\( locName, argType ) sx ->
                                                             case classifyAs Mono.tkClassParam argType sx of
@@ -1273,10 +1297,13 @@ specializeCycleFuncDef def demand =
 -- ====== CONSTRUCTOR / ENUM NODES ======
 
 
-{-| Specialize a constructor node into `MonoCtor`. Unify the ctor's scheme type
-with the demanded type, zonk to the substituted function type, and peel `arity`
-field types off it; the result type is peeled off the demand. Mirrors
-`Specialize.specializeCtorViaScheme` (Box uses tag 0, arity 1).
+{-| Specializes a constructor at `demand` as a `MonoCtor`.
+
+The constructor's type is unified with the demand and read back; its first
+`arity` parameter types are the field types. The node's result type is what is
+left of the demand itself after `arity` arrows. A mismatch with the demand
+aborts the build.
+
 -}
 specializeCtorViaScheme : Name -> Int -> Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 specializeCtorViaScheme name tag arity canType demand s0 =
@@ -1295,7 +1322,8 @@ specializeCtorViaScheme name tag arity canType demand s0 =
                                     )
 
 
-{-| Specialize an enum (nullary ctor) node into `MonoEnum tag <type>`.
+{-| Specializes a constructor with no fields at `demand` as a `MonoEnum`,
+whose type is the constructor's type unified with the demand and read back.
 -}
 enumNode : Int -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoNode
 enumNode tag canType demand s0 =
@@ -1310,6 +1338,10 @@ enumNode tag canType demand s0 =
                                     ( Mono.MonoEnum tag monoType, s4 )
 
 
+{-| Returns the parameter types of a function type, taking whole stages until at
+least `n` parameters are collected, so it can return more than `n`. Returns
+fewer when the type runs out of arrows.
+-}
 extractFieldTypes : Int -> Mono.MonoType -> List Mono.MonoType
 extractFieldTypes n monoType =
     if n <= 0 then
@@ -1324,6 +1356,10 @@ extractFieldTypes n monoType =
                 []
 
 
+{-| Returns what is left of a function type after removing `n` stages, or the
+type itself where it runs out of arrows. Each stage counts as one, whatever its
+number of parameters.
+-}
 extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
 extractCtorResultType n monoType =
     if n <= 0 then
@@ -1342,28 +1378,21 @@ extractCtorResultType n monoType =
 -- ====== CLOSURES ======
 
 
-{-| Specialize a lambda into `MonoClosure`. Mirrors `Specialize.specializeLambda`:
-classify the (curried, un-flattened) function type, specialize each param type,
-allocate `AnonymousLambda currentModule counter++`, translate the body, and
-compute captures via the shared `Closure.computeClosureCaptures`. `closureKind`
-and `captureAbi` are placeholder `Nothing` at mono time (filled by GlobalOpt).
+{-| Specializes a lambda as a `MonoClosure`.
+
+Its type comes from `classifyLambdaHead`, which under LSS also gives the
+lambda's own member id. The parameter types are peeled from that type, or
+classified one by one when the type has too few arrows. The body is translated
+with the parameters in scope, and the captures are computed from the body.
+`closureKind` and `captureAbi` are left `Nothing`.
+
 -}
 specializeLambda : Maybe TypeIds.SrcLambdaId -> List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 specializeLambda srcLam params body canType s0 =
     case classifyLambdaHead (List.length params) srcLam canType (m2ShapeCensus params body s0) of
         ( ( monoType0, maybeMember ), s1 ) ->
             let
-                -- Step 22(a): the param types are PEELED from the (possibly
-                -- re-translated, hence concretized) head type whenever the peel
-                -- has the right arity, and only the NAMES of the classified
-                -- params were used in that case — so classifying every param
-                -- and then discarding the result was the common path, not the
-                -- fallback. Classify only when the peel does not line up.
-                --
-                -- `classify` is compositional, so peeled and per-param
-                -- classification agree in the normal case; the peel stays
-                -- concrete when only the function type's vars were unified,
-                -- which is why it was preferred in the first place.
+                -- The peel stays concrete where only the function type's variables were unified.
                 peeled =
                     extractFieldTypes (List.length params) monoType0
 
@@ -1385,32 +1414,12 @@ specializeLambda srcLam params body canType s0 =
                 ( lambdaId, s3 ) ->
                     case Engine.scoped (\sx -> translate body (insertVars monoParams sx)) s3 of
                         ( monoBody, s4 ) ->
-                            -- `monoType0` is the head type as zonked
-                            -- BEFORE the body was translated. The M1
-                            -- flowConnect producer half used to unify the
-                            -- body's solved type back into the kept head
-                            -- variable's RESULT slot here; it was measured
-                            -- inert on this corpus (byte-identical
-                            -- artifact, -32.6 M dispatches when OFF) and
-                            -- was removed with its flag on 2026-09-18.
+                            -- `monoType0` was read before the body was translated.
                             ( Mono.MonoClosure
                                 { lambdaId = lambdaId
                                 , srcLambda = srcLam
 
-                                -- Fix B (LSS_017): the id this instance was
-                                -- minted under (spec-qualified when
-                                -- keyed-routed). Step 22(b): it now comes
-                                -- back FROM `classifyLambdaHead`'s single
-                                -- mint instead of being re-derived by a
-                                -- second `Engine.lambdaInstanceMemberMaybe`
-                                -- — that call was state-idempotent but ran
-                                -- `instanceQualTagFor`, the `rootLamOf`
-                                -- fold, `layoutQualKey` (a multi-kilobyte
-                                -- string concat) and a `byKey` probe every
-                                -- time. One mint, one id: LSS_017's
-                                -- "stamped IDENTICALLY in its set injection
-                                -- and its ClosureInfo.lssMember" now holds
-                                -- by construction.
+                                -- The same id the lambda's type carries in its sets.
                                 , lssMember = maybeMember
                                 , captures = Closure.computeClosureCaptures monoParams monoBody
                                 , params = monoParams
@@ -1423,21 +1432,25 @@ specializeLambda srcLam params body canType s0 =
                             )
 
 
-{-| The lambda's head type. lss off: exactly the storeless `classify` (the
-byte-identical path). lss on: LOAD the lambda's type (arrows slotted, through
-the ITEM memo so demand concretization is visible), inject the lambda's own
-member into the first `arity` result-spine arrows (LSS\_013 spine injection,
-bounded by the parameter count so a function-returning body never stamps its
-returned closure's arrows), and zonk — the closure's MonoType then carries
-`LSet [self, …demand-joined members]` on those arrows (design §8.2).
+{-| Returns a lambda's type and, under LSS, the member id minted for it.
 
-Def-root lambdas consume the stashed `demandUnifyVar` annotation var
-(matched by canonical type) instead of a fresh load: the fresh load of a
-GROUND annotation shares no vars with the demand-seeded one (LSS\_006), so
-without the reuse the demand's transported lambda sets never reach the
-def's binder/param types and every param-use call site zonks LTop. The
-zonked structure is identical either way (leaf demand flow is memo-shared);
-only annotations gain content — lss-off byte-identity untouched.
+With LSS off this is the classified type and no member.
+
+With LSS on, the lambda's type is loaded into the store, the lambda's own
+member is written into the sets of the first `arity` arrows of its result
+spine, and the type is read back, so those arrows carry the lambda together
+with whatever the demand put there. `arity` is the lambda's parameter count,
+so the arrows of a function the body returns are not marked. The structure of
+the result still comes from classifying `canType`; only the lambda sets come
+from the store.
+
+A definition's own lambda uses the annotation variable `demandUnifyRoot` kept,
+when its type matches ignoring arrow ids, instead of a fresh load, so the
+demand's sets reach its parameters. The kept variable is then cleared. Such a
+lambda's member is also recorded as the root lambda of the current global, so
+that it is minted under the global's key, except when a let-bound function's
+instance is being re-translated (the id would name the enclosing global
+instead) or the global is a kernel alias.
 
 -}
 classifyLambdaHead : Int -> Maybe TypeIds.SrcLambdaId -> Can.Type TypeIds.MVarId -> Step ( Mono.MonoType, Maybe Int )
@@ -1447,41 +1460,13 @@ classifyLambdaHead arity srcLam canType s0 =
             ( maybeRootVar, s0b ) =
                 case s0.itemAux.lssRootAnn of
                     Just ( annCanType, annVar ) ->
-                        -- Phase 2a §4.6(a): the guard is ID-BLIND. It used to
-                        -- be a whole-tree `annCanType == canType`, which under
-                        -- per-occurrence arrow identity would go always-false
-                        -- and switch `lssRootAnn` off silently.
+                        -- Arrow ids differ per occurrence, so the match must ignore them.
                         if sameCanTypeIgnoringArrows annCanType canType then
                             let
                                 aux0 =
                                     s0.itemAux
                             in
-                            -- EXP-2a (plans/lss-unknown-elimination.md §4.8):
-                            -- `hit` counts the id-blind match (the behaviour);
-                            -- `hitExact` additionally counts the raw `==`.
-                            --
-                            -- The question EXP-2a answers is whether a def's
-                            -- stashed `defType` and its body `Function`'s
-                            -- `meta.tipe` are structurally-equal DISTINCT
-                            -- objects or literally the same value. Elm has no
-                            -- reference equality, so only the measurement can
-                            -- say. Pre-2a, `hitExact == hit` by construction
-                            -- (there are no ids yet). Post-2a:
-                            --   hitExact ≈ hit  -> ONE object, so 2a's
-                            --                      per-occurrence ids already
-                            --                      agree and artifacts
-                            --                      #1/#2/#4a are reachable
-                            --                      from 2a;
-                            --   hitExact ≈ 0    -> two objects, 2a cannot
-                            --                      reach them, and #1/#2/#4a
-                            --                      need 2b (solver-root ids).
-                            --
-                            -- Report-gated on both counters, so this is
-                            -- byte-neutral. Splitting the counter (rather than
-                            -- keeping the raw `==` as the guard, which is what
-                            -- the plan's §4.8 sketch did) answers the same
-                            -- question without risking the regression it
-                            -- describes.
+                            -- `hitExact` also counts the matches that are equal including arrow ids.
                             ( Just annVar
                             , Engine.bumpArgFlowCensus "rootAnn|hit"
                                 (if annCanType == canType then
@@ -1498,12 +1483,9 @@ classifyLambdaHead arity srcLam canType s0 =
                     Nothing ->
                         ( Nothing, Engine.bumpArgFlowCensus "rootAnn|absent" s0 )
 
-            -- ROOT-MEMBER FOLD (plans/lss-root-member-fold.md §1.2): the
-            -- stashed-root path IS the def's root lambda — record
-            -- `srcLam -> global` so the mint moments below folds it to the
-            -- ground standalone key. Kernel-alias globals are skipped HERE
-            -- (Engine cannot import `kernelAliasOf` — the import cycle):
-            -- folding one would re-create the g|/k| split E9.2 removes.
+            -- Record the definition's root lambda so its member is minted under the global's key.
+            -- A kernel alias is skipped here because Engine cannot see `kernelAliasOf`; folding one
+            -- would give the alias a `g|` member besides its `k|` one.
             s0c =
                 case ( maybeRootVar, ( srcLam, s0b.currentGlobal ) ) of
                     ( Just _, ( Just lamId, Just (Mono.Global home name) ) ) ->
@@ -1512,21 +1494,8 @@ classifyLambdaHead arity srcLam canType s0 =
                                 TOpt.Global home name
                         in
                         if s0b.itemAux.retranslating /= Nothing then
-                            -- F2 (plans/lss-container-payload-transport.md
-                            -- §12.9.4, found by LssLocalMultiUseInjectTest):
-                            -- a LOCAL-multi instance RHS is re-translated
-                            -- through `demandUnifyRoot`, so its lambda
-                            -- matches the root stash too — and folding it
-                            -- onto the ENCLOSING global's ground key is
-                            -- wrong twice over: the id names a different
-                            -- value (`SourceGlobal` of the enclosing def),
-                            -- and `instanceQualTagFor` then drops the
-                            -- instance tag, so every instance of the
-                            -- let-function shares one id (the LSS_038
-                            -- collapse, live for lambda RHSs). Skip the
-                            -- fold; the lambda keeps its own `l|` identity,
-                            -- instance-qualified, and equals the use-site
-                            -- mint.
+                            -- A let-bound function's instance: folding would name the enclosing global
+                            -- and give every instance one id. It keeps its own instance-qualified `l|` id.
                             Engine.bumpArgFlowCensus "rootFold|localSkip" s0b
 
                         else
@@ -1553,19 +1522,10 @@ classifyLambdaHead arity srcLam canType s0 =
                     Store.loadType canType s0c
         of
             ( funcVar, s1 ) ->
-                -- Fix B (LSS_017): translation-phase mint — spec-qualified.
-                -- Step 22(b): take the member id FROM the mint instead of
-                -- re-deriving it with a second `lambdaInstanceMemberMaybe`.
                 case LssInfer.injectLambdaMemberQualifiedId arity srcLam funcVar s1 of
                     ( maybeMid, s2 ) ->
                         case Store.zonkToMono funcVar s2 of
                             ( zonked, s3 ) ->
-                                -- ABI guard (overlayAnnotations doc): the
-                                -- storeless classification is the structure
-                                -- truth; the store zonk contributes ONLY the
-                                -- lambda-set annotations. Letting the zonk
-                                -- decide structure diverged from the byte
-                                -- path on demand-concretized leaves.
                                 case classifyAs Mono.tkClassLambda canType s3 of
                                     ( classified, s4 ) ->
                                         ( ( Mono.overlayAnnotations classified zonked, maybeMid ), s4 )
@@ -1573,12 +1533,12 @@ classifyLambdaHead arity srcLam canType s0 =
     else
         case classifyAs Mono.tkClassLambda canType s0 of
             ( classified, s1 ) ->
-                -- lss off: exactly what `lambdaInstanceMemberMaybe` answered
-                -- here (its own `enabled` guard), so `ClosureInfo.lssMember`
-                -- is unchanged in this regime too.
                 ( ( classified, Nothing ), s1 )
 
 
+{-| Returns a new anonymous lambda id in the current module, from the state's
+lambda counter.
+-}
 allocLambdaId : Step Mono.LambdaId
 allocLambdaId =
     \s -> ( Mono.AnonymousLambda s.env.currentModule s.lambdaCounter, { s | lambdaCounter = s.lambdaCounter + 1 } )
@@ -1588,13 +1548,12 @@ allocLambdaId =
 -- ====== VAR REFERENCES ======
 
 
-{-| A standalone reference to a global value/ctor/box → `MonoVarGlobal SpecId`.
-Mirrors the VarGlobal/VarEnum/VarBox arms (enqueue with the node's own type).
+{-| Translates a reference to a global that is not being called as a
+`MonoVarGlobal`. The reference's type comes from `classifyRef`, and a spec of
+the global at that type is enqueued (`enqueueSpecStamped`).
 -}
 translateVarRef : TOpt.Expr TypeIds.MVarId -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateVarRef refExpr region global canType s0 =
-    -- M6: direct state-passing (desugared andThen/map). Fires on every global
-    -- reference; monad-law-preserving → byte-identical.
     case classifyRef refExpr canType s0 of
         ( monoType, s1 ) ->
             case enqueueSpecStamped global monoType s1 of
@@ -1602,37 +1561,18 @@ translateVarRef refExpr region global canType s0 =
                     ( Mono.MonoVarGlobal region specId monoType, s2 )
 
 
-{-| §5.4 (GAP-A): classify a bare global reference's type.
+{-| Returns the type of a reference to a global.
 
-`classify` is `Store.classifyDirect` — read-only, no store minting — and its
-`Can.TLambda` arm stamps `Mono.LTop` on EVERY arrow by construction
-("storeless classification stamps LTop"). `translateGlobalCall` knows this and
-GATES its storeless fast path on `lssFastOk`; `translateVarRef` did not, so a
-bare reference's arrows came back ⊤ unconditionally — poisoned before any
-member could reach them. That, not a missing injection, is why
-`[ incr, decr ]` and `( incr, decr )` produced no set while
-`[ \x -> x+1, … ]` (which goes through `classifyLambdaHead`) and
-`[ idf incr, … ]` (a call ARGUMENT, behind the gate) both did.
-
-Flag-on takes the store-aware route for exactly the references that can carry
-a set: load the type, inject the referent's identity — via
-`injectArgLambdaMember`, so the `g|`/`c|`/`k|` dispatch and the kernel-alias
-fold stay identical to the argument path (LSS\_016: a split `g|`/`k|` identity
-joins to a 2-set and kills every singleton consumer) — then read the answer
-back out of the store.
-
-The guard is `canTypeMentionsArrow`: an arrow-free reference cannot inhabit a
-lambda set, so it keeps the cheap path and stays byte-identical.
+With LSS on and an arrow in `canType`, the type is loaded into the store, the
+referenced value's own member is written into its head set
+(`injectArgLambdaMember`, the same as for a call argument), and the type is
+read back. Classifying alone would put ⊤ on every arrow, so a bare reference
+such as the elements of `[ incr, decr ]` would carry no set. Otherwise the type
+is classified.
 
 -}
 classifyRef : TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Engine.S -> ( Mono.MonoType, Engine.S )
 classifyRef refExpr canType s0 =
-    -- Step 10c: straight-line. `loadType` never fails, `injectArgLambdaMember`
-    -- cannot fail after step 6 removed the slow set-write arm, and
-    -- `zonkToMono` fails only on its two `EngineBug` invariants — which the
-    -- crash policy says abort rather than recover. So all three `Err` arms
-    -- here were recovering conditions that either cannot arise or must not be
-    -- recovered, and the chain is three plain steps.
     if not (s0.env.lss.enabled && LssInfer.canTypeMentionsArrow canType) then
         classifyAs Mono.tkClassMisc canType s0
 
@@ -1642,6 +1582,8 @@ classifyRef refExpr canType s0 =
                 Store.zonkToMono canVar (injectArgLambdaMember refExpr canVar s1)
 
 
+{-| Tells whether a MonoType contains a `CEcoValue` type variable anywhere.
+-}
 monoTypeMentionsEco : Mono.MonoType -> Bool
 monoTypeMentionsEco mt =
     case mt of
@@ -1671,11 +1613,15 @@ monoTypeMentionsEco mt =
 -- ====== CALLS ======
 
 
+{-| Translates a call by the form of its callee: a global (whose annotation
+is preferred to the reference's type), a kernel or `Debug` function, a local
+(which may be a let-bound function), or any other expression, which is an
+indirect call.
+-}
 translateCall : A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateCall region func args callCanType =
     case func of
         TOpt.VarGlobal funcRegion global funcMeta ->
-            -- M6: direct state-passing (desugared andThen) → byte-identical.
             \s0 ->
                 case lookupAnnotation global s0 of
                     ( maybeAnn, s1 ) ->
@@ -1706,15 +1652,12 @@ translateCall region func args callCanType =
             translateIndirectCall region func args callCanType
 
 
-{-| A call whose callee is a direct local reference (tracked or not). If the
-local is a multi-instance FUNCTION, concretize its type from the call args
-(solver-native, like the global path) and record its instance at that concrete
-type — so `applyTwo (\x y->x) 1 2` specializes the callee's params to Int
-rather than leaving them CEcoValue.
+{-| Translates a call whose callee is a local variable. A let-bound function
+goes through `translateLocalMultiCall`, so that its instance is recorded at
+the type this call gives it; any other local is called indirectly.
 -}
 localCalleeCall : A.Region -> TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 localCalleeCall region func name funcMeta args callCanType s0 =
-    -- M6: direct state-passing (desugared andThen) → byte-identical.
     case Engine.isLocalMultiTarget name s0 of
         ( isLM, s1 ) ->
             if isLM then
@@ -1724,11 +1667,14 @@ localCalleeCall region func name funcMeta args callCanType s0 =
                 translateIndirectCall region func args callCanType s1
 
 
-{-| Specialize a call to a local-multi function: instantiate its type, unify its
-params/result against the arg types (concretizing shared vars), translate the
-args, then record the callee's instance at the zonked concrete type (`f`/`f$1`).
-Mirrors `translateGlobalCall` but records a local instance instead of enqueueing
-a global spec.
+{-| Translates a call to a let-bound function.
+
+The function's type is instantiated afresh, its parameters are unified with the
+arguments' types and its result with the call's type, and the arguments are
+translated. The function's instance is then recorded at the read-back type, and
+the callee becomes a reference to that instance's binding (`f`, `f$1`, ...).
+So `applyTwo (\x y -> x) 1 2` gives `applyTwo` an instance at `Int`.
+
 -}
 translateLocalMultiCall : A.Region -> Name -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateLocalMultiCall region name funcCanType args callCanType s0 =
@@ -1736,8 +1682,6 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
         argCount =
             List.length args
     in
-    -- M6: direct state-passing (desugared 7-deep andThen/map nest, mirrors the
-    -- D11 rewrite of translateGlobalCallSlow) → byte-identical.
     case instantiate funcCanType s0 of
         ( funcVar, s1 ) ->
             case unifyParamsCollect funcVar args s1 of
@@ -1746,11 +1690,6 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
                         s3 ->
                             case translateArgsWith argStash args s3 of
                                 ( monoArgs, s3b ) ->
-                                    -- LSS_026 Phase-0 census: the LOCAL-MULTI
-                                    -- consumer class (D1 connects these too,
-                                    -- via this function's own
-                                    -- `unifyResultWithExpected`). Same
-                                    -- report-gated, read-only fold.
                                     case censusArgs (TOpt.Global (ModuleName.Canonical ( "local", "local" ) "local") name) args s3b of
                                         s4 ->
                                             case Store.zonkToMono funcVar s4 of
@@ -1768,27 +1707,23 @@ translateLocalMultiCall region name funcCanType args callCanType s0 =
                                                                     )
 
 
-{-| A call whose callee is not a direct global/kernel/debug (a local holding a
-function, an `Access`, a nested `Call`): translate the args, translate the callee
-as an ordinary expression, and take the result type from the call node. Mirrors
-the generic fallback in `Specialize` (recursively specialize the callee expr).
+{-| Translates a call whose callee is an arbitrary expression rather than a
+global or kernel reference: a local holding a function, a field access, the
+result of another call.
+
+The callee's type is first connected to the shape `arg1 -> ... -> result`
+(`appShapeConnect`), since for a function taken out of a pattern this call is
+the only place its type meets concrete arguments. The arguments and the callee
+are then translated, and the call is devirtualized when `devirtDirectTarget`
+names a single target; otherwise it stays indirect (`indirectCallFallback`).
+Under `lss.report` the call is counted as saturating or partial.
+
 -}
 translateIndirectCall : A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateIndirectCall region func args callCanType s0 =
-    -- Connect the callee's type var to `arg1 -> … -> result` first: a call to
-    -- a destructor-derived local function (`getter rec`) is the only place its
-    -- type meets concrete arguments, and the connection flows back through the
-    -- destructor root into the case/tuple the function came from.
-    -- M6: direct state-passing (desugared andThen) → byte-identical.
     case appShapeConnect func args callCanType s0 of
         s1 ->
             let
-                -- M2 route-(ii) tracker (lss-var-chain-roots §9.14 —
-                -- M2 closed UNBUILT): an INDIRECT call applying fewer
-                -- args than the callee's arrow depth constructs a PAP of
-                -- a non-global value. Kept as the class tracker for the
-                -- construction-anchored repair that could one day reach
-                -- the 142 stage holes. Report-gated.
                 s1b =
                     if not s1.env.lss.report then
                         s1
@@ -1802,29 +1737,27 @@ translateIndirectCall region func args callCanType s0 =
             translateIndirectCallBody region func args callCanType s1b
 
 
+{-| Unifies, best effort, the callee's type with `arg1 -> ... -> result`
+built from the arguments' and the call's types.
+
+The callee's type is first unified with the type bound to it in the variable
+environment (`enrichFromEnv`), which links it to its declaration's types; a
+rebuilt tail call's types are otherwise consistent only among themselves. When
+the callee is a local bound by a destructuring pattern, the shape is also
+unified with the destructor's type, which carries it back to the value the
+function was taken from.
+
+-}
 appShapeConnect : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 appShapeConnect func args callCanType s0 =
     case Store.loadType (TOpt.typeOf func) s0 of
         ( funcUseVar, s1 ) ->
-            -- MONO_029 root fix (R1): also unify the callee's use var with
-            -- its varEnv-bound MonoType. The use/arg/result canTypes of a
-            -- TCO/TailDef-REBUILT call node form a fresh id family that is
-            -- only internally consistent; the varEnv binding (a classified
-            -- param/let type) carries the demand-seeded annotation family.
-            -- Without this, the call-result element zonks to an erased
-            -- residual while the destructure leaf stays concrete — the
-            -- layout disagreement behind the foldMGo miscompile
-            -- (SolverLayoutFoldMTest / SolverLayoutFoldMCycleTest).
-            -- enrichFromEnv is best-effort and skips local-multi targets
-            -- (their varEnv entry is only the declared classify).
             case buildAppVar args callCanType (enrichFromEnv func funcUseVar s1) of
                 ( appVar, s2 ) ->
                     let
                         s3 =
                             unifyStepBestEffort funcUseVar appVar s2
                     in
-                    -- Bridge into the destructor's own type ids (and through
-                    -- them, the root case/tuple type) for derived functions.
                     case accessedLocalName func of
                         Just localName ->
                             case Dict.get localName s3.derivedDestructors of
@@ -1840,6 +1773,9 @@ appShapeConnect func args callCanType s0 =
                             s3
 
 
+{-| Returns a store variable for `arg1 -> ... -> result`, one arrow per
+argument, loading each argument's type and the call's type.
+-}
 buildAppVar : List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Vars.Variable
 buildAppVar args callCanType s0 =
     case args of
@@ -1854,6 +1790,17 @@ buildAppVar args callCanType s0 =
                             Engine.freshVar (Vars.Structure (Vars.Fun1 argVar restVar)) s2
 
 
+{-| Translates the arguments and the callee of an indirect call, then builds
+the call.
+
+When `devirtDirectTarget` names a global, the callee becomes a reference to
+that global at the callee's type, so the call is direct. When it names a
+kernel, the kernel's ABI type is derived from the call, and the call is direct
+only when both kernel guards accept it (`kernelDevirtShapeOk`,
+`kernelDevirtEmissionOk`); each refusal is counted. The arguments are
+translated once whichever way the call goes.
+
+-}
 translateIndirectCallBody : A.Region -> TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateIndirectCallBody region func args callCanType s0 =
     case Engine.traverse translate args s0 of
@@ -1862,14 +1809,6 @@ translateIndirectCallBody region func args callCanType s0 =
                 ( monoFunc, s2 ) ->
                     case devirtDirectTarget func args monoFunc s2 of
                         ( Just (DevirtGlobal ctorGlobal), s3 ) ->
-                            -- E9 (LSS_015): the callee value is provably
-                            -- ONE ctor — rewrite the callee to the ctor
-                            -- reference at the site's own type (enqueues
-                            -- the ctor spec at this layout); downstream
-                            -- staging/codegen emit a DIRECT ctor call,
-                            -- removing the dispatch. monoFunc's own
-                            -- translation (a var read) already happened,
-                            -- so state effects are identical.
                             case translateVarRef func region ctorGlobal (TOpt.typeOf func) (bumpDevirtDirect s3) of
                                 ( ctorRef, s4 ) ->
                                     case classifyAs Mono.tkClassCall callCanType s4 of
@@ -1879,38 +1818,15 @@ translateIndirectCallBody region func args callCanType s0 =
                                                     ( Mono.MonoCall region ctorRef monoArgs resultMonoType Mono.defaultCallInfo, s6 )
 
                         ( Just (DevirtKernel kernelPrefix home name), s3 ) ->
-                            -- E9.2 (LSS_016): the callee value is provably
-                            -- ONE whitelisted kernel — build the same
-                            -- direct form a written-out call produces
-                            -- (`translateKernelCall`'s shape), but on the
-                            -- ALREADY-translated monoArgs: re-invoking the
-                            -- full kernel path would translate the args a
-                            -- second time (doubled state effects). The ABI
-                            -- derives post-hoc, and the SITE type can be
-                            -- IMPRECISE: deep shared specs (combinator
-                            -- soups) reach the devirt with unresolved
-                            -- tvars defaulted to Int, and deriving cons
-                            -- over (Int, Int -> Int) would mint a
-                            -- poisonous cons_Int ABI (i64 tail/result —
-                            -- a list pointer reinterpreted as raw i64;
-                            -- caught by the CGEN_038 kernel-decl
-                            -- registry as a signature mismatch). GUARD:
-                            -- the derived type must have the whitelist
-                            -- entry's true shape or the devirt is
-                            -- DECLINED and the site falls back to the
-                            -- always-correct indirect call.
+                            -- Not `translateKernelCall`: that would translate the arguments a second time.
                             case deriveKernelAbiTypeCall ( kernelPrefix, home, name ) (TOpt.typeOf func) args s3 of
                                 ( funcMonoType, s4 ) ->
                                     case callResultType (List.length args) funcMonoType callCanType s4 of
                                         ( resultMonoType, s5 ) ->
                                             if not (kernelDevirtShapeOk kernelPrefix home name funcMonoType) then
-                                                -- census (E10.0): shape-guard decline.
                                                 indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineShape () s5)
 
                                             else if not (kernelDevirtEmissionOk kernelPrefix home name monoArgs resultMonoType) then
-                                                -- census (E10.0): emission-guard decline, split
-                                                -- CNumber (unsettled site — the declinedUnsettled
-                                                -- proxy) vs other (scalar tail/result, arg shape).
                                                 indirectCallFallback region monoFunc monoArgs (List.length args) callCanType (bumpKernelDeclineEmission home name monoArgs resultMonoType s5)
 
                                             else
@@ -1926,23 +1842,21 @@ translateIndirectCallBody region func args callCanType s0 =
                             indirectCallFallback region monoFunc monoArgs (List.length args) callCanType s3
 
 
-{-| E9 (LSS\_015) / E9.2 (LSS\_016): what a devirtualized indirect call
-rewrites to — a standalone global (ctor or fn-global), or a whitelisted
-kernel (prefix, home, name).
+{-| The single target an indirect call is rewritten to call directly.
+
+`DevirtGlobal` is a constructor or a global function with a body.
+`DevirtKernel` is a kernel function, named by prefix, home and name, that
+`KernelFacts` registers for this rewrite.
+
 -}
 type DevirtTarget
     = DevirtGlobal TOpt.Global
     | DevirtKernel Name Name Name
 
 
-{-| E9.2 (LSS\_016): the Elm-visible arity a singleton `{k|home.name}` must
-exactly saturate before it may devirtualize, or `Nothing` for an unregistered
-kernel (which keeps its indirect call).
-
-The registration itself lives in `KernelFacts` — beside the purity evidence
-that devirt makes load-bearing — rather than in an if-else chain here; see
-`KernelFacts.DevirtPolicy` and plans/kernel-devirt-arity-table.md.
-
+{-| Returns the number of arguments a call must supply for a kernel to be
+called directly in place of an indirect call, or `Nothing` when `KernelFacts`
+does not register the kernel for that rewrite.
 -}
 kernelDevirtArity : Name -> Name -> Name -> Maybe Int
 kernelDevirtArity prefix home name =
@@ -1954,17 +1868,16 @@ kernelDevirtArity prefix home name =
             Nothing
 
 
-{-| E9.2 (LSS\_016) shape guard: the DERIVED site ABI type must be sane for
-the whitelist entry before the devirt may emit the direct kernel call. For
-`List.cons : a -> List a -> List a` the tail arg and the result are BOXED
-slots in every legal ABI variant (`eco.value` — only the HEAD is ever
-unboxed, REP rules), so they derive as `MVar CEcoValue` (preserved-vars
-mode) or a list type (substitution mode) — never as an unboxed SCALAR. An
-imprecise site (unresolved tvars defaulted to Int in a deep shared
-combinator spec) derives `(Int, Int) -> Int`, whose cons\_Int ABI would
-treat the tail list pointer as a raw i64 (caught as a CGEN\_038 kernel-decl
-mismatch pre-guard). Decline on scalar tail/result ⇒ the site stays an
-indirect call, which is layout-agnostic and always correct.
+{-| Tells whether a kernel's derived ABI type passes the kernel's shape guard
+in `KernelFacts`.
+
+A guard that lists positions requires that none of those positions, peeled
+from the derived type, is an unboxed scalar (`unboxedScalar`). For
+`List.cons` the positions are the tail and the result, which are lists and so
+are always boxed; a derived type with a scalar there means the call's types
+are not reliable. An unregistered kernel, or a type with too few parameters,
+fails.
+
 -}
 kernelDevirtShapeOk : Name -> Name -> Name -> Mono.MonoType -> Bool
 kernelDevirtShapeOk prefix home name funcMonoType =
@@ -1986,10 +1899,9 @@ kernelDevirtShapeOk prefix home name funcMonoType =
                             False
 
 
-{-| The type at a guard position: `-1` is the result, otherwise the 0-based
-argument. An out-of-range index yields the RESULT, which is the conservative
-answer — a malformed guard declines rather than waving a site through.
-`validationErrors` rejects such rows anyway.
+{-| Returns the type at a guard position: a negative position is the result,
+otherwise it is the 0-based argument. A position past the last argument also
+gives the result.
 -}
 atPosition : Int -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 atPosition pos argTypes resultType =
@@ -2005,16 +1917,19 @@ atPosition pos argTypes resultType =
                 resultType
 
 
-{-| Peel `n` arguments off a derived kernel arrow, which arrives CURRIED (one
-arg per `MFunction` level, from the `Can.tLambda` spine) or FLAT (the
-site-substituted classify form), or any mixture. Anything that does not yield
-exactly `n` args declines (safe). Generalizes the v1 `consTailAndResult`.
+{-| Returns the first `n` parameter types of a function type and what
+remains, whether the type is curried, flat or a mixture. Returns `Nothing`
+when the type has fewer than `n` parameters or when the `n`th falls inside a
+stage of several.
 -}
 peelArrow : Int -> Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
 peelArrow n tipe =
     peelArrowGo n tipe []
 
 
+{-| Does the work of `peelArrow`, with the parameters taken so far in
+reverse.
+-}
 peelArrowGo : Int -> Mono.MonoType -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Mono.MonoType )
 peelArrowGo remaining tipe acc =
     if remaining == 0 then
@@ -2037,15 +1952,18 @@ peelArrowGo remaining tipe acc =
                 Nothing
 
 
-{-| E9.2 (LSS\_016) EMISSION guard — the decisive one: codegen derives the
-kernel DECLARATION from the actual argument/result mono types (not the
-callee type), so those are what must be sane. In preserved-vars mode the
-DERIVED callee type is all boxed placeholders and passes the shape guard,
-while the site's real args are scalar-typed (an Int-layout `List.foldl`
-spec whose `func` slot wrongly carries {k|List.cons}) — emitting would
-register `Elm_Kernel_List_cons_Int : (i64, i64) -> i64` and collide with
-the true declaration (CGEN\_038). For cons: the TAIL arg's and the
-RESULT's mono types must not be unboxed scalars.
+{-| Tells whether a direct kernel call may be emitted with these translated
+arguments and result type.
+
+Code generation declares the kernel from the argument and result types of the
+call, not from the callee's type, so the guard is checked on them as well: the
+call must supply exactly the registered number of arguments, the guarded
+positions must not be unboxed scalars, and no argument or result type may
+contain a `number` variable anywhere. Such a variable means the types are not
+settled yet; it may later be closed to `Int` (see `unboxedScalar`), which can
+make the declaration disagree with another of the same kernel. An unregistered
+kernel fails.
+
 -}
 kernelDevirtEmissionOk : Name -> Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Bool
 kernelDevirtEmissionOk prefix home name monoArgs resultMonoType =
@@ -2068,21 +1986,12 @@ kernelDevirtEmissionOk prefix home name monoArgs resultMonoType =
             in
             (List.length monoArgs == arity)
                 && shapeOk
-                -- DEEP CNumber-freedom, applied to EVERY registered kernel
-                -- rather than just to cons. A residual number var anywhere in
-                -- the site's types (observed live: tail `MList (MVar CNumber)`
-                -- in a generic foldl translation) means the layout is not
-                -- settled — the demand-closing rewrite can later collapse those
-                -- positions for a different instantiation (b := Int), leaving
-                -- this frozen kernel call ill-typed (the (i64,i64)->i64
-                -- cons_Int CGEN_038 collision). The hazard is sharpest for
-                -- suffix-selecting kernels, but declining an unsettled site
-                -- costs only a dispatch and the `declinedKernelCNumber` census
-                -- measures what it costs. Devirt only fully-settled sites.
                 && not (List.any containsCNumber argTypes)
                 && not (containsCNumber resultMonoType)
 
 
+{-| Tells whether a MonoType contains a `number` type variable anywhere.
+-}
 containsCNumber : Mono.MonoType -> Bool
 containsCNumber t =
     case t of
@@ -2108,6 +2017,9 @@ containsCNumber t =
             False
 
 
+{-| Tells whether a MonoType is, or will become, an unboxed scalar: `Int`,
+`Float`, `Char`, or a `number` variable, which is later closed to `Int`.
+-}
 unboxedScalar : Mono.MonoType -> Bool
 unboxedScalar t =
     case t of
@@ -2121,20 +2033,15 @@ unboxedScalar t =
             True
 
         Mono.MVar _ Mono.CNumber ->
-            -- The Prune taint the deriveKernelAbiTypeWith comment warns
-            -- about: a residual CNumber var looks boxed at translate time
-            -- but Prune CLOSES it to MInt before emission — the derived
-            -- cons ABI then carries an i64 tail/result after all. Only
-            -- CEcoValue residuals are guaranteed to stay boxed.
             True
 
         _ ->
             False
 
 
-{-| The plain indirect-call emission (LSS\_013 result-anno transport) — the
-no-devirt path, shared with devirt arms that must DECLINE at rewrite time
-(the E9.2 shape guard).
+{-| Builds an indirect call of `monoFunc`, whose result type is classified
+from the call's type and given the lambda sets of the callee's own type
+(`indirectResultAnno`).
 -}
 indirectCallFallback : A.Region -> Mono.MonoExpr -> List Mono.MonoExpr -> Int -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 indirectCallFallback region monoFunc monoArgs argCount callCanType s0 =
@@ -2145,18 +2052,22 @@ indirectCallFallback region monoFunc monoArgs argCount callCanType s0 =
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, s2 )
 
 
-{-| E9 (LSS\_015): decide whether this indirect call devirtualizes to a
-direct call. All of: lss on; the callee EXPR is a plain var (purity — the
-rewrite drops the callee computation, and only a var read is guaranteed
-effect-and-bottom-free); the translated callee's head anno is a singleton
-whose member is a STANDALONE GLOBAL ("g|" named function/ctor — `Can.Normal`
-ctors like `List.::` are VarGlobal — or "c|" box/enum ctor) or an E9.2
-whitelisted KERNEL ("k|"); and the site EXACTLY saturates the target's
-declared annotation arity (a partial application is a PAP — out of scope;
-kernel arity is pinned by the whitelist).
-Provisional-singleton soundness rides LSS\_010: if the spec's demand widens
-later, the dirty flush re-translates this node with the joined set and the
-devirt re-decides.
+{-| Returns the single target an indirect call can be rewritten to call
+directly, if there is one.
+
+There is one only when LSS is on, the callee is a local variable (so dropping
+the callee expression drops no computation), and the head lambda set of the
+callee's translated type has exactly one member. A member that stands for a
+global (`Engine.standaloneMemberGlobal`) is decided by `devirtGlobalTarget`,
+unless the global is an alias of a kernel, which is decided like a kernel. A
+member that stands for a kernel is decided by `devirtKernelTarget`. A
+partial-application member stands for neither, so it is never a target. A
+kernel target also needs the call to supply exactly its registered number of
+arguments.
+
+The set may be provisional. If the spec's demand widens later, the node is
+translated again and the decision is made again with the wider set.
+
 -}
 devirtDirectTarget : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Mono.MonoExpr -> Step (Maybe DevirtTarget)
 devirtDirectTarget func args monoFunc s0 =
@@ -2176,20 +2087,8 @@ devirtDirectTarget func args monoFunc s0 =
                     ( Just ctorGlobal, s1 ) ->
                         case LssInfer.kernelAliasOf ctorGlobal s1 of
                             Just ( kernelPrefix, home, name ) ->
-                                -- E9.2/Tier-1 hardening: a KERNEL-ALIAS global
-                                -- (`cons = Elm.Kernel.List.cons`) must devirt
-                                -- ONLY via the kernel whitelist + guards, never
-                                -- via the E9.1 fn-global path: DevirtGlobal
-                                -- would enqueue the alias spec at the SITE's
-                                -- type and the inliner then plants the raw
-                                -- kernel call there — at an imprecise site
-                                -- (an Int-layout foldl spec whose slot wrongly
-                                -- carries the cons member) that emits a
-                                -- poisonous i64-tail cons ABI (CGEN_038
-                                -- collision). The g| mint for such globals is
-                                -- normally identity-folded to k|, but any
-                                -- unfolded mint path lands here — route it to
-                                -- the same whitelist decision.
+                                -- A kernel alias such as `cons = Elm.Kernel.List.cons` goes through the kernel guards;
+                                -- as a global, inlining would place the raw kernel call here unguarded.
                                 case kernelDevirtArity kernelPrefix home name of
                                     Just arity ->
                                         if arity == List.length args then
@@ -2208,17 +2107,13 @@ devirtDirectTarget func args monoFunc s0 =
                 ( Nothing, s0 )
 
 
-{-| The ctor / fn-global leg of the devirt decision — the singleton's
-standalone global is NOT a kernel alias (those route through the kernel
-whitelist above).
+{-| Returns the global as a direct-call target when it is a constructor or a
+global with a body, has an annotation, and its annotation has as many arrows
+as the call has arguments (at least one). Otherwise returns `Nothing`.
 -}
 devirtGlobalTarget : TOpt.Global -> Int -> Step (Maybe DevirtTarget)
 devirtGlobalTarget ctorGlobal argCount s1 =
     if not (isCtorNode ctorGlobal s1 || isBodyNode ctorGlobal s1) then
-        -- CTORS + body-bearing FUNCTION globals. Direct CTOR calls have no
-        -- body and are never inlined — no inliner surface; the fn-global
-        -- class unlocks inlining (E9.1, after the BytesFusion walked-past-let
-        -- seam fix).
         ( Nothing, s1 )
 
     else
@@ -2238,9 +2133,9 @@ devirtGlobalTarget ctorGlobal argCount s1 =
                 ( Nothing, s2 )
 
 
-{-| E9.2 (LSS\_016): the kernel leg of the devirt decision — the singleton
-member is not a standalone global; if it is a WHITELISTED kernel and the
-site exactly saturates the whitelist-pinned arity, devirtualize.
+{-| Returns the kernel member `m` stands for as a direct-call target, when
+`KernelFacts` registers it and the call supplies exactly its registered number
+of arguments. An unregistered kernel and an arity mismatch are each counted.
 -}
 devirtKernelTarget : Int -> Int -> Step (Maybe DevirtTarget)
 devirtKernelTarget m argCount s0 =
@@ -2261,10 +2156,8 @@ devirtKernelTarget m argCount s0 =
                     ( Nothing, recordKernelMiss home name s1 )
 
 
-{-| Census (whitelist growth): a kernel-member SINGLETON call site whose
-kernel is not on the E9.2 whitelist — the histogram is the shopping list
-for whitelist growth, weighted later by the runtime dispatch census.
-Stats-only.
+{-| Counts, per kernel, a call whose single callee member is a kernel that
+`KernelFacts` does not register for direct calls.
 -}
 recordKernelMiss : Name -> Name -> Engine.S -> Engine.S
 recordKernelMiss home name s =
@@ -2284,8 +2177,8 @@ recordKernelMiss home name s =
     }
 
 
-{-| Census helper for the above. Separated so nothing but a flag test runs on
-the default path.
+{-| Counts, per kernel, a use of a kernel whose `KernelSetFacts` license does
+not apply to the type it is used at. Other kernels leave the state unchanged.
 -}
 recordRefusedLicense : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 recordRefusedLicense ( kPrefix, kHome, kName ) canFuncType s =
@@ -2313,8 +2206,8 @@ recordRefusedLicense ( kPrefix, kHome, kName ) canFuncType s =
             s
 
 
-{-| Census: a WHITELISTED kernel singleton consulted at a site that does
-not saturate the whitelist-pinned arity. Stats-only.
+{-| Counts a call that names a registered kernel as its single callee but
+supplies a different number of arguments than the kernel is registered for.
 -}
 recordKernelArityMiss : Engine.S -> Engine.S
 recordKernelArityMiss s =
@@ -2325,8 +2218,8 @@ recordKernelArityMiss s =
     { s | lssStats = { stats | declinedKernelArity = stats.declinedKernelArity + 1 } }
 
 
-{-| Is the global's node an actual CONSTRUCTOR (Ctor/Box, chasing Links)?
-Enum ctors are nullary and excluded by the arity guard anyway.
+{-| Tells whether a global's node, following links, is a constructor with
+fields (`Ctor` or `Box`). An enum is not.
 -}
 isCtorNode : TOpt.Global -> Engine.S -> Bool
 isCtorNode g s =
@@ -2344,12 +2237,8 @@ isCtorNode g s =
             False
 
 
-{-| E9.1: is the global a body-bearing FUNCTION node? Devirtualizing these
-unlocks INLINING of previously-indirect calls — the class E9 v1 excluded
-because the new inline shapes tripped the `lookupVar: unbound mono_inline_N`
-codegen seam. Behind `lss.devirtFnGlobals` until that seam fix was proven at
-self-compile scale; default-ON since Tier 1 (2026-07-20), unconditional since
-2026-09-18.
+{-| Tells whether a global's node, following links, has a body: a plain or
+tracked definition, or a recursive group.
 -}
 isBodyNode : TOpt.Global -> Engine.S -> Bool
 isBodyNode g s =
@@ -2370,6 +2259,8 @@ isBodyNode g s =
             False
 
 
+{-| Tells whether an expression is a reference to a local variable.
+-}
 calleeIsPlainVar : TOpt.Expr TypeIds.MVarId -> Bool
 calleeIsPlainVar func =
     case func of
@@ -2383,6 +2274,9 @@ calleeIsPlainVar func =
             False
 
 
+{-| Returns the number of arrows along a canonical type's result spine,
+without looking through aliases.
+-}
 arrowSpineLength : Can.Type TypeIds.MVarId -> Int
 arrowSpineLength t =
     case t of
@@ -2393,6 +2287,8 @@ arrowSpineLength t =
             0
 
 
+{-| Counts an indirect call rewritten to call a global directly.
+-}
 bumpDevirtDirect : Engine.S -> Engine.S
 bumpDevirtDirect s =
     let
@@ -2402,6 +2298,8 @@ bumpDevirtDirect s =
     { s | lssStats = { stats | devirtDirect = stats.devirtDirect + 1 } }
 
 
+{-| Counts an indirect call rewritten to call a kernel directly.
+-}
 bumpDevirtKernel : Engine.S -> Engine.S
 bumpDevirtKernel s =
     let
@@ -2411,7 +2309,8 @@ bumpDevirtKernel s =
     { s | lssStats = { stats | devirtKernel = stats.devirtKernel + 1 } }
 
 
-{-| Census (E10.0): the kernel-devirt SHAPE guard declined. Stats-only.
+{-| Counts a kernel call kept indirect by the shape guard
+(`kernelDevirtShapeOk`).
 -}
 bumpKernelDeclineShape : () -> Engine.S -> Engine.S
 bumpKernelDeclineShape () s =
@@ -2422,13 +2321,14 @@ bumpKernelDeclineShape () s =
     { s | lssStats = { stats | declinedKernelShape = stats.declinedKernelShape + 1 } }
 
 
-{-| Census (E10.0): the kernel-devirt EMISSION guard declined — classify
-CNumber (residual number var anywhere in the site types = the site is
-UNSETTLED; the `declinedUnsettled` population E10's commit-after-settle
-relocation would capture) vs other (unboxed-scalar tail/result, arg
-shape). The classification re-runs only the cheap non-CNumber clauses:
-if they all pass, the failing clause was one of the deep-CNumber checks.
-Stats-only.
+{-| Counts a kernel call kept indirect by the emission guard
+(`kernelDevirtEmissionOk`), in one of two counters.
+
+For `List.cons` with two arguments whose tail and result are not unboxed
+scalars, the decline is counted as caused by a `number` variable. Every other
+decline, including every decline for any other kernel, is counted in the
+other counter, whatever its cause.
+
 -}
 bumpKernelDeclineEmission : Name -> Name -> List Mono.MonoExpr -> Mono.MonoType -> Engine.S -> Engine.S
 bumpKernelDeclineEmission home name monoArgs resultMonoType s =
@@ -2456,15 +2356,10 @@ bumpKernelDeclineEmission home name monoArgs resultMonoType s =
         { s | lssStats = { stats | declinedKernelEmission = stats.declinedKernelEmission + 1 } }
 
 
-{-| LSS\_013 transport: an indirect call's result type carries the CALLEE's
-peeled inner-arrow lambda sets. `classify callCanType` gives the byte-path
-result STRUCTURE (LTop annos); flag-on we overlay the annotations from the
-already-translated callee's own MonoType (which carries the transported sets on
-its arrows — spine injection + demand seeding), peeled by the arg count. This is
-what moves a member from `f`'s inner arrow to `let g = f 10`'s type. GATED on
-`lss.enabled` so flag-off is a pure passthrough → byte-identical (the overlay
-would be a no-op there anyway, since flag-off callee arrows are slotless, but the
-guard makes byte-identity independent of any structural subtlety in the peel).
+{-| Returns the classified result type of an indirect call, with LSS on given
+the lambda sets of what remains of the callee's type after `argCount`
+parameters. This is how a member on `f`'s inner arrow reaches the type of
+`f 10`. With LSS off the classified type is returned unchanged.
 -}
 indirectResultAnno : Mono.MonoType -> Int -> Mono.MonoType -> Step Mono.MonoType
 indirectResultAnno funcMono argCount classifiedResult s0 =
@@ -2475,10 +2370,9 @@ indirectResultAnno funcMono argCount classifiedResult s0 =
         ( classifiedResult, s0 )
 
 
-{-| Peel `n` argument positions off a (possibly multi-param-per-arrow) function
-MonoType, returning the residual result type (for annotation overlay only). A
-partial peel within a multi-param arrow keeps the arrow's own annotation on the
-remaining params (a PAP of member m is m — OQ4 / LSS\_013).
+{-| Returns what remains of a function type after `n` parameters. When `n`
+ends inside a stage of several parameters, the rest of that stage keeps the
+stage's own lambda set.
 -}
 peelResultAnno : Int -> Mono.MonoType -> Mono.MonoType
 peelResultAnno n t =
@@ -2502,39 +2396,34 @@ peelResultAnno n t =
                 t
 
 
-{-| Specialize a call to a top-level global (monomorphic or polymorphic). The
-callee's demanded type is derived by instantiating its scheme with fresh vars,
-unifying the parameter slots with the concrete argument types and the result
-with the expected call type, then zonking — the store equivalent of the original
-engine's `applySubstPure` (monomorphic) / `unifyCallSiteDirectWithExpected`
-(polymorphic).
+{-| Translates a call to a global function.
+
+The type the callee is demanded at is found by instantiating its type afresh,
+unifying its parameters with the arguments' types and its result with the
+call's type, and reading the result back; `translateGlobalCallSlow` does this
+in full. Two faster paths give the same result where they can:
+`translateGlobalCallFast` for a callee whose type has no variables, and
+`translateGlobalCallGroundMemo` for a call whose argument and result types have
+none. Neither is taken while a let-bound function or number is having its uses
+recorded, because the full path records them. With LSS on, neither is taken
+unless the callee's signature is trivial, no argument's type has an arrow, and
+the call is not a partial application with a function-typed result
+(`lssFastOk`, `needsPapSlow`), because the fast paths would put ⊤ on every
+arrow.
+
 -}
 translateGlobalCall : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateGlobalCall region funcRegion global funcCanType args callCanType s =
-    -- Fast paths are guarded to no multi-instance recording in flight (that
-    -- path has side effects they must not skip).
     if List.isEmpty s.numberMulti && List.isEmpty s.localMulti then
-        -- LSS gate: the cached/storeless fast classifications stamp LTop,
-        -- which is exact only when the callee's signature is trivial AND
-        -- no argument type mentions an arrow (an arrow-free ground call
-        -- cannot transport sets). lss off ⇒ trivially permitted.
         case lssFastOk global args s of
             ( fastOk, s0 ) ->
                 if not fastOk || needsPapSlow global args callCanType s0 then
                     translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
 
                 else if groundCanType funcCanType then
-                    -- M2a: a CLOSED (var-free) scheme instantiates to a fully-ground
-                    -- structure — its classification is item-independent (cached) and
-                    -- unifying params against args is a no-op on the scheme, so only
-                    -- flow demand INTO non-ground args.
                     translateGlobalCallFast region funcRegion global funcCanType args callCanType s0
 
                 else if groundCanType callCanType && List.all (groundCanType << TOpt.typeOf) args then
-                    -- M2b: an OPEN scheme called with all-ground args and result. The
-                    -- instantiate+unify+zonk outcome is then a pure function of
-                    -- (global, argMonos, resultMono) — memoize it. Ground args carry
-                    -- no vars, so there is no demand to flow into them or back.
                     translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType s0
 
                 else
@@ -2544,22 +2433,12 @@ translateGlobalCall region funcRegion global funcCanType args callCanType s =
         translateGlobalCallSlow region funcRegion global funcCanType args callCanType s
 
 
-{-| Injection completeness (plans/lss-injection-completeness.md §2.3): must
-this call take the SLOW path so its residual arrows can carry the callee's
-member?
-
-`lssFastOk` inspects the ARGUMENTS for arrows but never the RESULT, so a
-partial application with ground args — `(::) x` exactly, the shape that
-manufactured the `arrowSolverRoots` false singleton — takes the M2b
-ground-memo fast path today. The fast paths never mint store structure, so
-there is no slot to inject into: the injection would silently never fire on
-its motivating case. Route partials to the slow path instead.
-
-The `canTypeHasArrow callCanType` pre-filter runs first and is cheap: a call
-whose RESULT mentions no arrow cannot be a partial application of a
-function-typed residual, so the arity walk only runs on candidate sites.
-Flag-off this is one Bool test.
-
+{-| Tells whether a call must take the full path because, with LSS on, it
+supplies fewer arguments than the global's declared arity and its result type
+has an arrow. Such a partial application needs store structure for its
+result's arrows to carry the partial-application member, and the fast paths
+build none. `lssFastOk` never looks at the call's result type, so `(::) x`
+would otherwise take a fast path.
 -}
 needsPapSlow : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Engine.S -> Bool
 needsPapSlow global args callCanType s =
@@ -2569,9 +2448,10 @@ needsPapSlow global args callCanType s =
         > List.length args
 
 
-{-| May this call take the cached fast paths under LSS? `sigTrivial` forces
-the signature computation on first use — the memo makes that a one-time cost
-per global.
+{-| Tells whether a call may take a fast path as far as LSS is concerned:
+always with LSS off, and with LSS on only when no argument's type has an arrow
+and the callee's signature (`LssInfer.signatureFor`, computed on first use) is
+trivial.
 -}
 lssFastOk : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Step Bool
 lssFastOk global args s =
@@ -2587,8 +2467,8 @@ lssFastOk global args s =
                 ( sig.trivial, s1 )
 
 
-{-| Does a canonical type mention an arrow anywhere? (Syntactic; aliases
-followed when filled.)
+{-| Tells whether a canonical type contains an arrow anywhere, including in
+an alias's arguments and its expansion.
 -}
 canTypeHasArrow : Can.Type TypeIds.MVarId -> Bool
 canTypeHasArrow t =
@@ -2618,40 +2498,18 @@ canTypeHasArrow t =
             canTypeHasArrow real || List.any (\( _, at ) -> canTypeHasArrow at) aliasArgs
 
 
-{-| Equality of two canonical types **ignoring arrow ids** (Phase 2a §4.6a,
-`plans/lss-unknown-elimination.md`).
-
-`classifyLambdaHead`'s def-root reuse used to test `annCanType == canType` — a
-whole-tree Elm `==` over `Can.Type MVarId`. Under per-occurrence arrow identity
-the stashed annotation and the body node's type carry DIFFERENT ids for the same
-shape, so that equality would silently become always-false, `lssRootAnn` would
-switch off, and the change would regress exactly the case the mechanism exists
-to fix — a green build with a large precision loss, and the likeliest way to
-land Phase 2a badly.
-
-**Implemented as strip-then-`==`, not as a hand-written structural walk, and
-that is deliberate.** Elm's `==` on `Dict` is structural over the red-black
-TREE, so two field maps with identical contents but different insertion orders
-compare unequal (the hazard `Intern.widenSets` documents). A hand-written
-size-plus-probe comparator would make MORE records compare equal than `==`
-does, which is a behaviour change flag-off — and Phase 2a is required to be
-byte-identical flag-off. `stripArrowIds` rebuilds records with `Dict.map`,
-which PRESERVES the input tree shape, so this reproduces the old `==` exactly.
-
-The `a == b` short-circuit keeps the common case allocation-free: when the two
-sides really are one object (or agree on ids), no copy is built. The strip is
-only paid on a genuine id-only difference, at most once per def root.
-
+{-| Tells whether two canonical types are equal once every arrow id is
+ignored. A definition's annotation and its body's type give the same arrow
+different ids, so plain `==` would not match them. Types that are already
+equal are not copied.
 -}
 sameCanTypeIgnoringArrows : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Bool
 sameCanTypeIgnoringArrows a b =
     (a == b) || (stripArrowIds a == stripArrowIds b)
 
 
-{-| Rewrite every arrow id in a canonical type to `noArrowId`, preserving
-everything else INCLUDING record field-map tree shape (`Dict.map`). Enumerates
-all seven arms: arrows hide under `TType`, `TRecord`, `TTuple` and BOTH
-`TAlias` forms, so a two-arm version with an `_ -> t` fallback would be wrong.
+{-| Returns a canonical type with every arrow, at any depth, rebuilt by
+`Can.tLambda` without its id, and everything else unchanged.
 -}
 stripArrowIds : Can.Type TypeIds.MVarId -> Can.Type TypeIds.MVarId
 stripArrowIds t =
@@ -2681,9 +2539,9 @@ stripArrowIds t =
             Can.TAlias home name (List.map (Tuple.mapSecond stripArrowIds) args) (Can.Holey (stripArrowIds inner))
 
 
-{-| True when a canonical type has no free type variable (a closed scheme).
-Conservative: never True for a type carrying a var, so the fast path is only
-taken when instantiation would be a pure no-op.
+{-| Tells whether a canonical type has no type variable, counting an
+extensible record's extension as one. A holey alias is ground when its
+arguments are.
 -}
 groundCanType : Can.Type TypeIds.MVarId -> Bool
 groundCanType canType =
@@ -2715,13 +2573,12 @@ groundCanType canType =
             groundCanType inner
 
         Can.TAlias _ _ aliasArgs (Can.Holey _) ->
-            -- Holey body's only vars are the params, bound to args → ground iff
-            -- every arg is ground.
             List.all (\( _, t ) -> groundCanType t) aliasArgs
 
 
-{-| Peel `n` leading parameter MonoTypes off a single-arg-per-arrow function
-MonoType — one per `MFunction` node, matching `peelResult`'s peeling.
+{-| Returns the first parameter type of each of the first `n` stages of a
+function type, stopping early where the type runs out of stages. A stage with
+several parameters contributes only its first.
 -}
 mFunctionParams : Int -> Mono.MonoType -> List Mono.MonoType
 mFunctionParams n mt =
@@ -2737,9 +2594,8 @@ mFunctionParams n mt =
                 []
 
 
-{-| Closed-scheme classification, from the global cache or computed purely
-(`Zonk.canTypeToMono`, which equals the slow path's zonk of a fully-ground
-instantiated scheme) and cached.
+{-| Returns the MonoType of a callee type with no variables, from the
+engine's cache under `key` or else computed without the store and cached.
 -}
 cachedSchemeMono : String -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 cachedSchemeMono key funcCanType s0 =
@@ -2751,10 +2607,9 @@ cachedSchemeMono key funcCanType s0 =
             computeSchemeMono key funcCanType s1
 
 
-{-| The `cachedSchemeMono` miss path, as a direct state function so the K6
-hash-cons table threads through the classification (a scheme's MonoType is
-retained by the memo and reused at every call site of that global, so
-canonicalising it is what lets those uses share one object).
+{-| Computes the MonoType for `cachedSchemeMono` and caches it under `key`.
+The type is built through the state's intern table, so every call site that
+reuses it shares one value.
 -}
 computeSchemeMono : String -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 computeSchemeMono key funcCanType s0 =
@@ -2767,11 +2622,9 @@ computeSchemeMono key funcCanType s0 =
             ( mt, s1 )
 
 
-{-| Flow the closed callee's ground parameter types into the args: a ground arg
-already matches its ground param (a no-op unify), so skip it; a var-carrying arg
-gets its vars concretized to the ground param via `demandUnify` (the store
-equivalent of the slow path's per-arg param↔arg unification — enrichment is
-redundant against a fully-ground param).
+{-| Unifies each argument's canonical type that has variables with the
+ground parameter type it is paired with (`demandUnify`). Arguments whose types
+are already ground are skipped.
 -}
 flowArgDemands : List ( Mono.MonoType, Can.Type TypeIds.MVarId ) -> Engine.S -> Engine.S
 flowArgDemands pairs s0 =
@@ -2787,6 +2640,12 @@ flowArgDemands pairs s0 =
         pairs
 
 
+{-| Translates a call to a global whose type has no variables. The callee's
+MonoType is the cached one (`cachedSchemeMono`); the arguments' and the
+call's types are unified with its parameters and result where they have
+variables, and a spec is enqueued at the callee's type. A call with more
+arguments than the type has stages goes to `translateGlobalCallSlow`.
+-}
 translateGlobalCallFast : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateGlobalCallFast region funcRegion global funcCanType args callCanType s0 =
     let
@@ -2800,8 +2659,6 @@ translateGlobalCallFast region funcRegion global funcCanType args callCanType s0
                     mFunctionParams argCount funcMonoType
             in
             if List.length paramMonos < argCount then
-                -- Over-applied relative to the scheme's arrows: the slow path's
-                -- Fun1 peeling handles this; fall back.
                 translateGlobalCallSlow region funcRegion global funcCanType args callCanType s1
 
             else
@@ -2832,34 +2689,24 @@ translateGlobalCallFast region funcRegion global funcCanType args callCanType s0
                                 )
 
 
-{-| M2b: memoized open-scheme call at all-ground args/result. The key is
-`(global, ground arg MonoTypes, expected result MonoType)`; the cached value is
-the slow path's `(funcMonoType, resultMonoType)`. Because ground args carry no
-type variables, they touch neither the item memo nor demand flow, so on a hit
-the whole instantiate+unify+zonk is skipped and only the args are translated and
-the spec enqueued — byte-identical to the slow path.
+{-| Translates a call to a global whose argument and result types have no
+variables, memoising the outcome.
+
+The memo key is the global together with the function type built from the
+argument types and the call's type. On a miss the callee's type is
+instantiated, unified with them and read back, the spec is enqueued, and the
+callee's type, the result type and the spec id are stored. On a hit those are
+reused and only the arguments are translated. Ground types touch no type
+variable of the item, so a hit leaves the store as a miss would have, apart
+from the instantiation itself. The key's arrows all carry ⊤, which is enough
+because `lssFastOk` keeps calls whose types could carry lambda sets off this
+path.
+
 -}
 translateGlobalCallGroundMemo : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanType s0 =
     let
         key =
-            -- Phase 3 site 1 (plans/speckey-optimization.md §10.2): the
-            -- key is the callee Global plus the synthetic `args ->
-            -- result` arrow these types already denote. The probe reads
-            -- the `specHashOf` Int stored IN the type node and confirms
-            -- with `eqKeySpec`, which partitions IDENTICALLY to the
-            -- `toComparableMonoType` concatenation this replaces —
-            -- pinned by ComparableKeyEncodingTest
-            -- (`eqKeySpec a b == (toComparableMonoType a == toComparableMonoType b)`).
-            -- The arg/result MonoTypes were already being built here
-            -- purely to be rendered; only the rendering is deleted.
-            --
-            -- Annotation-neutral by construction (M4 == audit):
-            -- canTypeToMono stamps LTop on every arrow AND the wrapper
-            -- arrow is built at LTop, and lssFastOk gates this memo to
-            -- trivial-signature callees with arrow-free args, so no set
-            -- can differ under one key and the cached (funcMonoType,
-            -- resultMonoType, specId) replay is exact.
             Mono.SpecKey (toptToMonoGlobal global)
                 (Mono.mFunction Mono.topDeclOther
                     (List.map (Zonk.canTypeToMono s0.env.superStatic << TOpt.typeOf) args)
@@ -2868,10 +2715,7 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
     in
     case Engine.lookupCallMemo key s0 of
         ( Just ( funcMonoType, resultMonoType, specId ), s1 ) ->
-            -- D10 HIT: the spec was scheduled on the first miss
-            -- (scheduled is monotonic), so skip enqueue entirely —
-            -- no `getOrCreateSpecId` re-serialization — and emit
-            -- the cached specId directly. Args still translate.
+            -- The spec was enqueued on the miss, so it is not enqueued again.
             case Engine.traverse translate args s1 of
                 ( monoArgs, s2 ) ->
                     ( Mono.MonoCall region
@@ -2883,8 +2727,6 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                     )
 
         ( Nothing, s1 ) ->
-            -- Compute exactly as the slow path does; enqueue to get
-            -- the specId; cache (funcMono, resultMono, specId).
             case instantiate funcCanType s1 of
                 ( funcVar, s2 ) ->
                     let
@@ -2911,18 +2753,25 @@ translateGlobalCallGroundMemo region funcRegion global funcCanType args callCanT
                                                     )
 
 
+{-| Translates a call to a global in full.
+
+The callee's type is instantiated afresh with its signature facts applied
+(`instantiateLss`), its parameters are unified with the arguments' types
+(`unifyParamsCollect`) and its result with the call's type, and a partial
+application gets its member (`unifyResultThenInjectPap`). Only then are the
+arguments translated, so that a use of a local inside an argument sees the
+type the call demands of it. The callee's type is read back, a spec is
+enqueued at it, and the call is built. With LSS on, a constructor applied to
+an argument whose type has a set variable or a non-legacy ⊤
+(`Mono.hasVarAnno`) marks the spec (`Engine.markFlexCtorSpec`).
+
+-}
 translateGlobalCallSlow : A.Region -> A.Region -> TOpt.Global -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0 =
     let
         argCount =
             List.length args
     in
-    -- Instantiate the callee and unify its params/result against the arg types
-    -- FIRST, concretizing shared vars in the item memo, THEN translate the args
-    -- so their VarLocal uses see the demanded type (solver-native demand flow;
-    -- needed for number-multi and for a faithful funcMonoType).
-    -- D11: direct state-passing (desugared 7-deep andThen/map nest). Eliminates
-    -- the seven per-call monad closures; monad-law-preserving → byte-identical.
     case instantiateLss global funcCanType s0 of
         ( funcVar, s1 ) ->
             case unifyParamsCollect funcVar args s1 of
@@ -2931,15 +2780,7 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                         s3 ->
                             case translateArgsWith argStash args s3 of
                                 ( monoArgs, s3b ) ->
-                                    -- LSS_026 Phase-0 census (plan §2.1
-                                    -- rows 1/4/5). AFTER the args are
-                                    -- translated, so every arg-callee's
-                                    -- signature is already memoized and
-                                    -- the census can READ triviality
-                                    -- without forcing it (forcing would
-                                    -- move member-id allocation order,
-                                    -- and `report` is excluded from the
-                                    -- config hash). Report-gated.
+                                    -- After the arguments, so their callees' signatures are already memoized.
                                     case censusArgs global args s3b of
                                         s4 ->
                                             case Store.zonkToMono funcVar s4 of
@@ -2949,11 +2790,6 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                                             case enqueueSpecStamped global funcMonoType s6 of
                                                                 ( specId, s7pre ) ->
                                                                     let
-                                                                        -- Phase 2b flex-construction mark
-                                                                        -- (plans/lss-var-chain-roots.md §3): a ctor
-                                                                        -- construction transporting an UNRESOLVED
-                                                                        -- flex arrow may hide a real inhabitant
-                                                                        -- behind this spec's var payload row.
                                                                         s7 =
                                                                             if
                                                                                 s7pre.env.lss.enabled
@@ -2975,26 +2811,16 @@ translateGlobalCallSlow region funcRegion global funcCanType args callCanType s0
                                                                     )
 
 
-{-| LSS\_026 Phase-0 census (plans/lss-gap2-callarg-transport.md §2.1 rows
-1/4/5). REPORT-GATED — the whole fold is skipped when `lss.report` is off, so
-the default path pays one branch per slow global call. Pure with respect to
-the artifact: it only READS (`memoizedSignatureTrivial`), never forces.
+{-| Counts, under `lss.report`, the arguments of a call to `global` whose
+types contain an arrow. Otherwise returns the state unchanged.
 
-Rows:
-
-  - `pop|*` — the transport population: CALL-shaped arguments whose type
-    mentions an arrow (exactly GAP-2's hole), split by consumer global
-    (`pop|hof=`), by arg-callee class (`pop|callee=`) and by whether the
-    arg-callee's signature is trivial (`pop|calleeTrivial=`). A trivial
-    arg-callee has nothing to transport, so `calleeTrivial=1` is the share
-    of the population the repair cannot help.
-  - `fan|<hof>|<callee>|<layout>` — one key per distinct
-    (consumer × arg-callee × argument layout) triple: counting DISTINCT
-    keys per consumer is the keyed-spec fan-out forecast (§2.1 row 4).
-  - `shape|*` — arrow-mentioning arguments that are NOT calls: the classes
-    already transported today (lambda literals, standalone globals) plus
-    the wrapped/blind shapes this plan's v1 declines (§8) and D2's poison
-    forecast (`shape|blind`).
+An argument that is itself a call is counted under `pop|` by the called
+global, by the class of its callee (`argCalleeKey`) and by whether that
+callee's memoized signature is trivial, together with how many of the
+callee's declared parameters it supplies (`sat|`, `arity|`), the enclosing
+global (`encl|`), and a `fan|` key per called global, callee and argument
+type. Any other argument is counted under `shape|` by its form
+(`argShapeName`). Signatures are read only from the memo, never computed.
 
 -}
 censusArgs : TOpt.Global -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
@@ -3006,6 +2832,8 @@ censusArgs global args s0 =
         censusArgsGo (TOpt.toComparableGlobal global) args s0
 
 
+{-| Counts each argument whose type contains an arrow, for `censusArgs`.
+-}
 censusArgsGo : String -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 censusArgsGo hofKey args s0 =
     case args of
@@ -3014,13 +2842,14 @@ censusArgsGo hofKey args s0 =
 
         arg :: rest ->
             if not (canTypeHasArrow (TOpt.typeOf arg)) then
-                -- No set positions to transport: not part of any population.
                 censusArgsGo hofKey rest s0
 
             else
                 censusArgsGo hofKey rest (censusOneArg hofKey arg s0)
 
 
+{-| Counts one argument for `censusArgs`.
+-}
 censusOneArg : String -> TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 censusOneArg hofKey arg s0 =
     case arg of
@@ -3040,8 +2869,6 @@ censusOneArg hofKey arg s0 =
                                     "0"
 
                                 Nothing ->
-                                    -- Not memoized even after the arg was
-                                    -- translated: keeps the partition honest.
                                     "?"
 
                         _ ->
@@ -3050,16 +2877,6 @@ censusOneArg hofKey arg s0 =
                 supplied =
                     List.length innerArgs
 
-                -- Saturation: a PARTIAL application's value is a PAP of the
-                -- callee, whose identity B.1.f `selfIdOf` filters out of the
-                -- signature on the premise that the `g|` standalone channel
-                -- delivers it — true for a bare VarGlobal arg, FALSE for a
-                -- call-shaped one. A SATURATED empty callee genuinely
-                -- contributed nothing (e.g. flow through a type-VARIABLE
-                -- position the loader mints no slot for). Arity resolved by
-                -- `declaredArityOf`; the `arity|` row publishes it so this
-                -- split stays auditable (the first cut of the census was
-                -- invalidated by the TrackedFunction arity-walk bug).
                 maybeDeclared =
                     case func of
                         TOpt.VarGlobal _ g _ ->
@@ -3086,9 +2903,6 @@ censusOneArg hofKey arg s0 =
                             else
                                 "over"
 
-                -- Distinct `encl|` keys, joined offline against the
-                -- `sig|allflex` producer list, bound how much of the empty
-                -- mass D2's arg-connection could plausibly convert.
                 enclKey =
                     case s0.currentGlobal of
                         Just g ->
@@ -3107,16 +2921,12 @@ censusOneArg hofKey arg s0 =
                         |> Engine.bumpArgFlowCensus ("sat|" ++ calleeKey ++ "|" ++ satTag)
                         |> Engine.bumpArgFlowCensus ("arity|" ++ calleeKey ++ "|d=" ++ Maybe.withDefault "?" (Maybe.map String.fromInt maybeDeclared) ++ "|s=" ++ String.fromInt supplied)
                         |> Engine.bumpArgFlowCensus ("encl|" ++ enclKey)
-                        -- The decision cross-tab: is the REACHABLE population
-                        -- concentrated at the HOT consumers?
                         |> Engine.bumpArgFlowCensus ("popt|" ++ hofKey ++ "|triv=" ++ trivialTag)
                         |> Engine.bumpArgFlowCensus ("calleeTriv|" ++ calleeKey ++ "|triv=" ++ trivialTag)
                         |> Engine.bumpArgFlowCensus ("fan|" ++ hofKey ++ "|" ++ calleeKey ++ "|" ++ canKind (TOpt.typeOf arg))
             in
             case ( satTag, maybeDeclared ) of
                 ( "partial", Just d ) ->
-                    -- The injection depth the PAP lever would need (residual
-                    -- arrows between supplied and declared).
                     Engine.bumpArgFlowCensus ("sat|partialDepth=" ++ String.fromInt (d - supplied)) base
 
                 _ ->
@@ -3126,9 +2936,9 @@ censusOneArg hofKey arg s0 =
             Engine.bumpArgFlowCensus ("shape|" ++ argShapeName arg) s0
 
 
-{-| LSS\_026 census: which CLASS of callee an argument call targets. Globals
-are named individually (the transport's own population); everything else is
-bucketed by class — those are the declined classes of §3.3/§8.
+{-| Returns the census label for the callee of an argument that is a call:
+the global or kernel by name, or one label each for `Debug`, a local and any
+other expression.
 -}
 argCalleeKey : TOpt.Expr TypeIds.MVarId -> String
 argCalleeKey func =
@@ -3155,10 +2965,10 @@ argCalleeKey func =
             "indirect"
 
 
-{-| LSS\_026 census: the shape of an arrow-mentioning argument that is NOT a
-call. `lambda`/`standalone` are the classes `injectArgLambdaMember` already
-transports; `letWrapped`/`branchWrapped` are the v1 non-goals; `blind` is
-D2's poison forecast (a point the inference walk cannot see honestly).
+{-| Returns the census label for the form of an argument that is not a call:
+a lambda, a global reference (`standalone`), a kernel, an accessor, a local,
+a `let` (`letWrapped`), an `if` or `case` (`branchWrapped`), or anything else
+(`blind`).
 -}
 argShapeName : TOpt.Expr TypeIds.MVarId -> String
 argShapeName arg =
@@ -3206,14 +3016,16 @@ argShapeName arg =
             "blind"
 
 
+{-| Translates a call to a kernel function.
+
+The kernel's type is derived from the call first (`deriveKernelAbiTypeCall`),
+which unifies its parameters with the arguments' types, so the arguments are
+translated after their variables are concrete: in `1.4 * n`, `n`'s number
+variable is already `Float` when `n` is translated.
+
+-}
 translateKernelCall : A.Region -> A.Region -> Name -> Name -> Name -> ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateKernelCall region funcRegion kernelPrefix home name kernelId funcCanType args callCanType s0 =
-    -- D5: no `argCanTypes` list — it was built only for its length.
-    -- Derive the kernel ABI FIRST: this unifies the kernel's param slots with the
-    -- argument types, concretizing shared vars in the item memo (e.g. `1.4 * n`
-    -- forces `n`'s number var to Float) BEFORE the args are translated — so an
-    -- arg's VarLocal use sees the demanded type (needed for number-multi).
-    -- D11: direct state-passing (desugared andThen/map) → byte-identical.
     case deriveKernelAbiTypeCall kernelId funcCanType args s0 of
         ( funcMonoType, s1 ) ->
             case Engine.traverse translate args s1 of
@@ -3229,9 +3041,9 @@ translateKernelCall region funcRegion kernelPrefix home name kernelId funcCanTyp
                             )
 
 
-{-| The MonoCall result type: peel the applied-arg count off the callee's type;
-if that still has a var, fall back to the call node's type. Mirrors
-`abiResultType`/`peelCallResult` in the original engine.
+{-| Returns a call's result type: what remains of the callee's type after
+`argCount` stages, or, when that still has a type variable, the call's own
+type classified.
 -}
 callResultType : Int -> Mono.MonoType -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 callResultType argCount funcMonoType callCanType s0 =
@@ -3246,6 +3058,10 @@ callResultType argCount funcMonoType callCanType s0 =
         ( abiResultType, s0 )
 
 
+{-| Returns what remains of a function type after `n` stages, each counting
+as one whatever its number of parameters, or the type itself where it runs out
+of arrows.
+-}
 peelResult : Int -> Mono.MonoType -> Mono.MonoType
 peelResult n monoType =
     if n <= 0 then
@@ -3264,8 +3080,9 @@ peelResult n monoType =
 -- ====== KERNEL ABI ======
 
 
-{-| Kernel ABI for a CALL: instantiate the kernel type fresh, unify its param
-slots with the concrete argument types, zonk, then apply the ABI-mode policy.
+{-| Returns a kernel's type at a call: its type is instantiated afresh, its
+parameters are unified with the arguments (`unifyParamsWithArgExprs`), and the
+result is read back under the kernel's ABI mode (`deriveKernelAbiTypeWith`).
 -}
 deriveKernelAbiTypeCall : ( String, String, String ) -> Can.Type TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId) -> Step Mono.MonoType
 deriveKernelAbiTypeCall kernelId canFuncType args =
@@ -3276,32 +3093,25 @@ deriveKernelAbiTypeCall kernelId canFuncType args =
                     ( funcVar, unifyParamsWithArgExprs funcVar args s1 )
 
 
-{-| Unify each parameter slot of a function Point from the argument EXPRS: the
-slot is
-unified with the arg's canonical type AND, when the arg is a local with a varEnv
-binding, with that bound MonoType too. The env binding carries the CONCRETE type
-(a lambda param or destructor-bound local peeled from a concretized instance),
-where the use's canonical type may still be a narrow/row-polymorphic
-generalization — without this, a body-internal call like `Tuple.second tup`
-inside a re-translated local function keys its callee at the NARROW record type
-and mis-lays-out fields (RecordNarrow).
+{-| Unifies each parameter of a function variable with the corresponding
+argument, as `unifyParamsCollect` does, discarding what it records.
 -}
 unifyParamsWithArgExprs : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 unifyParamsWithArgExprs funcVar args s0 =
     Tuple.second (unifyParamsCollect funcVar args s0)
 
 
-{-| What `unifyParamsCollect` recorded about one argument position, consumed
-by `translateArgsWith`.
+{-| What unifying a callee's parameter with one argument left for that
+argument's translation.
 
-  - `StashLocalMulti v`: the FRESH store var minted for a LOCAL-MULTI
-    FUNCTION arg (the historical `Just`). Such an arg's canonical type is
-    instantiated FRESH (per-call-site) rather than loaded through the shared
-    memo: an annotation with crossed var ids (LocalOpt-rebuilt) would
-    otherwise poison the function's own type via id sharing
-    (TupleSlotBoxingClosure). The caller zonks it to record the instance the
-    call actually demanded.
-  - `StashNone`: everything else — plain `translate`.
+`StashLocalMulti` is for an argument that is a reference to a let-bound
+function. Its type is instantiated afresh for this call rather than loaded
+through the item memo, because a type with variable ids shared with the
+function's own type would otherwise change that type. The variable is the
+fresh instantiation; the argument's translation reads it back to record the
+function's instance at the type this call demands.
+
+`StashNone` is for every other argument, which is translated normally.
 
 -}
 type ArgStash
@@ -3309,9 +3119,16 @@ type ArgStash
     | StashLocalMulti Vars.Variable
 
 
-{-| Like `unifyParamsWithArgExprs` but returns, per arg, what the argument's
-translation needs to know about the position it was unified into (see
-`ArgStash`).
+{-| Unifies, best effort, each parameter of a function variable with the
+corresponding argument, and returns one `ArgStash` per argument.
+
+An argument that refers to a let-bound function is unified as a fresh
+instantiation of its type. Any other argument is unified as `argUnifyVar`
+loads it, which also brings in the type bound to a local in the variable
+environment and writes the argument's own member into its lambda sets. When
+the function variable runs out of arrows, the remaining arguments are left
+ununified.
+
 -}
 unifyParamsCollect : Vars.Variable -> List (TOpt.Expr TypeIds.MVarId) -> Step (List ArgStash)
 unifyParamsCollect funcVar args s0 =
@@ -3320,25 +3137,15 @@ unifyParamsCollect funcVar args s0 =
             ( [], s0 )
 
         arg :: rest ->
-            -- M6/A1: direct state-passing over an explicit trailing S; fires once
-            -- per call argument. Monad-law-preserving → byte-identical.
             case Engine.liftIO (UF.get funcVar) s0 of
                 ( desc, s1 ) ->
                     case Store.arrowParts desc.content of
                         Just ( pParam, pRest ) ->
-                            -- Liveness census (§7): one arrow peeled per
-                            -- call argument — this IS the application.
                             case localMultiArgName arg (noteAppliedS desc.content s1) of
                                 ( maybeLM, s2 ) ->
                                     case maybeLM of
                                         Just _ ->
-                                            -- GAP-9b: fresh-instantiates a local-multi
-                                            -- FUNCTION arg, skipping injectArgLambdaMember
-                                            -- ("no member, no stamp"). One-shot census
-                                            -- 2026-08-18 (Run J): 469 events on the
-                                            -- self-compile — minor vs local-⊤ 7,361; the
-                                            -- per-event counter was removed after the
-                                            -- measurement (plan lss-fidelity-1 §7).
+                                            -- No `injectArgLambdaMember` here: `translateArgsWith` writes the instance's member.
                                             case instantiate (TOpt.typeOf arg) s2 of
                                                 ( freshVar0, s3 ) ->
                                                     case unifyStepBestEffort pParam freshVar0 s3 of
@@ -3357,19 +3164,12 @@ unifyParamsCollect funcVar args s0 =
                                                                     ( StashNone :: restStash, s5 )
 
                         Nothing ->
-                            -- Over-applied or opaque callee spine: no
-                            -- param slot exists for the remaining args.
-                            -- LSS_026 census: any Call-shaped arrow args
-                            -- left here are STRUCTURALLY unreachable for
-                            -- D1's connect (no stash entry is ever made)
-                            -- — the `dropped`-vs-population gap.
                             ( List.map (\_ -> StashNone) args, censusStashMiss args s1 )
 
 
-{-| LSS\_026 census (plan §2.6 "stash gap"): attribute the args that fall out
-of `unifyParamsCollect`'s early exit. Joined offline against `calleeTriv|`
-rows: a stash-missed site whose arg-callee carries facts is a site D1
-cannot serve without first fixing the spine walk. Report-gated.
+{-| Counts, under `lss.report`, the arguments left ununified because the
+callee's type ran out of arrows: how many there were, and each one that is a
+call with an arrow in its type, by the class of its callee.
 -}
 censusStashMiss : List (TOpt.Expr TypeIds.MVarId) -> Engine.S -> Engine.S
 censusStashMiss args s0 =
@@ -3404,9 +3204,7 @@ censusStashMiss args s0 =
                 qualifying
 
 
-{-| LSS\_026: is this argument expression itself a CALL? (v1 transport scope —
-wrapped shapes like `Let`/`If` around a call are a recorded non-goal, sized
-by the `leak|` census rows.)
+{-| Tells whether an expression is a call.
 -}
 isDirectCallShape : TOpt.Expr TypeIds.MVarId -> Bool
 isDirectCallShape arg =
@@ -3418,38 +3216,29 @@ isDirectCallShape arg =
             False
 
 
-{-| Translate call args, using the per-call-site stash for local-multi function
-args: zonk the fresh instantiation the params were unified against, record the
-instance at THAT type, and emit its per-instance local ref.
+{-| Translates a call's arguments, given what `unifyParamsCollect` stashed
+for each.
+
+An argument that refers to a let-bound function becomes a reference to the
+function's instance at the read-back fresh instantiation. Under LSS that
+instance's member is then written into the instantiation
+(`injectLocalMultiUseMember`); it is written after the instance is recorded so
+that the instance is keyed by the demanded type alone. Every other argument is
+translated normally. The stash has one entry per argument.
+
 -}
 translateArgsWith : List ArgStash -> List (TOpt.Expr TypeIds.MVarId) -> Step (List Mono.MonoExpr)
 translateArgsWith stash args s0 =
-    -- D4: `unifyParamsCollect` always returns exactly `List.length args` stash
-    -- entries (every arm produces one per arg), so the former `stash ++
-    -- List.repeat 0 Nothing` padding was a no-op that still copied `stash`.
-    -- Pair directly.
     Engine.traverse
         (\( entry, arg ) ->
             case ( entry, accessedLocalName arg ) of
                 ( StashLocalMulti v, Just localName ) ->
-                    -- M6: direct state-passing (desugared andThen/map) → byte-identical.
                     \sa ->
                         case Store.zonkToMono v sa of
                             ( instType0, s1 ) ->
                                 case Engine.recordLocalInstance localName instType0 s1 of
                                     ( ( freshName, instType, ord ), s2 ) ->
-                                        -- F2 (plans/lss-container-payload-transport.md
-                                        -- §12.9.4): the instance is recorded — now
-                                        -- write ITS member into the stashed var.
-                                        -- `v` is unified with the callee's param
-                                        -- slot and the callee is zonked/enqueued
-                                        -- only after every argument is translated,
-                                        -- so the demand carries the singleton.
-                                        -- Record FIRST, inject SECOND: the instance
-                                        -- key stays the demand-side type (two uses
-                                        -- at one type share an ordinal and an id);
-                                        -- injecting first would make the key depend
-                                        -- on the ordinal for ord >= 1.
+                                        -- The callee is read back after all arguments, so its demand carries this member.
                                         case injectLocalMultiUseMember localName ord v s2 of
                                             s3 ->
                                                 ( Mono.MonoVarLocal freshName instType, s3 )
@@ -3461,9 +3250,8 @@ translateArgsWith stash args s0 =
         s0
 
 
-{-| F2 (plans/lss-container-payload-transport.md §12.9.4): the let-function's
-RHS source lambda id and param count when the RHS is a lambda literal — what a
-use site injects; `Nothing` for tail defs and non-lambda RHSs.
+{-| Returns the source lambda id and parameter count of a let-bound
+function's right-hand side when it is a lambda literal with an id.
 -}
 rhsLamOf : TOpt.Expr TypeIds.MVarId -> Maybe ( TypeIds.SrcLambdaId, Int )
 rhsLamOf defBody =
@@ -3478,9 +3266,9 @@ rhsLamOf defBody =
             Nothing
 
 
-{-| F2.c: `Just ( g, supplied )` when the RHS is a call of global `g` with fewer
-arguments than `g`'s declared arity (the same test `injectPapMember` makes on
-the producer side; `VarGlobal` callees only — the shape the census found).
+{-| Returns the global and the number of arguments supplied when a let-bound
+right-hand side is a call of a global with at least one argument and fewer
+than the global's declared arity: a partial application.
 -}
 rhsPapOf : TOpt.Expr TypeIds.MVarId -> Engine.S -> Maybe ( TOpt.Global, Int )
 rhsPapOf defBody s =
@@ -3496,18 +3284,15 @@ rhsPapOf defBody s =
             Nothing
 
 
-{-| F2 use-site member injection (plans/lss-container-payload-transport.md
-§12.9.4). Mint the id the instance's RHS re-translation WILL mint for its
-lambda — `injectLambdaMemberQualified` under the instance's own tag
-(`localInstanceTagFor ord`, exactly what `retranslateAtInstance` sets) — and
-write it into the first `arity` result-spine arrows of the stashed var
-(LSS\_013 bounds: a function-returning body's returned closure keeps its own
-arrow). The id is a deterministic function of (source lambda, instance tag,
-spec id, item-static tables), and interning is get-or-create by key, so the
-two mints agree by construction (the v4 join measured it: one id per (def,
-ordinal) on every both-sided pair). Ordinal 0 is tagged only inside a tagged
-enclosing instance (`localInstanceTagFor`). RHSs without a
-`SrcLambdaId` take the PAP route (`injectLocalMultiUsePap`) or inject nothing.
+{-| Writes, with LSS on, the member of instance `ord` of the let-bound
+function `localName` into the first `arity` arrows of `v`'s result spine,
+where `arity` is the right-hand side lambda's parameter count.
+
+The member is minted under the instance's own tag, the same tag its
+right-hand side is translated under, so the id written here is the one that
+translation mints for the lambda. A right-hand side that is not a lambda goes
+to `injectLocalMultiUsePap`.
+
 -}
 injectLocalMultiUseMember : Name -> Int -> Vars.Variable -> Engine.S -> Engine.S
 injectLocalMultiUseMember localName ord v s0 =
@@ -3538,12 +3323,10 @@ injectLocalMultiUseMember localName ord v s0 =
                                 Engine.bumpArgFlowCensus "lmInject|use" { s2 | itemAux = { aux2 | currentLocalInstance = outerTag } }
 
 
-{-| F2.c (plans/lss-container-payload-transport.md §12.10.1): the local's RHS
-is a PARTIAL APPLICATION of a global — write the PAP member the RHS
-re-translation will mint (`injectPapMember` → `papMemberKey g k`) into the
-stashed var, HEAD-ONLY: one arrow deeper is a different PAP (the `p|` law),
-and `injectPapMember` writes exactly one position too. Instance-blind by
-construction, so ordinals and tags play no part in the agreement.
+{-| Writes, when the let-bound function `localName`'s right-hand side is a
+partial application of a global (`rhsPapOf`), that partial application's
+member into the head set of `v` only; otherwise only counts the use. The
+member does not depend on the instance.
 -}
 injectLocalMultiUsePap : Name -> Vars.Variable -> Engine.S -> Engine.S
 injectLocalMultiUsePap localName v s0 =
@@ -3558,8 +3341,7 @@ injectLocalMultiUsePap localName v s0 =
                         (LssInfer.injectSpineMemberId 1 mid v s1)
 
 
-{-| Is the argument a lambda literal? (The M1 flowConnect trigger — only
-literals carry a body whose translation solves interior sets in-item.)
+{-| Tells whether an expression is a lambda literal.
 -}
 isLambdaLiteral : TOpt.Expr TypeIds.MVarId -> Bool
 isLambdaLiteral arg =
@@ -3574,14 +3356,8 @@ isLambdaLiteral arg =
             False
 
 
-{-| M2 P0 shape census (lss-var-chain-roots §9.7 / lss-lpartial follow-on):
-classify every lambda literal by the AR-F7 predicate — COLLAPSED multi-param
-lambdas (stage identities needed; the §9.1 producer hole) vs NESTED bodies
-(the inner λ keeps its own `l|` mid; minting a stage id there would split
-identity). Report-gated. Historical: this census decided the M2 GO that
-§9.13/§9.14 then overturned (LSS\_013 already names collapsed stages; the
-24k here are translations of ALREADY-NAMED stages) — kept as the
-population tracker, with that reading correction attached.
+{-| Counts, under `lss.report`, a lambda by whether it has two or more
+parameters and whether its body is itself a lambda.
 -}
 m2ShapeCensus : List ( Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 m2ShapeCensus params body s =
@@ -3610,13 +3386,13 @@ m2ShapeCensus params body s =
         Engine.bumpArgFlowCensus key s
 
 
-{-| `Just name` when the arg is a direct reference to a local-multi FUNCTION.
+{-| Returns the name of the local an argument refers to when that local is a
+let-bound function.
 -}
 localMultiArgName : TOpt.Expr TypeIds.MVarId -> Step (Maybe Name)
 localMultiArgName arg s0 =
     case accessedLocalName arg of
         Just localName ->
-            -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
             case Engine.isLocalMultiTarget localName s0 of
                 ( isLM, s1 ) ->
                     ( if isLM then
@@ -3631,15 +3407,17 @@ localMultiArgName arg s0 =
             ( Nothing, s0 )
 
 
-{-| The store var to unify a call argument against: the arg's canonical type
-loaded through the memo, ENRICHED at local leaves with the varEnv binding (the
-concrete type of a lambda param / destructor-bound / let-bound local — the use's
-canonical type may still be a narrow row-polymorphic generalization). Tuple
-literals recurse so a `( 0, outer )` arg carries `outer`'s full record type.
+{-| Returns the store variable a call argument is unified with: its type
+loaded through the item memo, unified with what the variable environment binds
+to locals in it (`enrichFromEnv`), and with the argument's own member written
+into its lambda sets (`injectArgLambdaMember`).
+
+The binding matters because the type at a local's use can be more general than
+the type bound to it, for example a narrower extensible record.
+
 -}
 argUnifyVar : TOpt.Expr TypeIds.MVarId -> Step Vars.Variable
 argUnifyVar arg s0 =
-    -- M6: direct state-passing (desugared andThen) → byte-identical.
     case Store.loadTypeS (TOpt.typeOf arg) s0 of
         ( canVar, s1 ) ->
             case enrichFromEnv arg canVar s1 of
@@ -3649,12 +3427,9 @@ argUnifyVar arg s0 =
                             ( canVar, s3 )
 
 
-{-| P0 sizing instrument (plans/lss-ctor-arrow-identity.md §8.1): classify
-every argument by FORM and by whether a nameable position exists DEEPER than
-the depth this injection covers. `argdeep|<form>|<deep|flat>` — the `deep`
-rows are the `/a0/r`-class the census says holds 64.6 % of the remaining var.
-Report-gated inside `bumpArgFlowCensus`; the type walks are cheap (leading
-arrows only) but still guarded.
+{-| Counts, under `lss.report`, an argument whose type has arrows, by its
+form and by whether its type has more arrows than the depth its form's member
+injection is taken to cover (`argdeep|<form>|deep` or `|flat`).
 -}
 argDeepCensus : TOpt.Expr TypeIds.MVarId -> Engine.S -> Engine.S
 argDeepCensus arg s =
@@ -3711,13 +3486,11 @@ argDeepCensus arg s =
             Engine.bumpArgFlowCensus ("argdeep|" ++ form ++ "|flat") s
 
 
-{-| F2.b (plans/lss-container-payload-transport.md §12.9.4): a local-multi
-function referenced INSIDE its own instance re-translation (`Array.foldl`'s
-`helper` passing `helper` to `JsArray.foldl`). The stack entry is popped and
-the binding scope closed by then (`enrich|unbound`), so `enrichFromEnv` finds
-nothing; the value IS the instance being built, whose id is
-`injectLambdaMemberQualified` under the tag `retranslateWithTag` already set.
-Any other local injects nothing here (its members arrive via `enrichFromEnv`).
+{-| Writes, with LSS on, the member of the let-bound function instance being
+translated into `canVar`'s sets, when `name` is that function referring to
+itself from inside its own right-hand side, as `helper` passing `helper` on.
+Nothing else in scope gives that reference a member. Any other local is left
+alone.
 -}
 injectRetranslatingSelf : Name -> Vars.Variable -> Engine.S -> Engine.S
 injectRetranslatingSelf name canVar s0 =
@@ -3738,55 +3511,43 @@ injectRetranslatingSelf name canVar s0 =
                 s0
 
 
+{-| Writes into `canVar`'s lambda sets the member of the function value an
+argument or reference is, as `injectArgLambdaMemberGo` describes, after
+counting it in the `argDeepCensus`.
+-}
 injectArgLambdaMember : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
 injectArgLambdaMember arg canVar s0 =
     injectArgLambdaMemberGo arg canVar (argDeepCensus arg s0)
 
 
-{-| M3 arg-side member transport: a lambda LITERAL passed directly as an
-argument must contribute its member to the callee's param arrow slot.
+{-| Writes into `canVar`'s lambda sets the member of the function value
+`arg` is, by its form.
 
-`Store.loadType` mints fresh arrow structure per load (LSS\_006 — only leaf
-MVarIds are memo-shared), so the set slot `classifyLambdaHead` injects into
-when the lambda is TRANSLATED is a different slot from `canVar`'s — the one
-unified with the callee's param. Without this injection the member never
-reaches the callee's demand, every downstream call-site annotation zonks to
-LTop, and AbiCloning finds nothing to upgrade.
+This is needed because each load makes new arrow structure: the sets the
+lambda's own translation writes into are not the ones `canVar` has, and
+`canVar` is what the callee's parameter is unified with.
 
-Locals referencing a closure transport through `enrichFromEnv` (the bound
-MonoType carries the closure's annotation) when they are not local-multi
-targets; local-multi args (fresh-instantiated stash vars) remain a known
-precision gap in v1 — safe: no member, no stamp.
+A lambda literal gets its member on the first arrows of the result spine, one
+per parameter. A global, cycle member, enum or box gets its `g|` or `c|`
+member on the head arrow and partial-application members (`p|`) on the deeper
+arrows of its spine; a global that is an alias of a kernel gets the kernel's
+`k|` member at the head instead, with the `p|` members keyed by the alias. A
+kernel reference gets its `k|` member at the head only, and an accessor its
+`a|` member at the head only. A local is handled by
+`injectRetranslatingSelf`. Anything else gets nothing here.
 
 -}
 injectArgLambdaMemberGo : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
 injectArgLambdaMemberGo arg canVar s =
     case arg of
         TOpt.Function srcLam params _ _ ->
-            -- Fix B (LSS_017): translation-phase mint — spec-qualified.
             LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar s
 
         TOpt.TrackedFunction srcLam params _ _ ->
             LssInfer.injectLambdaMemberQualified (List.length params) srcLam canVar s
 
         TOpt.VarGlobal _ g _ ->
-            -- E9: standalone globals/ctors passed as function args contribute
-            -- their member the same way lambda literals do (head-only, like
-            -- standaloneMember — no local arity). Makes the global inhabitant
-            -- VISIBLE at the callee's param arrow, which both enables the
-            -- devirt (singleton {g|X}) and honestly widens joins where a
-            -- global flows alongside lambdas. Flag-off: slotless arrows, the
-            -- injection no-ops (spineGo's `_` arm).
-            -- E9.2 (LSS_016) identity fold: a kernel-ALIAS global (`(::)` →
-            -- VarGlobal List.cons, node = Define (VarKernel …)) IS the kernel
-            -- value — mint the kernel member (one identity; a split g|/k|
-            -- identity would join to a 2-set and kill singleton consumers),
-            -- registered for the kernel devirt's reverse lookup.
-            -- refPapSpine (plans/lss-ref-pap-spine.md): after the head
-            -- member, the PAP successors p|g|d ride the result spine. The
-            -- kernel-alias HEAD stays k| (kernelToSig's inner-arrow hazard is
-            -- a k|-member hazard); the successors key by the ALIAS global,
-            -- matching injectPapMember's producer key for the same values.
+            -- A kernel alias gets the kernel's member: a `g|` and a `k|` member for one value would make a set of two.
             case
                 case LssInfer.kernelAliasOf g s of
                     Just ( kernelPrefix, home, name ) ->
@@ -3809,22 +3570,11 @@ injectArgLambdaMemberGo arg canVar s =
                 (standaloneArgMember ("c|" ++ TOpt.toComparableGlobal g) g canVar s)
 
         TOpt.VarCycle _ home name _ ->
-            -- GAP-7 seam 2 (LSS_020 plan Phase E.2): a cycle member passed as
-            -- a function argument transports its member like any global
-            -- (mirrors the VarGlobal arm WITHOUT the kernel-alias fold —
-            -- `kernelAliasOf` can never return Just for a cycle member:
-            -- Link→Cycle→wildcard). The provisional `g|` id grounds at zonk
-            -- per LSS_019, and lands HEAD-ONLY in lockstep with the inference
-            -- side; `injectPapSuccessors` owns everything deeper.
             LssInfer.injectPapSuccessors (TOpt.Global home name)
                 canVar
                 (standaloneArgMember ("g|" ++ TOpt.toComparableGlobal (TOpt.Global home name)) (TOpt.Global home name) canVar s)
 
         TOpt.Accessor _ field _ ->
-            -- L3 (plans/lss-coverage-four-levers.md §1.3): the
-            -- inference side has minted `a|<field>` for accessor references
-            -- since POST-001; the translate side silently no-op'd — the S.10
-            -- lockstep asymmetry. Head-only (".field" is an arity-1 chomper).
             case Engine.memberIdFor ("a|" ++ field) (Engine.bumpArgFlowCensus "argArm|accessor" s) of
                 ( mid, s1 ) ->
                     LssInfer.injectSpineMemberId 1 mid canVar s1
@@ -3836,18 +3586,15 @@ injectArgLambdaMemberGo arg canVar s =
             injectRetranslatingSelf name canVar s
 
         TOpt.VarKernel _ kernelPrefix home name _ ->
-            -- L3: a BARE kernel reference as a function argument (kernel shim
-            -- modules) — the same k| identity the kernel-ALIAS VarGlobal arm
-            -- mints, head-only per the kernelToSig rule.
             standaloneArgKernelMember ("k|" ++ home ++ "." ++ name) ( kernelPrefix, home, name ) canVar (Engine.bumpArgFlowCensus "argArm|kernel" s)
 
         _ ->
             s
 
 
-{-| S.10 (F-5C): the translation-side twin of `LssInfer`'s `g|`/`c|` mints.
-The depth must match its LssInfer counterpart exactly — a member injected to
-different depths on the two sides would name different arrow sets for the same
+{-| Writes the standalone member under `key` for global `g` into `canVar`'s
+head set only. Signature inference in `LssInfer` writes the same member at the
+same depth; at different depths the two would name different sets for one
 value.
 -}
 standaloneArgMember : String -> TOpt.Global -> Vars.Variable -> Engine.S -> Engine.S
@@ -3857,9 +3604,8 @@ standaloneArgMember key g canVar s =
             LssInfer.injectSpineMemberId 1 mid canVar s1
 
 
-{-| Kernels stay HEAD-ONLY (see `LssInfer`'s kernel arms): `kernelToSig`
-misaligns at inner arrows, and keeping `k|` members off them makes that
-hazard unreachable.
+{-| Writes the kernel member under `key` for kernel `k` into `canVar`'s head
+set only. A kernel member is never put on inner arrows, as in `LssInfer`.
 -}
 standaloneArgKernelMember : String -> ( Name, Name, Name ) -> Vars.Variable -> Engine.S -> Engine.S
 standaloneArgKernelMember key k canVar s =
@@ -3868,12 +3614,10 @@ standaloneArgKernelMember key k canVar s =
             LssInfer.injectSpineMemberId 1 mid canVar s1
 
 
-{-| `unifyResultWithExpected` followed by the PAP residual injection, in that
-order, as one step — so the injection lands after the call's result has been
-unified with the expected type (the residual Points are then the ones the
-demand will be read from) and BEFORE `Store.zonkToMono funcVar`. Sequenced as
-a composed step rather than another level of case-nesting purely for
-readability; the ordering is the load-bearing part.
+{-| Unifies a call's result with the call's type (`unifyResultWithExpected`)
+and then writes the partial-application member, if any (`injectPapMember`).
+The order matters: the member must go into the result variables the call's
+type has been unified with.
 -}
 unifyResultThenInjectPap : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> TOpt.Global -> Engine.S -> Engine.S
 unifyResultThenInjectPap funcVar argCount callCanType global s0 =
@@ -3882,59 +3626,24 @@ unifyResultThenInjectPap funcVar argCount callCanType global s0 =
             injectPapMember global funcVar argCount s1
 
 
-{-| INJECTION COMPLETENESS (plans/lss-injection-completeness.md §2.3): a
-PARTIAL application of a known global is a PAP of that global, so the callee's
-member is SOUND on the residual arrows — LSS\_013's arity bound licenses
-exactly this ("a PAP of member m is m", design OQ4). Every residual arrow
-within the declared arity holds a further partial application of the SAME
-global, which is why the member is valid at depth `declared - supplied` and
-not merely at the head.
+{-| Writes, with LSS on, the member of a partial application into the result
+of a call that supplies `argCount` arguments to `global`, fewer than its
+declared arity.
 
-This is the one producer form that injected nothing before: P0's
-injection-totality census measured 3,624 such positions on the self-compile
-(83 % at residual depth 1), and that hole is what let a one-sided branch join
-publish `{identity}` as a COMPLETE set — the false singleton behind the
-`arrowSolverRoots` miscompile. The paper has no such hole: L^src is
-curry-free, so `(::) x` is necessarily a λ there and `𝒬` injects every λ.
+A partial application is not the global itself: it is the global with
+`argCount` arguments already bound. It therefore gets a member of its own,
+`p|<global>|<argCount>`, registered as a partial application, and never the
+global's `g|` or `k|` member. Were it to get the global's member, a call
+through a set holding only that member would be rewritten into a direct call
+of the global with the bound arguments missing. No direct-call rewrite acts on
+a `p|` member, but it still counts as a member, so a branch join that meets a
+partial application has a set of two rather than a wrong set of one.
 
-**IDENTITY: a PAP gets its OWN member id, NEVER the callee's `g|`/`k|` one.**
-This is the correction that made the first implementation of this function a
-MISCOMPILE, and it is a fidelity point, not a workaround. `g|X` is registered
-as `SourceGlobal X` (`Engine.standaloneMemberIdFor`), which puts it in the
-STAMPABLE class: devirt reads it as "this value IS X" and rewrites the site to
-a direct call of X's spec. A partial application is NOT X — it is X with `k`
-arguments already bound — so that rewrite drops the captured arguments. The
-observed failure was exactly this: `IO.traverseList (IO.traverseTuple f) args`
-made devirt call `traverseTuple`'s 2-arity spec with one argument, and
-monomorphization died on `demandUnify` with an arity mismatch.
-
-The paper has no such conflation: L^src is curry-free, so `(::) x` is its own
-λ with its OWN set element, distinct from `cons`'s. `p|<global>|<supplied>`
-is that element. It is minted through `Engine.memberIdFor` WITHOUT a
-`SourceGlobal`/`SourceKernel` registration (now `SourcePap`, whose
-`memberClassOf` arm is an EXPLICIT `"l"`), so no DIRECT devirt arm can act on
-it — while it still occupies
-the set, which is the entire point: a one-sided join becomes an honest >=2 set
-and the FALSE SINGLETON that motivated this plan cannot form.
-
-The fence is on DIRECT rewrites only. LSS\_040 (plans/lss-pap-fast-stamp.md)
-FAST-stamps a singleton `p|` site: the heap object is kept and the `supplied`
-bound arguments are loaded back out of it exactly as captures are, so nothing
-is reconstructed at the site and nothing is dropped.
-
-**Depth is HEAD-ONLY, and that is also identity-driven.** At the residual head
-the value is the PAP with `supplied` args bound; one arrow deeper it is a
-DIFFERENT PAP (`supplied + 1` bound) and therefore a different element, which
-`p|<global>|<supplied>` would misname. Injecting one id down a spine is what
-`g|` may do (every residual of an unapplied global is still that global) and
-what a PAP may not. Deeper residual arrows are left uninjected and COUNTED
-(`papInject|deep`) — honest residue; 83 % of sites are depth 1 (P0 census), and
-a per-arrow `p|<global>|<supplied+i>` walk is the clean generalization if the
-residue justifies it.
-
-No-ops when lss or the flag is off, when the call is saturated or
-over-applied, or when the residual Point is opaque at that depth — an
-uninjected position is exactly today's behaviour, so every fallback is sound.
+The member goes on the head arrow of the call's result. Each arrow deeper is a
+partial application with one more argument bound, so it gets
+`p|<global>|<argCount + i>` (`LssInfer.injectPapSuccessorsFrom`). Nothing is
+written, and the case is counted, when the result variable is not an arrow
+spine at that depth. A saturated or over-applied call is left alone.
 
 -}
 injectPapMember : TOpt.Global -> Vars.Variable -> Int -> Engine.S -> Engine.S
@@ -3953,19 +3662,9 @@ injectPapMember global funcVar argCount s0 =
         else
             case resultVarAfter funcVar argCount s0 of
                 ( Nothing, s1 ) ->
-                    -- Opaque at this depth (over-applied or not an arrow
-                    -- spine): nothing to inject into. COUNTED, not silently
-                    -- absorbed — this is the honest residue of the totality
-                    -- claim, and a form census cannot see it.
                     Engine.bumpArgFlowCensus "papInject|opaque" s1
 
                 ( Just residualVar, s1 ) ->
-                    -- The injection-FIRED counters. The P0 form census counts
-                    -- syntactic partial applications and cannot fall once they
-                    -- start injecting; only the write site can answer "did the
-                    -- member actually land". Gate: `papInject|pap` against the
-                    -- form census's `papKnown`, with `opaque`/`deep` reported
-                    -- as the residue.
                     let
                         residualDepth =
                             declared - argCount
@@ -3984,28 +3683,21 @@ injectPapMember global funcVar argCount s0 =
                     in
                     case Engine.papMemberIdFor global argCount s3 of
                         ( mid, s3a ) ->
-                            -- L2 (plans/lss-coverage-four-levers.md §1.2):
-                            -- finish the counted papInject|deep residue —
-                            -- p|g|d for the depths past the residual head.
                             LssInfer.injectPapSuccessorsFrom global
                                 (argCount + 1)
                                 residualVar
                                 (LssInfer.injectSpineMemberId 1 mid residualVar s3a)
 
 
-{-| Registration self-identity (plans/lss-registration-self-identity.md §1.1):
-the member id for depth d of global g's spine — the SAME ids every other
-injection path mints, which is the whole soundness story:
+{-| Returns the member id for arrow depth `d` of global `g`'s own type, the
+same id a reference to `g` gets elsewhere.
 
-  - depth 0 follows the E9.2 reference-path chooser exactly: kernel-alias fold
-    to the k| kernel member (ONE identity — "a split g|/k| identity would join
-    to a 2-set and kill singleton consumers"), Ctor/Enum/Box to c|, everything
-    else (Define/TrackedDefine/Link/Cycle) to g|.
-  - depth d > 0 is the p|<g>|<d> PAP member `papMembers` mints (LSS\_013: a PAP
-    of member m IS m, at its own DISTINCT declining identity per depth).
-
-`Nothing` = this global has no standalone identity here (raw kernels, managers,
-ports) — the stamp skips the whole global and the census counts it.
+At depth 0 it is the kernel's `k|` member for an alias of a kernel, the `c|`
+member for a constructor, enum or box, and otherwise the global's member:
+the ground id from `groundKey` when one is given, else `g|`. At depth `d`
+greater than 0 it is the partial-application member `p|<g>|<d>`. A kernel,
+effect manager or port node, or a global with no node, has no member at depth
+0 (`Nothing`).
 
 -}
 memberIdForDepth : TOpt.Global -> Int -> Maybe (() -> String) -> Step (Maybe Int)
@@ -4054,13 +3746,8 @@ memberIdForDepth g d groundKey s0 =
                     Just _ ->
                         case groundKey of
                             Just groundKeyOf ->
-                                -- Root-member fold §1.3: mint the GROUND id
-                                -- directly — the same string the folded root
-                                -- mint and LSS_019 reference grounding
-                                -- produce, so all three converge on one id.
+                                -- The same key the definition's root lambda is minted under, so both give one id.
                                 let
-                                    -- Forced HERE, which is the only place it
-                                    -- is read. See `stampSelfSpine`.
                                     ( mid, table1, next1 ) =
                                         Engine.groundStandaloneMemberIdFor g (groundKeyOf ()) s0.lssMemberTable s0.nextMemberId
                                 in
@@ -4075,19 +3762,24 @@ memberIdForDepth g d groundKey s0 =
                         ( Nothing, s0 )
 
 
-{-| Registration self-identity: stamp the leading spine of a DEMAND for
-global g with g's own tautological members, depths 0..declaredArity-1.
+{-| Returns a demanded type for global `g` with, under LSS, `g`'s own members
+written on the leading arrows of its result spine. With LSS off the type is
+returned unchanged.
 
-Stamps onto ⊤ and `LVar` only — NEVER over an existing `LSet` (AR-4: an
-existing set is either the same id, making the join idempotent anyway, or a
-defect signal that overwriting would hide). Applied to EVERY demand before it
-reaches the registry, because the LSS\_010 join collapses LSet-vs-LVar to ⊤
-(`Monomorphized.unionAnno`, AR-11) — a single unstamped demand would erase
-the benefit for every caller of the spec.
+A value of `g`'s type demanded for `g` is `g` itself, so its head arrow can
+only hold `g`, and each arrow below it, up to `g`'s declared arity, can only
+hold `g` partially applied. The head arrow gets the kernel's `k|` member when
+`g` is an alias of a kernel, the `c|` member when `g` is a constructor, enum or
+box, and otherwise `g`'s own member, minted under the key of the demand with
+its sets widened. The arrow at depth `d` below it gets the partial-application
+member `p|<g>|<d>`. Arrows past the declared arity belong to whatever the body
+returns and are not touched.
 
-Depth is bounded by `declaredArityOf`, not spine length: arrow
-`declaredArity + 1` belongs to the RETURNED value (LSS\_013), which is body
-dataflow this plan must not claim.
+The declared arity is `LssInfer.declaredArityOf`, which is at least 1, so even
+a global with no parameters gets its head arrow stamped. An arrow whose set is
+already an `LSet` keeps it; any other annotation, including an `LPartial`, is
+replaced by the one-member set. A kernel, effect manager or port has no
+member, and its type is returned unstamped.
 
 -}
 stampSelfSpine : TOpt.Global -> Mono.MonoType -> Step Mono.MonoType
@@ -4097,25 +3789,17 @@ stampSelfSpine g monoType s0 =
 
     else
         let
-            -- §1.3: the head's ground qualifier is the widened whole type —
-            -- pure `Mono.widenSets`, string-equal to the spec's captured
-            -- creation key (`widenSets` ⊤-widens every anno, so stamped and
-            -- unstamped demands render identically).
-            -- Step 11a: a THUNK. This is a full pure rebuild of the demand
-            -- type followed by a multi-kilobyte string render, and it runs per
-            -- global reference and per global call — about 141,000 times a
-            -- run. It is READ in one arm only: a depth-0 Define, TrackedDefine,
-            -- Link or Cycle head with a declared arity above zero on an arrow
-            -- demand. Arity-0 globals, kernel aliases, constructors, enums,
-            -- boxes, kernel, manager and port nodes, and every non-arrow
-            -- demand never look at it. Deferring it does not change WHICH
-            -- string is produced, only whether it is produced.
+            -- Deferred: rendering the key is costly and only the head arrow of a plain global reads it.
             groundKey =
                 Just (\() -> Mono.toComparableMonoType (Mono.widenSets monoType))
         in
         stampSpineGo g groundKey (LssInfer.declaredArityOf g 8 s0) 0 monoType s0
 
 
+{-| Stamps the arrows of `monoType`'s result spine from depth `d` up to
+`arity`, for `stampSelfSpine`. Where a depth has no member, that arrow and the
+ones below it are left as they are; only depth 0 can lack one.
+-}
 stampSpineGo : TOpt.Global -> Maybe (() -> String) -> Int -> Int -> Mono.MonoType -> Step Mono.MonoType
 stampSpineGo g groundKey arity d monoType s0 =
     if d >= arity then
@@ -4156,15 +3840,12 @@ stampSpineGo g groundKey arity d monoType s0 =
                 ( monoType, s0 )
 
 
-{-| `Engine.enqueueSpec` with the registration self-identity stamp applied
-first, so the keyed path's key, the LSS\_010 join, and the stored type all see
-the same stamped demand.
+{-| Enqueues a spec of `global` at `monoType` after stamping the global's own
+members on it (`stampSelfSpine`), so the spec is keyed and stored at the
+stamped type.
 -}
 enqueueSpecStamped : TOpt.Global -> Mono.MonoType -> Engine.S -> ( Mono.SpecId, Engine.S )
 enqueueSpecStamped global monoType s0 =
-    -- Step 10c: `stampSelfSpine` never fails (its only callees are Engine
-    -- mints, and Engine raises nothing but the enqueue watchdog, which is now
-    -- `pendingFailure`), so its `Err` arm was dead.
     case stampSelfSpine global monoType s0 of
         ( stamped, s1 ) ->
             case Engine.enqueueSpec (toptToMonoGlobal global) stamped s1 of
@@ -4172,15 +3853,9 @@ enqueueSpecStamped global monoType s0 =
                     ( specId, s2 )
 
 
-{-| The `enrich|bare` / `enrich|withSets` census row (P0.a,
-plans/lss-ctor-arrow-identity.md §8.1): does the varEnv type this transport
-carries actually HAVE members? `monoTypeToVar` encodes nested annotations
-faithfully, so a bare bound type is the laundering suspect.
-
-Hoisted to a helper by step 9 so that the arm which SKIPS the transport still
-counts the same row — the skip must not change report output. Off report it is
-one Bool read.
-
+{-| Counts, under `lss.report`, a type taken from the variable environment by
+`enrichFromEnv`, by whether it has any lambda-set members (`enrich|withSets`)
+or none (`enrich|bare`).
 -}
 enrichCensusRow : Mono.MonoType -> Engine.S -> Engine.S
 enrichCensusRow boundType s =
@@ -4194,17 +3869,22 @@ enrichCensusRow boundType s =
         Engine.bumpArgFlowCensus "enrich|withSets" s
 
 
-{-| Best-effort unify `canVar` with environment-derived structure for `arg`.
+{-| Unifies, best effort, `canVar` (the loaded type of `arg`) with types the
+variable environment gives the locals `arg` is made of.
+
+A reference to a local is unified with the type bound to it. A tuple literal
+is followed into its elements. With LSS on, a field access on a local record is
+unified with that field's type in the record's bound type. A let-bound
+function is never used, because its binding holds only its declared type,
+which could block the more specific type the call gives it. Where the use's
+type is ground and has no arrow, nothing is unified, since it could receive
+nothing.
+
 -}
 enrichFromEnv : TOpt.Expr TypeIds.MVarId -> Vars.Variable -> Engine.S -> Engine.S
 enrichFromEnv arg canVar s0 =
     case accessedLocalName arg of
         Just localName ->
-            -- Never enrich from a local-multi target: its varEnv entry is only
-            -- the DECLARED classify (possibly a closed-narrow row type), and
-            -- forcing it here would block the full type flowing from the other
-            -- call args. Its typing is owned by the instance-recording path.
-            -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
             case Engine.isLocalMultiTarget localName s0 of
                 ( isLM, s1 ) ->
                     if isLM then
@@ -4215,28 +3895,12 @@ enrichFromEnv arg canVar s0 =
                             ( maybeBound, s2 ) ->
                                 case maybeBound of
                                     Just boundType ->
-                                        -- Step 9: a ground, arrow-free USE type has
-                                        -- nothing to receive — no memo var to
-                                        -- concretise and no set slot to carry members
-                                        -- into. Re-encoding `boundType` (hundreds of
-                                        -- Points for `s : S`) and unifying it into an
-                                        -- unreferenced structure is a no-op. The census
-                                        -- row is still counted, so report output is
-                                        -- unchanged.
                                         if Store.groundNoArrowWith s2.monoMemo.aliasMemo (TOpt.typeOf arg) then
                                             enrichCensusRow boundType s2
 
                                         else
                                             case Store.monoTypeToVarS boundType s2 of
                                                 ( boundVar, s3 ) ->
-                                                    -- P0.a (plans/lss-ctor-arrow-identity.md
-                                                    -- §8.1): does the varEnv type this
-                                                    -- transport actually CARRY members?
-                                                    -- `monoTypeToVar` encodes nested
-                                                    -- annotations faithfully, so a bare
-                                                    -- bound type is the laundering
-                                                    -- suspect (leak|letAnno's downstream
-                                                    -- consequence). Report-gated walk.
                                                     unifyStepBestEffort canVar boundVar (enrichCensusRow boundType s3)
 
                                     Nothing ->
@@ -4245,14 +3909,10 @@ enrichFromEnv arg canVar s0 =
         Nothing ->
             case arg of
                 TOpt.Tuple _ a b rest _ ->
-                    -- Step 9: a ground tuple has ground elements, so every leaf
-                    -- below would skip anyway. Skipping here saves the `UF.get`
-                    -- and the three recursions at once.
                     if Store.groundNoArrowWith s0.monoMemo.aliasMemo (TOpt.typeOf arg) then
                         s0
 
                     else
-                        -- M6/A1: direct state-passing over explicit trailing S → byte-identical.
                         case Engine.liftIO (UF.get canVar) s0 of
                             ( desc, s1 ) ->
                                 case desc.content of
@@ -4270,13 +3930,6 @@ enrichFromEnv arg canVar s0 =
                                         s1
 
                 TOpt.Access record _ fieldName _ ->
-                    -- E15 (plans/lss-container-payload-transport.md §12.10.1):
-                    -- a `r.f` ARGUMENT or CALLEE used to enrich nothing — the
-                    -- record's bound type knows the field's set, so project it
-                    -- (the `VarLocal` arm one projection deeper). Shipped as
-                    -- `lss.flow.accessFlow`, DEFAULT-ON 2026-09-16
-                    -- (`enrich|access|ofLocal` 5,785 joins), unconditional
-                    -- 2026-09-18.
                     case accessedLocalName record of
                         Just rname ->
                             if not s0.env.lss.enabled then
@@ -4293,10 +3946,6 @@ enrichFromEnv arg canVar s0 =
                                                 ( Just (Mono.MRecord _ fields), s2 ) ->
                                                     case Dict.get fieldName fields of
                                                         Just fieldType ->
-                                                            -- Step 9: same argument as the local
-                                                            -- arm — a ground use type has nothing
-                                                            -- to receive. The census row is still
-                                                            -- counted.
                                                             if Store.groundNoArrowWith s2.monoMemo.aliasMemo (TOpt.typeOf arg) then
                                                                 Engine.bumpArgFlowCensus "enrich|access|ofLocal" s2
 
@@ -4318,20 +3967,39 @@ enrichFromEnv arg canVar s0 =
                     s0
 
 
-{-| Kernel ABI for a STANDALONE reference (`eq = Utils.equal`): load the type
-through the ITEM memo so the item's demand concretization (unified against the
-enclosing definition's annotation) is visible — a fresh instantiation would
-isolate the vars and lose it.
+{-| Returns the type of a kernel referred to without being called, as in
+`eq = Utils.equal`. The type is loaded through the item memo, not
+instantiated afresh, so it sees what the enclosing definition's demand made of
+its variables; it is then read back as `deriveKernelAbiTypeWith` describes.
 -}
 deriveKernelAbiTypeRef : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step Mono.MonoType
 deriveKernelAbiTypeRef kernelId canFuncType =
     deriveKernelAbiTypeWith kernelId canFuncType (Store.loadTypeS canFuncType)
 
 
+{-| Returns a kernel's type as code generation needs it, from the store
+variable `funcVarStep` produces.
+
+The kernel's lambda sets are poisoned or kept by its facts
+(`poisonKernelArrowsThen`), and the variable is read back. What happens next
+depends on the kernel's ABI mode (`KernelAbi.deriveKernelAbiMode`). In
+substitution mode the read-back type is the answer. In preserved-variables
+mode, a kernel that selects its implementation by the types it is called at
+keeps the read-back type when it has no type variable, and otherwise keeps it
+with its `CEcoValue` variables renamed to new ids. Any other kernel takes its
+type from its canonical type with the variables preserved, again with
+`CEcoValue` variables renamed.
+
+The renaming is needed because a variable id can be shared with other work
+items, and a `number` constraint recorded against it elsewhere would make
+pruning close the variable to `Int`, giving an unboxed parameter to a kernel
+that expects a boxed value. A new id keeps the position boxed. `number`
+variables are not renamed.
+
+-}
 deriveKernelAbiTypeWith : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Step Vars.Variable -> Step Mono.MonoType
 deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
     let
-        -- KernelAbi's elm/core dispatch tables key by ( home, name ).
         abiKey =
             case kernelId of
                 ( _, home, name ) ->
@@ -4357,38 +4025,7 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                 ( monoAfterSubst, sD )
 
                                             else if EverySet.member KernelAbi.comparePair abiKey KernelAbi.suffixSelectingKernels then
-                                                -- Suffix-selecting kernel with residual vars in the
-                                                -- store truth: use the STORE-TRUTH zonk (not a canType
-                                                -- re-derivation), remapping its CEcoValue residuals to
-                                                -- fresh, taint-proof engine ids (ConsNumberTaintTest,
-                                                -- the Stage-7a bootstrap SIGSEGV):
-                                                --
-                                                --   * A structurally CONCRETE param whose FIELDS carry
-                                                --     erased residuals (e.g. a `(Name, MonoExpr, Bool)`
-                                                --     cons element zonking `T(eco,MonoExpr,eco)`) fails
-                                                --     the whole-type `containsAnyMVar` gate above, but
-                                                --     its top-level shape — all the suffix selection
-                                                --     reads — is exact. The former canType re-derivation
-                                                --     DISCARDED that shape for the kernel scheme's
-                                                --     annotation var (e.g. `List.cons`'s `a`), whose id
-                                                --     is SHARED by every use of the kernel in the whole
-                                                --     program.
-                                                --
-                                                --   * A shared annotation id can be Number-stamped by a
-                                                --     FOREIGN item (`harvestSuperTable` covers only the
-                                                --     finishing item's own annIds, not callee-scheme
-                                                --     vars left at `FlexSuper Number` — e.g. an
-                                                --     unresolved-number `1 :: 2 :: []`). Prune then
-                                                --     closes `MVar a CEcoValue -> MInt` behind this
-                                                --     spec's back and the kernel selects `_Int` over a
-                                                --     BOXED element — `eco.unbox` of a heap pointer.
-                                                --
-                                                -- Store-truth params align the ABI with the spec's own
-                                                -- body/param types (same zonk source); the fresh eco
-                                                -- ids make genuinely-erased elements immune to foreign
-                                                -- stamps (they stay boxed, matching the subst engine).
-                                                -- CNumber residuals keep their unconditional
-                                                -- close-to-MInt — the intended same-item taint.
+                                                -- The read-back type keeps the shape the suffix is selected by.
                                                 let
                                                     ( abi2, nextId2 ) =
                                                         KernelAbi.remapEcoVarsFresh sD.nextMVarId monoAfterSubst
@@ -4396,67 +4033,35 @@ deriveKernelAbiTypeWith kernelId canFuncType funcVarStep s0 =
                                                 ( abi2, { sD | nextMVarId = nextId2 } )
 
                                             else
-                                                -- The preserved-vars ABI keeps the canType's var ids,
-                                                -- which THIS item's demand unification may have Join-R
-                                                -- number-tainted (e.g. `Decode.null 0` keys the spec at
-                                                -- CNumber and demandUnify taints the annotation vars) —
-                                                -- Prune would then close the honest eco ABI to MInt and
-                                                -- pass an unboxed i64 to a kernel expecting a boxed
-                                                -- value. The erased vars are layout placeholders, so
-                                                -- REMAP them to fresh, taint-proof engine ids (one per
-                                                -- distinct source id, preserving sharing) and advance
-                                                -- the id counter past everything minted.
                                                 let
                                                     ( abiType, env1 ) =
                                                         KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType
 
-                                                    -- Debug kernels included: MONO_009 keeps
-                                                    -- their variables CEcoValue, and a tainted id
-                                                    -- would let Prune close one to MInt, giving
-                                                    -- e.g. Debug.toString an i64 parameter in a
-                                                    -- Float specialization. (Suffix-selecting
-                                                    -- kernels take the store-truth branch above
-                                                    -- and never reach here.)
                                                     ( finalAbi, nextId2 ) =
                                                         KernelAbi.remapEcoVarsFresh env1.nextId abiType
                                                 in
                                                 ( finalAbi, { sD | nextMVarId = nextId2 } )
 
 
-{-| LSS\_004, refined by LSS\_021 and LSS\_022 (KernelSetFacts): a ROWLESS
-kernel poisons its whole loaded scheme's set slots (today's behavior); a
-`TypeFaithful` (LICENSED) kernel poisons NOTHING and passes the loaded scheme
-straight through; a `Positional` kernel poisons per-param — `PSFApplies`
-positions keep their slots (the caller's knowledge survives the boundary; the
-kernel only calls the value), `PSFTunnels` positions set-slot-join the
-result, everything else poisons. Both sides of the boundary consult ONE table
-(`KernelSetFacts` — the LSS\_006-style two-sided discipline; the inference
-twin is `LssInfer.kernelCallBoundary`).
+{-| Applies, with LSS on, a kernel's lambda-set policy from `KernelSetFacts`
+to the kernel's loaded type `funcVar`, and returns `funcVar`.
 
-The licensed pass-through is load-bearing precisely BECAUSE of the ordering
-note below: the arg unification has already run, so the unpoisoned shared
-slots carry the caller's real per-site member knowledge into the zonk. That
-is where the license's precision actually lands.
+A kernel with no fact has every set in its type poisoned (made ⊤). A
+`TypeFaithful` license that applies to `canFuncType` leaves every set as it is;
+one that does not apply poisons everything. A `Positional` row poisons the
+parameters marked `PSFOpaque` and the result when it is so marked, and leaves
+the `PSFApplies` parameters alone; when the type has fewer arrows than the row
+has parameters, everything is poisoned.
 
-Ordering note (corrected 2026-08-20, was stale): on the CALL path this runs
-AFTER `unifyParamsWithArgExprs` — `Engine.andThen f step` runs `step` first,
-and `deriveKernelAbiTypeCall`'s step already contains the arg unification —
-so an opaque position's poison deliberately reaches the arg-shared item-memo
-Points, and a skipped position is simply never poisoned (the skip needs no
-ordering assumption). It still runs before the zonk that reads the slots.
-No-op when lss is off.
+At a call this runs after the parameters were unified with the arguments, so a
+poison reaches the argument's own sets, and a set left alone carries what the
+caller put there into the read-back type. Under `lss.report`, a license that
+does not apply is also counted (`recordRefusedLicense`).
 
 -}
 poisonKernelArrowsThen : ( String, String, String ) -> Can.Type TypeIds.MVarId -> Vars.Variable -> Step Vars.Variable
 poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
     let
-        -- CENSUS (report-gated, so the default path carries only the flag
-        -- test): which LICENSED kernels had their occurrence verification
-        -- REFUSED? That is precisely the population an intrinsic annotation
-        -- would pay for — see plans/kernel-intrinsic-annotations.md. Kept
-        -- rather than deleted after its first run because it is the targeting
-        -- instrument for every future row: without it, "annotate the rest"
-        -- means annotating blind, and annotations are fail-stop.
         s =
             if s0.env.lss.report then
                 recordRefusedLicense ( kPrefix, kHome, kName ) canFuncType s0
@@ -4473,27 +4078,12 @@ poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
 
             Just (KernelSetFacts.TypeFaithful license) ->
                 if not (KernelSetFacts.licenseApplies (Engine.isScalarVar s) license canFuncType) then
-                    -- LSS_022 occurrence verification. This side is where the
-                    -- check EARNS its cost: the arg unification has already
-                    -- run (see the ordering note), so a wrongly-applied
-                    -- license would leave the caller's real members standing
-                    -- in a slot the kernel may not honour — the
-                    -- populated-but-incomplete hazard, i.e. a false singleton.
-                    -- Skipping verification here would make the whole tier
-                    -- rest on the Elm annotation never drifting, which the rot
-                    -- manifest cannot see. Fail SAFE to full poison.
+                    -- Left alone, the caller's members would stand in a set the kernel may not honour.
                     case Store.poisonArrowSets funcVar s of
                         s1 ->
                             ( funcVar, Engine.bumpWidenedByKernel s1 )
 
                 else
-                    -- Licensed — pass-through. No spine descent, so no
-                    -- arity/shape precondition either: whatever the scheme's
-                    -- shape, leaving every slot alone is exactly "the type IS
-                    -- the flow graph". Unlike the inference twin this arm
-                    -- needs no `scope` split — doing nothing is already the
-                    -- whole implementation, and for an `Inert` row there are
-                    -- no set slots for it to have done anything to.
                     ( funcVar, Engine.bumpKernelLicensed s )
 
             Just (KernelSetFacts.Positional plan) ->
@@ -4501,11 +4091,6 @@ poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
                     ( maybeOutcome, s1 ) ->
                         case maybeOutcome of
                             Nothing ->
-                                -- The spine ended before the row's params ran
-                                -- out (partial/reshaped scheme, or an Alias
-                                -- head — `arrowParts` does not chase them,
-                                -- matching `unifyParamsCollect`): structural
-                                -- arity mismatch ⇒ LSS_004 full poison.
                                 case Store.poisonArrowSets funcVar s1 of
                                     s2 ->
                                         ( funcVar, Engine.bumpWidenedByKernel s2 )
@@ -4540,10 +4125,10 @@ poisonKernelArrowsThen ( kPrefix, kHome, kName ) canFuncType funcVar s0 =
         ( funcVar, s )
 
 
-{-| Descend the kernel scheme's arrow spine one arrow per declared param,
-applying the row's per-position policy. Returns `Nothing` on an early spine
-end (the caller falls back to full poison). No Alias chase — matches the
-`unifyParamsCollect` precedent (mono stores are alias-expanded at load).
+{-| Walks a kernel type's arrows one per entry of `flows`, poisoning the sets
+of each `PSFOpaque` parameter. Returns the remaining result variable, the
+collected tunnel variables (always none, since no flow adds one), and whether
+anything was poisoned; or `Nothing` when the type runs out of arrows first.
 -}
 poisonKernelPerParam : List KernelSetFacts.ParamSetFlow -> List Vars.Variable -> Vars.Variable -> Bool -> Step (Maybe ( Vars.Variable, List Vars.Variable, Bool ))
 poisonKernelPerParam flows tunnelsRev v poisoned s0 =
@@ -4569,6 +4154,9 @@ poisonKernelPerParam flows tunnelsRev v poisoned s0 =
                                     poisonKernelPerParam rest tunnelsRev pRest poisoned s1
 
 
+{-| Lets the lambda sets of each variable in `vars` flow into the matching
+sets of `resVar` (`LssInfer.flowArrowSetsPlain`).
+-}
 joinKernelTunnels : Vars.Variable -> List Vars.Variable -> Engine.S -> Engine.S
 joinKernelTunnels resVar vars s0 =
     case vars of
@@ -4576,28 +4164,23 @@ joinKernelTunnels resVar vars s0 =
             s0
 
         v :: rest ->
-            -- LSS_023 — the translation twin of LssInfer's `joinTunnels`;
-            -- see the comment there. Also a `lss.sigFlow` selector until that
-            -- flag was fixed at its default and removed 2026-09-18.
             case LssInfer.flowArrowSetsPlain v resVar s0 of
                 s1 ->
                     joinKernelTunnels resVar rest s1
 
 
-{-| Load a type with a fresh, isolated memo so its vars do not share Points with
-the surrounding item (a fresh scheme instantiation). The minted Points persist
-in the store; the item memo is restored afterward.
+{-| Loads a type as a fresh instantiation whose type variables share nothing
+with the rest of the item (`Store.loadTypeIsolated`). The new variables stay
+in the item's store.
 -}
 instantiate : Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiate canType =
-    -- D8: one S-write instead of three (see Store.loadTypeIsolated).
     Store.loadTypeIsolated canType
 
 
-{-| `instantiate` with the callee's LSS signature facts applied to the fresh
-instantiation's arrow slots (design §8.4). lss-off = exactly `instantiate`.
-`funcCanType` is already annotation-sourced by `translateCall` (LSS\_006's
-other half — the signature side enumerates the same source).
+{-| Instantiates a global's type afresh, as `instantiate` does, and with LSS
+on applies the global's signature facts to the new arrows
+(`LssInfer.instantiateWithSignature`).
 -}
 instantiateLss : TOpt.Global -> Can.Type TypeIds.MVarId -> Engine.S -> ( Vars.Variable, Engine.S )
 instantiateLss global funcCanType s =
@@ -4608,13 +4191,9 @@ instantiateLss global funcCanType s =
         instantiate funcCanType s
 
 
-{-| Unify but never abort: on failure the store is restored to its pre-unify
-state. For polymorphic-call result/param unification where a higher-order arg's
-curried shape needn't line up (the residual then boxes to CEcoValue, matching
-the erased ABI).
-
-Only the store goes back on failure, as in `Store.unifyBestEffortStoreS`.
-
+{-| Unifies two variables without ever failing the build. When the
+unification fails, the store is put back as it was; the rest of the state is
+kept, as in `Store.unifyBestEffortStoreS`.
 -}
 unifyBestEffortS : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyBestEffortS v1 v2 s =
@@ -4626,11 +4205,16 @@ unifyBestEffortS v1 v2 s =
             { s1 | store = s.store }
 
 
+{-| The same as `unifyBestEffortS`.
+-}
 unifyStepBestEffort : Vars.Variable -> Vars.Variable -> Engine.S -> Engine.S
 unifyStepBestEffort v1 v2 s =
     unifyBestEffortS v1 v2 s
 
 
+{-| Returns a short text rendering of a canonical type, used in crash
+messages and census keys.
+-}
 canKind : Can.Type TypeIds.MVarId -> String
 canKind canType =
     case canType of
@@ -4662,9 +4246,10 @@ canKind canType =
             "alias:" ++ name
 
 
-{-| Unify the callee's result (after peeling `argCount` parameters) with the
-expected call type — the "WithExpected" part of the original poly call path,
-needed for return-polymorphic callees.
+{-| Unifies, best effort, what remains of a callee's type after `argCount`
+arrows with the call's type, so that a callee whose result type is
+polymorphic learns it from the call. Does nothing when the callee's type runs
+out of arrows.
 -}
 unifyResultWithExpected : Vars.Variable -> Int -> Can.Type TypeIds.MVarId -> Engine.S -> Engine.S
 unifyResultWithExpected funcVar argCount callCanType s0 =
@@ -4678,6 +4263,10 @@ unifyResultWithExpected funcVar argCount callCanType s0 =
             s1
 
 
+{-| Returns the store variable left after `n` arrows of `funcVar`, or
+`Nothing` when it has fewer arrows. Each arrow passed is counted as applied
+(`noteAppliedS`).
+-}
 resultVarAfter : Vars.Variable -> Int -> Engine.S -> ( Maybe Vars.Variable, Engine.S )
 resultVarAfter funcVar n s0 =
     if n <= 0 then
@@ -4688,42 +4277,27 @@ resultVarAfter funcVar n s0 =
             ( desc, s1 ) ->
                 case Store.arrowParts desc.content of
                     Just ( _, pRest ) ->
-                        -- Liveness census: peeling to find the result of an
-                        -- n-argument application is an APPLICATION of this
-                        -- arrow (plans/lss-provenance-ratio-census.md §7).
                         resultVarAfter pRest (n - 1) (noteAppliedS desc.content s1)
 
                     Nothing ->
                         ( Nothing, s1 )
 
 
-{-| Liveness census (plans/lss-provenance-ratio-census.md §7) — the `Step`-typed
-twin of `LssInfer.noteApplied`, for the Translate-side application paths.
-
-`LssInfer`'s copy hooks `localCalleeJoin`, which turned out to serve exactly ONE
-call shape (a letEnv-bound local callee); measured alone it saw only 10.76 % of
-concrete arrows, which is why the control ratio exists and why it is read before
-the finding. The general paths are here.
-
-The `ArrowId` lookup goes through the union-find CLASS for `noteMultiSet`'s
-reason: the surviving slot after a unification is often not the minted one, and
-only the loaded side carries an ArrowId.
-
+{-| Records in the census that an arrow was applied; the same as
+`LssInfer.noteApplied`.
 -}
 noteAppliedS : Vars.Content -> Engine.S -> Engine.S
 noteAppliedS =
     LssInfer.noteApplied
 
 
-{-| Build an `MVarEnv` for the KernelAbi helpers (which read super info; they
-never mutate it here). Uses the engine's current allocator + super table.
+{-| Returns a type-variable environment for the `KernelAbi` helpers, starting
+at the engine's next variable id and holding only the static super-class
+table. `number` constraints recorded during specialization are left out, so
+another item's constraint cannot make a kernel's variable a `number`.
 -}
 currentMVarEnv : Step State.MVarEnv
 currentMVarEnv =
-    -- STATIC supers only: the kernel-ABI preserveVars computation must not see
-    -- cross-item Join-R taint (a call like `Decode.null 0` elsewhere would stamp
-    -- the kernel's `a` as CNumber → Prune closes it to MInt → unboxed i64 passed
-    -- to a kernel expecting a boxed value). Same principle as Store.loadVar.
     \s -> ( State.initMVarEnv s.nextMVarId s.env.superStatic, s )
 
 
@@ -4731,14 +4305,24 @@ currentMVarEnv =
 -- ====== RECORDS ======
 
 
+{-| Returns the record type whose fields have the types of the given
+translated expressions.
+-}
 recordTypeFromFields : List ( Name, Mono.MonoExpr ) -> Mono.MonoType
 recordTypeFromFields fields =
     Mono.mRecord (List.foldl (\( name, me ) acc -> Dict.insert name (Mono.typeOf me) acc) Dict.empty fields)
 
 
-{-| Prefer the record's own field type when it is more concrete than the
-access node's classified type (mirrors the original `isMoreConcrete` guard,
-approximated: use the field type only when the classified type still has a var).
+{-| Returns the type of a field access, choosing between the access's
+classified type and the field's type in the translated record's type.
+
+The field's type is used when the classified type still has a type variable,
+or when both are records and the classified one has a strict subset of the
+field's fields (a narrower extensible-record view; the record's own type
+decides the layout). When `overlay` is set and the two have the same layout,
+the classified type is given the field type's lambda sets. Otherwise, or when
+the record type has no such field, the classified type is kept.
+
 -}
 refineAccessType : Bool -> Mono.MonoType -> Mono.MonoType -> Name -> Mono.MonoType
 refineAccessType overlay classified recordType fieldName =
@@ -4750,15 +4334,9 @@ refineAccessType overlay classified recordType fieldName =
                         fieldType
 
                     else if recordKeySubset classified fieldType then
-                        -- The classified type is a NARROWED (row-poly, closed at
-                        -- zonk) view of the record's actual field: the record side
-                        -- is authoritative for layout (field indices).
                         fieldType
 
                     else if overlay && Mono.eqLayout classified fieldType then
-                        -- E15 / F4-acc-node: the classify's STRUCTURE with the
-                        -- record's ANNOTATIONS — never worse than the storeless
-                        -- `clsMisc` ⊤ this used to keep.
                         Mono.overlayAnnotations classified fieldType
 
                     else
@@ -4771,19 +4349,13 @@ refineAccessType overlay classified recordType fieldName =
             classified
 
 
-{-| Do the two types have the SAME shape, differing only at numeric leaves
-(MInt vs MFloat)? The signature of shared-number-var memo pollution.
+{-| Tells whether two types differ, but only where one has `Int` or `Float`
+and the other has the other or a `number` variable. That is what a classified
+type looks like when a shared `number` variable was made `Float` by another
+use. Types equal up to their ⊤ labels (`Mono.eqModuloTopLabel`) do not differ.
 -}
 numericLeafOnlyDiff : Mono.MonoType -> Mono.MonoType -> Bool
 numericLeafOnlyDiff a b =
-    -- `eqModuloTopLabel`, not `==` (Phase 1a): `a` is a storeless `classify`
-    -- result, whose arrows are all `LTop` by design (§3.2), and `b` is
-    -- store-zonked, so `b` carries `LVar` wherever an arrow was never
-    -- written. A plain `==` reports those two as DIFFERENT and then
-    -- `sameShapeModuloNumeric` — which ignores annotations entirely — answers
-    -- True, flipping `useBodyType` at 14 `Let`s on the self-compile. Byte
-    -- neutral there (the labels are one key point), but a real behaviour drift
-    -- at a def-type SELECTION site, and Phase 1a is a pure relabel.
     if Mono.eqModuloTopLabel a b then
         False
 
@@ -4791,6 +4363,10 @@ numericLeafOnlyDiff a b =
         sameShapeModuloNumeric a b
 
 
+{-| Tells whether two types have the same structure, treating `Int`, `Float`
+and a `number` variable as interchangeable (though `Int` against `Int` is
+compared with `==` like any other leaf). Lambda sets are ignored.
+-}
 sameShapeModuloNumeric : Mono.MonoType -> Mono.MonoType -> Bool
 sameShapeModuloNumeric a b =
     case ( a, b ) of
@@ -4844,15 +4420,8 @@ sameShapeModuloNumeric a b =
             a == b
 
 
-{-| Pairwise `&&` over two lists, `False` when their lengths differ.
-
-Replaces `List.length xs == List.length ys && List.all identity (List.map2 f xs ys)`,
-which measured both lists, allocated a `List Bool` at full length, and — the
-part that actually cost — evaluated the recursive `f` for every pair even after
-the first mismatch. The length check cannot just be dropped from that form,
-because `List.map2` truncates silently; matching the two spines together
-subsumes it.
-
+{-| Tells whether `f` holds for every pair of elements at the same position;
+`False` when the lists differ in length. Stops at the first pair that fails.
 -}
 allPairs : (a -> b -> Bool) -> List a -> List b -> Bool
 allPairs f xs ys =
@@ -4867,8 +4436,8 @@ allPairs f xs ys =
             False
 
 
-{-| Is `narrow` a record whose keys are a STRICT subset of record `full`'s keys?
-(The signature of row-polymorphic narrowing.)
+{-| Tells whether both types are records and `narrow`'s fields are a strict
+subset of `full`'s.
 -}
 recordKeySubset : Mono.MonoType -> Mono.MonoType -> Bool
 recordKeySubset narrow full =
@@ -4880,9 +4449,12 @@ recordKeySubset narrow full =
             False
 
 
+{-| Translates a record update. Its type is the classified type with the
+translated record's fields added where the classified type lacks them
+(`unionRecordTypes`).
+-}
 translateUpdate : TOpt.Expr TypeIds.MVarId -> DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId) -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateUpdate record updates canType s0 =
-    -- M6: direct state-passing (desugared andThen/map) → byte-identical.
     case classifyAs Mono.tkClassLet canType s0 of
         ( monoType, s1 ) ->
             case translate record s1 of
@@ -4909,8 +4481,9 @@ translateUpdate record updates canType s0 =
                             ( Mono.MonoRecordUpdate monoRecord monoUpdatesRev resultMonoType, s3 )
 
 
-{-| `Mono.mRecord (Dict.union resultFields recordFields)` from the two record types,
-matching the original Update result-type computation.
+{-| Returns the record type with the fields of `classified`, plus those of
+`recordType` it lacks; a field in both keeps `classified`'s type. When either
+is not a record, returns `classified`.
 -}
 unionRecordTypes : Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 unionRecordTypes classified recordType =
@@ -4929,29 +4502,38 @@ unionRecordTypes classified recordType =
 -- ====== LET ======
 
 
+{-| Translates a `let` with one definition.
+
+A definition of function type, or of a type that contains a function and has
+a free type variable, is translated once per type it is used at
+(`translateLocalMultiLet`). A definition of an unresolved `number` type is
+handled by `translateNumberMultiLet`. Any other value is translated once and
+bound at its classified type, or at the right-hand side's own type where the
+classified type has a type variable, is a narrower record, or differs only by
+`number` pollution (`numericLeafOnlyDiff`, for types without a `CEcoValue`
+variable). With LSS on, a classified type that is kept is given the right-hand
+side's lambda sets.
+
+A tail-recursive definition is translated after the `let` body, so that the
+body's uses record the types it is used at. Used at one type or none, it is
+translated once under its own name (`translateTailDefSingle`); used at two or
+more, once per type (`translateTailDefInstances`).
+
+-}
 translateLet : TOpt.Def TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateLet def body letCanType sTop =
     case def of
         TOpt.Def _ name defBody defCanType ->
             if isFunctionType defCanType || (typeContainsCanLambda defCanType && KernelAbi.hasAnyFreeVar defCanType) then
-                -- Function-typed lets AND lambda-CONTAINING lets with unresolved
-                -- vars (a list/record of closures — the original engine's
-                -- value-multi gate `typeContainsLambda && hasVar`) route through
-                -- body-first discovery + per-instance re-translation, so a use at
-                -- a concrete type re-specializes the closures inside.
                 translateLocalMultiLet name defBody body letCanType sTop
 
             else
-                -- M6: direct state-passing (desugared andThen; plain-let path is the
-                -- common case). The number-multi/local-multi sub-paths keep their own
-                -- shapes. Monad-law-preserving → byte-identical.
                 case isNumberMultiEligible defCanType sTop of
                     ( eligible, s1 ) ->
                         if eligible then
                             translateNumberMultiLet name defBody body letCanType s1
 
                         else
-                            -- Plain non-function, non-number value let.
                             case translate defBody s1 of
                                 ( monoDefBody, s2 ) ->
                                     case classifyAs Mono.tkClassLet defCanType s2 of
@@ -4962,21 +4544,9 @@ translateLet def body letCanType sTop =
 
                                                 useBodyType =
                                                     Mono.containsAnyMVar defMonoType0
-                                                        -- A closed-narrow (row-poly) classified type defers
-                                                        -- to the body's actual/full record type (layout).
                                                         || recordKeySubset defMonoType0 bodyType
-                                                        -- Same shape differing ONLY in numeric leaves:
-                                                        -- the classify carries Float pollution from a
-                                                        -- sibling use of a shared number var; the body IS
-                                                        -- the value (LetNumberIndirectDual).
                                                         || (not (monoTypeMentionsEco bodyType) && numericLeafOnlyDiff defMonoType0 bodyType)
 
-                                                -- F3-b (`lss.flow.letOverlay`,
-                                                -- DEFAULT-ON 2026-09-16,
-                                                -- unconditional 2026-09-18):
-                                                -- `leak|letAnno` 58 -> 0,
-                                                -- ⊤ 698 -> 668, `var` +30 —
-                                                -- a ⊤-manufacturer removal.
                                                 letOverlay =
                                                     s3.env.lss.enabled
 
@@ -4985,21 +4555,12 @@ translateLet def body letCanType sTop =
                                                         bodyType
 
                                                     else if letOverlay then
-                                                        -- F3-b (plans/lss-container-payload-transport.md
-                                                        -- §12.9.5): the classify's STRUCTURE (the ABI
-                                                        -- guard) with the translated RHS's ANNOTATIONS —
-                                                        -- the top-level `TailDef` precedent. Closes the
-                                                        -- `leak|letAnno` class below.
                                                         Mono.overlayAnnotations defMonoType0 bodyType
 
                                                     else
                                                         defMonoType0
 
-                                                -- LSS_026 census (plan §2.1 row 5): the annotation-DROP leak.
-                                                -- When the classify wins over an arrow-bearing RHS, any set
-                                                -- annotations on `bodyType` never reach the varEnv, so
-                                                -- `enrichFromEnv` later enriches uses of this local from an
-                                                -- annotation-free type. Report-gated; cheap check first.
+                                                -- Counts a binding whose right-hand side's lambda sets are dropped.
                                                 s3b =
                                                     if not s3.env.lss.report || useBodyType || letOverlay || not (canTypeHasArrow defCanType) then
                                                         s3
@@ -5012,19 +4573,11 @@ translateLet def body letCanType sTop =
                                                 s3b
 
         TOpt.TailDef _ name typedArgs tailBody defCanType _ ->
-            -- Local tail-recursive function: BODY-FIRST discovery (uses record the
-            -- applied type via the local-multi stack), then — for the single-instance
-            -- case — demand-unify the def's type with the recorded instance IN the
-            -- item store and translate the def ONCE under the bare name (the
-            -- TailCall self-reference needs no renaming). Multi-instance falls back
-            -- to the declared type (rare; would need renamed self-calls).
             case classifyAs Mono.tkClassLet defCanType (Engine.pushLocalMulti Nothing Nothing name sTop) of
                 ( declType, s1 ) ->
                     case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
                         ( monoBody0, s2 ) ->
-                            -- E4a deferral: let-functions nested in this body owe their
-                            -- use-site overlay to the outermost let-function; a tail def
-                            -- pushes the same stack, so it must flush (or pass up) too.
+                            -- Takes part in handing nested let-functions' use-site overlays up (see `flushLocalMultiEnrich`).
                             case Engine.popLocalMulti s2 of
                                 ( maybeEntry, s3 ) ->
                                     case flushLocalMultiEnrich name maybeEntry [] monoBody0 s3 of
@@ -5037,8 +4590,8 @@ translateLet def body letCanType sTop =
                                                     translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4
 
 
-{-| The recorded instances of a local-multi entry when there are two or more
-(each needs its own renamed `MonoTailDef`), else `Nothing`.
+{-| Returns the recorded instances of a let-bound function when there are two
+or more, else `Nothing`.
 -}
 multiInstances : Maybe Engine.NumberMultiEntry -> Maybe (List Engine.NumberInstance)
 multiInstances maybeEntry =
@@ -5055,9 +4608,15 @@ multiInstances maybeEntry =
             Nothing
 
 
-{-| A local tail-recursive function used at one type (or none): demand-unify
-the def's type with the recorded instance IN the item store and translate the
-def ONCE under the bare name (the TailCall self-reference needs no renaming).
+{-| Translates a local tail-recursive function used at one type or none, once,
+under its own name, and builds the `let` around the already translated body.
+
+With one recorded instance, the definition's type is unified, best effort, with
+that instance's type in the item store, and the parameter and definition types
+come from it (`tailDefBindingTypes`); with none, they are classified. The
+`let`'s type is the body's type where the classified one has a type variable
+or differs only by `number` pollution.
+
 -}
 translateTailDefSingle : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody letCanType s4 =
@@ -5078,10 +4637,6 @@ translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody le
                                                 ( maybeAnnVar, s5 ) =
                                                     case singleInstance of
                                                         Just instType ->
-                                                            -- Bind the def's vars to the single recorded
-                                                            -- demand (best-effort, shared store). The seeded
-                                                            -- var is handed on: F3-b reads the binding types
-                                                            -- from its zonk.
                                                             case Store.loadTypeS defCanType s4 of
                                                                 ( annVar, sL1 ) ->
                                                                     case Store.monoTypeToVarS instType sL1 of
@@ -5118,13 +4673,14 @@ translateTailDefSingle name typedArgs tailBody defCanType maybeEntry monoBody le
                                                                     ( Mono.MonoLet (Mono.MonoTailDef name monoParams monoTailBody) monoBody letType, s8 )
 
 
-{-| A local tail-recursive function used at two or more types (MONO\_011).
-The body's uses already name the per-instance bindings (`f`, `f$1`, …), so
-each instance gets its own `MonoTailDef`: the def is re-translated in a
-scratch store with its type demand-unified to that instance (as
-`retranslateWithTag` does for a plain `Def`), and its self-references — tail
-calls and any other use of the name inside the body — are renamed to the
-instance's name. Instance 0 keeps the bare name.
+{-| Translates a local tail-recursive function used at two or more types,
+once per type, and nests the `let`s around the already translated body.
+
+The body's uses already name the instances' bindings (`f`, `f$1`, ...). Each
+instance's definition is translated at its type in a scratch store
+(`retranslateTailAtInstance`), and its references to itself, tail calls
+included, are renamed to the instance's name (`renameSelfReferences`).
+
 -}
 translateTailDefInstances : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> List Engine.NumberInstance -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateTailDefInstances name typedArgs tailBody defCanType instances monoBody letCanType s0 =
@@ -5158,10 +4714,15 @@ translateTailDefInstances name typedArgs tailBody defCanType instances monoBody 
                     )
 
 
-{-| One instance of a multi-instance local tail def: in a scratch store (the
-item store is stashed and restored, as in `retranslateWithTag`), bind the
-def's type to the instance's demanded type, then derive the param types and
-translate the body under the bare name. Returns the params and the body.
+{-| Translates one instance of a local tail-recursive function, returning its
+parameters and body.
+
+The work happens in a scratch store, under the instance's own tag; the item's
+store, memos and state are put back afterwards. The definition's type is
+unified, best effort, with the instance's type, the parameter and definition
+types are taken from it (`tailDefBindingTypes`), and the body is translated
+under the function's bare name.
+
 -}
 retranslateTailAtInstance : Name -> Int -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Mono.MonoType -> Step ( List ( Name, Mono.MonoType ), Mono.MonoExpr )
 retranslateTailAtInstance name ord typedArgs tailBody defCanType instType s0 =
@@ -5197,10 +4758,10 @@ retranslateTailAtInstance name ord typedArgs tailBody defCanType instType s0 =
                     ( result, { s1 | store = sT.store, memo = sT.memo, revMemo = sT.revMemo, itemAux = Engine.restoredAux sT.itemAux s1.itemAux } )
 
 
-{-| Renames a local tail def's self-references inside its own body: tail calls,
-variable uses, and closure captures of the name (a capture's name and the uses
-in the closure body must move together). Elm forbids shadowing, so a
-name-keyed rewrite is exact.
+{-| Returns `expr` with every reference to the local `oldName` renamed to
+`newName`: variable uses, tail calls, and closure captures, whose names must
+change together with the uses inside the closure. Elm forbids shadowing, so
+every occurrence of the name is the same variable.
 -}
 renameSelfReferences : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
 renameSelfReferences oldName newName expr =
@@ -5257,12 +4818,14 @@ renameSelfReferences oldName newName expr =
             expr
 
 
-{-| F3-b (plans/lss-container-payload-transport.md §12.9.5): a local tail-def's
-param and binding types. lss off, flag off, or no single-instance demand var:
-exactly the storeless classifies. Otherwise the top-level `TailDef` recipe
-(`specializeCycleFuncDef`): classify for STRUCTURE, the zonk of the
-demand-seeded annotation var for ANNOTATIONS, params peeled from the overlaid
-function type when the arity matches.
+{-| Returns a local tail-recursive function's parameter types and its own
+type.
+
+Each parameter is classified as a parameter and the function's type as a
+`let`. With LSS on and a seeded annotation variable, the function's type is
+given the lambda sets of that variable read back, and each parameter is given
+the sets of the matching parameter peeled from it when the counts agree.
+
 -}
 tailDefBindingTypes : Maybe Vars.Variable -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> Can.Type TypeIds.MVarId -> Step ( List ( Name, Mono.MonoType ), Mono.MonoType )
 tailDefBindingTypes maybeAnnVar typedArgs defCanType s0 =
@@ -5303,6 +4866,10 @@ tailDefBindingTypes maybeAnnVar typedArgs defCanType s0 =
                             ( ( classifiedParams, classifiedType ), s2 )
 
 
+{-| Translates a `let` body and builds the `let` around `monoDef`. The
+`let`'s type is the body's type where the classified one has a type variable
+or differs only by `number` pollution.
+-}
 finishLet : Mono.MonoDef -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 finishLet monoDef body letCanType s0 =
     case translate body s0 of
@@ -5323,20 +4890,27 @@ finishLet monoDef body letCanType s0 =
                     ( Mono.MonoLet monoDef monoBody letType, s2 )
 
 
+{-| Binds each name to its type in the variable environment.
+-}
 insertVars : List ( Name, Mono.MonoType ) -> Engine.S -> Engine.S
 insertVars pairs s0 =
     List.foldl (\( name, t ) sAcc -> Engine.insertVar name t sAcc) s0 pairs
 
 
 
--- ====== NUMBER-MULTI (a let-bound `number` used at Int AND Float) ======
+-- ====== LET-BOUND NUMBERS ======
 
 
-{-| A `let n = <number>` whose type carries an unresolved `number` var and a
-numeric-fixable shape gets multi-specialized: one binding per distinct
-monomorphic type it is used at (the first/Int keeps the bare name, later ones
-get `n$v<idx>`). Discovery is body-first (each use records its instance), then
-the eager Int def is emitted outermost, the extra copies nested inside.
+{-| Translates a `let` that binds a value of unresolved `number` type, once
+per type it is used at.
+
+The right-hand side is translated first at the type it has now (the eager
+instance), and recorded as the first instance, which keeps the bare name. The
+`let` body is then translated, each use recording the type it needs. Each
+other recorded type gets a copy named `n$v<k>`, translated again at that type
+(`buildFloatDefs`). The eager definition is outermost and the copies are
+nested inside it.
+
 -}
 translateNumberMultiLet : Name -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateNumberMultiLet name defBody body letCanType s0 =
@@ -5344,10 +4918,7 @@ translateNumberMultiLet name defBody body letCanType s0 =
         ( eagerBody, s1 ) ->
             case Engine.recordNumberInstance name (Mono.typeOf eagerBody) (Engine.pushNumberMulti name s1) of
                 ( _, s2 ) ->
-                    -- Bind the eager name in varEnv (scoped to the body) so
-                    -- destructor roots (`let (a,b) = (1,2)` => root `_v0`) and
-                    -- any non-VarLocal consumer resolve it. VarLocal uses still
-                    -- take the recordNumberInstance path (isTarget wins first).
+                    -- Bound for readers other than a variable use, such as a destructor's root.
                     case Engine.scoped (\sx -> translate body (Engine.insertVar name (Mono.typeOf eagerBody) sx)) s2 of
                         ( monoBody, s3 ) ->
                             case Engine.popNumberMulti s3 of
@@ -5373,9 +4944,10 @@ translateNumberMultiLet name defBody body letCanType s0 =
                                                     ( Mono.MonoLet (Mono.MonoDef name eagerBody) bodyWithFloats letType, s6 )
 
 
-{-| Build the per-type extra copies (`n$v1`, …), each by re-translating the RHS
-under a demand of the instance type (so e.g. `10 + 20` becomes the Float add).
-Excludes the eager/first instance (which keeps the bare name).
+{-| Returns a definition for each recorded instance of a let-bound number
+other than the one that keeps the bare name, each translated again at its
+instance's type (`retranslateAt`), so that `10 + 20` becomes a `Float`
+addition in a `Float` copy.
 -}
 buildFloatDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
 buildFloatDefs name defBody maybeEntry s0 =
@@ -5394,39 +4966,41 @@ buildFloatDefs name defBody maybeEntry s0 =
             ( [], s0 )
 
 
-{-| Re-translate an expression under a demanded type, in a fresh solver store
-(so the demand's concretization doesn't contaminate the surrounding item);
-`varEnv` and global state (registry/worklist) are kept so it can reference outer
-locals and enqueue its callees.
-
-Carries the enclosing instance tag unchanged — this is the NUMBER-multi entry
-point (`buildFloatDefs`), which deliberately does NOT instance-qualify
-(plans/lss-instance-qualified-members.md §3.7): Int and Float instances differ
-in LAYOUT, so AbiCloning already separates them into different buckets and
-already stamps them. Qualifying them would mint member ids and split specs for
-nothing.
-
+{-| Translates an expression again at `instType`, as `retranslateWithTag`
+does, keeping the enclosing instance tag. Copies of a let-bound number are not
+given tags of their own: copies at different types already differ in layout.
 -}
 retranslateAt : TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateAt defBody instType s0 =
     retranslateWithTag s0.itemAux.currentLocalInstance s0.itemAux.retranslating defBody instType s0
 
 
-{-| `retranslateAt` for a LOCAL-multi instance: the re-translation runs under
-the instance's own composed tag, so lambdas minted inside it carry member ids
-distinct from the same source lambda's ids in sibling instances
-(plans/lss-instance-qualified-members.md §3). Flag-off, and past the §3.3 cap,
-this is exactly `retranslateAt`.
+{-| Translates instance `ord` of the let-bound function `name` again at
+`instType`, as `retranslateWithTag` does, under the instance's own tag
+(`Engine.localInstanceTagFor`), so lambdas minted inside it get member ids
+apart from the same lambdas in other instances. When the right-hand side is a
+lambda, a reference to `name` inside it is given this instance's member
+(`injectRetranslatingSelf`).
 -}
 retranslateAtInstance : Name -> Int -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateAtInstance name ord defBody instType s0 =
     case Engine.localInstanceTagFor ord s0 of
         ( instTag, s1 ) ->
-            -- F2.b: the def's own name resolves to THIS instance's id inside
-            -- the re-translation (`injectRetranslatingSelf`).
             retranslateWithTag instTag (Maybe.map (\( lam, arity ) -> ( name, lam, arity )) (rhsLamOf defBody)) defBody instType s1
 
 
+{-| Translates `defBody` at `instType` in a scratch store, with the given
+instance tag and self-reference record, and puts the item's store, memos and
+store-scoped state back afterwards. The variable environment and the engine's
+global state are kept, so the expression can refer to outer locals and
+enqueue specs.
+
+The scratch store is seeded through `demandUnifyRoot`, so a lambda right-hand
+side takes its type from the demand. State that names store variables is
+cleared on entry (`Engine.clearedAux`), because those indices mean nothing in
+the item's store.
+
+-}
 retranslateWithTag : Int -> Maybe ( Name, TypeIds.SrcLambdaId, Int ) -> TOpt.Expr TypeIds.MVarId -> Mono.MonoType -> Step Mono.MonoExpr
 retranslateWithTag instTag retranslating defBody instType s0 =
     let
@@ -5434,10 +5008,6 @@ retranslateWithTag instTag retranslating defBody instType s0 =
             Engine.clearedAux s0.itemAux
 
         sFresh =
-            -- The MONO_029 read lists are stashed like the store: scratch
-            -- Point indices are meaningless against the restored item store
-            -- (leaking them aliases low outer point indices and livelocks the
-            -- saturation loop — found by the R0 census on elm-parser).
             { s0 | store = Engine.freshStore, memo = Dict.empty, revMemo = Array.empty, itemAux = { clearedA | currentLocalInstance = instTag, retranslating = retranslating } }
 
         step =
@@ -5445,10 +5015,14 @@ retranslateWithTag instTag retranslating defBody instType s0 =
     in
     case step sFresh of
         ( monoExpr, s1 ) ->
-            -- Drop the scratch store and reinstate the stashed one.
             ( monoExpr, { s1 | store = s0.store, memo = s0.memo, revMemo = s0.revMemo, itemAux = Engine.restoredAux s0.itemAux s1.itemAux } )
 
 
+{-| Tells whether a `let` definition of type `defCanType` should be
+specialized per use type as a number: its type has a free variable constrained
+to `number` in the item's super table, and its classified type is a numeric
+shape (`isNumericFixableShape`).
+-}
 isNumberMultiEligible : Can.Type TypeIds.MVarId -> Step Bool
 isNumberMultiEligible defCanType s0 =
     case hasNumberVar defCanType s0 of
@@ -5461,6 +5035,9 @@ isNumberMultiEligible defCanType s0 =
             ( False, s1 )
 
 
+{-| Tells whether any free type variable of a canonical type is constrained
+to `number` in the item's super table.
+-}
 hasNumberVar : Can.Type TypeIds.MVarId -> Step Bool
 hasNumberVar defCanType s =
     ( List.any (\id -> Dict.get (Id.toComparable id) s.superTable == Just Vars.Number) (KernelAbi.freeVarIds defCanType [])
@@ -5468,6 +5045,11 @@ hasNumberVar defCanType s =
     )
 
 
+{-| Tells whether a type is one a let-bound number can be specialized at per
+use: `Int`, `Float`, a `number` variable, a non-empty tuple or record made only
+of such types, a list of one, or a custom type with at least one such argument
+and no other argument that mentions a number.
+-}
 isNumericFixableShape : Mono.MonoType -> Bool
 isNumericFixableShape monoType =
     case monoType of
@@ -5490,8 +5072,6 @@ isNumericFixableShape monoType =
             isNumericFixableShape elem
 
         Mono.MCustom _ _ _ args ->
-            -- A custom type with at least one numeric-fixable arg and no arg the
-            -- recording couldn't re-type (mirrors the original engine's rule).
             List.any isNumericFixableShape args
                 && List.all (\a -> isNumericFixableShape a || not (monoTypeMentionsNumeric a)) args
 
@@ -5499,6 +5079,9 @@ isNumericFixableShape monoType =
             False
 
 
+{-| Tells whether a type contains `Int`, `Float` or a `number` variable
+anywhere.
+-}
 monoTypeMentionsNumeric : Mono.MonoType -> Bool
 monoTypeMentionsNumeric mt =
     case mt of
@@ -5534,14 +5117,16 @@ monoTypeMentionsNumeric mt =
 -- ====== RECORD ACCESS ======
 
 
-{-| Translate a record access. When the record is a direct use of a number-multi
-target and the access result is demanded at a CONCRETE scalar number, this is the
-access-analogue of the destructor divert: overlay ONLY the accessed field onto the
-root's eager type, record that root instance (`r$vN`), and point the access at it
-— each access site refines its own slot independently (sibling uses share solved
-type vars, so flowing the demand through the store would cross-pollute them).
-Otherwise: generic path, connecting the access result's var to the record-use
-type's field slot (demand flow for single-owner shapes).
+{-| Translates a field access.
+
+When the record is a let-bound number value being specialized per use and the
+access's classified type is `Int` or `Float`, the record's eager type with
+only this field set to that type is recorded as an instance of the record, and
+the access reads from that instance (`r$v<k>`). Each access thus picks its own
+instance; flowing the type through the store instead would reach the other
+uses, which share type variables. Otherwise the access is translated by
+`genericAccess`.
+
 -}
 translateAccess : TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
 translateAccess record fieldName meta s0 =
@@ -5571,8 +5156,8 @@ translateAccess record fieldName meta s0 =
             genericAccess record fieldName meta s0
 
 
-{-| The local name a record-access scrutinee refers to (if it is a direct local
-reference, tracked or not).
+{-| Returns the name of the local an expression refers to, when it is a
+reference to a local.
 -}
 accessedLocalName : TOpt.Expr TypeIds.MVarId -> Maybe Name
 accessedLocalName record =
@@ -5587,6 +5172,10 @@ accessedLocalName record =
             Nothing
 
 
+{-| Translates a field access by connecting its type to the field's type in
+the record's canonical type, translating the record, and choosing the type with
+`refineAccessType`.
+-}
 genericAccess : TOpt.Expr TypeIds.MVarId -> Name -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
 genericAccess record fieldName meta s0 =
     let
@@ -5610,10 +5199,16 @@ genericAccess record fieldName meta s0 =
 
 
 
--- ====== DESTRUCTOR-DERIVED MULTI-INSTANCE (MONO_028) ======
+-- ====== DESTRUCTURING ======
 
 
-{-| Original eager destructor handling (bind then translate body, always emit).
+{-| Translates a destructuring that binds one name.
+
+The destructor's canonical type is remembered under the bound name, and
+connected to the type of the slot it reads in the root's canonical type. A
+later call of a function bound this way (`appShapeConnect`) can then carry
+its argument types back to the value it was taken from.
+
 -}
 generalDestruct : TOpt.Destructor TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
 generalDestruct ((TOpt.Destructor dname0 _ dmeta0) as destructor) body meta s0 =
@@ -5621,10 +5216,6 @@ generalDestruct ((TOpt.Destructor dname0 _ dmeta0) as destructor) body meta s0 =
         (TOpt.Destructor _ dpath0 _) =
             destructor
 
-        -- Remember the derived name -> destructor canType, AND connect the
-        -- destructor's (freshly-rebuilt) type ids to the ROOT's canonical slot
-        -- type: a later CALL of a derived FUNCTION (`getter rec`) then flows its
-        -- concreteness back into the root case/tuple's own vars.
         s1 =
             { s0 | derivedDestructors = Dict.insert dname0 dmeta0.tipe s0.derivedDestructors }
 
@@ -5639,6 +5230,10 @@ generalDestruct ((TOpt.Destructor dname0 _ dmeta0) as destructor) body meta s0 =
     generalDestructBody destructor body meta s2
 
 
+{-| Translates the destructor (`specializeDestructor`), binds its name at
+the destructor's type, and translates the body. The node's type is the
+classified one, or the body's type where that has a type variable.
+-}
 generalDestructBody : TOpt.Destructor TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> TOpt.Meta TypeIds.MVarId -> Step Mono.MonoExpr
 generalDestructBody destructor body meta s0 =
     case classifyAs Mono.tkClassDestr meta.tipe s0 of
@@ -5667,12 +5262,16 @@ generalDestructBody destructor body meta s0 =
                         s2
 
 
-{-| Body-first specialization of a `Destruct` whose root is a number-multi target.
-Seed `dname` as a number-multi target, specialize the body FIRST so its uses
-record one instance per demanded numeric type, then for each instance materialise
-a slot-refined root instance (`recordNumberInstance rootName` — the root's own
-`translateNumberMultiLet` emits it) and emit a renamed destructor. The eager Int
-destructor is emitted only if the bare `dname` is actually referenced.
+{-| Translates a destructuring of a scalar number out of a let-bound number
+value that is being specialized per use.
+
+The bound name is itself treated as a number specialized per use, and the body
+is translated first, each use recording its type. For each recorded type, an
+instance of the root with only this slot set to that type is recorded on the
+root (the root's own `let` emits it), and a destructor reading from that root
+instance is emitted under the instance's name. The destructor for the bare
+name is emitted only when the body still refers to it.
+
 -}
 specializeNumberDestruct : Name -> TOpt.Path -> TOpt.Meta TypeIds.MVarId -> Name -> Mono.MonoType -> TOpt.Expr TypeIds.MVarId -> Step Mono.MonoExpr
 specializeNumberDestruct dname path dmeta rootName eagerRootType body s0 =
@@ -5707,16 +5306,19 @@ specializeNumberDestruct dname path dmeta rootName eagerRootType body s0 =
                                             )
 
 
-{-| For one recorded instance of the destructor name, materialise the root value
-instance with only this slot refined (overlay the leaf onto the eager root type),
-register it on the root's multi-entry, and build the renamed destructor pointing
-at that fresh root instance. Returns Nothing if the slot can't be refined.
+{-| Builds, for one recorded instance of a destructured name, the root
+instance with only this slot set to the instance's type, records it on the
+root, and returns a destructor under the instance's name that reads from it.
+Returns `Nothing` when the slot cannot be set (`refineRootInstance`).
 -}
 buildRefinedDestructor : Name -> Mono.MonoType -> TOpt.Path -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
 buildRefinedDestructor rootName eagerRootType path inst s0 =
     buildRefinedDestructorWith s0.env.globalTypeEnv rootName eagerRootType path inst s0
 
 
+{-| Does the work of `buildRefinedDestructor` with the global type
+environment given.
+-}
 buildRefinedDestructorWith : TypeEnv.GlobalTypeEnv -> Name -> Mono.MonoType -> TOpt.Path -> Engine.NumberInstance -> Step (Maybe Mono.MonoDestructor)
 buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
     case refineRootInstance gte eagerRootType path inst.monoType of
@@ -5737,10 +5339,10 @@ buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
             ( Nothing, s0 )
 
 
-{-| Overlay `leaf` onto the eager root container at the slot selected by `path`
-(tuple index / record field / custom-type payload / unbox wrapper), leaving
-other slots as they were. Nothing for list/array paths (those stay on the
-general destructor path).
+{-| Returns `container` with the slot `path` selects (a tuple element, record
+field, constructor field or unboxed value) replaced by `leaf`, other slots
+unchanged. Returns `Nothing` for a list path, a path it cannot follow, or a
+constructor field whose declared type is not a bare type parameter.
 -}
 refineRootInstance : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Mono.MonoType -> Maybe Mono.MonoType
 refineRootInstance gte container path leaf =
@@ -5778,8 +5380,9 @@ refineRootInstance gte container path leaf =
             Nothing
 
 
-{-| Set the union type-arg selected by ctor `ctorName`'s field `idx` to `leaf`
-(only when that field's declared type is a bare union type-param).
+{-| Returns the custom type `container` with the type argument that
+constructor `ctorName`'s field `idx` is declared as set to `leaf`, when that
+field's declared type is a bare type parameter; otherwise `Nothing`.
 -}
 replaceCustomSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceCustomSlot gte ctorName idx container leaf =
@@ -5820,8 +5423,9 @@ replaceCustomSlot gte ctorName idx container leaf =
             Nothing
 
 
-{-| Set the single type-arg of an @unbox wrapper's payload to `leaf` (only when
-the single ctor's single field is a bare union type-param).
+{-| Returns the custom type `container` with the type argument its single
+constructor's single field is declared as set to `leaf`, when that field's
+declared type is a bare type parameter; otherwise `Nothing`.
 -}
 replaceUnboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceUnboxSlot gte container leaf =
@@ -5863,6 +5467,8 @@ replaceUnboxSlot gte container leaf =
             Nothing
 
 
+{-| Returns the position of a type parameter in a type's parameter list.
+-}
 paramPosition : Name -> List Name -> Maybe Int
 paramPosition name vars =
     List.indexedMap Tuple.pair vars
@@ -5871,6 +5477,10 @@ paramPosition name vars =
         |> Maybe.map Tuple.first
 
 
+{-| Returns the type of the slot `path` selects in `container`, or `Nothing`
+for a list path, a path it cannot follow, or a constructor field whose
+declared type is not a bare type parameter.
+-}
 navigateType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Maybe Mono.MonoType
 navigateType gte container path =
     case path of
@@ -5902,8 +5512,8 @@ navigateType gte container path =
             Nothing
 
 
-{-| Read the type of ctor `ctorName`'s field `idx` from a custom container
-(only when the field's declared type is a bare union type-param).
+{-| Returns the type of constructor `ctorName`'s field `idx` in the custom
+type `container`, when the field's declared type is a bare type parameter.
 -}
 customSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 customSlot gte ctorName idx container =
@@ -5930,6 +5540,10 @@ customSlot gte ctorName idx container =
             Nothing
 
 
+{-| Returns the type of the single field of a custom type with one
+constructor of one field, when that field's declared type is a bare type
+parameter.
+-}
 unboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Maybe Mono.MonoType
 unboxSlot gte container =
     case container of
@@ -5956,6 +5570,8 @@ unboxSlot gte container =
             Nothing
 
 
+{-| Returns the type of tuple element `i`.
+-}
 tupleSlot : Mono.MonoType -> Int -> Maybe Mono.MonoType
 tupleSlot t i =
     case t of
@@ -5966,6 +5582,8 @@ tupleSlot t i =
             Nothing
 
 
+{-| Returns the type of record field `f`.
+-}
 recordSlot : String -> Mono.MonoType -> Maybe Mono.MonoType
 recordSlot f t =
     case t of
@@ -5976,6 +5594,9 @@ recordSlot f t =
             Nothing
 
 
+{-| Returns the tuple type with element `i` replaced by `leaf`, or `Nothing`
+when `i` is out of range or the type is not a tuple.
+-}
 replaceIndexSlot : Mono.MonoType -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 replaceIndexSlot t i leaf =
     case t of
@@ -6002,6 +5623,9 @@ replaceIndexSlot t i leaf =
             Nothing
 
 
+{-| Returns the record type with field `f` set to `leaf`, adding it if it is
+missing.
+-}
 replaceRecordSlot : Mono.MonoType -> String -> Mono.MonoType -> Maybe Mono.MonoType
 replaceRecordSlot t f leaf =
     case t of
@@ -6012,7 +5636,8 @@ replaceRecordSlot t f leaf =
             Nothing
 
 
-{-| Navigate a destructor path over the CANONICAL type (tuple/record slots).
+{-| Returns the canonical type of the slot a destructor path selects, for
+paths made of tuple elements and record fields; `Nothing` for any other step.
 -}
 canSlotForPath : Can.Type TypeIds.MVarId -> TOpt.Path -> Maybe (Can.Type TypeIds.MVarId)
 canSlotForPath rootCan path =
@@ -6033,6 +5658,8 @@ canSlotForPath rootCan path =
             Nothing
 
 
+{-| Returns the name of the variable a destructor path starts from.
+-}
 pathRootName : TOpt.Path -> Name
 pathRootName path =
     case path of
@@ -6052,6 +5679,9 @@ pathRootName path =
             pathRootName sub
 
 
+{-| Returns the path with its root variable renamed from `oldName` to
+`newName`.
+-}
 rewriteRootInPath : Name -> Name -> TOpt.Path -> TOpt.Path
 rewriteRootInPath oldName newName path =
     case path of
@@ -6077,6 +5707,8 @@ rewriteRootInPath oldName newName path =
             TOpt.Unbox (rewriteRootInPath oldName newName sub)
 
 
+{-| Tells whether a type is `Int`, `Float` or a `number` variable.
+-}
 isScalarNumber : Mono.MonoType -> Bool
 isScalarNumber t =
     case t of
@@ -6093,16 +5725,20 @@ isScalarNumber t =
             False
 
 
+{-| Tells whether an expression refers to the local `name` without binding
+it.
+-}
 exprReferencesLocal : Name -> Mono.MonoExpr -> Bool
 exprReferencesLocal name expr =
     List.member name (Closure.findFreeLocals Set.empty expr)
 
 
 
--- ====== LOCAL-MULTI (a let-bound function used at multiple types) ======
+-- ====== LET-BOUND FUNCTIONS ======
 
 
-{-| Does the canonical type CONTAIN a lambda anywhere (through aliases)?
+{-| Tells whether a canonical type contains an arrow anywhere, including in
+an alias's arguments and its expansion.
 -}
 typeContainsCanLambda : Can.Type TypeIds.MVarId -> Bool
 typeContainsCanLambda t =
@@ -6129,9 +5765,8 @@ typeContainsCanLambda t =
             False
 
 
-{-| Is this a function type (possibly through aliases)? Every let-bound function
-routes through local-multi (a single use collapses to the bare name; N distinct
-applied types produce `f`, `f$1`, …).
+{-| Tells whether a canonical type is a function type, looking through
+aliases.
 -}
 isFunctionType : Can.Type TypeIds.MVarId -> Bool
 isFunctionType t =
@@ -6149,10 +5784,17 @@ isFunctionType t =
             False
 
 
-{-| Specialize a let-bound function per distinct type it is applied at. Discovery
-is body-first (each use records its applied type), then each recorded instance is
-produced by re-translating the RHS under that type (in a fresh store), renamed to
-its per-instance name. An unused function emits its bare def once.
+{-| Translates a `let` that binds a function (or a value containing functions
+with a free type variable), once per type the binding is used at.
+
+The `let` body is translated first, each use recording the type it needs. Each
+recorded type gets a definition (`f`, `f$1`, ...) whose right-hand side is
+translated again at that type in a scratch store (`buildLocalDefs`); a binding
+the body never uses gets one definition at its classified type. With LSS on,
+the uses are then given the lambda sets of their instance's definition
+(`flushLocalMultiEnrich`). The `let`'s type is computed from the body before
+that overlay.
+
 -}
 translateLocalMultiLet : Name -> TOpt.Expr TypeIds.MVarId -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
 translateLocalMultiLet name defBody body letCanType s0 =
@@ -6165,26 +5807,18 @@ translateLocalMultiLet name defBody body letCanType s0 =
     in
     case classifyAs Mono.tkClassLet (TOpt.typeOf defBody) sB of
         ( declType, s1 ) ->
-            -- Bind the name (scoped) so non-VarLocal consumers — e.g. a
-            -- destructor root over a tuple-of-functions binding — resolve.
+            -- Bound for readers other than a variable use, such as a destructor's root.
             case Engine.scoped (\sx -> translate body (Engine.insertVar name declType sx)) s1 of
                 ( monoBody, s2 ) ->
                     case Engine.popLocalMulti s2 of
                         ( maybeEntry, s3 ) ->
                             case buildLocalDefs name defBody maybeEntry s3 of
                                 ( instanceDefs, s4 ) ->
-                                    -- E4a (plan §9.1): transport the per-instance re-translated
-                                    -- defs' lambda-set annos to the already-emitted USE sites —
-                                    -- walked now if this is the outermost let-function of the
-                                    -- item, else owed to the enclosing one's single walk
-                                    -- (`flushLocalMultiEnrich`).
                                     case flushLocalMultiEnrich name maybeEntry instanceDefs monoBody s4 of
                                         ( monoBody1, s5 ) ->
                                             case classifyAs Mono.tkClassLet letCanType s5 of
                                                 ( letType0, s6 ) ->
                                                     let
-                                                        -- letType stays computed from the UN-enriched
-                                                        -- body (its branch choice must not move flag-on).
                                                         letType =
                                                             if
                                                                 Mono.containsAnyMVar letType0
@@ -6201,9 +5835,8 @@ translateLocalMultiLet name defBody body letCanType s0 =
                                                     )
 
 
-{-| Overwrite the outermost `MonoLet`'s carried type with the let's own type
-(the fold seeds from the body's type; the whole expression's type is the let
-type). No-op for a bare body.
+{-| Returns the expression with the type of its outermost `MonoLet` replaced
+by `letType`; any other expression is returned unchanged.
 -}
 retypeLet : Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr
 retypeLet letType expr =
@@ -6215,42 +5848,22 @@ retypeLet letType expr =
             expr
 
 
-{-| E4a (plan §9.1): transport the defs' lambda-set annotations to the
-local-multi USE sites. Uses are emitted during body translation with MonoTypes
-from fresh per-use instantiations — all-`LTop` annos — while the per-instance
-re-translated def RHS (`buildLocalDefs`, carrying S's spine + indirect-result
-transport) holds the concrete sets. The runtime values reaching a use ARE the
-values that instance's RHS produces, so overlaying the def's annos onto each
-`MonoVarLocal` of the instance binding is the graph-level image of the §7.4
-def→use set join (union over uses at one layout; per-layout instances carry
-their own re-translated type, so precision is per-instance).
-`Mono.overlayAnnotations` is shape-guarded (keeps the use's structure, falls
-back on mismatch — worst case an untransported `LTop`, sound widening), and
-Elm's no-shadowing rule plus `$`-suffixed freshNames make the name-keyed
-rewrite safe. lss-off: identity, so flag-off output is byte-identical.
+{-| Returns, with LSS on, the `let` body with each use of a let-bound
+function's instance given the lambda sets of that instance's right-hand side.
+With LSS off the body is returned unchanged.
 
-DEFERRED TO THE OUTERMOST LET-FUNCTION (2026-09-04, the Aug-26 → Sep-3
-self-compile regression). The overlay used to run at EVERY let-function's
-completion as a generic `MonoTraverse.traverseExpr` over the whole let body —
-a PAP, a tuple and a rebuilt node per visited node, and a body nested under
-k let-functions rebuilt k times over. On the Sep-3 self-compile that was
-3.34e9 traversal dispatches (68 % of the program's dispatch) from 764 calls,
-at a 2.47 % hit rate. Now:
+A use was translated before its instance's definition, so its type carries no
+sets of its own, while the definition, translated at the use's type, does. The
+values reaching the use are the values that definition produces, so its sets
+are overlaid onto the use (`Mono.overlayAnnotations`, which keeps the use's
+structure). Elm forbids shadowing, so matching uses by name is exact.
 
-  - a let-function whose completion finds an ENCLOSING let-function on the
-    `localMulti` stack does not walk: it records its instance names in the
-    enclosing entry's `pendingEnrich` (inherited pendings cascade upward);
-  - the OUTERMOST let-function walks its body ONCE (`overlayLocalMultiUses`):
-    a direct walk that allocates nothing on unchanged paths, binds each
-    recorded group's `instance -> typeOf rhs` at the group's own `MonoLet`
-    chain (lexically scoped, so a sibling scope reusing a name binds its own
-    value) and overlays exactly the uses the per-let walks used to.
-
-The tree is the SAME one the per-let scheme built: own-group names are not
-overlaid inside the group's own RHSs (the old walk covered the body only),
-inherited names are (the old enclosing walk covered everything), and the
-non-outermost members of a chain carry `typeOf` of the own-overlaid body
-exactly as the completion-time fold computed it.
+To walk each body once, the work is done only by the outermost let-bound
+function of the work item. A nested one, finding an enclosing entry on the
+let-function stack, adds its own instances, and those it inherited, to that
+entry's pending set and returns the body unchanged. The outermost one walks
+its body once (`overlayLocalMultiUses`). A group's uses inside its own
+right-hand sides are not overlaid; uses of enclosing groups' instances are.
 
 -}
 flushLocalMultiEnrich : Name -> Maybe Engine.NumberMultiEntry -> List Mono.MonoDef -> Mono.MonoExpr -> Step Mono.MonoExpr
@@ -6268,10 +5881,7 @@ flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
                     Nothing ->
                         Dict.empty
 
-            -- This let's own instance bindings (`f`, `f$1`, …). Walking now,
-            -- they seed the environment directly (the chain is not wrapped
-            -- around `monoBody` yet); deferring, the enclosing walk finds
-            -- them at the chain.
+            -- Not yet wrapped around `monoBody`, so a walk here binds them at the root.
             own =
                 List.foldl
                     (\d acc ->
@@ -6294,7 +5904,6 @@ flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
         else
             case s0.localMulti of
                 top :: rest ->
-                    -- Nested: the enclosing let-function's walk covers this body.
                     ( monoBody, { s0 | localMulti = { top | pendingEnrich = Dict.union pending top.pendingEnrich } :: rest } )
 
                 [] ->
@@ -6305,16 +5914,20 @@ flushLocalMultiEnrich defName maybeEntry instanceDefs monoBody s0 =
                     ( overlayLocalMultiUses pending rootEnv monoBody, enrichCensus pending rootEnv monoBody s0 )
 
 
-{-| The single walk. `groups`: recorded instance name -> (its let's defName,
-the instance RHS type as recorded); `env`: the bindings in scope at the root.
+{-| Returns `root` with the instance uses overlaid, as `flushLocalMultiEnrich`
+describes. `groups` maps each recorded instance name to its function's name
+and the type its right-hand side had when recorded; `env` holds the instance
+bindings in scope at the root, with their types.
 -}
 overlayLocalMultiUses : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Mono.MonoExpr
 overlayLocalMultiUses groups env root =
     Maybe.withDefault root (olmExpr groups env root)
 
 
-{-| One node. `Nothing` = the subtree is unchanged (nothing is allocated on
-that path); `Just` = a rebuilt subtree.
+{-| Returns the expression with instance uses overlaid, or `Nothing` when
+nothing in it changes, so that unchanged subtrees are not rebuilt. A chain of
+one group's instance definitions brings that group's bindings into scope for
+the body below it (`olmChain`, `olmGroup`).
 -}
 olmExpr : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Maybe Mono.MonoExpr
 olmExpr groups env expr =
@@ -6414,11 +6027,11 @@ olmExpr groups env expr =
             Nothing
 
 
-{-| The maximal chain of instance-def `MonoLet`s of ONE recorded group
-starting at this node (top-first), with the body under the chain. A `MonoLet`
-is a member when its def name is a recorded instance of the same group AND
-its RHS type is the very type recorded at completion (a name reused in a
-sibling scope binds its own, different value). `Nothing`: no chain here.
+{-| Returns the longest chain of nested `let`s starting here whose
+definitions are recorded instances of one group, top first, together with the
+body below the chain. A definition belongs only when its right-hand side still
+has the recorded type, since the same name in a sibling scope is a different
+value. Returns `Nothing` when no chain starts here.
 -}
 olmChain : Dict.Dict String ( String, Mono.MonoType ) -> Mono.MonoExpr -> Maybe ( List ( Name, Mono.MonoExpr, Mono.MonoType ), Mono.MonoExpr )
 olmChain groups expr =
@@ -6439,6 +6052,8 @@ olmChain groups expr =
             Nothing
 
 
+{-| Extends a chain for `olmChain` while the next `let` belongs to `group`.
+-}
 olmChainGo : Dict.Dict String ( String, Mono.MonoType ) -> String -> Mono.MonoExpr -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> ( List ( Name, Mono.MonoExpr, Mono.MonoType ), Mono.MonoExpr )
 olmChainGo groups group expr acc =
     case expr of
@@ -6458,10 +6073,10 @@ olmChainGo groups group expr acc =
             ( List.reverse acc, expr )
 
 
-{-| Rebuild one group's chain: the RHSs see the OUTER bindings only (the
-per-let walk never covered its own instance RHSs), the body sees the group's
-own bindings too; non-top members carry `typeOf` of the own-overlaid body,
-as the completion-time fold computed it.
+{-| Rebuilds one group's chain of definitions over its body. The right-hand
+sides are overlaid with the outer bindings only, the body with the group's own
+bindings as well. The top `let` keeps its type; each lower one gets the type of
+the body as overlaid with the group's bindings.
 -}
 olmGroup : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoExpr
 olmGroup groups env members innerBody =
@@ -6488,6 +6103,9 @@ olmGroup groups env members innerBody =
     olmRebuild groups env members newBody memberType True
 
 
+{-| Wraps `body` in the group's `let`s for `olmGroup`, overlaying each
+right-hand side with `env`.
+-}
 olmRebuild : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> Bool -> Mono.MonoExpr
 olmRebuild groups env members body memberType isTop =
     case members of
@@ -6506,6 +6124,9 @@ olmRebuild groups env members body memberType isTop =
                 )
 
 
+{-| Overlays a definition's right-hand side, or returns `Nothing` when it
+does not change.
+-}
 olmDef : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoDef -> Maybe Mono.MonoDef
 olmDef groups env def =
     case def of
@@ -6516,6 +6137,9 @@ olmDef groups env def =
             Maybe.map (Mono.MonoTailDef n params) (olmExpr groups env rhs)
 
 
+{-| Overlays each expression in a list, or returns `Nothing` when none
+changes.
+-}
 olmList : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List Mono.MonoExpr -> Maybe (List Mono.MonoExpr)
 olmList groups env items =
     case items of
@@ -6531,6 +6155,9 @@ olmList groups env items =
                     Just (Maybe.withDefault x mx :: Maybe.withDefault xs mxs)
 
 
+{-| Overlays the expression of each keyed pair, or returns `Nothing` when
+none changes.
+-}
 olmNamed : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( k, Mono.MonoExpr ) -> Maybe (List ( k, Mono.MonoExpr ))
 olmNamed groups env items =
     case items of
@@ -6546,6 +6173,9 @@ olmNamed groups env items =
                     Just (( k, Maybe.withDefault x mx ) :: Maybe.withDefault xs mxs)
 
 
+{-| Overlays the expression of each closure capture, or returns `Nothing`
+when none changes.
+-}
 olmCaptures : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Name, Mono.MonoExpr, a ) -> Maybe (List ( Name, Mono.MonoExpr, a ))
 olmCaptures groups env items =
     case items of
@@ -6561,6 +6191,9 @@ olmCaptures groups env items =
                     Just (( n, Maybe.withDefault x mx, t ) :: Maybe.withDefault xs mxs)
 
 
+{-| Overlays the condition and value of each `if` branch, or returns
+`Nothing` when none changes.
+-}
 olmBranches : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Maybe (List ( Mono.MonoExpr, Mono.MonoExpr ))
 olmBranches groups env items =
     case items of
@@ -6576,6 +6209,9 @@ olmBranches groups env items =
                     Just (( Maybe.withDefault c mc, Maybe.withDefault x mx ) :: Maybe.withDefault xs mxs)
 
 
+{-| Overlays the inline leaves of a decision tree, or returns `Nothing` when
+none changes. Jump leaves are reached through the case's jump list instead.
+-}
 olmDecider : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Maybe (Mono.Decider Mono.MonoChoice)
 olmDecider groups env decider =
     case decider of
@@ -6602,6 +6238,9 @@ olmDecider groups env decider =
                     Just (Mono.FanOut path (Maybe.withDefault edges me) (Maybe.withDefault fallback mf))
 
 
+{-| Overlays the decision trees of a fan-out's edges, or returns `Nothing`
+when none changes.
+-}
 olmEdges : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> List ( a, Mono.Decider Mono.MonoChoice ) -> Maybe (List ( a, Mono.Decider Mono.MonoChoice ))
 olmEdges groups env edges =
     case edges of
@@ -6617,16 +6256,15 @@ olmEdges groups env edges =
                     Just (( test, Maybe.withDefault d md ) :: Maybe.withDefault rest mr)
 
 
-{-| Report-gated (`lss.report`) census of what the single walk replaced —
-the mechanism behind the Aug-26 → Sep-3 regression:
+{-| Counts, under `lss.report`, the cost of one walk of
+`flushLocalMultiEnrich`:
 
-    e4a|walks       outermost walks
-    e4a|nodes       nodes those walks visited (the new cost)
-    e4a|oldVisits   nodes the per-let scheme visited: Σ over every group
-                    of its body size (each body once per enclosing group)
-    e4a|groups      instance-def chains covered
+    e4a|walks       walks made
+    e4a|nodes       nodes the walk visited
+    e4a|oldVisits   nodes walking each group's body separately would visit
+    e4a|groups      chains of instance definitions covered
     e4a|depth|<d>   walks whose deepest chain nesting is d
-    e4a|item|<g>    oldVisits per global for the worst offenders (≥ 1e6)
+    e4a|item|<g>    oldVisits for a global, when at least 1,000,000
 
 -}
 enrichCensus : Dict.Dict String ( String, Mono.MonoType ) -> Dict.Dict String Mono.MonoType -> Mono.MonoExpr -> Engine.S -> Engine.S
@@ -6646,7 +6284,6 @@ enrichCensus groups rootEnv body s =
             ( size, st ) =
                 enrichCensusGo groups (1 + ownGroup) body { old = 0, groups = 0, maxDepth = 0 }
 
-            -- the flushing let is itself a group whose old walk covered `body`
             old =
                 st.old + ownGroup * size
 
@@ -6675,12 +6312,16 @@ enrichCensus groups rootEnv body s =
                )
 
 
+{-| What `enrichCensusGo` accumulates: the visits a separate walk per group
+would make, the number of chains, and the deepest chain nesting.
+-}
 type alias EnrichCensus =
     { old : Int, groups : Int, maxDepth : Int }
 
 
-{-| Subtree size (MonoExpr nodes, as `traverseExpr` counted them) plus the
-census over the chains inside; `depth` = chains enclosing this node + 1.
+{-| Returns the number of expression nodes in a subtree, and adds to the
+census each chain inside it. `depth` is one more than the number of chains
+enclosing the node.
 -}
 enrichCensusGo : Dict.Dict String ( String, Mono.MonoType ) -> Int -> Mono.MonoExpr -> EnrichCensus -> ( Int, EnrichCensus )
 enrichCensusGo groups depth expr st =
@@ -6723,24 +6364,22 @@ enrichCensusGo groups depth expr st =
             ( 1 + childSum, st1 )
 
 
+{-| Returns the definitions of a let-bound function's instances, each
+translated again at its type under the instance's position in recording order
+(`retranslateAtInstance`). An unused function gets one definition under its
+own name, translated once in the item's store.
+-}
 buildLocalDefs : Name -> TOpt.Expr TypeIds.MVarId -> Maybe Engine.NumberMultiEntry -> Step (List Mono.MonoDef)
 buildLocalDefs name defBody maybeEntry s0 =
     case maybeEntry of
         Just entry ->
             if Mono.specMapIsEmpty entry.instances then
-                -- Unused function: emit its bare def once, at its declared type.
                 case translate defBody s0 of
                     ( e, s1 ) ->
                         ( [ Mono.MonoDef name e ], s1 )
 
             else
-                -- The ORDINAL is the discriminator
-                -- (plans/lss-instance-qualified-members.md §3.1). `SpecMap`
-                -- iterates in INSERTION order and `freshName` is assigned from
-                -- `specMapSize` at insert, so this index is exactly the `$N`
-                -- already in the emitted binding name — if it were unstable the
-                -- def names would already be unstable, which is the whole
-                -- stability argument, and it costs nothing new.
+                -- Instances iterate in recording order, the order their `$N` names were given in.
                 Engine.traverse
                     (\( ord, inst ) sx ->
                         case retranslateAtInstance name ord defBody inst.monoType sx of
@@ -6758,6 +6397,10 @@ buildLocalDefs name defBody maybeEntry s0 =
 -- ====== CASE / DECISION TREE ======
 
 
+{-| Translates a case's decision tree: test paths are typed from the case
+root (`specializeDtPath`), inline leaves are translated with their type
+connected to the case's, and each branch is translated in its own scope.
+-}
 specializeDecider : Can.Type TypeIds.MVarId -> Name -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> Step (Mono.Decider Mono.MonoChoice)
 specializeDecider caseCanType root decider s0 =
     case decider of
@@ -6803,12 +6446,13 @@ specializeDecider caseCanType root decider s0 =
                                     ( Mono.FanOut monoPath monoEdges monoFallback, s3 )
 
 
+{-| Translates a decision-tree leaf: an inline expression is translated with
+its type connected to the case's type; a jump is kept.
+-}
 specializeChoice : Can.Type TypeIds.MVarId -> TOpt.Choice TypeIds.MVarId -> Step Mono.MonoChoice
 specializeChoice caseCanType choice s0 =
     case choice of
         TOpt.Inline expr ->
-            -- Connect the result's type to the case's own type first (demand flow
-            -- into branch results, as in the If arm).
             case translate expr (connectTypes (TOpt.typeOf expr) caseCanType s0) of
                 ( me, s1 ) ->
                     ( Mono.Inline me, s1 )
@@ -6817,6 +6461,9 @@ specializeChoice caseCanType choice s0 =
             ( Mono.Jump index, s0 )
 
 
+{-| Translates a case's shared branch bodies, each in its own scope with its
+type connected to the case's type.
+-}
 specializeJumps : Can.Type TypeIds.MVarId -> List ( Int, TOpt.Expr TypeIds.MVarId ) -> Step (List ( Int, Mono.MonoExpr ))
 specializeJumps caseCanType jumps s0 =
     Engine.traverse
@@ -6829,26 +6476,12 @@ specializeJumps caseCanType jumps s0 =
         s0
 
 
-{-| SHADOW MEASUREMENT (plans/lss-ctor-arrow-identity.md §9.2): at a `case`,
-does anyone actually KNOW what the storeless classification stamped ⊤?
-
-`classify` (Store.classifyGo's `Can.TLambda` arm) stamps ⊤ on every arrow by
-construction, and that is the sole manufacturer of the whole `declStoreS`
-class — 1,233 positions, 58 % of the residual ⊤. Whether repairing it is
-worth anything depends entirely on whether a BETTER answer exists at that
-moment: a ⊤ that becomes `var` is still uncovered, only relabelled.
-
-The branches are the candidate source — `specializeJumps` already
-`connectTypes`-es each branch to the case's canonical type, and
-`inferCaseType` already prefers a branch's type when the classification
-carries residual MVars. This census asks the annotation-level version of the
-same question, comparing the classified type against each translated branch
-position-wise: `caseanno|<classified>|<branch>` cells, e.g. `top|k1` = the
-branch NAMES a single inhabitant the case result threw away.
-
-Pure and report-gated: it reads two MonoTypes that already exist, mints
-nothing, and cannot perturb the compile.
-
+{-| Counts, under `lss.report`, how the lambda sets of a case's classified
+type compare with those of each branch, position by position
+(`caseanno|<classified>|<branch>`, labelled by `annoCellLabel`). A cell such
+as `top|k1` is a position where a branch names one member and the classified
+type has ⊤. Both the shared branch bodies and the decision tree's inline
+leaves are compared.
 -}
 caseAnnoCensus : Mono.MonoType -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Engine.S -> Engine.S
 caseAnnoCensus classified decider jumps s =
@@ -6856,14 +6489,14 @@ caseAnnoCensus classified decider jumps s =
         s
 
     else
-        -- BOTH branch homes: a simple case inlines its arms into the DECIDER
-        -- (`Mono.Inline`) and leaves `jumps` empty, so a jumps-only walk sees
-        -- almost nothing (measured: 2 cells across the whole self-compile).
         deciderAnnoFold classified
             decider
             (List.foldl (\( _, e ) acc -> annoPairFold classified (Mono.typeOf e) acc) s jumps)
 
 
+{-| Compares the classified type with each inline leaf of a decision tree,
+for `caseAnnoCensus`.
+-}
 deciderAnnoFold : Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Engine.S -> Engine.S
 deciderAnnoFold classified decider s =
     case decider of
@@ -6882,11 +6515,18 @@ deciderAnnoFold classified decider s =
                 edges
 
 
+{-| Compares two types' lambda sets position by position under the
+`caseanno` prefix.
+-}
 annoPairFold : Mono.MonoType -> Mono.MonoType -> Engine.S -> Engine.S
 annoPairFold =
     annoPairFoldWith "caseanno"
 
 
+{-| Counts, under `prefix`, one census cell for each pair of lambda sets at
+the same position of two types, walking functions, lists, tuples, records and
+custom types where their shapes agree and skipping where they do not.
+-}
 annoPairFoldWith : String -> Mono.MonoType -> Mono.MonoType -> Engine.S -> Engine.S
 annoPairFoldWith prefix a b s =
     case ( a, b ) of
@@ -6933,28 +6573,17 @@ annoPairFoldWith prefix a b s =
             s
 
 
+{-| Counts one census cell named by `prefix` and the labels of two
+annotations.
+-}
 bumpAnnoCell : String -> Mono.LambdaSetAnno -> Mono.LambdaSetAnno -> Engine.S -> Engine.S
 bumpAnnoCell prefix a b s =
     Engine.bumpArgFlowCensus (prefix ++ "|" ++ annoCellLabel a ++ "|" ++ annoCellLabel b) s
 
 
-{-| §9.4: THE destructor measurement. `specializeDestructor` computes two
-types for the same position side by side —
-
-  - `classified` = `classifyAs tkClassDestr meta.tipe`, the storeless answer,
-    ⊤ at every arrow by construction. This is the one it keeps, and §9.3
-    attributes 82 % of all surviving decl ⊤ to it.
-  - `projected` = `Mono.getMonoPathType monoPath`, the destructured position
-    reached by projecting the ROOT local's `varEnv`-bound MonoType down the
-    path (`projIndexType` / field lookup). The root's bound type is whatever
-    its binder recorded — which for a value constructed in this item carries
-    real members.
-
-If `projected` names inhabitants where `classified` says ⊤, the information
-is present at the exact moment it is discarded and a repair is worth
-building. If both are ⊤/var, the destructor is innocent and the loss is
-upstream. Cells: `destranno|<classified>|<projected>`. Pure, report-gated.
-
+{-| Counts, under `lss.report`, how a destructor's classified type compares
+with the type projected from its root's bound type, position by position
+(`destranno|<classified>|<projected>`).
 -}
 destrAnnoCensus : Mono.MonoType -> Mono.MonoType -> Engine.S -> Engine.S
 destrAnnoCensus classified projected s =
@@ -6965,15 +6594,10 @@ destrAnnoCensus classified projected s =
         annoPairFoldWith "destranno" classified projected s
 
 
-{-| §9.6 step 4 — Fix B's P0, the TRANSLATION-TIME half. At a destructor
-whose outermost step projects a ctor field, compare the classified type
-against the UNION (set-biased, `enrichAnnotations`-folded — a ⊤ contributes
-nothing) of the SAME field position across every registry entry of that ctor
-global. `destrBnow|top|k1` = a translation-time read of the sibling demands
-would already recover a singleton here; the end-of-run half (`destrBend:`
-in the census report) gives the order-free ceiling, and the gap between the
-two is the price of reading early. Report-gated; the registry scan runs only
-at ⊤-carrying ctor-field destructors.
+{-| Counts, under `lss.report` and when the classified type has a ⊤, how a
+destructor that reads a constructor field compares with the union of that
+field's type over every spec of the constructor created so far
+(`destrBnow|<classified>|<union>`), or that there are none.
 -}
 destrBNowCensus : Mono.MonoType -> Mono.MonoPath -> Engine.S -> Engine.S
 destrBNowCensus classified monoPath s =
@@ -6999,12 +6623,10 @@ destrBNowCensus classified monoPath s =
                 s
 
 
-{-| Set-biased union of field `i`'s type across every registry entry keyed by
-the ctor global. Ctor demand types are curried (one arrow per MFunction), so
-field `i` is the head argument after peeling `i` arrows. Shape mismatches
-between differently-instantiated specs fall back to the accumulator
-(`enrichAnnotations` keeps the structural side) — an UNDER-approximation,
-which is the safe direction for a GO/NO-GO floor.
+{-| Returns field `fieldIx`'s type combined over every spec of the
+constructor, by `Mono.enrichAnnotations`, or `Nothing` when there is none.
+Each spec's type is read as curried, so the field is the first parameter
+after `fieldIx` stages.
 -}
 ctorFieldUnion : ModuleName.Canonical -> Name -> Int -> Engine.S -> Maybe Mono.MonoType
 ctorFieldUnion ctorHome ctorName fieldIx s =
@@ -7035,6 +6657,8 @@ ctorFieldUnion ctorHome ctorName fieldIx s =
         (Engine.specIdsForGlobal gkey s)
 
 
+{-| Returns the first parameter type of stage `i` of a function type.
+-}
 ctorFieldAt : Int -> Mono.MonoType -> Maybe Mono.MonoType
 ctorFieldAt i t =
     case t of
@@ -7049,6 +6673,9 @@ ctorFieldAt i t =
             Nothing
 
 
+{-| Returns the census label for an annotation: `k1` for a one-member set,
+`kN` for any other set, `var`, `top` or `part`.
+-}
 annoCellLabel : Mono.LambdaSetAnno -> String
 annoCellLabel anno =
     case anno of
@@ -7068,21 +6695,14 @@ annoCellLabel anno =
             "part"
 
 
-{-| The case's MonoType when the storeless classification carries residual
-MVars: the STRUCTURE of the first branch (jumps first, then the decider's
-inline leaves, then the fallback), with the lambda-set annotations JOINED over
-every branch by `joinBranchTypes`.
+{-| Returns a case's type for when its classified type has type variables:
+the structure of the first branch (the shared bodies first, then the decision
+tree's inline leaves), with lambda sets joined over every branch
+(`joinBranchTypes`). With no branch it returns `fallback`.
 
-Before 2026-09-11 this returned the first branch's MonoType verbatim,
-annotations included. That is a soundness hole (/work/eta-fixed-point-root-cause.md):
-a `case` whose branches are `succeed ()` — a PAP of a global, `LSet [p|…]` —
-and an `andThen … (loadType …)` call whose result arrow reads back ⊤/var made
-the whole case `LSet [p|…]`, the consumer keyed its `andThen` instance on that
-singleton, and E9.5 fast-stamped `step s` to `succeed`'s evaluator — which then
-ran on the other branch's closure and silently skipped its state effect (the
-census cell `caseanno|top|k1` next to `caseanno|top|top` is exactly this shape).
-The store cannot catch it: each branch is unified INTO the case's slot, so the
-class content is whatever the set-bearing branch wrote.
+Taking the first branch's sets alone would be wrong: one branch's one-member
+set would stand for the whole case even when another branch's set is unknown,
+and a call through it could then be bound to the wrong function.
 
 -}
 inferCaseType : List ( Int, Mono.MonoExpr ) -> Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType
@@ -7095,8 +6715,8 @@ inferCaseType jumps decider fallback =
             fallback
 
 
-{-| Every `Inline` leaf's MonoType, in decider order (yes before no, edges
-before the default) — the same homes `caseAnnoCensus` walks.
+{-| Returns the type of every inline leaf of a decision tree, success before
+failure and edges before the fallback.
 -}
 deciderLeafTypes : Mono.Decider Mono.MonoChoice -> List Mono.MonoType
 deciderLeafTypes decider =
@@ -7114,18 +6734,14 @@ deciderLeafTypes decider =
             List.concatMap (\( _, d ) -> deciderLeafTypes d) edges ++ deciderLeafTypes def
 
 
-{-| Join the lambda-set annotations of two branch MonoTypes position-wise,
-keeping `acc`'s structure (the branches' structures agree by typing; on any
-shape disagreement `acc` is kept as-is, exactly as `Mono.overlayAnnotations`
-does).
+{-| Returns `acc` with each lambda set joined, position by position, with the
+one at the same position of `next`. Where the two shapes disagree, `acc` is
+kept from that point down.
 
-Per position the rule is `Mono.unionAnno` — set ∪ set = union, set ∪ var =
-`LPartial` (a lower bound, refused by every stamp guard and re-entering the
-store as flex), ⊤ absorbs — EXCEPT that two non-set labels keep the first
-branch's label rather than joining: `LVar i ∪ LVar j` would manufacture a
-conflict-⊤ out of two zonks' independent var numbering, and neither var nor ⊤
-is stampable, so nothing is gained by widening them. The only labels this join
-ever changes are the stampable ones, and it only ever weakens them.
+A position where either side is an `LSet` or `LPartial` is joined by
+`Mono.unionAnno`. Where both are a set variable or ⊤, `acc`'s annotation is
+kept: two set variables from separate read-backs are numbered independently,
+and joining them would give ⊤ for no reason.
 
 -}
 joinBranchTypes : Mono.MonoType -> Mono.MonoType -> Mono.MonoType
@@ -7166,6 +6782,8 @@ joinBranchTypes acc next =
             acc
 
 
+{-| Joins two annotations as `joinBranchTypes` describes for one position.
+-}
 joinBranchAnno : Mono.LambdaSetAnno -> Mono.LambdaSetAnno -> Mono.LambdaSetAnno
 joinBranchAnno acc next =
     case ( acc, next ) of
@@ -7182,10 +6800,13 @@ joinBranchAnno acc next =
             Mono.unionAnno acc next
 
         _ ->
-            -- (var | ⊤) × (var | ⊤): the first branch's label, as before.
             acc
 
 
+{-| Translates a decision-tree test path, typing each step from the type the
+variable environment binds to the case root. Aborts the build when the root is
+unbound.
+-}
 specializeDtPath : Name -> TypedPath.Path -> Step Mono.MonoDtPath
 specializeDtPath root path s0 =
     case path of
@@ -7220,6 +6841,17 @@ specializeDtPath root path s0 =
 -- ====== DESTRUCTURE ======
 
 
+{-| Translates a destructor: its path is typed from the root's bound type
+(`specializePath`) and its type is classified.
+
+With LSS on and a ⊤ in the classified type, the classified type is enriched
+with the lambda sets of the type projected down the path from the root
+(`Mono.enrichAnnotations`), which can carry sets that came in through the
+root's type arguments. Sets carried only by a constructor's declared field
+types are not recovered here; reading the constructor's specs now could miss
+constructions not yet translated.
+
+-}
 specializeDestructor : TOpt.Destructor TypeIds.MVarId -> Step Mono.MonoDestructor
 specializeDestructor (TOpt.Destructor name path meta) s0 =
     case specializePath path s0 of
@@ -7227,38 +6859,6 @@ specializeDestructor (TOpt.Destructor name path meta) s0 =
             case classifyAs Mono.tkClassDestr meta.tipe sP of
                 ( monoType0, sD ) ->
                     let
-                        -- Destructor annotations
-                        -- (plans/lss-ctor-arrow-identity.md §9.5). Shipped as
-                        -- `lss.destrAnno`, default-ON 2026-08-31, and
-                        -- unconditional since 2026-09-18:
-                        --
-                        -- FIX A: the projected type (the root's varEnv type
-                        -- pushed down the path) carries type-argument-borne
-                        -- sets the storeless classify discards — the
-                        -- paper's TIU substitution through the ctor's
-                        -- instantiated scheme. FIX B: syntactic payload
-                        -- arrows (invisible to the projection) recover from
-                        -- the set-biased union of the ctor global's spec
-                        -- demands — the paper's single global-store
-                        -- solution, reassembled; union can only WIDEN
-                        -- (AR-D2), and the P0 measured the translation-time
-                        -- read at 98.6 % of the order-free ceiling.
-                        -- Both merges are precision-monotone
-                        -- (`enrichAnnotations`): sets win, sets union, ⊤
-                        -- never absorbs, structure untouched (MONO_029).
-                        -- An early read that misses leaves today's ⊤ —
-                        -- sound, monotone across the fixpoint.
-                        -- FIX A ONLY here. The union read (Fix B) was
-                        -- originally at this site and is now at the
-                        -- POST-DRAIN settle (Monomorphize.settleCtorRows):
-                        -- the fixture differential caught a translation-time
-                        -- read seeing a PARTIAL union — a set stamped from
-                        -- it EXCLUDES constructions that have not happened
-                        -- yet, i.e. the arrowSolverRoots false-singleton
-                        -- class (§9.8). AR-D2's soundness argument requires
-                        -- the COMPLETE union, which only the settle has.
-                        -- The projection (Fix A) is per-value — the root's
-                        -- own flow — and stays.
                         monoType =
                             if not (sD.env.lss.enabled && Mono.hasTopAnno monoType0) then
                                 monoType0
@@ -7274,6 +6874,10 @@ specializeDestructor (TOpt.Destructor name path meta) s0 =
                     ( Mono.MonoDestructor name monoPath monoType, sD1 )
 
 
+{-| Translates a destructor path, typing each step from the type the
+variable environment binds to the root. Aborts the build when the root is
+unbound or a step does not fit its container's type.
+-}
 specializePath : TOpt.Path -> Step Mono.MonoPath
 specializePath path s0 =
     case path of
@@ -7330,19 +6934,25 @@ specializePath path s0 =
 -- ====== PROJECTION-TYPE COMPUTATION ======
 
 
+{-| The kind of container one indexed path step reads from: a list, a tuple,
+or the named constructor of a custom type.
+-}
 type ProjKind
     = PList
     | PTuple
     | PCustom Name
 
 
+{-| Returns the type at `index` of a container. For a list, index 0 is the
+head, whose type is the element type, and any other index is the tail, whose
+type is the list's. Aborts the build when the container does not match `kind`.
+-}
 projIndexType : ProjKind -> Int -> Mono.MonoType -> Step Mono.MonoType
 projIndexType kind index container s0 =
     case kind of
         PList ->
             case container of
                 Mono.MList _ elem ->
-                    -- index 0 = head → element; otherwise = tail → the list itself
                     if index == 0 then
                         ( elem, s0 )
 
@@ -7369,6 +6979,9 @@ projIndexType kind index container s0 =
             computeCustomFieldType ctorName index container s0
 
 
+{-| Returns the element type of an `Array` type, aborting the build for any
+other type.
+-}
 computeArrayElementType : Mono.MonoType -> Step Mono.MonoType
 computeArrayElementType container s0 =
     case container of
@@ -7379,6 +6992,10 @@ computeArrayElementType container s0 =
             ( Engine.crashFailure (EngineBug "array projection: container not Array"), s0 )
 
 
+{-| Returns the type of field `index` of constructor `ctorName`, with the
+custom type's arguments substituted for its parameters. Aborts the build when
+the container is not a custom type, or the type or field is not found.
+-}
 computeCustomFieldType : Name -> Int -> Mono.MonoType -> Step Mono.MonoType
 computeCustomFieldType ctorName index container s0 =
     case container of
@@ -7399,6 +7016,10 @@ computeCustomFieldType ctorName index container s0 =
             ( Engine.crashFailure (EngineBug "custom field projection: container not Mono.mCustom"), s0 )
 
 
+{-| Returns the type of the single field of a custom type with one
+constructor of one field, with the type's arguments substituted. Aborts the
+build for any other type.
+-}
 computeUnboxResultType : Mono.MonoType -> Step Mono.MonoType
 computeUnboxResultType container s0 =
     case container of
@@ -7424,6 +7045,9 @@ computeUnboxResultType container s0 =
             ( Engine.crashFailure (EngineBug "unbox: container not Mono.mCustom"), s0 )
 
 
+{-| Returns the declared type of field `index` of the constructor named
+`ctorName`.
+-}
 findCtorArg : Name -> Int -> List Can.Ctor -> Maybe (Can.Type Name)
 findCtorArg ctorName index alts =
     case List.filter (\(Can.Ctor c) -> c.name == ctorName) alts of
@@ -7434,10 +7058,10 @@ findCtorArg ctorName index alts =
             Nothing
 
 
-{-| Instantiate a union constructor's declared field type: map the union's
-type-param names to the container's concrete type args, convert to MVarIds, and
-classify. Mirrors the original engine's field-type computation without importing
-its `applySubstPure`.
+{-| Returns a constructor field's declared type with the custom type's
+parameters, `vars`, replaced by the container's type arguments. Each parameter
+gets a new variable id, and the type is converted with those ids bound to the
+arguments.
 -}
 instantiateUnionType : List Name -> List Mono.MonoType -> Can.Type Name -> Step Mono.MonoType
 instantiateUnionType vars typeArgs canArgType s0 =
@@ -7459,16 +7083,22 @@ instantiateUnionType vars typeArgs canArgType s0 =
             ( mt, { s1 | intern = intern1 } )
 
 
+{-| Returns `n` new type variable ids.
+-}
 allocFreshIds : Int -> Step (List TypeIds.MVarId)
 allocFreshIds n s0 =
     Engine.traverse (\_ -> allocFreshId) (List.repeat n ()) s0
 
 
+{-| Returns a new type variable id from the engine's counter.
+-}
 allocFreshId : Step TypeIds.MVarId
 allocFreshId =
     \s -> ( s.nextMVarId, { s | nextMVarId = Id.succ s.nextMVarId } )
 
 
+{-| Returns the container kind a destructor path step's hint names.
+-}
 hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
 hintToKind hint =
     case hint of
@@ -7485,6 +7115,8 @@ hintToKind hint =
             Mono.CustomContainer name
 
 
+{-| Returns the projection a destructor path step's hint calls for.
+-}
 hintToProj : TOpt.ContainerHint -> ProjKind
 hintToProj hint =
     case hint of
@@ -7501,6 +7133,9 @@ hintToProj hint =
             PCustom name
 
 
+{-| Returns the container kind a decision-tree path step's hint names; an
+unknown hint is a custom container with an empty name.
+-}
 dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
 dtHintToKind hint =
     case hint of
@@ -7520,6 +7155,9 @@ dtHintToKind hint =
             Mono.CustomContainer ""
 
 
+{-| Returns the projection a decision-tree path step's hint calls for; an
+unknown hint is a custom constructor with an empty name.
+-}
 dtHintToProj : TypedPath.ContainerHint -> ProjKind
 dtHintToProj hint =
     case hint of
@@ -7543,16 +7181,23 @@ dtHintToProj hint =
 -- ====== HELPERS ======
 
 
+{-| Returns a global's type annotation, if the environment has one.
+-}
 lookupAnnotation : TOpt.Global -> Step (Maybe (Can.Annotation TypeIds.MVarId))
 lookupAnnotation global s =
     ( DMap.get TOpt.toComparableGlobal global s.env.annotations, s )
 
 
+{-| Converts a TypedOptimized global name to a monomorphized one.
+-}
 toptToMonoGlobal : TOpt.Global -> Mono.Global
 toptToMonoGlobal (TOpt.Global home name) =
     Mono.Global home name
 
 
+{-| Returns a label for an expression's form, used in the message of an
+unsupported-expression failure.
+-}
 nodeKind : TOpt.Expr TypeIds.MVarId -> String
 nodeKind expr =
     case expr of

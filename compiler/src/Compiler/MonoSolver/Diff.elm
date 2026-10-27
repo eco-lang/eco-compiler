@@ -1,28 +1,32 @@
 module Compiler.MonoSolver.Diff exposing (runAssigned)
 
-{-| The A/B gate for the two monomorphizer engines (`EngineDiff`).
+{-| The compiler has two monomorphizers, the original engine and the solver
+engine, and this module checks that they agree on a given program.
 
-Runs the original engine and the solver engine on the identical input and
-compares their `MonoGraph` output by a **canonical serialization**: node
-structure rendered deeply, with every embedded type run through
-`Mono.toComparableMonoType` — which erases residual `MVar` ids (layout-erased
-`CEcoValue`s legitimately differ between engines, MONO\_003) and canonicalizes
-record-field dict ordering. This is more reliable than structural `==`, whose
-`Dict`/`Array` equality is insertion-order sensitive.
+`runAssigned` runs both engines on the same id-assigned graph and compares the
+two `MonoGraph`s. The build always continues with the original engine's graph,
+so a disagreement never changes the graph that is built; instead the step
+fails with an `Err` whose text starts with `ECO_MONO_DIFF`, which a test
+harness can search for.
 
-The build always proceeds on the original engine's graph, so `EngineDiff` is
-safe to run over the whole corpus; a divergence surfaces as a distinctive `Err`
-the harness greps for:
+The comparison is not structural `==`. Each graph is written out as a list of
+lines, one header line for the graph as a whole and one line per
+specialization slot, and the two lists are compared. Writing the graph out
+lets the comparison ignore what is allowed to differ: every type is written by
+`Mono.toComparableMonoType`, whose docstring says what that key leaves out
+(among other things, the ids of residual type variables). The serializer is
+written by hand because `Debug.toString` is not available to a build compiled
+with `--optimize`.
 
-  - `ECO_MONO_DIFF MonoSolver.unsupported: …` — the solver engine declined.
-  - `ECO_MONO_DIFF MISMATCH …` — both produced a graph, but they differ.
-
-`--optimize` note: `compiler/src` is compiled with `--optimize`, so
-`Debug.toString` is unavailable — hence the hand-written serializer.
-
-This is a comparison harness, not a fallback: neither engine's _output_ is ever
-built from the other. It imports the original driver's public `monomorphize` to
-run it (the point of A/B); the solver engine proper never does.
+The written form is deliberately partial, so a match is weaker than equality
+of the graphs. Only the main entry, the flags decoder, the number of ports,
+the node array and the registry's reverse mapping are written; the other
+fields of the graph are not compared. Within those, not compared: the lambda
+counter; the module of a global; the
+source regions; a call's `CallInfo`; the container kind of a destructuring
+index; the deciders and branch bodies of a `case`, which are reduced to a count of jump
+targets; and the type of any kernel whose home is `Debug`. Closure captures
+and ports are compared by count only.
 
 @docs runAssigned
 
@@ -38,12 +42,20 @@ import Compiler.Monomorphize.EntryPrep as EntryPrep
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 
 
-{-| `run` on a graph that has ALREADY been through `AssignMVarIds`.
+{-| Returns the original engine's graph for `assigned` when the solver engine
+produces a graph that serializes the same, and an `Err` otherwise.
 
-Both engines are handed the SAME assigned graph, so a diff run under
-`preMono=1` compares the two engines on the pre-mono passes' output rather than
-silently skipping them. Both assign with `( False, False )` today, which is why
-one `Assigned` serves both.
+Both engines are given the same `assigned` graph, so whatever ran before id
+assignment is seen by both. The solver engine runs with `Config.defaultLss`
+except that LSS (its set annotations on function types) is switched off,
+because the original engine produces no such annotations; `defaultLss` has it
+switched on, so it is turned off here explicitly.
+
+An `Err` from the original engine is returned as it is. An `Err` from the
+solver engine is returned prefixed with `ECO_MONO_DIFF` and a space. When the graphs
+differ, the `Err` is `ECO_MONO_DIFF MISMATCH` followed by the index of the
+first differing line and that line from each graph; when `dump` is `True`,
+both full serializations are appended.
 
 -}
 runAssigned : Bool -> Name -> TypeEnv.GlobalTypeEnv -> EntryPrep.Assigned -> Result String Mono.MonoGraph
@@ -53,12 +65,6 @@ runAssigned dump entryPointName globalTypeEnv assigned =
             Err e
 
         Ok oldGraph ->
-            -- LSS is FORCED OFF for diff runs: the subst engine cannot produce
-            -- sets, so parity is only meaningful against the set-free pipeline.
-            -- Forced EXPLICITLY — since H3 flipped defaultLss.enabled to True
-            -- ("solver implies LSS"), relying on the default here would diff
-            -- annotated solver output against subst and mismatch on every
-            -- set annotation.
             let
                 lssOff =
                     Config.defaultLss
@@ -82,6 +88,10 @@ runAssigned dump entryPointName globalTypeEnv assigned =
                         Err (mismatchMessage dump oldLines newLines)
 
 
+{-| Builds the `ECO_MONO_DIFF MISMATCH` message for two differing
+serializations, appending both in full, lines joined by `@@` between spaces, when `dump` is
+`True`.
+-}
 mismatchMessage : Bool -> List String -> List String -> String
 mismatchMessage dump oldLines newLines =
     let
@@ -107,6 +117,10 @@ mismatchMessage dump oldLines newLines =
         base
 
 
+{-| Returns the index of the first line at which `old` and `new` differ,
+counting from `i`. When one list is a prefix of the other, this is `i` plus
+the length of the shorter one.
+-}
 firstDifferingLine : Int -> List String -> List String -> Int
 firstDifferingLine i old new =
     case ( old, new ) of
@@ -121,6 +135,8 @@ firstDifferingLine i old new =
             i
 
 
+{-| Returns the line at index `i`, or `<none>` when there is none.
+-}
 nth : Int -> List String -> String
 nth i lines =
     case List.drop i lines of
@@ -135,8 +151,9 @@ nth i lines =
 -- ====== CANONICAL SERIALIZATION ======
 
 
-{-| One canonical line per specialization slot (node + registry entry), plus a
-header line for the graph-level scalars. Deterministic and id-insensitive.
+{-| Returns the lines a graph is compared by: a header line with the main entry,
+the flags decoder's spec id and the number of ports, then one line per slot of
+the node array, holding the slot's node and its registry entry.
 -}
 serializeGraph : Mono.MonoGraph -> List String
 serializeGraph (Mono.MonoGraph g) =
@@ -146,9 +163,8 @@ serializeGraph (Mono.MonoGraph g) =
                 ++ mainStr g.main
                 ++ " flags="
                 ++ maybeIntStr g.flagsDecoder
-                -- lambda counter deliberately NOT compared: differently-keyed
-                -- unreachable junk specs (pruned) shift it without any semantic
-                -- difference; the parity bar is runtime equivalence.
+                -- The lambda counter is left out: the engines may number
+                -- closures differently with no difference in behaviour.
                 ++ " ports="
                 ++ String.fromInt (List.length g.ports)
 
@@ -167,6 +183,8 @@ serializeGraph (Mono.MonoGraph g) =
     header :: nodeLines
 
 
+{-| Writes the main entry, or `none`.
+-}
 mainStr : Maybe Mono.MainInfo -> String
 mainStr maybeMain =
     case maybeMain of
@@ -177,6 +195,8 @@ mainStr maybeMain =
             "none"
 
 
+{-| Writes an optional number, or `-` when absent.
+-}
 maybeIntStr : Maybe Int -> String
 maybeIntStr m =
     case m of
@@ -187,11 +207,15 @@ maybeIntStr m =
             "-"
 
 
+{-| Returns the value at index `i`, or `Nothing` when the index is out of range or the slot is empty.
+-}
 arrayGet : Int -> Array (Maybe a) -> Maybe a
 arrayGet i arr =
     Array.get i arr |> Maybe.andThen identity
 
 
+{-| Writes an optional value with `f`, or `-` when absent.
+-}
 maybe : (a -> String) -> Maybe a -> String
 maybe f m =
     case m of
@@ -202,11 +226,15 @@ maybe f m =
             "-"
 
 
+{-| Writes a registry entry: its global and its type key.
+-}
 serRegEntry : ( Mono.Global, Mono.MonoType ) -> String
 serRegEntry ( global, monoType ) =
     serGlobal global ++ ":" ++ Mono.toComparableMonoType monoType
 
 
+{-| Writes a global by name alone, leaving out its module.
+-}
 serGlobal : Mono.Global -> String
 serGlobal global =
     case global of
@@ -217,6 +245,8 @@ serGlobal global =
             "A." ++ name
 
 
+{-| Writes a node.
+-}
 serNode : Mono.MonoNode -> String
 serNode node =
     case node of
@@ -245,6 +275,8 @@ serNode node =
             "PortOut(" ++ serExpr expr ++ "):" ++ ty t
 
 
+{-| Writes an expression and, for every form but `MonoUnit`, its type.
+-}
 serExpr : Mono.MonoExpr -> String
 serExpr expr =
     case expr of
@@ -258,10 +290,8 @@ serExpr expr =
             "VG(" ++ String.fromInt specId ++ "):" ++ ty t
 
         Mono.MonoVarKernel _ prefix home name t ->
-            -- Debug kernels are always boxed by the backend (kernelBackendAbiPolicy),
-            -- so their MonoType annotation is cosmetic; the two engines pick
-            -- CEcoValue vs Int for it depending on subtle number-taint timing that
-            -- never reaches codegen. Waive it (documented §7.3 gate normalization).
+            -- The engines can type a Debug kernel differently (CEcoValue or
+            -- Int), so its type is not compared.
             "VK("
                 ++ prefix
                 ++ "."
@@ -319,16 +349,22 @@ serExpr expr =
             "AccV(" ++ name ++ "):" ++ ty t
 
 
+{-| Writes a list of expressions, separated by commas.
+-}
 serExprs : List Mono.MonoExpr -> String
 serExprs exprs =
     String.join "," (List.map serExpr exprs)
 
 
+{-| Writes record fields as `name=expression`, separated by commas.
+-}
 serFields : List ( Name, Mono.MonoExpr ) -> String
 serFields fields =
     String.join "," (List.map (\( n, e ) -> n ++ "=" ++ serExpr e) fields)
 
 
+{-| Writes a literal, tagged by its kind.
+-}
 serLit : Mono.Literal -> String
 serLit lit =
     case lit of
@@ -348,6 +384,8 @@ serLit lit =
             "S" ++ s
 
 
+{-| Writes a `let` definition.
+-}
 serDef : Mono.MonoDef -> String
 serDef def =
     case def of
@@ -358,11 +396,15 @@ serDef def =
             name ++ "([" ++ serParams params ++ "])=" ++ serExpr body
 
 
+{-| Writes a destructor: the bound name, its path and its type.
+-}
 serDtor : Mono.MonoDestructor -> String
 serDtor (Mono.MonoDestructor name path t) =
     name ++ "<-" ++ serPath path ++ ":" ++ ty t
 
 
+{-| Writes a destructuring path, outermost step first.
+-}
 serPath : Mono.MonoPath -> String
 serPath path =
     case path of
@@ -379,21 +421,29 @@ serPath path =
             "Root" ++ name ++ ":" ++ ty t
 
 
+{-| Writes parameters as `name:type`, separated by commas.
+-}
 serParams : List ( Name, Mono.MonoType ) -> String
 serParams params =
     String.join "," (List.map (\( n, t ) -> n ++ ":" ++ ty t) params)
 
 
+{-| Writes a closure's parameters and the number of its captures.
+-}
 serClosure : Mono.ClosureInfo -> String
 serClosure info =
     "params=[" ++ serParams info.params ++ "] captures=" ++ String.fromInt (List.length info.captures)
 
 
+{-| The function that writes a type: `Mono.toComparableMonoType`.
+-}
 ty : Mono.MonoType -> String
 ty =
     Mono.toComparableMonoType
 
 
+{-| Writes a `Bool` as `T` or `F`.
+-}
 boolStr : Bool -> String
 boolStr b =
     if b then

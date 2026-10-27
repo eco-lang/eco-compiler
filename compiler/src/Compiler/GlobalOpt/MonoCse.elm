@@ -3,44 +3,51 @@ module Compiler.GlobalOpt.MonoCse exposing
     , Stats, emptyStats, renderStats
     )
 
-{-| C2: bounded-scope common-subexpression elimination over pure Mono-level
-calls (kernel-opt-13 Phase 3, executing `plans/cse-pure-calls.md` §"C2").
+{-| Elm code often computes the same pure call twice in one function body, as in
+`if Set.member (f x) s then ... else Set.insert (f x) s`, and nothing later in
+the compiler merges the two; this module binds such a call once and reuses the
+value.
 
-Targets the probe-then-insert idiom —
-`if Set.member (f x) s then … else Set.insert (f x) s`, where `f x` is built
-twice. Nothing in the pipeline eliminates redundant computation at the Elm
-level; LLVM's CSE runs downstream of every boxing, closure and layout decision
-and sees two identical _allocation sequences_ it may not merge.
+The pass is common subexpression elimination (CSE) over monomorphized
+function bodies. A _candidate_ is a call that `CsePurity.isSafeExpr` accepts,
+whose result is not a function, which contains no `let`, destructuring,
+`case` or closure, and whose `CsePurity.costOf` is at least `minCost`. An
+_occurrence_ is one candidate in a body together with its _path_, the list of
+steps from the body's root down to it. A _group_ is two or more occurrences
+that are equal once source regions are ignored. A group's _lowest common
+ancestor_ (LCA) is the longest prefix shared by all of its paths. A merged
+group becomes `let mono_cse_N = <one occurrence> in <LCA node>`, and every
+occurrence becomes a reference to `mono_cse_N`.
 
-**Where the safety comes from, in three parts:**
+Three rules decide whether a group is merged.
 
-1.  _Purity._ `CsePurity` admits only calls whose kernels are audited `cseSafe`
-    and whose global callees are transitively observation-free. `Debug` is
-    unsafe by construction, so no merge can change how many log lines are
-    emitted (`OPT_DEBUG_ORDER_001` D-2).
-2.  _Distance._ A group is merged only if at least one occurrence's path from
-    the lowest common ancestor is entirely unconditional — that occurrence is
-    evaluated on every path that reaches any other, so binding the value at the
-    LCA evaluates nothing that was not already going to be evaluated. Groups
-    reached through a closure body are excluded permanently: different
-    evaluation frequency.
-3.  _Scope._ The binding goes at the LCA and **nothing above it**. Every free
-    local of the candidate is in scope at the occurrences by construction;
-    moving above its binder would make the moved expression ill-scoped. A group
-    is dropped if any binder between the LCA and an occurrence rebinds one of
-    those free names.
+  - Purity. Which calls may be merged is `CsePurity`'s decision, described
+    there.
 
-**It moves, it never copies.** The first occurrence becomes the let's bound
-expression and every occurrence becomes a `MonoVarLocal`, so binder
-multiplicity strictly decreases and the inliner's duplicate-SSA-name hazard
-does not arise.
+  - Evaluation. Each step of a path is either unconditional, meaning the child
+    is evaluated whenever its parent is, conditional, or entering a closure
+    body. A group is merged only if no occurrence lies inside a closure body
+    below the LCA, and at least one occurrence is reached from the LCA by
+    unconditional steps alone. That occurrence is evaluated whenever the LCA
+    node is, so binding the value at the LCA adds no evaluation. The one
+    exception is the body of a local tail-recursive function, whose step is
+    marked unconditional although it runs only when the function is called.
 
-**Why it runs post-annotation** (in `runGlobalOptPhase`, not inside
-`globalOptimizeWithStats`): this pass's whole job is adding `MonoLet` bindings,
-and `annotateCallStaging` is O(2^let-depth). Running before it would re-arm a
-known exponential. Verbatim moves are already licensed in this slot — CGEN\_069
-records the `CafHoist` precedent — and function-typed results, the one case
-CGEN\_069 says breaks it, are excluded.
+  - Scope. The binding is placed at the LCA and no higher. A group is dropped
+    if any name bound below the LCA on the way to an occurrence is a free
+    local of the candidate, whether or not it shadows another name, because
+    the binding at the LCA could not see it.
+
+Each body takes at most `maxPerDef` groups, and of groups whose occurrences
+overlap only one is kept. Names `mono_cse_N` are numbered across
+the whole graph.
+
+Expressions are moved, never copied: one occurrence becomes the bound
+expression and the others disappear, so no local name is duplicated.
+
+The inserted `let`s carry no call staging information of their own. Only
+non-function values are bound, which is why candidates whose result is a
+function are excluded.
 
 @docs run
 @docs Stats, emptyStats, renderStats
@@ -56,10 +63,16 @@ import Dict exposing (Dict)
 import Set exposing (Set)
 
 
-{-| Counters for one run: bodies rewritten, merge groups formed, occurrences
-merged away, `let`s inserted, groups dropped because a binder between the LCA
-and an occurrence binds one of their free locals, and groups dropped because
-the body's `maxPerDef` budget was used up.
+{-| Counters for one run of the pass.
+
+`groups` and `merged` are counted before overlapping groups are dropped, so
+they can exceed what was applied: `groups` is groups that passed every test,
+and `merged` is their occurrences other than the first. `letsInserted` counts
+the groups actually bound, and `specsTouched` the bodies that received at least
+one. `shadowBlocked` counts groups dropped by the scope rule, and
+`budgetExhausted` counts groups of equal occurrences turned away because the
+body already had `maxPerDef` groups, before any other test was applied to them.
+
 -}
 type alias Stats =
     { specsTouched : Int
@@ -84,7 +97,7 @@ emptyStats =
     }
 
 
-{-| Render the counters as a single `mono-cse:` report line.
+{-| Returns the counters as one line beginning `mono-cse:`.
 -}
 renderStats : Stats -> String
 renderStats s =
@@ -106,33 +119,39 @@ renderStats s =
 -- PATHS
 
 
-{-| A root→node path, serialized. Paths are compared and used as `Dict` keys, so
-they are carried as strings; the per-step encoding keeps the prefix property
-(the LCA of two paths is the longest common prefix), which is what makes
-`lcaOf` a plain string operation.
+{-| The steps from a body's root down to one expression, one string per step.
 
-`u` marks an unconditional step (strict operand, let sequence, or the FIRST
-condition of an if-chain, which is evaluated whenever the chain is). `b` marks a
-conditional one, `c` entering a closure body.
+A step's first letter classifies it. `u` is unconditional: call function and
+arguments, tail call arguments, list, tuple and record elements, the record of
+an access or update, the bound expression and body of a `let`, the body of a
+destructuring, and the first condition of an `if`. `b` is conditional: later
+`if` conditions, every `if` branch and the final `else`, `case` branches, and
+expressions inline in a `case` decision tree. `c` is the body of a closure. The
+rest of the step says which child it is, so two different expressions in one
+body never share a path.
 
 -}
 type alias Path =
     List String
 
 
+{-| Returns the path as one string with steps joined by `/`, for use as a
+`Dict` key.
+-}
 pathKey : Path -> String
 pathKey =
     String.join "/"
 
 
-{-| Does this suffix dominate — i.e. is it reached on every path that reaches
-the LCA's continuation?
+{-| Returns whether every step of a path suffix is unconditional.
 -}
 dominates : List String -> Bool
 dominates =
     List.all (\s -> String.startsWith "u" s)
 
 
+{-| Returns whether a path suffix enters a closure body.
+-}
 hasClosure : List String -> Bool
 hasClosure =
     List.any (\s -> String.startsWith "c" s)
@@ -142,6 +161,15 @@ hasClosure =
 -- OCCURRENCES
 
 
+{-| One occurrence of a candidate in a body.
+
+`key` is `CafHoist.kindTagOf` of the call and `shape` is the call with its
+source regions zeroed; occurrences are grouped by equal `shape`. `orig` is the
+call as written. `binders` holds the names bound by lets and destructurings
+above the occurrence, and a local tail-recursive function's parameters within
+its body, each with the length of the path at which it comes into scope.
+
+-}
 type alias Occ =
     { key : String
     , shape : MonoExpr
@@ -153,6 +181,10 @@ type alias Occ =
     }
 
 
+{-| A group that passed every test: where its `let` goes (`lca`), the path
+keys of its occurrences, the expression it binds, that expression's type, and
+the name it binds it to.
+-}
 type alias Group =
     { lca : Path
     , occPaths : Set String
@@ -166,10 +198,14 @@ type alias Group =
 -- ENTRY
 
 
-{-| Run the pass over the bodies of every `MonoDefine` and `MonoTailFunc` node.
-Candidates cost at least `minCost` (by `CsePurity.costOf`), and at most
-`maxPerDef` groups are bound per body. Returns the rewritten graph and the
-counters.
+{-| Runs the pass over the body of every `MonoDefine` and `MonoTailFunc` node in
+the graph, and returns the rewritten graph with the counters.
+
+Candidates must cost at least `minCost` by `CsePurity.costOf`, and at most
+`maxPerDef` groups are bound in each body. Only those bodies change: every
+other node, the empty slots of the node array, and every node's index are
+kept, and no node is added or removed.
+
 -}
 run : { minCost : Int, maxPerDef : Int } -> Mono.MonoGraph -> ( Mono.MonoGraph, Stats )
 run cfg ((Mono.MonoGraph g) as graph) =
@@ -182,9 +218,7 @@ run cfg ((Mono.MonoGraph g) as graph) =
                 (\maybeNode ( acc, st, counter ) ->
                     case maybeNode of
                         Nothing ->
-                            -- `Nothing` slots are the Prune gap convention; the
-                            -- array length and index↔specId identity are graph
-                            -- invariants and must be passed through unchanged.
+                            -- Kept so that every node keeps its index.
                             ( Array.push Nothing acc, st, counter )
 
                         Just node ->
@@ -197,12 +231,12 @@ run cfg ((Mono.MonoGraph g) as graph) =
                 ( Array.empty, emptyStats, 0 )
                 g.nodes
     in
-    -- Only `g.nodes` changes, and only within bodies. No spec is minted or
-    -- removed, so CafHoist's append-only drift assertion is trivially satisfied
-    -- and the three already-empty caches stay empty.
     ( Mono.MonoGraph { g | nodes = nodes1 }, stats1 )
 
 
+{-| Rewrites the body of a `MonoDefine` or `MonoTailFunc` node and returns any
+other node unchanged, threading the counters and the next `mono_cse_N` number.
+-}
 rewriteNode : CsePurity.Oracle -> { minCost : Int, maxPerDef : Int } -> Mono.MonoNode -> Stats -> Int -> ( Mono.MonoNode, Stats, Int )
 rewriteNode oracle cfg node stats counter =
     case node of
@@ -224,20 +258,20 @@ rewriteNode oracle cfg node stats counter =
             ( other, stats, counter )
 
 
+{-| Returns `body` with every kept group merged, together with the updated
+counters and the next `mono_cse_N` number.
+
+Occurrences are bucketed by kind tag and then by result type before groups are
+formed in each bucket. The order buckets are visited in decides which of two
+overlapping groups is kept.
+
+-}
 rewriteBody : CsePurity.Oracle -> { minCost : Int, maxPerDef : Int } -> MonoExpr -> Stats -> Int -> ( MonoExpr, Stats, Int )
 rewriteBody oracle cfg body stats counter =
     let
         occs =
             collect oracle cfg.minCost body [] [] []
 
-        -- Two-level: kind tag (a short String) -> demanded type
-        -- (`Mono.SpecMap`, structural). The type half used to be rendered into
-        -- the String key via `toComparableMonoType`; it is now keyed on the
-        -- `specHashOf` Int the node already carries. The PARTITION is
-        -- unchanged (`eqKeySpec` is exactly comparable-key equality), but the
-        -- inner iteration order is insertion order rather than
-        -- lexicographic-by-rendered-type, which reorders `allGroups` and hence
-        -- which groups survive `dropOverlapping` — see the plan's §10.9.
         buckets =
             List.foldl
                 (\o d ->
@@ -294,8 +328,14 @@ rewriteBody oracle cfg body stats counter =
         )
 
 
-{-| Turn one fingerprint bucket into merge groups: exact-equality partition,
-then the distance / shadow / budget tests.
+{-| Adds to the accumulator the groups formed from one bucket of occurrences.
+
+The bucket is split into sets of equal `shape`. A set of one is ignored. A set
+of two or more is turned away once the body already has `maxPerDef` groups, and
+otherwise becomes a group if it passes the evaluation and scope rules of the
+module docstring. A new group binds the set's head occurrence's expression and
+takes the next `mono_cse_N` number.
+
 -}
 formGroups :
     { minCost : Int, maxPerDef : Int }
@@ -338,13 +378,8 @@ formGroups cfg members ( groups, stats, counter ) =
                     free =
                         freeLocals first.orig
 
-                    -- SCOPE, not shadowing. A local bound between the LCA and
-                    -- an occurrence is in scope AT the occurrence but not at the
-                    -- LCA, so binding the candidate there would reference a name
-                    -- that does not exist yet. The plan's claim that "every free
-                    -- local is by construction in scope at the occurrences"
-                    -- is true and beside the point -- the binding does not go at
-                    -- the occurrence, it goes at the LCA.
+                    -- A name bound below the LCA is not in scope at the LCA,
+                    -- whether or not it shadows anything.
                     shadowed =
                         List.any
                             (\o ->
@@ -380,18 +415,15 @@ formGroups cfg members ( groups, stats, counter ) =
                         )
 
 
-{-| Keep a NON-OVERLAPPING subset of the candidate groups.
+{-| Returns the groups that do not overlap a group already kept, taking them in
+list order.
 
-A group's let binds the ORIGINAL first-occurrence subtree, inserted verbatim
-without rebuilding. If a second group's occurrences lived inside that subtree,
-they would either vanish (the subtree gets replaced by a var) or reference a let
-that does not dominate them — the `unbound variable mono_cse_N` failure mode.
-Rejecting any group whose occurrence subtrees overlap an already-kept group's
-also covers the LCA case, because a group's LCA is an ancestor of all of its
-occurrences: if the LCA were inside another group's occurrence, every occurrence
-would be too.
-
-Greedy in encounter order, which is deterministic.
+Two groups overlap when an occurrence of one is equal to, inside, or around an
+occurrence of the other. A group binds one of its occurrences exactly as written,
+so an occurrence of another group inside it would not be replaced, and an
+occurrence around it would remove it. A group's LCA is above all its
+occurrences, so a group whose LCA lay inside another's occurrence would overlap
+it too.
 
 -}
 dropOverlapping : List Group -> List Group
@@ -420,12 +452,15 @@ dropOverlapping groups =
         groups
 
 
+{-| Returns whether path key `b` lies strictly below path key `a`.
+-}
 isPrefixPath : String -> String -> Bool
 isPrefixPath a b =
     String.startsWith (a ++ "/") b
 
 
-{-| Longest common prefix of every path — the lowest common ancestor.
+{-| Returns the longest prefix shared by every path, the lowest common
+ancestor, or the empty path for no paths.
 -}
 lcaOf : List Path -> Path
 lcaOf paths =
@@ -437,6 +472,8 @@ lcaOf paths =
             List.foldl (\p acc -> commonPrefix acc p) p0 rest
 
 
+{-| Returns the longest prefix shared by two paths.
+-}
 commonPrefix : Path -> Path -> Path
 commonPrefix a b =
     case ( a, b ) of
@@ -451,6 +488,12 @@ commonPrefix a b =
             []
 
 
+{-| Returns the names of the `MonoVarLocal`s in an expression, not looking
+inside a closure's capture expressions.
+
+It does not remove names the expression binds itself.
+
+-}
 freeLocals : MonoExpr -> Set Name
 freeLocals root =
     let
@@ -469,6 +512,10 @@ freeLocals root =
 -- COLLECT
 
 
+{-| Adds to `acc` every candidate occurrence in `expr` and below it, except
+inside closure capture expressions, given the path to `expr` and the names
+bound inside the body that are in scope there.
+-}
 collect : CsePurity.Oracle -> Int -> MonoExpr -> Path -> List ( Int, Name ) -> List Occ -> List Occ
 collect oracle minCost expr path binders acc =
     let
@@ -529,15 +576,10 @@ collect oracle minCost expr path binders acc =
 
         MonoLet def body _ ->
             let
-                -- The let-bound NAME scopes over the body.
                 bodyBinders =
                     ( depth + 1, defName def ) :: binders
 
-                -- A MonoTailDef's PARAMETERS scope over its bound expression.
-                -- Missing these is what let a candidate mentioning a tail-func
-                -- parameter be hoisted above the parameter's binder, producing
-                -- `lookupVar: unbound variable i`. The shadow test can only be
-                -- as complete as this list.
+                -- The scope rule is only as complete as these binder lists.
                 boundBinders =
                     case def of
                         Mono.MonoTailDef _ params _ ->
@@ -576,12 +618,12 @@ collect oracle minCost expr path binders acc =
             acc1
 
 
-{-| `dpath` distinguishes decider leaves.
+{-| Adds to `acc` the occurrences in the expressions held inline at the leaves
+of a `case` decision tree.
 
-Without it every `Leaf (Inline _)` in a `Chain`/`FanOut` tree would share one
-path key, two distinct occurrences would look like the same node, and the LCA
-would be computed against a path that does not identify either of them — which
-produces a `MonoLet` that does not dominate its uses.
+`dpath` records the way down the tree to the current node, and becomes part of
+the leaf's step, so that two leaves of one tree have different paths. Jump
+leaves hold no expression here; their targets are the `case` branches.
 
 -}
 collectDecider : CsePurity.Oracle -> Int -> Path -> String -> List ( Int, Name ) -> List Occ -> Mono.Decider Mono.MonoChoice -> List Occ
@@ -618,8 +660,8 @@ collectDecider oracle minCost path dpath binders acc decider =
                 fallback
 
 
-{-| Candidate test. Mirrors `CseCensus.admit` exactly — the census's numbers are
-only meaningful if the pass admits the same set.
+{-| Returns the occurrence for `expr` if it is a candidate, as the module
+docstring defines one.
 -}
 admit : CsePurity.Oracle -> Int -> MonoExpr -> Path -> List ( Int, Name ) -> Maybe Occ
 admit oracle minCost expr path binders =
@@ -636,9 +678,6 @@ admit oracle minCost expr path binders =
                 Nothing
 
             else if not (CsePurity.isSafeExpr oracle expr) then
-                -- The purity gate. Without this the pass would merge Debug
-                -- calls and effectful kernels; `CsePurity` is what makes
-                -- OPT_DEBUG_ORDER_001 D-2 hold by construction.
                 Nothing
 
             else if cost < minCost then
@@ -659,6 +698,9 @@ admit oracle minCost expr path binders =
             Nothing
 
 
+{-| Returns whether an expression contains a `let`, a destructuring, a `case` or
+a closure.
+-}
 hasBinderOrClosure : MonoExpr -> Bool
 hasBinderOrClosure root =
     let
@@ -686,9 +728,10 @@ hasBinderOrClosure root =
 -- REBUILD
 
 
-{-| Top-down rebuild. At an occurrence path the node becomes a `MonoVarLocal`;
-at an LCA path the rebuilt node is wrapped in the group's `MonoLet`. Occurrences
-are replaced BEFORE the wrap, so the let's bound expression is the original.
+{-| Returns `expr`, found at `path`, with the groups applied: an occurrence
+becomes a reference to its group's name, and a node that is some groups' LCA is
+rebuilt and then wrapped in one `let` per group. Each `let` binds its group's
+bound expression as written, not a rebuilt copy.
 -}
 rebuild : Dict String ( Name, Mono.MonoType ) -> Dict String (List Group) -> Path -> MonoExpr -> MonoExpr
 rebuild byOcc byLca path expr =
@@ -718,6 +761,9 @@ rebuild byOcc byLca path expr =
                         groups
 
 
+{-| Returns `expr` with `rebuild` applied to each child, using the same steps
+as `collect`.
+-}
 rebuildChildren : Dict String ( Name, Mono.MonoType ) -> Dict String (List Group) -> Path -> MonoExpr -> MonoExpr
 rebuildChildren byOcc byLca path expr =
     let
@@ -795,6 +841,9 @@ rebuildChildren byOcc byLca path expr =
             other
 
 
+{-| Returns a `case` decision tree with `rebuild` applied to the expressions
+held inline at its leaves, using the same steps as `collectDecider`.
+-}
 rebuildDecider : Dict String ( Name, Mono.MonoType ) -> Dict String (List Group) -> Path -> String -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 rebuildDecider byOcc byLca path dpath decider =
     case decider of
@@ -819,9 +868,12 @@ rebuildDecider byOcc byLca path dpath decider =
 
 
 
--- SHARED SHAPE HELPERS
+-- SHAPE HELPERS
 
 
+{-| Returns the direct subexpressions of an expression, including those inline
+in a `case` decision tree, except a closure's capture expressions.
+-}
 childrenOf : MonoExpr -> List MonoExpr
 childrenOf expr =
     case expr of
@@ -865,6 +917,8 @@ childrenOf expr =
             []
 
 
+{-| Returns the expressions held inline at the leaves of a decision tree.
+-}
 deciderExprs : Mono.Decider Mono.MonoChoice -> List MonoExpr
 deciderExprs decider =
     case decider of
@@ -881,6 +935,8 @@ deciderExprs decider =
             List.concatMap (\( _, d ) -> deciderExprs d) tests ++ deciderExprs fallback
 
 
+{-| Returns the expression a local definition binds.
+-}
 defBound : Mono.MonoDef -> MonoExpr
 defBound def =
     case def of
@@ -891,6 +947,8 @@ defBound def =
             bound
 
 
+{-| Returns the name a local definition binds.
+-}
 defName : Mono.MonoDef -> Name
 defName def =
     case def of
@@ -901,6 +959,8 @@ defName def =
             n
 
 
+{-| Returns a local definition with `f` applied to its bound expression.
+-}
 mapDefBound : (MonoExpr -> MonoExpr) -> Mono.MonoDef -> Mono.MonoDef
 mapDefBound f def =
     case def of
@@ -911,6 +971,8 @@ mapDefBound f def =
             Mono.MonoTailDef n ps (f bound)
 
 
+{-| Returns the name a destructuring binds, paired with `depth`.
+-}
 destructBinders : Int -> Mono.MonoDestructor -> List ( Int, Name )
 destructBinders depth d =
     case d of

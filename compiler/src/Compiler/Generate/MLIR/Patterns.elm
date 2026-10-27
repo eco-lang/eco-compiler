@@ -3,15 +3,32 @@ module Compiler.Generate.MLIR.Patterns exposing
     , materializeSplitParam
     )
 
-{-| Pattern matching and path generation for MLIR code generation.
+{-| Pattern matching compiles to two kinds of question about the value being
+matched, the _scrutinee_, and this module emits the MLIR ops that ask them.
 
-This module handles:
+The first question is "what is at this position inside the scrutinee?". A
+_path_ (`Mono.MonoPath`, or the decision-tree form `Mono.MonoDtPath`) names a
+position: the scrutinee itself, an index into a list cell, tuple or
+constructor, a record field, or the one field of a single-constructor type.
+`generateMonoPath` emits the projections that walk a path and returns the
+value at the caller's _target type_, the MLIR type the caller wants it in.
+The value may be stored in a different form from the target: Int, Float and
+Char fields can be stored unboxed while every other field, Bool included, is
+an `!eco.value` (see `Compiler.Generate.MLIR.Types` for the layouts). Most of
+this module is therefore the matching of stored form to target type, adding
+an `eco.box` or an `eco.unbox` where they differ.
 
-  - Path navigation (MonoPath and MonoDtPath)
-  - Test generation for pattern matching
-  - Case kind determination
-  - Scrutinee type determination
-  - Fallback tag computation
+The second question is "does that value pass this decision-tree test?".
+`generateMonoTest` returns an `i1` for one test, and `testToTagInt`,
+`caseKindFromTest`, `scrutineeTypeFromCaseKind` and `computeFallbackTag`
+supply the attributes of an `eco.case` that dispatches on several tests at
+once. A constructor's tag is the one `Compiler.Data.CtorTag` assigns.
+
+A path may also start at a _scalar-split_ loop parameter, a tuple or
+constructor that a tail-recursive loop holds as one SSA variable per field
+(`Ctx.SplitParamInfo`). A projection of such a root reads the field's
+variable directly, a shape test on it is decided at compile time, and a use
+of the whole value rebuilds it on the heap with `materializeSplitParam`.
 
 @docs generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
 @docs materializeSplitParam
@@ -36,7 +53,7 @@ import Utils.Crash
 -- ====== HELPERS ======
 
 
-{-| Extract record fields from a MonoType. Returns empty dict if not a record.
+{-| Returns the fields of a record type, or an empty dict for any other type.
 -}
 getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
@@ -48,7 +65,7 @@ getRecordFields monoType =
             Dict.empty
 
 
-{-| Find a FieldInfo by name in a list of FieldInfos.
+{-| Returns the first field layout entry named `targetName`, if any.
 -}
 findFieldInfoByName : Name.Name -> List Types.FieldInfo -> Maybe Types.FieldInfo
 findFieldInfoByName targetName fields =
@@ -60,7 +77,12 @@ findFieldInfoByName targetName fields =
 -- ====== MONO PATH GENERATION ======
 
 
-{-| Generate MLIR ops to navigate a MonoPath and extract a value.
+{-| Returns the ops that read the value at `path`, the variable holding it at
+`targetType`, and the updated context.
+
+A tuple field or single-constructor field read from the heap that is stored
+boxed while the target is an unboxed primitive crashes the compiler.
+
 -}
 generateMonoPath : Ctx.Context -> Mono.MonoPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoPath ctx path targetType =
@@ -71,17 +93,15 @@ generateMonoPath ctx path targetType =
     ( List.reverse revOps, var, ctx_ )
 
 
-{-| Generate MLIR ops to navigate a MonoDtPath and extract a value.
-
-Converts MonoDtPath to MonoPath and delegates to generateMonoPath.
-
+{-| Returns the ops that read the value at a decision-tree path, as
+`generateMonoPath` does for the equivalent `MonoPath`.
 -}
 generateMonoDtPath : Ctx.Context -> Mono.MonoDtPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoDtPath ctx dtPath targetType =
     generateMonoPath ctx (dtPathToMonoPath dtPath) targetType
 
 
-{-| Convert MonoDtPath to MonoPath for reuse of existing generateMonoPath machinery.
+{-| Returns the `MonoPath` naming the same position as a decision-tree path.
 -}
 dtPathToMonoPath : Mono.MonoDtPath -> Mono.MonoPath
 dtPathToMonoPath monoDt =
@@ -96,7 +116,16 @@ dtPathToMonoPath monoDt =
             Mono.MonoUnbox resultTy (dtPathToMonoPath sub)
 
 
-{-| Generate a test condition from a MonoDtPath and a DT.Test.
+{-| Returns the ops that compute an `i1` saying whether the value at `dtPath`
+passes `test`, and the variable holding it.
+
+A constructor, cons or nil test compares the value's `eco.get_tag` with
+`testToTagInt`, except on a scalar-split root, where the answer is a
+constant. An Int or Char test compares the unboxed value with the
+literal. A String test uses `eco.value.eq` when `ecoConfig.valueEq` is on and
+otherwise calls `Elm_Kernel_Utils_equal` and unboxes its result. A Bool test
+is the value itself, or its negation. A tuple test is always true.
+
 -}
 generateMonoTest : Ctx.Context -> ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
 generateMonoTest ctx ( dtPath, test ) =
@@ -108,11 +137,14 @@ generateMonoTest ctx ( dtPath, test ) =
             generateMonoTestGeneral ctx ( dtPath, test )
 
 
-{-| U-T1.3.3L: shape tests on a BARE scalar-split loop-param root are
-statically decided — the split shape IS the layout truth (IsTuple is
-always true; a single-ctor tag either matches or it doesn't). Without
-this, the general path would materialize the whole value each iteration
-just to read a known tag.
+{-| Returns a constant `i1` for a tuple or constructor test whose path is a
+scalar-split parameter itself, or `Nothing` for any other test or path.
+
+The split's layout fixes the value's shape, so the answer is known at compile
+time: a tuple test is true, and a constructor test is true exactly when the
+layout's tag equals the test's. Answering here avoids rebuilding the value on
+the heap only to read its tag.
+
 -}
 splitTestFastPath : Ctx.Context -> Mono.MonoDtPath -> DT.Test -> Maybe ( List MlirOp, String, Ctx.Context )
 splitTestFastPath ctx dtPath test =
@@ -151,6 +183,10 @@ splitTestFastPath ctx dtPath test =
             Nothing
 
 
+{-| Returns the ops for `generateMonoTest` when the answer is not known at
+compile time: it reads the value at the type the test compares in, then
+compares.
+-}
 generateMonoTestGeneral : Ctx.Context -> ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
 generateMonoTestGeneral ctx ( dtPath, test ) =
     let
@@ -186,9 +222,7 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
     case test of
         Test.IsCtor _ _ _ _ _ ->
             let
-                -- Same tag the eco.case path uses (testToTagInt), so both the
-                -- if-chain and the fan-out dispatch agree with eco_get_tag —
-                -- including CONSTANT_TAG for embedded-constant constructors (D9).
+                -- The same tag an eco.case dispatch uses, so both agree.
                 expectedTag =
                     testToTagInt test
 
@@ -272,8 +306,6 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                 ( strVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
-                -- RS4GC handles the underlying alloc call's statepoint at the
-                -- LLVM level.
                 ( ctx3, strOp ) =
                     if s == "" then
                         Ops.ecoConstantEmptyString ctx2 strVar
@@ -284,11 +316,8 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
                 ( eqVar, ctx4 ) =
                     Ctx.freshVar ctx3
 
-                -- kernel-opt-03: under `valueEq` the boxed call + unbox becomes
-                -- one eco.value.eq producing i1 directly. Both operands are
-                -- String, so they are !eco.value by REP_ABI_001 and the SSA-type
-                -- admissibility test Expr.gateIntrinsic applies elsewhere is
-                -- satisfied by construction here.
+                -- Both operands are Strings, so both are !eco.value and need
+                -- no type check before eco.value.eq.
                 ( eqOps, resVar, ctx6 ) =
                     if ctx.ecoConfig.valueEq then
                         let
@@ -364,10 +393,13 @@ generateMonoTestGeneral ctx ( dtPath, test ) =
             ( pathOps ++ [ constOp ], resVar, ctx3 )
 
 
-{-| U-T1.3.3L: materialize a scalar-split loop param back into a heap value
-(construct from the current slot vars). Used when a split param is consumed
-as a WHOLE value (bare var use / bare-root path). Elm values are immutable
-and equality is structural, so reconstruction is semantically transparent.
+{-| Returns the ops that build a scalar-split value on the heap from its
+current field variables, and the variable holding the new `!eco.value`.
+
+This is how the whole value is read. Elm values are immutable and compared by
+structure, so the copy cannot be told apart from the original. A split tuple
+with other than two or three fields crashes the compiler.
+
 -}
 materializeSplitParam : Ctx.Context -> Ctx.SplitParamInfo -> ( List MlirOp, String, Ctx.Context )
 materializeSplitParam ctx info =
@@ -403,9 +435,9 @@ materializeSplitParam ctx info =
             ( [ op ], resultVar, ctx2 )
 
 
-{-| U-T1.3.3L: coerce a slot var (already in its STORED form — unboxed
-primitive or boxed `!eco.value` per layout) to the path consumer's target
-type. Mirrors the box/unbox tails of the heap projection arms.
+{-| Returns `slotVar`, held at `storedType`, converted to `targetType`: boxed
+when a primitive meets an `!eco.value` target, unboxed when an `!eco.value`
+meets an `i1` or primitive target, and returned unchanged otherwise.
 -}
 coerceSlotToTarget : Ctx.Context -> String -> MlirType -> MlirType -> ( List MlirOp, String, Ctx.Context )
 coerceSlotToTarget ctx slotVar storedType targetType =
@@ -429,9 +461,8 @@ coerceSlotToTarget ctx slotVar storedType targetType =
         ( [], slotVar, ctx )
 
 
-{-| U-T1.3.3L: is this sub-path a DIRECT root naming a scalar-split loop
-param? (Deeper split roots are handled by the recursive descent — the
-inner navigation materializes.)
+{-| Returns the split information when `sub` is itself the root and names a
+scalar-split parameter, and `Nothing` for any longer path.
 -}
 splitRootOf : Ctx.Context -> Mono.MonoPath -> Maybe Ctx.SplitParamInfo
 splitRootOf ctx sub =
@@ -443,8 +474,9 @@ splitRootOf ctx sub =
             Nothing
 
 
-{-| U-T1.3.3L: slot read for a split param — the "projection" is just the
-k-th slot var (no op), then target coercion.
+{-| Returns field `index` of a scalar-split value at `targetType`. The field
+is already a variable, so the only ops are any box or unbox. An index past
+the last field crashes the compiler.
 -}
 splitSlotRead : Ctx.Context -> Ctx.SplitParamInfo -> Int -> MlirType -> ( List MlirOp, String, Ctx.Context )
 splitSlotRead ctx info index targetType =
@@ -456,8 +488,8 @@ splitSlotRead ctx info index targetType =
             Utils.Crash.crash "splitSlotRead: slot index out of range"
 
 
-{-| Internal helper for generateMonoPath that accumulates ops in reverse order
-to avoid quadratic ++ [ behavior.
+{-| Returns what `generateMonoPath` returns, with the ops pushed onto
+`revAcc` in reverse order.
 -}
 generateMonoPathHelper : Ctx.Context -> Mono.MonoPath -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
 generateMonoPathHelper ctx path targetType revAcc =
@@ -465,9 +497,6 @@ generateMonoPathHelper ctx path targetType revAcc =
         Mono.MonoRoot name _ ->
             case Dict.get name ctx.splitAggParams of
                 Just splitInfo ->
-                    -- U-T1.3.3L: whole-value read of a scalar-split loop
-                    -- param — materialize from the current slots, then the
-                    -- ordinary boxed-value coercion applies.
                     let
                         ( matOps, matVar, ctxM ) =
                             materializeSplitParam ctx splitInfo
@@ -483,8 +512,6 @@ generateMonoPathHelper ctx path targetType revAcc =
         Mono.MonoIndex index containerKind resultType subPath ->
             case splitRootOf ctx subPath of
                 Just splitInfo ->
-                    -- U-T1.3.3L: projection of a scalar-split loop param —
-                    -- the k-th slot var directly (no op), plus coercion.
                     let
                         ( slotOps, slotFinalVar, ctxSlot ) =
                             splitSlotRead ctx splitInfo index targetType
@@ -507,12 +534,15 @@ generateMonoPathHelper ctx path targetType revAcc =
                     generateMonoUnboxOnHeap ctx targetType revAcc subPath
 
         Mono.MonoField fieldName fieldResultType subPath ->
-            -- Record fields cannot sit directly above a split root (split
-            -- shapes are tuples/customs); a DEEPER split root is handled by
-            -- the recursive descent (the sub-navigation materializes).
+            -- No split check: a split value is a tuple or constructor, never
+            -- a record, and a split root reached by the descent is handled
+            -- there.
             generateMonoFieldOnHeap ctx targetType revAcc fieldName fieldResultType subPath
 
 
+{-| Returns the variable bound to the root `name`, unboxed first when it is
+an `!eco.value` and the target is `i1` or an unboxed primitive.
+-}
 generateMonoRootOnHeap : Ctx.Context -> Name.Name -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
 generateMonoRootOnHeap ctx name targetType revAcc =
     let
@@ -520,11 +550,7 @@ generateMonoRootOnHeap ctx name targetType revAcc =
             Ctx.lookupVar ctx name
     in
     if Types.isEcoValueType actualType && (targetType == I1 || Types.isUnboxable targetType) then
-        -- Variable stored boxed (per its ABI) but the path consumer
-        -- expects an unboxed primitive (i1 Bool test, or an i64/f64
-        -- destructor target whose recorded element type was erased —
-        -- the solver engine's residuals surface here; returning the
-        -- boxed var raw would LIE about the SSA type and miscompile).
+        -- Returning the boxed variable here would give it the wrong SSA type.
         let
             ( unboxOps, unboxedVar, ctxU ) =
                 Intrinsics.unboxToType ctx varName targetType
@@ -535,13 +561,21 @@ generateMonoRootOnHeap ctx name targetType revAcc =
         ( revAcc, varName, ctx )
 
 
+{-| Returns the ops that read element `index` of the list cell, tuple or
+constructor that `subPath` reaches, at `targetType`.
+
+A list cell's index 0 is its head, read at the target type, and any other
+index is its tail. A tuple element is stored unboxed when the ABI type of
+`resultType` is a primitive. A constructor field's storage comes from the
+shape registry (`lookupCtorFieldInfo`); when the registry has no entry, the
+ABI type of `resultType` decides.
+
+-}
 generateMonoIndexOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Int -> Mono.ContainerKind -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
 generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType subPath =
     let
-        -- Navigate to the container object (always !eco.value —
-        -- except a U-T1.3.1 promoted tuple root, which stays in its
-        -- value-aggregate form and is projected via the dual-form
-        -- lowering; `aggOperand` carries its type for the op attr).
+        -- The container is an !eco.value, except a root variable held as a
+        -- value aggregate, whose type `aggOperand` carries to the projection.
         ( revAcc1, subVar, ctx1 ) =
             generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
@@ -588,16 +622,10 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
         ( resultVar, ctx2 ) =
             Ctx.freshVar ctx1
 
-        -- Use type-specific projection ops based on ContainerKind.
-        -- This ensures correct heap layout access for each container type.
         ( projectOps, projectVar, ctx3 ) =
             case containerKind of
                 Mono.ListContainer ->
                     if index == 0 then
-                        -- List head projection. Use targetType directly so the
-                        -- projection result matches what the caller stores in the
-                        -- context. Bool is !eco.value in heap storage (not unboxed),
-                        -- so targetType=EcoValue is correct for Bool.
                         let
                             ( ctx_, op ) =
                                 Ops.ecoProjectListHead ctx2 resultVar targetType subVar
@@ -605,7 +633,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                         ( [ op ], resultVar, ctx_ )
 
                     else
-                        -- List tail (index 1)
                         let
                             ( ctx_, op ) =
                                 Ops.ecoProjectListTail ctx2 resultVar subVar
@@ -618,7 +645,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             Types.monoTypeToAbi resultType
                     in
                     if Types.isUnboxable fieldAbiType then
-                        -- Field is stored unboxed (Int/Float/Char) in the tuple
                         let
                             ( primitiveVar, ctx3_ ) =
                                 Ctx.freshVar ctx2
@@ -640,7 +666,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             ( [ projectOp ], primitiveVar, ctx4 )
 
                     else
-                        -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
                         let
                             ( valVar, ctx3_ ) =
                                 Ctx.freshVar ctx2
@@ -656,19 +681,9 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             ( projectOp :: unboxOps, unboxedVar, ctxU )
 
                         else if Types.isUnboxable targetType then
-                            -- MONO_029 violation: the recorded container
-                            -- element type is erased (boxed) while the
-                            -- destructor target is a concrete unboxable
-                            -- primitive — two layout-disagreeing views of
-                            -- one value. Tuple slots are LAYOUT-STATIC, so
-                            -- NO emission is safe here (raw read is wrong if
-                            -- the producer boxed; boxed read is wrong if it
-                            -- stored raw). The monomorphizer must record
-                            -- layout-equal views (solver: appShapeConnect
-                            -- enrichFromEnv, R1 in
-                            -- plans/solver-layout-connectivity-reconciliation.md).
-                            -- Sentinels: SolverLayoutFoldMTest /
-                            -- SolverLayoutFoldMCycleTest.
+                            -- The element is stored boxed but the target is
+                            -- an unboxed primitive: the two views of the value
+                            -- disagree on its layout, and the compile stops.
                             Utils.Crash.crash "MONO_029 layout disagreement: erased tuple2 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                         else
@@ -680,7 +695,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             Types.monoTypeToAbi resultType
                     in
                     if Types.isUnboxable fieldAbiType then
-                        -- Field is stored unboxed (Int/Float/Char) in the tuple
                         let
                             ( primitiveVar, ctx3_ ) =
                                 Ctx.freshVar ctx2
@@ -702,7 +716,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             ( [ projectOp ], primitiveVar, ctx4 )
 
                     else
-                        -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
                         let
                             ( valVar, ctx3_ ) =
                                 Ctx.freshVar ctx2
@@ -718,15 +731,13 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                             ( projectOp :: unboxOps, unboxedVar, ctxU )
 
                         else if Types.isUnboxable targetType then
-                            -- MONO_029 violation — see the Tuple2 arm.
+                            -- Layouts disagree; see the Tuple2Container arm.
                             Utils.Crash.crash "MONO_029 layout disagreement: erased tuple3 element vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                         else
                             ( [ projectOp ], valVar, ctx4 )
 
                 Mono.CustomContainer ctorName ->
-                    -- For custom types, we need to check if the field is stored unboxed
-                    -- by looking up the CtorLayout for this constructor.
                     let
                         containerType =
                             Mono.getMonoPathType subPath
@@ -737,12 +748,9 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                     case maybeFieldInfo of
                         Just fieldInfo ->
                             if fieldInfo.isUnboxed then
-                                -- Field is stored unboxed (as primitive).
-                                -- Use fieldInfo.monoType (from the shape registry, always
-                                -- fully substituted via buildCtorShapeFromUnion) rather
-                                -- than the MonoPath's resultType, which can be stale or
-                                -- polymorphic for specialized polymorphic ctors like
-                                -- `Done a` at `a = Int` / `Float` / `Char`.
+                                -- The registry's field type, not `resultType`, which
+                                -- can still be a type variable for a specialized
+                                -- polymorphic constructor such as `Done a` at `a = Int`.
                                 let
                                     fieldMlirType =
                                         Types.monoTypeToAbi fieldInfo.monoType
@@ -754,7 +762,6 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                                         projCustom ctx3_ primitiveVar index fieldMlirType
                                 in
                                 if Types.isEcoValueType targetType then
-                                    -- Caller wants eco.value, need to box the primitive
                                     let
                                         ( boxedVar, ctx5 ) =
                                             Ctx.freshVar ctx4
@@ -765,23 +772,11 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                                     ( [ projectOp, boxOp ], boxedVar, ctx6 )
 
                                 else
-                                    -- Caller wants primitive, return directly
                                     ( [ projectOp ], primitiveVar, ctx4 )
 
                             else
-                            -- Field is stored boxed (as eco.value). Project as
-                            -- eco.value and add an eco.unbox if the caller wants
-                            -- I1 (Bool scrutinee): the storage is an HPointer to
-                            -- True/False constants (3<<40 vs 4<<40), so loading
-                            -- the field directly as i1 reads only the low bit
-                            -- of the HPointer, which is 0 for both True and
-                            -- False — silently inverting Bool pattern tests.
-                            -- An Int/Float/Char target on a boxed slot (e.g. a
-                            -- polymorphic field) is unboxed the same way
-                            -- (REP_BOUNDARY_001: the slot kind is 00, so the
-                            -- projection is !eco.value). Other targetTypes pass
-                            -- through unchanged because the caller has set them
-                            -- to match the field's storage.
+                            -- The slot holds an !eco.value, so an i1 or primitive
+                            -- target is read through eco.unbox.
                             if
                                 targetType == I1 || Types.isUnboxable targetType
                             then
@@ -805,17 +800,11 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                                 ( [ op ], resultVar, ctx_ )
 
                         Nothing ->
-                            -- Field is stored boxed (as eco.value) or no layout found.
-                            -- Use the MonoPath's declared resultType to determine the
-                            -- correct projection type (CGEN_004).
                             let
                                 fieldMlirType =
                                     Types.monoTypeToAbi resultType
                             in
                             if Types.isUnboxable fieldMlirType then
-                                -- Field has a primitive type but layout lookup failed.
-                                -- Project as the primitive type directly so we don't
-                                -- introduce a spurious project→unbox sequence.
                                 let
                                     ( primitiveVar, ctx3_ ) =
                                         Ctx.freshVar ctx2
@@ -837,11 +826,8 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
                                     ( [ projectOp ], primitiveVar, ctx4 )
 
                             else
-                            -- Field is non-primitive (eco.value), project as eco.value.
-                            -- Same Bool/I1 unbox insertion as the field-info branch
-                            -- above: an I1 target with a boxed source must go through
-                            -- eco.unbox so the True/False HPointer constants are
-                            -- compared via runtime semantics.
+                            -- Unlike the registry branch, only an i1 target is
+                            -- unboxed here.
                             if
                                 targetType == I1
                             then
@@ -870,17 +856,23 @@ generateMonoIndexOnHeap ctx targetType revAcc index containerKind resultType sub
     )
 
 
+{-| Returns the ops that read the record field `fieldName` of the record that
+`subPath` reaches, at `targetType`.
+
+The field's slot and stored form come from `Types.computeRecordLayout` of the
+record's type, and the read is boxed or unboxed to meet the target. A field
+missing from that layout crashes the compiler.
+
+-}
 generateMonoFieldOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Name.Name -> Mono.MonoType -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
 generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
     let
-        -- Navigate to the container object (always !eco.value)
         ( revAcc1, subVar, ctx1 ) =
             generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
         ( resultVar, ctx2 ) =
             Ctx.freshVar ctx1
 
-        -- Compute record layout to get the field index
         containerType =
             Mono.getMonoPathType subPath
 
@@ -895,9 +887,6 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
                 Nothing ->
                     Utils.Crash.crash ("generateMonoFieldOnHeap: field " ++ fieldName ++ " is not in the record layout")
 
-        -- The slot's stored type (REP_BOUNDARY_001): the field's ABI primitive
-        -- when its kind is unboxed, else !eco.value (Bool and every other
-        -- non-Int/Float/Char field; layouts have no index cap, HEAP_019).
         storedType =
             if fieldInfo.isUnboxed then
                 Types.monoTypeToAbi fieldInfo.monoType
@@ -913,8 +902,6 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
         ( projectOp :: revAcc1, resultVar, ctx3 )
 
     else if fieldInfo.isUnboxed && Types.isEcoValueType targetType then
-        -- Unboxed slot, boxed target: project the primitive, then box (mirrors
-        -- the CustomContainer arm of generateMonoIndexOnHeap).
         let
             ( primVar, ctxA ) =
                 Ctx.freshVar ctx2
@@ -928,9 +915,6 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
         ( boxOp :: projectOp :: revAcc1, resultVar, ctxC )
 
     else if not fieldInfo.isUnboxed && (targetType == I1 || Types.isUnboxable targetType) then
-        -- Boxed slot, primitive target: project !eco.value, then unbox. Covers
-        -- a primitive read of a boxed (e.g. polymorphic) field and a Bool scrutinee, whose
-        -- slot holds the True/False HPointer constants.
         let
             ( valVar, ctxA ) =
                 Ctx.freshVar ctx2
@@ -951,27 +935,26 @@ generateMonoFieldOnHeap ctx targetType revAcc fieldName resultType subPath =
         ( projectOp :: revAcc1, resultVar, ctx3 )
 
 
+{-| Returns the ops that read the one field of the single-constructor value
+that `subPath` reaches, at `targetType`.
+
+The field's stored form comes from the first registered shape for the
+container's type. When there is no shape, or the shape has no fields, the
+container value itself is returned with no projection added, whatever
+`targetType` is.
+
+-}
 generateMonoUnboxOnHeap : Ctx.Context -> MlirType -> List MlirOp -> Mono.MonoPath -> ( List MlirOp, String, Ctx.Context )
 generateMonoUnboxOnHeap ctx targetType revAcc subPath =
-    -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
-    -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
-    -- The resultType is the type of the inner value (the single field's type).
-    --
-    -- We need to:
-    -- 1. Get the container (wrapper) value
-    -- 2. Look up the unbox type's single constructor layout
-    -- 3. Project field 0 with the appropriate type
-    -- 4. Box/unbox if needed to match targetType
     let
         containerType =
             Mono.getMonoPathType subPath
 
-        -- Navigate to the container object (always !eco.value —
-        -- except a U-T1.3.2 promoted custom root, projected via the
-        -- dual-form lowering; see the MonoIndex arm).
         ( revAcc1, subVar, ctx1 ) =
             generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
+        -- A root held as a custom-type value aggregate is projected through
+        -- its aggregate type.
         unboxAggOperand =
             case subPath of
                 Mono.MonoRoot rootName _ ->
@@ -996,13 +979,11 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                 Nothing ->
                     Ops.ecoProjectCustom ctxP rv 0 rt subVar
 
-        -- Look up the shape for this unbox type
         maybeShapes =
             Mono.layoutMapGet containerType ctx1.typeRegistry.ctorShapes
     in
     case maybeShapes of
         Just (shape :: _) ->
-            -- Found shape - compute layout and check if the single field is unboxed
             let
                 layout =
                     Types.computeCtorLayout shape
@@ -1017,13 +998,11 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                             Types.monoTypeToAbi fieldInfo.monoType
                     in
                     if fieldInfo.isUnboxed then
-                        -- Field is stored unboxed (as primitive)
                         let
                             ( ctx3, projectOp ) =
                                 projCustomUnbox ctx2 resultVar fieldMlirType
                         in
                         if Types.isEcoValueType targetType then
-                            -- Caller wants eco.value, need to box
                             let
                                 ( boxedVar, ctx4 ) =
                                     Ctx.freshVar ctx3
@@ -1034,18 +1013,14 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                             ( boxOp :: projectOp :: revAcc1, boxedVar, ctx5 )
 
                         else
-                            -- Caller wants primitive, return directly
                             ( projectOp :: revAcc1, resultVar, ctx3 )
 
                     else
-                        -- Field is stored boxed (as eco.value)
                         let
                             ( ctx3, projectOp ) =
                                 projCustomUnbox ctx2 resultVar Types.ecoValue
                         in
                         if targetType == I1 then
-                            -- Bool is stored as eco.value in custom types (never unboxed).
-                            -- Project as eco.value, then unbox to i1.
                             let
                                 ( unboxOps, unboxedVar, ctxU ) =
                                     Intrinsics.unboxToType ctx3 resultVar I1
@@ -1053,11 +1028,11 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                             ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
 
                         else if Types.isUnboxable targetType then
-                            -- MONO_029 violation — see the Tuple2 arm.
+                            -- Layouts disagree; see generateMonoIndexOnHeap's tuple arms.
                             Utils.Crash.crash "MONO_029 layout disagreement: erased unboxed-custom field vs unboxable destructor target — see plans/solver-layout-connectivity-reconciliation.md"
 
                         else if Types.isUnboxable targetType then
-                            -- Caller wants primitive, need to unbox
+                            -- Unreachable: the branch above has the same condition.
                             let
                                 ( unboxedVar, ctx4 ) =
                                     Ctx.freshVar ctx3
@@ -1075,31 +1050,24 @@ generateMonoUnboxOnHeap ctx targetType revAcc subPath =
                             ( unboxOp :: projectOp :: revAcc1, unboxedVar, ctx5 )
 
                         else
-                            -- Caller wants eco.value, return directly
                             ( projectOp :: revAcc1, resultVar, ctx3 )
 
                 [] ->
-                    -- No fields in layout - fall back to pass-through
                     ( revAcc1, subVar, ctx1 )
 
         _ ->
-            -- No layout found - fall back to pass-through (treat as eco.value)
-            -- This preserves backward compatibility for cases where layout isn't available.
             ( revAcc1, subVar, ctx1 )
 
 
-{-| Resolve a `MonoPath`'s top-level result type, preferring a concrete
-constructor-field type from the shape registry over an unresolved polymorphic
-`MVar`.
+{-| Returns the type of the value at `path`, with a constructor field's type
+taken from the shape registry when the path's own type contains a type
+variable.
 
-`Mono.getMonoPathType` reads whatever result-type annotation was cached during
-`Specialize.specializePath`. When a polymorphic constructor like `Done a` is
-specialized at `a = Int` but the surrounding call site leaves `a` only
-partially unified, that annotation can remain an `MVar`. Downstream codegen
-would then pick `!eco.value` as the destructor's MLIR type, even though the
-actual runtime field is stored unboxed (because the constructor wrapper was
-emitted for the fully-concrete specialization). This helper restores the
-concrete type so `generateDestruct` produces a matching projection.
+A specialized polymorphic constructor such as `Done a` at `a = Int` can reach
+here with its path type still holding `a`, while the field is stored as an
+unboxed `i64`. Only a constructor-field index is resolved this way, and only
+to a registry type with no type variable; in
+every other case the path's own type is returned.
 
 -}
 resolvePathResultType : Ctx.Context -> Mono.MonoPath -> Mono.MonoType
@@ -1133,22 +1101,15 @@ resolvePathResultType ctx path =
         raw
 
 
-{-| Look up the full FieldInfo for a constructor's field from the ctor shape
-registry. Returns Nothing if no shape for the container type has a concretely
-typed field at this index for the named constructor.
+{-| Returns the layout entry of field `fieldIndex` of constructor `ctorName`,
+from the shapes registered for `containerType`.
 
-The registry's FieldInfo is authoritative for the field's ABI because shapes
-are built via `Analysis.buildCtorShapeFromUnion` with full type-variable
-substitution. Codegen should prefer `fieldInfo.monoType` over a MonoPath's
-`resultType` for deciding the projection's MLIR type.
-
-If the shape keyed by `containerType` leaves the field as an unresolved `MVar`
-(partial polymorphic specialization — e.g. `Step[Int, <MVar>]` because the
-call-site didn't pin `a`), we scan all other registered shapes for the same
-constructor name and return a concretely-typed field-info if one exists. The
-constructor wrapper (`generateCtor`) is unique per ctor specialization and its
-layout matches whichever specialization pinned the type variables, so we must
-use that authoritative layout for projection to agree with the heap format.
+When that entry's type still contains a type variable, the entry of a
+same-union shape whose type has none is returned instead, if
+`findConcreteCtorField` finds one; otherwise the entry with the type variable
+is returned. When the registered shapes have no such field, the answer is
+`findConcreteCtorField`'s. With no shapes registered for `containerType` the
+result is `Nothing`.
 
 -}
 lookupCtorFieldInfo : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Types.FieldInfo
@@ -1168,16 +1129,15 @@ lookupCtorFieldInfo ctx containerType ctorName fieldIndex =
                 Just info
 
             else
-                -- Registered shape has an unresolved polymorphic MVar in this
-                -- slot. Fall back to scanning other specializations of the
-                -- *same union*, identified by having the same set of ctor
-                -- names, and prefer one with a concrete field type.
                 Just (Maybe.withDefault info (findConcreteCtorField ctx preferredShapes ctorName fieldIndex))
 
         Nothing ->
             findConcreteCtorField ctx preferredShapes ctorName fieldIndex
 
 
+{-| Returns the layout entry of field `fieldIndex` of the first shape named
+`ctorName` among `shapes`, if there is one.
+-}
 ctorFieldFromShapes : Name.Name -> Int -> List Mono.CtorShape -> Maybe Types.FieldInfo
 ctorFieldFromShapes ctorName fieldIndex shapes =
     case List.filter (\shape -> shape.name == ctorName) shapes of
@@ -1193,26 +1153,14 @@ ctorFieldFromShapes ctorName fieldIndex shapes =
             Nothing
 
 
-{-| Scan registered ctor-shape entries that belong to the _same union_ as the
-given reference (same sorted set of ctor names) and return a concretely-typed
-field at `fieldIndex` for `ctorName` if every concrete specialization agrees
-on that field's type.
+{-| Returns field `fieldIndex` of `ctorName` from the registered shapes of the
+same union as `referenceShapes`, when every such entry with no type variable
+has the same layout key (`Mono.eqKeyLayout`).
 
-The constructor wrapper is emitted per concrete ctor specialization, so when
-the container's keyed shape left a field as an unresolved `MVar`, another
-specialization of the same union often holds the concrete heap layout that
-all specializations share (e.g. `Done a` with a = Int always stores an `i64`
-at field 0 regardless of which surrounding context instantiated it).
-
-To avoid picking the wrong answer when the field is genuinely polymorphic
-across specializations (e.g. `Problem a` where some sites use `a = Int` and
-others use `a = String`), we require **agreement**: all concrete fieldInfo
-entries for this ctor+index across same-union shapes must yield the same
-MonoType. If they disagree, or if no concrete entry exists, return `Nothing`
-and let the caller fall back to the unresolved type.
-
-If `referenceShapes` is `Nothing`, the scan finds no match (we can't identify
-the union).
+Two shape lists belong to the same union when they hold the same constructor
+names. A field that is genuinely polymorphic across specializations, `Int` in
+one and `String` in another, gives `Nothing`, as do no concrete entry and no
+`referenceShapes`.
 
 -}
 findConcreteCtorField : Ctx.Context -> Maybe (List Mono.CtorShape) -> Name.Name -> Int -> Maybe Types.FieldInfo
@@ -1256,12 +1204,15 @@ findConcreteCtorField ctx referenceShapes ctorName fieldIndex =
                         Nothing
 
 
+{-| Returns whether a field's type contains no type variable.
+-}
 fieldIsConcrete : Types.FieldInfo -> Bool
 fieldIsConcrete info =
     not (Mono.containsAnyMVar info.monoType)
 
 
-{-| Box a primitive value into an eco.value.
+{-| Returns an `eco.box` op that boxes `primitiveVar`, of type `primType`,
+into `resultVar`.
 -}
 boxPrimitive : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
 boxPrimitive ctx resultVar primitiveVar primType =
@@ -1276,20 +1227,20 @@ boxPrimitive ctx resultVar primitiveVar primType =
         |> Ops.opBuilder.build
 
 
-{-| Get the tag from a DT.Test for use with eco.case
+{-| Returns the integer an `eco.case` alternative uses for `test`.
+
+A constructor test gives `CtorTag.constantTag` for `Maybe.Nothing`,
+`Basics.True` and `Basics.False`, which the runtime represents as fixed
+constants, and `CtorTag.effective` for every other constructor. `[]` also
+gives `CtorTag.constantTag`, and `::` gives 1. A Bool test gives 1 or 0, an
+Int test its literal and a Char test its code point. String and tuple tests
+give 0.
+
 -}
 testToTagInt : DT.Test -> Int
 testToTagInt test =
     case test of
         Test.IsCtor home ctorName index _ _ ->
-            -- Embedded-constant constructors (Nothing) share the merged empty
-            -- bit pattern, so the runtime can only produce the reserved
-            -- CONSTANT_TAG for them, not a per-declaration index (see D9).
-            -- EVERY OTHER nullary ctor does carry its declaration index in its
-            -- embedded null-cons word (HEAP_044), and all three tag extractors
-            -- return it — so the `effective` arm below is right for them with
-            -- no special case, which is what keeps dispatch representation-
-            -- agnostic (CGEN_079(c)).
             if CtorTag.isEmbeddedConstantCtor home ctorName then
                 CtorTag.constantTag
 
@@ -1300,7 +1251,6 @@ testToTagInt test =
             1
 
         Test.IsNil ->
-            -- Nil is an embedded empty constant; matches CONSTANT_TAG at runtime.
             CtorTag.constantTag
 
         Test.IsBool True ->
@@ -1322,11 +1272,13 @@ testToTagInt test =
             0
 
 
-{-| Decode a char pattern string to its character code.
+{-| Returns the code point of a Char pattern's text.
 
-Char patterns from the parser may contain raw escape sequences (e.g., the 2-char
-string backslash+n for a newline). This function decodes such escape sequences
-to the actual character code.
+The text is one character, or the escape sequence as the parser stores it (a
+`\u{...}` source escape is stored as `\uXXXX`):
+a backslash followed by `n`, `r`, `t` or any other character, which then
+stands for itself, or a single `\uXXXX` escape. Text of any other form gives
+0, except that text of two `\u` escapes gives a meaningless number.
 
 -}
 decodeChrPatternCode : String -> Int
@@ -1347,7 +1299,6 @@ decodeChrPatternCode c =
                     0x09
 
                 _ ->
-                    -- '"', '\'', '\\' — the escaped char IS the value
                     Char.toCode escaped
 
         '\\' :: 'u' :: hexChars ->
@@ -1357,6 +1308,9 @@ decodeChrPatternCode c =
             0
 
 
+{-| Returns the value of a hexadecimal digit of either case, or 0 for any
+other character.
+-}
 hexDigitToInt : Char -> Int
 hexDigitToInt c =
     let
@@ -1376,15 +1330,9 @@ hexDigitToInt c =
         0
 
 
-{-| Determine the case kind from a DT.Test for use with eco.case.
-
-Returns a string indicating how the runtime should handle the case:
-
-  - "ctor" for ADT constructor matching (uses GetTagOp)
-  - "int" for integer matching (unboxes to i64 and compares)
-  - "chr" for character matching (unboxes to i16 and compares)
-  - "str" for string matching (uses string comparison)
-
+{-| Returns the `case_kind` attribute of an `eco.case` whose alternatives are
+tests like `test`: `"int"`, `"chr"` or `"str"` for literal tests, and
+`"ctor"` for every other test, Bool and tuple tests included.
 -}
 caseKindFromTest : DT.Test -> String
 caseKindFromTest test =
@@ -1414,10 +1362,8 @@ caseKindFromTest test =
             "ctor"
 
 
-{-| Get the MLIR type for the scrutinee based on case\_kind.
-
-Int cases need i64 scrutinee, Char cases need i16, all others use eco.value.
-
+{-| Returns the scrutinee type an `eco.case` of `caseKind` takes: `i64` for
+`"int"`, `i16` for `"chr"`, and `!eco.value` for any other kind.
 -}
 scrutineeTypeFromCaseKind : String -> MlirType
 scrutineeTypeFromCaseKind caseKind =
@@ -1431,14 +1377,17 @@ scrutineeTypeFromCaseKind caseKind =
         "str" ->
             Types.ecoValue
 
-        -- "ctor" and anything else: boxed ADTs
         _ ->
             Types.ecoValue
 
 
-{-| Compute the fallback tag for a fan-out based on the edge tests.
-For two-way branches (Bool, Cons/Nil), this computes the "other" tag.
-For N-way branches (custom types), this finds the first missing tag.
+{-| Returns the tag of the fallback alternative of an `eco.case` whose other
+alternatives are `edgeTests`.
+
+A single Bool test gives the other Bool tag, a single `::` test gives 0 and a
+single `[]` test gives 1. Any other set of tests gives the smallest
+non-negative integer that no edge's `testToTagInt` uses.
+
 -}
 computeFallbackTag : List DT.Test -> Int
 computeFallbackTag edgeTests =
@@ -1456,25 +1405,14 @@ computeFallbackTag edgeTests =
             1
 
         _ ->
-            -- Smallest non-negative tag not among the edges. Computed by sorting
-            -- the (few) edge tags and scanning for the first gap from 0, so the
-            -- cost is O(n log n) in the EDGE COUNT, never O(maxTag). The old
-            -- `List.range 0 (maxTag + 1)` allocated a list proportional to the
-            -- largest matched literal: for `int` cases `testToTagInt` returns the
-            -- literal value, so a case over large literals (e.g. PNG chunk-type
-            -- codes ~1.95e9 in justgook/elm-image's Image.Internal.PNG) tried to
-            -- build a multi-billion-element list and OOMed. This yields the same
-            -- value as the old code (smallest non-negative integer not used).
+            -- Sorting and scanning makes the cost depend on the number of
+            -- edges, not on the size of the largest Int literal.
             firstUnusedTag 0 (List.sort (List.map testToTagInt edgeTests))
 
 
-{-| Smallest non-negative `Int` not present in the ascending-sorted `sortedTags`.
-
-Scans for the first gap starting at `candidate` (0 at the top level). Tags below
-the candidate (including negatives and duplicates) are skipped; when a tag equals
-the candidate the candidate advances; the first tag strictly greater than the
-candidate exposes the gap. Cost is O(n) over the sorted edge tags.
-
+{-| Returns the smallest integer, no lower than `candidate`, that is absent
+from the ascending list `sortedTags`. Tags below `candidate` and repeated tags
+are skipped.
 -}
 firstUnusedTag : Int -> List Int -> Int
 firstUnusedTag candidate sortedTags =

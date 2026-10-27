@@ -3,11 +3,76 @@ module Compiler.Type.Unify exposing
     , unifyBoolS, unifyS
     )
 
-{-| Type unification for Hindley-Milner type inference.
+{-| Type inference turns a program into equations between type variables, and
+this module solves one equation at a time: it decides whether two variables can
+stand for the same type and, if they can, makes them one.
 
-Unification finds a substitution that makes two types equal, or reports
-that no such substitution exists. This module implements unification using
-union-find data structures for efficient variable binding.
+A variable is a point of the store, as `Compiler.AST.TypeVars` describes, and
+points known to be equal form a class with one shared descriptor, as
+`Compiler.Type.UnionFind` describes. To _unify_ two points is to compare the
+contents of their two classes and, when they agree, join the classes under a
+descriptor whose content is the agreed type. The join takes the lower of the two
+ranks, resets the mark to `Type.noMark` and clears the copy. Where the two
+contents are structures, their parts are unified first, recursively.
+
+Agreement follows a few rules.
+
+A flexible variable agrees with anything and takes the other side's content;
+of two flexible variables, a named one's content survives. A rigid variable
+agrees only with a flexible variable, with `Error`, or, for a rigid super type,
+with a flexible super type it subsumes: equal ones, a rigid `number` with a
+flexible `comparable`, and a rigid `compappend` with a flexible `comparable` or
+`appendable`.
+
+A _super type_ is one of Elm's constrained variables. A flexible `number` is
+`Int` or `Float` from `Basics`. A flexible `comparable` is a number, `String`,
+`Char`, a `List` of comparables, or a tuple of comparables, every element of
+which is checked. A flexible `appendable` is `String` or any `List`; a
+`compappend` is `String` or a `List` of comparables, never a tuple. Two flexible
+super types join to the narrower: `number` with `comparable` gives `number`,
+`comparable` with `appendable` gives `compappend`, and `number` mismatches
+`appendable` and `compappend`. Before a `List` or tuple is accepted as
+comparable, an occurs check rejects a structure that contains its own variable.
+
+An alias is unified through its expansion. Against a flexible variable the
+alias content is kept; against an alias of the same module and name only the
+arguments are unified; against anything else but `Error` only the alias's
+expansion point is unified, so the alias's own point stays a class of its own.
+The one asymmetry is a rigid variable: with the rigid variable first the pair
+mismatches, and with the alias first the alias's expansion is unified with the
+rigid variable.
+
+`Error` content agrees with everything and the joined class holds `Error`, so
+that one type error does not cause a cascade of further reports.
+
+Lambda sets, the contents of the set slot of a `FunL` arrow, are joined rather
+than matched, and the join never fails. Top absorbs any other set; of two tops
+the one with the lower provenance code is kept. Two member lists give their
+union, and when one already contains the other its content is kept unchanged.
+An `LsFrom` set's sources are kept through the join: two source lists are
+concatenated, keeping the first occurrence of each point. No cap on the size of
+a set is applied here. A `Fun1` arrow agrees with a `FunL` arrow whose argument
+and result agree, and the join keeps the `FunL`.
+
+Records are unified field by field, through extension chains: each side's
+fields are gathered by following `Record1` extensions and aliases. Fields both
+sides have are unified; fields only one side has are pushed into the other
+side's extension as a fresh record, sharing a fresh extension variable when
+both sides have fields of their own.
+
+The fresh variables made along the way, by records and by comparable element
+checks, are collected and returned with the answer, on failure as well as on
+success, so that the caller can give them a rank. Where a failure in one part
+would otherwise skip the rest, the arguments of a type application and of an
+alias are all unified before the failure is reported, and so are the shared
+fields of a record once its extensions agree; a mismatch between the extensions
+skips the shared fields, and the parts of an arrow or a tuple stop at the first
+failure.
+
+A failed unification is not undone. Classes the attempt joined before it met
+the mismatch stay joined. `unify` and `unifyS` then render both types and join
+the two classes under `Error`; `unifyBoolS` does neither and leaves the store
+as the attempt left it.
 
 
 # Unification
@@ -32,11 +97,14 @@ import System.TypeCheck.IO as IO exposing (IO)
 -- ====== UNIFY ======
 
 
-{-| Result of attempting to unify two type variables.
+{-| The outcome of unifying two variables, with the fresh variables the attempt
+made.
 
-AnswerOk indicates successful unification and includes all newly created
-variables. AnswerErr indicates a type mismatch and includes the conflicting
-types for error reporting.
+`AnswerOk` means the two variables are now one class.
+
+`AnswerErr` carries the two types as rendered after the failed attempt, so they
+include whatever partial joins the attempt made before the mismatch. By the
+time it is returned, both classes have been joined under `Error`.
 
 -}
 type Answer
@@ -44,13 +112,8 @@ type Answer
     | AnswerErr (List Vars.Variable) Error.Type Error.Type
 
 
-{-| Attempts to unify two type variables.
-
-Finds a substitution that makes both variables represent the same type, or
-returns an error with the conflicting types. Uses union-find to efficiently
-merge equivalent variables and handles all type constructors including
-functions, records, tuples, and type aliases.
-
+{-| Unifies two variables as an `IO` action. It is `unifyS` with the state
+first in the result.
 -}
 unify : Vars.Variable -> Vars.Variable -> IO Answer
 unify v1 v2 s0 =
@@ -61,20 +124,13 @@ unify v1 v2 s0 =
     ( s1, answer )
 
 
-{-| The direct-state entry: `guardedUnify`'s body on an empty fresh-var
-accumulator, then the success or error tail of `unify`.
+{-| Unifies two variables in the given state and returns the answer with the
+new state.
 
-This is the same computation the CPS entry performed, with the per-call
-scaffolding gone: the `IO.andThen` continuation closure, the `IO.pure` of the
-success arm, and the `Ok`/`UnifyOk` tuple pairs that only existed to be
-immediately destructured. On the ~10^6-per-run unification path that is real
-nursery allocation, and none of it did any work.
-
-Order is preserved exactly, because it has to be for more than the byte-identity
-gate: the two `toErrorType` renders still happen BEFORE the error union, so the
-reported types show the partial merges the failed attempt made, and the Points
-minted along the way keep their indices — `Vars.Pt` indices are exposed through
-`pointKey` to `dedupeSources` and to the lambda-set `seen` sets.
+On a mismatch both types are rendered with `Type.toErrorType` before the two
+classes are joined under `Error`, so the rendered types show the partial joins
+the failed attempt made. Rendering writes names into the store, as
+`Compiler.Type.Type` describes.
 
 -}
 unifyS : Vars.Variable -> Vars.Variable -> IO.State -> ( Answer, IO.State )
@@ -94,15 +150,13 @@ unifyS v1 v2 s0 =
             ( AnswerErr vars t1 t2, UF.unionS v1 v2 errorDescriptor s3 )
 
 
-{-| The recovering entry: `True` with the unified store, `False` with the store
-as the failed attempt left it.
+{-| Unifies two variables and reports only whether it worked: `True` with the
+unified state, or `False` with the state as the failed attempt left it,
+partial joins included.
 
-It renders no error types and performs no error union, which is the whole cost
-of a best-effort failure and is unobservable to a caller that is about to
-discard the attempt.
-
-A caller that recovers undoes the attempt by putting back the point store it
-held before the call; the store is immutable, so that older store is intact.
+It renders no error types, joins nothing under `Error`, and does not return the
+fresh variables. A caller that wants to discard a failed attempt goes back to
+the state it held before the call, which the immutable store leaves intact.
 
 -}
 unifyBoolS : Vars.Variable -> Vars.Variable -> IO.State -> ( Bool, IO.State )
@@ -115,8 +169,8 @@ unifyBoolS v1 v2 s0 =
             ( False, s1 )
 
 
-{-| `AnswerOk []` is by far the common answer — fresh vars are registered only
-by the record and comparable arms — so share it rather than allocate it.
+{-| Returns `AnswerOk vars`, using one shared value when `vars` is empty, which
+is the common case because only records and comparable checks make variables.
 -}
 answerOk : List Vars.Variable -> Answer
 answerOk vars =
@@ -128,11 +182,16 @@ answerOk vars =
             AnswerOk vars
 
 
+{-| The shared successful answer with no fresh variables.
+-}
 answerOkEmpty : Answer
 answerOkEmpty =
     AnswerOk []
 
 
+{-| The descriptor both classes of a failed unification are joined under:
+`Error` content with rank `Type.noRank` and mark `Type.noMark`.
+-}
 errorDescriptor : Vars.Descriptor
 errorDescriptor =
     IO.makeDescriptor Vars.Error Type.noRank Type.noMark Nothing
@@ -142,18 +201,31 @@ errorDescriptor =
 -- ====== CPS UNIFIER ======
 
 
+{-| A step of unification that may mismatch, producing an `a` when it does not.
+
+It is run with the list of fresh variables made so far, and passes that list on
+whether the step succeeds or mismatches, so the variables made before a
+mismatch are not lost.
+
+-}
 type Unify a
     = Unify (List Vars.Variable -> IO (Result UnifyErr (UnifyOk a)))
 
 
+{-| A successful step's result together with the fresh variables made so far.
+-}
 type UnifyOk a
     = UnifyOk (List Vars.Variable) a
 
 
+{-| A mismatch, together with the fresh variables made before it.
+-}
 type UnifyErr
     = UnifyErr (List Vars.Variable) ()
 
 
+{-| Applies `func` to a step's result.
+-}
 map : (a -> b) -> Unify a -> Unify b
 map func (Unify kv) =
     Unify <|
@@ -167,11 +239,16 @@ map func (Unify kv) =
                 (kv vars)
 
 
+{-| Returns a step that succeeds with `a` and changes nothing.
+-}
 pure : a -> Unify a
 pure a =
     Unify (\vars -> IO.pure (Ok (UnifyOk vars a)))
 
 
+{-| Returns a step that runs the given one and, unless it mismatched, the step
+`callback` makes from its result.
+-}
 andThen : (a -> Unify b) -> Unify a -> Unify b
 andThen callback (Unify ka) =
     Unify <|
@@ -190,6 +267,9 @@ andThen callback (Unify ka) =
                     )
 
 
+{-| Returns a step that runs `mkVar` and adds the variable it makes to the
+fresh variables.
+-}
 register : IO Vars.Variable -> Unify Vars.Variable
 register mkVar =
     Unify
@@ -202,23 +282,24 @@ register mkVar =
         )
 
 
+{-| A step that fails, leaving the store unchanged.
+-}
 mismatch : Unify a
 mismatch =
     Unify (\vars -> IO.pure (Err (UnifyErr vars ())))
 
 
-{-| Run each element through `f` in order, short-circuiting on the first
-mismatch. Threads the fresh-var accumulator through the whole traversal, so an
-element-wise unification can't accidentally drop a step (which is what the old
-hand-written `List.foldl` in the comparable-tuple case did).
+{-| Returns a step that runs `f` on each element of `xs` in order, stopping at
+the first mismatch.
 -}
 forEach_ : List a -> (a -> Unify ()) -> Unify ()
 forEach_ xs f =
     List.foldl (\x acc -> acc |> andThen (\_ -> f x)) (pure ()) xs
 
 
-{-| Unify two lists pairwise, short-circuiting on the first mismatch; `mismatch`
-if the lengths differ.
+{-| Returns a step that runs `f` on the pairs of `xs` and `ys` in order,
+stopping at the first mismatch. Lists of different lengths mismatch once the
+shorter runs out.
 -}
 zipWithM_ : (a -> b -> Unify ()) -> List a -> List b -> Unify ()
 zipWithM_ f xs ys =
@@ -233,9 +314,9 @@ zipWithM_ f xs ys =
             mismatch
 
 
-{-| Run a unification, recovering a mismatch to `False` while keeping any fresh
-vars it allocated (never short-circuits). `True` on success. This is the single
-place the `Ok`/`Err` conversion lives for the run-all discipline below.
+{-| Returns a step that never mismatches: it runs the given step and gives
+`True` if it succeeded and `False` if it mismatched, keeping the fresh variables
+either way. The store keeps whatever the step changed before a mismatch.
 -}
 try : Unify () -> Unify Bool
 try (Unify u) =
@@ -254,11 +335,9 @@ try (Unify u) =
         )
 
 
-{-| "Run-all-then-report": unify every pair (so all fresh vars are collected)
-even after a mismatch, then report a mismatch if any pair failed or the lengths
-differ. Preserves the discipline of the old `unifyArgs`/`unifyAliasArgs`, which
-kept unifying remaining args after a failure so `Solve` still sees every fresh
-var on the error path.
+{-| Returns a step that runs `f` on every pair of `xs` and `ys`, carrying on
+after a mismatch so that every fresh variable is collected, and then mismatches
+if any pair did or the lengths differ.
 -}
 zipAllWithM_ : (a -> b -> Unify ()) -> List a -> List b -> Unify ()
 zipAllWithM_ f xs ys =
@@ -289,6 +368,9 @@ zipAllWithM_ f xs ys =
 -- ====== UNIFICATION HELPERS ======
 
 
+{-| The two variables being unified, with the descriptors of their classes as
+read when the attempt began.
+-}
 type alias Context =
     { var1 : Vars.Variable
     , desc1 : Vars.Descriptor
@@ -297,13 +379,15 @@ type alias Context =
     }
 
 
-{-| Helper to construct Context with positional args
+{-| Builds a `Context` from its four fields in order.
 -}
 makeContext : Vars.Variable -> Vars.Descriptor -> Vars.Variable -> Vars.Descriptor -> Context
 makeContext var1 desc1 var2 desc2 =
     { var1 = var1, desc1 = desc1, var2 = var2, desc2 = desc2 }
 
 
+{-| Returns the context with the two sides swapped.
+-}
 reorient : Context -> Context
 reorient props =
     makeContext props.var2 props.desc2 props.var1 props.desc1
@@ -311,9 +395,11 @@ reorient props =
 
 
 -- ====== MERGE ======
--- merge : Context -> UF.Content -> Unify ( UF.Point UF.Descriptor, UF.Point UF.Descriptor )
 
 
+{-| Returns a step that joins the two classes of the context under `content`,
+with the lower of their two ranks, no mark and no copy.
+-}
 merge : Context -> Vars.Content -> Unify ()
 merge props content =
     let
@@ -331,6 +417,9 @@ merge props content =
         )
 
 
+{-| Returns a step that makes a new variable holding `content`, at the lower of
+the context's two ranks, and adds it to the fresh variables.
+-}
 fresh : Context -> Vars.Content -> Unify Vars.Variable
 fresh props content =
     let
@@ -347,28 +436,24 @@ fresh props content =
 -- ====== ACTUALLY UNIFY THINGS ======
 
 
+{-| Returns a step that unifies two variables, doing nothing when they are
+already one class.
+-}
 guardedUnify : Vars.Variable -> Vars.Variable -> Unify ()
 guardedUnify left right =
-    -- The combinator form. It keeps the explicit `\vars s0 ->` closure rather
-    -- than partially applying `guardedUnifyS`: the latter would make `k vars s3`
-    -- a PAP extension — a 4-ary function applied to two arguments and then two
-    -- more — which is exactly the dispatch the note below records removing.
+    -- An explicit closure, not a partial application of `guardedUnifyS`, so
+    -- that running the step is a saturated call.
     Unify (\vars s0 -> guardedUnifyS left right vars s0)
 
 
-{-| `guardedUnify`'s body as a saturated top-level function, so the direct-state
-entries can call it without building the CPS closure first.
+{-| Unifies two variables in the given state, given the fresh variables made
+so far, doing nothing when they are already one class.
+
+Unlike `unifyS`, the state comes first in the result, as in an `IO` action.
+
 -}
 guardedUnifyS : Vars.Variable -> Vars.Variable -> List Vars.Variable -> IO.State -> ( IO.State, Result UnifyErr (UnifyOk ()) )
 guardedUnifyS left right vars s0 =
-    -- THE hot path of unification. Threads the union-find state directly
-    -- (plans/io-monad-dispatch-reduction.md P3): `UF.equivalent left right` and
-    -- the two `UF.get`s were each a PARTIAL application, so each built a PAP
-    -- that `andThen` then had to dispatch through — 141 M dispatches to the
-    -- `UnionFind` IO wrappers across the self-compile, `UF.get` alone 80.8 M.
-    -- Saturated `equivalentS`/`getS` calls are direct, and the three `andThen`s
-    -- disappear with them. `Unify` wraps `List Variable -> IO a`, and
-    -- `IO a = State -> ( State, a )`, so taking `s0` here is just eta-expansion.
     let
         ( equivalent, s1 ) =
             UF.equivalentS s0 left right
@@ -389,17 +474,26 @@ guardedUnifyS left right vars s0 =
                 k vars s3
 
 
+{-| Returns a step that unifies two parts of the structures being unified.
+-}
 subUnify : Vars.Variable -> Vars.Variable -> Unify ()
 subUnify var1 var2 =
     guardedUnify var1 var2
 
 
+{-| Returns a step that unifies the remaining elements of two tuples pairwise,
+stopping at the first mismatch, and then joins the context under
+`otherContent`.
+-}
 subUnifyTuple : List Vars.Variable -> List Vars.Variable -> Context -> Vars.Content -> Unify ()
 subUnifyTuple cs zs context otherContent =
     zipWithM_ subUnify cs zs
         |> andThen (\_ -> merge context otherContent)
 
 
+{-| Returns a step that unifies the two sides of a context whose variables are
+in different classes, choosing the rule by the first side's content.
+-}
 actuallyUnify : Context -> Unify ()
 actuallyUnify ctx =
     let
@@ -435,8 +529,6 @@ actuallyUnify ctx =
             unifyStructure ctx flatType firstContent secondContent
 
         Vars.Error ->
-            -- If there was an error, just pretend it is okay. This lets us avoid
-            -- "cascading" errors where one problem manifests as multiple message.
             merge ctx Vars.Error
 
 
@@ -444,6 +536,10 @@ actuallyUnify ctx =
 -- ====== UNIFY FLEXIBLE VARIABLES ======
 
 
+{-| Returns a step that unifies a flexible variable, whose content is
+`content`, with `otherContent`. The other side's content is kept, except that an
+unnamed flexible variable on the other side keeps this one's.
+-}
 unifyFlex : Context -> Vars.Content -> Vars.Content -> Unify ()
 unifyFlex context content otherContent =
     case otherContent of
@@ -479,6 +575,11 @@ unifyFlex context content otherContent =
 -- ====== UNIFY RIGID VARIABLES ======
 
 
+{-| Returns a step that unifies a rigid variable, with its super type if it has
+one, with `otherContent`. It succeeds against a flexible variable, against
+`Error`, and against a flexible super type that `combineRigidSupers` accepts,
+keeping the rigid content in the last case.
+-}
 unifyRigid : Context -> Maybe Vars.SuperType -> Vars.Content -> Vars.Content -> Unify ()
 unifyRigid context maybeSuper content otherContent =
     case otherContent of
@@ -517,6 +618,9 @@ unifyRigid context maybeSuper content otherContent =
 -- ====== UNIFY SUPER VARIABLES ======
 
 
+{-| Returns a step that unifies a flexible variable with super type `super` with
+`otherContent`, following the super-type rules in the module docstring.
+-}
 unifyFlexSuper : Context -> Vars.SuperType -> Vars.Content -> Vars.Content -> Unify ()
 unifyFlexSuper ctx super content otherContent =
     let
@@ -605,6 +709,9 @@ unifyFlexSuper ctx super content otherContent =
             merge ctx Vars.Error
 
 
+{-| Tells whether a rigid variable with super type `rigid` can absorb a
+flexible variable with super type `flex`.
+-}
 combineRigidSupers : Vars.SuperType -> Vars.SuperType -> Bool
 combineRigidSupers rigid flex =
     rigid
@@ -613,6 +720,9 @@ combineRigidSupers rigid flex =
         || (rigid == Vars.CompAppend && (flex == Vars.Comparable || flex == Vars.Appendable))
 
 
+{-| Tells whether the type named `home`.`name`, applied to no arguments, belongs
+to super type `super`.
+-}
 atomMatchesSuper : Vars.SuperType -> ModuleName.Canonical -> Name.Name -> Bool
 atomMatchesSuper super home name =
     case super of
@@ -629,12 +739,18 @@ atomMatchesSuper super home name =
             Error.isString home name
 
 
+{-| Tells whether `home`.`name` is `Basics.Int` or `Basics.Float`.
+-}
 isNumber : ModuleName.Canonical -> Name.Name -> Bool
 isNumber home name =
     (home == ModuleName.basics)
         && (name == Name.int || name == Name.float)
 
 
+{-| Returns a step that unifies the first side of the context, a flexible
+variable with super type `super`, with the structure `flatType` on the second
+side, keeping the structure.
+-}
 unifyFlexSuperStructure : Context -> Vars.SuperType -> Vars.FlatType -> Unify ()
 unifyFlexSuperStructure context super flatType =
     case flatType of
@@ -692,6 +808,9 @@ unifyFlexSuperStructure context super flatType =
 -- Do type classes require occurs checks?
 
 
+{-| Returns a step that mismatches when the context's second variable occurs
+inside its own structure.
+-}
 comparableOccursCheck : Context -> Unify ()
 comparableOccursCheck props =
     Unify
@@ -708,6 +827,9 @@ comparableOccursCheck props =
         )
 
 
+{-| Returns a step that unifies `var` with a fresh flexible `comparable` at
+`var`'s rank, adding that variable to the fresh variables.
+-}
 unifyComparableRecursive : Vars.Variable -> Unify ()
 unifyComparableRecursive var =
     register
@@ -724,6 +846,10 @@ unifyComparableRecursive var =
 -- ====== UNIFY ALIASES ======
 
 
+{-| Returns a step that unifies an alias of `home`.`name` with arguments `args`
+and expansion `realVar` with `otherContent`, following the alias rules in the
+module docstring.
+-}
 unifyAlias : Context -> ModuleName.Canonical -> Name.Name -> List ( Name.Name, Vars.Variable ) -> Vars.Variable -> Vars.Content -> Unify ()
 unifyAlias ctx home name args realVar otherContent =
     let
@@ -762,6 +888,11 @@ unifyAlias ctx home name args realVar otherContent =
 -- ====== UNIFY STRUCTURES ======
 
 
+{-| Returns a step that unifies the structure `flatType` with `otherContent`.
+Two structures agree only when they are built the same way and their parts
+agree, apart from the arrow, lambda-set and record rules in the module
+docstring.
+-}
 unifyStructure : Context -> Vars.FlatType -> Vars.Content -> Vars.Content -> Unify ()
 unifyStructure ctx flatType content otherContent =
     let
@@ -808,9 +939,7 @@ unifyStructure ctx flatType content otherContent =
                         |> andThen (\_ -> subUnify set1 set2)
                         |> andThen (\_ -> merge ctx otherContent)
 
-                -- Mixed arrows: unify the type structure, keep the slotted
-                -- side. Legal only transiently (a demand encoded before lss
-                -- gating); semantically Fun1 ≡ FunL with an unconstrained slot.
+                -- A plain arrow is a `FunL` whose slot is unconstrained.
                 ( Vars.Fun1 arg1 res1, Vars.FunL arg2 res2 _ ) ->
                     subUnify arg1 arg2
                         |> andThen (\_ -> subUnify res1 res2)
@@ -822,21 +951,7 @@ unifyStructure ctx flatType content otherContent =
                         |> andThen (\_ -> merge ctx content)
 
                 ( Vars.LambdaSet1 ls1, Vars.LambdaSet1 ls2 ) ->
-                    -- Join-semilattice union (LSS): TOTAL — set unification
-                    -- never mismatches. Members are ground ids; ⊤ absorbs and
-                    -- carries none (members-under-⊤ are dead at every reader).
-                    -- One O(n+m) merge-scan classifies the pair; subsumption
-                    -- reuses the covering side's content AS-IS, and a real
-                    -- union allocates only the merged spine with suffix
-                    -- sharing. NOTE the ≤8 `maxSetSize` cap is READBACK-only
-                    -- (zonkSetSlot): in-store sets can transiently exceed it
-                    -- (Run B measured a 81-97-member tail), which the linear
-                    -- scan tolerates.
                     case ( ls1, ls2 ) of
-                        -- §4.9 provenance: (⊤,⊤) takes the higher-priority
-                        -- kind (min code) via the shared per-kind CAFs —
-                        -- still allocation-free; absorption keeps the
-                        -- surviving ⊤'s birth kind.
                         ( Vars.LsTop p1, Vars.LsTop p2 ) ->
                             if p1 <= p2 then
                                 merge ctx content
@@ -856,21 +971,14 @@ unifyStructure ctx flatType content otherContent =
                                     merge ctx content
 
                                 Vars.SortedSuper ->
-                                    -- m2 ⊆ m1: side 1's content as-is.
                                     merge ctx content
 
                                 Vars.SortedSub ->
-                                    -- m1 ⊆ m2: side 2's content as-is.
                                     merge ctx otherContent
 
                                 Vars.SortedMixed ->
                                     merge ctx (Vars.Structure (Vars.LambdaSet1 (Vars.LsMembers (IO.unionSortedAsc m1 m2))))
 
-                        -- LSS_023 (`plans/lss-directed-set-flow.md`): class
-                        -- merges MERGE the deferred edge lists — the union-hook
-                        -- problem is solved by representation, not by hooks.
-                        -- Dedupe uses IO.pointKey (Unify cannot import Engine).
-                        -- The join stays TOTAL.
                         ( Vars.LsFrom m1 s1, Vars.LsFrom m2 s2 ) ->
                             merge ctx
                                 (Vars.Structure
@@ -936,10 +1044,14 @@ unifyStructure ctx flatType content otherContent =
 
 
 
--- ====== UNIFY ARGS ======
 -- ====== UNIFY RECORDS ======
 
 
+{-| Returns a step that unifies two gathered records, pushing each side's own
+fields into the other side's extension as described in the module docstring,
+and then joins the context under a record of the shared fields, together with
+each side's own fields only when both sides have some.
+-}
 unifyRecord : Context -> RecordStructure -> RecordStructure -> Unify ()
 unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2) =
     let
@@ -1005,6 +1117,10 @@ unifyRecord context (RecordStructure fields1 ext1) (RecordStructure fields2 ext2
                 )
 
 
+{-| Returns a step that unifies every pair in `sharedFields`, carrying on after
+a mismatch, and then either mismatches or joins the context under a record of
+the shared fields and `otherFields` with extension `ext`.
+-}
 unifySharedFields : Context -> Dict Name.Name ( Vars.Variable, Vars.Variable ) -> Dict Name.Name Vars.Variable -> Vars.Variable -> Unify ()
 unifySharedFields context sharedFields otherFields ext =
     traverseAll unifyField sharedFields
@@ -1019,12 +1135,9 @@ unifySharedFields context sharedFields otherFields ext =
             )
 
 
-{-| Traverse every entry, failing as a whole if `func` declines any of them.
-
-The caller used to reconstruct that verdict by comparing `Dict.size` of the
-input against `Dict.size` of the output — two full tree walks to recover one bit
-that the traversal already knew.
-
+{-| Returns a step that runs `func` on every entry in key order and gives the
+dictionary of its results, or `Nothing` if `func` gave `Nothing` for any entry.
+Every entry is run either way.
 -}
 traverseAll : (comparable -> b -> Unify (Maybe c)) -> Dict comparable b -> Unify (Maybe (Dict comparable c))
 traverseAll func =
@@ -1042,6 +1155,9 @@ traverseAll func =
         (pure (Just Dict.empty))
 
 
+{-| Returns a step that unifies a shared field's two variables, giving the
+first one on success and `Nothing` on a mismatch, without mismatching itself.
+-}
 unifyField : Name.Name -> ( Vars.Variable, Vars.Variable ) -> Unify (Maybe Vars.Variable)
 unifyField _ ( actual, expected ) =
     try (subUnify actual expected)
@@ -1059,19 +1175,25 @@ unifyField _ ( actual, expected ) =
 -- ====== GATHER RECORD STRUCTURE ======
 
 
+{-| A record's fields gathered from its whole extension chain, with the
+variable that ends the chain, which is not a `Record1` or an alias.
+-}
 type RecordStructure
     = RecordStructure (Dict Name.Name Vars.Variable) Vars.Variable
 
 
-{-| Dedupe an `LsFrom` source list by raw Point index, preserving first
-occurrence. Small lists (edge fan-in per slot); quadratic is fine and
-allocation-light.
+{-| Returns `sources` without repeated points, keeping the first occurrence of
+each. Points are compared by store index, so two points of one class are both
+kept.
 -}
 dedupeSources : List Vars.Variable -> List Vars.Variable
 dedupeSources sources =
     dedupeSourcesGo sources []
 
 
+{-| Returns `sources` without the points whose index is in `seen` and without
+repeats, keeping first occurrences.
+-}
 dedupeSourcesGo : List Vars.Variable -> List Int -> List Vars.Variable
 dedupeSourcesGo sources seen =
     case sources of
@@ -1090,6 +1212,10 @@ dedupeSourcesGo sources seen =
                 v :: dedupeSourcesGo rest (k :: seen)
 
 
+{-| Gathers the fields of a record whose own fields are `fields` and whose
+extension is `variable`, following `Record1` extensions and aliases. Where a
+field name appears more than once, the outermost occurrence wins.
+-}
 gatherFields : Dict Name.Name Vars.Variable -> Vars.Variable -> IO RecordStructure
 gatherFields fields variable =
     UF.get variable

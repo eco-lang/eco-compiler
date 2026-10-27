@@ -8,11 +8,28 @@ module Builder.Reporting exposing
     , BResult
     )
 
-{-| Build progress reporting and user interaction for the Elm compiler.
+{-| What the build tool prints while it works, and how a command that failed
+ends.
 
-This module provides the reporting infrastructure for displaying build progress,
-dependency downloads, and compilation status to users. It supports multiple output
-styles including terminal progress indicators, JSON output, and silent mode.
+Every command runs in one of three output styles, a `Style`. Only the terminal
+style shows progress; the silent and JSON styles discard it and differ only in
+how a failure is reported.
+
+Progress is reported through a _key_, a send-only handle that a long-running
+task is given and calls once per event. In the terminal style the key writes
+each event to a channel, and a separate worker reads the channel and redraws a
+progress line on standard output. The task doing the work never prints
+progress itself.
+
+The terminal style carries a lock, an `MVar ()`, so that progress and final
+output do not interleave. A progress worker holds the lock while it runs and
+gives it back after printing its final line. Printing a failure report or the
+generated-files diagram first waits until the lock is free.
+
+Most of the file is that machinery, twice over: once for verifying
+dependencies (`trackDetails`) and once for compiling modules (`trackBuild`).
+The rest is `attempt`, which turns a failed result into a report and a failing
+exit, and `ask`, a yes/no prompt.
 
 
 # Output Styles
@@ -62,7 +79,18 @@ import Utils.Main as Utils exposing (Chan)
 -- ====== STYLE ======
 
 
-{-| Represents different output styles for build reporting.
+{-| How a command presents itself: what progress it shows and how it reports
+a failure.
+
+`Silent` shows no progress and exits on failure without printing anything.
+
+`Json` shows no progress and writes a failure report to standard error as one
+line of JSON.
+
+`Terminal` shows progress on standard output and writes a failure report to
+standard error, laid out for a terminal. Its `MVar ()` is the lock described in
+the module docstring; it is made full by `terminal`.
+
 -}
 type Style
     = Silent
@@ -70,21 +98,22 @@ type Style
     | Terminal (MVar ())
 
 
-{-| Silent output style that produces no progress messages.
+{-| The style that prints no progress and no failure report.
 -}
 silent : Style
 silent =
     Silent
 
 
-{-| JSON output style for machine-readable progress messages.
+{-| The style that prints no progress and reports a failure as one line of
+JSON on standard error.
 -}
 json : Style
 json =
     Json
 
 
-{-| Terminal output style with interactive progress indicators.
+{-| Creates the terminal style, with its output lock initially free.
 -}
 terminal : Task Never Style
 terminal =
@@ -95,15 +124,19 @@ terminal =
 -- ====== ATTEMPT ======
 
 
-{-| Executes a task and converts failures to error reports, exiting on failure.
+{-| Runs `work` and returns its `Ok` value. On `Err` it writes the error's
+report to standard error, laid out for a terminal whatever style the command
+uses, and exits with failure.
 -}
 attempt : (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attempt toReport work =
     work
-        -- |> IO.catch reportExceptionsNicely
         |> Task.andThen (handleAttemptResult toReport)
 
 
+{-| Returns the `Ok` value of `result`, or reports the error to standard error
+and exits with failure.
+-}
 handleAttemptResult : (x -> Help.Report) -> Result x a -> Task Never a
 handleAttemptResult toReport result =
     case result of
@@ -114,21 +147,28 @@ handleAttemptResult toReport result =
             reportErrorAndExit (toReport x)
 
 
+{-| Writes `helpReport` to standard error and exits with failure.
+-}
 reportErrorAndExit : Help.Report -> Task Never a
 reportErrorAndExit helpReport =
     Exit.toStderr helpReport
         |> Task.andThen (\_ -> Exit.exitFailure)
 
 
-{-| Executes a task with a specific output style, converting failures to error reports.
+{-| Runs `work` and returns its `Ok` value. On `Err` it exits with failure,
+reporting the error as `style` dictates: nothing for `silent`, one line of JSON
+on standard error for `json`, and the terminal layout on standard error for the
+terminal style, printed once no progress worker holds the terminal lock.
 -}
 attemptWithStyle : Style -> (x -> Help.Report) -> Task Never (Result x a) -> Task Never a
 attemptWithStyle style toReport work =
     work
-        -- |> IO.catch reportExceptionsNicely
         |> Task.andThen (handleStyledResult style toReport)
 
 
+{-| Returns the `Ok` value of `result`, or reports the error in `style` and
+exits with failure.
+-}
 handleStyledResult : Style -> (x -> Help.Report) -> Result x a -> Task Never a
 handleStyledResult style toReport result =
     case result of
@@ -139,6 +179,9 @@ handleStyledResult style toReport result =
             exitWithError style (toReport x)
 
 
+{-| Reports `helpReport` in `style` and exits with failure. The silent style
+prints nothing.
+-}
 exitWithError : Style -> Help.Report -> Task Never a
 exitWithError style helpReport =
     case style of
@@ -152,12 +195,18 @@ exitWithError style helpReport =
             exitWithTerminalError mvar helpReport
 
 
+{-| Writes `helpReport` to standard error as one line of JSON and exits with
+failure.
+-}
 exitWithJsonError : Help.Report -> Task Never a
 exitWithJsonError helpReport =
     Utils.builderHPutBuilder IO.stderr (Encode.encodeUgly (Exit.toJson helpReport))
         |> Task.andThen (\_ -> Exit.exitFailure)
 
 
+{-| Waits until the terminal lock `mvar` is free, then writes `helpReport` to
+standard error and exits with failure.
+-}
 exitWithTerminalError : MVar () -> Help.Report -> Task Never a
 exitWithTerminalError mvar helpReport =
     Utils.readMVar (Bytes.Decode.map (\_ -> ()) BD.bool) mvar
@@ -169,6 +218,8 @@ exitWithTerminalError mvar helpReport =
 -- ====== MARKS ======
 
 
+{-| The green mark printed before a package that downloaded successfully.
+-}
 goodMark : D.Doc
 goodMark =
     D.green
@@ -180,6 +231,8 @@ goodMark =
         )
 
 
+{-| The red mark printed before a package whose download failed.
+-}
 badMark : D.Doc
 badMark =
     D.red
@@ -191,6 +244,10 @@ badMark =
         )
 
 
+{-| Whether to draw marks and the generated-files diagram with plain ASCII
+characters. It is always `False`: nothing detects the operating system, so the
+Unicode characters are always used.
+-}
 isWindows : Bool
 isWindows =
     -- TODO Info.os == "mingw32"
@@ -201,20 +258,25 @@ isWindows =
 -- ====== KEY ======
 
 
-{-| Represents a channel for sending progress messages.
+{-| A send-only handle for reporting progress events of type `msg`.
+
+A key is obtained from `trackDetails` or `trackBuild`, or is `ignorer`. What
+happens to a message depends on where the key came from; the sender cannot
+tell whether it was printed.
+
 -}
 type Key msg
     = Key (msg -> Task Never ())
 
 
-{-| Sends a progress message through a reporting key.
+{-| Sends `msg` through `key`.
 -}
 report : Key msg -> msg -> Task Never ()
 report (Key send) msg =
     send msg
 
 
-{-| A reporting key that ignores all messages, useful for silent mode.
+{-| A key that discards every message.
 -}
 ignorer : Key msg
 ignorer =
@@ -225,7 +287,12 @@ ignorer =
 -- ====== ASK ======
 
 
-{-| Prompts the user with a yes/no question, defaulting to yes on empty input.
+{-| Prints `doc` to standard output and reads the answer to a yes/no question
+from standard input.
+
+An empty line, `y` or `Y` answers yes and `n` answers no. Anything else,
+including `N`, prints a reminder and asks again.
+
 -}
 ask : D.Doc -> Task Never Bool
 ask doc =
@@ -233,6 +300,9 @@ ask doc =
         |> Task.andThen (\_ -> askHelp)
 
 
+{-| Reads one line of input and returns the yes/no answer it gives, asking
+again until the line is a valid answer.
+-}
 askHelp : Task Never Bool
 askHelp =
     IO.flush
@@ -240,6 +310,9 @@ askHelp =
         |> Task.andThen parseYesNoResponse
 
 
+{-| Returns the answer `input` gives: yes for an empty line, `y` or `Y`, no for
+`n`. Anything else asks again.
+-}
 parseYesNoResponse : String -> Task Never Bool
 parseYesNoResponse input =
     case input of
@@ -259,6 +332,8 @@ parseYesNoResponse input =
             promptAndRetry
 
 
+{-| Prints a reminder of the valid answers and asks again.
+-}
 promptAndRetry : Task Never Bool
 promptAndRetry =
     IO.print "Must type 'y' for yes or 'n' for no: "
@@ -269,13 +344,21 @@ promptAndRetry =
 -- ====== DETAILS ======
 
 
-{-| Type alias for dependency resolution progress reporting key.
+{-| A key for reporting progress while dependencies are downloaded and built.
 -}
 type alias DKey =
     Key DMsg
 
 
-{-| Tracks dependency resolution progress with the given style.
+{-| Runs `callback` with a key for dependency progress, and returns its result.
+
+In the terminal style a worker prints each download as it is reported and a
+"Verifying dependencies (done/total)" line, which counts a package as done
+once it is built, broken or failed to download. When `callback` finishes, the
+worker prints "Dependencies ready!" if every package was built, and
+"Dependency problem!" otherwise. A `DStart` message sets the total and resets
+every count. In the other styles the key discards every message.
+
 -}
 trackDetails : Style -> (DKey -> Task Never a) -> Task Never a
 trackDetails style callback =
@@ -291,12 +374,18 @@ trackDetails style callback =
                 |> Task.andThen (trackDetailsWithChan mvar callback)
 
 
+{-| Starts the dependency progress worker reading `chan`, then runs `callback`
+with a key that writes to `chan`.
+-}
 trackDetailsWithChan : MVar () -> (DKey -> Task Never a) -> Chan (Maybe DMsg) -> Task Never a
 trackDetailsWithChan mvar callback chan =
     Utils.forkIO (runDetailsWorker mvar chan)
         |> Task.andThen (\_ -> runDetailsCallback chan callback)
 
 
+{-| Takes the terminal lock `mvar`, prints dependency progress from `chan`
+until the end-of-progress `Nothing`, then gives the lock back.
+-}
 runDetailsWorker : MVar () -> Chan (Maybe DMsg) -> Task Never ()
 runDetailsWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
@@ -304,6 +393,9 @@ runDetailsWorker mvar chan =
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
 
+{-| Runs `callback` with a key that writes each message to `chan` as `Just`,
+and returns its result after writing the end-of-progress `Nothing`.
+-}
 runDetailsCallback : Chan (Maybe DMsg) -> (DKey -> Task Never a) -> Task Never a
 runDetailsCallback chan callback =
     let
@@ -315,18 +407,26 @@ runDetailsCallback chan callback =
         |> Task.andThen (signalDetailsComplete encoder chan)
 
 
+{-| Writes the end-of-progress `Nothing` to `chan` and returns `answer`.
+-}
 signalDetailsComplete : (Maybe DMsg -> Bytes.Encode.Encoder) -> Chan (Maybe DMsg) -> a -> Task Never a
 signalDetailsComplete encoder chan answer =
     Utils.writeChan encoder chan Nothing
         |> Task.map (\_ -> answer)
 
 
+{-| Reads messages from `chan`, printing progress for each, until the
+end-of-progress `Nothing`, and then prints the final line.
+-}
 detailsLoop : Chan (Maybe DMsg) -> DState -> Task Never ()
 detailsLoop chan ((DState ds) as state) =
     Utils.readChan (BD.maybe dMsgDecoder) chan
         |> Task.andThen (handleDetailsMessage chan state ds.total ds.built)
 
 
+{-| Applies one message read from `chan` and continues the loop, or, for the
+end-of-progress `Nothing`, prints the final line from `total` and `built`.
+-}
 handleDetailsMessage : Chan (Maybe DMsg) -> DState -> Int -> Int -> Maybe DMsg -> Task Never ()
 handleDetailsMessage chan state total built msg =
     case msg of
@@ -338,6 +438,9 @@ handleDetailsMessage chan state total built msg =
             printFinalDetailsStatus total built
 
 
+{-| Prints the final dependency line over the progress line: "Dependencies
+ready!" when `built` equals `total`, and "Dependency problem!" otherwise.
+-}
 printFinalDetailsStatus : Int -> Int -> Task Never ()
 printFinalDetailsStatus total built =
     IO.printLn
@@ -351,6 +454,9 @@ printFinalDetailsStatus total built =
         )
 
 
+{-| The counts the dependency progress worker keeps: the `total` number of
+packages, and how many have been reported in each way so far.
+-}
 type alias DStateData =
     { total : Int
     , cached : Int
@@ -362,11 +468,26 @@ type alias DStateData =
     }
 
 
+{-| The state of the dependency progress worker.
+-}
 type DState
     = DState DStateData
 
 
-{-| Progress messages for dependency resolution and building.
+{-| An event in getting dependencies ready: each package is found in the
+cache or downloaded, and then built.
+
+`DStart` carries the number of packages to be made ready. It sets the total
+and resets every count.
+
+`DCached` reports a package found without downloading it, and `DRequested` a
+download started. The first `DRequested` prints "Starting downloads...".
+
+`DReceived` and `DFailed` report a download that succeeded or failed, and name
+the package and version, which are printed with a mark.
+
+`DBuilt` and `DBroken` report a package that was built or failed to build.
+
 -}
 type DMsg
     = DStart Int
@@ -378,6 +499,9 @@ type DMsg
     | DBroken
 
 
+{-| Applies `msg` to the counts in the state, printing what it reports, and
+returns the new state.
+-}
 detailsStep : DMsg -> DState -> Task Never DState
 detailsStep msg (DState ds) =
     case msg of
@@ -411,6 +535,8 @@ detailsStep msg (DState ds) =
             putBuilt (DState { ds | broken = ds.broken + 1 })
 
 
+{-| Prints one indented download line: `mark`, the package and the version.
+-}
 putDownload : D.Doc -> Pkg.Name -> V.Version -> Task Never ()
 putDownload mark pkg vsn =
     Help.toStdout
@@ -423,6 +549,15 @@ putDownload mark pkg vsn =
         )
 
 
+{-| Prints the "Verifying dependencies" line once every package has been found
+in the cache or downloaded, or failed to download, and returns `state`
+unchanged.
+
+The line starts on a new line if any download was reported, successful or
+failed, so it follows the download lines, and otherwise overwrites the current
+line.
+
+-}
 putTransition : DState -> Task Never DState
 putTransition ((DState ds) as state) =
     if ds.cached + ds.received + ds.failed < ds.total then
@@ -442,6 +577,10 @@ putTransition ((DState ds) as state) =
             |> Task.map (\_ -> state)
 
 
+{-| Redraws the "Verifying dependencies" line with the new count of finished
+packages, once every package has been found in the cache or downloaded, or
+failed to download, and returns `state` unchanged.
+-}
 putBuilt : DState -> Task Never DState
 putBuilt ((DState ds) as state) =
     let
@@ -458,11 +597,17 @@ putBuilt ((DState ds) as state) =
         |> Task.map (\_ -> state)
 
 
+{-| Returns the dependency progress line for `built` packages done out of
+`total`.
+-}
 toBuildProgress : Int -> Int -> String
 toBuildProgress built total =
     "Verifying dependencies (" ++ String.fromInt built ++ "/" ++ String.fromInt total ++ ")"
 
 
+{-| Returns text that blanks out a line as long as `before` and then writes
+`after` from the start of the line.
+-}
 clear : String -> String -> String
 clear before after =
     String.cons '\u{000D}'
@@ -475,24 +620,29 @@ clear before after =
 -- ====== BUILD ======
 
 
-{-| Type alias for build progress reporting key.
+{-| A key for reporting progress while modules are compiled.
 -}
 type alias BKey =
     Key BMsg
 
 
-{-| Type alias for build results that may contain build problems.
+{-| The result of building a project: a value, or the problem that stopped
+the build.
 -}
 type alias BResult a =
     Result Exit.BuildProblem a
 
 
-{-| Tracks build progress with the given style, displaying compilation status.
+{-| Runs `callback` with a key for compile progress, and returns its result.
 
-The progress channel carries `BResult ()`, never the build's result itself
-(plans/frontend-heap-release.md §7.2 row 2): the reader only needs Ok/Err and
-the problem to print the final message, and an off-heap channel hole holding
-the whole `Build.Artifacts` would pin it until exit.
+In the terminal style a worker prints "Compiling ..." and then a count of the
+`BDone` messages received. When `callback` finishes, the worker replaces it
+with a final line: "Success!", with the number of modules compiled when any
+were, or how many modules have problems, or "Detected a problem." for a problem with the project
+as a whole. In the other styles the key discards every message.
+
+The worker is sent only whether the build succeeded and the problem if it did
+not, never the successful value itself.
 
 -}
 trackBuild : Style -> (BKey -> Task Never (BResult a)) -> Task Never (BResult a)
@@ -509,6 +659,9 @@ trackBuild style callback =
                 |> Task.andThen (trackBuildWithChan mvar callback)
 
 
+{-| Starts the compile progress worker reading `chan`, runs `callback` with a
+key that writes to `chan`, and then sends the worker the outcome.
+-}
 trackBuildWithChan : MVar () -> (BKey -> Task Never (BResult a)) -> Chan (Result BMsg (BResult ())) -> Task Never (BResult a)
 trackBuildWithChan mvar callback chan =
     Utils.forkIO (runBuildWorker mvar chan)
@@ -516,11 +669,17 @@ trackBuildWithChan mvar callback chan =
         |> Task.andThen (signalBuildComplete chan)
 
 
+{-| Encodes a message on the compile progress channel: `Err` carries a
+progress message and `Ok` the outcome that ends the progress.
+-}
 buildChanEncoder : Result BMsg (BResult ()) -> Bytes.Encode.Encoder
 buildChanEncoder =
     BE.result bMsgEncoder (bResultEncoder BE.unit)
 
 
+{-| Takes the terminal lock `mvar`, prints compile progress from `chan` until
+the outcome arrives, then gives the lock back.
+-}
 runBuildWorker : MVar () -> Chan (Result BMsg (BResult ())) -> Task Never ()
 runBuildWorker mvar chan =
     Utils.takeMVar (Bytes.Decode.succeed ()) mvar
@@ -529,24 +688,33 @@ runBuildWorker mvar chan =
         |> Task.andThen (\_ -> Utils.putMVar (\_ -> BE.bool True) mvar ())
 
 
+{-| Sends the outcome of `result`, without its successful value, on `chan`, and
+returns `result`.
+-}
 signalBuildComplete : Chan (Result BMsg (BResult ())) -> BResult a -> Task Never (BResult a)
 signalBuildComplete chan result =
     Utils.writeChan buildChanEncoder chan (Ok (Result.map (\_ -> ()) result))
         |> Task.map (\_ -> result)
 
 
-{-| Progress messages for build tracking.
+{-| An event while compiling modules. `BDone` reports one module compiled.
 -}
 type BMsg
     = BDone
 
 
+{-| Reads messages from `chan`, where `done` modules have been reported
+compiled so far, until the outcome arrives.
+-}
 buildLoop : Chan (Result BMsg (BResult ())) -> Int -> Task Never ()
 buildLoop chan done =
     Utils.readChan (BD.result bMsgDecoder (bResultDecoder BD.unit)) chan
         |> Task.andThen (handleBuildMessage chan done)
 
 
+{-| Redraws the count for a `BDone` and continues the loop, or prints the final
+line for an outcome.
+-}
 handleBuildMessage : Chan (Result BMsg (BResult ())) -> Int -> Result BMsg (BResult ()) -> Task Never ()
 handleBuildMessage chan done msg =
     case msg of
@@ -557,12 +725,17 @@ handleBuildMessage chan done msg =
             printFinalBuildMessage done result
 
 
+{-| Redraws the "Compiling (done)" line and continues the loop.
+-}
 updateBuildProgress : Chan (Result BMsg (BResult ())) -> Int -> Task Never ()
 updateBuildProgress chan done =
     putStrFlush ("\u{000D}Compiling (" ++ String.fromInt done ++ ")")
         |> Task.andThen (\_ -> buildLoop chan done)
 
 
+{-| Prints the final compile line over the progress line, blanking out any part
+of the progress line it would not cover.
+-}
 printFinalBuildMessage : Int -> BResult a -> Task Never ()
 printFinalBuildMessage done result =
     let
@@ -584,6 +757,9 @@ printFinalBuildMessage done result =
         )
 
 
+{-| Returns the final compile line for `done` modules compiled and the outcome
+`result`.
+-}
 toFinalMessage : Int -> BResult a -> String
 toFinalMessage done result =
     case result of
@@ -614,7 +790,9 @@ toFinalMessage done result =
 -- ====== GENERATE ======
 
 
-{-| Reports code generation results, showing module names and output file.
+{-| Prints a diagram of the modules in `names` pointing to the file `output`
+they were generated into, in the terminal style once no progress worker holds
+the terminal lock. The other styles print nothing.
 -}
 reportGenerate : Style -> NE.Nonempty ModuleName.Raw -> String -> Task Never ()
 reportGenerate style names output =
@@ -630,6 +808,9 @@ reportGenerate style names output =
                 |> Task.andThen (\_ -> printGenerateDiagram names output)
 
 
+{-| Prints the generated-files diagram for `names` and `output`, after a blank
+line.
+-}
 printGenerateDiagram : NE.Nonempty ModuleName.Raw -> String -> Task Never ()
 printGenerateDiagram names output =
     let
@@ -640,6 +821,9 @@ printGenerateDiagram names output =
     IO.printLn (String.cons '\n' (toGenDiagram cnames output))
 
 
+{-| Returns the generated-files diagram: one line for a single module, or one
+line per module joined by a bracket into an arrow to `output`.
+-}
 toGenDiagram : NE.Nonempty String -> String -> String
 toGenDiagram (NE.Nonempty name names) output =
     let
@@ -658,6 +842,9 @@ toGenDiagram (NE.Nonempty name names) output =
                 )
 
 
+{-| Returns one diagram line: `name`, a horizontal rule padding it to `width`,
+and `end`.
+-}
 toGenLine : Int -> String -> String -> String
 toGenLine width name end =
     "    "
@@ -666,6 +853,8 @@ toGenLine width name end =
         ++ end
 
 
+{-| The horizontal line character of the generated-files diagram.
+-}
 hbar : Char
 hbar =
     if isWindows then
@@ -675,6 +864,8 @@ hbar =
         '─'
 
 
+{-| The diagram character joining the first module's line to the bracket.
+-}
 vtop : Char
 vtop =
     if isWindows then
@@ -684,6 +875,8 @@ vtop =
         '┬'
 
 
+{-| The diagram character joining a middle module's line to the bracket.
+-}
 vmiddle : Char
 vmiddle =
     if isWindows then
@@ -693,6 +886,8 @@ vmiddle =
         '┤'
 
 
+{-| The diagram character joining the last module's line to the bracket.
+-}
 vbottom : Char
 vbottom =
     if isWindows then
@@ -706,6 +901,8 @@ vbottom =
 --
 
 
+{-| Writes `str` to standard output and flushes it.
+-}
 putStrFlush : String -> Task Never ()
 putStrFlush str =
     IO.write IO.stdout str
@@ -716,6 +913,8 @@ putStrFlush str =
 -- ====== ENCODERS and DECODERS ======
 
 
+{-| Encodes a dependency progress message for the channel.
+-}
 dMsgEncoder : DMsg -> Bytes.Encode.Encoder
 dMsgEncoder dMsg =
     case dMsg of
@@ -752,6 +951,8 @@ dMsgEncoder dMsg =
             Bytes.Encode.unsignedInt8 6
 
 
+{-| A decoder for a dependency progress message, as `dMsgEncoder` writes it.
+-}
 dMsgDecoder : Bytes.Decode.Decoder DMsg
 dMsgDecoder =
     Bytes.Decode.unsignedInt8
@@ -788,11 +989,15 @@ dMsgDecoder =
             )
 
 
+{-| Encodes a compile progress message for the channel.
+-}
 bMsgEncoder : BMsg -> Bytes.Encode.Encoder
 bMsgEncoder _ =
     Bytes.Encode.unsignedInt8 0
 
 
+{-| A decoder for a compile progress message, as `bMsgEncoder` writes it.
+-}
 bMsgDecoder : Bytes.Decode.Decoder BMsg
 bMsgDecoder =
     Bytes.Decode.unsignedInt8
@@ -807,11 +1012,16 @@ bMsgDecoder =
             )
 
 
+{-| Encodes a build outcome, using `encoder` for its successful value.
+-}
 bResultEncoder : (a -> Bytes.Encode.Encoder) -> BResult a -> Bytes.Encode.Encoder
 bResultEncoder encoder bResult =
     BE.result Exit.buildProblemEncoder encoder bResult
 
 
+{-| Produces a decoder for a build outcome, using `decoder` for its successful
+value.
+-}
 bResultDecoder : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (BResult a)
 bResultDecoder decoder =
     BD.result Exit.buildProblemDecoder decoder

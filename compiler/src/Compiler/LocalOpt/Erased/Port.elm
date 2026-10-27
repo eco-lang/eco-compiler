@@ -3,20 +3,33 @@ module Compiler.LocalOpt.Erased.Port exposing
     , toDecoder, toFlagsDecoder
     )
 
-{-| Generates JSON encoders and decoders for port types.
+{-| A port and a program's flags carry values between Elm and the host as JSON,
+so each needs a codec built from its type, and this module builds those codecs
+as expressions in the erased optimized AST.
 
-This module analyzes Elm types used in port definitions and automatically
-generates the necessary encoder and decoder expressions for converting between
-Elm values and JavaScript JSON values. It handles:
+An outgoing port needs an _encoder_: a function from the Elm value to a
+`Json.Encode.Value`. An incoming port and the flags need a _decoder_: a
+`Json.Decode.Decoder` for the Elm value. Each is assembled by walking the
+payload type and combining the library functions of `Json.Encode` and
+`Json.Decode`, so the result is ordinary code that calls those modules.
 
-  - Primitives (Int, Float, Bool, String)
-  - Collections (List, Array, Maybe)
-  - Tuples
-  - Records
-  - Special types (Bytes, Json.Encode.Value)
+The payload types handled are `Int`, `Float`, `Bool`, `String`,
+`Json.Encode.Value`, `Bytes`, unit, `Maybe`, `List` and `Array` of a payload
+type, tuples and closed records. Aliases are expanded first. This is the set
+`Compiler.Canonicalize.Effects.checkPayload` accepts, and any other type
+(`Char`, a function, a type variable, an extensible record, another custom
+type) would crash the compiler here; `checkPayload` reports such types to the
+user before this module runs. A type is recognised by its name alone; its home
+module is not looked at.
 
-The generated code ensures type-safe communication across the Elm/JavaScript
-boundary without requiring manual encoder/decoder implementations.
+The JSON shapes are: a tuple is an array of its elements, a record is an
+object keyed by its field names, unit is `null`, and `Maybe` is `null` for
+`Nothing` and the value itself for `Just`. `Bytes` goes through the
+`encodeBytes` and `decodeBytes` functions of the `Json` kernel module.
+
+Everything here runs in a `Names.Tracker`, which records each global and
+kernel module a codec refers to, and the record fields it uses, as
+`Compiler.LocalOpt.Erased.Names` describes.
 
 
 # Encoders
@@ -48,8 +61,10 @@ import Utils.Crash exposing (crash)
 -- ====== ENCODE ======
 
 
-{-| Generate a JSON encoder function for the given Elm type.
-Produces an optimized expression that converts Elm values to JSON for outgoing ports.
+{-| Builds a function expression that encodes a value of type `tipe` as JSON.
+
+Crashes on a type outside the payload set given in the module docstring.
+
 -}
 toEncoder : Can.Type Name -> Names.Tracker Opt.Expr
 toEncoder tipe =
@@ -143,6 +158,9 @@ toEncoder tipe =
 -- ====== ENCODE HELPERS ======
 
 
+{-| Builds an encoder for `Maybe tipe`: `Json.Encode.null` for `Nothing`, and
+the encoding of the contained value for `Just`.
+-}
 encodeMaybe : Can.Type Name -> Names.Tracker Opt.Expr
 encodeMaybe tipe =
     encode "null"
@@ -167,6 +185,9 @@ encodeMaybe tipe =
             )
 
 
+{-| Builds an encoder for `List tipe`, which encodes each element with the
+encoder for `tipe`.
+-}
 encodeList : Can.Type Name -> Names.Tracker Opt.Expr
 encodeList tipe =
     encode "list"
@@ -177,6 +198,9 @@ encodeList tipe =
             )
 
 
+{-| Builds an encoder for `Array tipe`, which encodes each element with the
+encoder for `tipe`.
+-}
 encodeArray : Can.Type Name -> Names.Tracker Opt.Expr
 encodeArray tipe =
     encode "array"
@@ -187,6 +211,14 @@ encodeArray tipe =
             )
 
 
+{-| Builds an encoder for a tuple with elements of types `a`, `b` and then
+`cs`, which encodes it as a JSON array of the encoded elements in order.
+
+The function binds the first two elements as `a` and `b`, and each later one,
+taken from the tuple's `cs` field, under the `IndexName` name for its position
+(`c`, `d` and so on).
+
+-}
 encodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker Opt.Expr
 encodeTuple a b cs =
     let
@@ -252,8 +284,12 @@ encodeTuple a b cs =
 -- ====== FLAGS DECODER ======
 
 
-{-| Generate a JSON decoder for program flags.
-Handles the special case where Unit flags decode to a successful Unit value.
+{-| Builds a decoder expression for program flags of type `tipe`.
+
+When `tipe` is unit itself (not an alias of it), the decoder is
+`Json.Decode.succeed ()`, which accepts any JSON value; otherwise it is
+`toDecoder`.
+
 -}
 toFlagsDecoder : Can.Type Name -> Names.Tracker Opt.Expr
 toFlagsDecoder tipe =
@@ -270,8 +306,10 @@ toFlagsDecoder tipe =
 -- ====== DECODE ======
 
 
-{-| Generate a JSON decoder for the given Elm type.
-Produces an optimized expression that converts JSON to Elm values for incoming ports.
+{-| Builds a decoder expression for values of type `tipe`.
+
+Crashes on a type outside the payload set given in the module docstring.
+
 -}
 toDecoder : Can.Type Name -> Names.Tracker Opt.Expr
 toDecoder tipe =
@@ -334,6 +372,13 @@ toDecoder tipe =
 -- ====== DECODE MAYBE ======
 
 
+{-| Builds a decoder for `Maybe tipe` that gives `Nothing` for JSON `null`
+and otherwise `Just` the value decoded as `tipe`.
+
+`null` is tried first, so where `tipe` can itself decode `null`, such as a
+nested `Maybe`, a `null` still gives the outer `Nothing`.
+
+-}
 decodeMaybe : Can.Type Name -> Names.Tracker Opt.Expr
 decodeMaybe tipe =
     Names.registerGlobal A.zero ModuleName.maybe "Nothing"
@@ -373,6 +418,8 @@ decodeMaybe tipe =
 -- ====== DECODE LIST ======
 
 
+{-| Builds a decoder for a JSON array as `List tipe`.
+-}
 decodeList : Can.Type Name -> Names.Tracker Opt.Expr
 decodeList tipe =
     decode "list"
@@ -387,6 +434,8 @@ decodeList tipe =
 -- ====== DECODE ARRAY ======
 
 
+{-| Builds a decoder for a JSON array as `Array tipe`.
+-}
 decodeArray : Can.Type Name -> Names.Tracker Opt.Expr
 decodeArray tipe =
     decode "array"
@@ -401,12 +450,23 @@ decodeArray tipe =
 -- ====== DECODE TUPLES ======
 
 
+{-| A decoder for unit, which accepts only JSON `null`.
+-}
 decodeTuple0 : Names.Tracker Opt.Expr
 decodeTuple0 =
     Names.map (\null -> Opt.Call A.zero null [ Opt.Unit ])
         (decode "null")
 
 
+{-| Builds a decoder for a tuple with elements of types `a`, `b` and then `cs`,
+read from a JSON array by position.
+
+Each element is decoded with `Json.Decode.index` and bound by
+`Json.Decode.andThen` to the name `Name.fromVarIndex` gives its position
+(`_v0`, `_v1` and so on). The innermost step builds the tuple from those
+names and passes it to `Json.Decode.succeed`.
+
+-}
 decodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker Opt.Expr
 decodeTuple a b cs =
     decode "succeed"
@@ -431,11 +491,17 @@ decodeTuple a b cs =
             )
 
 
+{-| Returns a reference to the local variable for tuple position `index`, as
+bound by `indexAndThen`.
+-}
 toLocal : Int -> Opt.Expr
 toLocal index =
     Opt.VarLocal (Name.fromVarIndex index)
 
 
+{-| Wraps `decoder` so that it runs after the element at array index `i` has
+been decoded as `tipe` and bound to the name `Name.fromVarIndex i`.
+-}
 indexAndThen : Int -> Can.Type Name -> Opt.Expr -> Names.Tracker Opt.Expr
 indexAndThen i tipe decoder =
     decode "andThen"
@@ -461,6 +527,16 @@ indexAndThen i tipe decoder =
 -- ====== DECODE RECORDS ======
 
 
+{-| Builds a decoder for a closed record with `fields`, read from a JSON object
+by field name.
+
+Each field is decoded with `Json.Decode.field` and bound by
+`Json.Decode.andThen` to a local of the field's own name, and the record is
+built from those locals and passed to `Json.Decode.succeed`. The fields are
+nested in reverse alphabetical order, so the last field alphabetically is
+decoded first. Every field name is registered once in the field counts.
+
+-}
 decodeRecord : Dict Name.Name (Can.FieldType Name) -> Names.Tracker Opt.Expr
 decodeRecord fields =
     let
@@ -485,6 +561,9 @@ decodeRecord fields =
             )
 
 
+{-| Wraps `decoder` so that it runs after field `key` has been decoded as its
+type and bound to a local named `key`.
+-}
 fieldAndThen : Opt.Expr -> ( Name.Name, Can.FieldType Name ) -> Names.Tracker Opt.Expr
 fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
     decode "andThen"
@@ -510,11 +589,17 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 -- ====== GLOBALS HELPERS ======
 
 
+{-| Returns a reference to the `Json.Encode` value `name`, registering it as a
+dependency.
+-}
 encode : Name -> Names.Tracker Opt.Expr
 encode name =
     Names.registerGlobal A.zero ModuleName.jsonEncode name
 
 
+{-| Returns a reference to the `Json.Decode` value `name`, registering it as a
+dependency.
+-}
 decode : Name -> Names.Tracker Opt.Expr
 decode name =
     Names.registerGlobal A.zero ModuleName.jsonDecode name
@@ -524,11 +609,17 @@ decode name =
 -- ====== BYTES HELPERS ======
 
 
+{-| A reference to the `Json` kernel's `encodeBytes`, the encoder used for
+`Bytes`, with the kernel module registered as a dependency.
+-}
 encodeBytes : Names.Tracker Opt.Expr
 encodeBytes =
     Names.registerKernel "Elm" Name.json (Opt.VarKernel A.zero "Elm" Name.json "encodeBytes")
 
 
+{-| A reference to the `Json` kernel's `decodeBytes`, the decoder used for
+`Bytes`, with the kernel module registered as a dependency.
+-}
 decodeBytes : Names.Tracker Opt.Expr
 decodeBytes =
     Names.registerKernel "Elm" Name.json (Opt.VarKernel A.zero "Elm" Name.json "decodeBytes")

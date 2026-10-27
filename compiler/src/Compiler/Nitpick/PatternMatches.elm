@@ -5,34 +5,43 @@ module Compiler.Nitpick.PatternMatches exposing
     , errorEncoder, errorDecoder
     )
 
-{-| Pattern match exhaustiveness and redundancy checker for Elm.
+{-| A pattern match that misses a value would fail at run time, and a branch
+that can never be reached is almost always a mistake, so every pattern match in
+a canonical module is checked for both before it is compiled.
 
-This module implements Luc Maranget's algorithm for detecting incomplete and redundant
-patterns in case expressions, function arguments, and let destructuring. It simplifies
-canonical patterns into a normalized form, then analyzes them to find missing cases
-(non-exhaustive matches) and unreachable branches (redundant patterns).
+`check` looks at three kinds of match: a function or lambda argument, the
+pattern of a `let` destructuring, and the branches of a `case`. A match that
+misses cases is reported as an `Incomplete` error, whose `Context` says which
+kind of match it was; a `Redundant` error does not say.
 
-The algorithm comes from "Warnings for Pattern Matching" by Luc Maranget:
-<http://moscova.inria.fr/~maranget/papers/warn/warn.pdf>
+The method is Luc Maranget's, from "Warnings for Pattern Matching". The patterns
+of one match are rows of a matrix, and each canonical pattern is first
+simplified to a `Pattern`, which keeps only what decides whether a value
+matches. Unit, tuples and lists become constructors of built-in unions, and
+`Bool` a constructor of its own union, so that every pattern is a wildcard, a
+literal or a constructor.
 
+Two questions are then asked of the matrix. A row is _useful_ when it matches
+some value that no earlier row matches; a row that is not useful is redundant.
+The match is _exhaustive_ when no value escapes every row; when it is not, the
+check produces example patterns of the values that escape. Both questions are
+answered by _specialising_ the matrix: keeping the rows that can match a given
+constructor, literal or wildcard in the first column, and replacing that column
+by what remains to be matched.
 
-# Pattern Representation
+Redundancy is checked first. The first redundant branch of a match is the only
+error reported for it, and that match is not then checked for missing cases.
+
+A literal never covers its type, since `Int`, `Char` and `String` have no finite
+list of values, so a match on literals is exhaustive only with a wildcard.
+
+The functions that specialise rows crash on a row where a literal meets a
+constructor in the same column. They rely on the module having been type
+checked, which makes that impossible.
 
 @docs Pattern, Literal
-
-
-# Error Reporting
-
 @docs Error, Context
-
-
-# Checking
-
 @docs check
-
-
-# Serialization
-
 @docs errorEncoder, errorDecoder
 
 -}
@@ -59,13 +68,18 @@ import Utils.Main as Utils
 -- ====== PATTERN ======
 
 
-{-| Simplified pattern representation used by the exhaustiveness checker.
+{-| A pattern reduced to what decides whether a value matches it.
 
-Canonical patterns are normalized into this simpler form for analysis:
+`Anything` matches every value. A wildcard, a variable and a record pattern all
+become `Anything`, and an alias pattern (`p as x`) becomes whatever `p` does.
 
-  - `Anything` matches any value (wildcards, variables, records)
-  - `Literal` matches exact primitive values (Int, Char, String)
-  - `Ctor` matches custom type constructors with their arguments
+`Literal` matches exactly one `Int`, `Char` or `String`.
+
+`Ctor` matches one constructor of the union it carries, with a pattern for each
+argument. Besides custom types it stands for `Bool`, unit, tuples and lists,
+using built-in unions whose constructors are named `#0` for unit, `#2` for a
+pair, `#3` for a triple, and `[]` and `::` for lists. A list pattern
+`[ a, b ]` becomes `a :: b :: []`.
 
 -}
 type Pattern
@@ -74,13 +88,9 @@ type Pattern
     | Ctor Can.Union Name.Name (List Pattern)
 
 
-{-| Literal value that can appear in patterns.
+{-| A literal value a pattern can match exactly.
 
-Represents primitive values that can be matched exactly:
-
-  - `Chr` for character literals
-  - `Str` for string literals
-  - `Int` for integer literals
+`Chr` carries the character as the `String` the canonical pattern holds.
 
 -}
 type Literal
@@ -93,6 +103,8 @@ type Literal
 -- ====== CREATE SIMPLIFIED PATTERNS ======
 
 
+{-| Returns the `Pattern` that matches the same values as a canonical pattern.
+-}
 simplify : Can.Pattern -> Pattern
 simplify (A.At _ patternInfo) =
     case patternInfo.node of
@@ -149,11 +161,15 @@ simplify (A.At _ patternInfo) =
                 []
 
 
+{-| Builds the `::` pattern of a canonical head and an already simplified tail.
+-}
 cons : Can.Pattern -> Pattern -> Pattern
 cons hd tl =
     Ctor list consName [ simplify hd, tl ]
 
 
+{-| The pattern of the empty list.
+-}
 nil : Pattern
 nil =
     Ctor list nilName []
@@ -163,6 +179,8 @@ nil =
 -- ====== BUILT-IN UNIONS ======
 
 
+{-| The built-in union of the unit value, with the one constructor `#0`.
+-}
 unit : Can.Union
 unit =
     let
@@ -173,6 +191,8 @@ unit =
     Can.Union { vars = [], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
+{-| The built-in union of pairs, with the one two-argument constructor `#2`.
+-}
 pair : Can.Union
 pair =
     let
@@ -183,6 +203,8 @@ pair =
     Can.Union { vars = [ "a", "b" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
+{-| The built-in union of triples, with the one three-argument constructor `#3`.
+-}
 triple : Can.Union
 triple =
     let
@@ -193,6 +215,13 @@ triple =
     Can.Union { vars = [ "a", "b", "c" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
+{-| The built-in union for a tuple of more than three elements, with the one
+constructor `#N`.
+
+It declares three arguments whatever the tuple's size. Such a tuple cannot reach
+this module, because canonicalization rejects tuples larger than three.
+
+-}
 nTuple : Can.Union
 nTuple =
     let
@@ -203,6 +232,8 @@ nTuple =
     Can.Union { vars = [ "a", "b", "cs" ], alts = [ ctor ], numAlts = 1, opts = Can.Normal }
 
 
+{-| The built-in union of lists, with the constructors `[]` and `::`.
+-}
 list : Can.Union
 list =
     let
@@ -225,31 +256,43 @@ list =
     Can.Union { vars = [ "a" ], alts = [ nilCtor, consCtor ], numAlts = 2, opts = Can.Normal }
 
 
+{-| The constructor name that stands for the unit value.
+-}
 unitName : Name.Name
 unitName =
     "#0"
 
 
+{-| The constructor name that stands for a pair.
+-}
 pairName : Name.Name
 pairName =
     "#2"
 
 
+{-| The constructor name that stands for a triple.
+-}
 tripleName : Name.Name
 tripleName =
     "#3"
 
 
+{-| The constructor name that stands for a tuple of more than three elements.
+-}
 nTupleName : Name.Name
 nTupleName =
     "#N"
 
 
+{-| The constructor name that stands for a non-empty list.
+-}
 consName : Name.Name
 consName =
     "::"
 
 
+{-| The constructor name that stands for the empty list.
+-}
 nilName : Name.Name
 nilName =
     "[]"
@@ -259,12 +302,15 @@ nilName =
 -- ====== ERROR ======
 
 
-{-| Pattern matching error detected during exhaustiveness checking.
+{-| A fault in one pattern match.
 
-  - `Incomplete` indicates missing cases in pattern matching, with the region,
-    context where the error occurred, and example patterns that are not covered
-  - `Redundant` indicates an unreachable pattern, with the overall match region,
-    the redundant pattern's region, and its 1-based index in the pattern list
+`Incomplete` carries the region of the match, the kind of match, and one example
+pattern for each group of values that no pattern matches. The region is that of
+the whole `case` expression, or of the argument or destructuring pattern.
+
+`Redundant` carries the region of the whole match, the region of the first
+pattern that can never match, and that pattern's position among the match's
+patterns, counting from 1.
 
 -}
 type Error
@@ -272,11 +318,11 @@ type Error
     | Redundant A.Region A.Region Int
 
 
-{-| Context where a pattern matching error occurred.
+{-| The kind of pattern match an `Error` is about.
 
-  - `BadArg` means the error is in a function argument pattern
-  - `BadDestruct` means the error is in a let-destructuring pattern
-  - `BadCase` means the error is in a case expression
+`BadArg` is the pattern of one argument of a function or a lambda. `BadDestruct`
+is the pattern of a `let` destructuring. `BadCase` is the branches of a `case`
+expression.
 
 -}
 type Context
@@ -289,14 +335,17 @@ type Context
 -- ====== CHECK ======
 
 
-{-| Check a canonical module for pattern matching errors.
+{-| Checks every pattern match in a module's declarations, and returns every
+`Error` found.
 
-Traverses all declarations, expressions, and patterns in the module to find:
+For each match, the first branch that can never be reached is reported as
+`Redundant`, and the match is then not checked for missing cases. A match with
+no redundant branch that misses some values is reported as `Incomplete`, with
+example patterns of what it misses. Matches on literals are exhaustive only with
+a wildcard or variable, since a literal never covers its type.
 
-  - Non-exhaustive pattern matches (missing cases)
-  - Redundant patterns (unreachable branches)
-
-Returns `Ok ()` if all patterns are valid, or `Err` with a list of errors found.
+The module must already be type checked: a pattern that mixes literals and
+constructors in one position crashes the check.
 
 -}
 check : Can.Module -> Result (NE.Nonempty Error) ()
@@ -313,6 +362,8 @@ check (Can.Module canData) =
 -- ====== CHECK DECLS ======
 
 
+{-| Returns `errors` with the errors of every definition in `decls` added.
+-}
 checkDecls : Can.Decls -> List Error -> (List Error -> List Error) -> List Error
 checkDecls decls errors cont =
     case decls of
@@ -330,6 +381,8 @@ checkDecls decls errors cont =
 -- ====== CHECK DEFS ======
 
 
+{-| Adds the errors of a definition's argument patterns and body to `errors`.
+-}
 checkDef : Can.Def -> List Error -> List Error
 checkDef def errors =
     case def of
@@ -340,11 +393,15 @@ checkDef def errors =
             List.foldr checkTypedArg (checkExpr body errors) args
 
 
+{-| Adds the errors of one argument pattern, checked as a match of its own.
+-}
 checkArg : Can.Pattern -> List Error -> List Error
 checkArg ((A.At region _) as pattern) errors =
     checkPatterns region BadArg [ pattern ] errors
 
 
+{-| Adds the errors of one annotated argument pattern, checked as a match of its own.
+-}
 checkTypedArg : ( Can.Pattern, tipe ) -> List Error -> List Error
 checkTypedArg ( (A.At region _) as pattern, _ ) errors =
     checkPatterns region BadArg [ pattern ] errors
@@ -354,6 +411,8 @@ checkTypedArg ( (A.At region _) as pattern, _ ) errors =
 -- ====== CHECK EXPRESSIONS ======
 
 
+{-| Adds the errors of every pattern match inside an expression to `errors`.
+-}
 checkExpr : Can.Expr -> List Error -> List Error
 checkExpr (A.At region exprInfo) errors =
     case exprInfo.node of
@@ -450,6 +509,8 @@ checkExpr (A.At region exprInfo) errors =
 -- ====== CHECK FIELD ======
 
 
+{-| Adds the errors inside the new value of one updated record field.
+-}
 checkField : Can.FieldUpdate -> List Error -> List Error
 checkField (Can.FieldUpdate _ expr) errors =
     checkExpr expr errors
@@ -459,6 +520,8 @@ checkField (Can.FieldUpdate _ expr) errors =
 -- ====== CHECK IF BRANCH ======
 
 
+{-| Adds the errors inside one condition of an `if` and the branch it guards.
+-}
 checkIfBranch : ( Can.Expr, Can.Expr ) -> List Error -> List Error
 checkIfBranch ( condition, branch ) errs =
     checkExpr condition (checkExpr branch errs)
@@ -468,6 +531,9 @@ checkIfBranch ( condition, branch ) errs =
 -- ====== CHECK CASE EXPRESSION ======
 
 
+{-| Adds the errors of a `case` expression covering `region`: those inside its
+branch bodies, and those of its branch patterns taken as one match.
+-}
 checkCases : A.Region -> List Can.CaseBranch -> List Error -> List Error
 checkCases region branches errors =
     let
@@ -477,6 +543,8 @@ checkCases region branches errors =
     checkPatterns region BadCase patterns newErrors
 
 
+{-| Adds a branch's pattern to the patterns and the errors inside its body to the errors.
+-}
 checkCaseBranch : Can.CaseBranch -> ( List Can.Pattern, List Error ) -> ( List Can.Pattern, List Error )
 checkCaseBranch (Can.CaseBranch pattern expr) ( patterns, errors ) =
     ( pattern :: patterns
@@ -488,6 +556,12 @@ checkCaseBranch (Can.CaseBranch pattern expr) ( patterns, errors ) =
 -- ====== CHECK PATTERNS ======
 
 
+{-| Adds the error, if any, of `patterns` taken as one match covering `region`.
+
+A redundant pattern gives a `Redundant` error and stops the check; otherwise a
+non-exhaustive match gives one `Incomplete` error.
+
+-}
 checkPatterns : A.Region -> Context -> List Can.Pattern -> List Error -> List Error
 checkPatterns region context patterns errors =
     case toNonRedundantRows region patterns of
@@ -505,13 +579,18 @@ checkPatterns region context patterns errors =
 
 
 -- ====== EXHAUSTIVE PATTERNS ======
-{- INVARIANTS:
-   The initial rows "matrix" are all of length 1.
-   The initial count of items per row "n" is also 1.
-   The resulting rows are examples of missing patterns.
+
+
+{-| Returns example rows of `n` patterns that together cover the values no row of
+`matrix` matches, or `[]` when the matrix is exhaustive. Every row of `matrix`
+has `n` patterns.
+
+When no row starts with a constructor, or not every constructor of the union
+appears in the first column, only the rows starting with `Anything` can cover
+what is left. Otherwise the matrix is specialised by each constructor in turn,
+and the missing rows found are rebuilt into that constructor.
+
 -}
-
-
 isExhaustive : List (List Pattern) -> Int -> List (List Pattern)
 isExhaustive matrix n =
     case matrix of
@@ -559,6 +638,8 @@ isExhaustive matrix n =
                         List.concatMap isAltExhaustive altsData.alts
 
 
+{-| Returns a pattern for a constructor of `union` that is not a key of `ctors`, with `Anything` for each argument.
+-}
 isMissing : Can.Union -> Dict Name.Name a -> Can.Ctor -> Maybe Pattern
 isMissing union ctors (Can.Ctor c) =
     if Dict.member c.name ctors then
@@ -568,6 +649,8 @@ isMissing union ctors (Can.Ctor c) =
         Just (Ctor union c.name (List.repeat c.numArgs Anything))
 
 
+{-| Rebuilds a row by putting its first `arity` patterns back under the constructor `name`.
+-}
 recoverCtor : Can.Union -> Name.Name -> Int -> List Pattern -> List Pattern
 recoverCtor union name arity patterns =
     let
@@ -581,14 +664,18 @@ recoverCtor union name arity patterns =
 -- ====== REDUNDANT PATTERNS ======
 
 
-{-| INVARIANT: Produces a list of rows where (forall row. length row == 1)
+{-| Returns the patterns of one match as rows of one simplified pattern each, or
+the `Redundant` error of the first pattern that is not useful. `region` is the
+region of the whole match.
 -}
 toNonRedundantRows : A.Region -> List Can.Pattern -> Result Error (List (List Pattern))
 toNonRedundantRows region patterns =
     toSimplifiedUsefulRows region [] patterns
 
 
-{-| INVARIANT: Produces a list of rows where (forall row. length row == 1)
+{-| Adds each of `uncheckedPatterns` in turn to `checkedRows`, which hold one
+pattern each, last checked first, and stops with a `Redundant` error at the
+first one that is not useful.
 -}
 toSimplifiedUsefulRows : A.Region -> List (List Pattern) -> List Can.Pattern -> Result Error (List (List Pattern))
 toSimplifiedUsefulRows overallRegion checkedRows uncheckedPatterns =
@@ -609,45 +696,40 @@ toSimplifiedUsefulRows overallRegion checkedRows uncheckedPatterns =
                 Err (Redundant overallRegion region (List.length checkedRows + 1))
 
 
-
--- Check if a new row "vector" is useful given previous rows "matrix"
-
-
+{-| Returns whether `vector` matches some value that no row of `matrix` matches.
+-}
 isUseful : List (List Pattern) -> List Pattern -> Bool
 isUseful matrix vector =
     case matrix of
         [] ->
-            -- No rows are the same as the new vector! The vector is useful!
+            -- No row matches anything, so the vector is useful.
             True
 
         _ ->
             case vector of
                 [] ->
-                    -- There is nothing left in the new vector, but we still have
-                    -- rows that match the same things. This is not a useful vector!
+                    -- Some row matches everything the vector matches.
                     False
 
                 firstPattern :: patterns ->
                     case firstPattern of
                         Ctor _ name args ->
-                            -- keep checking rows that start with this Ctor or Anything
                             isUseful
                                 (List.filterMap (specializeRowByCtor name (List.length args)) matrix)
                                 (args ++ patterns)
 
                         Anything ->
-                            -- check if all alts appear in matrix
                             case isComplete matrix of
                                 No ->
-                                    -- This Anything is useful because some Ctors are missing.
-                                    -- But what if a previous row has an Anything?
-                                    -- If so, this one is not useful.
+                                    -- Some constructor is missing, so only rows starting with
+                                    -- Anything can cover what this Anything adds; the vector is
+                                    -- useful unless those rows cover the rest of it.
                                     isUseful (List.filterMap specializeRowByAnything matrix) patterns
 
                                 Yes alts ->
-                                    -- All Ctors are covered, so this Anything is not needed for any
-                                    -- of those. But what if some of those Ctors have subpatterns
-                                    -- that make them less general? If so, this actually is useful!
+                                    -- All constructors appear, but the vector is still useful if,
+                                    -- for some constructor, the rows starting with it leave values
+                                    -- of its arguments uncovered.
                                     let
                                         isUsefulAlt : Can.Ctor -> Bool
                                         isUsefulAlt (Can.Ctor c) =
@@ -658,14 +740,15 @@ isUseful matrix vector =
                                     List.any isUsefulAlt alts
 
                         Literal literal ->
-                            -- keep checking rows that start with this Literal or Anything
                             isUseful
                                 (List.filterMap (specializeRowByLiteral literal) matrix)
                                 patterns
 
 
-{-| Specializes a pattern row for a constructor match.
-INVARIANT: (length row == N) ==> (length result == arity + N - 1).
+{-| Returns what is left of `row` to match once its first value is the
+constructor `ctorName` of `arity` arguments, or `Nothing` when the row starts
+with a different constructor. The first pattern is replaced by `arity`
+argument patterns. It crashes on a row starting with a literal, or an empty row.
 -}
 specializeRowByCtor : Name.Name -> Int -> List Pattern -> Maybe (List Pattern)
 specializeRowByCtor ctorName arity row =
@@ -687,8 +770,9 @@ specializeRowByCtor ctorName arity row =
             crash "Compiler error! Empty matrices should not get specialized."
 
 
-{-| Specializes a pattern row for a literal match.
-INVARIANT: (length row == N) ==> (length result == N-1).
+{-| Returns what is left of `row` to match once its first value is `literal`,
+or `Nothing` when the row starts with a different literal. It crashes on a row
+starting with a constructor, or an empty row.
 -}
 specializeRowByLiteral : Literal -> List Pattern -> Maybe (List Pattern)
 specializeRowByLiteral literal row =
@@ -710,8 +794,8 @@ specializeRowByLiteral literal row =
             crash "Compiler error! Empty matrices should not get specialized."
 
 
-{-| Specializes a pattern row for a wildcard match.
-INVARIANT: (length row == N) ==> (length result == N-1).
+{-| Returns the rest of `row` when it starts with `Anything`, and `Nothing`
+otherwise.
 -}
 specializeRowByAnything : List Pattern -> Maybe (List Pattern)
 specializeRowByAnything row =
@@ -733,11 +817,19 @@ specializeRowByAnything row =
 -- ====== ALL CONSTRUCTORS PRESENT ======
 
 
+{-| Whether the first column of a matrix names every constructor of its union.
+
+`Yes` carries all the union's constructors. `No` also holds when the column
+names no constructor at all.
+
+-}
 type Complete
     = Yes (List Can.Ctor)
     | No
 
 
+{-| Returns whether the first column of `matrix` names every constructor of its union.
+-}
 isComplete : List (List Pattern) -> Complete
 isComplete matrix =
     let
@@ -768,11 +860,15 @@ isComplete matrix =
 -- ====== COLLECT CTORS ======
 
 
+{-| Returns the constructors that start a row of `matrix`, each with its union.
+-}
 collectCtors : List (List Pattern) -> Dict Name.Name Can.Union
 collectCtors matrix =
     List.foldl (\row acc -> collectCtorsHelp acc row) Dict.empty matrix
 
 
+{-| Adds the constructor that starts `row`, if any, to `ctors`.
+-}
 collectCtorsHelp : Dict Name.Name Can.Union -> List Pattern -> Dict Name.Name Can.Union
 collectCtorsHelp ctors row =
     case row of
@@ -787,7 +883,8 @@ collectCtorsHelp ctors row =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a pattern matching error to bytes for caching or serialization.
+{-| Encodes an `Error` in the binary form `errorDecoder` reads. A constructor
+pattern is written with its whole union.
 -}
 errorEncoder : Error -> Bytes.Encode.Encoder
 errorEncoder error =
@@ -809,7 +906,7 @@ errorEncoder error =
                 ]
 
 
-{-| Decode a pattern matching error from bytes after deserialization.
+{-| A decoder for an `Error` in the form `errorEncoder` writes.
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =
@@ -834,6 +931,8 @@ errorDecoder =
             )
 
 
+{-| Encodes a `Context` as one byte.
+-}
 contextEncoder : Context -> Bytes.Encode.Encoder
 contextEncoder context =
     Bytes.Encode.unsignedInt8
@@ -849,6 +948,8 @@ contextEncoder context =
         )
 
 
+{-| A decoder for a `Context` in the form `contextEncoder` writes.
+-}
 contextDecoder : Bytes.Decode.Decoder Context
 contextDecoder =
     Bytes.Decode.unsignedInt8
@@ -869,6 +970,8 @@ contextDecoder =
             )
 
 
+{-| Encodes a `Pattern`, a constructor together with its whole union.
+-}
 patternEncoder : Pattern -> Bytes.Encode.Encoder
 patternEncoder pattern =
     case pattern of
@@ -890,6 +993,8 @@ patternEncoder pattern =
                 ]
 
 
+{-| A decoder for a `Pattern` in the form `patternEncoder` writes.
+-}
 patternDecoder : Bytes.Decode.Decoder Pattern
 patternDecoder =
     Bytes.Decode.unsignedInt8
@@ -913,6 +1018,8 @@ patternDecoder =
             )
 
 
+{-| Encodes a `Literal` as a tag byte followed by its value.
+-}
 literalEncoder : Literal -> Bytes.Encode.Encoder
 literalEncoder literal =
     case literal of
@@ -935,6 +1042,8 @@ literalEncoder literal =
                 ]
 
 
+{-| A decoder for a `Literal` in the form `literalEncoder` writes.
+-}
 literalDecoder : Bytes.Decode.Decoder Literal
 literalDecoder =
     Bytes.Decode.unsignedInt8

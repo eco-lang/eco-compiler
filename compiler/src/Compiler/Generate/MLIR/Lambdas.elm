@@ -1,9 +1,25 @@
 module Compiler.Generate.MLIR.Lambdas exposing (processLambdas)
 
-{-| Lambda processing for the MLIR backend.
+{-| MLIR has no nested functions, so every anonymous or let-bound local
+function in a program must become a top-level `func.func` of its own. This
+module generates those functions.
 
-This module handles processing pending lambdas into func.func ops
-with typed ABIs (parameters in their actual types, not all boxed).
+While generating an enclosing function, expression generation does not emit a
+local function's body in place. It builds the closure value and queues the
+function as a _pending lambda_ (`Ctx.PendingLambda`) in the context. Once the
+enclosing nodes are generated, `processLambdas` turns the queue into
+functions. Generating one lambda's body can queue further lambdas, so this is
+repeated, round by round, until a round queues nothing.
+
+A lambda's arguments are its _captures_, the free variables it closes over,
+followed by its parameters, each at its ABI type (`Types.monoTypeToAbi`), so a
+primitive arrives unboxed. A lambda without captures is generated under its
+own name. A lambda with captures is generated as its _fast clone_, named with a
+`$cap` suffix.
+
+A lambda's body may also refer to _sibling mappings_: names bound by the
+enclosing let chain, as they were mapped to SSA values when the lambda was
+queued. Captures and parameters shadow a sibling of the same name.
 
 @docs processLambdas
 
@@ -26,7 +42,16 @@ import Utils.Crash exposing (crash)
 -- ====== LAMBDA PROCESSING ======
 
 
-{-| Process pending lambdas and generate their function definitions.
+{-| Returns the function definitions for every lambda pending in `ctx`,
+including those queued while generating them, together with the context
+emptied of pending lambdas and pending function ops.
+
+Function ops already in `ctx.pendingFuncOps` are returned ahead of each
+round's lambdas. Within one round, two pending lambdas with the same name and
+the same contents are generated once, while two with the same name and
+different contents are a crash. A name queued again in a later round is
+generated again.
+
 -}
 processLambdas : Ctx.Context -> ( List MlirOp, Ctx.Context )
 processLambdas ctx =
@@ -102,7 +127,7 @@ processLambdas ctx =
             ( priorFuncOps ++ List.reverse revLambdaOps ++ moreOps, finalCtx )
 
 
-{-| Whether two pending lambdas queued under one name are the same lambda queued
+{-| Returns whether two pending lambdas queued under one name are the same lambda queued
 twice: the same captures, parameters, body, return type and tail-recursion
 role. `siblingMappings` is not compared, since it records SSA names of the
 enclosing function at the point each copy was queued, which differ between two
@@ -124,18 +149,39 @@ sameLambda a b =
         == b.body
 
 
+{-| Builds the function definition of `lambda`, with the context's current
+function name set to the lambda's name.
+-}
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )
 generateLambdaFunc ctxIn lambda =
     generateLambdaFuncNamed { ctxIn | currentFuncName = lambda.name } lambda
 
 
+{-| Builds the function definition of `lambda`: one `func.func`, carrying
+logical-type attributes, named after the lambda, with `$cap` appended when it
+has captures.
+
+The body is generated in a fresh scope: captures, parameters and sibling
+mappings are in it, and nothing else of the enclosing function's state.
+`nextVar` starts no lower than the enclosing context's, the argument count, and
+one past every numeric SSA name among the siblings, so a fresh name cannot
+collide with one of them.
+
+A tail-recursive lambda's body becomes a loop through
+`TailRec.compileTailFuncToWhile`, over its parameters only. When it refers to
+itself by name, the body first builds a closure of the lambda itself with
+`eco.papCreate` over its captures, and that closure is what the name means
+inside the body; a sibling of the same name is not imported. Any other lambda's
+body is generated with `Expr.generateExpr`; unless the body ends in its own
+terminator, the result is coerced to the ABI return type and returned.
+
+-}
 generateLambdaFuncNamed : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )
 generateLambdaFuncNamed ctx lambda =
     let
         hasCaptures =
             not (List.isEmpty lambda.captures)
 
-        -- Parameters use their actual MLIR types (typed calling convention)
         captureArgPairs : List ( String, MlirType )
         captureArgPairs =
             List.map (\( name, monoTy ) -> ( "%" ++ name, Types.monoTypeToAbi monoTy )) lambda.captures
@@ -148,8 +194,6 @@ generateLambdaFuncNamed ctx lambda =
         allArgPairs =
             captureArgPairs ++ paramArgPairs
 
-        -- Build varMappings directly from typed parameters (no unboxing needed)
-        -- Parameters arrive in their actual types due to typed calling convention.
         varMappingsWithArgs : Dict.Dict String Ctx.VarInfo
         varMappingsWithArgs =
             List.foldl
@@ -170,8 +214,7 @@ generateLambdaFuncNamed ctx lambda =
                 Dict.empty
                 (lambda.captures ++ lambda.params)
 
-        -- Extract numeric index from an SSA name like "%0", "%1", "%42".
-        -- Returns Nothing for non-numeric names (e.g. "%decider").
+        -- Nothing for a non-numeric name such as "%decider".
         parseNumericIndex : String -> Maybe Int
         parseNumericIndex ssaName =
             if String.startsWith "%" ssaName then
@@ -180,7 +223,6 @@ generateLambdaFuncNamed ctx lambda =
             else
                 Nothing
 
-        -- Maximum numeric SSA index used in siblingMappings (e.g. "%1", "%2", ...).
         maxSiblingIndex : Int
         maxSiblingIndex =
             lambda.siblingMappings
@@ -189,16 +231,13 @@ generateLambdaFuncNamed ctx lambda =
                 |> List.maximum
                 |> Maybe.withDefault -1
 
-        -- Preserve global monotonic allocator across siblings:
-        --  - never move nextVar backwards relative to enclosing ctx
-        --  - ensure we are past any numeric %N appearing in siblingMappings
+        -- Never below the enclosing context's counter, nor at a sibling's %N.
         nextVarBase : Int
         nextVarBase =
             List.maximum [ ctx.nextVar, List.length allArgPairs, maxSiblingIndex + 1 ]
                 |> Maybe.withDefault 0
 
-        -- Filter out self-binding from sibling mappings for tail-rec lambdas
-        -- to prevent importing the outer function's SSA var for the self-reference
+        -- The self name is bound to a local closure instead (see below).
         filteredSiblingMappings : Dict.Dict String Ctx.VarInfo
         filteredSiblingMappings =
             case lambda.selfBindingName of
@@ -208,37 +247,28 @@ generateLambdaFuncNamed ctx lambda =
                 Nothing ->
                     lambda.siblingMappings
 
-        -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String Ctx.VarInfo
         varMappingsWithSiblings =
             Dict.union varMappingsWithArgs filteredSiblingMappings
 
-        -- SSA vars valid in this function: captures + params (NOT sibling mappings)
+        -- Sibling SSA names are mapped but not registered as defined here.
         lambdaSsaVars : List String
         lambdaSsaVars =
             List.map Tuple.first allArgPairs
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            -- A lambda body is a NEW function: the enclosing loop's split-param
-            -- slot vars are out of scope here (captures of split params were
-            -- materialized at capture-collection time).
+            -- A new function: the enclosing function's split parameters and sret layout do not apply.
             { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarBase, splitAggParams = Dict.empty, sretTailLayout = Nothing }
                 |> Ctx.resetDefinedSsaVars lambdaSsaVars
 
-        -- Actual return type from the lambda (typed ABI)
         actualResultType : MlirType
         actualResultType =
             Types.monoTypeToAbi lambda.returnType
     in
     if lambda.isTailRecursive then
-        -- Tail-recursive lambda: use TailRec.compileTailFuncToWhile for the body.
-        -- Only params participate in the loop state; captures are accessed from the
-        -- enclosing func.func scope (scf.while is NOT IsolatedFromAbove).
+        -- Captures stay function arguments outside the loop state; scf.while is not isolated from above.
         let
-            -- C3: If this is a self-recursive tail function, create a local self-closure
-            -- (eco.papCreate) before the scf.while loop so the body can reference itself
-            -- without importing the outer function's SSA var.
             ( selfPrefixOps, ctxForTailRec ) =
                 case lambda.selfBindingName of
                     Just selfName ->
@@ -274,11 +304,7 @@ generateLambdaFuncNamed ctx lambda =
                                 else
                                     Dict.empty
 
-                            -- _result_kind: the lambda's saturated return ABI
-                            -- (REP_ABI_001 — primitives MUST be unboxed). Drives the
-                            -- wrapper's compiled return type and the closure header's
-                            -- `result_kind` so dispatch paths cast the evaluator
-                            -- correctly. Omitted when 0 to keep MLIR diffs minimal.
+                            -- The kind of the unboxed ABI return type; the attribute is omitted for kind 0 (boxed).
                             selfResultKind =
                                 Types.mlirTypeToKind (Types.monoTypeToAbi lambda.returnType)
 
@@ -362,7 +388,6 @@ generateLambdaFuncNamed ctx lambda =
             ( ctx2, fastCloneOpRaw ) =
                 Ops.funcFunc ctx1 funcName allArgPairs actualResultType funcBodyRegion
 
-            -- Logical-types for the fast clone: captures + params.
             captureMonoTypes : List Mono.MonoType
             captureMonoTypes =
                 List.map Tuple.second lambda.captures
@@ -382,7 +407,6 @@ generateLambdaFuncNamed ctx lambda =
         ( [ fastCloneOp ], ctx2 )
 
     else
-        -- Regular (non-tail-recursive) lambda
         let
             exprResult : Expr.ExprResult
             exprResult =

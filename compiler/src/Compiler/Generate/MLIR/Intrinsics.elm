@@ -1,10 +1,31 @@
 module Compiler.Generate.MLIR.Intrinsics exposing (intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOps)
 
-{-| Intrinsic operations for the MLIR backend.
+{-| Emits the MLIR for an _intrinsic_: a kernel call that the back end lowers to
+inline operations instead of a call to the kernel function.
 
-This module emits the MLIR for the intrinsics that
-`Compiler.GlobalOpt.KernelIntrinsics` selects: core Elm operations that are
-lowered directly to MLIR operations instead of kernel calls.
+Which calls are intrinsics, and which `Intrinsic` each becomes, is decided by
+`Compiler.GlobalOpt.KernelIntrinsics`, whose `Intrinsic` docstring says what
+each constructor stands for. This module takes that decision as given and
+answers three questions about it: what MLIR type the result has, what types
+the operands must have, and which operations compute it.
+
+Operands arrive as SSA variables that may be boxed (`!eco.value`) where the
+operation wants a primitive (`i64`, `f64`, `i1` or the Char type). The operand
+types listed here are what the operation needs, and `unboxArgsForIntrinsic`
+inserts an `eco.unbox` for each boxed argument in a primitive slot. It never
+boxes; a slot that wants `!eco.value` takes the argument as it is. Strings and
+Lists are always `!eco.value` operands.
+
+Most intrinsics are one operation. Three need more: `StringOrderCompare` is a
+three-way compare followed by a test of its sign against zero; `ValueEq` with
+`negate` (`/=`) is `eco.value.eq` followed by `eco.bool.not`; and `BoolEq`
+without `negate` (`==`) is `eco.bool.xor` followed by `eco.bool.not`, since
+`eco.bool.xor` already computes `/=`. `generateIntrinsicOps` emits every
+intrinsic, these included.
+
+When the argument variables do not fit what an intrinsic takes, operands that
+cannot be taken from them are named `%error`, and the emitted MLIR is not
+meaningful.
 
 @docs intrinsicResultMlirType, unboxArgsForIntrinsic, unboxToType, generateIntrinsicOps
 
@@ -22,7 +43,12 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 -- ====== INTRINSIC TYPE INFO ======
 
 
-{-| Get the MLIR result type for an intrinsic operation.
+{-| Returns the MLIR type of the value an intrinsic produces.
+
+Comparisons and equality give `i1`; `compare` gives a boxed `Order`. `ArrayGet`
+gives the element type it carries, so an element stored unboxed is read
+unboxed.
+
 -}
 intrinsicResultMlirType : Intrinsic -> MlirType
 intrinsicResultMlirType intrinsic =
@@ -127,7 +153,12 @@ intrinsicResultMlirType intrinsic =
             I1
 
 
-{-| Get the expected operand types for an intrinsic operation.
+{-| Returns the MLIR types the operation for an intrinsic needs its operands to
+have, in the order of the kernel function's arguments.
+
+For `ConstructList` the list is not used to coerce arguments in practice; it
+records the operand shape, with the tail always boxed.
+
 -}
 intrinsicOperandTypes : Intrinsic -> List MlirType
 intrinsicOperandTypes intrinsic =
@@ -192,11 +223,9 @@ intrinsicOperandTypes intrinsic =
             [ I64, elementMlirType, Types.ecoValue ]
 
         ArrayLength ->
-            -- array : !eco.value
             [ Types.ecoValue ]
 
         StringLength ->
-            -- REP_ABI_001: String crosses every ABI as !eco.value; never unbox.
             [ Types.ecoValue ]
 
         ArrayEmpty ->
@@ -218,14 +247,8 @@ intrinsicOperandTypes intrinsic =
             [ I64, Types.ecoValue, Types.ecoValue ]
 
         ConstructList { headMlirType } ->
-            -- Elm arg order: cons head tail. Tail is ALWAYS boxed (Ops.td:636-642).
-            -- Never actually consulted: Expr.coerceIntrinsicArgs intercepts this
-            -- ctor before unboxArgsForIntrinsic (its only caller). Present for
-            -- exhaustiveness and as documentation of the operand shape.
             [ headMlirType, Types.ecoValue ]
 
-        -- REP_ABI_001: String and List cross every ABI as !eco.value. Never
-        -- unbox; unboxArgsForIntrinsic no-ops for boxed-expected slots.
         AppendString ->
             [ Types.ecoValue, Types.ecoValue ]
 
@@ -243,14 +266,10 @@ intrinsicOperandTypes intrinsic =
                 CompareCharKind ->
                     [ Types.ecoChar, Types.ecoChar ]
 
-                -- REP_ABI_001: String crosses every ABI as !eco.value. Never
-                -- unbox; unboxArgsForIntrinsic no-ops for boxed-expected slots.
                 CompareStringKind ->
                     [ Types.ecoValue, Types.ecoValue ]
 
         StringOrderCompare _ ->
-            -- REP_ABI_001: String crosses every ABI as !eco.value; never unbox.
-            -- unboxArgsForIntrinsic no-ops on boxed-expected slots.
             [ Types.ecoValue, Types.ecoValue ]
 
         ValueEq _ ->
@@ -264,7 +283,8 @@ intrinsicOperandTypes intrinsic =
 -- ====== UNBOXING HELPERS ======
 
 
-{-| Unbox a value from !eco.value to a target primitive type.
+{-| Returns one `eco.unbox` that reads the boxed `var` as a value of
+`targetType`, together with the fresh variable holding the result.
 -}
 unboxToType : Ctx.Context -> String -> MlirType -> ( List MlirOp, String, Ctx.Context )
 unboxToType ctx var targetType =
@@ -285,9 +305,14 @@ unboxToType ctx var targetType =
     ( [ unboxOp ], unboxedVar, ctx2 )
 
 
-{-| Unbox arguments to match the expected operand types for an intrinsic.
-If an argument has !eco.value type but the intrinsic expects a primitive type,
-an unbox operation is inserted.
+{-| Returns the argument variables to pass to an intrinsic's operation, with the
+operations that prepare them.
+
+An argument whose type is `!eco.value` where the intrinsic wants a primitive is
+unboxed into a fresh variable; every other argument is passed as it is. Nothing
+is boxed. Arguments are paired with the operand types by position, so any
+beyond the number of operands the intrinsic takes are dropped.
+
 -}
 unboxArgsForIntrinsic : Ctx.Context -> List ( String, MlirType ) -> Intrinsic -> ( List MlirOp, List String, Ctx.Context )
 unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
@@ -299,7 +324,6 @@ unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
             List.foldl
                 (\( ( var, actualType ), expectedType ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if Types.isEcoValueType actualType && not (Types.isEcoValueType expectedType) then
-                        -- Need to unbox: actual is !eco.value, expected is primitive
                         let
                             ( unboxOps, unboxedVar, newCtx ) =
                                 unboxToType ctxAcc var expectedType
@@ -307,7 +331,6 @@ unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
                         ( List.reverse unboxOps ++ opsAcc, unboxedVar :: varsAcc, newCtx )
 
                     else
-                        -- No unboxing needed
                         ( opsAcc, var :: varsAcc, ctxAcc )
                 )
                 ( [], [], ctx )
@@ -320,7 +343,14 @@ unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
 -- ====== INTRINSIC OP GENERATION ======
 
 
-{-| Generate an MLIR operation for an intrinsic.
+{-| Returns the single operation that computes an intrinsic into `resultVar`
+from `argVars`, which must already have the operand types the intrinsic needs.
+
+This is correct only for intrinsics that are one operation. For
+`StringOrderCompare` it emits a placeholder over `%error` operands, and for
+`ValueEq` and `BoolEq` it ignores `negate`: `ValueEq` always gives `==` and
+`BoolEq` always gives `/=`. `generateIntrinsicOps` handles those three itself.
+
 -}
 generateIntrinsicOp : Ctx.Context -> Intrinsic -> String -> List String -> ( Ctx.Context, MlirOp )
 generateIntrinsicOp ctx intrinsic resultVar argVars =
@@ -517,7 +547,6 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                     Ops.ecoTernaryOp ctx "eco.array.append_n" resultVar ( "%error", I64 ) ( "%error", Types.ecoValue ) ( "%error", Types.ecoValue ) Types.ecoValue
 
         ConstructList { headMlirType } ->
-            -- Elm arg order: cons head tail.
             case argVars of
                 [ headVar, tailVar ] ->
                     Ops.ecoConstructList ctx
@@ -573,13 +602,9 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                     Ops.ecoBinaryOp ctx opName resultVar ( "%error", lhsType ) ( "%error", rhsType ) Types.ecoValue
 
         StringOrderCompare { op } ->
-            -- Multi-op intrinsic: both emission sites route through
-            -- generateIntrinsicOps. Kept only for case totality.
             Ops.ecoBinaryOp ctx op resultVar ( "%error", Types.ecoInt ) ( "%error", Types.ecoInt ) I1
 
         ValueEq _ ->
-            -- Non-negated form; the negated one is multi-op and goes through
-            -- generateIntrinsicOps.
             case argVars of
                 [ lhs, rhs ] ->
                     Ops.ecoBinaryOp ctx "eco.value.eq" resultVar ( lhs, Types.ecoValue ) ( rhs, Types.ecoValue ) I1
@@ -596,13 +621,15 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
                     Ops.ecoBinaryOp ctx "eco.bool.xor" resultVar ( "%error", I1 ) ( "%error", I1 ) I1
 
 
-{-| Emit an intrinsic that needs MORE THAN ONE op.
+{-| Returns the operations that compute an intrinsic into `resultVar` from
+`argVars`, which must already have the operand types the intrinsic needs.
 
-`generateIntrinsicOp` returns a single `MlirOp`; `StringOrderCompare` needs
-three (the cmp3, the zero constant, the signed test). Rather than churn the
-existing single-op arms, this wraps them: anything that is not multi-op is
-delegated and wrapped in a singleton list, so both emission sites in `Expr.elm`
-can call this uniformly.
+Most intrinsics are one operation. `StringOrderCompare` is three: an
+`eco.string.cmp3` giving a signed Int, a zero constant, and the comparison
+`op` between the two. `ValueEq` and `BoolEq` with `negate` set are the equality
+into a fresh variable followed by `eco.bool.not`. Two Bools are compared with
+`eco.bool.xor`, which is true when they differ, so `BoolEq` without `negate` is
+the one that gets the `eco.bool.not`.
 
 -}
 generateIntrinsicOps : Ctx.Context -> Intrinsic -> String -> List String -> ( Ctx.Context, List MlirOp )
@@ -639,7 +666,6 @@ generateIntrinsicOps ctx intrinsic resultVar argVars =
             emitEqMaybeNegated ctx "eco.value.eq" Types.ecoValue negate resultVar argVars
 
         BoolEq { negate } ->
-            -- xor IS notEqual, so the polarity is inverted relative to ValueEq.
             emitEqMaybeNegated ctx "eco.bool.xor" I1 (not negate) resultVar argVars
 
         _ ->
@@ -647,13 +673,9 @@ generateIntrinsicOps ctx intrinsic resultVar argVars =
                 |> Tuple.mapSecond List.singleton
 
 
-{-| Emit a two-operand equality op, optionally followed by `eco.bool.not`.
-
-`notEqual` is emission-side negation -- there is deliberately no second MLIR op
-def for it. `eco.bool.not` lowers to `arith.xori %x, true`. When negating, the
-equality lands in a fresh temp and the NOT writes `resultVar`, so the caller's
-result variable always holds the final value.
-
+{-| Returns the two-operand operation `opName` into `resultVar`, or, when
+`negate` is set, that operation into a fresh variable followed by an
+`eco.bool.not` into `resultVar`. Either way `resultVar` holds the final value.
 -}
 emitEqMaybeNegated : Ctx.Context -> String -> MlirType -> Bool -> String -> List String -> ( Ctx.Context, List MlirOp )
 emitEqMaybeNegated ctx opName operandTy negate resultVar argVars =

@@ -1,8 +1,35 @@
 module Compiler.Generate.MLIR.BytesFusion.Emit exposing (ExprCompiler, emitFusedDecoder, emitFusedEncoder, CompileExprResult)
 
-{-| Emit MLIR operations for fused byte encoding and decoding.
+{-| Turns a fused `elm/bytes` encoder or decoder, described in the operations
+of `Compiler.Generate.MLIR.BytesFusion.LoopIR`, into MLIR, so that an encoder
+writes straight into one buffer and a decoder reads straight from its input.
+No encoder or decoder value is walked at run time, except for a subtree that
+was not recognised.
 
-Takes Loop IR operations and emits bf dialect MLIR ops.
+The output is mostly operations of the `bf` dialect, whose central value is the
+_cursor_ (`!bf.cursor`): a position in a buffer. Every `bf` read or write takes
+a cursor and returns a new one, moved on by the bytes it covered, so the module
+threads the current cursor's SSA name through everything it emits. Values that
+the operations carry as `Mono.MonoExpr` are compiled by an `ExprCompiler`
+supplied by the caller, which lets this module compile expressions without
+importing the expression generator.
+
+`emitFusedEncoder` emits the encoder: the buffer's total width in bytes as an
+`i32`, a `bf.alloc` of that size, a cursor on it, then one `bf.write.*` per
+write, and a list loop as an `scf.while` over the list's cons cells. Integer and
+float writes take `i64` and `f64`, so a boxed `!eco.value` is unboxed first. A
+subtree that was not recognised is written whole by `bf.write.encoder`. The
+values of the top-level writes are compiled before `bf.alloc`, so that no
+allocation they make happens while the cursor is live.
+
+`emitFusedDecoder` emits the decoder, whose result is a `Maybe`. Each read is
+guarded: a `bf.require` checks that its bytes are there, and an `scf.if` runs
+the read and all the remaining operations in its then-branch and gives
+`Nothing` in its else-branch, so the operations nest one level per read. A
+UTF-8 read nests once more on its own validity result. The counted loop checks
+all its bytes before the loop; the sentinel loop checks before each item. A
+decoder that reaches its end gives `Just` its result value, by default the last
+value produced.
 
 @docs ExprCompiler, emitFusedDecoder, emitFusedEncoder, CompileExprResult
 
@@ -19,7 +46,9 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 import Utils.Crash as Crash
 
 
-{-| Result of compiling an expression.
+{-| What an `ExprCompiler` gives back for one expression: the ops that compute
+it, in order, the SSA name and type of its value, and the context after those
+ops.
 -}
 type alias CompileExprResult =
     { ops : List MlirOp
@@ -29,43 +58,53 @@ type alias CompileExprResult =
     }
 
 
-{-| Type alias for expression compiler callback.
-This allows Emit.elm to compile MonoExpr values without importing Expr.elm.
-The callback takes a MonoExpr and Context, returns a CompileExprResult.
+{-| A function that compiles one expression in a context, supplied by the
+caller of `emitFusedEncoder` or `emitFusedDecoder`.
 -}
 type alias ExprCompiler =
     Mono.MonoExpr -> Context -> CompileExprResult
 
 
-{-| State threaded through encoder emission.
-Contains the current cursor SSA variable and accumulated ops.
+{-| The state threaded through the emission of an encoder.
+
+`ops` holds the ops emitted so far, most recent first. `hoisted` holds the
+values compiled ahead of `bf.alloc` that writes have not yet taken, in op order.
+
 -}
 type alias EmitState =
     { ctx : Context
-    , cursor : String -- Current cursor SSA variable
-    , bufferVar : String -- The allocated ByteBuffer eco.value
+    , cursor : String -- SSA name of the current cursor
+    , bufferVar : String -- SSA name of the buffer bf.alloc made
     , ops : List MlirOp
-    , compileExpr : ExprCompiler -- Callback to compile MonoExpr
-    , hoisted : List ( String, MlirType ) -- Values compiled before bf.alloc, in op order
+    , compileExpr : ExprCompiler
+    , hoisted : List ( String, MlirType )
     }
 
 
-{-| The bf.cursor MLIR type.
+{-| The MLIR type of a `bf` cursor.
 -}
 bfCursorType : MlirType
 bfCursorType =
     NamedStruct "bf.cursor"
 
 
-{-| Emit a complete fused encoder from Loop IR operations.
-Takes an expression compiler callback to compile embedded MonoExpr values.
-Returns the MLIR ops and the result variable name.
+{-| Emits the encoder described by `ops`, compiling its values with
+`compileExpr`. Returns the ops in order, the SSA name of the buffer it fills,
+and the context after them.
+
+The buffer is the one an `InitCursor` operation allocates, so `ops` must contain
+one; without it the returned name is empty. The returned context's
+`currentFuncName` has `/bf-enc` appended.
+
 -}
 emitFusedEncoder : ExprCompiler -> Context -> List Op -> ( List MlirOp, String, Context )
 emitFusedEncoder compileExpr ctxIn ops =
     emitFusedEncoderTagged compileExpr { ctxIn | currentFuncName = ctxIn.currentFuncName ++ "/bf-enc" } ops
 
 
+{-| Emits the encoder described by `ops`, as `emitFusedEncoder` does, without
+changing the function name in the context.
+-}
 emitFusedEncoderTagged : ExprCompiler -> Context -> List Op -> ( List MlirOp, String, Context )
 emitFusedEncoderTagged compileExpr ctx ops =
     let
@@ -84,14 +123,17 @@ emitFusedEncoderTagged compileExpr ctx ops =
     ( List.reverse finalState.ops, finalState.bufferVar, finalState.ctx )
 
 
-{-| Compiles the value of every top-level write (and the list a loop walks)
-before `bf.alloc`, in op order, and queues the results for the writes to take
-(`compileValue`). A value expression may call a function that allocates, and
-an allocation while the cursor is live is a GC point that BFToLLVM must
-bracket with a cursor rebase and make the buffer a builder for (BFOPS\_039);
-compiled first, it leaves the cursor's live range free of GC points. Elm
-values are immutable, so compiling them earlier gives the same values. The
-per-item values of a loop stay inside the loop.
+{-| Compiles the value of every top-level write, and the list each loop walks,
+ahead of the rest of the encoder, in op order, and queues the results in
+`hoisted` for `compileValue` to hand out. It does this only when `ops` starts
+with `InitCursor`, and otherwise returns `state` unchanged.
+
+A value expression may call a function that allocates, and an allocation while
+the cursor is live is a garbage-collection point the later lowering has to work
+around. Compiled first, the values leave the cursor's live range free of them.
+Elm values are immutable, so compiling them earlier gives the same values. The
+values written inside a loop's body are still compiled inside the loop.
+
 -}
 hoistValues : List Op -> EmitState -> EmitState
 hoistValues ops state =
@@ -123,7 +165,9 @@ hoistValues ops state =
             state
 
 
-{-| The expression a top-level encoder op compiles for its value, if any.
+{-| Returns the expression an encoder operation compiles for its value: what a
+write writes, or the list a loop walks. `Nothing` for `InitCursor` and
+`ReturnBuffer`.
 -}
 writtenValue : Op -> Maybe Mono.MonoExpr
 writtenValue op =
@@ -162,8 +206,13 @@ writtenValue op =
             Nothing
 
 
-{-| The value of a write: the next hoisted value when `hoistValues` compiled
-it, else `valueExpr` compiled here.
+{-| Returns the value of a write, with the hoisted values left after it: the
+next hoisted value when there is one, with no ops, and otherwise `valueExpr`
+compiled here.
+
+The hoisted value is taken by position, not matched against `valueExpr`, so the
+writes must ask in the order `hoistValues` compiled them.
+
 -}
 compileValue : Mono.MonoExpr -> EmitState -> ( CompileExprResult, List ( String, MlirType ) )
 compileValue valueExpr state =
@@ -175,7 +224,8 @@ compileValue valueExpr state =
             ( state.compileExpr valueExpr state.ctx, [] )
 
 
-{-| Emit a single Loop IR operation.
+{-| Emits one encoder operation onto `state`. `ReturnBuffer` emits nothing,
+since the buffer is already in `bufferVar`.
 -}
 emitOp : Op -> EmitState -> EmitState
 emitOp op state =
@@ -211,29 +261,25 @@ emitOp op state =
             emitWriteOpaque encoderExpr state
 
         ReturnBuffer ->
-            -- Buffer is already stored in state.bufferVar
             state
 
 
-{-| Emit cursor initialization.
-Allocates the buffer and creates initial cursor.
+{-| Emits the computation of `widthExpr`, a `bf.alloc` of a buffer that many
+bytes long, and a cursor at its start, which becomes the state's cursor and
+buffer.
 -}
 emitInitCursor : WidthExpr -> EmitState -> EmitState
 emitInitCursor widthExpr state =
     let
-        -- Emit width computation
         ( widthOps, widthVar, ctx1 ) =
             emitWidthExpr state.compileExpr widthExpr state.ctx
 
-        -- Generate buffer variable name
         ( bufferVar, ctx2 ) =
             Context.freshVar ctx1
 
-        -- Add _operand_types for width (I32)
         allocAttrs =
             Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I32 ])
 
-        -- Emit bf.alloc - returns eco.value (heap pointer to ByteBuffer)
         ( ctx3, allocOp ) =
             Ops.mlirOp ctx2 "bf.alloc"
                 |> Ops.opBuilder.withOperands [ widthVar ]
@@ -241,15 +287,12 @@ emitInitCursor widthExpr state =
                 |> Ops.opBuilder.withAttrs allocAttrs
                 |> Ops.opBuilder.build
 
-        -- Generate cursor variable name
         ( cursorVar, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Add _operand_types for eco.value buffer
         initAttrs =
             Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
 
-        -- Emit bf.cursor.init - takes eco.value buffer
         ( ctx5, initOp ) =
             Ops.mlirOp ctx4 "bf.cursor.init"
                 |> Ops.opBuilder.withOperands [ bufferVar ]
@@ -265,8 +308,12 @@ emitInitCursor widthExpr state =
     }
 
 
-{-| Emit width expression to MLIR.
-Returns ops, result variable name, and updated context.
+{-| Emits the computation of a buffer width as an `i32`. Returns the ops, the
+SSA name of the width, and the context after them.
+
+The expressions inside the width are compiled here, independently of any
+compilation of the same expressions for the writes.
+
 -}
 emitWidthExpr : ExprCompiler -> WidthExpr -> Context -> ( List MlirOp, String, Context )
 emitWidthExpr compileExpr expr ctx =
@@ -304,7 +351,6 @@ emitWidthExpr compileExpr expr ctx =
             ( aOps ++ bOps ++ [ addOp ], resultVar, ctx4 )
 
         WStringUtf8Width strExpr ->
-            -- Compile the string expression, then call bf.utf8_width
             let
                 strResult =
                     compileExpr strExpr ctx
@@ -312,7 +358,6 @@ emitWidthExpr compileExpr expr ctx =
                 ( resultVar, ctx2 ) =
                     Context.freshVar strResult.ctx
 
-                -- Add _operand_types using actual expression result type
                 widthAttrs =
                     Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr strResult.resultType ])
 
@@ -326,7 +371,6 @@ emitWidthExpr compileExpr expr ctx =
             ( strResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
         WBytesWidth bytesExpr ->
-            -- Compile the bytes expression, then call bf.bytes_width
             let
                 bytesResult =
                     compileExpr bytesExpr ctx
@@ -334,7 +378,6 @@ emitWidthExpr compileExpr expr ctx =
                 ( resultVar, ctx2 ) =
                     Context.freshVar bytesResult.ctx
 
-                -- Add _operand_types using actual expression result type
                 widthAttrs =
                     Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bytesResult.resultType ])
 
@@ -348,8 +391,6 @@ emitWidthExpr compileExpr expr ctx =
             ( bytesResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
         WOpaqueWidth encoderExpr ->
-            -- Escape-hatch width: runtime call to elm_encoder_size via
-            -- bf.encoder.width on an opaque encoder subtree.
             let
                 exprResult =
                     compileExpr encoderExpr ctx
@@ -370,9 +411,8 @@ emitWidthExpr compileExpr expr ctx =
             ( exprResult.ops ++ [ widthOp ], resultVar, ctx3 )
 
         WListLengthMul countExpr constWidth ->
-            -- Compile countExpr (typically a List.length call, which
-            -- monomorphises to i64), truncate to i32, multiply by the
-            -- compile-time-known per-iteration body width.
+            -- The count is truncated to i32 as it stands, so it must compile to
+            -- an unboxed integer, not an !eco.value.
             let
                 countResult =
                     compileExpr countExpr ctx
@@ -415,9 +455,8 @@ emitWidthExpr compileExpr expr ctx =
             ( countResult.ops ++ [ trunciOp, constOp, mulOp ], mulVar, ctx7 )
 
 
-{-| Convert endianness to MLIR enum attribute.
-The BF dialect uses I32EnumAttr for endianness: LE=0, BE=1.
-In MLIR generic format, enum attributes are written as typed i32 integers.
+{-| Returns the `endianness` attribute of a `bf` read or write: the `i32` 0 for
+little-endian and 1 for big-endian.
 -}
 endianToAttr : Endianness -> MlirAttr
 endianToAttr endian =
@@ -429,17 +468,12 @@ endianToAttr endian =
             IntAttr (Just I32) 1
 
 
-{-| Coerce a value SSA to the primitive type a BF write op expects,
-inserting an `eco.unbox` when the source is `!eco.value`. The integer
-write ops (`bf.write.u8/u16/u32`) take `I64`; the float write ops
-(`bf.write.f32/f64`) take `F64`. Bytes and UTF-8 writes accept any
-type and skip this coercion entirely.
+{-| Returns `valueVar` as a value of `targetType`, with the ops that make it so:
+an `eco.unbox` when `valueType` is `!eco.value` and `targetType` is not, and
+otherwise `valueVar` itself with no ops.
 
-The bytes-fusion ELoop body sees its per-iteration head bound to the
-list-head SSA at `!eco.value` (loop-carried values cross the
-`scf.while` boundary as a single uniform type). When the body
-references the head directly as the value of `bf.write.u8` etc., this
-unbox satisfies the op's operand-type constraint.
+The integer writes use it to get an `i64` and the float writes an `f64`. Bytes,
+UTF-8 and opaque writes take their value as it is.
 
 -}
 ensureUnboxed : MlirType -> String -> MlirType -> Context -> ( String, List MlirOp, Context )
@@ -466,7 +500,8 @@ ensureUnboxed targetType valueVar valueType ctx =
         ( valueVar, [], ctx )
 
 
-{-| Emit bf.write.u8 operation.
+{-| Emits a `bf.write.u8` of the value of `valueExpr`, unboxed to `i64`
+where it is boxed, and moves the cursor past it.
 -}
 emitWriteU8 : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU8 valueExpr state =
@@ -499,7 +534,8 @@ emitWriteU8 valueExpr state =
     }
 
 
-{-| Emit bf.write.u16 operation.
+{-| Emits a `bf.write.u16` of the value of `valueExpr` in the byte order `endian`, unboxed to `i64`
+where it is boxed, and moves the cursor past it.
 -}
 emitWriteU16 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU16 endian valueExpr state =
@@ -534,7 +570,8 @@ emitWriteU16 endian valueExpr state =
     }
 
 
-{-| Emit bf.write.u32 operation.
+{-| Emits a `bf.write.u32` of the value of `valueExpr` in the byte order `endian`, unboxed to `i64`
+where it is boxed, and moves the cursor past it.
 -}
 emitWriteU32 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU32 endian valueExpr state =
@@ -569,7 +606,8 @@ emitWriteU32 endian valueExpr state =
     }
 
 
-{-| Emit bf.write.f32 operation.
+{-| Emits a `bf.write.f32` of the value of `valueExpr` in the byte order `endian`, unboxed to `f64`
+where it is boxed, and moves the cursor past it.
 -}
 emitWriteF32 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteF32 endian valueExpr state =
@@ -604,7 +642,8 @@ emitWriteF32 endian valueExpr state =
     }
 
 
-{-| Emit bf.write.f64 operation.
+{-| Emits a `bf.write.f64` of the value of `valueExpr` in the byte order `endian`, unboxed to `f64`
+where it is boxed, and moves the cursor past it.
 -}
 emitWriteF64 : Endianness -> Mono.MonoExpr -> EmitState -> EmitState
 emitWriteF64 endian valueExpr state =
@@ -639,7 +678,8 @@ emitWriteF64 endian valueExpr state =
     }
 
 
-{-| Emit bf.write.bytes operation.
+{-| Emits a `bf.write.bytes` copying the bytes value of `bytesExpr` into the
+buffer, and moves the cursor past it.
 -}
 emitWriteBytes : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteBytes bytesExpr state =
@@ -650,7 +690,6 @@ emitWriteBytes bytesExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
-        -- Add _operand_types for cursor and bytes (using actual expression result type)
         writeAttrs =
             Dict.singleton "_operand_types"
                 (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
@@ -670,9 +709,9 @@ emitWriteBytes bytesExpr state =
     }
 
 
-{-| Emit bf.write.encoder operation — the escape hatch for encoder
-subtrees the reifier didn't recognise. Delegates to the runtime
-walker via elm\_encoder\_write\_into; cursor advances by bytes-written.
+{-| Emits a `bf.write.encoder` that writes the encoder value of `encoderExpr`
+into the buffer whole, for a part of an encoder that was not recognised, and
+moves the cursor past what it wrote.
 -}
 emitWriteOpaque : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteOpaque encoderExpr state =
@@ -702,7 +741,8 @@ emitWriteOpaque encoderExpr state =
     }
 
 
-{-| Emit bf.write.utf8 operation.
+{-| Emits a `bf.write.utf8` of the string value of `strExpr`, and moves the
+cursor past it.
 -}
 emitWriteUtf8 : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteUtf8 strExpr state =
@@ -713,7 +753,6 @@ emitWriteUtf8 strExpr state =
         ( newCursor, ctx2 ) =
             Context.freshVar exprResult.ctx
 
-        -- Add _operand_types for cursor and string (using actual expression result type)
         writeAttrs =
             Dict.singleton "_operand_types"
                 (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr exprResult.resultType ])
@@ -733,34 +772,30 @@ emitWriteUtf8 strExpr state =
     }
 
 
-{-| Emit a length-prefixed encoder loop as an scf.while over the source
-list with loop-carried cursor + remaining list.
+{-| Emits a loop that runs the body operations once for each item of the list
+`iterExpr` produces, in list order, and leaves the cursor after the last item.
 
-Pseudo-MLIR:
+The loop is an `scf.while` carrying the cursor and the rest of the list. Its
+condition is that the list is not empty, tested by comparing the list's tag with
+`CtorTag.constantTag`, since the empty list is an embedded constant. Its body
+projects the head and the tail, binds `itemVar` to the head so that the body's
+expressions can refer to the item, emits the body operations with their own
+cursor, and passes on the new cursor and the tail.
 
-    %list_init = <compileExpr iterExpr>
-    %loop:2 = scf.while (%cur = state.cursor, %lst = %list_init)
-              : (!bf.cursor, !eco.value) -> (!bf.cursor, !eco.value) {
-      // before region: condition is "list is Cons"
-      %tag = eco.get_tag %lst
-      %is_nil = arith.cmpi eq, %tag, c0_i32
-      %is_cons = arith.xori %is_nil, true
-      scf.condition (%is_cons) %cur, %lst : !bf.cursor, !eco.value
+The head is projected at the item type's ABI type: `i64` for an `Int`, `f64`
+for a `Float`, `i16` for a `Char`, and `!eco.value` for anything else.
+
+    %list = <iterExpr>
+    %cur_end, %rest = scf.while (%cur = <cursor>, %lst = %list) {
+      %is_cons = <tag of %lst is not the constant tag>
+      scf.condition (%is_cons) %cur, %lst
     } do {
     ^bb0(%cur, %lst):
-      // after region
       %head = eco.project.list_head %lst
       %tail = eco.project.list_tail %lst
-      // body ops emit bf.write.* threaded through %cur, producing %new_cur
-      // with itemVar bound to %head
-      scf.yield %new_cur, %tail : !bf.cursor, !eco.value
+      <body writes from %cur to %new_cur, with itemVar bound to %head>
+      scf.yield %new_cur, %tail
     }
-    // %loop#0 is the final cursor; %loop#1 is the empty-list residue.
-
-Mirrors the decoder loop's scf.while construction. Cursor threading
-inside the body uses Context.addVarMapping to bind the user-visible
-itemVar name to the per-iteration head SSA, so the body's MonoExpr
-references resolve correctly through the standard compileExpr callback.
 
 -}
 emitWriteEachItem :
@@ -775,14 +810,12 @@ emitWriteEachItem :
     -> EmitState
 emitWriteEachItem r state =
     let
-        -- 1. Compile iterExpr to get the list SSA (or take it hoisted).
         ( iterResult, hoisted ) =
             compileValue r.iterExpr state
 
         ctx0 =
             iterResult.ctx
 
-        -- 2. Generate fresh names for loop result vars and block args.
         ( whileCursorResult, ctx1 ) =
             Context.freshVar ctx0
 
@@ -795,7 +828,6 @@ emitWriteEachItem r state =
         ( beforeListArg, ctx4 ) =
             Context.freshVar ctx3
 
-        -- 3. Build before region: tag check.
         ( tagVar, ctx5 ) =
             Context.freshVar ctx4
 
@@ -809,8 +841,7 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
-        -- Nil is an embedded empty constant; eco_get_tag returns CONSTANT_TAG
-        -- for it (see D9), so the "is this list Nil?" check compares against
+        -- The empty list is an embedded constant, whose tag reads as
         -- CtorTag.constantTag, not 0.
         ( nilTagVar, ctx7 ) =
             Context.freshVar ctx6
@@ -824,7 +855,7 @@ emitWriteEachItem r state =
         ( isNilVar, ctx9 ) =
             Context.freshVar ctx8
 
-        -- arith.cmpi predicate=0 means eq
+        -- Predicate 0 is eq.
         ( ctx10, cmpEqOp ) =
             Ops.mlirOp ctx9 "arith.cmpi"
                 |> Ops.opBuilder.withOperands [ tagVar, nilTagVar ]
@@ -874,25 +905,15 @@ emitWriteEachItem r state =
                 [ tagOp, nilTagOp, cmpEqOp, trueOp, xoriOp ]
                 conditionOp
 
-        -- 4. Build after region: project head, run body, project tail, yield.
         ( afterCursorArg, ctx16 ) =
             Context.freshVar ctx15
 
         ( afterListArg, ctx17 ) =
             Context.freshVar ctx16
 
-        -- Project the head at the element type's SSA type (REP_BOUNDARY_003):
-        -- i64 for Int, f64 for Float, i16 for Char, `!eco.value` for anything
-        -- else. The body's writes are always primitive (buildLoopNode restricts
-        -- them to EU8/EU16/EU32/EF32/EF64), but the item is whatever they read
-        -- from: a number written directly, or a record whose fields they read.
-        -- An Int or Float head must not be projected as `!eco.value` and then
-        -- `eco.unbox`-ed (resolve + load): the raw scalar word would be
-        -- reinterpreted as an HPointer, and an unboxed int like 7 has the
-        -- ptr_ind bit set, so eco_resolve_hptr rejects it as an embedded
-        -- constant. The i64/f64 `eco.project.list_head` lowering
-        -- (eco_cons_head_i64/f64) reads the head whether it is stored boxed or
-        -- unboxed.
+        -- An Int or Float head is projected unboxed, never as !eco.value and
+        -- then unboxed: the head may be stored unboxed, and unboxing would
+        -- read that raw word as a heap pointer.
         headType =
             Types.monoTypeToAbi r.itemType
 
@@ -922,17 +943,11 @@ emitWriteEachItem r state =
                     )
                 |> Ops.opBuilder.build
 
-        -- Bind itemVar -> headVar (at its SSA type) so body MonoExpr lookups
-        -- resolve. A number head is already the unboxed i64/f64, so the write
-        -- op's `ensureUnboxed` is a no-op (no stray eco.unbox /
-        -- eco_resolve_hptr on a raw scalar word); a record head is projected
-        -- from by the body as usual.
         ctxBody =
             Context.addVarMapping r.itemVar headVar headType ctx21
 
-        -- Emit the body ops with afterCursorArg as the starting cursor,
-        -- fresh `ops` accumulator (these belong inside the region, not the
-        -- outer scope).
+        -- The body's ops go inside the region, and its values are compiled
+        -- there, not taken from the hoisted ones.
         bodyInitState =
             { state | ctx = ctxBody, cursor = afterCursorArg, ops = [], hoisted = [] }
 
@@ -959,7 +974,6 @@ emitWriteEachItem r state =
                 ([ headOp, tailOp ] ++ List.reverse finalBodyState.ops)
                 yieldOp
 
-        -- 5. Build scf.while binding (whileCursorResult, whileListResult).
         ( ctx24, whileOp ) =
             Ops.scfWhile ctx23
                 [ ( whileCursorResult, state.cursor, bfCursorType )
@@ -977,40 +991,51 @@ emitWriteEachItem r state =
 
 
 -- ============================================================================
--- Decoder Emission (Phase 2)
+-- Decoder Emission
 -- ============================================================================
 
 
-{-| State for decoder emission with nested scf.if fail-fast.
-No okFlags accumulation - each read immediately branches on failure.
+{-| The state threaded through the emission of a decoder, down through its
+nested `scf.if` operations.
+
+`decodedVars` holds the SSA names of the values produced so far, most recent
+first; the head is what the decoder gives when it reaches its end.
+`varMapping` maps each placeholder named in the operations to the SSA name of
+the value produced for it, and `varTypes` gives the MLIR type of those SSA
+names.
+
 -}
 type alias DecoderEmitState =
     { ctx : Context
     , cursor : String
-    , bytesVar : String -- SSA variable holding the input bytes
-    , decodedVars : List String -- Stack of decoded SSA variable names
-    , compileExpr : ExprCompiler -- Callback to compile MonoExpr
-    , varMapping : Dict.Dict String String -- placeholder var name → actual SSA var name
-    , varTypes : Dict.Dict String MlirType -- SSA var name → type
+    , bytesVar : String
+    , decodedVars : List String
+    , compileExpr : ExprCompiler
+    , varMapping : Dict.Dict String String
+    , varTypes : Dict.Dict String MlirType
     }
 
 
-{-| Emit a complete fused decoder from Loop IR operations.
-Takes the pre-compiled bytesVar (SSA value for the input bytes).
-Returns (ops, resultVar, context) where resultVar contains Maybe a.
+{-| Emits the decoder described by `ops`, reading the bytes value whose SSA name
+is `bytesVar` and compiling its expressions with `compileExpr`. Returns the ops
+in order, the SSA name of the decoder's `Maybe` result, and the context after
+them.
 
-Uses nested scf.if for fail-fast bounds checking: each read is wrapped in
-scf.if that returns Nothing immediately on bounds failure.
+The result is `Nothing` when a read finds too few bytes left, when a UTF-8 read
+finds invalid UTF-8, when a decoding loop runs out of input, when a counted
+loop's total byte count does not fit in 32 bits, or when the operations end in
+`ReturnNothing`. Otherwise it is `Just` the value of the
+`ReturnJust` placeholder, or `Just` the last value produced when the operations
+end without one, or `Just ()` when they produce none. An `Int`, `Float` or
+`Char` result is stored unboxed in the `Just`.
 
 -}
 emitFusedDecoder : ExprCompiler -> Context -> String -> List IR.DecoderOp -> ( List MlirOp, String, Context )
 emitFusedDecoder compileExpr ctx bytesVar ops =
     let
-        -- Initialize cursor from bytes
         ( cursorVar, ctx1 ) =
             Context.freshVar ctx
 
-        -- Add _operand_types for bytes (eco.value)
         initAttrs =
             Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
 
@@ -1031,18 +1056,16 @@ emitFusedDecoder compileExpr ctx bytesVar ops =
             , varTypes = Dict.empty
             }
 
-        -- Filter out InitReadCursor since we handled it above
         remainingOps =
             List.filter (not << isInitReadCursor) ops
 
-        -- Recursively emit nested scf.if structure
         ( resultOps, resultVar, finalCtx ) =
             emitDecoderOpsNested remainingOps initialState
     in
     ( initOp :: resultOps, resultVar, finalCtx )
 
 
-{-| Check if op is InitReadCursor.
+{-| Returns whether a decoder operation is `InitReadCursor`.
 -}
 isInitReadCursor : DecoderOp -> Bool
 isInitReadCursor op =
@@ -1054,38 +1077,39 @@ isInitReadCursor op =
             False
 
 
-{-| Recursively emit decoder ops with nested scf.if for fail-fast.
+{-| Emits the decoder operations `ops` from `state`. Returns the ops, the SSA
+name of the `Maybe` result, and the context after them.
 
-Each read operation emits:
-%ok = bf.require(%cur, N)
-%result = scf.if %ok -> !eco.value {
-%value, %newCur = bf.read.\*(...)
-// ... recursive call for remaining ops ...
-scf.yield %innerResult
-} else {
-%nothing = call @elm\_maybe\_nothing()
-scf.yield %nothing
-}
+A read emits a `bf.require` of its bytes and an `scf.if` on the result. The
+then-branch holds the read and everything emitted for the operations after it;
+the else-branch gives the embedded `Nothing` constant.
 
-A UTF-8 string read nests one more `scf.if` on its own `ok` result (valid
-UTF-8) around the remaining ops, with the same `Nothing` else-branch.
+    %ok = bf.require %cur, <width>
+    %result = scf.if %ok -> !eco.value {
+      %value, %next = bf.read.<kind> %cur
+      <the remaining operations, from %next>
+      scf.yield %rest
+    } else {
+      %nothing = <Nothing>
+      scf.yield %nothing
+    }
 
-Non-read ops (Apply, PushValue) are emitted directly without scf.if wrapping.
+`Apply*` and `PushValue` operations emit their ops in line, with no check. Each
+operation's value is recorded against its placeholder in `varMapping`, which is
+how a later operation, such as a read whose length is an earlier value, finds it.
 
-IMPORTANT: Each op carries a placeholder resultVarName that must be mapped to
-the actual SSA variable created during emission. This mapping is stored in
-state.varMapping and used by ReadBytesVar/ReadUtf8Var to look up length vars.
+`ReturnJust` ends the decoder with `Just` its placeholder's value; a placeholder
+with no value falls back to the last value produced. Operations after a
+`ReturnJust` or `ReturnNothing` are ignored.
 
 -}
 emitDecoderOpsNested : List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitDecoderOpsNested ops state =
     case ops of
         [] ->
-            -- Base case: return Just with the final decoded value
             emitJustResult state
 
         (InitReadCursor _ _) :: rest ->
-            -- Skip - already handled in emitFusedDecoder
             emitDecoderOpsNested rest state
 
         (ReadU8 _ placeholderVar) :: rest ->
@@ -1149,13 +1173,11 @@ emitDecoderOpsNested ops state =
             emitLoopSentinelDecodeListNested sentinel itemOps order resultPlaceholder rest state
 
         (ReturnJust resultPlaceholder) :: _ ->
-            -- Explicit return - look up actual SSA var from mapping
             case Dict.get resultPlaceholder state.varMapping of
                 Just actualVar ->
                     emitJustResultWithVar actualVar state
 
                 Nothing ->
-                    -- Fallback: maybe it's already an SSA var or top of stack
                     case state.decodedVars of
                         topVar :: _ ->
                             emitJustResultWithVar topVar state
@@ -1164,17 +1186,16 @@ emitDecoderOpsNested ops state =
                             emitJustResult state
 
         ReturnNothing :: _ ->
-            -- Explicit failure - return Nothing
             emitNothingResult state
 
 
-{-| Emit a fixed-size read with nested scf.if fail-fast pattern.
-The placeholderVar is the name from the IR op that must be mapped to the actual SSA var.
+{-| Emits a read of `byteCount` bytes by the op `readOpName`, guarded by a
+`bf.require`, with the remaining operations `restOps` nested in the guard's
+then-branch. The value read, of type `resultType`, is bound to `placeholderVar`.
 -}
 emitReadWithNestedScfIf : Int -> String -> Maybe Endianness -> MlirType -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderVar restOps state =
     let
-        -- 1. Create constant for byte count
         ( bytesConstVar, ctx0 ) =
             Context.freshVar state.ctx
 
@@ -1184,11 +1205,9 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
                 |> Ops.opBuilder.withAttrs (Dict.singleton "value" (IntAttr (Just I32) byteCount))
                 |> Ops.opBuilder.build
 
-        -- 2. bf.require check (takes cursor and bytes operands)
         ( okVar, ctx1 ) =
             Context.freshVar ctx0b
 
-        -- Add _operand_types for cursor and byte count
         requireAttrs =
             Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
@@ -1199,15 +1218,12 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
                 |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
-        -- 2. Build the "then" block: do the read and continue recursively
         ( valueVar, ctx3 ) =
             Context.freshVar ctx2
 
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Always include _operand_types for the cursor input
-        -- Use "endianness" to match BFOps.td definition
         endianAttrs =
             let
                 baseAttrs =
@@ -1227,7 +1243,6 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
                 |> Ops.opBuilder.withResults [ ( valueVar, resultType ), ( newCursor, bfCursorType ) ]
                 |> Ops.opBuilder.build
 
-        -- Update state for recursive call - add mapping from placeholder to actual SSA var
         updatedState =
             { state
                 | ctx = ctx5
@@ -1237,11 +1252,9 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
                 , varTypes = Dict.insert valueVar resultType state.varTypes
             }
 
-        -- Recursively emit remaining ops
         ( thenBodyOps, thenResultVar, ctx6 ) =
             emitDecoderOpsNested restOps updatedState
 
-        -- Yield the result from the then block
         ( ctx7, thenYieldOp ) =
             Ops.mlirOp ctx6 "scf.yield"
                 |> Ops.opBuilder.withOperands [ thenResultVar ]
@@ -1250,11 +1263,9 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         thenRegion =
             Ops.mkRegion [] (readOp :: thenBodyOps) thenYieldOp
 
-        -- 3. Build the "else" block: return Nothing
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.constant Nothing (embedded constant, matches non-fused path)
         ( ctx9, nothingOp ) =
             Ops.ecoConstantNothing ctx8 nothingVar
 
@@ -1266,7 +1277,6 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         elseRegion =
             Ops.mkRegion [] [ nothingOp ] elseYieldOp
 
-        -- 4. Build the scf.if
         ( ifResultVar, ctx11 ) =
             Context.freshVar ctx10
 
@@ -1280,7 +1290,10 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
     ( [ bytesConstOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit ReadBytes with nested scf.if pattern.
+{-| Emits a read of a bytes value whose length is the value of `lenExpr`,
+truncated to `i32`, guarded by a `bf.require` of that length, with the
+remaining operations nested in the guard's then-branch. The bytes read are
+bound to `placeholderVar`.
 -}
 emitReadBytesNested : Mono.MonoExpr -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadBytesNested lenExpr placeholderVar restOps state =
@@ -1288,7 +1301,6 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         lenResult =
             state.compileExpr lenExpr state.ctx
 
-        -- Truncate i64 length to i32 for bf ops
         ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar lenResult.ctx
 
@@ -1384,8 +1396,11 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
     ( lenResult.ops ++ [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit ReadUtf8 with nested scf.if pattern: `bf.require` guards the read,
-and the read's `ok` (valid UTF-8) result guards the rest of the decoder.
+{-| Emits a read of a UTF-8 string whose length in bytes is the value of
+`lenExpr`, truncated to `i32`, and binds the string to `placeholderVar`. A
+`bf.require` of that length guards the read, and the read's own result saying
+the bytes are valid UTF-8 guards the remaining operations; either failing gives
+`Nothing`.
 -}
 emitReadUtf8Nested : Mono.MonoExpr -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadUtf8Nested lenExpr placeholderVar restOps state =
@@ -1393,7 +1408,6 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         lenResult =
             state.compileExpr lenExpr state.ctx
 
-        -- Truncate i64 length to i32 for bf ops
         ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar lenResult.ctx
 
@@ -1451,9 +1465,6 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
                 , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
-        -- The rest of the decoder runs only when the bytes are valid UTF-8
-        -- (`ok` of bf.read.utf8); otherwise the decode is Nothing, like a
-        -- failed bf.require (BFOPS_016).
         ( validIfOp, validIfVar, ctx6 ) =
             emitIfElseNothing readOkVar (emitDecoderOpsNested restOps updatedState)
 
@@ -1492,8 +1503,10 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
     ( lenResult.ops ++ [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit ReadBytesVar with nested scf.if pattern (length from previously decoded SSA var).
-Looks up the lenPlaceholderVar in varMapping to get the actual SSA variable.
+{-| Emits a read of a bytes value whose length is the earlier value bound to
+`lenPlaceholderVar`, as `emitReadBytesNested` does for a length expression, and
+binds the bytes to `resultPlaceholderVar`. A placeholder with no value is used
+as an SSA name itself, and a value of unknown type is taken to be an `i64`.
 -}
 emitReadBytesVarNested : String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
@@ -1506,7 +1519,6 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
             Dict.get actualLenVar state.varTypes
                 |> Maybe.withDefault I64
 
-        -- Truncate to i32 for bf ops
         ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar state.ctx
 
@@ -1602,9 +1614,11 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
     ( [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit ReadUtf8Var with nested scf.if pattern (length from previously decoded SSA var).
-As in `emitReadUtf8Nested`, the read's `ok` result guards the rest of the decoder.
-Looks up the lenPlaceholderVar in varMapping to get the actual SSA variable.
+{-| Emits a read of a UTF-8 string whose length in bytes is the earlier value
+bound to `lenPlaceholderVar`, as `emitReadUtf8Nested` does for a length
+expression, and binds the string to `resultPlaceholderVar`. A placeholder with
+no value is used as an SSA name itself, and a value of unknown type is taken to
+be an `i64`.
 -}
 emitReadUtf8VarNested : String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
@@ -1617,7 +1631,6 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
             Dict.get actualLenVar state.varTypes
                 |> Maybe.withDefault I64
 
-        -- Truncate to i32 for bf ops
         ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar state.ctx
 
@@ -1675,9 +1688,6 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 , varTypes = Dict.insert stringVar Types.ecoValue state.varTypes
             }
 
-        -- The rest of the decoder runs only when the bytes are valid UTF-8
-        -- (`ok` of bf.read.utf8); otherwise the decode is Nothing, like a
-        -- failed bf.require (BFOPS_016).
         ( validIfOp, validIfVar, ctx6 ) =
             emitIfElseNothing readOkVar (emitDecoderOpsNested restOps updatedState)
 
@@ -1716,18 +1726,21 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
     ( [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
-{-| Emit Apply with nested continuation.
-Apply operations don't do bounds checks, so no scf.if needed.
-Looks up arg placeholder vars in varMapping to get actual SSA variables.
+{-| Emits an `eco.papExtend` that applies the function `fnExpr` compiles to to
+the values bound to `argPlaceholders`, binds the result to `resultPlaceholder`,
+and emits the remaining operations after it.
+
+The result's type is taken from `fnExpr`'s type after as many arguments as are
+given. An argument placeholder with no value is used as an SSA name itself, and
+one of unknown type is taken to be an `!eco.value`.
+
 -}
 emitApplyNested : Mono.MonoExpr -> List String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
     let
-        -- Compile function expression
         fnResult =
             state.compileExpr fnExpr state.ctx
 
-        -- Look up actual SSA variables and their types for args
         actualArgVarsAndTypes =
             List.map
                 (\placeholder ->
@@ -1750,18 +1763,15 @@ emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
         actualArgTypes =
             List.map Tuple.second actualArgVarsAndTypes
 
-        -- Determine the result type for a saturated call by examining the function's MonoType
         saturatedResultType =
             fnExprReturnType fnExpr (List.length argPlaceholders)
 
-        -- Build eco.papExtend call
         ( resVar, ctx1 ) =
             Context.freshVar fnResult.ctx
 
         allOperandNames =
             fnResult.resultVar :: actualArgVars
 
-        -- Use function result type for first operand, actual types for args
         allOperandTypes =
             fnResult.resultType :: actualArgTypes
 
@@ -1769,7 +1779,7 @@ emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                 , ( "remaining_arity", IntAttr Nothing (List.length argPlaceholders) )
-                , ( "slot_kinds", Ops.slotKindsAttr actualArgTypes ) -- one kind per newarg (S.5)
+                , ( "slot_kinds", Ops.slotKindsAttr actualArgTypes )
                 ]
 
         ( ctx2, papExtendOp ) =
@@ -1793,8 +1803,8 @@ emitApplyNested fnExpr argPlaceholders resultPlaceholder restOps state =
     ( fnResult.ops ++ [ papExtendOp ] ++ restBodyOps, resultVar, finalCtx )
 
 
-{-| Extract the return type of a function expression when applied to N arguments.
-Examines the MonoType annotation of the function expression.
+{-| Returns the ABI type of what `fnExpr` returns once applied to `nArgs`
+arguments, from the type recorded on the expression.
 -}
 fnExprReturnType : Mono.MonoExpr -> Int -> MlirType
 fnExprReturnType fnExpr nArgs =
@@ -1805,8 +1815,10 @@ fnExprReturnType fnExpr nArgs =
     Types.monoTypeToAbi (uncurryReturnType fnType nArgs)
 
 
-{-| Unwrap curried Mono.mFunction types to find the final return type after consuming N args.
-E.g. MFunction [MInt] (MFunction [MInt] MInt) with nArgs=2 -> MInt
+{-| Returns the type left after a function of type `monoType` consumes
+`remainingArgs` arguments, stepping through nested function types as many
+parameters at a time as each has. A type that is not a function is returned as
+it is, even with arguments left over.
 -}
 uncurryReturnType : Mono.MonoType -> Int -> Mono.MonoType
 uncurryReturnType monoType remainingArgs =
@@ -1823,11 +1835,10 @@ uncurryReturnType monoType remainingArgs =
                 uncurryReturnType returnType (remainingArgs - consumed)
 
             _ ->
-                -- Not a function type but still have args to consume - shouldn't happen
                 monoType
 
 
-{-| Extract the MonoType from a MonoExpr.
+{-| Returns the type recorded on an expression, `MUnit` for the unit value.
 -}
 monoExprType : Mono.MonoExpr -> Mono.MonoType
 monoExprType expr =
@@ -1887,7 +1898,8 @@ monoExprType expr =
             t
 
 
-{-| Emit PushValue with nested continuation.
+{-| Emits the value of `valueExpr`, binds it to `placeholderVar`, and emits the
+remaining operations after it.
 -}
 emitPushValueNested : Mono.MonoExpr -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitPushValueNested valueExpr placeholderVar restOps state =
@@ -1909,7 +1921,7 @@ emitPushValueNested valueExpr placeholderVar restOps state =
     ( exprResult.ops ++ restBodyOps, resultVar, finalCtx )
 
 
-{-| Emit Just with the top decoded value (base case).
+{-| Emits `Just` the last value produced, or `Just ()` when there is none.
 -}
 emitJustResult : DecoderEmitState -> ( List MlirOp, String, Context )
 emitJustResult state =
@@ -1918,7 +1930,6 @@ emitJustResult state =
             emitJustResultWithVar resultVar state
 
         [] ->
-            -- No decoded values - return unit wrapped in Just
             let
                 ( unitVar, ctx1 ) =
                     Context.freshVar state.ctx
@@ -1931,28 +1942,24 @@ emitJustResult state =
                 ( justVar, ctx3 ) =
                     Context.freshVar ctx2
 
-                -- Use eco.construct.custom with constructor "Just", tag 0, size 1.
                 ( ctx4, justOp ) =
                     Ops.ecoConstructCustom ctx3 justVar 0 1 [ 0 ] [ ( unitVar, Types.ecoValue ) ] (Just "Just")
             in
             ( [ unitOp, justOp ], justVar, ctx4 )
 
 
-{-| Emit Just with a specific variable.
-Primitive types are stored unboxed (slot kind 1..3) to match type registry expectations.
-Non-primitives are stored as eco.value (slot kind 0).
+{-| Emits `Just` the value `varName`. A value whose recorded type is `i64`,
+`f64` or `i16` is stored unboxed, with that type's slot kind; anything else,
+including a value of unknown type, is stored as an `!eco.value`.
 -}
 emitJustResultWithVar : String -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitJustResultWithVar varName state =
     let
-        -- Look up the type of the variable
         varType =
             Dict.get varName state.varTypes
                 |> Maybe.withDefault Types.ecoValue
     in
     if Types.isUnboxable varType then
-        -- Primitive types are stored unboxed in Just (matches type registry expectations).
-        -- Slot 0's kind is derived from varType.
         let
             ( justVar, ctx1 ) =
                 Context.freshVar state.ctx
@@ -1963,19 +1970,17 @@ emitJustResultWithVar varName state =
         ( [ justOp ], justVar, ctx2 )
 
     else
-        -- Non-primitives are stored boxed (eco.value)
         let
             ( justVar, ctx1 ) =
                 Context.freshVar state.ctx
 
-            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, slot kind 0
             ( ctx2, justOp ) =
                 Ops.ecoConstructCustom ctx1 justVar 0 1 [ 0 ] [ ( varName, Types.ecoValue ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
 
-{-| Emit Nothing result (failure case).
+{-| Emits the embedded `Nothing` constant.
 -}
 emitNothingResult : DecoderEmitState -> ( List MlirOp, String, Context )
 emitNothingResult state =
@@ -1983,16 +1988,14 @@ emitNothingResult state =
         ( nothingVar, ctx1 ) =
             Context.freshVar state.ctx
 
-        -- Use eco.constant Nothing (embedded constant, matches non-fused path)
         ( ctx2, nothingOp ) =
             Ops.ecoConstantNothing ctx1 nothingVar
     in
     ( [ nothingOp ], nothingVar, ctx2 )
 
 
-{-| The single fixed-width read a decoding loop's item operations must be: the
-`bf.read.*` op, its byte order, its width in bytes and the type of the value it
-produces (`i64` for integers, `f64` for floats). `Nothing` for anything else.
+{-| A fixed-width read: the `bf.read.*` op that does it, its byte order, its
+width in bytes, and the type of the value it produces.
 -}
 type alias FixedRead =
     { opName : String
@@ -2002,6 +2005,10 @@ type alias FixedRead =
     }
 
 
+{-| Returns the fixed-width read that a decoding loop's item operations consist
+of, or `Nothing` when they are anything other than a single fixed-width read.
+Integer reads produce an `i64` and float reads an `f64`.
+-}
 fixedReadOf : List DecoderOp -> Maybe FixedRead
 fixedReadOf itemOps =
     case itemOps of
@@ -2033,9 +2040,9 @@ fixedReadOf itemOps =
             Nothing
 
 
-{-| Emits `read` at `cursor`, returning the ops, the value and the new cursor.
-The caller must already have checked that `read.width` bytes are there
-(BFOPS\_012).
+{-| Emits `read` at `cursor` with no bounds check. Returns the ops, the value
+and the new cursor. The caller must already have checked that `read.width` bytes
+are there.
 -}
 emitFixedRead : FixedRead -> String -> Context -> ( List MlirOp, ( String, String ), Context )
 emitFixedRead read cursor ctx0 =
@@ -2067,7 +2074,7 @@ emitFixedRead read cursor ctx0 =
     ( [ readOp ], ( valueVar, newCursor ), ctx3 )
 
 
-{-| Emits an `i64` constant.
+{-| Emits an `i64` constant. Returns the op and its SSA name.
 -}
 emitI64Const : Int -> Context -> ( MlirOp, String, Context )
 emitI64Const value ctx0 =
@@ -2081,7 +2088,9 @@ emitI64Const value ctx0 =
     ( op, var, ctx2 )
 
 
-{-| Emits a binary `arith` op on two operands of type `operandType`.
+{-| Emits the binary `arith` op `opName` on `lhs` and `rhs`, both of type
+`operandType`, with a result of type `resultType`. Returns the op and its
+result.
 -}
 emitArith : String -> MlirType -> MlirType -> String -> String -> Context -> ( MlirOp, String, Context )
 emitArith opName operandType resultType lhs rhs ctx0 =
@@ -2102,8 +2111,8 @@ emitArith opName operandType resultType lhs rhs ctx0 =
     ( op, var, ctx2 )
 
 
-{-| Emits `value :: tail` with the value stored unboxed (an `Int` or `Float`
-item, REP rules: only Int, Float and Char are unboxed in heap fields).
+{-| Emits the cons cell `head :: tail`, with the head stored unboxed under its
+type's slot kind. Returns the op and the new list.
 -}
 emitConsUnboxed : ( String, MlirType ) -> String -> Context -> ( MlirOp, String, Context )
 emitConsUnboxed head tail ctx0 =
@@ -2117,8 +2126,8 @@ emitConsUnboxed head tail ctx0 =
     ( op, var, ctx2 )
 
 
-{-| Emits the reversal of `list` with the `List.reverse` kernel, keeping the
-fused decoder to one loop (BFOPS\_035). Returns the ops and the reversed list.
+{-| Emits a call to the `List.reverse` kernel on `list`. Returns the ops and
+the reversed list.
 -}
 emitReverseList : String -> Context -> ( List MlirOp, String, Context )
 emitReverseList list ctx0 =
@@ -2132,7 +2141,7 @@ emitReverseList list ctx0 =
     ( [ callOp ], reversed, ctx2 )
 
 
-{-| Emits the empty list.
+{-| Emits the empty list constant. Returns the op and its SSA name.
 -}
 emitEmptyList : Context -> ( MlirOp, String, Context )
 emitEmptyList ctx0 =
@@ -2211,14 +2220,18 @@ emitIfElseNothing okVar ( thenOps, thenResult, ctx0 ) =
     ( ifOp, ifVar, ctx6 )
 
 
-{-| Emit a count-based decode loop (`LoopDecodeList`).
+{-| Emits a loop that decodes `count` items, each one fixed-width read, binds
+the list of them in `order` to `resultPlaceholder`, and emits the remaining
+operations after it.
 
-The count is clamped at zero, and the bytes of every item are checked once
-before the loop (`bf.require` of count \* width, with the product checked to fit
-in 32 bits), so the reads inside the loop are all covered by that check
-(BFOPS\_012); when they are not all there the decoder gives `Nothing`, as the
-loop would when a read fails. Then an `scf.while` over (counter, cursor,
-accumulator) reads an item and conses it until the counter reaches zero.
+A negative count is taken as zero. The bytes of all the items are checked once,
+before the loop: a `bf.require` of the count times the item width, together with
+a check that the product fits in 32 bits. When the check fails the decoder gives
+`Nothing`; otherwise the reads inside the loop need no check of their own. The
+loop is an `scf.while` over a counter, the cursor and the list so far, which
+reads an item and conses it until the counter reaches zero.
+
+It crashes the compiler when the item operations are not one fixed-width read.
 
 -}
 emitLoopDecodeListNested : IR.LoopCount -> List DecoderOp -> IR.ListOrder -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
@@ -2280,7 +2293,7 @@ emitLoopDecodeListNested count itemOps order resultPlaceholder restOps state =
                 ( okOp, okVar, ctx13 ) =
                     emitArith "arith.andi" I1 I1 fitsVar requireVar ctx12
 
-                -- The loop, inside the then-branch.
+                -- The loop goes inside the then-branch of the check.
                 ( nilOp, nilVar, ctx14 ) =
                     emitEmptyList ctx13
 
@@ -2370,7 +2383,11 @@ emitLoopDecodeListNested count itemOps order resultPlaceholder restOps state =
             )
 
 
-{-| Emits the count of a `LoopDecodeList` as an `i64`.
+{-| Emits the count of a `LoopDecodeList` as an `i64`. A count expression
+whose value is not already an `i64` is unboxed.
+
+It crashes the compiler when the count is a placeholder with no value.
+
 -}
 emitLoopCount : IR.LoopCount -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitLoopCount count state =
@@ -2414,15 +2431,19 @@ emitLoopCount count state =
                 ( result.ops ++ [ unboxOp ], unboxedVar, ctx2 )
 
 
-{-| Emit a sentinel-terminated decode loop (`LoopSentinelDecodeList`).
+{-| Emits a loop that decodes items, each one fixed-width read, until one
+equals `sentinel`, binds the list of the items before it in `order` to
+`resultPlaceholder`, and emits the remaining operations after it.
 
-An `scf.while` over (cursor, accumulator, found). The before region continues
-while the sentinel has not been found and `bf.require` shows the next item's
-bytes are there, so the read in the after region only runs once that check has
-passed (BFOPS\_012). The after region reads the item; the sentinel sets found
-(consumed, not put in the list), any other item is consed. When the loop
-stops, found tells the two cases apart: the sentinel was read, or input ran out
-before one and the decoder gives `Nothing`.
+The loop is an `scf.while` over the cursor, the list so far, and whether the
+sentinel has been found. It continues while the sentinel has not been found and
+a `bf.require` shows the next item's bytes are there, so every read is checked.
+An item equal to the sentinel is consumed and sets the flag, and any other item
+is consed. When the loop stops without the sentinel, because the input ran out,
+the decoder gives `Nothing`.
+
+The comparison with the sentinel is an integer comparison on the value read.
+It crashes the compiler when the item operations are not one fixed-width read.
 
 -}
 emitLoopSentinelDecodeListNested : Int -> List DecoderOp -> IR.ListOrder -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
@@ -2460,7 +2481,6 @@ emitLoopSentinelDecodeListNested sentinel itemOps order resultPlaceholder restOp
                 loopTypes =
                     [ bfCursorType, Types.ecoValue, I1 ]
 
-                -- Before region: continue while not found and the item fits.
                 ( beforeCursor, ctx9 ) =
                     Context.freshVar ctx8
 
@@ -2497,8 +2517,6 @@ emitLoopSentinelDecodeListNested sentinel itemOps order resultPlaceholder restOp
                         [ requireOp, notFoundOp, continueOp ]
                         conditionOp
 
-                -- After region: read the item; the sentinel sets found, any
-                -- other item is consed.
                 ( afterCursor, ctx17 ) =
                     Context.freshVar ctx16
 

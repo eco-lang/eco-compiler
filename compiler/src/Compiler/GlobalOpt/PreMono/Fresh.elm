@@ -4,39 +4,45 @@ module Compiler.GlobalOpt.PreMono.Fresh exposing
     , assertMinted
     )
 
-{-| The ONE place a pre-monomorphization pass mints identity.
+{-| Identity for typed-optimized code that a pre-monomorphization pass copies
+or creates.
 
-`plans/pre-mono-lss-transforms-00-assign-mvar-ids-first.md` §3.3.
+By the time the pre-monomorphization passes run, `AssignMVarIds` has already
+given the graph its identities: an `MVarId` for every type variable, a
+`SrcLambdaId` for every function value and an `ArrowId` in the slot of every
+`TLambda`. A pass that rewrites the graph must keep those identities sound, and
+there are two ways to break them.
 
-`AssignMVarIds` now runs BEFORE the pre-mono passes, so every `MVarId`,
-`SrcLambdaId` and `ArrowId` already exists on the graph those passes rewrite.
-That turns the pre-mono position's central guarantee — "nothing can be
-destroyed here, because no identity exists yet" — into a DISCIPLINE:
+A pass that copies a subtree and keeps its ids, as an inliner does, leaves two
+bodies under one lambda id. Lambda-set specialization (LSS) tracks which
+function values can reach a call, one member per lambda id, and then treats the
+two as one member, so two different instantiations can stand in for each other.
+This is a wrong program, not a crash.
 
-  - a transform that COPIES a subtree and keeps its ids puts two bodies under
-    one member, which is LSS\_009 impersonation across different
-    instantiations: a silent miscompile, not a crash;
-  - a transform that CREATES a node and leaves `Function Nothing` /
-    `TLambda NoArrow` produces a memberless closure, which declines as
-    `g1absentl`.
+A pass that creates a node, such as a wrapper lambda, and leaves its lambda id
+`Nothing` or its arrow slot `NoArrow`, produces a closure with no member, which
+lambda-set specialization cannot resolve.
 
-So there are exactly two entry points and every pass must use one of them:
+The module therefore has two entry points, one per kind of change, and a
+validator.
 
-  - `freshenCopy` — COPY semantics. Every `SrcLambdaId` and every `ArrowId` in
-    the copy is re-minted; every `MVarId` is either substituted from the call
-    site or re-minted with its supertype constraint carried across.
-  - `mintNewNode` — NEW-NODE semantics. A transform builds nodes with
-    `Function Nothing` and `Can.tLambda` (which is `TLambda NoArrow`) and calls
-    this once on the built subtree; ids are assigned ONLY where absent, so it
-    is idempotent and safe to run over a mixture of new and existing nodes.
+`freshenCopy` has copy semantics. Every `SrcLambdaId` and every `ArrowId` in the
+copy is re-minted, and every type variable is either replaced by the type the
+caller supplies for it in a `Subst` or re-minted, except a record extension
+variable whose substitution is not a variable, which keeps its original id.
+`freshenType` does the same for a single type.
 
-`assertMinted` is the validator (`mono.validate`): it fails on an unminted node
-AND on a REPEATED lambda or arrow id. The second check is the one that matters
-— a presence check cannot see copy-without-mint, which is the miscompile shape.
+`mintNewNode` has new-node semantics. A pass builds its nodes with
+`Function Nothing` and `Can.tLambda` (which leaves the slot `NoArrow`), then
+calls it once on the built subtree. It assigns ids only where they are missing.
 
-All three mint from `AssignMVarIds`'s own supplies, so `Engine.initState`'s
-`nextMemberId = Id.toComparable state.nextLam` stays past every id ever minted
-(LSS\_003).
+`assertMinted` checks a whole graph: it fails on a lambda or arrow without an
+id, and on any lambda id or arrow id that occurs twice. Only the second check
+can see a copy that kept its ids.
+
+Every id comes from `AssignMVarIds`'s own supplies (`freshMVarId`, `mintLamId`,
+`mintArrowId`), so a new id never collides with one assigned earlier. Term-level
+names are not renamed here; a caller that copies binders renames them itself.
 
 @docs Subst
 @docs freshenCopy, freshenType, mintNewNode
@@ -55,18 +61,24 @@ import Data.Map as DMap
 import Dict exposing (Dict)
 
 
-{-| What the call site says each of the copied body's type variables is, keyed
-by `Id.toComparable`. A hit is spliced in VERBATIM: it is the CALLER's type, so
-its ids and arrow identities are already consistent with the caller and must
-not be walked or re-minted.
+{-| A substitution from a copied body's type variables to the types the caller
+gives them, keyed by `Id.toComparable` of the variable's `MVarId`.
+
+A substituted type is inserted as it is, without being walked, so its own ids
+and arrow slots are kept. This is a name for a `Dict`; nothing checks that the
+keys are type-variable ids.
+
 -}
 type alias Subst =
     Dict Int (Can.Type TypeIds.MVarId)
 
 
-{-| Copy-walk state: the substitution, the per-copy mapping for variables that
-were NOT substituted (so every occurrence of one original variable becomes the
-same fresh one), and the allocator.
+{-| The state threaded through one copy.
+
+`renamed` maps each original type variable or alias parameter that was not
+substituted to its fresh `MVarId`, so that every occurrence of one original
+variable within the copy becomes the same fresh one.
+
 -}
 type alias Env =
     { subst : Subst
@@ -81,13 +93,15 @@ type alias Env =
 -- ============================================================================
 
 
-{-| Freshen a copied expression: new lambda ids, new arrow ids, and either the
-call site's type or a fresh variable for every type variable.
+{-| Returns a copy of `expr` with a new `SrcLambdaId` on every function and a
+new `ArrowId` in every arrow slot, together with the advanced id state.
 
-This replaces the whole `_pi` type-name suffix machinery (`suffixType`,
-`suffixMeta`, `withRenamedSupers`, the `SolverRoot -> NoArrow` clearing) that
-the pre-mono inliner used while it ran on `GlobalGraph Name`. TERM-level names
-are NOT touched here — the caller renames its own binders.
+Each type variable found in `subst` is replaced by its entry. Each other type
+variable is replaced by a fresh one carrying the original's super constraint
+from the state's `superVars`, the same fresh one at every occurrence within the
+copy. Alias parameters are always re-minted, never substituted. A record
+extension variable whose substitution is not itself a variable keeps its
+original id. Term-level names, including binders, are left unchanged.
 
 -}
 freshenCopy :
@@ -103,12 +117,12 @@ freshenCopy subst state expr =
     ( copied, env.state )
 
 
-{-| `freshenCopy` for a bare type — the copied definition's parameter types go
-through this so they share the copy's variable mapping.
+{-| Returns a copy of one type, freshened as `freshenCopy` freshens the types
+inside an expression, together with the advanced id state.
 
-Returns the env so a caller freshening several types plus a body keeps ONE
-mapping across all of them; use `freshenCopy` when a single expression is all
-that is needed.
+Each call starts a new variable mapping and returns only the state. A variable
+that `subst` does not cover therefore gets a different fresh id here than it
+gets in a separate `freshenCopy` or `freshenType` call on the same state.
 
 -}
 freshenType :
@@ -124,14 +138,15 @@ freshenType subst state tipe =
     ( copied, env.state )
 
 
+{-| Returns a copy of a type under the copy semantics of `freshenCopy`, with the
+copy state advanced.
+-}
 copyType : Env -> Can.Type TypeIds.MVarId -> ( Can.Type TypeIds.MVarId, Env )
 copyType env tipe =
     case tipe of
         Can.TVar id ->
             case Dict.get (Id.toComparable id) env.subst of
                 Just concrete ->
-                    -- The call site's type, spliced verbatim: its ids are the
-                    -- CALLER's and are already consistent there.
                     ( concrete, env )
 
                 Nothing ->
@@ -155,9 +170,7 @@ copyType env tipe =
                             )
 
         Can.TLambda _ from to ->
-            -- Every arrow in a copy is a NEW occurrence, carrying the
-            -- occurrence identity the old `NoArrow` clearing achieved and that
-            -- `AssignMVarIds`'s own fallback arm mints.
+            -- The old slot is ignored: every arrow in a copy is a new occurrence.
             let
                 ( arrowId, st1 ) =
                     AssignMVarIds.mintArrowId env.state
@@ -227,11 +240,10 @@ copyType env tipe =
             ( Can.TTuple newA newB newRest, env3 )
 
         Can.TAlias home name args real ->
-            -- ALIAS PARAMETERS ARE ALIAS-LOCAL, BY POSITION. After assignment
-            -- a parameter id was minted by NAME in the definition's env, so it
-            -- can share an id with a same-named scheme binder: an "is this a
-            -- binder?" test on ids is wrong here. The parameter is re-minted
-            -- through `renamed` so the `Holey` body's occurrences of it follow.
+            -- An alias parameter can share its id with a same-named variable of
+            -- the enclosing definition, so it is re-minted through `renamed`
+            -- (never substituted). Occurrences in the `Holey` body follow it
+            -- only when the id is not in the substitution.
             let
                 ( newArgs, env1 ) =
                     List.foldl
@@ -254,8 +266,9 @@ copyType env tipe =
             ( Can.TAlias home name (List.reverse newArgs) newReal, env2 )
 
 
-{-| Re-mint an alias parameter id through the copy mapping. Unlike an ordinary
-variable it is never substituted — it is bound by the alias, not by the call.
+{-| Returns the fresh id for an alias parameter, minting one and recording it in
+`renamed` on its first occurrence in the copy. The substitution is not
+consulted: the parameter is bound by the alias, not by the caller.
 -}
 copyParamId : Env -> TypeIds.MVarId -> ( TypeIds.MVarId, Env )
 copyParamId env paramId =
@@ -278,6 +291,8 @@ copyParamId env paramId =
             )
 
 
+{-| Returns a copy of a record field's type, keeping its field index.
+-}
 copyFieldType : Env -> Can.FieldType TypeIds.MVarId -> ( Can.FieldType TypeIds.MVarId, Env )
 copyFieldType env (Can.FieldType index t) =
     let
@@ -287,6 +302,9 @@ copyFieldType env (Can.FieldType index t) =
     ( Can.FieldType index newT, env1 )
 
 
+{-| Returns a copy of an alias's expanded body, keeping whether it is `Holey` or
+`Filled`.
+-}
 copyAliasType : Env -> Can.AliasType TypeIds.MVarId -> ( Can.AliasType TypeIds.MVarId, Env )
 copyAliasType env real =
     case real of
@@ -305,6 +323,8 @@ copyAliasType env real =
             ( Can.Filled newT, env1 )
 
 
+{-| Returns copies of a list of types, in order, threading one copy state.
+-}
 copyTypeList : Env -> List (Can.Type TypeIds.MVarId) -> ( List (Can.Type TypeIds.MVarId), Env )
 copyTypeList env types =
     let
@@ -323,17 +343,21 @@ copyTypeList env types =
     ( List.reverse acc, env1 )
 
 
+{-| Returns a copy of a node's `Meta`. Only `tipe` is copied; `tvar` is kept as
+it is.
+-}
 copyMeta : Env -> TOpt.Meta TypeIds.MVarId -> ( TOpt.Meta TypeIds.MVarId, Env )
 copyMeta env meta =
     let
         ( newTipe, env1 ) =
             copyType env meta.tipe
     in
-    -- `tvar` is carried verbatim, as `AssignMVarIds.rewriteMeta` does;
-    -- monomorphization never reads it.
     ( { tipe = newTipe, tvar = meta.tvar }, env1 )
 
 
+{-| Returns a copy of an expression under the copy semantics of `freshenCopy`,
+with the copy state advanced.
+-}
 copyExpr : Env -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, Env )
 copyExpr env expr =
     let
@@ -395,8 +419,7 @@ copyExpr env expr =
             ( TOpt.List region newItems m, env2 )
 
         TOpt.Function _ params body meta ->
-            -- A COPIED lambda is a NEW member. Sharing the original's id is the
-            -- verbatim-copy impersonation this module exists to prevent.
+            -- The original lambda id is dropped: a copied lambda is a new member.
             let
                 ( lamId, st1 ) =
                     AssignMVarIds.mintLamId env.state
@@ -611,6 +634,8 @@ copyExpr env expr =
             withMeta (TOpt.Shader src inputs outputs) meta
 
 
+{-| Returns copies of a list of expressions, in order, threading one copy state.
+-}
 copyExprList : Env -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), Env )
 copyExprList env exprs =
     let
@@ -629,6 +654,8 @@ copyExprList env exprs =
     ( List.reverse acc, env1 )
 
 
+{-| Returns copies of the field expressions of a record or record update.
+-}
 copyLocatedFields :
     Env
     -> DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
@@ -646,6 +673,9 @@ copyLocatedFields env fields =
         fields
 
 
+{-| Returns a function's parameters with their types copied and their names
+unchanged.
+-}
 copyParams :
     Env
     -> List ( Name, Can.Type TypeIds.MVarId )
@@ -667,6 +697,9 @@ copyParams env params =
     ( List.reverse acc, env1 )
 
 
+{-| Returns located parameters with their types copied and their names
+unchanged.
+-}
 copyLocatedParams :
     Env
     -> List ( A.Located Name, Can.Type TypeIds.MVarId )
@@ -688,6 +721,9 @@ copyLocatedParams env params =
     ( List.reverse acc, env1 )
 
 
+{-| Returns a copy of a `let` definition: its bound expression or tail-function
+arguments and body, and its type. A `TailDef`'s `tvar` is kept as it is.
+-}
 copyDef : Env -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, Env )
 copyDef env def =
     case def of
@@ -715,6 +751,9 @@ copyDef env def =
             ( TOpt.TailDef region n newArgs newBody newTipe tvar, env3 )
 
 
+{-| Returns a copy of a decision tree, copying the expressions inlined at its
+leaves. Jump leaves and tests are kept as they are.
+-}
 copyDecider :
     Env
     -> TOpt.Decider (TOpt.Choice TypeIds.MVarId)
@@ -767,21 +806,15 @@ copyDecider env decider =
 -- ============================================================================
 
 
-{-| Assign identity to nodes a transform CREATED, and only to those.
+{-| Returns `expr` with ids assigned to the nodes that lack them, together with
+the advanced id state.
 
-`Function Nothing` gets a fresh `SrcLambdaId`; `TLambda NoArrow` gets a fresh
-`ArrowId`. Anything already carrying identity is left exactly as it is, so this
-is idempotent and safe over a subtree that mixes new nodes with existing ones —
-which is the normal case, since a transform builds a wrapper around code it did
-not create.
-
-Type VARIABLES are never minted here: a new node is built from types that are
-already assigned. A transform that genuinely needs a fresh variable calls
+A `Function` or `TrackedFunction` with no lambda id gets a fresh `SrcLambdaId`,
+and every arrow slot that is not `Arrow`, whether `NoArrow` or `SolverRoot`,
+gets a fresh `ArrowId`. Ids already present are kept, so the function is
+idempotent and can be run over a subtree that mixes new nodes with existing
+ones. Type variables are never minted; a pass that needs a fresh one calls
 `AssignMVarIds.freshMVarId` itself.
-
-`TLambda (SolverRoot _)` cannot occur after assignment (every slot is `Arrow`);
-it is treated as unminted rather than trusted, so a stray one is repaired
-instead of reaching `assertMinted`.
 
 -}
 mintNewNode :
@@ -792,6 +825,10 @@ mintNewNode state expr =
     mintExpr state expr
 
 
+{-| Returns a type with a fresh `ArrowId` in every arrow slot that is not
+already `Arrow`, with the state advanced. Type variables, record extensions and
+alias parameter ids are kept.
+-}
 mintType : AssignMVarIds.GlobalMVarState -> Can.Type TypeIds.MVarId -> ( Can.Type TypeIds.MVarId, AssignMVarIds.GlobalMVarState )
 mintType state tipe =
     case tipe of
@@ -884,6 +921,8 @@ mintType state tipe =
             ( Can.TAlias home name (List.reverse newArgs) newReal, st2 )
 
 
+{-| Returns a list of types each given the treatment of `mintType`, in order.
+-}
 mintTypeList : AssignMVarIds.GlobalMVarState -> List (Can.Type TypeIds.MVarId) -> ( List (Can.Type TypeIds.MVarId), AssignMVarIds.GlobalMVarState )
 mintTypeList state types =
     let
@@ -902,6 +941,8 @@ mintTypeList state types =
     ( List.reverse acc, st1 )
 
 
+{-| Returns a node's `Meta` with its `tipe` given the treatment of `mintType`.
+-}
 mintMeta : AssignMVarIds.GlobalMVarState -> TOpt.Meta TypeIds.MVarId -> ( TOpt.Meta TypeIds.MVarId, AssignMVarIds.GlobalMVarState )
 mintMeta state meta =
     let
@@ -911,6 +952,9 @@ mintMeta state meta =
     ( { tipe = newTipe, tvar = meta.tvar }, st1 )
 
 
+{-| Returns an expression under the new-node semantics of `mintNewNode`, with
+the state advanced.
+-}
 mintExpr : AssignMVarIds.GlobalMVarState -> TOpt.Expr TypeIds.MVarId -> ( TOpt.Expr TypeIds.MVarId, AssignMVarIds.GlobalMVarState )
 mintExpr state expr =
     let
@@ -1192,6 +1236,9 @@ mintExpr state expr =
             simple (TOpt.Shader src inputs outputs) meta
 
 
+{-| Returns a list of expressions each given the treatment of `mintExpr`, in
+order.
+-}
 mintExprList : AssignMVarIds.GlobalMVarState -> List (TOpt.Expr TypeIds.MVarId) -> ( List (TOpt.Expr TypeIds.MVarId), AssignMVarIds.GlobalMVarState )
 mintExprList state exprs =
     let
@@ -1210,6 +1257,9 @@ mintExprList state exprs =
     ( List.reverse acc, st1 )
 
 
+{-| Returns the field expressions of a record or record update, each given the
+treatment of `mintExpr`.
+-}
 mintLocatedFields :
     AssignMVarIds.GlobalMVarState
     -> DMap.Dict String (A.Located Name) (TOpt.Expr TypeIds.MVarId)
@@ -1227,6 +1277,9 @@ mintLocatedFields state fields =
         fields
 
 
+{-| Returns a function's parameters with their types given the treatment of
+`mintType`.
+-}
 mintParams : AssignMVarIds.GlobalMVarState -> List ( Name, Can.Type TypeIds.MVarId ) -> ( List ( Name, Can.Type TypeIds.MVarId ), AssignMVarIds.GlobalMVarState )
 mintParams state params =
     let
@@ -1245,6 +1298,9 @@ mintParams state params =
     ( List.reverse acc, st1 )
 
 
+{-| Returns located parameters with their types given the treatment of
+`mintType`.
+-}
 mintLocatedParams : AssignMVarIds.GlobalMVarState -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> ( List ( A.Located Name, Can.Type TypeIds.MVarId ), AssignMVarIds.GlobalMVarState )
 mintLocatedParams state params =
     let
@@ -1263,6 +1319,9 @@ mintLocatedParams state params =
     ( List.reverse acc, st1 )
 
 
+{-| Returns a `let` definition with its expressions and types given the
+new-node treatment.
+-}
 mintDef : AssignMVarIds.GlobalMVarState -> TOpt.Def TypeIds.MVarId -> ( TOpt.Def TypeIds.MVarId, AssignMVarIds.GlobalMVarState )
 mintDef state def =
     case def of
@@ -1290,6 +1349,9 @@ mintDef state def =
             ( TOpt.TailDef region n newArgs newBody newTipe tvar, st3 )
 
 
+{-| Returns a decision tree with the expressions inlined at its leaves given the
+treatment of `mintExpr`.
+-}
 mintDecider : AssignMVarIds.GlobalMVarState -> TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> ( TOpt.Decider (TOpt.Choice TypeIds.MVarId), AssignMVarIds.GlobalMVarState )
 mintDecider state decider =
     case decider of
@@ -1335,16 +1397,19 @@ mintDecider state decider =
 -- ============================================================================
 
 
-{-| Every lambda and arrow in the graph is minted, and no id occurs twice.
+{-| Checks the bodies of a graph's `Define`, `TrackedDefine`, `PortIncoming` and
+`PortOutgoing` nodes, returning `Err` with a message naming the global at the
+first failure.
 
-The DUPLICATE check is the one that earns its keep. A missing id is a
-`Function Nothing`, which declines visibly as `g1absentl`; a REPEATED id is two
-bodies under one member, which AbiCloning will treat as interchangeable
-instances — a silent wrong answer. A presence check cannot see it, so this
-collects every id and fails on a repeat.
+It fails on a `Function` or `TrackedFunction` with no lambda id, on an arrow
+slot that is `NoArrow` or `SolverRoot`, and on any lambda id or arrow id met a
+second time anywhere in the walked bodies. The repeat check is the one that
+catches a copy that kept its ids. The types checked are each node's `Meta`
+type, function parameter types, `let` definition types and destructor types.
 
-Run under `mono.validate` (`ECO_MONO_VALIDATE=1`), which is the flag that
-already gates the post-mono layout validator.
+Other node kinds, including `Cycle`, are not walked. Every repeated `ArrowId`
+fails, including arrows that `AssignMVarIds` deliberately gave one id because
+they share a solver root.
 
 -}
 assertMinted : TOpt.GlobalGraph TypeIds.MVarId -> Result String ()
@@ -1371,17 +1436,25 @@ assertMinted (TOpt.GlobalGraph nodes _ _ _ _) =
     Result.map (\_ -> ()) result
 
 
+{-| The lambda ids and arrow ids met so far during `assertMinted`, keyed by
+`Id.toComparable`.
+-}
 type alias Seen =
     { lams : Dict Int ()
     , arrows : Dict Int ()
     }
 
 
+{-| The `Seen` record with no ids in it.
+-}
 emptySeen : Seen
 emptySeen =
     { lams = Dict.empty, arrows = Dict.empty }
 
 
+{-| Returns the body of a node that `assertMinted` walks, or `Nothing` for every
+other kind of node.
+-}
 nodeExpr : TOpt.Node TypeIds.MVarId -> Maybe (TOpt.Expr TypeIds.MVarId)
 nodeExpr node =
     case node of
@@ -1401,6 +1474,9 @@ nodeExpr node =
             Nothing
 
 
+{-| Records a lambda id as seen, or returns `Err` if it was already seen. `who`
+names the global in the message.
+-}
 seeLam : String -> TypeIds.SrcLambdaId -> Seen -> Result String Seen
 seeLam who lamId seen =
     let
@@ -1414,6 +1490,9 @@ seeLam who lamId seen =
         Ok { seen | lams = Dict.insert key () seen.lams }
 
 
+{-| Records an arrow id as seen, or returns `Err` if it was already seen. `who`
+names the global in the message.
+-}
 seeArrow : String -> TypeIds.ArrowId -> Seen -> Result String Seen
 seeArrow who arrowId seen =
     let
@@ -1427,6 +1506,9 @@ seeArrow who arrowId seen =
         Ok { seen | arrows = Dict.insert key () seen.arrows }
 
 
+{-| Checks every arrow slot in a type, recording each `ArrowId` and failing on a
+repeat or on a slot that is not `Arrow`.
+-}
 checkType : String -> Can.Type TypeIds.MVarId -> Seen -> Result String Seen
 checkType who tipe seen =
     case tipe of
@@ -1480,6 +1562,9 @@ checkType who tipe seen =
                     )
 
 
+{-| Checks one expression and, recursively, its sub-expressions: the lambda id of
+a function, the types it carries, and the arrow slots in them.
+-}
 checkExpr : String -> TOpt.Expr TypeIds.MVarId -> Seen -> Result String Seen
 checkExpr who expr seen =
     let
@@ -1527,8 +1612,9 @@ checkExpr who expr seen =
         |> Result.andThen checkChildren
 
 
-{-| Immediate sub-expressions, including the decider's `Inline` choices — an
-unshared `case` branch body lives there and would otherwise go unchecked.
+{-| Returns the immediate sub-expressions of an expression, including the
+expressions inlined at a decision tree's leaves, where a `case` branch used by
+only one path is stored.
 -}
 exprChildren : TOpt.Expr TypeIds.MVarId -> List (TOpt.Expr TypeIds.MVarId)
 exprChildren expr =
@@ -1586,6 +1672,8 @@ exprChildren expr =
             []
 
 
+{-| Returns the expressions inlined at the leaves of a decision tree.
+-}
 deciderChildren : TOpt.Decider (TOpt.Choice TypeIds.MVarId) -> List (TOpt.Expr TypeIds.MVarId)
 deciderChildren decider =
     case decider of

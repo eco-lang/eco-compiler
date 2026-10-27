@@ -9,15 +9,27 @@ module Common.Format.Render.ElmStructure exposing
     , extensionGroup_
     )
 
-{-| Higher-level formatting primitives for common Elm syntax structures.
+{-| The handful of layouts elm-format uses again and again, so that the
+formatter that walks the syntax tree (`Common.Format.Render.Box`) states each
+layout decision once.
 
-This module provides specialized layout functions for recurring patterns in Elm syntax,
-such as function applications, definitions with equals signs, grouped elements with
-delimiters, and record extensions. Each function intelligently chooses between compact
-single-line layout and expanded multi-line layout based on content complexity.
+Each function takes the parts of one piece of syntax, already laid out as boxes,
+and returns one box. A box is either a single line that can be joined into a
+surrounding line, or something that must stand on its own lines (see
+`Common.Format.Box`). Most functions here make the same basic choice: they join
+the parts into one line when every part is a single-line box and the caller has
+not forced the multi-line layout, and otherwise they stack them. Several
+(`spaceSepOrPrefix`, `prefixOrIndented`, `equalsPair`, `application`, `group_`)
+add an intermediate layout or exception, described in their own docstrings. Nothing here measures
+a line against a width limit. The one length test is in `spaceSepOrPrefix`, which
+looks at how wide an operator is.
 
-These primitives abstract common formatting decisions and ensure consistent style across
-the entire codebase, handling indentation, spacing, and line breaking automatically.
+A _forceable_ function takes a `Bool` that, when `True`, chooses the multi-line
+layout even though every part would fit on one line. The caller decides when to
+force it. `Multiline` and `FunctionApplicationMultiline` play the same part for
+function application, where there are more than two layouts to choose from.
+
+The examples in the docstrings show each layout's shapes, one-line form first.
 
 
 # Multiline Control
@@ -65,22 +77,20 @@ import Common.Format.Box as Box exposing (Box)
 import Utils.Crash exposing (crash)
 
 
-{-| Same as `forceableSpaceSepOrStack False`
+{-| Returns `first` and `rest` on one line separated by spaces when all are
+single lines, and otherwise stacked one under another without indentation. It is
+`forceableSpaceSepOrStack` never forced.
 -}
 spaceSepOrStack : Box -> List Box -> Box
 spaceSepOrStack =
     forceableSpaceSepOrStack False
 
 
-{-| Formats as:
+{-| Returns `first` and `rest` on one line separated by spaces, or stacked one
+under another without indentation.
 
-    first rest0 rest1
-
-    first
-
-    rest0
-
-    rest1
+The one-line form is used only when `forceMultiline` is `False` and every part
+is a single line.
 
 -}
 forceableSpaceSepOrStack : Bool -> Box -> List Box -> Box
@@ -95,16 +105,11 @@ forceableSpaceSepOrStack forceMultiline first rest =
             Box.stack1 (first :: rest)
 
 
-{-| Formats as row or stack with forceable multiline layout.
-Similar to forceableSpaceSepOrStack but without spaces between elements in single-line mode.
+{-| Returns `first` and `rest` joined on one line with nothing between them,
+or stacked one under another without indentation.
 
-    first rest0 rest1
-
-    first
-
-    rest0
-
-    rest1
+The one-line form is used only when `forceMultiline` is `False` and every part
+is a single line.
 
 -}
 forceableRowOrStack : Bool -> Box -> List Box -> Box
@@ -117,7 +122,8 @@ forceableRowOrStack forceMultiline first rest =
             Box.stack1 (first :: rest)
 
 
-{-| Same as `forceableSpaceSepOrStack`
+{-| Returns the same layout as `forceableSpaceSepOrStack`, taking the first
+part as the head of `boxes`. It crashes when `boxes` is empty.
 -}
 forceableSpaceSepOrStack1 : Bool -> List Box -> Box
 forceableSpaceSepOrStack1 forceMultiline boxes =
@@ -129,24 +135,17 @@ forceableSpaceSepOrStack1 forceMultiline boxes =
             crash "forceableSpaceSepOrStack1 with empty list"
 
 
-{-| Formats as:
-
-    first rest0 rest1 rest2
-
-    first
-        rest0
-        rest1
-        rest2
-
+{-| Returns `first` and `rest` on one line separated by spaces when all are
+single lines, and otherwise `first` with each of `rest` indented under it. It is
+`forceableSpaceSepOrIndented` never forced.
 -}
 spaceSepOrIndented : Box -> List Box -> Box
 spaceSepOrIndented =
     forceableSpaceSepOrIndented False
 
 
-{-| Formats as space-separated or indented with forceable multiline layout.
-When forceMultiline is True or content doesn't fit on one line, the first element stays
-on its own line and subsequent elements are indented.
+{-| Returns `first` and `rest` on one line separated by spaces, or `first`
+with each of `rest` indented under it:
 
     first rest0 rest1 rest2
 
@@ -154,6 +153,9 @@ on its own line and subsequent elements are indented.
         rest0
         rest1
         rest2
+
+The one-line form is used only when `forceMultiline` is `False` and every part
+is a single line.
 
 -}
 forceableSpaceSepOrIndented : Bool -> Box -> List Box -> Box
@@ -169,7 +171,7 @@ forceableSpaceSepOrIndented forceMultiline first rest =
                 (first :: List.map Box.indent rest)
 
 
-{-| Formats as:
+{-| Returns `op` followed by `rest`:
 
     op rest
 
@@ -178,6 +180,12 @@ forceableSpaceSepOrIndented forceMultiline first rest =
 
     opLong
         rest
+
+Both on one line when both are single lines. When only `op` is a single line and
+it is narrower than 4 columns, `op` and a space are put before the first line of
+`rest`, and the other lines of `rest` are padded with spaces to stay aligned
+with it, so `rest2` above starts under `rest1`.
+Otherwise `rest` is indented under `op`.
 
 -}
 spaceSepOrPrefix : Box -> Box -> Box
@@ -197,13 +205,16 @@ spaceSepOrPrefix op rest =
             Box.stack1 [ op, Box.indent rest ]
 
 
-{-| Formats two boxes with space separation on single line, or stacks them with indentation.
-Similar to spaceSepOrPrefix but without the special handling for short operators.
+{-| Returns `a` followed by `b`:
 
     a b
 
     a
         b
+
+`a` and `b` share a line when `a` is a single line and `b` is a single line or a
+line that must end there (a `--` comment); in the second case the result must
+end the line too. Otherwise `b` is indented under `a`.
 
 -}
 prefixOrIndented : Box -> Box -> Box
@@ -219,14 +230,13 @@ prefixOrIndented a b =
             Box.stack1 [ a, Box.indent b ]
 
 
-{-| Formats as:
+{-| Returns `left` and `right` joined by `symbol`, such as `=` or `:`.
 
-    left =
-        right
-    left =
-        right
-    left =
-        right
+All on one line when `forceMultiline` is `False` and both sides are single
+lines. When `left` is a single line and `right` is a line that must end there (a
+`--` comment), the result is one line whatever `forceMultiline` says. Otherwise
+`symbol` ends the line of a single-line `left` and `right` is indented below; a
+multi-line `left` puts `symbol` on its own indented line.
 
 -}
 equalsPair : String -> Bool -> Box -> Box -> Box
@@ -266,7 +276,9 @@ equalsPair symbol forceMultiline left right =
                 ]
 
 
-{-| An equalsPair where the left side is an application
+{-| Returns `equalsPair` whose left side is `first` applied to `rest`, laid
+out as `application` with `FAJoinFirst JoinAll`. The final argument is the right
+side.
 -}
 definition : String -> Bool -> Box -> List Box -> Box -> Box
 definition symbol forceMultiline first rest =
@@ -275,7 +287,7 @@ definition symbol forceMultiline first rest =
         (application (FAJoinFirst JoinAll) first rest)
 
 
-{-| Formats as:
+{-| Returns the function `first` applied to `args`:
 
     first rest0 rest1 rest2
 
@@ -287,6 +299,12 @@ definition symbol forceMultiline first rest =
         rest0
         rest1
         rest2
+
+With no arguments the result is `first` unchanged. The one-line form needs
+`FAJoinFirst JoinAll` and every part a single line. Under any `FAJoinFirst`,
+when `first` and the first argument are single lines they share a line and the
+other arguments are indented below. Otherwise, and always under `FASplitFirst`,
+every argument is indented under `first`.
 
 -}
 application : FunctionApplicationMultiline -> Box -> List Box -> Box
@@ -322,7 +340,8 @@ application forceMultiline first args =
                             :: List.map Box.indent (arg0 :: rest)
 
 
-{-| `group True '<' ';' '>'` formats as:
+{-| Returns `children` between the delimiters `left` and `right`, separated by
+`sep`. `group True "<" ";" ">"` gives:
 
     <>
 
@@ -335,15 +354,27 @@ application forceMultiline first args =
     ; child2
     >
 
+The one-line form is used when `forceMultiline` is `False` and every child is a
+single line; `innerSpaces` puts a space inside each delimiter there. No children
+gives the two delimiters alone, even when forced. In the multi-line form the
+first child follows `left` and a space, and each other child follows `sep` and a
+space.
+
 -}
 group : Bool -> String -> String -> String -> Bool -> List Box -> Box
 group innerSpaces left sep right forceMultiline children =
     group_ innerSpaces left sep [] right forceMultiline children
 
 
-{-| Similar to `group` but with additional footer elements to insert before the closing delimiter.
-Allows extra boxes (like trailing commas or comments) to be placed after the main children
-but before the right delimiter.
+{-| Returns the layout of `group`, with `extraFooter` placed after the children
+and before `right`.
+
+On one line the footer boxes are separated like children. In the multi-line form
+each footer box is its own line, with no separator before it. With no children,
+the result is one line of `left`, the footer and `right` with no separators or
+inner spaces when every footer box is a single line, and `left` and `right`
+alone, without the footer, when one is not.
+
 -}
 group_ : Bool -> String -> String -> List Box -> String -> Bool -> List Box -> Box
 group_ innerSpaces left sep extraFooter right forceMultiline children =
@@ -371,7 +402,7 @@ group_ innerSpaces left sep extraFooter right forceMultiline children =
         _ ->
             case children of
                 [] ->
-                    -- TODO: might lose extraFooter in this case, but can that ever happen?
+                    -- Reached only when a footer box is not a single line; the footer is dropped.
                     Box.row [ Box.punc left, Box.punc right ] |> Box.line
 
                 first :: rest ->
@@ -382,14 +413,17 @@ group_ innerSpaces left sep extraFooter right forceMultiline children =
                             ++ [ Box.punc right |> Box.line ]
 
 
-{-| Alternative version of extensionGroup that takes pre-formatted fields as a single Box.
-Formats record extension syntax with base record and fields.
+{-| Returns a record extension: `base` and the already laid out `fields`
+between braces.
 
     { base fields }
 
     { base
         fields
     }
+
+The one-line form is used only when `multiline` is `False` and both are single
+lines.
 
 -}
 extensionGroup_ : Bool -> Box -> Box -> Box
@@ -418,14 +452,12 @@ extensionGroup_ multiline base fields =
                 ]
 
 
+{-| A choice between joining the parts of a layout on one line and splitting
+them, used by `application` through `FAJoinFirst`.
 
--- ====== FROM AST.V0_16 ======
-
-
-{-| Controls whether multiple elements should be joined on one line or split across lines.
-
-  - JoinAll: Keep all elements on a single line if possible
-  - SplitAll: Force each element onto its own line
+`JoinAll` allows the one-line form when every part is a single line. `SplitAll`
+rules it out; `application` still keeps the function and its first argument on
+one line.
 
 -}
 type Multiline
@@ -433,10 +465,14 @@ type Multiline
     | SplitAll
 
 
-{-| Controls multiline behavior for function applications.
+{-| How `application` may lay out a function and its arguments.
 
-  - FASplitFirst: Function name on one line, all arguments indented on subsequent lines
-  - FAJoinFirst: Function name and first argument may share a line based on the Multiline setting
+`FASplitFirst` puts every argument on its own line indented under the function,
+even when all would fit on one line.
+
+`FAJoinFirst` lets the function and its first argument share a line when both
+are single lines; its `Multiline` says whether the remaining arguments may join
+them.
 
 -}
 type FunctionApplicationMultiline

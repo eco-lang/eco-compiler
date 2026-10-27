@@ -5,14 +5,42 @@ module Compiler.Parse.Module exposing
     , isKernel
     )
 
-{-| Parse Elm module declarations including headers, imports, and declarations.
+{-| Turns the text of one `.elm` file into a `Src.Module`, and decides
+whether the file may use ports or be an effect module.
 
-This module provides the entry point for parsing entire Elm modules. It handles:
+Parsing comes first and keeps every comment. `chompModule` reads the file into
+a `Module`: the module header if there is one, then the imports, then (for a
+kernel project only) `infix` declarations, then one or more top-level
+declarations, each starting in column 1. A header is one of `module`,
+`port module` or `effect module ... where { command = X, subscription = Y }`,
+each with a name and an `exposing` list, and may be followed by the module doc
+comment. A file with no header is accepted too.
 
-  - Module headers (normal, port, and effect modules)
-  - Import declarations
-  - Module documentation comments
-  - Top-level declarations
+Checking comes second. `fromByteString` runs the parser and then sorts the
+declarations into values, custom types, type aliases and ports, collects the
+doc comments, and applies the rules about effects, which depend on the
+`ProjectType`:
+
+  - A module with a plain `module` header may not declare ports.
+  - A `port module` is refused in a package, and elsewhere must declare at
+    least one port.
+  - An `effect module` is allowed only in a kernel project, and may not
+    declare ports.
+  - A file with no header is not checked: its ports, if any, become its
+    effects.
+
+A _kernel project_ is a package, or a kernel application, whose name
+`Pkg.isKernel` accepts. A _kernel application_ is an application compiled as
+though it were that package.
+
+The checked `Src.Module` keeps no comments outside the declarations, imports
+and expressions themselves, so a client that needs those (a formatter) uses the
+`Module` record from `chompModule` instead.
+
+Every list in the checked module that is built here comes out in reverse source
+order: the values, custom types, type aliases, ports, infixes and doc comments.
+The imports are the default imports, unless the package is `elm/core`, in
+reverse order, followed by the file's own imports in source order.
 
 
 # Parsing Entry Point
@@ -54,10 +82,12 @@ import Compiler.Reporting.Error.Syntax as E
 -- ====== Parsing Entry Point ======
 
 
-{-| Parse a complete Elm module from source text.
+{-| Parses and checks the whole of `source` as a module of a project of
+`projectType`.
 
-Takes a project type and source string. Returns either
-a parsed module or a syntax error. This is the main entry point for module parsing.
+The error is `E.ParseError` when the text does not parse, including when text
+is left over after the last declaration it could read. Otherwise it is the
+error for the effect rule the module breaks.
 
 -}
 fromByteString : ProjectType -> String -> Result E.Error Src.Module
@@ -74,10 +104,22 @@ fromByteString projectType source =
 -- ====== Project Type ======
 
 
-{-| Whether we're compiling a package or application.
+{-| The kind of project a module belongs to, which decides which module-level
+features it may use.
 
-This affects whether ports and effect modules are allowed, and which
-default imports are included.
+`Package` names the package being compiled. A package may not declare ports
+or be a port module. When the package is `elm/core`, its modules get no
+default imports.
+
+`Application` is an ordinary application.
+
+`KernelApplication` is an application compiled as though it were the named
+package. When `Pkg.isKernel` accepts that name it may, like a kernel package,
+declare `infix` operators and be an effect module, while ports follow the
+application rules.
+
+Every other project type gets the default imports, and a project that
+`isKernel` rejects may not declare infixes or effect modules.
 
 -}
 type ProjectType
@@ -86,10 +128,9 @@ type ProjectType
     | KernelApplication Pkg.Name
 
 
-
--- Checks if this is the elm/core package.
-
-
+{-| Tells whether the project is the `elm/core` package, whose modules get no
+default imports.
+-}
 isCore : ProjectType -> Bool
 isCore projectType =
     case projectType of
@@ -103,10 +144,10 @@ isCore projectType =
             False
 
 
-{-| Check if the project type represents a kernel package.
+{-| Tells whether the project is a kernel project: a package or a kernel
+application whose name `Pkg.isKernel` accepts.
 
-Only kernel packages (like elm/core internals) are allowed to define
-effect modules and use kernel JavaScript code.
+Only a kernel project may declare `infix` operators or be an effect module.
 
 -}
 isKernel : ProjectType -> Bool
@@ -126,10 +167,13 @@ isKernel projectType =
 -- ====== Module Parsing ======
 
 
-{-| Intermediate representation of a parsed module before validation.
+{-| A parsed module before its effects are checked, with every comment
+outside the declarations still in place.
 
-This structure preserves all comments and formatting information during
-parsing. It's later converted to `Src.Module` after validation in `checkModule`.
+`initialComments` are the comments before the header. The comment group in
+`imports` is the comments after the header and its doc comment. `imports`
+holds the default imports ahead of the file's own, as the module docstring
+describes; `infixes` are in reverse source order and `decls` in source order.
 
 -}
 type alias Module =
@@ -141,11 +185,12 @@ type alias Module =
     }
 
 
-{-| Parse the structure of an Elm module.
+{-| Produces a parser for a whole module of a project of `projectType`: an
+optional header, the imports, `infix` declarations when the project is a kernel
+project, and then at least one declaration.
 
-Parses header (if present), imports, infixes (for kernel code), and
-declarations. Handles different project types by conditionally including
-default imports and allowing/disallowing certain features.
+The imports start from `Imports.defaults` unless the project is `elm/core`. No
+effect rule is checked here.
 
 -}
 chompModule : ProjectType -> P.Parser E.Module Module
@@ -189,6 +234,15 @@ chompModule projectType =
 -- ====== CHECK MODULE ======
 
 
+{-| Builds the `Src.Module` for a parsed module, failing when its effects
+break the rules for `projectType`.
+
+Comments outside declarations are dropped, including those attached to each
+import and infix. A module without a header gets no name, an `exposing (..)`
+placed at `A.one`, docs that are missing at `A.one`, and `Src.Ports` effects
+exactly when it declares a port; it cannot fail.
+
+-}
 checkModule : ProjectType -> Module -> Result E.Error Src.Module
 checkModule projectType module_ =
     let
@@ -245,6 +299,16 @@ checkModule projectType module_ =
                 )
 
 
+{-| Returns the effects of a module with a header, given its declared `ports`,
+or the error that the combination of header and `projectType` earns.
+
+A plain module with ports fails with `E.NoPortsInPackage`, naming the first
+port in `ports`, in a package, and `E.UnexpectedPort` otherwise. A port module
+fails with `E.NoPortModulesInPackage` in a package and with `E.NoPorts` when
+it declares none. An effect module fails with `E.NoEffectsOutsideKernel`
+outside a kernel project and with `E.UnexpectedPort` when it declares a port.
+
+-}
 checkEffects : ProjectType -> List Src.Port -> Effects -> Result E.Error Src.Effects
 checkEffects projectType ports effects =
     case effects of
@@ -298,6 +362,10 @@ checkEffects projectType ports effects =
                 Err (E.NoEffectsOutsideKernel region)
 
 
+{-| Sorts `decls` into values, custom types, type aliases and ports, each
+pushed onto the front of its accumulator, so that each list comes out in
+reverse order of `decls`.
+-}
 categorizeDecls :
     List (A.Located Src.Value)
     -> List (A.Located Src.Union)
@@ -329,6 +397,9 @@ categorizeDecls values unions aliases ports decls =
 -- ====== TO DOCS ======
 
 
+{-| Builds the module's docs from the module doc comment, or the region where
+it was missing, and the doc comments of `decls`.
+-}
 toDocs : Result A.Region Src.Comment -> List Decl.Decl -> Src.Docs
 toDocs comment decls =
     case comment of
@@ -339,6 +410,9 @@ toDocs comment decls =
             Src.NoDocs region (getComments decls [])
 
 
+{-| Pushes the name and doc comment of each of `decls` that has one onto the
+front of `comments`, so the declarations' pairs come out in reverse order.
+-}
 getComments : List Decl.Decl -> List ( Name.Name, Src.Comment ) -> List ( Name.Name, Src.Comment )
 getComments decls comments =
     case decls of
@@ -360,6 +434,9 @@ getComments decls comments =
                     getComments otherDecls (addComment c n comments)
 
 
+{-| Pushes `name` paired with the comment onto `comments` when there is a
+comment, and returns `comments` unchanged when there is none.
+-}
 addComment : Maybe Src.Comment -> A.Located Name.Name -> List ( Name.Name, Src.Comment ) -> List ( Name.Name, Src.Comment )
 addComment maybeComment (A.At _ name) comments =
     case maybeComment of
@@ -374,6 +451,10 @@ addComment maybeComment (A.At _ name) comments =
 -- ====== FRESH LINES ======
 
 
+{-| Produces a parser that reads whitespace and comments and then requires the
+next token to start in column 1, failing with `toFreshLineError` otherwise. It
+returns the comments read.
+-}
 freshLine : (Row -> Col -> E.Module) -> P.Parser E.Module Src.FComments
 freshLine toFreshLineError =
     Space.chomp E.ModuleSpace
@@ -388,12 +469,20 @@ freshLine toFreshLineError =
 -- ====== CHOMP DECLARATIONS ======
 
 
+{-| A parser for one or more top-level declarations, in source order. Every
+declaration after the first must start in column 1; the first needs no check,
+because the parser before it has already required one.
+-}
 chompDecls : P.Parser E.Decl (List (Src.C2 Decl.Decl))
 chompDecls =
     Decl.declaration
         |> P.andThen (\( decl, _ ) -> P.loop chompDeclsHelp [ decl ])
 
 
+{-| One step of `chompDecls`: reads another declaration onto the front of
+`decls` when the next line starts in column 1, and otherwise finishes with
+`decls` reversed.
+-}
 chompDeclsHelp : List (Src.C2 Decl.Decl) -> P.Parser E.Decl (P.Step (List (Src.C2 Decl.Decl)) (List (Src.C2 Decl.Decl)))
 chompDeclsHelp decls =
     P.oneOfWithFallback
@@ -407,6 +496,10 @@ chompDeclsHelp decls =
         (P.Done (List.reverse decls))
 
 
+{-| Produces a parser that reads `infix` declarations for as long as there are
+any, pushing each onto the front of `infixes`, and returns the accumulated list
+without reversing it.
+-}
 chompInfixes : List (Src.C1 (A.Located Src.Infix)) -> P.Parser E.Module (List (Src.C1 (A.Located Src.Infix)))
 chompInfixes infixes =
     P.oneOfWithFallback
@@ -420,6 +513,14 @@ chompInfixes infixes =
 -- ====== MODULE DOC COMMENT ======
 
 
+{-| A parser for what follows a module header: the comments up to the next line
+starting in column 1, and a module doc comment there if there is one.
+
+The result's comments are all those read, before and after the doc comment.
+Without a doc comment the result is `Err` of the region of the whitespace that
+was read, which is where the doc comment was expected.
+
+-}
 chompModuleDocCommentSpace : P.Parser E.Module (Src.C1 (Result A.Region Src.Comment))
 chompModuleDocCommentSpace =
     P.addLocation (freshLine E.FreshLine)
@@ -450,10 +551,11 @@ chompModuleDocCommentSpace =
 -- ====== Header ======
 
 
-{-| Module header information including name, exports, and effect type.
+{-| A module's header: its name, its kind of effects, its `exposing` list and
+its module doc comment, with the comments around them.
 
-Contains all the information from the module declaration line,
-including surrounding comments and the module documentation comment.
+`docs` is `Err` of the place the doc comment was expected when the header has
+none.
 
 -}
 type alias Header =
@@ -464,11 +566,20 @@ type alias Header =
     }
 
 
-{-| The kind of effects a module can have.
+{-| Which of the three kinds of header a module has, as written, before the
+rules about effects are checked.
 
-  - `NoEffects` - A normal module with no special effects
-  - `Ports` - A port module that can define ports for JavaScript interop
-  - `Manager` - An effect manager (kernel code only) that defines commands/subscriptions
+Each region runs from the first keyword of the header to the end of its
+`module` keyword.
+
+`NoEffects` is a plain `module` header.
+
+`Ports` is a `port module` header, and carries the comments between `port`
+and `module`.
+
+`Manager` is an `effect module` header. It carries the comments between
+`effect` and `module`, and the `where { ... }` record naming the module's
+command type, subscription type, or both, with the comments after `where`.
 
 -}
 type Effects
@@ -481,6 +592,9 @@ type Effects
 -- ====== HEADER PARSING HELPERS ======
 
 
+{-| The error constructors a header parser reports with, which differ between a
+plain module header and a port module header.
+-}
 type alias ModuleErrContext =
     { spaceErr : Row -> Col -> E.Module
     , nameErr : Row -> Col -> E.Module
@@ -488,6 +602,13 @@ type alias ModuleErrContext =
     }
 
 
+{-| Produces a parser for the part of a plain or port module header after its
+`module` keyword: the name, `exposing` and the exposing list, then the comments
+and optional doc comment that follow.
+
+`makeEffects` receives `start` and the position after `module`.
+
+-}
 chompModuleHeaderCommon :
     ModuleErrContext
     -> (A.Position -> A.Position -> Effects)
@@ -534,6 +655,9 @@ chompModuleHeaderCommon errCtx makeEffects initialComments start =
             )
 
 
+{-| Assembles a parsed header and the comment groups around its parts into the
+result of a header parser.
+-}
 buildHeader :
     Src.FComments
     -> Src.FComments
@@ -555,6 +679,14 @@ buildHeader initialComments beforeNameComments name afterNameComments afterExpor
     )
 
 
+{-| A parser for the comments at the top of a file and the module header after
+them, if there is one.
+
+The first comment group of the result is the comments before the header, and
+the second those after it. With no header the second group is empty and the
+header is `Nothing`.
+
+-}
 chompHeader : P.Parser E.Module (Src.C2 (Maybe Header))
 chompHeader =
     freshLine E.FreshLine
@@ -573,6 +705,8 @@ chompHeader =
             )
 
 
+{-| Produces a parser for a `module` header starting at `start`.
+-}
 chompNormalModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
 chompNormalModule initialComments start =
     let
@@ -587,6 +721,8 @@ chompNormalModule initialComments start =
         |> P.andThen (\_ -> chompModuleHeaderCommon errCtx (\s e -> NoEffects (A.Region s e)) initialComments start)
 
 
+{-| Produces a parser for a `port module` header starting at `start`.
+-}
 chompPortModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
 chompPortModule initialComments start =
     let
@@ -606,6 +742,8 @@ chompPortModule initialComments start =
             )
 
 
+{-| Produces a parser for an `effect module` header starting at `start`.
+-}
 chompEffectModule : Src.FComments -> A.Position -> P.Parser E.Module (Src.C2 (Maybe Header))
 chompEffectModule initialComments start =
     Keyword.effect_ E.Effect
@@ -617,6 +755,9 @@ chompEffectModule initialComments start =
             )
 
 
+{-| Produces a parser for the module name of an effect module header and
+everything after it.
+-}
 chompEffectModuleBody : Src.FComments -> A.Position -> Src.FComments -> P.Parser E.Module (Src.C2 (Maybe Header))
 chompEffectModuleBody initialComments start postEffectComments =
     P.getPosition
@@ -638,6 +779,9 @@ chompEffectModuleBody initialComments start postEffectComments =
             )
 
 
+{-| Produces a parser for the `where { ... }` part of an effect module header
+and everything after it.
+-}
 chompEffectModuleWhere :
     Src.FComments
     -> A.Position
@@ -660,6 +804,12 @@ chompEffectModuleWhere initialComments start effectEnd postEffectComments before
             )
 
 
+{-| Produces a parser for the `exposing` list of an effect module header and
+the comments and optional doc comment that follow it, and builds the header.
+
+Every failure in the list is reported as `E.Effect`.
+
+-}
 chompEffectModuleExposing :
     Src.FComments
     -> A.Position
@@ -708,6 +858,10 @@ chompEffectModuleExposing initialComments start effectEnd postEffectComments bef
             )
 
 
+{-| A parser for the `{ ... }` record of an effect module header, which names a
+command type, a subscription type, or both in either order. Its comment group
+is the comments after the closing brace.
+-}
 chompManager : P.Parser E.Module (Src.C1 Src.Manager)
 chompManager =
     P.word1 '{' E.Effect
@@ -801,6 +955,8 @@ chompManager =
             )
 
 
+{-| A parser for `command = Name` in an effect module header.
+-}
 chompCommand : P.Parser E.Module (Src.C2 (A.Located Name.Name))
 chompCommand =
     Keyword.command_ E.Effect
@@ -817,6 +973,8 @@ chompCommand =
             )
 
 
+{-| A parser for `subscription = Name` in an effect module header.
+-}
 chompSubscription : P.Parser E.Module (Src.C2 (A.Located Name.Name))
 chompSubscription =
     Keyword.subscription_ E.Effect
@@ -833,6 +991,9 @@ chompSubscription =
             )
 
 
+{-| A parser for whitespace and comments inside an effect module header, which
+fails with `E.Effect` when the next token is in column 1.
+-}
 spaces_em : P.Parser E.Module Src.FComments
 spaces_em =
     Space.chompAndCheckIndent E.ModuleSpace E.Effect
@@ -842,11 +1003,8 @@ spaces_em =
 -- ====== Imports ======
 
 
-{-| Parse a sequence of import declarations.
-
-Repeatedly parses import statements until none remain. Takes a list of
-default imports to prepend (empty for core, standard defaults otherwise).
-
+{-| Produces a parser that reads import declarations for as long as there are
+any, and returns `is` reversed followed by the imports read, in source order.
 -}
 chompImports : List (Src.C1 Src.Import) -> P.Parser E.Module (List (Src.C1 Src.Import))
 chompImports is =
@@ -857,10 +1015,12 @@ chompImports is =
         (List.reverse is)
 
 
-{-| Parse a single import declaration.
+{-| A parser for one import declaration: `import`, the module name, an
+optional `as` alias and an optional `exposing` list, ending with the next token
+in column 1.
 
-Parses the import keyword, module name, optional alias, and optional
-exposing list. Handles all comment preservation around each component.
+The comment group is the comments after the import. An import without an
+`exposing` list gets an empty explicit list placed at `A.zero`.
 
 -}
 chompImport : P.Parser E.Module (Src.C1 Src.Import)
@@ -892,6 +1052,9 @@ chompImport =
             )
 
 
+{-| Produces a parser for the `as Alias` part of an import of `name` and
+whatever follows it.
+-}
 chompAs : Src.C1 (A.Located Name.Name) -> Src.FComments -> P.Parser E.Module (Src.C1 Src.Import)
 chompAs name trailingComments =
     Keyword.as_ E.ImportAs
@@ -928,6 +1091,9 @@ chompAs name trailingComments =
             )
 
 
+{-| Produces a parser for the `exposing` list of an import of `name` and the
+comments after it, up to the next token in column 1.
+-}
 chompExposing :
     Src.C1 (A.Located Name.Name)
     -> Maybe (Src.C1 Name.Name)
@@ -968,6 +1134,13 @@ chompExposing name maybeAlias trailingComments preExposedComments =
 -- ====== LISTING ======
 
 
+{-| A parser for an exposing list in parentheses: `(..)`, or a comma-separated
+list of names.
+
+The region of an explicit list starts just after the `(` and ends just after
+the `)`.
+
+-}
 exposing_ : P.Parser E.Exposing Src.Exposing
 exposing_ =
     P.word1 '(' E.ExposingStart
@@ -999,6 +1172,10 @@ exposing_ =
             )
 
 
+{-| One step of `exposing_`: reads a comma and another entry onto the front of
+`revExposed`, or a `)` that ends the list, which is then put back in source
+order and placed from `start`.
+-}
 exposingHelp : A.Position -> List (Src.C2 Src.Exposed) -> P.Parser E.Exposing (P.Step (List (Src.C2 Src.Exposed)) Src.Exposing)
 exposingHelp start revExposed =
     P.oneOf E.ExposingEnd
@@ -1022,6 +1199,9 @@ exposingHelp start revExposed =
         ]
 
 
+{-| A parser for one entry of an exposing list: a value, an operator in
+parentheses, or a type with its privacy.
+-}
 chompExposed : P.Parser E.Exposing Src.Exposed
 chompExposed =
     P.getPosition
@@ -1060,6 +1240,11 @@ chompExposed =
             )
 
 
+{-| A parser for what follows a type in an exposing list: `(..)` makes its
+constructors public, with the region of the `..`. When the next character is
+not `(`, the type is private and nothing is read; a `(` not followed by `..)`
+is an error.
+-}
 privacy : P.Parser E.Exposing Src.Privacy
 privacy =
     P.oneOfWithFallback

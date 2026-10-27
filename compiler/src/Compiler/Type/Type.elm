@@ -10,11 +10,28 @@ module Compiler.Type.Type exposing
     , toAnnotation, toErrorType, toCanTypeBatch
     )
 
-{-| Internal type representation for type inference.
+{-| Constraint generation and the solver need one vocabulary for what must be
+true of a program's types and for the types themselves, and this module is that
+vocabulary, together with the way back from solved variables to types a person
+can read.
 
-This module defines the runtime type representation used during type checking.
-Unlike `Can.Type Name` which represents user-written types, these types use union-find
-variables for efficient unification.
+Type inference works on type variables that are points of a union-find store
+(`Compiler.Type.UnionFind`), not on named variables as they appear in source.
+Two variables found to be equal are joined into one class, and what is known
+about the class is held in a descriptor on its root (`Compiler.AST.TypeVars`).
+A `Constraint` says what must hold, a `Type` is a type built over such
+variables, and the solver turns both into classes and joins them.
+
+A descriptor carries two numbers the solver needs besides the content. Its
+_rank_ is the let-nesting depth the class belongs to, which generalization
+uses to decide what it may quantify; `noRank` and `outermostRank` are the two
+reserved values. Its _mark_ is a stamp a walk of the type graph leaves on the
+classes it visits, so that it can stop on a class it has already reached.
+
+The rest of the module, from `toAnnotation` on, converts a solved variable
+back into a `Can.Type` or an error type. A variable with no name is given one
+while it is converted, and the conversion is not read-only: see "Converting
+solved variables" below.
 
 
 # Constraints
@@ -52,12 +69,23 @@ Commonly used built-in types:
 
 # Rank and Mark
 
-Used by the solver to track generalization levels:
+Ranks track let levels for generalization; marks stamp the classes a walk has
+visited.
 
 @docs noRank, outermostRank, noMark, nextMark
 
 
-# Conversion
+# Converting solved variables
+
+Each conversion first collects the names the variables already carry, then
+converts the variable under a naming scope (`System.TypeCheck.IO.withFreshNames`)
+seeded with those names, in which every generated name is new. Converting
+changes the store in three ways. A variable without a name has the generated
+name written into its descriptor. A user's variable whose name another, distinct
+variable already holds is renamed by a numeric suffix (`a` to `a1`, `a2`, ...).
+And the collecting walk stamps every class it visits with a fixed mark that it
+never takes off, so a later conversion's collecting walk skips those classes and
+does not see their names.
 
 @docs toAnnotation, toErrorType, toCanTypeBatch
 
@@ -83,11 +111,26 @@ import Utils.Crash exposing (crash)
 -- ====== CONSTRAINTS ======
 
 
-{-| Constraint tree representing type relationships for the solver.
+{-| A tree of the facts about types that the solver must make true, with what to
+report when one cannot be.
 
-Constraints form a tree structure that encodes all type requirements discovered
-during constraint generation. The solver walks this tree to unify types and
-detect type errors.
+`CTrue` holds trivially. `CSaveTheEnvironment` asks the solver to record the
+environment of names in scope at this point.
+
+`CEqual` requires a type to equal an expected type, and `CPattern` does the same
+for a pattern. `CLocal` requires the type of a name bound locally to equal the
+expected type; the name's type is copied from its scheme first. `CForeign` does
+the same for a name defined elsewhere, whose type is given as its annotation.
+Each carries the region and the expectation an error is reported with.
+
+`CAnd` requires all of its constraints.
+
+`CLet rigids flexes header headerCon bodyCon` introduces the variables `rigids`
+and `flexes` and solves `headerCon`, then binds each name of `header` to its
+type and solves `bodyCon` with those names in scope. When it has variables to
+introduce, the header's types are solved one rank deeper and generalized, which
+is how let-polymorphism arises. A `CLet` with no rigids and a body of `CTrue`
+only introduces `flexes` for `headerCon`; `exists` builds that form.
 
 -}
 type Constraint
@@ -101,11 +144,8 @@ type Constraint
     | CLet (List Variable) (List Variable) (Dict Name (A.Located Type)) Constraint Constraint
 
 
-{-| Wraps a constraint with existentially quantified flex variables.
-
-Creates a CLet constraint that introduces new flex variables that are local to
-the given constraint, with no header bindings.
-
+{-| Returns `constraint` with the variables `flexVars` introduced for it, binding
+no names.
 -}
 exists : List Variable -> Constraint -> Constraint
 exists flexVars constraint =
@@ -116,11 +156,17 @@ exists flexVars constraint =
 -- ====== TYPE PRIMITIVES ======
 
 
-{-| Runtime type representation with unification variables.
+{-| A type as constraint generation writes it, whose variables are points of the
+union-find store rather than names.
 
-Types during inference use Variables (union-find pointers) rather than the
-named type variables seen in source code. This enables efficient unification
-through union-find operations.
+The solver turns a `Type` into a class of the store before unifying it.
+
+`AliasN` is a use of a type alias: the module and name of the alias, its
+arguments by parameter name, and the type it stands for. `VarN` is a solver
+variable. `AppN` is a named type applied to arguments. `FunN` is a function
+type from its first type to its second. `RecordN` is a record's fields and the
+type it extends, which is `EmptyRecordN` for a closed record. `UnitN` is the
+unit type `()`. `TupleN` holds a tuple's first two types and the rest.
 
 -}
 type Type
@@ -138,6 +184,8 @@ type Type
 -- ====== DESCRIPTORS ======
 
 
+{-| Returns a descriptor for `content` with no rank, no mark and no copy.
+-}
 makeDescriptor : Content -> Descriptor
 makeDescriptor content =
     IO.makeDescriptor content noRank noMark Nothing
@@ -147,10 +195,12 @@ makeDescriptor content =
 -- ====== RANKS ======
 
 
-{-| Rank value for unranked variables or error states.
+{-| The rank that belongs to no let level.
 
-Used to mark variables that haven't been assigned a rank yet or that are in an
-error state.
+It is the rank of every variable this module makes, and of the descriptor
+`Compiler.Type.Unify` writes when a unification fails. The solver gives every
+generalized variable this rank. The solver's check that a variable can be
+generalized compares a rank against it.
 
 -}
 noRank : Int
@@ -158,11 +208,7 @@ noRank =
     0
 
 
-{-| Rank value for top-level type variables.
-
-Variables at the outermost scope have rank 1, allowing the solver to detect
-when generalization is safe.
-
+{-| The rank of the outermost let level, the one just above `noRank`.
 -}
 outermostRank : Int
 outermostRank =
@@ -173,10 +219,11 @@ outermostRank =
 -- ====== MARKS ======
 
 
-{-| Default mark value for unmarked variables.
+{-| The mark of a class that no walk has stamped.
 
-Marks are used during graph traversal to avoid revisiting nodes. This is the
-initial mark value for fresh variables.
+Every variable this module makes carries it. It differs from the two marks the
+conversions below use, so a fresh variable is never mistaken for one they have
+visited.
 
 -}
 noMark : Mark
@@ -184,20 +231,25 @@ noMark =
     Mark 2
 
 
+{-| The mark `toErrorType` puts on a class while it is converting it, so that
+reaching the class again from inside itself is recognised as an infinite type.
+-}
 occursMark : Mark
 occursMark =
     Mark 1
 
 
+{-| The mark `getVarNames` leaves on every class it visits. It is never removed.
+-}
 getVarNamesMark : Mark
 getVarNamesMark =
     Mark 0
 
 
-{-| Generates the next mark value for a new traversal.
+{-| Returns the mark one above `mark`.
 
-Each graph traversal should use a fresh mark value to distinguish visited nodes
-from unvisited ones.
+The fixed marks are `getVarNamesMark` (0), `occursMark` (1) and `noMark` (2), so
+a mark obtained by stepping from `noMark` differs from all three.
 
 -}
 nextMark : Mark -> Mark
@@ -209,10 +261,7 @@ nextMark (Mark mark) =
 -- ====== FUNCTION TYPES ======
 
 
-{-| Constructs a function type from argument to result.
-
-Represents the type `arg -> result` in Elm syntax.
-
+{-| Returns the function type from the first type to the second.
 -}
 funType : Type -> Type -> Type
 funType =
@@ -258,7 +307,7 @@ bool =
     AppN ModuleName.basics "Bool" []
 
 
-{-| The Never type, representing values that cannot exist.
+{-| The Never type, which has no values.
 -}
 never : Type
 never =
@@ -269,35 +318,35 @@ never =
 -- ====== WEBGL TYPES ======
 
 
-{-| The Vec2 WebGL type for 2D vectors.
+{-| The `Vec2` type of `Math.Vector2`, as WebGL shaders use it.
 -}
 vec2 : Type
 vec2 =
     AppN ModuleName.vector2 "Vec2" []
 
 
-{-| The Vec3 WebGL type for 3D vectors.
+{-| The `Vec3` type of `Math.Vector3`, as WebGL shaders use it.
 -}
 vec3 : Type
 vec3 =
     AppN ModuleName.vector3 "Vec3" []
 
 
-{-| The Vec4 WebGL type for 4D vectors.
+{-| The `Vec4` type of `Math.Vector4`, as WebGL shaders use it.
 -}
 vec4 : Type
 vec4 =
     AppN ModuleName.vector4 "Vec4" []
 
 
-{-| The Mat4 WebGL type for 4x4 matrices.
+{-| The `Mat4` type of `Math.Matrix4`, as WebGL shaders use it.
 -}
 mat4 : Type
 mat4 =
     AppN ModuleName.matrix4 "Mat4" []
 
 
-{-| The Texture WebGL type.
+{-| The `Texture` type of `WebGL.Texture`.
 -}
 texture : Type
 texture =
@@ -308,27 +357,23 @@ texture =
 -- ====== MAKE FLEX VARIABLES ======
 
 
-{-| Creates a fresh unnamed flexible type variable.
-
-Returns a new variable that can unify with any type. Used during type inference
-when the type is initially unknown.
-
+{-| Creates a new flex variable with no name, which unification may bind to any
+type.
 -}
 mkFlexVar : IO Variable
 mkFlexVar =
     UF.fresh flexVarDescriptor
 
 
+{-| The descriptor of a new unnamed flex variable.
+-}
 flexVarDescriptor : Descriptor
 flexVarDescriptor =
     makeDescriptor unnamedFlexVar
 
 
-{-| Content representing an unnamed flexible variable.
-
-Flexible variables can unify with any type and will be given generated names if
-needed for error reporting.
-
+{-| The content of a flex variable with no name. Converting it back to a type
+gives it a generated name.
 -}
 unnamedFlexVar : Content
 unnamedFlexVar =
@@ -339,27 +384,21 @@ unnamedFlexVar =
 -- ====== MAKE FLEX NUMBERS ======
 
 
-{-| Creates a fresh unnamed flexible number variable.
-
-Returns a new variable constrained to the Number supertype (Int or Float).
-Used for numeric literals that could be either type.
-
+{-| Creates a new flex variable with no name, constrained to `number`.
 -}
 mkFlexNumber : IO Variable
 mkFlexNumber =
     UF.fresh flexNumberDescriptor
 
 
+{-| The descriptor of a new unnamed flex variable constrained to `number`.
+-}
 flexNumberDescriptor : Descriptor
 flexNumberDescriptor =
     makeDescriptor (unnamedFlexSuper Number)
 
 
-{-| Content representing an unnamed flexible supertype variable.
-
-Supertype variables are constrained to unify only with types matching the given
-supertype (Number, Comparable, Appendable, or CompAppend).
-
+{-| The content of a flex variable with no name, constrained by `super`.
 -}
 unnamedFlexSuper : SuperType -> Content
 unnamedFlexSuper super =
@@ -370,11 +409,11 @@ unnamedFlexSuper super =
 -- ====== MAKE NAMED VARIABLES ======
 
 
-{-| Creates a named flexible variable from a type variable name.
+{-| Creates a new flex variable called `name`.
 
-If the name corresponds to a supertype (number, comparable, appendable,
-compappend), creates a flexible supertype variable. Otherwise creates a regular
-flexible variable.
+A name that starts with `number`, `comparable`, `appendable` or `compappend`
+gives a flex variable constrained by that super-type, as
+`Compiler.Data.Name.isNumberType` and its neighbours decide.
 
 -}
 nameToFlex : Name -> IO Variable
@@ -382,11 +421,11 @@ nameToFlex name =
     Maybe.unwrap FlexVar FlexSuper (toSuper name) (Just name) |> makeDescriptor |> UF.fresh
 
 
-{-| Creates a named rigid variable from a type variable name.
+{-| Creates a new rigid variable called `name`, a variable that unification may
+not bind to a type.
 
-Rigid variables represent bound type variables from user annotations or let
-polymorphism. They cannot unify with other rigid variables. If the name
-corresponds to a supertype, creates a rigid supertype variable.
+A name that starts with `number`, `comparable`, `appendable` or `compappend`
+gives a rigid variable constrained by that super-type, as for `nameToFlex`.
 
 -}
 nameToRigid : Name -> IO Variable
@@ -394,6 +433,8 @@ nameToRigid name =
     Maybe.unwrap RigidVar RigidSuper (toSuper name) name |> makeDescriptor |> UF.fresh
 
 
+{-| Returns the super-type a variable called `name` is constrained by, if any.
+-}
 toSuper : Name -> Maybe SuperType
 toSuper name =
     if Name.isNumberType name then
@@ -416,11 +457,13 @@ toSuper name =
 -- ====== TO TYPE ANNOTATION ======
 
 
-{-| Converts a type variable to a canonical type annotation.
+{-| Converts the solved type of `variable` to an annotation.
 
-Traverses the type structure to produce a user-readable type with properly
-named type variables. Generates fresh names for unnamed variables and returns
-a Forall quantifier listing all type variables found.
+The annotation quantifies over every name taken in the naming scope: the names
+the type's variables already carried and those generated for it. Unnamed
+variables are named, and the store is changed, as "Converting solved variables"
+describes. Crashes on a class whose content is a unification error, and on a
+lambda set that is not in a function type's set slot.
 
 -}
 toAnnotation : Variable -> IO (Can.Annotation Name)
@@ -439,32 +482,24 @@ toAnnotation variable =
             )
 
 
-{-| Convert an array of solver Variables to Can.Types using a shared NameState.
+{-| Converts each variable of `nodeVars` to a `Can.Type`, keeping `Nothing` where
+there is no variable.
 
-This ensures that type variables across different expressions get distinct
-names, preventing collisions where e.g. two lambda parameters independently
-both get named "a".
+All of them are converted in one naming scope, so a name generated for one
+variable is never generated again for another: two unnamed lambda parameters do
+not both become `a`.
 
-`annotationNames` are the names `toAnnotation` has already given: every type
-variable of every top-level annotation (`Can.Forall`'s variables). Those
-variables keep their names, which the node types must share with the
-annotations, and the names are reserved, so that no other variable is given
-one of them. They must be passed in rather than found by `getVarNames`:
-`toAnnotation`'s own `getVarNames` walk left `getVarNamesMark` on each of
-those variables, so the walk below skips them and would not see their names.
-Without the reservation a let-polymorphic variable inside a definition could
-be given the same name as one of that definition's own variables, and
-monomorphization, which identifies type variables by name within a
-definition, would take one for the other.
+`annotationNames` are names to reserve: no generated name is one of them.
+Typically they are the names earlier `toAnnotation` calls gave, whose variables
+keep those names. They must be passed in rather than found by `getVarNames`:
+`toAnnotation`'s own `getVarNames` walk left `getVarNamesMark` on each of those
+variables, so the walk below skips them and would not see their names.
 
-Names are unique within one top-level definition, its annotation and the node
-types of its body. Two definitions can still use one name, each for a variable
-of its own scheme, as their annotations do.
+Crashes in the same cases as `toAnnotation`.
 
 -}
 toCanTypeBatch : Dict Name () -> Array (Maybe Variable) -> IO (Array (Maybe (Can.Type Name)))
 toCanTypeBatch annotationNames nodeVars =
-    -- First pass: collect all user-provided names across all variables
     IO.foldMArray
         (\names maybeVar ->
             case maybeVar of
@@ -478,8 +513,6 @@ toCanTypeBatch annotationNames nodeVars =
         nodeVars
         |> IO.andThen
             (\allUserNames ->
-                -- Second pass: convert all variables sharing one name state, so
-                -- fresh names avoid every name already in use.
                 let
                     nameState =
                         makeNameState allUserNames
@@ -489,13 +522,15 @@ toCanTypeBatch annotationNames nodeVars =
             )
 
 
-{-| Convert a solver variable to a canonical type.
+{-| Converts the solved type of `variable` to a `Can.Type`, naming unnamed
+variables as it goes.
 
-Memoized per naming scope (`IO.withFreshNames`) by union-find root, for
-structural and alias nodes only (cache-serialization plan S8). Valid because
-nothing unifies inside a scope and the first visit writes every generated name
-back into the descriptors, so a second conversion of the same root would build
-an equal tree and call no fresh-name generator: skipping it leaves the name
+The result is remembered by union-find root for the rest of the naming scope
+(`IO.withFreshNames`), for alias nodes and the structures `worthMemo` accepts,
+and a remembered root is not converted again. That is valid only while
+nothing is unified inside the scope: then the first visit writes every
+generated name back into the descriptors, so a second conversion of the same
+root would build an equal tree and call no fresh-name generator: skipping it leaves the name
 state and the output unchanged.
 
 -}
@@ -521,15 +556,23 @@ variableToCanType variable =
             )
 
 
+{-| Records `t` as the conversion of the root with index `rootIdx` in the current
+naming scope, and returns it.
+
+The name state is read afresh here, not passed in, because converting the
+subtree may have generated names since it was last read.
+
+-}
 rememberCanType : Int -> Can.Type Name -> IO (Can.Type Name)
 rememberCanType rootIdx t =
-    -- Re-read the names: converting the subtree may have generated some.
     IO.getNames
         |> IO.andThen (\ns -> IO.putNames { ns | canMemo = Dict.insert rootIdx t ns.canMemo })
         |> IO.map (\_ -> t)
 
 
-{-| Leaves (and nullary `App1`) are O(1) and not worth a Dict insert.
+{-| Tells whether the conversion of a structure is worth remembering: true for
+an applied type with arguments, a function, a record and a tuple. The others
+convert in constant time.
 -}
 worthMemo : FlatType -> Bool
 worthMemo term =
@@ -553,6 +596,14 @@ worthMemo term =
             False
 
 
+{-| Converts `variable`, whose root has index `rootIdx` and nothing remembered for
+it, to a `Can.Type`.
+
+An unnamed flex variable is given a generated name, which is written into its
+descriptor. A use of an alias becomes a `Can.TAlias` with its body `Filled`.
+Crashes on a class whose content is a unification error.
+
+-}
 variableToCanTypeMiss : Int -> Variable -> IO (Can.Type Name)
 variableToCanTypeMiss rootIdx variable =
     UF.get variable
@@ -621,6 +672,16 @@ variableToCanTypeMiss rootIdx variable =
             )
 
 
+{-| Converts one structure to a `Can.Type`.
+
+A function type with a lambda set (`FunL`) becomes a plain `Can.TLambda`.
+A record's fields are merged with those of the record it extends, after
+aliases are removed from the extension, so the result names only the last
+extension variable; a field present in both keeps the extension's type.
+Crashes on a lambda set outside a function type's set slot, and on a record
+extension that is neither a record nor a variable.
+
+-}
 termToCanType : FlatType -> IO (Can.Type Name)
 termToCanType term =
     case term of
@@ -634,16 +695,13 @@ termToCanType term =
                 |> IO.apply (variableToCanType b)
 
         FunL a b _ ->
-            -- Erasure: canonical types never see lambda sets.
             IO.pure Can.tLambda
                 |> IO.apply (variableToCanType a)
                 |> IO.apply (variableToCanType b)
 
         LambdaSet1 _ ->
-            -- (Also unreachable for LsFrom — LSS_023 — by the same phase
-            -- separation; its source Points never reach this walk.)
-            -- Unreachable from well-formed content (LSS_007): a LambdaSet1
-            -- only ever lives inside a FunL set slot, which erases above.
+            -- A lambda set is meant to occur only in a FunL set slot, which
+            -- the arm above drops without visiting.
             crash "LambdaSet1 outside an arrow slot in variableToCanType"
 
         EmptyRecord1 ->
@@ -682,6 +740,8 @@ termToCanType term =
                 |> IO.apply (IO.traverseList variableToCanType cs)
 
 
+{-| Converts the type of a record field, giving the field index 0.
+-}
 fieldToCanType : Variable -> IO (Can.FieldType Name)
 fieldToCanType variable =
     variableToCanType variable
@@ -692,11 +752,13 @@ fieldToCanType variable =
 -- ====== TO ERROR TYPE ======
 
 
-{-| Converts a type variable to an error type for reporting.
+{-| Converts the solved type of `variable` to the type an error message shows.
 
-Similar to toAnnotation but produces types in the error reporting format.
-Includes special handling for infinite types (occurs check failures) by
-detecting cycles during traversal.
+A class reached again from inside itself becomes `ET.Infinite`, and a class
+whose content is a unification error becomes `ET.Error`. Unnamed variables are
+named, and the store is changed, as "Converting solved variables" describes.
+Crashes on a lambda set outside a function type's set slot, and on such an
+infinite or error class in a record's extension position.
 
 -}
 toErrorType : Variable -> IO ET.Type
@@ -708,6 +770,13 @@ toErrorType variable =
             )
 
 
+{-| Converts `variable` to an error type, giving `ET.Infinite` if its class is
+already being converted further up.
+
+The class carries `occursMark` while its contents are converted, and its own
+mark is put back afterwards.
+
+-}
 variableToErrorType : Variable -> IO ET.Type
 variableToErrorType variable =
     UF.get variable
@@ -730,6 +799,9 @@ variableToErrorType variable =
             )
 
 
+{-| Converts `content`, the content of `variable`'s class, to an error type,
+writing a generated name into the descriptor of an unnamed flex variable.
+-}
 contentToErrorType : Variable -> Content -> IO ET.Type
 contentToErrorType variable content =
     case content of
@@ -789,6 +861,8 @@ contentToErrorType variable content =
             IO.pure ET.Error
 
 
+{-| Returns the error type's form of a super-type.
+-}
 superToSuper : SuperType -> ET.Super
 superToSuper super =
     case super of
@@ -805,6 +879,16 @@ superToSuper super =
             ET.CompAppend
 
 
+{-| Converts one structure to an error type.
+
+A function whose result is a function becomes one `ET.Lambda` with all the
+arguments. A function type with a lambda set is shown as a plain arrow.
+A record's fields are merged with those of the record it extends, as in
+`termToCanType`. Crashes on a lambda set outside a function type's set slot,
+and on a record extension that is neither a record nor an unconstrained flex or
+rigid variable.
+
+-}
 termToErrorType : FlatType -> IO ET.Type
 termToErrorType term =
     case term of
@@ -829,7 +913,6 @@ termToErrorType term =
                     )
 
         FunL a b _ ->
-            -- Render as the plain arrow: error types never see lambda sets.
             variableToErrorType a
                 |> IO.andThen
                     (\arg ->
@@ -889,11 +972,11 @@ termToErrorType term =
 
 
 -- ====== MANAGE FRESH VARIABLE NAMES ======
---
--- `NameState` now lives in `System.TypeCheck.IO` (folded into the IO state), so
--- the conversion functions above run in plain `IO` rather than `StateT`.
 
 
+{-| Returns the name state a naming scope starts with: the names of
+`takenNames` taken, every counter at zero and nothing remembered.
+-}
 makeNameState : Dict Name Variable -> NameState
 makeNameState takenNames =
     { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0, canMemo = Dict.empty }
@@ -903,6 +986,9 @@ makeNameState takenNames =
 -- ====== FRESH VAR NAMES ======
 
 
+{-| Returns a generated name for a plain variable that no one in the naming
+scope has taken, and marks it taken.
+-}
 getFreshVarName : IO Name
 getFreshVarName =
     IO.getNames
@@ -917,6 +1003,9 @@ getFreshVarName =
             )
 
 
+{-| Returns the first name from `Compiler.Data.Name.fromTypeVariableScheme index`
+onwards that is not in `taken`, the index after it, and `taken` with it added.
+-}
 getFreshVarNameHelp : Int -> Dict Name () -> ( Name, Int, Dict Name () )
 getFreshVarNameHelp index taken =
     let
@@ -935,6 +1024,10 @@ getFreshVarNameHelp index taken =
 -- ====== FRESH SUPER NAMES ======
 
 
+{-| Returns a generated name for a variable constrained by `super`, such as
+`number` or `comparable1`, that no one in the naming scope has taken, and marks
+it taken.
+-}
 getFreshSuperName : SuperType -> IO Name
 getFreshSuperName super =
     case super of
@@ -967,6 +1060,9 @@ getFreshSuperName super =
                 )
 
 
+{-| Returns a generated name starting with `prefix`, using the counter that
+`getter` reads and `setter` writes, and marks it taken.
+-}
 getFreshSuper : Name -> (NameState -> Int) -> (Int -> NameState -> NameState) -> IO Name
 getFreshSuper prefix getter setter =
     IO.getNames
@@ -987,6 +1083,9 @@ getFreshSuper prefix getter setter =
             )
 
 
+{-| Returns the first name from `Compiler.Data.Name.fromTypeVariable prefix index`
+onwards that is not in `taken`, the index after it, and `taken` with it added.
+-}
 getFreshSuperHelp : Name -> Int -> Dict Name () -> ( Name, Int, Dict Name () )
 getFreshSuperHelp prefix index taken =
     let
@@ -1005,6 +1104,14 @@ getFreshSuperHelp prefix index taken =
 -- ====== GET ALL VARIABLE NAMES ======
 
 
+{-| Returns `takenNames` with the names of the variables reachable from `var`
+added, each mapped to the variable that holds it.
+
+Every class visited is stamped with `getVarNamesMark`, which stays, and a class
+already carrying that mark is skipped. A name another, distinct variable holds
+is changed by `addName`. The lambda sets of function types are not visited.
+
+-}
 getVarNames : Variable -> Dict Name Variable -> IO (Dict Name Variable)
 getVarNames var takenNames =
     UF.get var
@@ -1055,7 +1162,6 @@ getVarNames var takenNames =
                                                 getVarNames body takenNames |> IO.andThen (getVarNames arg)
 
                                             FunL arg body _ ->
-                                                -- Set slots carry no names (never rendered).
                                                 getVarNames body takenNames |> IO.andThen (getVarNames arg)
 
                                             LambdaSet1 _ ->
@@ -1080,6 +1186,14 @@ getVarNames var takenNames =
 -- ====== REGISTER NAME ======
 
 
+{-| Records `var` in `takenNames` under `givenName` with the numeric suffix
+`index`, or under the first larger suffix whose name is free or already held
+by `var`'s own class.
+
+When the name recorded is not `givenName`, `var`'s content is replaced by
+`makeContent` of the new name, which is how a clashing user name is renamed.
+
+-}
 addName : Int -> Name -> Variable -> (Name -> Content) -> Dict Name Variable -> IO (Dict Name Variable)
 addName index givenName var makeContent takenNames =
     let

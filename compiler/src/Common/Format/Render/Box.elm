@@ -1,20 +1,44 @@
 module Common.Format.Render.Box exposing (formatModule)
 
-{-| Render Elm AST structures to formatted Box layout.
+{-| The built-in formatter prints a parsed module back out the way elm-format
+would, and this module decides that layout. `formatModule` turns a module into
+a `Box` (see `Common.Format.Box`), which the caller renders to text.
 
-This module is the core formatting engine that transforms parsed Elm syntax trees into
-Box-based layouts. It handles the formatting of all Elm language constructs including:
+The input is `Compiler.Parse.Module.Module`, the parser's record before any
+checking, because it still holds the comments around the header, between the
+imports and between the top-level declarations. Inside each declaration, every
+syntax node carries the comments the parser found next to it, in the comment
+groups `Compiler.AST.Source` defines, and the formatters here print them back
+in place.
 
-  - Module headers and exports
-  - Import declarations
-  - Type definitions and annotations
-  - Function declarations and patterns
-  - Expressions (applications, let-bindings, case expressions, etc.)
-  - Comments and documentation
+Formatting happens in two steps. `formatModu` first converts the parsed module
+into this module's own model: a header with its source tag (an ordinary,
+`port` or `effect` module), its `where` settings and its exposing list; the
+imports keyed by module path; and a body that is a flat list of _top-level
+structures_, each a doc comment, a comment between declarations, or a
+declaration. Then every piece is laid out with the combinators of
+`Common.Format.Render.ElmStructure`.
 
-The formatter makes intelligent decisions about single-line vs multi-line layout based
-on content complexity and length, applying consistent indentation and spacing rules
-throughout.
+Two ideas run through the layout code. The first is that whether a construct
+takes one line or several never depends on width. It stays on one line when all
+its parts are single-line boxes and nothing forces it apart, and what usually
+forces it apart is that its source region spanned several lines
+(`A.isMultiline`). So the output follows the line breaks of the input. The
+second is the _syntax context_: every expression and pattern formatter returns,
+alongside its box, a `SyntaxContext` saying how loosely the result binds, and
+the caller wraps it in parentheses when that is too loose for the place it is
+put. Types do the same with `TypeParensInner` and `TypeParensRequired`.
+
+The module's doc comment decides the order of its exposing list: the exposed
+names on each `@docs` line form a group, in that order, and the exposed names no
+`@docs` line mentions usually follow in one more group. Doc comments are reprinted through
+`Common.Format.Render.Markdown`, and the Elm code blocks in them are
+reformatted by parsing each as a declaration, then as an expression, then as a
+module.
+
+A shape the formatter does not expect is printed as a visible
+`<elm-format: ... please report this ...>` marker in the output rather than
+stopping the run. A union type with no constructors stops it with `crash`.
 
 
 # Module Formatting
@@ -47,6 +71,15 @@ import Maybe.Extra as Maybe
 import Utils.Crash exposing (crash)
 
 
+{-| The formatter's model of a whole module.
+
+`imports` maps each imported module's path to the import's comments and
+`ImportMethod`, after the comments that come before all the imports. `docs` is the
+module doc comment parsed as Markdown, `Nothing` when there is none. `body`
+holds the infix declarations and the declarations in order, with the comments
+between them.
+
+-}
 type alias Module =
     { importInfo : ImportInfo
     , initialComments : Src.FComments
@@ -57,10 +90,20 @@ type alias Module =
     }
 
 
+{-| The `module` line of a module, as `HeaderProps` describes it.
+-}
 type Header
     = Header HeaderProps
 
 
+{-| The parts of a `module` line.
+
+`name` is the module path split at its dots. `moduleSettings` is the
+`where { command = ..., subscription = ... }` clause of an effect module.
+`exports` is `Nothing` only for a header the formatter made up, which has no
+exposing list.
+
+-}
 type alias HeaderProps =
     { srcTag : SourceTag
     , name : Src.C2 (List Name)
@@ -69,35 +112,57 @@ type alias HeaderProps =
     }
 
 
+{-| Builds a `Header` from its parts.
+-}
 makeHeader : SourceTag -> Src.C2 (List Name) -> Maybe (Src.C2 SourceSettings) -> Maybe (Src.C2 (Listing DetailedListing)) -> Header
 makeHeader srcTag name moduleSettings exports =
     Header { srcTag = srcTag, name = name, moduleSettings = moduleSettings, exports = exports }
 
 
+{-| The header of an ordinary module named `Main` with no exposing list, used when the source has no `module` line.
+-}
 defaultHeader : Header
 defaultHeader =
     makeHeader Normal ( ( [], [] ), [ "Main" ] ) Nothing Nothing
 
 
+{-| The settings of an effect module's `where` clause, each a setting name and the type name it is set to.
+-}
 type alias SourceSettings =
     List ( Src.C2 Name, Src.C2 Name )
 
 
+{-| The kind of module a `module` line declares.
+
+`Normal` is an ordinary `module` line. `Effect` and `Port` carry the comments between their keyword and `module`.
+
+-}
 type SourceTag
     = Normal
     | Effect Src.FComments
     | Port Src.FComments
 
 
+{-| One import line: the module path with the comments before it, and what it brings in.
+-}
 type alias UserImport =
     ( Src.C1 (List Name), ImportMethod )
 
 
+{-| What an import brings in: its `as` alias, if one is written, and its exposing listing, each with the comments around its keyword.
+-}
 type ImportMethod
     = ImportMethod (Maybe (Src.C2 Name)) (Src.C2 (Listing DetailedListing))
 
 
-{-| A listing of values. Something like (a,b,c) or (..) or (a,b,..)
+{-| What an exposing list, or a type's constructor list inside one, says is
+exposed.
+
+`ExplicitListing` names the entries, and its `Bool` is `True` when the list
+spanned several lines in the source. `OpenListing` is `(..)`, with the comments
+around the `..`. `ClosedListing` exposes nothing: an import with no exposing
+list, an empty one, or a type exposed without its constructors.
+
 -}
 type Listing a
     = ExplicitListing a Bool
@@ -105,6 +170,8 @@ type Listing a
     | ClosedListing
 
 
+{-| The entries of an explicit exposing list, sorted into values, operators and types, each map keyed by name.
+-}
 type alias DetailedListing =
     { values : CommentedMap Name ()
     , operators : CommentedMap Name ()
@@ -112,11 +179,14 @@ type alias DetailedListing =
     }
 
 
+{-| A map from names to entries of an exposing list, each with the comments around it, so the entries print in name order.
+-}
 type alias CommentedMap k v =
     Dict String k (Src.C2 v)
 
 
-{-| A value that can be imported or exported
+{-| One entry of an exposing list: a lower-case value, an operator, or a type
+with the comments after its name and its constructor listing.
 -}
 type Value
     = Value Name
@@ -124,6 +194,16 @@ type Value
     | Union (Src.C1 Name) (Listing (CommentedMap Name ()))
 
 
+{-| One top-level declaration.
+
+`CommonDeclaration` is a definition or a type annotation, the two kinds that
+also appear in a `let`. `Datatype` is a custom type: its name and type
+variables, and its constructors. `TypeAlias` carries the comments between
+`type` and `alias`. `PortAnnotation` carries the comments before the port's
+type. `Fixity` is an `infix` declaration: its associativity, its precedence,
+the operator and the function it stands for.
+
+-}
 type Declaration
     = CommonDeclaration CommonDeclaration
     | Datatype (Src.C2 (NameWithArgs Name Name)) (Src.OpenCommentedList (NameWithArgs Name Src.Type))
@@ -132,21 +212,37 @@ type Declaration
     | Fixity (Src.C1 Binop.Associativity) (Src.C1 Binop.Precedence) (Src.C2 Name) (Src.C1 Name)
 
 
+{-| A declaration that can appear both at the top level and in a `let`.
+
+`Definition` is the defined pattern, its argument patterns, the comments
+before the body, and the body. `TypeAnnotation` names the value it annotates.
+
+-}
 type CommonDeclaration
     = Definition Src.Pattern (List (Src.C1 Src.Pattern)) Src.FComments Src.Expr
     | TypeAnnotation (Src.C1 (Ref ())) (Src.C1 Src.Type)
 
 
+{-| A name followed by its arguments, each with the comments before it: a type with its type variables, or a constructor with its argument types.
+-}
 type NameWithArgs name arg
     = NameWithArgs name (List (Src.C1 arg))
 
 
+{-| One item of a module body or of a doc-comment code block, in source order.
+
+`DocComment` is a doc comment, already parsed as Markdown. `BodyComment` is an
+ordinary comment between declarations. `Entry` is the declaration itself.
+
+-}
 type TopLevelStructure a
     = DocComment Blocks
     | BodyComment Src.FComment
     | Entry a
 
 
+{-| Applies `f` to the declaration of an `Entry`, leaving comments unchanged.
+-}
 topLevelStructureMap : (a -> b) -> TopLevelStructure a -> TopLevelStructure b
 topLevelStructureMap f topLevelStructure =
     case topLevelStructure of
@@ -160,12 +256,20 @@ topLevelStructureMap f topLevelStructure =
             Entry (f a)
 
 
+{-| A reference to a name, with its module qualifier of type `ns`.
+
+`VarRef` is a lower-case name and `TagRef` a capitalised one. `OpRef` is an
+operator, which is never qualified.
+
+-}
 type Ref ns
     = VarRef ns String
     | TagRef ns String
     | OpRef String
 
 
+{-| Applies `f` to the qualifier of a reference.
+-}
 refMap : (a -> b) -> Ref a -> Ref b
 refMap f ref =
     case ref of
@@ -179,6 +283,8 @@ refMap f ref =
             OpRef name
 
 
+{-| Returns each element of `input` paired with the one after it, in order, so a list of n elements gives n - 1 pairs.
+-}
 pairs : List a -> List ( a, a )
 pairs input =
     let
@@ -195,6 +301,8 @@ pairs input =
         |> Tuple.second
 
 
+{-| Returns `fn` applied to every element of `list`, with what `spacer` gives for each two neighbouring elements put between their results.
+-}
 intersperseMap : (a -> a -> List b) -> (a -> b) -> List a -> List b
 intersperseMap spacer fn list =
     case list of
@@ -208,22 +316,29 @@ intersperseMap spacer fn list =
                    )
 
 
+{-| Returns the text of the marker the formatter prints in place of a shape it does not expect, naming `what` was unexpected and the `details`.
+-}
 pleaseReport__ : String -> String -> String
 pleaseReport__ what details =
-    -- TODO: include version in the message
     "<elm-format: " ++ what ++ ": " ++ details ++ " -- please report this at https://github.com/guida-lang/compiler/issues>"
 
 
+{-| Returns the marker of `pleaseReport__` as one line.
+-}
 pleaseReport_ : String -> String -> Box.Line
 pleaseReport_ what details =
     Box.keyword (pleaseReport__ what details)
 
 
+{-| Returns the marker of `pleaseReport__` as a box.
+-}
 pleaseReport : String -> String -> Box
 pleaseReport what details =
     Box.line (pleaseReport_ what details)
 
 
+{-| Returns `b` between the characters `left` and `right`: on one line when `b` is a single line, and otherwise with `left` before its first line and `right` on a line of its own.
+-}
 surround : Char -> Char -> Box -> Box
 surround left right b =
     let
@@ -246,11 +361,22 @@ surround left right b =
                 ]
 
 
+{-| Returns a box wrapped in parentheses.
+-}
 parens : Box -> Box
 parens =
     surround '(' ')'
 
 
+{-| Returns `left` followed by each operator and its right operand in `ops`, each
+operator with the comments before it.
+
+An operator whose `Bool` is `True` is `<|`: what precedes it stays on its line
+and the rest of the chain is put after it, or indented below. Every other
+operator starts the line of its own operand. When `multiline` is `True` the
+chain is laid out over several lines.
+
+-}
 formatBinary : Bool -> Box -> List ( ( Bool, Src.FComments, Box ), Box ) -> Box
 formatBinary multiline left ops =
     case ops of
@@ -276,6 +402,19 @@ formatBinary multiline left ops =
                     rest
 
 
+{-| The kind of a top-level item, as far as the blank lines around it are
+concerned.
+
+`DStarter` and `DCloser` are the two comment-trick markers, the empty block
+comment that opens a stretch of code which one edit can comment out, and the
+line comment ending in a block-comment closer that ends it.
+`DDefinition` carries the name declared, `Nothing` for a definition of a
+pattern other than a plain name, so that an annotation and the definition
+of the same name can be kept together.
+`DComment` is any other comment, `DDocComment` a doc comment, `DFixity` an
+`infix` declaration.
+
+-}
 type DeclarationType
     = DComment
     | DStarter
@@ -285,6 +424,8 @@ type DeclarationType
     | DDocComment
 
 
+{-| Returns the `DeclarationType` of a top-level item.
+-}
 declarationType : TopLevelStructure BodyEntryType -> DeclarationType
 declarationType decl =
     case decl of
@@ -312,6 +453,8 @@ declarationType decl =
             DComment
 
 
+{-| Returns the groups of `input` with every value whose name has already appeared in an earlier place removed, dropping groups that become empty.
+-}
 removeDuplicates : List (List (Src.C2 Value)) -> List (List (Src.C2 Value))
 removeDuplicates input =
     let
@@ -355,6 +498,23 @@ removeDuplicates input =
         |> List.reverse
 
 
+{-| Returns the exposing list of a module as groups of entries, together with the
+comments of the entries that were moved.
+
+`fromExposing` is what the module exposes and `fromDocs` the names on each
+`@docs` line of its doc comment. Each `@docs` line that names an exposed value
+becomes a group, in its own order and without repeats. The exposed values no
+`@docs` line names follow as one group, operators first, then types, then
+values, each in name order. When no `@docs` line names an exposed value
+and `forceMultiline` is `True`, every exposed value is a group of its own instead.
+
+An entry moved into a `@docs` group loses its comments, which are returned as
+the second element so they can still be printed.
+
+Names are matched as written on the `@docs` line, so `Type(..)` there does not
+match an exposed `Type`.
+
+-}
 sortVars : Bool -> EverySet String (Src.C2 Value) -> List (List String) -> ( List (List (Src.C2 Value)), Src.FComments )
 sortVars forceMultiline fromExposing fromDocs =
     let
@@ -440,6 +600,13 @@ sortVars forceMultiline fromExposing fromDocs =
         )
 
 
+{-| Returns the lines before the module body: the `module` line, the module doc
+comment and the imports, with a blank line between each two present.
+
+The `module` line is printed only when the module has one or `addDefaultHeader`
+is `True`; its exposing list is ordered as `sortVars` describes.
+
+-}
 formatModuleHeader : Bool -> Module -> List Box
 formatModuleHeader addDefaultHeader modu =
     let
@@ -680,6 +847,8 @@ formatModuleHeader addDefaultHeader modu =
         )
 
 
+{-| Returns the import lines of a module, sorted by module path, preceded by the comments that come before them, with a blank line between the comments and the imports.
+-}
 formatImports : Module -> List Box
 formatImports modu =
     let
@@ -697,6 +866,14 @@ formatImports modu =
         |> List.concat
 
 
+{-| Returns the `module` line: the source tag, the name, the `where` clause of an
+effect module, and `exposing` with the exposing list.
+
+`varsToExpose` holds the groups `sortVars` returns. No groups print as `(..)`;
+one group is one parenthesised list; several groups are printed one group to a
+line. `extraComments` are printed at the end of the list.
+
+-}
 formatModuleLine :
     ( List (List (Src.C2 Value)), Src.FComments )
     -> SourceTag
@@ -785,14 +962,37 @@ formatModuleLine ( varsToExpose, extraComments ) srcTag name moduleSettings preE
         [ exports ]
 
 
-{-| Format a complete Elm module into a Box layout with configurable spacing and header options.
-The first parameter controls whether to add a default module header if none exists.
+{-| Returns the layout of a whole parsed module.
+
+When `addDefaultHeader` is `True` and the source has no `module` line, a
+`module Main exposing (...)` line is added. Its exposing list holds the names
+the module defines, and is `(..)` when it defines none.
+
+`spacing` is the usual number of blank lines between top-level declarations.
+None are put between a doc comment and its definition, an annotation and its
+definition, or two comments, and one more usually goes before a comment unless
+`spacing` is 1. The body starts `spacing` blank lines after what comes before
+it, one more when it starts with a comment.
+
+Line breaks follow the source: a construct that spanned several lines there is
+laid out over several lines here.
+
 -}
 formatModule : Bool -> Int -> M.Module -> Box
 formatModule addDefaultHeader spacing modu =
     formatModule_ addDefaultHeader spacing (formatModu modu)
 
 
+{-| Converts a parsed module into the formatter's model.
+
+Imports are keyed by module path, so they come out sorted, and an import of the
+same module twice keeps only the last. The comments after every import but the
+last are moved before the first import, and those after the last import start
+the body. The body is the `infix` declarations in source order, each followed
+by the comments after it, and then the declarations. The module doc comment is
+parsed as Markdown.
+
+-}
 formatModu : M.Module -> Module
 formatModu modu =
     let
@@ -972,6 +1172,14 @@ formatModu modu =
     }
 
 
+{-| Returns a parsed top-level declaration as top-level items: the comments
+before it, its doc comment parsed as Markdown, the declaration (a value with
+an annotation becomes the annotation followed by the definition), and the
+comments after it.
+
+A union type with no constructors stops the program with `crash`.
+
+-}
 declToDeclarations : Src.C2 Decl.Decl -> List (TopLevelStructure Declaration)
 declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
     List.map BodyComment preDeclComments
@@ -1033,8 +1241,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                                         ( preLastConstructorComments, Nothing, NameWithArgs lastName lastArgs )
                                     )
 
-                                -- Note: the following case should not occur, since
-                                -- it is invalid to have a union type without constructors.
+                                -- The parser never produces a union type without constructors.
                                 _ ->
                                     crash "union type without constructors"
                     in
@@ -1098,6 +1305,8 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
         ++ List.map BodyComment postDeclComments
 
 
+{-| Returns the layout of a module in the formatter's model, as `formatModule` describes: any comments before the header followed by two blank lines, the header, and the body.
+-}
 formatModule_ : Bool -> Int -> Module -> Box
 formatModule_ addDefaultHeader spacing modu =
     let
@@ -1136,6 +1345,8 @@ formatModule_ addDefaultHeader spacing modu =
             ]
 
 
+{-| Returns the layout of a list of top-level items with `linesBetween` blank lines between declarations, or `Nothing` when there are none.
+-}
 formatModuleBody : Int -> ImportInfo -> List (TopLevelStructure Declaration) -> Maybe Box
 formatModuleBody linesBetween importInfo body =
     let
@@ -1170,12 +1381,29 @@ formatModuleBody linesBetween importInfo body =
     List.map (topLevelStructureMap (\b -> ( entryType b, formatDeclaration importInfo b ))) body |> formatTopLevelBody linesBetween importInfo
 
 
+{-| What kind of declaration a top-level entry is, for spacing.
+
+`BodyNamed` is a declaration of one name, `BodyUnnamed` a definition of any
+other pattern, and `BodyFixity` an `infix` declaration.
+
+-}
 type BodyEntryType
     = BodyNamed (Ref ())
     | BodyUnnamed
     | BodyFixity
 
 
+{-| Returns the given items stacked with blank lines between them, or `Nothing`
+when there are none.
+
+Two items are usually `linesBetween` blank lines apart. Nothing separates a
+doc comment from the definition after it, an annotation from the definition of
+the same name, two comments, two `infix` declarations, an opening comment-trick
+marker from the item after it, or a closing one from the item before it. Before a comment there is one
+more blank line than usual unless `linesBetween` is 1, and between a comment
+and the definition after it there are none when `linesBetween` is 1.
+
+-}
 formatTopLevelBody :
     Int
     -> ImportInfo
@@ -1267,12 +1495,23 @@ formatTopLevelBody linesBetween importInfo body =
             Box.stack1 boxes |> Just
 
 
+{-| The Elm code in a doc-comment code block, according to which of the three parses accepted it.
+-}
 type ElmCodeBlock
     = DeclarationsCode (List (TopLevelStructure Declaration))
     | ExpressionsCode (List (TopLevelStructure (Src.C0Eol Src.Expr)))
     | ModuleCode Module
 
 
+{-| Returns a doc comment laid out as `{-| ... -}`.
+
+The Markdown is reprinted by `Common.Format.Render.Markdown`, with `(..)`
+removed from the names on `@docs` lines. Each Elm code block is reformatted
+when it parses as a declaration, an expression or a module, tried in that
+order, with one blank line between declarations; otherwise it is kept as
+written.
+
+-}
 formatDocComment : ImportInfo -> Blocks -> Box
 formatDocComment importInfo blocks =
     let
@@ -1324,6 +1563,8 @@ formatDocComment importInfo blocks =
     formatDocCommentString content
 
 
+{-| Parses `source` as one top-level declaration and returns it as top-level items.
+-}
 parseDeclarations : String -> Result () (List (TopLevelStructure Declaration))
 parseDeclarations source =
     P.fromByteString (P.specialize (\_ -> Tuple.pair) Decl.declaration) Tuple.pair source
@@ -1331,6 +1572,8 @@ parseDeclarations source =
         |> Result.map (\( decl, _ ) -> declToDeclarations decl)
 
 
+{-| Parses `source` as one expression and returns it as a single item.
+-}
 parseExpressions : String -> Result () (List (TopLevelStructure (Src.C0Eol Src.Expr)))
 parseExpressions source =
     P.fromByteString (P.specialize (\_ -> Tuple.pair) Expr.expression) Tuple.pair source
@@ -1338,6 +1581,14 @@ parseExpressions source =
         |> Result.map (\( ( _, expr ), _ ) -> [ Entry ( Nothing, expr ) ])
 
 
+{-| Parses `source` as a module of an application and returns the formatter's
+model of it.
+
+An application gets the default imports, so the result also holds `Basics`,
+`List`, `Maybe` and the other default imports, except where `source` imports
+the same module.
+
+-}
 parseModule : String -> Result () Module
 parseModule source =
     P.fromByteString (P.specialize (\_ -> Tuple.pair) (M.chompModule M.Application)) Tuple.pair source
@@ -1345,6 +1596,8 @@ parseModule source =
         |> Result.map formatModu
 
 
+{-| Returns the doc comment whose text is `docs`: `{-|` and the first line, the other lines unchanged, and `-}` on a line of its own, with a trailing empty line dropped. Empty text gives `{-| -}` on one line.
+-}
 formatDocCommentString : String -> Box
 formatDocCommentString docs =
     case lines docs of
@@ -1363,6 +1616,8 @@ formatDocCommentString docs =
                 |> Box.andThen [ Box.punc "-}" |> Box.line ]
 
 
+{-| Returns the lines of `str`, without the empty line after a final newline.
+-}
 lines : String -> List String
 lines str =
     case List.reverse (String.lines str) of
@@ -1373,6 +1628,13 @@ lines str =
             List.reverse result
 
 
+{-| Returns one import line: the module name, its `as` clause and its `exposing`
+clause.
+
+An alias equal to the module name is not printed. The import is one line when
+every part is a single line; otherwise some parts go on indented lines below.
+
+-}
 formatImport : UserImport -> Box
 formatImport ( ( _, rawName ) as name, (ImportMethod _ exposedVars) as method ) =
     let
@@ -1551,6 +1813,8 @@ formatImport ( ( _, rawName ) as name, (ImportMethod _ exposedVars) as method ) 
                 ]
 
 
+{-| Returns a listing in parentheses, using `format` for the entries of an explicit one, or `Nothing` when it exposes nothing.
+-}
 formatListing : (a -> List Box) -> Listing a -> Maybe Box
 formatListing format listing =
     case listing of
@@ -1569,26 +1833,8 @@ formatListing format listing =
                     ElmStructure.group False "(" "," ")" multiline vars_ |> Just
 
 
-
--- formatExposing : (List (Src.C2 Src.Exposed) -> List Box) -> Src.Exposing -> Maybe Box
--- formatExposing format listing =
---     case listing of
---         Src.Open preComments postComments ->
---             Just (parens (formatCommented ( preComments, postComments, Box.line (Box.keyword "..") )))
---         Src.Explicit (A.At _ []) ->
---             Nothing
---         Src.Explicit (A.At region exposedList) ->
---             case format exposedList of
---                 [] ->
---                     Nothing
---                 vars_ ->
---                     let
---                         multiline =
---                             A.isMultiline region
---                     in
---                     Just <| ElmStructure.group False "(" "," ")" multiline vars_
-
-
+{-| Returns the entries of an explicit exposing list: operators, then types, then values, each in name order.
+-}
 formatDetailedListing : DetailedListing -> List Box
 formatDetailedListing listing =
     List.concat
@@ -1607,6 +1853,8 @@ formatDetailedListing listing =
         ]
 
 
+{-| Returns each entry of `values` in name order, built with `construct`, laid out with `format`, and printed with its comments.
+-}
 formatCommentedMap : (k -> v -> a) -> (a -> Box) -> CommentedMap k v -> List Box
 formatCommentedMap construct format values =
     let
@@ -1619,6 +1867,8 @@ formatCommentedMap construct format values =
         |> List.map format_
 
 
+{-| Returns one exposing-list entry. A type whose constructor listing exposes anything is printed as `Type(..)`, whatever constructors the listing names.
+-}
 formatVarValue : Value -> Box
 formatVarValue aval =
     case aval of
@@ -1649,6 +1899,8 @@ formatVarValue aval =
                     name_
 
 
+{-| Returns a top-level item whose declaration is already laid out.
+-}
 formatTopLevelStructure : ImportInfo -> TopLevelStructure Box -> Box
 formatTopLevelStructure importInfo topLevelStructure =
     case topLevelStructure of
@@ -1662,6 +1914,8 @@ formatTopLevelStructure importInfo topLevelStructure =
             entry
 
 
+{-| Returns the layout of a definition or a type annotation.
+-}
 formatCommonDeclaration : ImportInfo -> CommonDeclaration -> Box
 formatCommonDeclaration importInfo decl =
     case decl of
@@ -1672,6 +1926,13 @@ formatCommonDeclaration importInfo decl =
             formatTypeAnnotation name typ
 
 
+{-| Returns the layout of a top-level declaration.
+
+A custom type puts `=` before the first constructor and `|` before each other
+one, one constructor to a line. An `infix` associativity is padded to five
+characters, so that `left` and `non` take as much room as `right`.
+
+-}
 formatDeclaration : ImportInfo -> Declaration -> Box
 formatDeclaration importInfo decl =
     case decl of
@@ -1768,6 +2029,8 @@ formatDeclaration importInfo decl =
                 ]
 
 
+{-| Returns a type's name followed by its type variables, on one line when every variable with its comments is one line, and otherwise stacked.
+-}
 formatNameWithArgs : NameWithArgs Name Name -> Box
 formatNameWithArgs (NameWithArgs name args) =
     case List.map (formatPreCommented << Src.c1map (Box.line << formatLowercaseIdentifier [])) args |> Box.allSingles of
@@ -1780,6 +2043,8 @@ formatNameWithArgs (NameWithArgs name args) =
                     :: List.map Box.indent args_
 
 
+{-| Returns `name args = expr`, with `comments` above the body.
+-}
 formatDefinition : ImportInfo -> Src.Pattern -> List (Src.C1 Src.Pattern) -> Src.FComments -> Src.Expr -> Box
 formatDefinition importInfo (A.At _ name) args comments expr =
     let
@@ -1799,6 +2064,8 @@ formatDefinition importInfo (A.At _ name) args comments expr =
         body
 
 
+{-| Returns `name : type`, with each part's comments.
+-}
 formatTypeAnnotation : Src.C1 (Ref ()) -> Src.C1 Src.Type -> Box
 formatTypeAnnotation name typ =
     ElmStructure.definition ":"
@@ -1808,6 +2075,14 @@ formatTypeAnnotation name typ =
         (formatPreCommented (Src.c1map (typeParens NotRequired << formatType) typ))
 
 
+{-| Returns the layout of a pattern and its syntax context.
+
+A record pattern's fields are printed in reverse of their stored order, which
+is source order because the parser stores them reversed. Parentheses with no
+comments inside are dropped, so the caller adds them back only where the
+context needs them.
+
+-}
 formatPattern : Src.Pattern_ -> ( SyntaxContext, Box )
 formatPattern apattern =
     case apattern of
@@ -1978,6 +2253,8 @@ formatPattern apattern =
             )
 
 
+{-| Returns a `key delim value` pair of the `where` clause of an effect module, with the comments around each side.
+-}
 formatRecordPair : String -> (v -> Box) -> ( Src.C2 String, Src.C2 v, Bool ) -> Box
 formatRecordPair delim formatValue ( ( ( pre, postK ), k ), v, forceMultiline ) =
     ElmStructure.equalsPair delim
@@ -1988,6 +2265,8 @@ formatRecordPair delim formatValue ( ( ( pre, postK ), k ), v, forceMultiline ) 
         |> formatPreCommented
 
 
+{-| Returns a field of a record expression or type: the name, `delim` and the value, with their comments.
+-}
 formatPair : String -> Src.Pair Box.Line Box -> Box
 formatPair delim (Src.Pair a b (Src.ForceMultiline forceMultiline)) =
     ElmStructure.equalsPair delim
@@ -1996,6 +2275,8 @@ formatPair delim (Src.Pair a b (Src.ForceMultiline forceMultiline)) =
         (formatPreCommented b)
 
 
+{-| Returns the function that wraps a case-branch pattern in parentheses when it is a negative integer, and leaves any other pattern alone.
+-}
 negativeCasePatternWorkaround : Src.Pattern_ -> Box -> Box
 negativeCasePatternWorkaround pattern =
     case pattern of
@@ -2010,6 +2291,19 @@ negativeCasePatternWorkaround pattern =
             identity
 
 
+{-| How loosely an expression or pattern binds, which is what decides whether it
+needs parentheses where it is placed.
+
+A formatter returns the context of what it built, and a caller passes the
+context of the place it is putting it. `SyntaxSeparated` binds tightest: a
+name, a literal, or something already delimited such as a list. `SpaceSeparated`
+is a function application or a constructor with arguments; an `as` pattern and
+a `::` pattern chain are also `SpaceSeparated`. `InfixSeparated` is an operator
+chain. `AmbiguousEnd` is an expression that extends as far to the
+right as it can, such as a lambda, `if`, `let` or `case`. `needsParensInContext`
+says which combinations need parentheses.
+
+-}
 type SyntaxContext
     = SyntaxSeparated
     | InfixSeparated
@@ -2017,6 +2311,8 @@ type SyntaxContext
     | AmbiguousEnd
 
 
+{-| Returns the box of an expression or pattern of context `inner`, in parentheses when it is placed where `outer` says they are needed.
+-}
 syntaxParens : SyntaxContext -> ( SyntaxContext, Box ) -> Box
 syntaxParens outer ( inner, box ) =
     let
@@ -2031,6 +2327,15 @@ syntaxParens outer ( inner, box ) =
     parensIf (needsParensInContext inner outer) box
 
 
+{-| Tells whether something of context `inner` needs parentheses in a place of
+context `outer`.
+
+An application or an operator chain needs them as an argument. An operator
+chain needs them as an operand of another chain. An `AmbiguousEnd` expression
+needs them as an argument or an operand, and an operator chain needs them in
+an `AmbiguousEnd` place.
+
+-}
 needsParensInContext : SyntaxContext -> SyntaxContext -> Bool
 needsParensInContext inner outer =
     case ( inner, outer ) of
@@ -2056,6 +2361,14 @@ needsParensInContext inner outer =
             False
 
 
+{-| Returns the layout of an expression and its syntax context.
+
+Whether a list, record, tuple, operator chain, lambda or function application
+is split over several lines comes from whether its source region spanned
+several lines. Parentheses with no comments inside are dropped, so the caller
+adds them back only where the context needs them.
+
+-}
 formatExpression : ImportInfo -> Src.Expr -> ( SyntaxContext, Box )
 formatExpression importInfo (A.At region aexpr) =
     case aexpr of
@@ -2108,7 +2421,6 @@ formatExpression importInfo (A.At region aexpr) =
 
         Src.Negate expr ->
             ( SyntaxSeparated
-              -- TODO: This might need something stronger than SpaceSeparated?
             , Box.prefix (Box.punc "-") (syntaxParens SpaceSeparated (formatExpression importInfo expr))
             )
 
@@ -2329,8 +2641,7 @@ formatExpression importInfo (A.At region aexpr) =
                             formatComment comment
             in
             ( AmbiguousEnd
-            , -- TODO: not tested
-              Box.line (Box.keyword "let")
+            , Box.line (Box.keyword "let")
                 |> Box.andThen
                     (defs
                         |> List.concatMap letDeclarations
@@ -2407,8 +2718,7 @@ formatExpression importInfo (A.At region aexpr) =
                                 ]
             in
             ( AmbiguousEnd
-            , -- TODO: not tested
-              opening
+            , opening
                 |> Box.andThen
                     (clauses
                         |> List.map clause
@@ -2426,7 +2736,6 @@ formatExpression importInfo (A.At region aexpr) =
             ( SyntaxSeparated
             , formatExpression importInfo record
                 |> syntaxParens SpaceSeparated
-                -- TODO: does this need a different context than SpaceSeparated?
                 |> Box.addSuffix (Box.row [ Box.punc ".", formatLowercaseIdentifier [] field ])
             )
 
@@ -2518,40 +2827,38 @@ formatExpression importInfo (A.At region aexpr) =
                     )
 
 
+{-| One item of a `let` block: a definition or annotation, or a comment between them.
+-}
 type LetDeclaration
     = LetCommonDeclaration CommonDeclaration
     | LetComment Src.FComment
 
 
+{-| Returns an expression with the comments before and after it.
+-}
 formatCommentedExpression : ImportInfo -> Src.C2 Src.Expr -> Box
 formatCommentedExpression importInfo ( ( pre, post ), e ) =
     let
         commented_ : Src.C2 Src.Expr
         commented_ =
-            -- TODO
-            -- case e of
-            --     Src.Parens (C ( pre__, post__ ) e__) ->
-            --         ( pre ++ pre__, e__, post__ ++ post )
-            --     _ ->
             ( ( pre, post ), e )
     in
     Src.c2map (syntaxParens SyntaxSeparated << formatExpression importInfo) commented_ |> formatCommented
 
 
+{-| Returns an expression with the comments before it, in parentheses when its context requires them in a place of `context`.
+-}
 formatPreCommentedExpression : ImportInfo -> SyntaxContext -> Src.C1 Src.Expr -> Box
 formatPreCommentedExpression importInfo context ( pre, e ) =
     let
         ( pre_, e_ ) =
-            -- TODO
-            -- case e of
-            --     Parens (C ( pre__, [] ) e__) ->
-            --         ( pre ++ pre__, e__ )
-            --     _ ->
             ( pre, e )
     in
     formatCommentedApostrophe pre_ (syntaxParens context <| formatExpression importInfo e_)
 
 
+{-| Returns a record expression or type: `{ base | fields }` when there is a base record, and `{ fields }` otherwise, with `trailing` comments before the closing brace.
+-}
 formatRecordLike : Maybe (Src.C2 Box) -> List (Src.C2Eol Box) -> Src.FComments -> Src.ForceMultiline -> Box
 formatRecordLike base_ fields trailing multiline =
     case ( base_, fields ) of
@@ -2576,6 +2883,15 @@ formatRecordLike base_ fields trailing multiline =
                 pairs_
 
 
+{-| Returns a delimited sequence: `left` before the first item, `delim` before each
+other one, `trailing` comments after the last, and `maybeRight` to close it.
+
+On one line when `multiline` is `False` and every part is one line, and
+otherwise one item to a line. Comments before an item go on lines of their own
+above it. With no items the result is `left` and the closing character (a space
+when `maybeRight` is `Nothing`) with the comments between them.
+
+-}
 formatSequence : Char -> Char -> Maybe Char -> Src.ForceMultiline -> Src.FComments -> List (Src.C2Eol Box) -> Box
 formatSequence left delim maybeRight (Src.ForceMultiline multiline) trailing list =
     case ( maybeRight, list ) of
@@ -2599,6 +2915,8 @@ formatSequence left delim maybeRight (Src.ForceMultiline multiline) trailing lis
             formatUnit left ' ' trailing
 
 
+{-| Applies `f` to every element of `l`, telling it whether the element is the last.
+-}
 mapIsLast : (Bool -> a -> b) -> List a -> List b
 mapIsLast f l =
     case l of
@@ -2612,10 +2930,14 @@ mapIsLast f l =
             f False next :: mapIsLast f rest
 
 
+{-| One operator of an operator chain with the operand to its right, as `BinopsClauseProps` describes.
+-}
 type BinopsClause varRef expr
     = BinopsClause (BinopsClauseProps varRef expr)
 
 
+{-| The parts of a `BinopsClause`: the comments before the operator, the operator, the comments after it, and the operand.
+-}
 type alias BinopsClauseProps varRef expr =
     { preOpComments : Src.FComments
     , op : varRef
@@ -2624,11 +2946,21 @@ type alias BinopsClauseProps varRef expr =
     }
 
 
+{-| Builds a `BinopsClause` from its parts.
+-}
 makeBinopsClause : Src.FComments -> varRef -> Src.FComments -> expr -> BinopsClause varRef expr
 makeBinopsClause preOpComments op postOpComments expr =
     BinopsClause { preOpComments = preOpComments, op = op, postOpComments = postOpComments, expr = expr }
 
 
+{-| Returns the operator chain that starts with `left` and continues with each of
+`ops`.
+
+Every operand is parenthesised as an operand of an operator chain, except the
+last operand of a final `<|`, which may be a lambda or another expression that
+extends to the right without parentheses.
+
+-}
 formatBinops : ImportInfo -> Src.Expr -> List (BinopsClause (Ref (List String)) Src.Expr) -> Bool -> Box
 formatBinops importInfo left ops multiline =
     let
@@ -2660,6 +2992,13 @@ formatBinops importInfo left ops multiline =
         (mapIsLast formatPair_ ops)
 
 
+{-| Returns `left` and `right` with `comments` between them, as an empty record,
+list or unit.
+
+With no comments this is the two characters together. A `{` whose first comment
+is a `--` comment puts the comments on lines of their own.
+
+-}
 formatUnit : Char -> Char -> Src.FComments -> Box
 formatUnit left right comments =
     case ( left, comments ) of
@@ -2679,6 +3018,8 @@ formatUnit left right comments =
                         Box.stack1 comments_
 
 
+{-| Returns the comments on one line when each is one line, stacked otherwise, or `Nothing` when there are none.
+-}
 formatComments : Src.FComments -> Maybe Box
 formatComments comments =
     case List.map formatComment comments of
@@ -2689,6 +3030,8 @@ formatComments comments =
             Just (ElmStructure.spaceSepOrStack first rest)
 
 
+{-| Returns `inner` between the comments before and after it, on one line unless `forceMultiline` is `True` or a part is not a single line.
+-}
 formatCommented_ : Bool -> Src.C2 Box -> Box
 formatCommented_ forceMultiline ( ( pre, post ), inner ) =
     ElmStructure.forceableSpaceSepOrStack1 forceMultiline <|
@@ -2699,31 +3042,43 @@ formatCommented_ forceMultiline ( ( pre, post ), inner ) =
             ]
 
 
+{-| Returns a box between the comments before and after it, on one line when every part is one line.
+-}
 formatCommented : Src.C2 Box -> Box
 formatCommented =
     formatCommented_ False
 
 
+{-| Returns a box after the comments before it.
+-}
 formatPreCommented : Src.C1 Box -> Box
 formatPreCommented ( pre, inner ) =
     formatCommentedApostrophe pre inner
 
 
+{-| Returns `inner` after the comments `pre`.
+-}
 formatCommentedApostrophe : Src.FComments -> Box -> Box
 formatCommentedApostrophe pre inner =
     formatCommented ( ( pre, [] ), inner )
 
 
+{-| Returns a box followed by the comments after it.
+-}
 formatTailCommented : Src.C1 Box -> Box
 formatTailCommented ( post, inner ) =
     formatCommented ( ( [], post ), inner )
 
 
+{-| Returns a box between the comments before and after it, followed by its end-of-line comment if it has one.
+-}
 formatC2Eol : Src.C2Eol Box -> Box
 formatC2Eol ( ( pre, post, eol ), a ) =
     formatCommented ( ( pre, post ), formatEolCommented ( eol, a ) )
 
 
+{-| Returns `inner` followed by the end-of-line comment `post`: on the same line, after which the line must break, when `inner` is one line, and on a line of its own otherwise.
+-}
 formatEolCommented : ( Maybe String, Box ) -> Box
 formatEolCommented ( post, inner ) =
     case ( post, inner ) of
@@ -2737,6 +3092,8 @@ formatEolCommented ( post, inner ) =
             Box.stack1 [ box, Src.LineComment eol |> formatComment ]
 
 
+{-| Returns a box with each comment before and after it on a line of its own.
+-}
 formatCommentedStack : Src.C2 Box -> Box
 formatCommentedStack ( ( pre, post ), inner ) =
     Box.stack1 <|
@@ -2745,11 +3102,15 @@ formatCommentedStack ( ( pre, post ), inner ) =
             :: List.map formatComment post
 
 
+{-| Returns a box with each comment before it on a line of its own.
+-}
 formatPreCommentedStack : Src.C1 Box -> Box
 formatPreCommentedStack ( pre, inner ) =
     formatCommentedStack ( ( pre, [] ), inner )
 
 
+{-| Returns `word` between its comments, followed by `value` on the same line or indented below.
+-}
 formatKeywordCommented : String -> Src.C2 Box -> Box
 formatKeywordCommented word ( ( pre, post ), value ) =
     ElmStructure.spaceSepOrIndented
@@ -2757,12 +3118,20 @@ formatKeywordCommented word ( ( pre, post ), value ) =
         [ value ]
 
 
+{-| Returns every element of the list with its comments, the last included.
+-}
 formatOpenCommentedList : Src.OpenCommentedList Box -> List Box
 formatOpenCommentedList (Src.OpenCommentedList rest ( preLst, eol, lst )) =
     List.map formatC2Eol rest
         ++ [ formatC2Eol ( ( preLst, [], eol ), lst ) ]
 
 
+{-| Returns a comment as it is written in source.
+
+A block comment of one line is trimmed and printed with a space inside each
+delimiter. A `--` comment and the three comment-trick forms end their line.
+
+-}
 formatComment : Src.FComment -> Box
 formatComment comment =
     case comment of
@@ -2802,16 +3171,22 @@ formatComment comment =
             Box.row [ Box.punc "{--", Box.literal c, Box.punc "-}" ] |> Box.mustBreak
 
 
+{-| Whether a string literal is written with `"` or with `"""`.
+-}
 type StringRepresentation
     = SingleQuotedString
     | TripleQuotedString
 
 
+{-| A number literal, holding its spelling in the source.
+-}
 type LiteralValue
     = IntNum String
     | FloatNum String
 
 
+{-| Returns a number literal as it was written, except that the digits of a hexadecimal integer are made upper-case.
+-}
 formatLiteral : LiteralValue -> Box
 formatLiteral lit =
     case lit of
@@ -2831,11 +3206,15 @@ formatLiteral lit =
             Box.line (Box.literal f)
 
 
+{-| The kind of text literal being printed: a character, or a string written with `"` or `"""`.
+-}
 type StringStyle
     = SChar
     | SString StringRepresentation
 
 
+{-| Tells whether a character is printed as itself in a literal; only U+2028 and U+2029 are not.
+-}
 charIsPrint : Char -> Bool
 charIsPrint c =
     case c of
@@ -2849,6 +3228,15 @@ charIsPrint c =
             True
 
 
+{-| Returns a character or string literal, from its escaped text `s`.
+
+Escapes the delimiter makes unnecessary are removed: `\"` in a character and in
+a `"""` string, `\'` in a string, and `\n` in a `"""` string, which becomes a
+real line break. A tab becomes `\t`, and U+2028 and U+2029 become `\u{...}`
+escapes. In a `"""` string, every quote of a run of three or more, and every
+quote at the very end, is escaped.
+
+-}
 formatString : StringStyle -> String -> Box
 formatString style s =
     let
@@ -2933,18 +3321,37 @@ formatString style s =
             stringBox "\"\"\"" escapeMultiQuote
 
 
+{-| The kind of place a type is put, which decides whether it needs parentheses
+there.
+
+The constructors are ordered from the most permissive place to the least.
+`NotRequired` is a place where any type may stand, such as the right of a
+`:`. `ForLambda` is a part of a function-arrow chain. `ForCtor` is an argument of a
+type constructor.
+
+-}
 type TypeParensRequired
-    = {- 0 -} NotRequired
-    | {- 1 -} ForLambda
-    | {- 2 -} ForCtor
+    = NotRequired
+    | ForLambda
+    | ForCtor
 
 
+{-| What kind of type a type formatter produced, as far as parentheses are
+concerned.
+
+`ForFunctionType` is a function type and `ForTypeConstruction` a type
+constructor applied to arguments. `NotNeeded` is anything that never needs
+parentheses.
+
+-}
 type TypeParensInner
     = NotNeeded
     | ForFunctionType
     | ForTypeConstruction
 
 
+{-| Returns the box of a type of kind `inner`, in parentheses when `outer` requires them.
+-}
 typeParens : TypeParensRequired -> ( TypeParensInner, Box ) -> Box
 typeParens outer ( inner, box ) =
     if typeParensNeeded outer inner then
@@ -2954,6 +3361,8 @@ typeParens outer ( inner, box ) =
         box
 
 
+{-| Tells whether a type of the given kind needs parentheses in a place of kind `outer`: a function type does on the left of an arrow and as an argument, and an applied type constructor does as an argument.
+-}
 typeParensNeeded : TypeParensRequired -> TypeParensInner -> Bool
 typeParensNeeded outer typeParensInner =
     case typeParensInner of
@@ -2961,19 +3370,26 @@ typeParensNeeded outer typeParensInner =
             False
 
         ForTypeConstruction ->
-            -- outer >= ForCtor
             outer == ForCtor
 
         ForFunctionType ->
-            -- outer >= ForLambda
             outer == ForLambda || outer == ForCtor
 
 
+{-| Returns a possibly qualified type name, given with its dots.
+-}
 formatTypeConstructor : String -> Box
 formatTypeConstructor name =
     formatQualifiedUppercaseIdentifier (String.split "." name) |> Box.line
 
 
+{-| Returns the layout of a type and the kind of type it is.
+
+Function arrows are flattened into one chain. A function type, an applied type
+constructor, a record or a tuple is split over several lines when its source
+region spanned several lines.
+
+-}
 formatType : Src.Type -> ( TypeParensInner, Box )
 formatType (A.At region atype) =
     case atype of
@@ -3127,6 +3543,8 @@ formatType (A.At region atype) =
             )
 
 
+{-| Returns a reference to a value, constructor or operator, with its qualifier.
+-}
 formatVar : Ref (List String) -> Box.Line
 formatVar var =
     case var of
@@ -3149,11 +3567,15 @@ formatVar var =
             formatSymbolIdentifierInParens name
 
 
+{-| Returns an operator in parentheses, as it is written when used as a value.
+-}
 formatSymbolIdentifierInParens : String -> Box.Line
 formatSymbolIdentifierInParens name =
     ("(" ++ name ++ ")") |> Box.identifier
 
 
+{-| Returns a reference written in infix position: an operator as it is, and any other name between backticks.
+-}
 formatInfixVar : Ref (List String) -> Box.Line
 formatInfixVar var =
     case var of
@@ -3175,6 +3597,8 @@ formatInfixVar var =
             Box.identifier name
 
 
+{-| Returns a lower-case name, qualified by `namespace` when that is not empty.
+-}
 formatLowercaseIdentifier : List String -> String -> Box.Line
 formatLowercaseIdentifier namespace name =
     case ( namespace, name ) of
@@ -3189,16 +3613,22 @@ formatLowercaseIdentifier namespace name =
                 ]
 
 
+{-| Returns a capitalised name.
+-}
 formatUppercaseIdentifier : String -> Box.Line
 formatUppercaseIdentifier name =
     Box.identifier (formatVarName name)
 
 
+{-| Returns a module path or qualified name, its parts joined with dots.
+-}
 formatQualifiedUppercaseIdentifier : List String -> Box.Line
 formatQualifiedUppercaseIdentifier names =
     List.map formatVarName names |> String.join "." |> Box.identifier
 
 
+{-| Returns `name` with every `'` replaced by `_`.
+-}
 formatVarName : String -> String
 formatVarName name =
     String.map

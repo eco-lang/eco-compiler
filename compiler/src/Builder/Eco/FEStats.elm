@@ -6,15 +6,23 @@ module Builder.Eco.FEStats exposing
     , prettyPrint
     )
 
-{-| Front-end timing stats: phase wall-clocks, per-module crawl/check/build
-histograms, and the slowest-N modules per stage.
+{-| `eco make --stats` reports where the front end spent its time, and this
+module collects and prints those figures.
 
-Gated by a runtime flag (`eco make --stats`). When disabled, every entry point
-in this module is a no-op so the unobserved path costs nothing.
+Two kinds of measurement are kept. A _phase_ is one of six whole steps of the
+pipeline, from the dependency check to MLIR generation, and gets one wall-clock
+duration each. A _module stage_ is one of three per-module steps (crawl, check,
+build), and gets a histogram over the modules it ran for: how many
+samples fell in each duration bucket, their count, sum, minimum and maximum, and
+the five slowest modules. Each phase and module-stage measurement is wall-clock
+time between the start and the end of its task, so it includes any time the
+task spent waiting.
 
-The handle is a `Maybe (MVar State)`: per-module workers run inside forked
-threads (`Build.dictForkWithKey`), so updates take/put through an MVar for
-thread safety. Phase-level updates run single-threaded.
+A `Handle` is either disabled, in which case every function here runs the given
+task unchanged and records nothing, or enabled, in which case the figures are
+kept in an `MVar` that each recording takes and puts back, so recordings made
+from concurrent threads do not overwrite one another. `prettyPrint` writes the
+report to stderr.
 
 @docs Handle
 @docs PhaseName, ModuleStage
@@ -41,22 +49,29 @@ import Utils.Task.Extra as Task
 -- ====== PUBLIC TYPES ======
 
 
-{-| Stats handle. `Disabled` means the `--stats` flag was off; every public
-operation short-circuits without touching the MVar.
+{-| Where the timing figures of one run go, if anywhere.
+
+`Disabled` records and prints nothing; the wrappers run their task without
+timing it.
+`Enabled` holds the figures recorded so far.
+
 -}
 type Handle
     = Disabled
     | Enabled (MVar State)
 
 
-{-| A handle in the off position. All operations are no-ops.
+{-| A handle that records nothing.
 -}
 disabled : Handle
 disabled =
     Disabled
 
 
-{-| The six front-end phases timed individually.
+{-| One of the six front-end phases that are each timed as a whole. A phase
+appears in the report under the label it is given here: dependency check,
+parse / check / build, monomorphization, inline + simplify, global optimization
+and MLIR codegen.
 -}
 type PhaseName
     = PhaseDeps
@@ -67,7 +82,11 @@ type PhaseName
     | PhaseMlir
 
 
-{-| The three per-module stages inside the local-build phase.
+{-| One of the three per-module steps, each of which gets its own per-module
+histogram. In `Builder.Build`, `Crawl` times finding and crawling a module's
+source file, `Check` times checking a module from its crawl status, and `Build`
+times compiling a module, which happens only for modules not reused from the
+cache.
 -}
 type ModuleStage
     = Crawl
@@ -79,6 +98,14 @@ type ModuleStage
 -- ====== INTERNAL STATE ======
 
 
+{-| Everything an enabled handle has recorded: the run's start and end times, one
+duration per phase that has run, and one histogram per module stage that has
+had a sample. Times are milliseconds since the epoch. `phases` and `modules`
+are keyed by `phaseOrd` and `stageOrd`.
+
+`endMs` equals `startMs` until `finalize` is called.
+
+-}
 type alias State =
     { startMs : Int
     , endMs : Int
@@ -87,12 +114,22 @@ type alias State =
     }
 
 
+{-| The start and end of one phase, in milliseconds since the epoch.
+-}
 type alias PhaseStats =
     { startMs : Int
     , endMs : Int
     }
 
 
+{-| A summary of the samples of one module stage, with durations in
+milliseconds.
+
+`buckets` holds `numBuckets` counts, indexed as `bucketOf` describes. `minMs`
+and `maxMs` are 0 while `count` is 0. `topSlow` is at most `topSlowCap` module
+names with their durations, slowest first.
+
+-}
 type alias Histogram =
     { buckets : Array Int
     , count : Int
@@ -103,6 +140,8 @@ type alias Histogram =
     }
 
 
+{-| A histogram with no samples.
+-}
 emptyHistogram : Histogram
 emptyHistogram =
     { buckets = Array.repeat numBuckets 0
@@ -114,32 +153,35 @@ emptyHistogram =
     }
 
 
+{-| The number of histogram buckets: twelve bounded by `bucketUpperEdge` and one
+for everything longer.
+-}
 numBuckets : Int
 numBuckets =
     13
 
 
-{-| Upper edges in ms for the 12 bounded buckets. Bucket 12 is the overflow
-catch-all for samples above `bucketUpperEdge 11` (= 20480 ms).
-
-Boundaries are 10·2^k ms for k = 0..11: 10, 20, 40, 80, 160, 320, 640, 1280,
-2560, 5120, 10240, 20480.
-
+{-| Returns the inclusive upper edge, in milliseconds, of bounded bucket `idx`:
+10 times 2 to the power `idx`, so 10, 20, 40 up to 20480 for bucket 11. Bucket
+12 has no upper edge.
 -}
 bucketUpperEdge : Int -> Int
 bucketUpperEdge idx =
-    -- 10 ms times 2^idx
     10 * (2 ^ idx)
 
 
-{-| Map a millisecond sample to its bucket index in `[0, numBuckets - 1]`.
-Anything ≤ 10 ms lands in bucket 0; anything > 20480 ms lands in bucket 12.
+{-| Returns the bucket a duration of `ms` milliseconds falls in: the first
+bucket whose upper edge is at least `ms`, so 10 ms or less (negative included)
+is bucket 0, and more than 20480 ms is the last bucket, 12.
 -}
 bucketOf : Int -> Int
 bucketOf ms =
     bucketOfHelp ms 0
 
 
+{-| Returns the first bucket from `idx` onwards that `ms` falls in, or the last
+bucket.
+-}
 bucketOfHelp : Int -> Int -> Int
 bucketOfHelp ms idx =
     if idx >= numBuckets - 1 then
@@ -152,6 +194,8 @@ bucketOfHelp ms idx =
         bucketOfHelp ms (idx + 1)
 
 
+{-| The number of slowest modules each stage histogram keeps.
+-}
 topSlowCap : Int
 topSlowCap =
     5
@@ -161,9 +205,8 @@ topSlowCap =
 -- ====== INIT / FINALIZE ======
 
 
-{-| Create a stats handle. When `enabled` is `False`, returns `Disabled` and
-later operations are no-ops. When `True`, allocates an MVar with an empty
-State stamped with the current wall-clock millis.
+{-| Creates a handle: one that records nothing when `enabled` is `False`, and
+otherwise one with nothing recorded yet whose run starts now.
 -}
 init : Bool -> Task Never Handle
 init enabled =
@@ -190,7 +233,8 @@ init enabled =
         Task.succeed Disabled
 
 
-{-| Stamp the end-of-run wall clock onto the stats. No-op when disabled.
+{-| Records now as the end of the run, which is what the report's total is
+measured to. A later call replaces the earlier end.
 -}
 finalize : Handle -> Task Never ()
 finalize handle =
@@ -213,8 +257,14 @@ finalize handle =
 -- ====== PHASE WRAPPER ======
 
 
-{-| Time a phase: emit `Starting <phase>...` to stderr (when enabled), run the
-task, and record its wall-clock duration. When disabled, just runs the task.
+{-| Runs `task` as `phase`. With an enabled handle it first writes
+`Starting <phase label>...` to stderr, and records the time from just after
+that line to the task's success as the phase's duration, replacing any earlier
+duration for the same phase. A task that fails records nothing.
+
+Any work done while building `task` happens before the call and is not timed;
+`withPhaseLazy` times it too.
+
 -}
 withPhase : Handle -> PhaseName -> Task x a -> Task x a
 withPhase handle phase task =
@@ -246,14 +296,11 @@ withPhase handle phase task =
                     )
 
 
-{-| Like `withPhase`, but the phase's task is built by a thunk that is only
-called INSIDE the timing step (plans/frontend-heap-release.md §7.1, E0).
+{-| Runs the task `thunk` builds as `phase`, as `withPhase` does, except that
+`thunk` is called inside the timed step, so the work of building the task is
+billed to the phase.
 
-`withPhase` receives its task argument already evaluated, so any pure work done
-while BUILDING that task (e.g. `case selectMonomorphizer … of`) runs before
-"Starting <phase>" and is billed to no phase. Worse for memory, it runs inside
-the CALLER's `andThen` callback, whose argument stays rooted the whole time.
-Here the thunk runs in its own step, even when stats are disabled.
+`thunk` is called in a task step of its own even when the handle is disabled.
 
 -}
 withPhaseLazy : Handle -> PhaseName -> (() -> Task x a) -> Task x a
@@ -286,6 +333,9 @@ withPhaseLazy handle phase thunk =
                     )
 
 
+{-| Records a phase as running from `startMs` to `endMs`, replacing any earlier
+record for it.
+-}
 recordPhase : PhaseName -> Int -> Int -> State -> State
 recordPhase phase startMs endMs state =
     { state
@@ -300,8 +350,9 @@ recordPhase phase startMs endMs state =
 -- ====== PER-MODULE RECORDING ======
 
 
-{-| Time a per-module stage. No-op when disabled (the task is invoked directly
-with no timestamp overhead).
+{-| Runs `task` as module stage `stage` of module `name`. With an enabled handle
+the time to the task's success is added as one sample to that stage's
+histogram; a task that fails records nothing.
 -}
 withModuleStage : Handle -> ModuleStage -> String -> Task x a -> Task x a
 withModuleStage handle stage name task =
@@ -326,8 +377,9 @@ withModuleStage handle stage name task =
                     )
 
 
-{-| Record a single (start, end) measurement for a module stage. No-op when
-disabled.
+{-| Adds one sample for module `name` to `stage`'s histogram, lasting from
+`startPosix` to `endPosix`, or 0 ms if the end is before the start. Does
+nothing with a disabled handle.
 -}
 recordModule : Handle -> ModuleStage -> String -> Time.Posix -> Time.Posix -> Task Never ()
 recordModule handle stage name startPosix endPosix =
@@ -343,6 +395,9 @@ recordModule handle stage name startPosix endPosix =
             modifyState mvar (addModuleSample stage name dtMs)
 
 
+{-| Returns `state` with a sample of `dtMs` milliseconds for module `name` added
+to `stage`'s histogram.
+-}
 addModuleSample : ModuleStage -> String -> Int -> State -> State
 addModuleSample stage name dtMs state =
     let
@@ -380,11 +435,17 @@ addModuleSample stage name dtMs state =
     { state | modules = Dict.insert key updated state.modules }
 
 
+{-| Returns `existing`, a slowest-first list, with `entry` added and cut to
+`topSlowCap` entries.
+-}
 insertTopSlow : ( String, Int ) -> List ( String, Int ) -> List ( String, Int )
 insertTopSlow entry existing =
     List.take topSlowCap (insertDescending entry existing)
 
 
+{-| Returns the slowest-first `list` with `entry` inserted ahead of the first entry
+no slower than it, so it goes before entries of equal duration.
+-}
 insertDescending : ( String, Int ) -> List ( String, Int ) -> List ( String, Int )
 insertDescending (( _, ms ) as entry) list =
     case list of
@@ -403,7 +464,10 @@ insertDescending (( _, ms ) as entry) list =
 -- ====== PRETTY-PRINT ======
 
 
-{-| Render the stats to stderr. No-op when disabled.
+{-| Writes the report to stderr: each phase's duration, or `(not run)`, then a
+one-line summary of each module stage that has samples, the total from `init`
+to the last `finalize`, and then each stage's histogram in full with its
+slowest modules. Writes nothing with a disabled handle.
 -}
 prettyPrint : Handle -> Task Never ()
 prettyPrint handle =
@@ -416,6 +480,8 @@ prettyPrint handle =
                 |> Task.andThen (IO.writeLn IO.stderr << formatState)
 
 
+{-| Returns the whole report for `state` as text.
+-}
 formatState : State -> String
 formatState state =
     let
@@ -446,6 +512,8 @@ formatState state =
         )
 
 
+{-| Returns the report line for `phase`: its label and duration, or `(not run)`.
+-}
 formatPhaseRow : State -> PhaseName -> String
 formatPhaseRow state phase =
     let
@@ -463,6 +531,9 @@ formatPhaseRow state phase =
     label ++ body
 
 
+{-| Returns the one-line summary of `stage`'s histogram, with the buckets as a
+sparkline, or nothing if it has no samples.
+-}
 formatStageBlock : State -> ModuleStage -> List String
 formatStageBlock state stage =
     case Dict.get (stageOrd stage) state.modules of
@@ -486,6 +557,9 @@ formatStageBlock state stage =
             ]
 
 
+{-| Returns the full histogram of `stage`, one line per bucket, followed by its
+slowest modules, or nothing if it has no samples.
+-}
 expandedStageBlock : State -> ModuleStage -> List String
 expandedStageBlock state stage =
     case Dict.get (stageOrd stage) state.modules of
@@ -520,8 +594,9 @@ expandedStageBlock state stage =
                 ++ ("" :: slowestHeader :: slowestLines)
 
 
-{-| One row of the expanded histogram: range label, count, and a horizontal
-bar scaled against the busiest bucket.
+{-| Returns the line for bucket `idx` of a full histogram: its range, `count`,
+and a bar of up to 40 characters scaled against `maxCount`, at least one
+character long when `count` is not 0.
 -}
 renderBucketLine : Int -> Int -> Int -> String
 renderBucketLine maxCount idx count =
@@ -546,8 +621,9 @@ renderBucketLine maxCount idx count =
         ++ bar
 
 
-{-| Human-readable bucket range. Bucket 0 is `0 ms – 10 ms`; bucket N (the
-overflow) is `> 20.48 s`.
+{-| Returns the range of bucket `idx` as text, from the previous bucket's upper
+edge (0 for bucket 0) to its own, formatted by `formatMs`. The last bucket
+reads `> 20.5 s`, because `formatMs` rounds 20480 ms to tenths of a second.
 -}
 formatBucketRange : Int -> String
 formatBucketRange idx =
@@ -571,16 +647,23 @@ formatBucketRange idx =
         padLeft 7 (formatMs lo) ++ " – " ++ padLeft 7 (formatMs hi)
 
 
+{-| Returns the report line for one of the slowest modules.
+-}
 renderSlowLine : ( String, Int ) -> String
 renderSlowLine ( name, ms ) =
     "    " ++ padLeft 8 (formatMs ms) ++ "   " ++ name
 
 
+{-| Returns `s` with its first character in upper case.
+-}
 capitalize : String -> String
 capitalize s =
     String.toUpper (String.left 1 s) ++ String.dropLeft 1 s
 
 
+{-| Returns a sparkline of `buckets`, one character per bucket: `.` for an empty
+bucket, otherwise a block whose height is the count relative to the largest.
+-}
 renderBuckets : Array Int -> String
 renderBuckets buckets =
     let
@@ -600,6 +683,9 @@ renderBuckets buckets =
     Array.foldr (\c acc -> String.cons (glyphFor c) acc) "" buckets
 
 
+{-| Returns the block character for a count that is `ratio` of the largest count,
+from the lowest block up to the full block at `ratio` 1.
+-}
 bucketGlyph : Float -> Char
 bucketGlyph ratio =
     let
@@ -614,10 +700,8 @@ bucketGlyph ratio =
         (List.head (List.drop idx glyphs))
 
 
-{-| Format a millisecond duration. Under 1000 ms shows as `<n> ms`; 1000 ms and
-above shows as decimal seconds with one fractional digit (e.g. `1.6 s`,
-`47.2 s`). Keeps wide histograms readable without losing precision on the
-small samples that dominate per-module timings.
+{-| Returns `ms` milliseconds as text: below 1000 as whole milliseconds
+(`640 ms`), from 1000 as seconds rounded to the nearest tenth (`1.6 s`).
 -}
 formatMs : Int -> String
 formatMs ms =
@@ -641,6 +725,9 @@ formatMs ms =
         String.fromInt whole ++ "." ++ String.fromInt frac ++ " s"
 
 
+{-| Returns `s` padded with spaces on the right to `n` characters, or unchanged if
+already that long.
+-}
 padRight : Int -> String -> String
 padRight n s =
     if String.length s >= n then
@@ -650,6 +737,9 @@ padRight n s =
         s ++ String.repeat (n - String.length s) " "
 
 
+{-| Returns `s` padded with spaces on the left to `n` characters, or unchanged if
+already that long.
+-}
 padLeft : Int -> String -> String
 padLeft n s =
     if String.length s >= n then
@@ -663,6 +753,8 @@ padLeft n s =
 -- ====== LABELS / ORDINALS ======
 
 
+{-| Returns the name `phase` is reported under.
+-}
 phaseLabel : PhaseName -> String
 phaseLabel phase =
     case phase of
@@ -685,6 +777,8 @@ phaseLabel phase =
             "MLIR codegen"
 
 
+{-| Returns the name `stage` is reported under.
+-}
 stageLabel : ModuleStage -> String
 stageLabel stage =
     case stage of
@@ -698,6 +792,8 @@ stageLabel stage =
             "build"
 
 
+{-| Returns the key `phase` is stored under, which is also its place in the report.
+-}
 phaseOrd : PhaseName -> Int
 phaseOrd phase =
     case phase of
@@ -720,6 +816,8 @@ phaseOrd phase =
             5
 
 
+{-| Returns the key `stage` is stored under.
+-}
 stageOrd : ModuleStage -> Int
 stageOrd stage =
     case stage of
@@ -733,11 +831,15 @@ stageOrd stage =
             2
 
 
+{-| Every phase, in report order.
+-}
 allPhases : List PhaseName
 allPhases =
     [ PhaseDeps, PhaseLocal, PhaseMono, PhaseInlineSimplify, PhaseGlobalOpt, PhaseMlir ]
 
 
+{-| Every module stage, in report order.
+-}
 allStages : List ModuleStage
 allStages =
     [ Crawl, Check, Build ]
@@ -747,6 +849,9 @@ allStages =
 -- ====== MVAR HELPERS ======
 
 
+{-| Replaces the state in `mvar` with `f` applied to it, holding the MVar empty in
+between so that no other update can interleave.
+-}
 modifyState : MVar State -> (State -> State) -> Task Never ()
 modifyState mvar f =
     Utils.takeMVar stateDecoder mvar
@@ -757,6 +862,8 @@ modifyState mvar f =
 -- ====== ENCODERS / DECODERS ======
 
 
+{-| Produces the encoder that writes `s` into the MVar.
+-}
 stateEncoder : State -> Bytes.Encode.Encoder
 stateEncoder s =
     Bytes.Encode.sequence
@@ -767,6 +874,8 @@ stateEncoder s =
         ]
 
 
+{-| A decoder for the state, as `stateEncoder` writes it.
+-}
 stateDecoder : Bytes.Decode.Decoder State
 stateDecoder =
     Bytes.Decode.map State BD.int
@@ -775,22 +884,31 @@ stateDecoder =
         |> bdApply (BD.stdDict BD.int histogramDecoder)
 
 
+{-| Produces a decoder that applies the function `df` decodes to the value `da`
+decodes next.
+-}
 bdApply : Bytes.Decode.Decoder a -> Bytes.Decode.Decoder (a -> b) -> Bytes.Decode.Decoder b
 bdApply da df =
     Bytes.Decode.andThen (\f -> Bytes.Decode.map f da) df
 
 
+{-| Produces the encoder for one phase's record.
+-}
 phaseStatsEncoder : PhaseStats -> Bytes.Encode.Encoder
 phaseStatsEncoder ps =
     Bytes.Encode.sequence [ BE.int ps.startMs, BE.int ps.endMs ]
 
 
+{-| A decoder for one phase's record, as `phaseStatsEncoder` writes it.
+-}
 phaseStatsDecoder : Bytes.Decode.Decoder PhaseStats
 phaseStatsDecoder =
     Bytes.Decode.map PhaseStats BD.int
         |> bdApply BD.int
 
 
+{-| Produces the encoder for one histogram.
+-}
 histogramEncoder : Histogram -> Bytes.Encode.Encoder
 histogramEncoder h =
     Bytes.Encode.sequence
@@ -803,6 +921,8 @@ histogramEncoder h =
         ]
 
 
+{-| A decoder for one histogram, as `histogramEncoder` writes it.
+-}
 histogramDecoder : Bytes.Decode.Decoder Histogram
 histogramDecoder =
     BD.map6 Histogram

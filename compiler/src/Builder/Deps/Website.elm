@@ -1,10 +1,16 @@
 module Builder.Deps.Website exposing (route, metadata)
 
-{-| Constructs URLs for the Elm package registry website.
+{-| Every request the compiler makes to the package server starts from a URL
+built here, so this module is the one place that decides which server that is.
 
-This module provides utilities for building URLs to access package metadata, documentation,
-and registry endpoints. It respects the GUIDA\_REGISTRY environment variable to support
-custom package registries, defaulting to package.elm-lang.org.
+The server's address, called the domain here, is the value of the
+`GUIDA_REGISTRY` environment variable when it is set, and
+`https://package.elm-lang.org` otherwise. The variable is read again each time a
+URL is built. Its value is used as a prefix exactly as given, with nothing
+added or removed, so a value ending in `/` produces a doubled slash.
+
+`route` builds a URL for an endpoint of the server, and `metadata` one for a
+file the server keeps about one version of one package.
 
 
 # URL Construction
@@ -20,14 +26,20 @@ import Task exposing (Task)
 import Utils.Main as Utils
 
 
+{-| A task giving the package server's domain: the `GUIDA_REGISTRY` environment
+variable when it is set, and `https://package.elm-lang.org` otherwise.
+-}
 domain : Task Never String
 domain =
     Utils.envLookupEnv "GUIDA_REGISTRY"
         |> Task.map (Maybe.withDefault "https://package.elm-lang.org")
 
 
-{-| Construct a URL for a registry API endpoint with optional query parameters.
-Respects the GUIDA\_REGISTRY environment variable for custom registries.
+{-| Returns the URL of `path` on the package server, with `params` appended as
+a percent-encoded query string when there are any.
+
+`path` is appended to the domain as given, so it should begin with `/`.
+
 -}
 route : String -> List ( String, String ) -> Task Never String
 route path params =
@@ -35,8 +47,9 @@ route path params =
         |> Task.map (\d -> Http.toUrl (d ++ path) params)
 
 
-{-| Construct a URL for accessing package metadata files (like docs.json or endpoint.json).
-Respects the GUIDA\_REGISTRY environment variable for custom registries.
+{-| Returns the URL of the file named `file` that the package server keeps for
+version `version` of package `name`, of the form
+`<domain>/packages/<author>/<project>/<version>/<file>`.
 -}
 metadata : Pkg.Name -> V.Version -> String -> Task Never String
 metadata name version file =
