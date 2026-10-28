@@ -1,5 +1,10 @@
-// threaded-gc-03: deferred decommit (U1) and commit-ahead (U2). See
-// PageWork.hpp and plans/threaded-gc-03-helper-threads.md P§3.6-3.7.
+// Aging keeps Pending extents twice: `pending_` finds an extent by address, and `pending_order_` lists releases
+// oldest first, so that a sync point stops at the first extent not yet due. A cancelled reuse removes only the
+// `pending_` entry, leaving a stale `pending_order_` entry that aging and `drainAll` recognise by its release number
+// and skip.
+//
+// A Posted extent records the slot whose job discards it, and reaping a job forgets only the extents recorded
+// against that slot.
 
 #include "PageWork.hpp"
 
@@ -7,16 +12,18 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: M7's trace, test/tla/)
+#include "TlaTrace.hpp"
 
-// M7's trace (test/tla/M7-pagework/TracePageWork.tla): every PageWork event is
-// stamped from one process-wide seq_cst counter, so the merged log is one total
-// order in which each stamp sits where its model step does (plan §8).
+// In trace builds every event below is passed to `ECO_TLA_TRACE`, stamped from one process-wide sequentially
+// consistent counter, so that the stamps put the events of every thread in one total order. In other builds
+// `PW_TRACE` expands to `((void)0)` and its arguments are not evaluated.
 #if ECO_TLA_TRACE_ENABLED
 #include <atomic>
 namespace {
+// The next stamp for a page-work trace event.
 std::atomic<uint64_t> g_pw_tick{0};
 }  // namespace
+// Writes trace event `ev` with the next stamp and the name/value pairs that follow it.
 #define PW_TRACE(ev, ...) ECO_TLA_TRACE(ev, "clk", "pw", "tick", g_pw_tick.fetch_add(1) __VA_OPT__(, ) __VA_ARGS__)
 #else
 #define PW_TRACE(...) ((void)0)
@@ -26,22 +33,22 @@ namespace Elm::gc {
 
 namespace {
 
+// Prints `msg` to stderr with a "[page-work]" prefix and aborts.
 [[noreturn]] void pageWorkAbort(const char* msg) {
     std::fprintf(stderr, "[page-work] %s\n", msg);
     std::fflush(stderr);
     std::abort();
 }
 
-// One private-writable page for the MADV_POPULATE_WRITE support probe.
-// A PE image's sections align to at most /ALIGN (4096 by default: LNK1164
-// above it); roundUp below still finds a 4 KiB page in the array, and the
-// Win64 populate stub fails the probe regardless.
+// Private writable memory holding the page the constructor's populate probe runs on. On Windows the array is
+// aligned to 4096 only; the probe uses the first 4 KiB-aligned page in it either way.
 #if defined(_WIN32)
 alignas(4096) char g_probe_page[65536];
 #else
 alignas(65536) char g_probe_page[65536];
 #endif
 
+// Returns `p` rounded up to a multiple of `g`, which must be a power of two.
 char* roundUp(char* p, size_t g) {
     const uintptr_t v = reinterpret_cast<uintptr_t>(p);
     return reinterpret_cast<char*>((v + g - 1) & ~(uintptr_t(g) - 1));
@@ -54,16 +61,15 @@ PageWork::PageWork(PageOps ops, PageWorkConfig cfg, GCHelperPool& pool,
     : ops_(ops), cfg_(cfg), pool_(pool), hooks_(hooks) {
     for (auto& s : slots_) s.ops = &ops_;
     if (cfg_.ahead_bytes > 0 && ops_.populate != nullptr) {
-        // Probe on a page of our own (P§3.7). A failure (EINVAL on kernels
-        // older than 5.14, the Win64 stub) disables U2 for the process.
+        // Probed on a page of our own, so that no heap page is touched. A failure turns commit-ahead off for
+        // this PageWork.
         counters_.populate_supported =
             ops_.populate(ops_.ctx, roundUp(g_probe_page, 4096), 4096);
     }
 }
 
 PageWork::~PageWork() {
-    // The owner must have drained (Allocator::reset / ~Allocator); a job
-    // still running would touch a PageWork that no longer exists.
+    // A job still in flight would touch a PageWork that no longer exists.
     for (auto& s : slots_) {
         if (!s.isIdle() && !s.isDone()) pageWorkAbort("destroyed with a job in flight");
     }
@@ -99,7 +105,7 @@ bool PageWork::isPendingOrPosted(char* p) const {
 }
 
 void PageWork::reap(PageJob& s) {
-    // Caller has observed Done (acquire): the runner's writes are visible.
+    // The caller has seen Done with an acquire load, so the helper's writes to `s` are visible.
     if (s.kind == Kind::Discard) {
         for (const Extent& e : s.extents) {
             auto it = posted_discard_.find(e.p);
@@ -186,7 +192,6 @@ PageWork::Reuse PageWork::onReuse(char* p, size_t n, bool in_pause) {
              "st", pending_.count(p) != 0 ? 1 : (posted_discard_.count(p) != 0 ? 2 : 0),
              "slot", posted_discard_.count(p) != 0 ? int{posted_discard_.at(p).slot} : -1);
     if (auto it = pending_.find(p); it != pending_.end()) {
-        // U1's win: the pages are still resident, no refault.
         counters_.pending_bytes -= it->second.size;
         counters_.cancelled_bytes += it->second.size;
         counters_.cancelled_extents += 1;
@@ -264,7 +269,7 @@ void PageWork::topUpWindow(char* bump, char* cap_end, bool in_pause) {
     char* lo = (window_end_ != nullptr && window_end_ > bump) ? window_end_ : bump;
     if (target <= lo) return;
     if (!ops_.commit(ops_.ctx, lo, static_cast<size_t>(target - lo))) {
-        ++counters_.window_commit_failures;   // best effort; decides nothing
+        ++counters_.window_commit_failures;
         return;
     }
     window_end_ = target;
@@ -285,11 +290,10 @@ void PageWork::topUpWindow(char* bump, char* cap_end, bool in_pause) {
 
 void PageWork::syncPoint(uint64_t epoch, uint64_t major_epoch, char* bump, char* cap_end,
                          bool in_pause) {
-    // (a) Reap finished jobs: bookkeeping only, decides nothing.
     reapDone();
     epoch_ = epoch;
     major_epoch_ = major_epoch;
-    // (b) Age: pending_order_ is in release (hence epoch) order.
+    // Release order is also epoch order, so the first extent not due ends the scan.
     batch_.clear();
     while (!pending_order_.empty()) {
         const OrderEntry oe = pending_order_.front();
@@ -313,9 +317,7 @@ void PageWork::syncPoint(uint64_t epoch, uint64_t major_epoch, char* bump, char*
         pending_order_.pop_front();
     }
     PW_TRACE("sync", "size", batch_.size());
-    // (c) Post the due discards as one job.
     postDiscardBatch(batch_, in_pause);
-    // (d) U2: keep the commit-ahead window topped up.
     topUpWindow(bump, cap_end, in_pause);
 }
 

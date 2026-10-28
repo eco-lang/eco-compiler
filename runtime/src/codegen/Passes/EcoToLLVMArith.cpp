@@ -1,7 +1,32 @@
 //===- EcoToLLVMArith.cpp - Arithmetic lowering patterns ------------------===//
 //
-// This file implements lowering patterns for ECO arithmetic, comparison,
-// bitwise, boolean, character, and type conversion operations.
+// Elm's scalar operations are mostly single machine instructions, and this file turns the eco
+// dialect's scalar operations into those instructions, as conversion patterns of the `eco-to-llvm`
+// pass.
+//
+// A scalar here is an unboxed Int (i64), Float (f64), Char (i32, a code point or an encoded
+// case-mapping result) or Bool (i1).
+// Most operations become one arith or LLVM dialect op. The patterns that do more exist because the
+// Elm operation is defined where the LLVM instruction is not, or means something different:
+//
+// - Integer division and remainder are total (CGEN_084). LLVM's `sdiv` and `srem` are undefined for
+//   a divisor of 0 and for the minimum Int divided by -1, so a divisor of 0 or -1 is replaced by 1
+//   before the instruction and the result is chosen afterwards. `modBy` is floored division modulo:
+//   a non-zero result takes the sign of the modulus, where `srem`'s takes the sign of the dividend.
+// - A shift count is taken modulo 64 (CGEN_085), because an LLVM shift by 64 or more is poison.
+// - Chars are ordered by unsigned comparison of their sort keys (`charSortKey`), and an Int outside
+//   0..0x10FFFF converted to a Char becomes U+FFFD.
+// - Float comparisons use ordered predicates, so each one is false when either operand is NaN.
+//
+// The comparisons that produce an Elm `Order` (`LT`, `EQ` or `GT`) return a boxed `!eco.value`. For
+// Int, Float and Char the comparison is done inline and a runtime function only supplies the
+// `Order` value (CGEN_075); for String one runtime function compares and returns it.
+// `eco.value.eq` becomes a call to the `__eco_value_eq` marker, a declaration with no definition
+// that the backend later replaces with inline code (CGEN_076).
+//
+// The patterns are added by `populateEcoArithPatterns`, and those that call a runtime function by
+// `populateEcoArithPatternsWithRuntime`. Every runtime function they call is declared gc-leaf by
+// `EcoRuntime`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,6 +47,7 @@ namespace {
 // Integer Arithmetic
 //===----------------------------------------------------------------------===//
 
+/// Lowers `eco.int.add` to a wrapping 64-bit `arith.addi`.
 struct IntAddOpLowering : public OpConversionPattern<IntAddOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -33,6 +59,7 @@ struct IntAddOpLowering : public OpConversionPattern<IntAddOp> {
     }
 };
 
+/// Lowers `eco.int.sub` to a wrapping 64-bit `arith.subi`.
 struct IntSubOpLowering : public OpConversionPattern<IntSubOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -44,6 +71,7 @@ struct IntSubOpLowering : public OpConversionPattern<IntSubOp> {
     }
 };
 
+/// Lowers `eco.int.mul` to a wrapping 64-bit `arith.muli`.
 struct IntMulOpLowering : public OpConversionPattern<IntMulOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -55,6 +83,8 @@ struct IntMulOpLowering : public OpConversionPattern<IntMulOp> {
     }
 };
 
+/// Lowers Int division `//`, which truncates toward zero and is total: `x // 0` is 0 and `x // -1` is
+/// the wrapping negation of `x`, so the minimum Int divided by -1 is the minimum Int (CGEN_084).
 struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -66,10 +96,8 @@ struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
         Value lhs = adaptor.getLhs();
         Value rhs = adaptor.getRhs();
 
-        // CGEN_084: x // 0 = 0 and x // -1 = 0 - x, wrapping (MIN_INT // -1 =
-        // MIN_INT). `sdiv` by 0 and MIN_INT by -1 are LLVM UB (SIGFPE on
-        // x86), so neither divisor reaches it: rhs in {-1, 0} (one unsigned
-        // compare: rhs + 1 <=u 1) divides by 1 and takes rhs * lhs instead,
+        // `sdiv` by 0, or of the minimum Int by -1, is undefined, so a divisor in {-1, 0} (tested with
+        // one unsigned compare, rhs + 1 <=u 1) divides by 1 instead, and the result is rhs * lhs,
         // which is 0 or the wrapping negation.
         auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
         auto rhsPlus1 = rewriter.create<arith::AddIOp>(loc, rhs, one);
@@ -87,6 +115,8 @@ struct IntDivOpLowering : public OpConversionPattern<IntDivOp> {
     }
 };
 
+/// Lowers `modBy`, the floored remainder: `modBy 3 (-5)` is 1 where `srem` gives -2. A modulus of 0
+/// or -1 gives 0 (CGEN_084).
 struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -98,30 +128,20 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
         Value modulus = adaptor.getModulus();
         Value x = adaptor.getX();
 
-        // Elm's modBy implements floored division modulo:
-        // modBy b a = a - (floor(a/b)) * b
-        //
-        // This differs from C's % (truncated) for negative numbers.
-        // Example: modBy 3 (-5) = 1 in Elm, but (-5) % 3 = -2 in C
-        //
-        // Implementation: r = a % b; if (r != 0 && (r ^ b) < 0) r += b;
+        // r = x srem m; a non-zero r whose sign differs from m's ((r ^ m) < 0) has m added.
 
         auto zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
 
-        // CGEN_084: modBy 0 x = 0 and modBy -1 x = 0. `srem` by 0 and MIN_INT
-        // by -1 are LLVM UB (SIGFPE on x86), so a modulus in {-1, 0} (one
-        // unsigned compare: m + 1 <=u 1) is replaced by 1, whose floored
-        // remainder is 0 for every x: no final select is needed.
+        // `srem` by 0, or of the minimum Int by -1, is undefined, so a modulus in {-1, 0} (m + 1 <=u 1)
+        // is replaced by 1. The floored remainder by 1 is 0 for every x, so no final select is needed.
         auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
         auto modPlus1 = rewriter.create<arith::AddIOp>(loc, modulus, one);
         auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
                                                          modPlus1, one);
         auto safeModulus = rewriter.create<arith::SelectOp>(loc, isSpecial, one, modulus);
 
-        // Compute truncated remainder
         auto truncRem = rewriter.create<arith::RemSIOp>(loc, x, safeModulus);
 
-        // Check if signs differ and remainder is non-zero
         auto remIsNonZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
                                                             truncRem, zero);
         auto xorVal = rewriter.create<arith::XOrIOp>(loc, truncRem, safeModulus);
@@ -129,7 +149,6 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
                                                            xorVal, zero);
         auto needsAdjust = rewriter.create<arith::AndIOp>(loc, remIsNonZero, signsDiffer);
 
-        // Adjust by adding modulus if needed
         auto adjusted = rewriter.create<arith::AddIOp>(loc, truncRem, safeModulus);
         auto result = rewriter.create<arith::SelectOp>(loc, needsAdjust, adjusted, truncRem);
 
@@ -138,6 +157,8 @@ struct IntModByOpLowering : public OpConversionPattern<IntModByOp> {
     }
 };
 
+/// Lowers `remainderBy`, the truncated remainder, which takes the sign of the dividend. A divisor
+/// of 0 or -1 gives 0 (CGEN_084).
 struct IntRemainderByOpLowering : public OpConversionPattern<IntRemainderByOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -149,10 +170,8 @@ struct IntRemainderByOpLowering : public OpConversionPattern<IntRemainderByOp> {
         Value divisor = adaptor.getDivisor();
         Value x = adaptor.getX();
 
-        // CGEN_084: remainderBy 0 x = 0 and remainderBy -1 x = 0. `srem` by 0
-        // and MIN_INT by -1 are LLVM UB (SIGFPE on x86), so a divisor in
-        // {-1, 0} (one unsigned compare: d + 1 <=u 1) is replaced by 1, whose
-        // remainder is 0 for every x.
+        // `srem` by 0, or of the minimum Int by -1, is undefined, so a divisor in {-1, 0} (d + 1 <=u 1)
+        // is replaced by 1, whose remainder is 0 for every x.
         auto one = rewriter.create<arith::ConstantIntOp>(loc, 1, /*width=*/64);
         auto divPlus1 = rewriter.create<arith::AddIOp>(loc, divisor, one);
         auto isSpecial = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ule,
@@ -166,6 +185,7 @@ struct IntRemainderByOpLowering : public OpConversionPattern<IntRemainderByOp> {
     }
 };
 
+/// Lowers Int negation to `0 - x`, which wraps for the minimum Int.
 struct IntNegateOpLowering : public OpConversionPattern<IntNegateOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -179,6 +199,7 @@ struct IntNegateOpLowering : public OpConversionPattern<IntNegateOp> {
     }
 };
 
+/// Lowers Int `abs` to a select of `x` and `0 - x`; the minimum Int is returned unchanged.
 struct IntAbsOpLowering : public OpConversionPattern<IntAbsOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -196,9 +217,12 @@ struct IntAbsOpLowering : public OpConversionPattern<IntAbsOp> {
     }
 };
 
+/// Lowers Int `^` to a call to the runtime function `eco_int_pow`.
 struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     IntPowOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -220,6 +244,7 @@ struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
 // Float Arithmetic
 //===----------------------------------------------------------------------===//
 
+/// Lowers Float addition to `arith.addf`.
 struct FloatAddOpLowering : public OpConversionPattern<FloatAddOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -231,6 +256,7 @@ struct FloatAddOpLowering : public OpConversionPattern<FloatAddOp> {
     }
 };
 
+/// Lowers Float subtraction to `arith.subf`.
 struct FloatSubOpLowering : public OpConversionPattern<FloatSubOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -242,6 +268,7 @@ struct FloatSubOpLowering : public OpConversionPattern<FloatSubOp> {
     }
 };
 
+/// Lowers Float multiplication to `arith.mulf`.
 struct FloatMulOpLowering : public OpConversionPattern<FloatMulOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -253,18 +280,19 @@ struct FloatMulOpLowering : public OpConversionPattern<FloatMulOp> {
     }
 };
 
+/// Lowers Float division `/` to `arith.divf`; division by zero gives an infinity or NaN.
 struct FloatDivOpLowering : public OpConversionPattern<FloatDivOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(FloatDivOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // IEEE 754 handles div by zero (returns Inf or NaN)
         rewriter.replaceOpWithNewOp<arith::DivFOp>(op, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
 
+/// Lowers Float negation to `llvm.fneg`.
 struct FloatNegateOpLowering : public OpConversionPattern<FloatNegateOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -276,6 +304,7 @@ struct FloatNegateOpLowering : public OpConversionPattern<FloatNegateOp> {
     }
 };
 
+/// Lowers Float `abs` to `llvm.intr.fabs`.
 struct FloatAbsOpLowering : public OpConversionPattern<FloatAbsOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -287,6 +316,7 @@ struct FloatAbsOpLowering : public OpConversionPattern<FloatAbsOp> {
     }
 };
 
+/// Lowers Float `^` to `llvm.intr.pow`.
 struct FloatPowOpLowering : public OpConversionPattern<FloatPowOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -298,6 +328,7 @@ struct FloatPowOpLowering : public OpConversionPattern<FloatPowOp> {
     }
 };
 
+/// Lowers `sqrt` to `llvm.intr.sqrt`.
 struct FloatSqrtOpLowering : public OpConversionPattern<FloatSqrtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -309,6 +340,7 @@ struct FloatSqrtOpLowering : public OpConversionPattern<FloatSqrtOp> {
     }
 };
 
+/// Lowers `sin` to `llvm.intr.sin`.
 struct FloatSinOpLowering : public OpConversionPattern<FloatSinOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -320,6 +352,7 @@ struct FloatSinOpLowering : public OpConversionPattern<FloatSinOp> {
     }
 };
 
+/// Lowers `cos` to `llvm.intr.cos`.
 struct FloatCosOpLowering : public OpConversionPattern<FloatCosOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -331,6 +364,7 @@ struct FloatCosOpLowering : public OpConversionPattern<FloatCosOp> {
     }
 };
 
+/// Lowers `tan` to `sin x / cos x`, computed with the LLVM sine and cosine intrinsics.
 struct FloatTanOpLowering : public OpConversionPattern<FloatTanOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -346,9 +380,12 @@ struct FloatTanOpLowering : public OpConversionPattern<FloatTanOp> {
     }
 };
 
+/// Lowers `asin` to a call to the C library function `asin`.
 struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     FloatAsinOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -364,9 +401,12 @@ struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
     }
 };
 
+/// Lowers `acos` to a call to the C library function `acos`.
 struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     FloatAcosOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -382,9 +422,12 @@ struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
     }
 };
 
+/// Lowers `atan` to a call to the C library function `atan`.
 struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     FloatAtanOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -400,9 +443,12 @@ struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
     }
 };
 
+/// Lowers `atan2 y x` to a call to the C library function `atan2(y, x)`.
 struct FloatAtan2OpLowering : public OpConversionPattern<FloatAtan2Op> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     FloatAtan2OpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -419,6 +465,7 @@ struct FloatAtan2OpLowering : public OpConversionPattern<FloatAtan2Op> {
     }
 };
 
+/// Lowers the natural logarithm to `llvm.intr.log`.
 struct FloatLogOpLowering : public OpConversionPattern<FloatLogOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -430,19 +477,20 @@ struct FloatLogOpLowering : public OpConversionPattern<FloatLogOp> {
     }
 };
 
+/// Lowers `isNaN` to an unordered self-comparison, which is true only for NaN.
 struct FloatIsNaNOpLowering : public OpConversionPattern<FloatIsNaNOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(FloatIsNaNOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // x != x is true only for NaN
         rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, arith::CmpFPredicate::UNO,
                                                     adaptor.getValue(), adaptor.getValue());
         return success();
     }
 };
 
+/// Lowers `isInfinite` to a test that the absolute value equals positive infinity.
 struct FloatIsInfiniteOpLowering : public OpConversionPattern<FloatIsInfiniteOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -466,6 +514,7 @@ struct FloatIsInfiniteOpLowering : public OpConversionPattern<FloatIsInfiniteOp>
 // Type Conversions
 //===----------------------------------------------------------------------===//
 
+/// Lowers `toFloat` to a signed integer-to-float conversion.
 struct IntToFloatOpLowering : public OpConversionPattern<IntToFloatOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -479,6 +528,8 @@ struct IntToFloatOpLowering : public OpConversionPattern<IntToFloatOp> {
     }
 };
 
+/// Lowers `round` to `llvm.intr.round`, which rounds halfway cases away from zero, followed by a
+/// conversion to Int. The conversion is poison for NaN, an infinity, or a value outside the Int range.
 struct FloatRoundOpLowering : public OpConversionPattern<FloatRoundOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -495,6 +546,7 @@ struct FloatRoundOpLowering : public OpConversionPattern<FloatRoundOp> {
     }
 };
 
+/// Lowers `floor` to `llvm.intr.floor` and a conversion to Int, poison outside the Int range.
 struct FloatFloorOpLowering : public OpConversionPattern<FloatFloorOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -511,6 +563,7 @@ struct FloatFloorOpLowering : public OpConversionPattern<FloatFloorOp> {
     }
 };
 
+/// Lowers `ceiling` to `llvm.intr.ceil` and a conversion to Int, poison outside the Int range.
 struct FloatCeilingOpLowering : public OpConversionPattern<FloatCeilingOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -527,6 +580,7 @@ struct FloatCeilingOpLowering : public OpConversionPattern<FloatCeilingOp> {
     }
 };
 
+/// Lowers `truncate` to a float-to-Int conversion, which rounds toward zero and is poison outside the Int range.
 struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -535,7 +589,6 @@ struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        // FPToSIOp inherently truncates toward zero
         rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, i64Ty, adaptor.getValue());
         return success();
     }
@@ -545,6 +598,7 @@ struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
 // Integer Comparisons
 //===----------------------------------------------------------------------===//
 
+/// Lowers Int `<` to a signed comparison.
 struct IntLtOpLowering : public OpConversionPattern<IntLtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -557,6 +611,7 @@ struct IntLtOpLowering : public OpConversionPattern<IntLtOp> {
     }
 };
 
+/// Lowers Int `<=` to a signed comparison.
 struct IntLeOpLowering : public OpConversionPattern<IntLeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -569,6 +624,7 @@ struct IntLeOpLowering : public OpConversionPattern<IntLeOp> {
     }
 };
 
+/// Lowers Int `>` to a signed comparison.
 struct IntGtOpLowering : public OpConversionPattern<IntGtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -581,6 +637,7 @@ struct IntGtOpLowering : public OpConversionPattern<IntGtOp> {
     }
 };
 
+/// Lowers Int `>=` to a signed comparison.
 struct IntGeOpLowering : public OpConversionPattern<IntGeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -593,6 +650,7 @@ struct IntGeOpLowering : public OpConversionPattern<IntGeOp> {
     }
 };
 
+/// Lowers Int `==` to an integer equality comparison.
 struct IntEqOpLowering : public OpConversionPattern<IntEqOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -605,6 +663,7 @@ struct IntEqOpLowering : public OpConversionPattern<IntEqOp> {
     }
 };
 
+/// Lowers Int `/=` to an integer inequality comparison.
 struct IntNeOpLowering : public OpConversionPattern<IntNeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -621,6 +680,7 @@ struct IntNeOpLowering : public OpConversionPattern<IntNeOp> {
 // Float Comparisons
 //===----------------------------------------------------------------------===//
 
+/// Lowers Float `<` to the ordered comparison `olt`.
 struct FloatLtOpLowering : public OpConversionPattern<FloatLtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -633,6 +693,7 @@ struct FloatLtOpLowering : public OpConversionPattern<FloatLtOp> {
     }
 };
 
+/// Lowers Float `<=` to the ordered comparison `ole`.
 struct FloatLeOpLowering : public OpConversionPattern<FloatLeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -645,6 +706,7 @@ struct FloatLeOpLowering : public OpConversionPattern<FloatLeOp> {
     }
 };
 
+/// Lowers Float `>` to the ordered comparison `ogt`.
 struct FloatGtOpLowering : public OpConversionPattern<FloatGtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -657,6 +719,7 @@ struct FloatGtOpLowering : public OpConversionPattern<FloatGtOp> {
     }
 };
 
+/// Lowers Float `>=` to the ordered comparison `oge`.
 struct FloatGeOpLowering : public OpConversionPattern<FloatGeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -669,6 +732,7 @@ struct FloatGeOpLowering : public OpConversionPattern<FloatGeOp> {
     }
 };
 
+/// Lowers Float `==` to the ordered comparison `oeq`.
 struct FloatEqOpLowering : public OpConversionPattern<FloatEqOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -681,6 +745,7 @@ struct FloatEqOpLowering : public OpConversionPattern<FloatEqOp> {
     }
 };
 
+/// Lowers Float `/=` to the ordered comparison `one`, which is false when either operand is NaN.
 struct FloatNeOpLowering : public OpConversionPattern<FloatNeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -697,6 +762,7 @@ struct FloatNeOpLowering : public OpConversionPattern<FloatNeOp> {
 // Min/Max Operations
 //===----------------------------------------------------------------------===//
 
+/// Lowers Int `min` to a signed minimum.
 struct IntMinOpLowering : public OpConversionPattern<IntMinOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -708,6 +774,7 @@ struct IntMinOpLowering : public OpConversionPattern<IntMinOp> {
     }
 };
 
+/// Lowers Int `max` to a signed maximum.
 struct IntMaxOpLowering : public OpConversionPattern<IntMaxOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -719,6 +786,7 @@ struct IntMaxOpLowering : public OpConversionPattern<IntMaxOp> {
     }
 };
 
+/// Lowers Float `min` to `llvm.intr.minnum`, which returns the other operand when one is NaN.
 struct FloatMinOpLowering : public OpConversionPattern<FloatMinOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -730,6 +798,7 @@ struct FloatMinOpLowering : public OpConversionPattern<FloatMinOp> {
     }
 };
 
+/// Lowers Float `max` to `llvm.intr.maxnum`, which returns the other operand when one is NaN.
 struct FloatMaxOpLowering : public OpConversionPattern<FloatMaxOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -745,6 +814,7 @@ struct FloatMaxOpLowering : public OpConversionPattern<FloatMaxOp> {
 // Bitwise Operations
 //===----------------------------------------------------------------------===//
 
+/// Lowers `Bitwise.and` to `arith.andi`.
 struct IntAndOpLowering : public OpConversionPattern<IntAndOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -756,6 +826,7 @@ struct IntAndOpLowering : public OpConversionPattern<IntAndOp> {
     }
 };
 
+/// Lowers `Bitwise.or` to `arith.ori`.
 struct IntOrOpLowering : public OpConversionPattern<IntOrOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -767,6 +838,7 @@ struct IntOrOpLowering : public OpConversionPattern<IntOrOp> {
     }
 };
 
+/// Lowers `Bitwise.xor` to `arith.xori`.
 struct IntXorOpLowering : public OpConversionPattern<IntXorOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -778,6 +850,7 @@ struct IntXorOpLowering : public OpConversionPattern<IntXorOp> {
     }
 };
 
+/// Lowers `Bitwise.complement` to an exclusive or with all bits set.
 struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -786,22 +859,21 @@ struct IntComplementOpLowering : public OpConversionPattern<IntComplementOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
 
-        // complement(x) = x XOR -1 (all bits set)
         auto allOnes = rewriter.create<arith::ConstantIntOp>(loc, -1, /*width=*/64);
         rewriter.replaceOpWithNewOp<arith::XOrIOp>(op, adaptor.getValue(), allOnes);
         return success();
     }
 };
 
-// CGEN_085: a shift count is taken modulo 64 (count & 63), as JavaScript takes
-// it modulo 32 for its 32-bit Bitwise; the kernel C++ Bitwise path does the
-// same. An LLVM shift by >= 64 (or a negative count) is poison.
+/// Returns `amount & 63`, the shift count modulo 64, with negative counts wrapping too (CGEN_085). An
+/// LLVM shift by 64 or more is poison, so every shift here takes its count through this function.
 static Value shiftAmountMod64(ConversionPatternRewriter &rewriter, Location loc,
                               Value amount) {
     auto mask = rewriter.create<arith::ConstantIntOp>(loc, 63, /*width=*/64);
     return rewriter.create<arith::AndIOp>(loc, amount, mask);
 }
 
+/// Lowers `eco.int.shl` to a left shift by the count modulo 64.
 struct IntShiftLeftOpLowering : public OpConversionPattern<IntShiftLeftOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -814,26 +886,26 @@ struct IntShiftLeftOpLowering : public OpConversionPattern<IntShiftLeftOp> {
     }
 };
 
+/// Lowers `eco.int.shr` to an arithmetic (sign-filling) right shift by the count modulo 64.
 struct IntShiftRightOpLowering : public OpConversionPattern<IntShiftRightOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(IntShiftRightOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Arithmetic shift right (preserves sign)
         rewriter.replaceOpWithNewOp<arith::ShRSIOp>(op, adaptor.getValue(),
             shiftAmountMod64(rewriter, op.getLoc(), adaptor.getAmount()));
         return success();
     }
 };
 
+/// Lowers `eco.int.shru` to a logical (zero-filling) right shift by the count modulo 64.
 struct IntShiftRightZfOpLowering : public OpConversionPattern<IntShiftRightZfOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(IntShiftRightZfOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Logical shift right (zero fill)
         rewriter.replaceOpWithNewOp<arith::ShRUIOp>(op, adaptor.getValue(),
             shiftAmountMod64(rewriter, op.getLoc(), adaptor.getAmount()));
         return success();
@@ -844,6 +916,7 @@ struct IntShiftRightZfOpLowering : public OpConversionPattern<IntShiftRightZfOp>
 // Boolean Operations
 //===----------------------------------------------------------------------===//
 
+/// Lowers Bool `not` to an exclusive or with 1.
 struct BoolNotOpLowering : public OpConversionPattern<BoolNotOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -857,6 +930,7 @@ struct BoolNotOpLowering : public OpConversionPattern<BoolNotOp> {
     }
 };
 
+/// Lowers Bool `&&` on i1 values to `arith.andi`; both operands are already evaluated.
 struct BoolAndOpLowering : public OpConversionPattern<BoolAndOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -868,6 +942,7 @@ struct BoolAndOpLowering : public OpConversionPattern<BoolAndOp> {
     }
 };
 
+/// Lowers Bool `||` on i1 values to `arith.ori`; both operands are already evaluated.
 struct BoolOrOpLowering : public OpConversionPattern<BoolOrOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -879,6 +954,7 @@ struct BoolOrOpLowering : public OpConversionPattern<BoolOrOp> {
     }
 };
 
+/// Lowers Bool `xor` to `arith.xori`.
 struct BoolXorOpLowering : public OpConversionPattern<BoolXorOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -894,6 +970,7 @@ struct BoolXorOpLowering : public OpConversionPattern<BoolXorOp> {
 // Character Operations
 //===----------------------------------------------------------------------===//
 
+/// Lowers `Char.toCode` to the code point, zero-extended from i32 to i64.
 struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -901,9 +978,8 @@ struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
     matchAndRewrite(CharToIntOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
-        // Char.toCode (KERN_008): the code point, or an encoded case-mapping
-        // result's first code point = value & 0x1FFFFF, zero-extended to i64.
-        // With ECO_CHAR_CASE_EXPANSION off no value is encoded: no mask.
+        // With ECO_CHAR_CASE_EXPANSION on, an encoded case-mapping result yields its first code point,
+        // `value & kFirstMask`; with it off no value is encoded and no mask is emitted.
         Value v = adaptor.getValue();
         if constexpr (Elm::CharValue::kExpansions) {
             Value mask = rewriter.create<arith::ConstantIntOp>(
@@ -915,6 +991,8 @@ struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
     }
 };
 
+/// Lowers `Char.fromCode` to a truncation of the Int to i32 when it is in 0..0x10FFFF (surrogates
+/// included), and to U+FFFD otherwise.
 struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -926,9 +1004,7 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
 
         Value input = adaptor.getValue();
 
-        // Elm semantics (Char.fromCode): a code outside 0..0x10FFFF becomes
-        // U+FFFD; anything in range (surrogates included) passes through.
-        // One unsigned compare covers both ends: a negative i64 is a huge
+        // One unsigned compare checks both ends: a negative Int is a huge
         // unsigned value.
         Value limit = rewriter.create<arith::ConstantIntOp>(loc, 0x110000, /*width=*/64);
         Value inRange = rewriter.create<arith::CmpIOp>(
@@ -945,11 +1021,10 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
 // Char Comparisons
 //===----------------------------------------------------------------------===//
 
-// The ordering key of a Char value (KERN_008, CharValue::sortKey): rotl32(x, 11),
-// which LLVM turns into one `rol`. Chars order by the unsigned compare of the
-// keys: code-point order for ordinary Chars, UTF-16 string order wherever an
-// encoded case-mapping result takes part. With ECO_CHAR_CASE_EXPANSION off the
-// key is the value itself and the comparisons emit a plain unsigned compare.
+/// Returns the ordering key of the Char value `x` (KERN_008, `CharValue::sortKey`). Chars order by the
+/// unsigned compare of their keys: code-point order for ordinary Chars, and UTF-16 string order wherever
+/// an encoded case-mapping result takes part. With ECO_CHAR_CASE_EXPANSION on the key is
+/// `rotl32(x, 11)`, which LLVM turns into one `rol`; with it off the key is `x` itself.
 static Value charSortKey(OpBuilder &b, Location loc, Value x) {
     if constexpr (Elm::CharValue::kExpansions) {
         auto c = [&](int64_t v) {
@@ -964,6 +1039,7 @@ static Value charSortKey(OpBuilder &b, Location loc, Value x) {
     }
 }
 
+/// Lowers Char `<` to an unsigned comparison of the sort keys (`charSortKey`).
 struct CharLtOpLowering : public OpConversionPattern<CharLtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -978,6 +1054,7 @@ struct CharLtOpLowering : public OpConversionPattern<CharLtOp> {
     }
 };
 
+/// Lowers Char `<=` to an unsigned comparison of the code points.
 struct CharLeOpLowering : public OpConversionPattern<CharLeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -992,6 +1069,7 @@ struct CharLeOpLowering : public OpConversionPattern<CharLeOp> {
     }
 };
 
+/// Lowers Char `>` to an unsigned comparison of the code points.
 struct CharGtOpLowering : public OpConversionPattern<CharGtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1006,6 +1084,7 @@ struct CharGtOpLowering : public OpConversionPattern<CharGtOp> {
     }
 };
 
+/// Lowers Char `>=` to an unsigned comparison of the code points.
 struct CharGeOpLowering : public OpConversionPattern<CharGeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1020,6 +1099,7 @@ struct CharGeOpLowering : public OpConversionPattern<CharGeOp> {
     }
 };
 
+/// Lowers Char `==` to an integer equality comparison.
 struct CharEqOpLowering : public OpConversionPattern<CharEqOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1032,6 +1112,7 @@ struct CharEqOpLowering : public OpConversionPattern<CharEqOp> {
     }
 };
 
+/// Lowers Char `/=` to an integer inequality comparison.
 struct CharNeOpLowering : public OpConversionPattern<CharNeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1045,29 +1126,13 @@ struct CharNeOpLowering : public OpConversionPattern<CharNeOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Compare-to-Order Intrinsics (Int/Float/Char)
+// Compare-to-Order (Int/Float/Char/String)
 //===----------------------------------------------------------------------===//
-//
-// Each lowering produces:
-//   %lt = call ptr addrspace(1) @Eco_Runtime_getOrderLT()
-//   %eq = call ptr addrspace(1) @Eco_Runtime_getOrderEQ()
-//   %gt = call ptr addrspace(1) @Eco_Runtime_getOrderGT()
-//   %isLt = <pred-lt> %a, %b
-//   %isGt = <pred-gt> %a, %b
-//   %tmp  = select %isGt, %gt, %eq
-//   %ord  = select %isLt, %lt, %tmp
-// All three getters are gc-leaf (single load from a value-rooted slot), so
-// RS4GC won't insert statepoints around them. The `Pure` op trait lets MLIR
-// CSE/hoist redundant cmp_order calls.
 
 namespace {
 
-// Phase C (CGEN_075): fold the sign in SSA and let one gc-leaf call pick the
-// singleton, instead of calling all three getters unconditionally. Cost per
-// execution goes from 3 calls + 2 selects to 1 call + 2 selects. The selects
-// are now over i64 constants rather than ptr addrspace(1) values, which also
-// keeps three GC pointers from being materialized on every compare.
-// ECO_ORDER_FROM_SIGN=0 restores the three-call shape (A/B escape hatch).
+/// Returns whether an `Order` is chosen by one call to `eco_order_from_sign`. It is true unless
+/// `ECO_ORDER_FROM_SIGN` is exactly `0`; the variable is read once per process.
 static bool orderFromSignEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_ORDER_FROM_SIGN");
@@ -1076,6 +1141,13 @@ static bool orderFromSignEnabled() {
     return on;
 }
 
+/// Emits the `Order` value for a comparison whose results are `isLt` and `isGt`: `LT` when `isLt`
+/// holds, else `GT` when `isGt` holds, else `EQ`, so `isLt` wins if both hold.
+///
+/// By default the two flags become a sign of -1, 0 or 1 in i64 and one call to `eco_order_from_sign`
+/// returns the value (CGEN_075). When `orderFromSignEnabled` is false, the three `Order` values are
+/// fetched by calls to `Eco_Runtime_getOrderLT`, `Eco_Runtime_getOrderEQ` and `Eco_Runtime_getOrderGT`
+/// and selected between.
 static Value emitOrderSelect(Location loc, Value isLt, Value isGt,
                               const EcoRuntime &runtime,
                               ConversionPatternRewriter &rewriter) {
@@ -1105,9 +1177,12 @@ static Value emitOrderSelect(Location loc, Value isLt, Value isGt,
 
 } // namespace
 
+/// Lowers `eco.int.cmp_order` to signed comparisons and `emitOrderSelect`.
 struct IntCmpOrderOpLowering : public OpConversionPattern<IntCmpOrderOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     IntCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                           const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1125,9 +1200,14 @@ struct IntCmpOrderOpLowering : public OpConversionPattern<IntCmpOrderOp> {
     }
 };
 
+/// Lowers `eco.float.cmp_order` to ordered comparisons and `emitOrderSelect`. Both comparisons are
+/// false when either operand is NaN, so such a comparison gives `EQ`. These predicates are repeated
+/// in the `EcoCompareCaseRewrite` pass and must change with it.
 struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     FloatCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1136,8 +1216,6 @@ struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
     matchAndRewrite(FloatCmpOrderOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        // Ordered predicates: both fcmp olt and fcmp ogt are false on any NaN,
-        // routing NaN-vs-anything to EQ. Matches Elm Basics.compare semantics.
         Value isLt = rewriter.create<arith::CmpFOp>(
             loc, arith::CmpFPredicate::OLT, adaptor.getLhs(), adaptor.getRhs());
         Value isGt = rewriter.create<arith::CmpFOp>(
@@ -1147,9 +1225,12 @@ struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
     }
 };
 
+/// Lowers `eco.char.cmp_order` to unsigned comparisons of the sort keys and `emitOrderSelect`.
 struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     CharCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1158,7 +1239,6 @@ struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
     matchAndRewrite(CharCmpOrderOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        // Char compares are unsigned compares of the sort keys (mirrors eco.char.lt).
         Value lhs = charSortKey(rewriter, loc, adaptor.getLhs());
         Value rhs = charSortKey(rewriter, loc, adaptor.getRhs());
         Value isLt = rewriter.create<arith::CmpIOp>(
@@ -1170,12 +1250,15 @@ struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
     }
 };
 
-// String compares can't use emitOrderSelect: the sign needs a call, so picking
-// the singleton in C++ costs ONE gc-leaf call instead of one call plus the
-// three getOrder calls the select shape would add.
+// String compares do not use emitOrderSelect: the comparison is already a runtime call, and having
+// that call return the `Order` value as well needs no second call.
+/// Lowers `eco.string.cmp_order` to one call to `eco_string_cmp_order`, which compares the strings
+/// and returns the `Order` value.
 struct StringCmpOrderOpLowering : public OpConversionPattern<StringCmpOrderOp> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     StringCmpOrderOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1190,14 +1273,16 @@ struct StringCmpOrderOpLowering : public OpConversionPattern<StringCmpOrderOp> {
     }
 };
 
-// eco.value.eq -> the declare-only __eco_value_eq marker. The fast/slow diamond
-// cannot be built here: this pattern runs inside the Stage 2 dialect conversion,
-// which also lowers scf, so block surgery on a still-converting region is not
-// available. Emitting a marker and expanding it at LLVM-IR level pre-RS4GC is
-// the house idiom (HEAP_034 __eco_alloc_inline; P2 __eco_resolve_fwd).
+// The fast and slow paths of value equality need new blocks, which cannot be built inside a
+// region that the dialect conversion is still converting; a marker expanded later at LLVM IR level
+// avoids that.
+/// Lowers `eco.value.eq` to a call to the marker `__eco_value_eq`, which the backend replaces with
+/// inline equality code before RS4GC (CGEN_076).
 struct ValueEqOpLowering : public OpConversionPattern<ValueEqOp> {
+    /// Declares the `__eco_value_eq` marker this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     ValueEqOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1212,9 +1297,13 @@ struct ValueEqOpLowering : public OpConversionPattern<ValueEqOp> {
     }
 };
 
+/// Lowers `eco.string.cmp3` to a call to `eco_string_cmp3`, whose i64 result has the sign of the
+/// comparison; its magnitude means nothing.
 struct StringCmp3OpLowering : public OpConversionPattern<StringCmp3Op> {
+    /// Declares the runtime functions this pattern calls.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern. It keeps references to `typeConverter` and `runtime`, which must outlive it.
     StringCmp3OpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1241,9 +1330,6 @@ void eco::detail::populateEcoArithPatterns(
 
     auto *ctx = patterns.getContext();
 
-    // Get runtime for patterns that need it
-    // Note: For arith patterns that need runtime (IntPow, trig), we use a
-    // separate overload. Most arith patterns don't need runtime.
     patterns.add<
         // Integer arithmetic
         IntAddOpLowering,
@@ -1319,7 +1405,6 @@ void eco::detail::populateEcoArithPatterns(
     >(typeConverter, ctx);
 }
 
-// Separate function for patterns that need EcoRuntime
 void eco::detail::populateEcoArithPatternsWithRuntime(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,

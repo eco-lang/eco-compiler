@@ -1,6 +1,15 @@
 //===- BFOps.h - ByteFusion operation declarations ------------------------===//
 //
-// This file declares the BF dialect operations.
+// The operations of the BF (ByteFusion) dialect, `bf`, are defined in TableGen
+// (`BFOps.td`), and this header is where C++ code gets their classes. The
+// dialect and its cursor are described in `BFDialect.h`.
+//
+// It includes two generated files. `bf/BFEnums.h.inc` declares
+// `bf::Endianness`, a byte order: `LE` (0) for
+// little-endian and `BE` (1) for big-endian. The 16- and 32-bit integer and
+// the float writes and reads carry it as their `endianness` attribute; the
+// single-byte ones do not. `bf/BFOps.h.inc` declares one class per operation,
+// such as `bf::WriteU16Op` for `bf.write.u16`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +27,6 @@
 #include "BFDialect.h"
 #include "BFTypes.h"
 
-// Include enum definitions
 #include "bf/BFEnums.h.inc"
 
 #define GET_OP_CLASSES

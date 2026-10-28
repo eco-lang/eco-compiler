@@ -1,13 +1,22 @@
 //===- CheckEcoClosureCaptures.cpp - Verify closure capture integrity -----===//
 //
-// This pass enforces CGEN_CLOSURE_003 at the MLIR level with two checks:
+// A closure whose captures do not match the leading parameters of the function it names hands that function
+// values of the wrong type, so this pass checks invariant CGEN_CLOSURE_003 on the MLIR and fails on a violation.
 //
-// 1. For each eco.papCreate: verify num_captured and captured operand types
-//    are consistent with the referenced function's signature.
+// A closure is built by `eco.papCreate`, or, for a group of mutually referring closures, by
+// `eco.papCreateGroup`. The function such an op names takes the captured values as its leading parameters, so
+// the pass makes three checks:
 //
-// 2. For each lambda func.func (name matching *_lambda_*): verify no SSA
-//    value used in the body was defined in a different func.func. This catches
-//    cross-function SSA leakage from incomplete closure captures.
+// 1. For each `eco.papCreate`, `num_captured` is no larger than the named function's parameter count, and each
+//    captured operand's type equals the type of the parameter at the same position.
+// 2. For each `eco.papCreateGroup`, the same check is made per sibling against its `fast_evaluators` entry,
+//    using only that sibling's `capture_counts[i]` operands. A capture of another sibling of the group (a
+//    cross edge) is not an operand of the op, so it is not checked here.
+// 3. For each `func.func` whose name contains `_lambda_`, no operand of an op in its body is a value defined,
+//    or a block argument owned, outside that function.
+//
+// A closure op naming a symbol that is not a `func.func` in the module is accepted without a check. The whole check is
+// compiled only when `ECO_LOWERING_VALIDATION` is defined; otherwise the pass does nothing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +35,7 @@ using namespace eco;
 
 namespace {
 
+/// The closure-capture check, as a module pass named `eco-check-closure-captures`.
 struct CheckEcoClosureCapturesPass
     : public PassWrapper<CheckEcoClosureCapturesPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CheckEcoClosureCapturesPass)
@@ -39,14 +49,14 @@ struct CheckEcoClosureCapturesPass
                "no cross-function SSA references (CGEN_CLOSURE_003)";
     }
 
-    /// Verify one closure-binding site against its callee signature:
-    ///   - num_captured must not exceed the callee's parameter count
-    ///   - per-slot capture types must match the callee's first
-    ///     num_captured parameter types (non-sibling slots only; sibling
-    ///     cross-edge slots do not appear as SSA operands).
-    /// Returns true on success; emits a diagnostic on the given op and
-    /// returns false on mismatch. `context` disambiguates which op kind
-    /// is being checked in the error message.
+    /// Returns whether captures of types `capturedTypes`, with a count of `numCaptured`, fit the leading
+    /// parameters of the function `funcSym` names in `module`.
+    ///
+    /// They fit when `numCaptured` is at most the parameter count and `capturedTypes[i]` equals parameter `i`'s
+    /// type for every `i`. On a mismatch it emits one error on `op`, naming `context` as the kind of op, and
+    /// returns false. It returns true without checking when `module` has no `func.func` of that name. The two
+    /// counts are not compared with each other: `capturedTypes` must be no longer than the parameter list,
+    /// which holds when its size equals `numCaptured`.
     static bool checkCalleeShape(
             Operation *op,
             ModuleOp module,
@@ -85,6 +95,8 @@ struct CheckEcoClosureCapturesPass
         return true;
     }
 
+    /// Checks every closure op and every lambda function in the module, reporting each violation as an error
+    /// and failing the pass if there was any. Does nothing unless `ECO_LOWERING_VALIDATION` is defined.
     void runOnOperation() override {
 #ifndef ECO_LOWERING_VALIDATION
         return;
@@ -92,7 +104,6 @@ struct CheckEcoClosureCapturesPass
         ModuleOp module = getOperation();
         bool hasErrors = false;
 
-        // === Phase 1: Validate eco.papCreate ops ===
         module.walk([&](PapCreateOp createOp) {
             // `function` names the evaluator (`$cap` for a capturing
             // closure), which takes the captures as individual typed params.
@@ -108,12 +119,8 @@ struct CheckEcoClosureCapturesPass
                 hasErrors = true;
         });
 
-        // === Phase 1b: Validate eco.papCreateGroup ops ===
-        // Cross-edge consumer slots are NOT captured operands (they are
-        // filled in by the runtime). Only the non-sibling captures appear
-        // on the op; those occupy the leading slots of each sibling's
-        // capture prefix. Check them against the callee's first
-        // capture_counts[i] parameters.
+        // A group's operands are each sibling's non-sibling captures in turn, `capture_counts[i]` of them,
+        // and they occupy the leading parameters of that sibling's function.
         module.walk([&](PapCreateGroupOp groupOp) {
             auto functions = groupOp.getFunctions();
             auto fastEvals = groupOp.getFastEvaluators();
@@ -127,12 +134,8 @@ struct CheckEcoClosureCapturesPass
                 capturedTypes.reserve(cc);
                 for (int64_t j = 0; j < cc; ++j)
                     capturedTypes.push_back(operands[cursor + j].getType());
-                // num_captured (for callee-shape check) is the count of
-                // non-sibling captures. Sibling cross-edge slots occupy
-                // higher indices in the callee's param list and are
-                // validated only structurally (the op verifier checks
-                // num_captured == capture_counts[i] + cross-edge
-                // in-degree, and the callee's arity bounds).
+                // Cross-edge captures follow at higher parameter indices and are not checked here; the op
+                // verifier checks their count.
                 if (!checkCalleeShape(groupOp, module,
                                       "eco.papCreateGroup sibling",
                                       funcSym, cc, capturedTypes))
@@ -141,17 +144,13 @@ struct CheckEcoClosureCapturesPass
             }
         });
 
-        // === Phase 2: Validate lambda func.func SSA integrity ===
         module.walk([&](func::FuncOp funcOp) {
-            // Only check lambda functions (naming convention: *_lambda_*)
             StringRef funcName = funcOp.getSymName();
             if (!funcName.contains("_lambda_"))
                 return;
 
-            // Walk every operation in the lambda body
             funcOp.walk([&](Operation *op) {
                 for (Value operand : op->getOperands()) {
-                    // Block arguments: verify the block is within this function
                     if (auto blockArg = dyn_cast<BlockArgument>(operand)) {
                         Operation *parentOp = blockArg.getOwner()->getParentOp();
                         if (!funcOp->isAncestor(parentOp) &&
@@ -165,7 +164,6 @@ struct CheckEcoClosureCapturesPass
                         continue;
                     }
 
-                    // Op-defined values: check defining op is inside this func
                     Operation *defOp = operand.getDefiningOp();
                     if (defOp &&
                         !funcOp->isAncestor(defOp) &&

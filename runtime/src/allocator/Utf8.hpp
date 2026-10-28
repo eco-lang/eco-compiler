@@ -1,20 +1,23 @@
-/**
- * UTF-8 scanning / widening primitives.
- *
- * Header-only, layout-only dependency (Heap.hpp for the u8/u16/u32 aliases);
- * no allocator, no GC, no allocation. This is the single shared codec used by
- * the UTF-8 String representation (Tag_StringUtf8View / Tag_StringUtf8Leaf):
- * it decides whether a byte range may become a UTF-8 string form and, when it
- * may, yields the logical UTF-16 code-unit length for free.
- *
- * `scan` mirrors the validation pass of elm_utf8_decode
- * (runtime/src/allocator/ElmBytesRuntime.cpp) EXACTLY, so a byte range that
- * `scan` accepts is decoded identically by every existing decoder — the new
- * UTF-8 forms therefore never hold content the old paths would have rejected.
- * The existing six UTF-8 codec sites are intentionally left untouched (they
- * carry three deliberately different strictness levels; see
- * design_docs/utf8-string-encoding-investigation.md §1.4 / Appendix B).
- */
+// Utf8.hpp - strict UTF-8 validation and ASCII widening over raw bytes.
+//
+// An Elm string may be held as UTF-8 bytes (the `Tag_StringUtf8View` and
+// `Tag_StringUtf8Leaf` forms) as well as UTF-16 code units. Bytes may take a
+// UTF-8 form only if they are valid UTF-8, and the runtime counts a string's
+// length in UTF-16 code units, so whoever builds such a form needs both answers
+// about the bytes. `scan` gives them in one pass. `allAscii` and `widenAscii`
+// serve the all-ASCII case, a range of bytes all below 0x80, which is valid
+// UTF-8 and whose UTF-16 units equal its bytes.
+//
+// Valid here means strict: no truncated sequence, no stray continuation byte,
+// no overlong encoding, no surrogate code point (0xD800..0xDFFF), and nothing
+// above 0x10FFFF. `scan` applies the same checks, in the same order, as the
+// first (validating) pass of `elm_utf8_decode` in ElmBytesRuntime.cpp, so a
+// range `scan` accepts is one that decoder accepts too. That correspondence is
+// kept by hand; nothing in the code ties the two together.
+//
+// Everything here is a pure function over caller-owned memory: it allocates
+// nothing and knows nothing of the heap beyond the `u8`/`u16`/`u32` aliases
+// from Heap.hpp.
 
 #ifndef ECO_UTF8_HPP
 #define ECO_UTF8_HPP
@@ -25,28 +28,24 @@
 namespace Elm {
 namespace Utf8 {
 
-// Result of a single validation+count pass over a byte range.
+/// What one `scan` learned about a range of bytes.
 struct ScanResult {
-    bool valid;      // the range is strictly valid UTF-8
-    bool ascii;      // valid AND every byte < 0x80 (equivalently utf16Units==len)
-    u32  utf16Units; // logical UTF-16 code-unit count; meaningful only when valid
+    bool valid;      ///< The range is strictly valid UTF-8.
+    bool ascii;      ///< The range is valid and every byte is below 0x80. Always false when `valid` is false.
+    /// The length of the range in UTF-16 code units. When `valid` is false it
+    /// counts only the sequences before the first invalid one.
+    u32  utf16Units;
 };
 
-/**
- * Strict single-pass UTF-8 validation + UTF-16 code-unit count over
- * [p, p+len). Mirrors elm_utf8_decode's pass 1 exactly:
- *   - continuation-byte structure (top bits 10 on trailing bytes),
- *   - truncation at end of buffer,
- *   - overlong rejection (2-byte cp<0x80, 3-byte cp<0x800, 4-byte cp<0x10000),
- *   - UTF-16 surrogate range 0xD800..0xDFFF rejected,
- *   - cp>0x10FFFF rejected.
- * On any violation returns {valid=false, ascii=false, utf16Units=<partial>}.
- *
- * `ascii` is true iff the whole range is valid AND every byte is < 0x80. For
- * valid input that is exactly `utf16Units == len` (any multibyte sequence
- * consumes strictly more bytes than the units it contributes), which is the
- * cheap ASCII gate the UTF-8 forms rely on.
- */
+/// Checks that the `len` bytes at `p` are strictly valid UTF-8, as the file
+/// comment defines it, and counts the UTF-16 code units they decode to.
+///
+/// A code point above 0xFFFF counts as two units, a surrogate pair; every
+/// other code point counts as one. A valid range is therefore all ASCII
+/// exactly when its unit count equals `len`, which is how `ascii` is decided.
+/// The scan stops at the first invalid sequence. An empty range is valid and
+/// ASCII, with no units. `p` must point to at least `len` readable bytes; it
+/// is not kept.
 inline ScanResult scan(const u8* p, size_t len) {
     u32 units = 0;
     size_t i = 0;
@@ -94,11 +93,10 @@ inline ScanResult scan(const u8* p, size_t len) {
     return {true, units == static_cast<u32>(len), units};
 }
 
-/**
- * True iff every byte in [p, p+len) is < 0x80. All-ASCII byte ranges are
- * trivially valid UTF-8, so this is a cheaper gate than `scan` when the caller
- * does not need the (equal-to-len) unit count or full multibyte validation.
- */
+/// Returns whether every one of the `len` bytes at `p` is below 0x80.
+///
+/// Such a range is valid UTF-8 and its UTF-16 unit count is `len`, so this is
+/// a cheaper test than `scan` when only the all-ASCII case is wanted.
 inline bool allAscii(const u8* p, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         if (p[i] & 0x80) return false;
@@ -106,11 +104,12 @@ inline bool allAscii(const u8* p, size_t len) {
     return true;
 }
 
-/**
- * Zero-extend ASCII bytes to UTF-16 code units: dst[i] = src[i]. The caller
- * guarantees the range is all-ASCII (each byte < 0x80), so the widened unit
- * equals the code point. `dst` must have room for `n` u16 values.
- */
+/// Writes each of the `n` bytes at `src`, zero-extended, to the `n` UTF-16
+/// code units at `dst`.
+///
+/// The bytes must all be below 0x80, which nothing here checks; only then is
+/// each unit the character its byte encodes. `dst` must have room for `n`
+/// units.
 inline void widenAscii(const u8* src, size_t n, u16* dst) {
     for (size_t i = 0; i < n; ++i) {
         dst[i] = static_cast<u16>(src[i]);

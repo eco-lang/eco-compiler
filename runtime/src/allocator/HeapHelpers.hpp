@@ -1,51 +1,48 @@
-/**
- * Heap Allocation Helpers for Elm Runtime.
- *
- * This file provides high-level allocation utilities for creating Elm values
- * on the GC-managed heap. These helpers abstract the low-level allocator
- * interface and handle header initialization, unboxing decisions, and
- * pointer wrapping.
- *
- * Usage Pattern:
- *   auto& alloc = Allocator::instance();
- *   HPointer str = alloc::allocString(u"Hello");
- *   HPointer list = alloc::cons(Unboxable{.i = 42}, listNil(), true);
- *
- * Key concepts:
- *   - HPointer: Logical pointer (40-bit offset) for heap references
- *   - Unboxable: Union of i64/f64/char16_t/HPointer for polymorphic storage
- *   - Embedded constants: Nil, True, False, Unit, Nothing stored in HPointer
- *   - Unboxing: Primitives stored directly without heap allocation
- *
- * ============================================================================
- * GC Rooting Patterns (mandatory for all runtime/kernel C++)
- * ============================================================================
- *
- * Pattern 1 — Root across a GC-capable call:
- *   Any helper that stores existing HPointers or boxed Unboxable slots into a
- *   freshly allocated object must either:
- *   (a) call a centralized alloc::* helper whose internal implementation
- *       already roots (cons, tuple2/3, custom, record, just, ok, err,
- *       stackFrame, listFromPointers, arrayFromPointers, allocTask,
- *       allocProcess), or
- *   (b) wrap the boxed locals in a StackRootGuard (<=~8 slots) or
- *       StackRootRangeGuard (contiguous buffer) for the lifetime of the
- *       allocation.
- *   Raw Allocator::allocate calls outside HeapHelpers.hpp are permitted only
- *   when all stored fields are unboxed primitives or newly-initialized memory.
- *
- * Pattern 2 — GC-safe collect-then-build:
- *   Kernel/runtime C++ that constructs an Elm list from a pre-collected batch
- *   of values MUST use one of:
- *   - alloc::listFromPointers     (input: std::vector<HPointer>)
- *   - alloc::listFromUnboxables   (input: std::vector<pair<Unboxable,u8 kind>>)
- *   Hand-rolled loops over alloc::cons across a std::vector are forbidden.
- *
- * Pattern 3 — void* parameters:
- *   Functions receiving void* (resolved heap pointers) must copy any data
- *   they need from the object BEFORE performing any allocation, because GC
- *   can move the object and invalidate the void* pointer.
- */
+// Helpers that runtime and kernel C++ use to build and read Elm values on the garbage-collected heap
+// without being left holding a pointer that a collection has made stale.
+//
+// Almost every allocation may run a collection, and a minor collection moves every nursery object it
+// keeps. It rewrites the HPointers it can find, its roots, and nothing else. An HPointer held in a C++
+// local, or a raw `void*` returned by `Allocator::resolve`, is therefore stale after any call that may
+// allocate, unless it was rooted. The exceptions are a large String or Bytes body, which is pinned and
+// never moves, and an object in `PermanentSpace`. This component owns the rules for working under that
+// fact, and the helpers below follow them:
+//
+// - Pattern 1, rooting across an allocation. Code that stores existing HPointers into a new object either
+//   calls a helper here that roots its own arguments (`cons`, `tuple2`, `tuple3`, `custom`, `record`,
+//   `justKind`, `just`, `ok`, `err`, `stackFrame`, `consChunkView`, `makeByteBufferSlice`,
+//   `listFromPointers`, `listFromUnboxables`, `arrayFromPointers`, `allocTask`, `allocTaskUnboxed`,
+//   `allocProcess`), or roots them itself with a `StackRootGuard`, a `StackRootRangeGuard` or a
+//   `RootedSlots` for as long as it holds them. A direct `Allocator::allocate` outside this file is safe
+//   only when nothing it stores is an HPointer the caller already held.
+// - Pattern 2, collect then build. A list made from a batch of values is built with `listFromPointers`
+//   or `listFromUnboxables`, which root the whole batch with one shadow-stack record, and not by a loop
+//   of `cons` calls over a `std::vector` that the collector cannot see.
+// - Pattern 3, raw pointers. A function given a resolved `void*` copies what it needs out of the object
+//   before it allocates.
+//
+// A *GC point*, below, is a call that may run a collection. An HPointer is *current* when no GC point has
+// run since it was read from a root or returned by an allocation. Most helpers allocate through
+// `eco_alloc_with_roots`, which roots the buffer of values it is given only on its slow path, the only
+// path that can collect; each helper reads the values it stores back out of that buffer after the call.
+//
+// Values do not change once Elm code can see them, so the collector has no write barrier; `NurserySpace`
+// states the collector's side of that. The builder side is here. A helper that writes into an object
+// after allocating it (`arrayPush`, `arrayPushKind`, `closureCapture`, `ListChainWriter`,
+// `ListChainReverseWriter`) may write only into an object that has not yet survived a collection, or
+// into a *builder*. A builder is an object whose header `builder` bit is set. It must be young, in the
+// nursery or the young large-object space; a collection neither ages nor promotes it while the bit is set;
+// and the bit must be cleared before Elm code can reach the object. `mark_as_builder`, `clear_builder`,
+// `BuilderGuard`, `allocArrayBuilder`, `listChunkChain` and `finishChunkChain` set and clear the bit.
+//
+// The rest of the file is constructors, accessors and predicates for each kind of value: embedded
+// constants, boxed primitives and `Unboxable` slots, Strings, lists (as cons cells and as chunked lists),
+// tuples, custom types and records, Bytes, arrays, closures, and tasks and processes. A field's slot kind
+// is 2 bits: 0 for a boxed HPointer, 1 for Int, 2 for Float and 3 for Char (Heap.hpp); Bool is always
+// boxed. Several helpers also have an overload taking `bool is_boxed`, in which `true` means kind 0 and
+// `false` means Int, never Float or Char.
+//
+// Everything here uses the calling thread's heap and shadow stacks.
 
 #ifndef ECO_HEAP_HELPERS_H
 #define ECO_HEAP_HELPERS_H
@@ -63,38 +60,36 @@
 #include <vector>
 #include <initializer_list>
 
-// Chunked-list production switch (plans/chunked-list-representation.md §6).
-// Set ONCE at program start by eco_enable_list_chunks(), which the backend
-// injects into @main's entry ONLY for modules compiled with
-// config.list.chunks — so kernels produce chunk spines exactly when the
-// compiled code's projections are chunk-aware. Defined in RuntimeExports.cpp.
+/// Whether the list builders here may produce chunked lists. False until `eco_enable_list_chunks` sets
+/// it; that call is made at the start of `@main` only in programs compiled with chunked lists, so
+/// helpers produce chunks only for code that can read them.
 extern "C" bool eco_g_list_chunks;
 
-// Cons-site tally (ECO_CONS_SITES=1 measurement runs; RuntimeExports.cpp).
+/// Whether `cons` reports each call site to `eco_cons_site_tally`, for measurement runs
+/// (`ECO_CONS_SITES`).
 extern "C" bool eco_g_cons_sites;
+/// Counts one `cons` call from the return address `ra`. Defined in RuntimeExports.cpp.
 extern "C" void eco_cons_site_tally(void *ra);
 
 namespace Elm {
 
-// Forward declaration for the UTF-8 ingestion gate. Defined in StringOps.cpp
-// (layering: StringOps.hpp includes THIS header, so it cannot be included from
-// here). If `data[0..len)` is all-ASCII and UTF-8 strings are enabled, builds a
-// Tag_StringUtf8Leaf (small) or a ByteBuffer + Tag_StringUtf8View (>= LOT) and
-// returns true; otherwise leaves *out untouched and returns false. `data` must
-// be C-heap memory (not a GC payload) — it is read after allocations.
-// See plans/utf8-string-pipeline-wiring.md (W2, BB-1).
+// Declared here because StringOps.hpp includes this header.
 namespace StringOps {
+/// Builds a String from `data[0, len)` and stores it in `*out`, returning true. Returns false and leaves
+/// `*out` alone when UTF-8 Strings are disabled in the allocator config, when `len` is 0 or above
+/// 0xFFFFFFFF, or when any byte is non-ASCII. The result is a `Tag_StringUtf8Leaf` when the leaf is below
+/// the large-object threshold, and otherwise a UTF-8 view over a new ByteBuffer. A GC point. `data` must
+/// not point into the collected heap, because it is read after an allocation.
 bool tryMakeAsciiString(const char* data, size_t len, HPointer* out);
 }
 
-// Descriptor for a C++-kernel evaluator (plans/gc-root-registration-cost.md
-// Phase 2, risk R6). Compiled code gets its `EvaluatorDesc` emitted as a static
-// global beside the wrapper, but a kernel that builds a closure has only a
-// function pointer, so the runtime interns one descriptor per
-// (fn, stage_arity, result_kind) for the life of the process. Kernel evaluators
-// use the all-boxed `void*[]` convention, so `kinds` is 0 and every `sat[]` slot
-// is null — such a closure fails the fast-path guard closed and takes exactly
-// the path it takes today. Defined in RuntimeExports.cpp.
+/// Returns the `EvaluatorDesc` for a closure built by C++ around the evaluator `fn`, interned once per
+/// (`fn`, `stage_arity`, low 2 bits of `result_kind`) for the life of the process.
+///
+/// Compiled code emits a descriptor for each of its evaluators; a kernel has only the function pointer,
+/// so it gets one here. A kernel evaluator takes all its arguments boxed, so the descriptor's `kinds` is
+/// 0 and every `sat` entry is null, which sends calls through the generic path. Takes a mutex. Defined in
+/// RuntimeExports.cpp.
 const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
                                                unsigned stage_arity,
                                                unsigned char result_kind);
@@ -102,45 +97,45 @@ const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
 // ============================================================================
 // GC Stack Root Guard (RAII)
 // ============================================================================
-//
-// Roots one or more HPointer locals on the C++ stack so that they survive any
-// allocation that triggers a minor GC. The GC walks `RootSet::getStackRootRanges()`
-// and updates the pointed-to HPointer values in place to their post-evacuation
-// locations. The destructor restores the prior stack-range point.
-//
-// Use this around any code path that:
-//   1) holds an HPointer in a C++ local that refers to a heap object, AND
-//   2) calls into the allocator (or any helper that may transitively allocate),
-// then reads/uses that local after the call.
-//
-// Example:
-//   HPointer cb = ...;
-//   HPointer t  = ...;
-//   {
-//       StackRootGuard guard(&cb, &t);
-//       Task* obj = allocator.allocate(...);  // GC may run; cb/t are updated.
-//       obj->callback = cb;
-//       obj->task     = t;
-//   }
+
+/// A scope during which some HPointer variables are roots: a collection that moves what they point to
+/// rewrites them in place.
+///
+/// Use one when code holds an HPointer in a variable, calls something that may allocate, and uses the
+/// variable afterwards:
+///
+///     HPointer cb = ...;
+///     HPointer t  = ...;
+///     {
+///         StackRootGuard guard(&cb, &t);
+///         Task* obj = ...;   // may collect; cb and t are rewritten
+///         obj->callback = cb;
+///         obj->task     = t;
+///     }
+///
+/// The constructor pushes each address onto the calling thread's single-slot shadow stack, and the
+/// destructor pops both of that thread's shadow stacks back to where they were at construction, so it
+/// also pops any range the guarded scope pushed and did not pop. Each variable must outlive the guard.
+/// Guards nest last-in first-out with every other user of those stacks. A guard can be neither copied
+/// nor moved.
 class StackRootGuard {
 public:
-    // Each pointer becomes one 8-byte entry on the single-slot shadow stack
-    // (plans/gc-root-registration-cost.md §3.3) — it used to be a 24-byte
-    // one-element RANGE each, so the four-pointer form wrote 96 bytes to say
-    // "four pointers". Both cursors are saved because a guarded scope may also
-    // push real ranges (a kernel that builds an args buffer inside one).
+    /// Roots `*a`.
     StackRootGuard(HPointer* a) : saved_(ecoRootMark()) {
         ecoRoot1Push(a);
     }
+    /// Roots `*a` and `*b`.
     StackRootGuard(HPointer* a, HPointer* b) : saved_(ecoRootMark()) {
         ecoRoot1Push(a);
         ecoRoot1Push(b);
     }
+    /// Roots `*a`, `*b` and `*c`.
     StackRootGuard(HPointer* a, HPointer* b, HPointer* c) : saved_(ecoRootMark()) {
         ecoRoot1Push(a);
         ecoRoot1Push(b);
         ecoRoot1Push(c);
     }
+    /// Roots `*a`, `*b`, `*c` and `*d`.
     StackRootGuard(HPointer* a, HPointer* b, HPointer* c, HPointer* d)
         : saved_(ecoRootMark()) {
         ecoRoot1Push(a);
@@ -148,6 +143,7 @@ public:
         ecoRoot1Push(c);
         ecoRoot1Push(d);
     }
+    /// Roots each variable `roots` points to, skipping null entries.
     StackRootGuard(std::initializer_list<HPointer*> roots) : saved_(ecoRootMark()) {
         for (HPointer* r : roots) {
             // root-bounded: one push per pointer named at the call site; popped by the destructor
@@ -162,13 +158,21 @@ public:
     StackRootGuard& operator=(const StackRootGuard&) = delete;
 
 private:
-    EcoRootMark saved_;
+    EcoRootMark saved_;   // Both shadow stacks' restore points from before construction.
 };
 
-// RAII wrapper for pushStackRootRange / restoreStackRangePoint.
-// Use for contiguous buffers of HPointers (e.g. std::vector<HPointer>).
+/// A scope during which a contiguous buffer of slots, such as the data of a `std::vector<HPointer>`,
+/// holds roots.
+///
+/// The constructor pushes one record onto the calling thread's range stack (`RootSet::pushStackRootRange`,
+/// which pushes nothing for a null `base` or a `count` of 0), and the destructor pops that stack back to
+/// where it was at construction. Bit `i` of `hpointer_mask` makes slot `i` a root; beyond slot 63 only an
+/// all-ones mask makes a slot a root. The buffer must not move or shrink while the guard lives, since the
+/// record keeps its address and count. The thread must have a heap. A guard can be neither copied nor
+/// moved.
 class StackRootRangeGuard {
 public:
+    /// Roots the slots of `base[0, count)` that `hpointer_mask` selects.
     StackRootRangeGuard(HPointer* base, size_t count, uint64_t hpointer_mask) {
         auto& rs = Allocator::instance().getRootSet();
         saved_ = rs.stackRangePoint();
@@ -180,7 +184,7 @@ public:
     StackRootRangeGuard(const StackRootRangeGuard&) = delete;
     StackRootRangeGuard& operator=(const StackRootRangeGuard&) = delete;
 private:
-    size_t saved_;
+    size_t saved_;   // The range stack's restore point from before construction.
 };
 
 namespace alloc {
@@ -189,11 +193,8 @@ namespace alloc {
 // Embedded Constants
 // ============================================================================
 
-/**
- * Returns the unified empty/nullary constant (word 0x6): ptr_ind set, the empty
- * bit set. Under the merged representation Unit, EmptyRec, Nil, Nothing, and ""
- * all share this one bit pattern (plan D3); the builders below are aliases.
- */
+/// Returns the Empty constant (word 0x6), the one value of Unit, the empty record, Nil, Nothing, the empty
+/// String and the empty Bytes. The five functions after it return the same word.
 inline HPointer empty() {
     HPointer p{};
     p.ptr_ind = 1;
@@ -201,20 +202,22 @@ inline HPointer empty() {
     return p;
 }
 
-inline HPointer listNil()     { return empty(); }  // []
-inline HPointer unit()        { return empty(); }  // ()
-inline HPointer nothing()     { return empty(); }  // Nothing
-inline HPointer emptyString() { return empty(); }  // ""
-inline HPointer emptyRecord() { return empty(); }  // {}
-// Empty Bytes (plans/empty-bytes-embedded-constant.md, HEAP_071): like "", an
-// empty ByteBuffer is the merged Empty constant, never an 8-byte header-only
-// heap object. Readers see it as (nullptr, 0) via resolveBytesOrNull.
+/// Returns `[]`, the Empty constant.
+inline HPointer listNil()     { return empty(); }
+/// Returns `()`, the Empty constant.
+inline HPointer unit()        { return empty(); }
+/// Returns `Nothing`, the Empty constant.
+inline HPointer nothing()     { return empty(); }
+/// Returns `""`, the Empty constant. No String of length 0 is ever allocated (HEAP_071).
+inline HPointer emptyString() { return empty(); }
+/// Returns `{}`, the Empty constant.
+inline HPointer emptyRecord() { return empty(); }
+/// Returns the empty Bytes, the Empty constant. No ByteBuffer of length 0 is ever allocated (HEAP_071);
+/// `resolveBytesOrNull` turns this value into a null pointer, which the Bytes readers here treat as
+/// length 0.
 inline HPointer emptyBytes()  { return empty(); }
 
-/**
- * Returns an HPointer representing the True boolean (word 0x5): ptr_ind set,
- * constant bit 0 set so the word's low bit is the i1 value.
- */
+/// Returns True, the constant word 0x5, whose low bit is the Bool's i1 value.
 inline HPointer elmTrue() {
     HPointer p{};
     p.ptr_ind = 1;
@@ -222,9 +225,7 @@ inline HPointer elmTrue() {
     return p;
 }
 
-/**
- * Returns an HPointer representing the False boolean (word 0x4).
- */
+/// Returns False, the constant word 0x4.
 inline HPointer elmFalse() {
     HPointer p{};
     p.ptr_ind = 1;
@@ -232,75 +233,59 @@ inline HPointer elmFalse() {
     return p;
 }
 
-/**
- * Checks if an HPointer is an embedded constant (not a heap pointer).
- */
+/// Returns whether `ptr` is an embedded constant or a null-cons word rather than a heap pointer, by its
+/// `ptr_ind` bit. The null word is not a constant.
 inline bool isConstant(HPointer ptr) {
     return ptr.ptr_ind != 0;
 }
 
-/**
- * Returns true if pointer represents Nil / any merged empty (empty list, etc.).
- */
+/// Returns whether `ptr` is the Empty constant, which is how `[]` is represented.
 inline bool isNil(HPointer ptr) {
     return Elm::isEmptyBits(Elm::hpBits(ptr));
 }
 
+/// Returns whether `ptr` is the Empty constant, which is how `""` is represented. A String object of
+/// length 0, which no helper allocates, is not detected; `isZeroLengthString` tests for one.
 inline bool isEmptyString(HPointer ptr) {
     return Elm::isEmptyBits(Elm::hpBits(ptr));
 }
 
-/// Returns true if the HPointer is any embedded constant.
+/// Returns whether `ptr` is an embedded constant or a null-cons word; the same test as `isConstant`.
 inline bool isEmbeddedConstant(HPointer ptr) {
     return ptr.ptr_ind != 0;
 }
 
 // ============================================================================
-// Semantic HPointer constant predicates (see plan D2/D3)
+// Semantic HPointer constant predicates
 // ============================================================================
 //
-// Low-level word/forward helpers (hpBits/hpFromBits/isConstantBits/
-// isEmptyBits/encode|decodeForwardPtr) live in Heap.hpp so the GC core can use
-// them without depending on this higher-level file. The predicates below add
-// the specific-constant and Bool classifications used by the printer, JSON,
-// equality, and kernels.
-//
-// Under the merged representation all five empties share one bit pattern, so the
-// specific-empty predicates all collapse to isEmpty; Bool is read from bit 0.
-// See plan D3.
+// The word-level tests these build on (`hpBits`, `isConstantBits`, `isEmptyBits`) are in Heap.hpp.
 
-// True for the unified empty constant (Unit/EmptyRec/Nil/Nothing/"") — i.e. an
-// embedded constant that is not a Bool.
+/// Returns whether `p` is the Empty constant. A null-cons word is not Empty.
 inline bool isEmpty(HPointer p) {
     return Elm::isEmptyBits(Elm::hpBits(p));
 }
 
-// Specific-constant predicates (all now the merged empty constant).
+/// Returns whether `p` is `Nothing`, the Empty constant.
 inline bool isNothing(HPointer p)   { return isEmpty(p); }
+/// Returns whether `p` is `()`, the Empty constant.
 inline bool isUnit(HPointer p)      { return isEmpty(p); }
+/// Returns whether `p` is `{}`, the Empty constant.
 inline bool isEmptyRec(HPointer p)  { return isEmpty(p); }
 
-// Bool-constant predicates. Bool codes are 0/1 (bit 1 clear); Empty (2) and
-// NullCons (3, HEAP_044) both carry bit 1 and are NOT Bools.
+/// Returns whether `p` is True or False: a constant whose code, 0 or 1, has bit 1 clear. Empty (2) and a
+/// null-cons word (3) have bit 1 set.
 inline bool isBoolConst(HPointer p) {
     return p.ptr_ind != 0 && (p.constant & 2u) == 0;
 }
+/// Returns the value of the Bool `p`, from bit 0 of its constant code. Meaningful only when `p` is True
+/// or False.
 inline bool boolValue(HPointer p) { return (p.constant & 1u) != 0; }
 
-/**
- * Per-write stale-pointer tripwire (ECO_HEAP_VALIDATE-gated).
- *
- * Validates an HPointer-encoded value at the moment it's about to be written
- * into a heap field. Routes through `Allocator::validateInNurserySafe`,
- * which calls `debugAssertValidNurseryPointer` for any nursery target,
- * aborting if the pointer resolves into a free (post-swap) region — i.e.
- * the "stale by-value HPointer across an alloc" pattern.
- *
- * Compiles to a no-op outside validator builds: the call sites are spread
- * across every heap-write hot path (eco_store_field, closureCapture,
- * arrayPush, etc.), so an always-on body materially slows the runtime.
- * Enable via -DECO_HEAP_VALIDATE=ON for heap-profile / stress runs.
- */
+/// Checks, in `ECO_HEAP_VALIDATE` builds only, that `hp`, about to be written into a heap field, does
+/// not point into a free part of the calling thread's nursery, and aborts if it does
+/// (`Allocator::validateInNurserySafe`). Such a pointer is usually one held unrooted across an
+/// allocation. Does nothing in other builds.
 inline void validateNurseryHPtr(HPointer hp) {
 #if ECO_HEAP_VALIDATE
     Allocator::instance().validateInNurserySafe(hp);
@@ -309,8 +294,7 @@ inline void validateNurseryHPtr(HPointer hp) {
 #endif
 }
 
-/// Same as validateNurseryHPtr, taking a uint64_t-encoded HPointer (the form
-/// used by closure args, eco_store_field, etc.).
+/// Does what `validateNurseryHPtr` does, for an HPointer held as a 64-bit word.
 inline void validateNurseryHPtrBits(uint64_t bits) {
 #if ECO_HEAP_VALIDATE
     HPointer hp;
@@ -325,12 +309,8 @@ inline void validateNurseryHPtrBits(uint64_t bits) {
 // Primitive Allocation
 // ============================================================================
 
-/**
- * Allocates a boxed Int on the heap.
- *
- * In most cases, prefer storing ints unboxed in container fields.
- * Only use this when a heap-allocated Int object is required.
- */
+/// Allocates a boxed Int holding `value`, for a place that needs an Int as an HPointer; a field of kind
+/// Int holds the value itself. A GC point.
 inline HPointer allocInt(i64 value) {
     ElmInt* obj = static_cast<ElmInt*>(
         eco_alloc_with_roots(Tag_Int, sizeof(ElmInt), nullptr, 0, 0));
@@ -338,12 +318,7 @@ inline HPointer allocInt(i64 value) {
     return Allocator::instance().wrap(obj);
 }
 
-/**
- * Allocates a boxed Float on the heap.
- *
- * In most cases, prefer storing floats unboxed in container fields.
- * Only use this when a heap-allocated Float object is required.
- */
+/// Allocates a boxed Float holding `value`, for a place that needs a Float as an HPointer. A GC point.
 inline HPointer allocFloat(f64 value) {
     ElmFloat* obj = static_cast<ElmFloat*>(
         eco_alloc_with_roots(Tag_Float, sizeof(ElmFloat), nullptr, 0, 0));
@@ -351,12 +326,8 @@ inline HPointer allocFloat(f64 value) {
     return Allocator::instance().wrap(obj);
 }
 
-/**
- * Allocates a boxed Char on the heap.
- *
- * In most cases, prefer storing chars unboxed in container fields.
- * Only use this when a heap-allocated Char object is required.
- */
+/// Allocates a boxed Char holding `value`, a Char value as CharValue.hpp defines it, for a place that
+/// needs a Char as an HPointer. A GC point.
 inline HPointer allocChar(u32 value) {
     ElmChar* obj = static_cast<ElmChar*>(
         eco_alloc_with_roots(Tag_Char, sizeof(ElmChar), nullptr, 0, 0));
@@ -368,39 +339,30 @@ inline HPointer allocChar(u32 value) {
 // Unboxable Helpers
 // ============================================================================
 
-/**
- * Creates an Unboxable containing an unboxed integer.
- */
+/// Returns a slot holding the Int `value`.
 inline Unboxable unboxedInt(i64 value) {
     Unboxable u;
     u.i = value;
     return u;
 }
 
-/**
- * Creates an Unboxable containing an unboxed float.
- */
+/// Returns a slot holding the Float `value`.
 inline Unboxable unboxedFloat(f64 value) {
     Unboxable u;
     u.f = value;
     return u;
 }
 
-/**
- * Creates an Unboxable containing an unboxed char (a Unicode code point).
- * Sets the whole 64-bit word: a kind-3 slot holds the code point
- * zero-extended to 64 bits, and raw-word readers (eval buffers, hashing)
- * rely on bits 32..63 being zero. Every writer of a Char slot uses this.
- */
+/// Returns a slot holding the Char value `cp` (a code point or, with case expansion on, an encoded
+/// case-mapping result; CharValue.hpp), zero-extended to the whole 64-bit word. Code that reads a Char
+/// slot as a raw word relies on bits 32 to 63 being zero, so a Char slot is written through this.
 inline Unboxable unboxedChar(u32 cp) {
     Unboxable u;
     u.i = static_cast<i64>(cp);
     return u;
 }
 
-/**
- * Creates an Unboxable containing a heap pointer.
- */
+/// Returns a slot holding the HPointer `ptr`.
 inline Unboxable boxed(HPointer ptr) {
     Unboxable u;
     u.p = ptr;
@@ -411,20 +373,16 @@ inline Unboxable boxed(HPointer ptr) {
 // String Allocation
 // ============================================================================
 
-/**
- * Allocates an ElmString from a UTF-16 buffer.
- *
- * @param chars  Pointer to UTF-16 code units.
- * @param length Number of code units.
- * @return HPointer to the allocated string.
- *
- * Returns the empty string constant for zero-length input.
- *
- * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
- * it may run a minor GC, a major GC, or (on the large split path, D4) a
- * minor then a major before it copies. `chars` must therefore not point into
- * the GC heap unless it is a rooted, pinned large body.
- */
+/// Returns a String holding the `length` UTF-16 units at `chars`, or the Empty constant when `length` is
+/// 0.
+///
+/// A String whose object would be at least the large-object threshold is built by
+/// `Allocator::allocLargeString`: a header in the nursery and a pinned body in the old generation. Any
+/// other is one `Tag_String` leaf.
+///
+/// A GC point, and the units are copied after the collections it may run (on the large path, possibly
+/// more than one). `chars` must therefore not point into the collected heap, unless it points into a
+/// rooted large body.
 inline HPointer allocString(const u16* chars, size_t length) {
     if (length == 0) {
         return emptyString();
@@ -436,14 +394,9 @@ inline HPointer allocString(const u16* chars, size_t length) {
     // Round up to 8-byte alignment
     total_size = (total_size + 7) & ~7;
 
-    // Per-thread histogram of fresh-leaf String sizes. Recorded once here
-    // (before the large/inline-leaf split) so each call contributes to
-    // exactly one bucket regardless of which storage path is taken.
+    // Recorded before the large/leaf split so each call counts once whichever path it takes.
     GC_STATS_STRING_RECORD_ALLOC(total_size);
 
-    // At/above the large-object threshold, route to the split path: small
-    // Tag_LargeStringHeader in nursery + pinned Tag_String body in old gen.
-    // See HEAP_026.
     if (total_size >= allocator.getLargeObjectThreshold()) {
         return allocator.allocLargeString(chars, length);
     }
@@ -456,45 +409,25 @@ inline HPointer allocString(const u16* chars, size_t length) {
     return allocator.wrap(str);
 }
 
-/**
- * Result of `allocStringBlank`. The fresh string has been allocated with
- * uninitialized chars[]; the caller is responsible for writing all
- * `length` code units BEFORE any subsequent allocation. After the next
- * allocation in this thread, `chars` may dangle (small-path strings live in
- * the nursery and can be moved by a minor GC); the GC-tracked `hp` remains
- * valid throughout.
- */
+/// A new String whose units have not been written yet, with a pointer to write them through.
+///
+/// `chars` is where the `length` units go; the caller writes all of them before anything else allocates.
+/// For a leaf in the nursery, `chars` points into the object and is stale after the next allocation on
+/// this thread, which may move it; for a large String it points into the pinned body and stays valid.
+/// `hp` is the String itself, an HPointer the caller must root as any other. For `length` 0, `hp` is the
+/// Empty constant and `chars` is null.
 struct BlankString {
     HPointer hp;
     u16* chars;
     u32 length;
 };
 
-/**
- * Allocates a fresh string of `length` code units with uninitialized
- * chars[]. Returns the GC-tracked handle and a writable pointer.
- *
- * Routes length==0 to the embedded empty-string constant (chars == nullptr
- * in that case; caller must check `length > 0` before writing).
- *
- * Pairs with `StringOps::forEachSegment` / `StringOps::copyInto` to let
- * transformation ops (toUpper, reverse, etc.) write directly into the heap
- * object instead of through a `std::vector<u16>` intermediate buffer.
- *
- * Safety contract: the writable pointer is valid only until the next
- * allocation by this thread. Do not call any allocator function (including
- * implicit allocation via alloc::* helpers) between getting `chars` and
- * finishing the write. For payload sizes that route through the large-object
- * split-header path, the body is pinned in old gen and `chars` remains
- * stable across subsequent allocations — but callers should not depend on
- * that without checking the tag.
- *
- * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
- * it may run a minor GC, a major GC, or (on the large split path, D4) a
- * minor then a major. Any heap pointer the caller holds across it must be
- * rooted; a source it copies from afterwards must not point into the GC heap
- * unless it is a rooted, pinned large body.
- */
+/// Allocates a String of `length` UTF-16 units without writing them, so that a caller can write the
+/// units straight into the object rather than through a temporary buffer. The size split is as for
+/// `allocString`. A GC point, so any HPointer the caller holds across it must be rooted.
+///
+/// The result's `chars` is valid only as `BlankString` says. Until every unit is written, the String
+/// holds garbage and must not be read or reach Elm code.
 inline BlankString allocStringBlank(size_t length) {
     if (length == 0) {
         return BlankString{emptyString(), nullptr, 0};
@@ -508,10 +441,7 @@ inline BlankString allocStringBlank(size_t length) {
     GC_STATS_STRING_RECORD_ALLOC(total_size);
 
     if (total_size >= allocator.getLargeObjectThreshold()) {
-        // Large path: split-header + pinned body. allocLargeString accepts a
-        // nullptr `chars` argument and leaves the body uninitialized
-        // (the existing `if (chars && length > 0) memcpy(...)` guard); we then
-        // resolve through the header to expose the body's writable chars[].
+        // With null `chars`, allocLargeString leaves the body unwritten.
         HPointer hp = allocator.allocLargeString(nullptr, length);
         void* header_obj = allocator.resolve(hp);
         LargeStringHeader* lh = static_cast<LargeStringHeader*>(header_obj);
@@ -525,30 +455,24 @@ inline BlankString allocStringBlank(size_t length) {
     return BlankString{hp, str->chars, static_cast<u32>(length)};
 }
 
-/**
- * Allocates an ElmString from a std::u16string.
- */
+/// Returns a String holding the units of `s`, as `allocString(const u16*, size_t)` does. `s` is C++
+/// memory, so it is safe to read after a collection.
 inline HPointer allocString(const std::u16string& s) {
     return allocString(reinterpret_cast<const u16*>(s.data()), s.size());
 }
 
-/**
- * Allocates an ElmString from a UTF-8 std::string.
- * Converts UTF-8 to UTF-16 internally.
- */
+/// Returns a String holding the text of the UTF-8 bytes `utf8`, or the Empty constant when it is empty.
+///
+/// Input that `StringOps::tryMakeAsciiString` accepts (all ASCII, when UTF-8 Strings are enabled) becomes
+/// one of the UTF-8 String forms. Anything else is decoded to UTF-16 leniently: a byte that cannot start a
+/// sequence is dropped, continuation bytes are not checked, a sequence cut off by the end of the input
+/// decodes with its missing bytes taken as zero, and a decoded value above 0x10FFFF is dropped. A GC
+/// point.
 inline HPointer allocStringFromUTF8(const std::string& utf8) {
     if (utf8.empty()) {
         return emptyString();
     }
 
-    // ASCII fast path (HEAP_032): an all-ASCII payload becomes a UTF-8 form
-    // (inline leaf, or ByteBuffer + zero-copy view >= LOT) instead of widening
-    // to UTF-16. This is the single ingestion chokepoint behind
-    // Eco.File.readString, Console, Env, Http, and ports — so they all produce
-    // UTF-8 for ASCII with no call-site change, which is what lets the parser
-    // scan its own source at 1 byte/char. Non-ASCII / invalid input falls
-    // through to the legacy lenient transcode below, byte-for-byte unchanged.
-    // See plans/utf8-string-pipeline-wiring.md (W2).
     {
         HPointer asciiOut;
         if (StringOps::tryMakeAsciiString(utf8.data(), utf8.size(), &asciiOut)) {
@@ -556,7 +480,6 @@ inline HPointer allocStringFromUTF8(const std::string& utf8) {
         }
     }
 
-    // Simple UTF-8 to UTF-16 conversion
     std::u16string utf16;
     utf16.reserve(utf8.size());
 
@@ -609,22 +532,17 @@ inline HPointer allocStringFromUTF8(const std::string& utf8) {
     return allocString(utf16);
 }
 
-/**
- * Returns the length (in code units) of any String form (Tag_String,
- * Tag_StringSlice, Tag_StringRope, Tag_LargeStringHeader). header.size
- * carries the logical length for all string forms.
- */
+/// Returns the length in UTF-16 units of the String object `str`, in any of its six forms, from its
+/// `header.size` (which for the all-ASCII UTF-8 forms is also the byte count), or 0 for null.
 inline size_t stringLength(void* str) {
     if (!str) return 0;
     return static_cast<Header*>(str)->size;
 }
 
-/**
- * Returns a pointer to the character data of a flat ElmString leaf, or
- * resolves through a Tag_LargeStringHeader to its Tag_String body. Asserts
- * the object is a flat leaf or split header — slice/rope callers must go
- * through Elm::StringOps::charAt or toStdU16String / ensureFlat instead.
- */
+/// Returns the UTF-16 units of `str`, which must be a `Tag_String` leaf or a `Tag_LargeStringHeader`
+/// (asserted); a slice, rope or UTF-8 form is read through `StringOps`. For a large String the pointer is
+/// into its pinned body; for a leaf it is into `str` itself and is stale once a collection may have
+/// moved it.
 inline const u16* stringData(void* str) {
     Header* hdr = static_cast<Header*>(str);
     if (hdr->tag == Tag_LargeStringHeader) {
@@ -639,21 +557,11 @@ inline const u16* stringData(void* str) {
 // List Allocation
 // ============================================================================
 
-/**
- * Allocates a Cons cell for building lists.
- *
- * @param head      The head value (may be boxed or unboxed).
- * @param tail      Pointer to the tail list (or Nil).
- * @param head_is_boxed  True if head contains a heap pointer.
- * @return HPointer to the allocated Cons cell.
- *
- * The unboxed flag is stored in the header for GC scanning.
- */
-// `head_kind`: 2-bit slot kind (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
+/// Returns the list `head :: tail`, as one cons cell whose head has slot kind `head_kind` (low 2 bits
+/// used). `head`, when boxed, and `tail` are rooted across the allocation. A GC point.
 inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
     if (__builtin_expect(eco_g_cons_sites, 0))
         eco_cons_site_tally(__builtin_return_address(0));
-    // Pack head + tail as roots; the helper roots only on the slow path.
     uint64_t roots[2] = { static_cast<uint64_t>(head.i), 0 };
     std::memcpy(&roots[1], &tail, sizeof(tail));
     uint64_t mask = (head_kind == 0) ? 0x3 : 0x2;
@@ -662,39 +570,35 @@ inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
         eco_alloc_with_roots(Tag_Cons, sizeof(Cons), roots, 2, mask));
     cell->header.size = 0;
     cell->header.unboxed = head_kind & 0x3;
-    // Read post-GC field values back from roots[].
     cell->head.i = static_cast<i64>(roots[0]);
     std::memcpy(&cell->tail, &roots[1], sizeof(cell->tail));
     return Allocator::instance().wrap(cell);
 }
 
-// Boolean-friendly overload: true = boxed (kind 0), false = Int (kind 1).
-// Preserved for callers that previously used the bool API and meant Int.
+/// Returns `head :: tail` with the head's kind boxed when `head_is_boxed` is true and Int when it is
+/// false. A Float or Char head needs the kind overload. A GC point.
 inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
     return cons(head, tail, static_cast<u8>(head_is_boxed ? 0 : 1));
 }
 
 // ============================================================================
-// Chunked-list allocation (plans/chunked-list-representation.md §6 L1.2).
-//
-// Hybrid spines: `::` stays a Cons cell; chunk views/backings are ADDITIONAL
-// spine forms that bulk builders produce. v1 chunks are built whole and are
-// IMMUTABLE once observable (hd == 0 always; §10 slack fill deferred).
-//
-// Construction discipline (GC safety): allocate the backing FIRST, fill every
-// live slot, then allocate the view. For boxed element kinds the backing's
-// slots are ZEROED at allocation, so a GC between backing allocation and the
-// fill scans null HPointers (skipped) rather than garbage. Callers that fill
-// across allocation points must root the backing (StackRootGuard or builder
-// bit) exactly like any fresh object.
+// Chunked-list allocation
 // ============================================================================
+//
+// A list's spine may mix two kinds of node. A cons cell (`Tag_Cons`) holds one element and the rest of the
+// list. A chunk view (`Tag_ConsChunk`) holds a run of elements stored in a backing (`Tag_ListBacking`),
+// an array of element slots of one kind. A view records its backing, the offset of its first element
+// there, the list's whole logical length `len` from this node to the end, and the node after its run,
+// `next`. The run is the elements from `offset` to the end of the backing, or the first `len` of them if
+// that is fewer. `::` always makes a cons cell; chunked lists come from the bulk builders here and in the
+// kernels, and only when `eco_g_list_chunks` is set.
+//
+// A chunk is filled once while it is being built and is not written after that. A backing for boxed
+// elements is zeroed when allocated, so a collection that runs before it is filled sees null slots, which
+// it skips.
 
-/**
- * Allocates a Tag_ListBacking with `capacity` element slots of uniform
- * 2-bit kind `elem_kind` (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
- * Boxed-kind slots are zero-initialized; scalar kinds are left raw (they
- * are never traced). hd = 0.
- */
+/// Allocates a backing of `capacity` element slots, all of slot kind `elem_kind` (low 2 bits used). Slots
+/// of a boxed backing are zeroed; slots of any other kind are left unwritten. A GC point.
 inline HPointer listBacking(u32 capacity, u8 elem_kind) {
     size_t size = sizeof(ListBacking) + capacity * sizeof(Unboxable);
     ListBacking* lb = static_cast<ListBacking*>(
@@ -709,12 +613,9 @@ inline HPointer listBacking(u32 capacity, u8 elem_kind) {
     return Allocator::instance().wrap(lb);
 }
 
-/**
- * Allocates a Tag_ConsChunk view over `backing`. `len` is the TOTAL logical
- * length of the resulting list (elements in this chunk's run plus everything
- * in `next`). `elem_kind` mirrors the backing's uniform kind. `backing` and
- * `next` are rooted across the allocation.
- */
+/// Allocates a chunk view over `backing` starting at element `offset`, followed by `next`. `len` is the
+/// logical length of the whole list the view starts, its own run included. `elem_kind` must be the
+/// backing's kind; nothing checks it. `backing` and `next` are rooted across the allocation. A GC point.
 inline HPointer consChunkView(HPointer backing, u32 offset, u32 len,
                               HPointer next, u8 elem_kind) {
     uint64_t roots[2];
@@ -731,15 +632,12 @@ inline HPointer consChunkView(HPointer backing, u32 offset, u32 len,
     return Allocator::instance().wrap(cv);
 }
 
-/**
- * Logical tail of a non-empty hybrid list node. For a Cons cell this is the
- * stored tail (no allocation). For a chunk view whose run has more than one
- * element it MATERIALIZES the successor view {backing, offset+1, len-1,
- * next} — the plan's allocating-tail (§2.3(b)); with one element left it is
- * `next` directly. All needed fields are copied by value before the
- * allocation and consChunkView roots its HPointer arguments, so the call is
- * GC-safe without extra rooting.
- */
+/// Returns the tail of the non-empty list `list`, or `[]` if `list` is not a cons cell or chunk view.
+///
+/// For a cons cell, and for a view whose run has one element left, this is the stored next node and
+/// nothing is allocated. For a longer run it allocates a new view one element further on, so it is then
+/// a GC point. The fields it needs are read before that allocation, and `consChunkView` roots them.
+/// `list` must not be a constant: it is resolved without a check.
 inline HPointer listTailOf(HPointer list) {
     void* obj = Allocator::instance().resolve(list);
     Header* hdr = getHeader(obj);
@@ -759,31 +657,34 @@ inline HPointer listTailOf(HPointer list) {
     return listNil();
 }
 
-/**
- * Allocation-TOLERANT forward cursor over a hybrid list spine. Holds only a
- * rooted spine-node HPointer plus an index, and re-resolves on every read
- * and advance, so user code (predicates, mappers) may allocate and trigger
- * GC between reads (the kernelListMapN stale-cursor lesson baked into the
- * type). Usage:
- *
- *     alloc::RootedListCursor c(list);
- *     Unboxable head; u8 kind;
- *     while (c.read(head, kind)) {
- *         // ... call user code; may GC. Root `head.p` if kind == 0 and the
- *         // call can allocate before using it.
- *         c.advance();
- *     }
- */
+/// A position in a list, from the front, that stays valid across collections, so the code walking the
+/// list may allocate between steps.
+///
+///     alloc::RootedListCursor c(list);
+///     Unboxable head; u8 kind;
+///     while (c.read(head, kind)) {
+///         // May allocate. If kind is 0 and head.p is used after an allocation, root it first.
+///         c.advance();
+///     }
+///
+/// The cursor roots its current node for its whole life and resolves it again at every `read` and
+/// `advance`. Its rooting follows `StackRootGuard`'s rules: it must be destroyed on the thread that made
+/// it, in last-in first-out order with other roots, and it can be neither copied nor moved. An element
+/// returned by `read` is a copy and is not rooted. A node that is not a cons cell or chunk view ends the
+/// walk.
 struct RootedListCursor {
-    HPointer node;  // Current spine node (a list value; Nil when finished).
-    u32 idx;        // Index within the current view's run.
-    Allocator* alloc_;  // Hoisted singleton (stable address across GC).
-    Elm::StackRootGuard guard;
+    HPointer node;  // The current node; `[]` when the walk is over.
+    u32 idx;        // The current element's index within a chunk view's run; 0 in a cons cell.
+    Allocator* alloc_;   // The process's allocator; not null.
+    Elm::StackRootGuard guard;  // Roots `node`.
 
+    /// Starts at the first element of `list`, which must be current.
     explicit RootedListCursor(HPointer list)
         : node(list), idx(0), alloc_(&Allocator::instance()), guard(&node) {}
 
-    // Fetch the current element (fresh resolve). Returns false at list end.
+    /// Stores the current element and its slot kind in `head` and `kind` and returns true, or returns
+    /// false at the end of the list. Does not allocate. Calling it again without `advance` returns the
+    /// same element.
     bool read(Unboxable& head, u8& kind) {
         while (true) {
             if (isNil(node) || node.ptr_ind != 0) return false;
@@ -815,7 +716,8 @@ struct RootedListCursor {
         }
     }
 
-    // Step past the element the last read() returned (fresh resolve).
+    /// Moves past the current element. Does not allocate. The next `read` moves on to the following node
+    /// when a chunk view's run is used up.
     void advance() {
         if (isNil(node) || node.ptr_ind != 0) return;
         void* obj = alloc_->resolve(node);
@@ -832,31 +734,29 @@ struct RootedListCursor {
     }
 };
 
-/**
- * Non-allocating forward cursor over a hybrid list spine (cells + chunk
- * views). GC DISCIPLINE: the cursor caches raw interior state that is
- * invalidated by ANY allocation (objects move); after an allocation the
- * caller must re-create the cursor from a rooted list HPointer and re-skip,
- * or better, snapshot what it needs before allocating (the kernelListMapN
- * stale-cursor lesson). Suitable as-is for the read-only walkers
- * (eq/compare/toString/length) which never allocate mid-walk. For walks
- * that allocate, use RootedListCursor above.
- */
+/// A position in a list, from the front, for a walk that does not allocate.
+///
+/// The cursor keeps a raw pointer into the current chunk's backing and an unrooted HPointer to the rest
+/// of the list, so it is stale after any allocation, which may move them. Code that must allocate during
+/// a walk uses `RootedListCursor`, or copies out what it needs and starts a new cursor afterwards from a
+/// rooted list. A node that is not a cons cell or chunk view ends the walk.
 struct ListCursor {
-    Allocator* alloc_;  // Hoisted singleton (walks are non-allocating).
-    HPointer rest;      // Un-entered part of the spine (list value; Nil at end).
-    ListBacking* lb;    // Current chunk's backing (null when in a cell / done).
-    u32 idx;            // Current index into lb->elems.
-    u32 chunkEnd;       // One past the last live index of the current run.
-    Unboxable cellHead; // Current element when walking a Cons cell.
-    u8 kind;            // 2-bit element kind of the CURRENT element.
-    bool inCell;        // True when current element came from a Cons cell.
+    Allocator* alloc_;   // The process's allocator; not null.
+    HPointer rest;      // The nodes not yet entered; `[]` at the end.
+    ListBacking* lb;    // The current chunk's backing; null in a cons cell.
+    u32 idx;            // The current element's index in `lb->elems`.
+    u32 chunkEnd;       // One past the last index of the current run in `lb->elems`.
+    Unboxable cellHead; // The current element when it is a cons cell's head.
+    u8 kind;            // The current element's slot kind.
+    bool inCell;        // Whether the current element is a cons cell's head.
     bool done_;
 
+    /// Starts at the first element of `list`, which must be current.
     explicit ListCursor(HPointer list) : alloc_(&Allocator::instance()) {
         reset(list);
     }
 
+    /// Starts again at the first element of `list`, which must be current.
     void reset(HPointer list) {
         rest = list;
         lb = nullptr;
@@ -868,13 +768,15 @@ struct ListCursor {
         advanceSpine();
     }
 
+    /// Returns whether the walk has passed the last element.
     bool done() const { return done_; }
 
-    // Current element (valid when !done()).
+    /// Returns the current element. The cursor must not be `done()`.
     Unboxable current() const { return inCell ? cellHead : lb->elems[idx]; }
+    /// Returns the current element's slot kind. The cursor must not be `done()`.
     u8 currentKind() const { return kind; }
 
-    // Advance to the next element.
+    /// Moves to the next element. The cursor must not be `done()`.
     void next() {
         if (inCell) {
             advanceSpine();
@@ -887,8 +789,8 @@ struct ListCursor {
     }
 
 private:
-    // Enter the node `rest` points at (following the spine until an element
-    // is found or the list ends).
+    // Enters the node `rest` names, skipping chunk views with an empty run, until it reaches an element or
+    // the end.
     void advanceSpine() {
         inCell = false;
         while (true) {
@@ -919,7 +821,7 @@ private:
                 u32 total = cv->len;
                 u32 k = run < total ? run : total;
                 if (k == 0) {
-                    // Degenerate empty run (should not be constructed); skip.
+                    // A view with an empty run is skipped.
                     rest = cv->next;
                     continue;
                 }
@@ -930,8 +832,7 @@ private:
                 rest = cv->next;
                 return;
             }
-            // Not a list node: treat as end (mirrors existing walkers'
-            // defensive `tag != Tag_Cons` breaks).
+            // Not a list node: treated as the end.
             done_ = true;
             return;
         }
@@ -939,20 +840,9 @@ private:
 };
 
 
-/**
- * Builds a list from a vector of (Unboxable, is_boxed) pairs with proper
- * GC rooting. All boxed entries are registered as stack roots for the
- * duration of the build phase, so a minor GC triggered by any cons()
- * call updates them in place.
- *
- * @param elems    Mutable ref to (value, is_boxed) pairs. Boxed entries
- *                 may be updated in-place by GC. Must not be resized
- *                 during the call (addresses registered as roots).
- * @param tail     Initial tail for the list (default: Nil).
- * @param reversed If true, iterate forward (producing a reversed list).
- */
-// Logical length of a list value (O(spine-nodes): a chunk view completes in
-// O(1) via its `len`). Non-allocating.
+/// Returns the number of elements in `list`, counting up to the first node that is neither a cons cell
+/// nor a chunk view. Walks cons cells one at a time and stops at the first chunk view, whose `len` gives
+/// the rest. Does not allocate.
 inline u32 listLogicalLen(HPointer list) {
     u32 n = 0;
     HPointer cur = list;
@@ -973,34 +863,25 @@ inline u32 listLogicalLen(HPointer list) {
 }
 
 // ============================================================================
-// Chunk chains (plan §6 L2): over-cap batches split across linked backings
+// Chunk chains
 // ============================================================================
+//
+// A batch too large for one backing is split across several, each wrapped in its own view, the views
+// linked through `next`. Such a list is a chunk chain.
 
-// Largest element count whose backing stays strictly below the large-object
-// threshold, so every chain link is an ordinary nursery-born object (§2.2).
-// The cap is kept, but its original rationale (an over-LOT backing would land
-// in pinned old gen and hold unrecorded old→young edges) no longer applies:
-// ThreadLocalHeap::allocate never places a pointer-bearing large object in the
-// old gen (it goes to the nursery up to the cap, else the young large-object
-// space); only pointer-free large objects are allocated old and pinned.
+/// Returns the most elements a backing may hold while its size stays below the large-object threshold,
+/// so that every backing in a chain is allocated in the nursery.
 inline u32 listBackingMaxElems() {
     return static_cast<u32>(
         (Allocator::instance().getLargeObjectThreshold() - 1
          - sizeof(ListBacking)) / sizeof(Unboxable));
 }
 
-// Builds the chunk spine for an n-element batch ending in `next`:
-// ⌈n / listBackingMaxElems()⌉ nursery-born backings wrapped in views chained
-// tail-first (the tail-most link takes the remainder; earlier links are
-// full), each view's len telescoping per the len-consistency invariant.
-// Returns the head view. Boxed-kind slots are zero-initialized, so a GC
-// during construction scans nulls; callers fill AFTER this returns and must
-// not allocate between construction and the end of the fill.
-//
-// threaded-gc-04 S1: a chunk chain is built as builder objects, which stay in
-// the nursery until finishChunkChain. Take the chunk path only when the whole
-// chain (backings + views) fits in a quarter of the current nursery; larger
-// batches use the cons-cell path, which never needs builders.
+/// Returns whether a chunk chain for `n` elements is small enough to build: whether an estimate of its
+/// size, backings and views together, is at most a quarter of the calling thread's nursery capacity.
+///
+/// A chain is built as builders, which a collection keeps in the nursery, so it must fit there with room
+/// to spare. A caller whose batch does not fit builds cons cells instead.
 inline bool chunkChainFits(u32 n) {
     const size_t links = n / listBackingMaxElems() + 1;
     const size_t bytes = static_cast<size_t>(n) * sizeof(Unboxable) +
@@ -1008,17 +889,22 @@ inline bool chunkChainFits(u32 n) {
     return bytes * 4 <= Allocator::instance().nurseryCapacityBytes();
 }
 
-// (Defined with the other builder helpers below.)
+// Defined with the other builder helpers below.
 inline void mark_as_builder(Header* h);
 inline void clear_builder(Header* h);
 
-// threaded-gc-04 S1 (HEAP_SNAPSHOT_001): every backing AND view is created
-// with builder = 1, so a minor GC during the construction neither ages nor
-// promotes them (a promoted backing filled afterwards would hold unremembered
-// old->young pointers; an aged one would be a write into a survived object).
-// Views are builders too because a builder child of a promoted parent is
-// forbidden (HEAP_BUILDER_001). The caller MUST call finishChunkChain(head, n)
-// after its fill and before the list escapes (HEAP_BUILDER_003).
+/// Allocates an unfilled chunk chain for `n` elements of slot kind `kind`, followed by `next`, and returns
+/// its first view; returns `next` itself when `n` is 0.
+///
+/// The chain has ceil(n / `listBackingMaxElems()`) backings. The last one holds the remainder and every
+/// other one is full. Each view's `len` counts the elements from it to the end, `next`'s included. `next`
+/// is rooted across the allocations, which make this a GC point.
+///
+/// Every backing and view is created as a builder, so a collection during the build or the fill neither
+/// ages nor promotes it, and the fill is a legal write. The caller fills the chain with a
+/// `ListChainWriter` or `ListChainReverseWriter` without allocating in between, then calls
+/// `finishChunkChain(head, n)` before Elm code can reach the list. A boxed chain holds nulls until it is
+/// filled.
 inline HPointer listChunkChain(u32 n, u8 kind, HPointer next) {
     if (n == 0) return next;
     u32 maxElems = listBackingMaxElems();
@@ -1040,10 +926,9 @@ inline HPointer listChunkChain(u32 n, u8 kind, HPointer next) {
     return chain;
 }
 
-// Ends the construction window listChunkChain opened: clears the builder bit
-// of the chain's first ceil(n / listBackingMaxElems()) views and their
-// backings (the part listChunkChain built; the `next` tail is untouched).
-// Allocation-free.
+/// Clears the builder bit of the views and backings of the chain `listChunkChain(n, ...)` returned as
+/// `head`, leaving the list that follows them untouched. `n` must be the count the chain was built for.
+/// Does not allocate.
 inline void finishChunkChain(HPointer head, u32 n) {
     auto& allocator = Allocator::instance();
     u32 seen = 0;
@@ -1058,18 +943,23 @@ inline void finishChunkChain(HPointer head, u32 n) {
     }
 }
 
-// Sequential logical-order writer over a freshly built chunk chain. Caches
-// raw pointers: the caller must not allocate while writing.
+/// A writer that fills a new chunk chain from its first element to its last.
+///
+/// It keeps a raw pointer to the current backing and an unrooted HPointer to the next view, so nothing
+/// may allocate while it is in use. Each `put` stores the next element. The caller must not `put` more
+/// elements than the chain holds; nothing checks.
 struct ListChainWriter {
-    Allocator* alloc_;
-    ListBacking* lb;
-    HPointer nextView;
-    u32 idx, run;
+    Allocator* alloc_;   // The process's allocator; not null.
+    ListBacking* lb;     // The backing being filled; null before the first `put`.
+    HPointer nextView;   // The view whose backing is filled next.
+    u32 idx, run;        // The next index in `lb`, and `lb`'s capacity.
 
+    /// Starts at the first element of the chain whose first view is `headView`.
     explicit ListChainWriter(HPointer headView)
         : alloc_(&Allocator::instance()), lb(nullptr), nextView(headView),
           idx(0), run(0) {}
 
+    /// Stores `v` as the next element.
     void put(Unboxable v) {
         if (idx == run) {
             ConsChunk* cv =
@@ -1079,30 +969,27 @@ struct ListChainWriter {
             idx = 0;
             run = lb->header.size;
 #if P1_CENSUS_COMPILED
-            p1::noteWrite(lb, "listChainFill");   // builder: legal (S1)
+            p1::noteWrite(lb, "listChainFill");   // A builder, so the write is legal.
 #endif
         }
         lb->elems[idx++] = v;
     }
 };
 
-// Reverse-order writer: fills the last logical slot first. Used by reverse,
-// whose source cursor can only walk forward. Resolves the whole chain's
-// backings up front (raw pointers — same no-allocation discipline).
-/// Backward iterator over a hybrid spine (plan §6 "backward-cursor foldr
-/// walks"). The constructor collects the spine NODES front-to-back — one
-/// entry per Cons cell or chunk view, so chunk runs collapse to a single
-/// entry instead of per-element copies — and prev() then yields elements in
-/// REVERSE order, indexing backward through each chunk's run. Allocation-
-/// TOLERANT: the caller roots `nodes` (contiguous HPointer storage, stable
-/// after construction) and every read re-resolves, so fold callbacks may
-/// allocate and trigger GC between reads.
+/// A position in a list, walking from the last element to the first, that stays valid across
+/// collections once its nodes are rooted.
+///
+/// The constructor records every node of the list, one entry per cons cell or chunk view, without
+/// allocating. The caller then roots those entries with `rootNodes` before anything allocates, and may
+/// allocate between calls to `prev`, which resolves the current node again each time. An element `prev`
+/// returns is a copy and is not rooted. A node that is not a cons cell or chunk view ends the list.
 struct ListBackwardCursor {
-    std::vector<HPointer> nodes;  // spine nodes, front-to-back
-    size_t ni;                    // node being drained (moving toward 0)
-    i64 idx;                      // next element index in ni's run, or -1
-    Allocator* alloc_;
+    std::vector<HPointer> nodes;  // The list's nodes, first to last.
+    size_t ni;                    // The node being read; counts down.
+    i64 idx;                      // The next element's index in node `ni`'s run, or -1 to move to the node before.
+    Allocator* alloc_;   // The process's allocator; not null.
 
+    /// Records the nodes of `list`, which must be current. Allocates C++ memory only.
     explicit ListBackwardCursor(HPointer list)
         : ni(0), idx(-1), alloc_(&Allocator::instance()) {
         HPointer cur = list;
@@ -1123,15 +1010,15 @@ struct ListBackwardCursor {
         ni = nodes.size();
     }
 
-    // Roots the node array with ONE all-boxed record (an all-ones mask covers
-    // a range of any length; plans/kernel-root-stack-bounded-rooting.md). Pair
-    // with rs.restoreStackRangePoint(save-point taken before this call). The
-    // array must not grow after this.
+    /// Pushes one record onto `rs`, the calling thread's root set, that roots every recorded node, or
+    /// nothing if there are none. The caller takes `rs.stackRangePoint()` first and restores it when the
+    /// walk is over, before the cursor is destroyed.
     void rootNodes(RootSet& rs) {
         if (!nodes.empty()) rs.pushStackRootRange(nodes.data(), nodes.size(), ~0ULL);
     }
 
-    // Yields the next element in reverse order; false when exhausted.
+    /// Stores the next element, walking backwards, and its slot kind in `out` and `kind` and returns true,
+    /// or returns false when every element has been returned. Does not allocate.
     bool prev(Unboxable& out, u8& kind) {
         while (true) {
             if (idx < 0) {
@@ -1171,11 +1058,18 @@ struct ListBackwardCursor {
     }
 };
 
+/// A writer that fills a new chunk chain from its last element to its first, for a producer that meets
+/// the elements in the reverse of list order.
+///
+/// The constructor records a raw pointer to every backing of the chain, so nothing may allocate while
+/// the writer is in use. The caller must not `put` more elements than the chain holds; nothing checks.
 struct ListChainReverseWriter {
-    std::vector<ListBacking*> chunks;
-    size_t ci;
-    u32 idx;
+    std::vector<ListBacking*> chunks;  // The chain's backings, first to last.
+    size_t ci;                         // The backing being filled; counts down.
+    u32 idx;                           // One past the next index to fill in `chunks[ci]`.
 
+    /// Starts at the last element of the chain `listChunkChain(n, ...)` returned as `headView`. `n` must be
+    /// the count the chain was built for, and not 0. Allocates C++ memory only.
     ListChainReverseWriter(HPointer headView, u32 n) : ci(0), idx(0) {
         auto& allocator = Allocator::instance();
         u32 seen = 0;
@@ -1185,7 +1079,7 @@ struct ListChainReverseWriter {
             ListBacking* lb =
                 static_cast<ListBacking*>(allocator.resolve(cv->backing));
 #if P1_CENSUS_COMPILED
-            p1::noteWrite(lb, "listChainFill");   // builder: legal (S1)
+            p1::noteWrite(lb, "listChainFill");   // A builder, so the write is legal.
 #endif
             chunks.push_back(lb);
             seen += lb->header.size;
@@ -1195,6 +1089,7 @@ struct ListChainReverseWriter {
         idx = chunks[ci]->header.size;
     }
 
+    /// Stores `v` as the element before the one stored last.
     void put(Unboxable v) {
         if (idx == 0) {
             --ci;
@@ -1204,12 +1099,11 @@ struct ListChainReverseWriter {
     }
 };
 
-/**
- * Builds a list from a rooted buffer of boxed HPointers (first element becomes
- * head). The buffer is ONE shadow-stack record whatever its length
- * (plans/kernel-root-stack-bounded-rooting.md); elements are re-read from it
- * after each allocation.
- */
+/// Returns the list of the boxed values in `rooted`, first to last. Each value is read from `rooted` after
+/// the allocations before it, so it is current when stored.
+///
+/// When `eco_g_list_chunks` is set, there are at least 4 values and `chunkChainFits` allows, the list is
+/// one chunk chain; otherwise it is cons cells. A GC point.
 inline HPointer listFromPointers(const RootedSlots& rooted) {
     HPointer result = listNil();
     auto& rs = Allocator::instance().getRootSet();
@@ -1217,9 +1111,7 @@ inline HPointer listFromPointers(const RootedSlots& rooted) {
     rs.pushStackRootRange(&result, 1, 1);
     const u32 n = static_cast<u32>(rooted.size());
 
-    // Chunks: one dense chain instead of n cells (String.split parts and
-    // the other pointer-list builders). Elements are re-read from the
-    // rooted buffer after construction; the fill never allocates.
+    // The values are read from the rooted buffer after the chain is allocated; the fill does not allocate.
     if (eco_g_list_chunks && n >= 4 && chunkChainFits(n)) {
         HPointer head = listChunkChain(n, 0, listNil());
         ListChainWriter w(head);
@@ -1240,29 +1132,19 @@ inline HPointer listFromPointers(const RootedSlots& rooted) {
     return result;
 }
 
-/**
- * Builds a list from a vector of boxed HPointers.
- * All elements are treated as boxed pointers. The pointers must be valid on
- * entry (read since the last possible GC); they are copied into one rooted
- * buffer before anything allocates.
- *
- * @param elements Vector of HPointers (first element becomes head).
- * @return HPointer to the list head (or Nil if empty).
- */
+/// Returns the list of the HPointers in `elements`, first to last, or `[]` when it is empty, as the
+/// `RootedSlots` overload does. The values must be current on entry; they are copied into a rooted
+/// buffer before anything heap-allocates. A GC point.
 inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
     RootedSlots rooted(elements.size());
     for (HPointer hp : elements) rooted.push(hp);
     return listFromPointers(rooted);
 }
 
-/**
- * Builds a list from a vector of unboxed integers.
- *
- * @param elements Vector of i64 values.
- * @return HPointer to the list head (or Nil if empty).
- */
+/// Returns the list of Ints in `elements`, first to last, or `[]` when it is empty. The list is one chunk
+/// chain under the same conditions as `listFromPointers`, and cons cells otherwise. A GC point.
 inline HPointer listFromInts(const std::vector<i64>& elements) {
-    // Chunks: scalar backings need no rooting discipline at all.
+    // Int slots hold no pointers, so nothing needs rooting.
     if (eco_g_list_chunks && elements.size() >= 4 &&
         chunkChainFits(static_cast<u32>(elements.size()))) {
         u32 n = static_cast<u32>(elements.size());
@@ -1283,12 +1165,8 @@ inline HPointer listFromInts(const std::vector<i64>& elements) {
     return result;
 }
 
-/**
- * Builds a list from a vector of unboxed floats.
- *
- * @param elements Vector of f64 values.
- * @return HPointer to the list head (or Nil if empty).
- */
+/// Returns the list of Floats in `elements`, first to last, or `[]` when it is empty. The list is always
+/// cons cells. A GC point.
 inline HPointer listFromFloats(const std::vector<f64>& elements) {
     HPointer result = listNil();
     for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
@@ -1297,48 +1175,38 @@ inline HPointer listFromFloats(const std::vector<f64>& elements) {
     return result;
 }
 
-// A user callback reports only whether its result is a POINTER, never WHICH
-// unboxed kind it is, so an unboxed callback result can only be stored as Int
-// — the historical behaviour of the `cons(…, bool)` overload. Sound for Int
-// and boxed results; a Float- or Char-returning mapper routed through one of
-// those paths would be stored at the wrong kind. The LIVE map/indexedMap
-// exports do NOT route there (they carry `meta.result_kind` through
-// `kernelListMapN`), which is why this is a documented limitation and not a
-// live defect. Every path whose element kind IS knowable — anything copying
-// or permuting an existing list — passes the real kind instead.
+/// Returns the slot kind for a value known only to be boxed or not: 0 when `is_boxed` is true, 1 (Int)
+/// when it is false.
+///
+/// A Float or Char value passed through this is given kind Int, which is wrong. Use it only where the
+/// value can only be boxed or an Int; where the real kind is known, pass that.
 inline u8 kindFromBoxedFlag(bool is_boxed) {
     return is_boxed ? static_cast<u8>(0) : static_cast<u8>(1);
 }
 
-// Build a list from (value, KIND) pairs.
-//
-// The second field is a 2-bit slot kind (0 = boxed pointer, 1 = Int,
-// 2 = Float, 3 = Char), NOT a boolean. It used to be `bool is_boxed`, which
-// collapsed every unboxed kind to Int: a Float list rebuilt through here came
-// back with its f64 bit patterns sitting in Int-kinded slots, so consumers
-// reading at the static (Float) kind — arithmetic folds, structural equality —
-// silently disagreed with the values `Debug.log` printed from the header.
+/// Returns the list of the values in `elems`, each with its own slot kind, followed by `tail`; returns
+/// `tail` when `elems` is empty. The kind is the full 2-bit slot kind, not a boxed flag, so Float and Char
+/// elements keep their kinds.
+///
+/// The elements are in `elems`' order, or in reverse order when `reversed` is true. `tail`, when it is a
+/// heap pointer, and the boxed values are rooted, and each value is read from `elems` after the
+/// allocations before it. When `eco_g_list_chunks` is set, there are at least 4 elements,
+/// `chunkChainFits` allows and every element has the same kind, the elements are one chunk chain;
+/// otherwise they are cons cells. A GC point.
 inline HPointer listFromUnboxables(
         const RootedElems& elems,
         HPointer tail = listNil(),
         bool reversed = false) {
     if (elems.empty()) return tail;
 
-    // `elems` roots its boxed values with ONE record
-    // (plans/kernel-root-stack-bounded-rooting.md); `result` is the one other
-    // root.
+    // `elems` roots the boxed values; `result` is the one other root.
     HPointer result = tail;
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(&result, 1, 1);
     const u32 n = static_cast<u32>(elems.size());
 
-    // Chunked-list fast path (plans/chunked-list-representation.md §6): when
-    // the program was compiled chunk-aware, a kind-UNIFORM batch becomes a
-    // chunk chain — one dense backing per listBackingMaxElems() run — instead
-    // of n cells. Mixed batches fall back to cells. Threshold 4 avoids
-    // tiny-chunk overhead. Elements are re-read from the rooted buffer after
-    // construction, and the fill itself never allocates.
+    // The values are read from `elems` after the chain is allocated; the fill does not allocate.
     if (eco_g_list_chunks && n >= 4 && chunkChainFits(n) && elems.uniform()) {
         u8 kind = elems.kind(0);
         HPointer head = listChunkChain(n, kind, result);
@@ -1367,8 +1235,9 @@ inline HPointer listFromUnboxables(
     return result;
 }
 
-// Vector form: the values must be valid on entry (read since the last possible
-// GC); they are copied into one rooted buffer before anything allocates.
+/// Returns what the `RootedElems` overload returns for the (value, slot kind) pairs in `elems`. The boxed
+/// values must be current on entry; they are copied into a rooted buffer before anything heap-allocates.
+/// A GC point.
 inline HPointer listFromUnboxables(
         const std::vector<std::pair<Unboxable, u8>>& elems,
         HPointer tail = listNil(),
@@ -1383,15 +1252,9 @@ inline HPointer listFromUnboxables(
 // Tuple Allocation
 // ============================================================================
 
-/**
- * Allocates a Tuple2.
- *
- * @param a           First element.
- * @param b           Second element.
- * @param unboxed_mask Bitmask: bit 0 = a is unboxed, bit 1 = b is unboxed.
- * @return HPointer to the allocated tuple.
- */
-// `unboxed_mask`: 2-bit-per-slot kind bitmap (4 bits used for 2 slots).
+/// Returns the pair `(a, b)`. `unboxed_mask` holds the two slot kinds, 2 bits each, `a`'s in bits 0-1 and
+/// `b`'s in bits 2-3; higher bits are ignored. The boxed fields are rooted across the allocation. A GC
+/// point.
 inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
     uint64_t roots[2] = { static_cast<uint64_t>(a.i), static_cast<uint64_t>(b.i) };
     uint64_t mask = 0;
@@ -1406,16 +1269,8 @@ inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
     return Allocator::instance().wrap(tuple);
 }
 
-/**
- * Allocates a Tuple3.
- *
- * @param a           First element.
- * @param b           Second element.
- * @param c           Third element.
- * @param unboxed_mask Bitmask: bit 0 = a, bit 1 = b, bit 2 = c is unboxed.
- * @return HPointer to the allocated tuple.
- */
-// `unboxed_mask`: 2-bit-per-slot kind bitmap (6 bits used for 3 slots).
+/// Returns the triple `(a, b, c)`. `unboxed_mask` holds the three slot kinds, 2 bits each from bit 0 in
+/// field order; bits above 5 are ignored. The boxed fields are rooted across the allocation. A GC point.
 inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) {
     uint64_t roots[3] = {
         static_cast<uint64_t>(a.i),
@@ -1441,10 +1296,14 @@ inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) 
 // ============================================================================
 
 namespace detail {
-// Shared body of custom()/record() (layout C, HEAP_019): n fields, kinds from
-// kindOf(i) for every slot. Roots the boxed values across the allocation
-// (64-slot chunks over 64), then writes the header bitmap, the K ext kind words
-// (initHeaderForTag set size = n, unboxed = K and zeroed them) and the values.
+/// Allocates a Custom or Record (`tag`) holding `values`, with field `i`'s slot kind given by `kindOf(i)`,
+/// and writes the kinds and values. Aborts past the type's field limit. The caller sets anything else,
+/// such as a Custom's constructor. `values` must not be empty.
+///
+/// The boxed values are rooted across the allocation, in records of 64 slots when there are more than 64.
+/// The first kinds go in the object's own bitmap and the rest in the extension kind words after the values
+/// (HEAP_019); the allocation has already zeroed those words. `KindOf` is called with a field index and
+/// must return the kind in its low 2 bits. A GC point.
 template <class Obj, class KindOf>
 inline Obj* allocWideContainer(Tag tag, const std::vector<Unboxable>& values, KindOf kindOf) {
     const bool isC = tag == Tag_Custom;
@@ -1483,23 +1342,17 @@ inline Obj* allocWideContainer(Tag tag, const std::vector<Unboxable>& values, Ki
 }
 } // namespace detail
 
-/**
- * Allocates a Custom type value (algebraic data type).
- *
- * @param ctor   Constructor index.
- * @param values Vector of field values (1..CUSTOM_MAX_FIELDS; aborts past it).
- * @param kinds  One 2-bit kind per field (0 boxed, 1 Int, 2 Float, 3 Char);
- *               fields >= 24 go to the ext kind words (HEAP_019).
- * @return HPointer to the allocated Custom value.
- */
+/// Returns the value of constructor `ctor` of a custom type with fields `values`, whose slot kinds are
+/// `kinds`, one per field. Aborts if there are more than `CUSTOM_MAX_FIELDS` fields. The boxed fields are
+/// rooted across the allocation. A GC point when there are fields.
+///
+/// A constructor with no fields is not a heap object: for empty `values` this returns the null-cons word
+/// for `ctor`, which must be at most `NULL_CONS_MAX` (asserted), and allocates nothing.
 inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, const std::vector<u8>& kinds) {
     assert(kinds.size() == values.size());
     if (values.empty()) {
-        // Single-representation invariant (plans/null-cons-hpointer-embedding.md
-        // §2.3, HEAP_044): nullary ctors are embedded HPointer constants, never
-        // heap objects — resolveAndCompare/eco.value.eq decide by word
-        // (in)equality the moment either side is embedded, so a heap copy here
-        // would make equal values compare unequal.
+        // A nullary constructor must have one representation (HEAP_044): equality decides by comparing
+        // words once either side is a constant, so a heap copy would compare unequal to the constant.
         assert(ctor <= NULL_CONS_MAX && "nullary ctor index exceeds null_cons_idx capacity");
         return hpFromBits(nullConsWordFor(ctor));
     }
@@ -1509,8 +1362,8 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, const std
     return Allocator::instance().wrap(obj);
 }
 
-// u64 overload: `unboxed_mask` is the 2-bit-per-slot header bitmap (slots 0..23,
-// 48 bits); slots past it are boxed.
+/// Returns what the `kinds` overload returns, with the kinds of fields 0 to 23 given 2 bits each in
+/// `unboxed_mask`, which must fit in 48 bits (asserted). Fields past 23 are boxed.
 inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
     assert((unboxed_mask >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
     if (values.empty()) {
@@ -1525,44 +1378,29 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unbox
     return Allocator::instance().wrap(obj);
 }
 
-/**
- * Allocates a Just value (Maybe with a value).
- *
- * @param value The wrapped value.
- * @param is_boxed True if value is a heap pointer.
- * @return HPointer to the Just value.
- */
-// `kind`: 0=boxed, 1=Int, 2=Float, 3=Char.
+/// Returns `Just value`, where `value` has slot kind `kind` (low 2 bits used). A GC point.
 inline HPointer justKind(Unboxable value, u8 kind) {
     std::vector<Unboxable> vals = {value};
     u64 mask = static_cast<u64>(kind) & 0x3;
     return custom(0, vals, mask);
 }
 
+/// Returns `Just value`, with the value boxed when `is_boxed` is true and an Int when it is false. A GC
+/// point.
 inline HPointer just(Unboxable value, bool is_boxed) {
     return justKind(value, static_cast<u8>(is_boxed ? 0 : 1));
 }
 
-/**
- * Allocates an Ok value (Result.Ok).
- *
- * @param value The success value.
- * @param is_boxed True if value is a heap pointer.
- * @return HPointer to the Ok value.
- */
+/// Returns `Ok value` (constructor 0), with the value boxed when `is_boxed` is true and an Int when it is
+/// false. A GC point.
 inline HPointer ok(Unboxable value, bool is_boxed) {
     std::vector<Unboxable> vals = {value};
     u64 mask = is_boxed ? 0 : 1;
     return custom(0, vals, mask);  // Ok is ctor 0
 }
 
-/**
- * Allocates an Err value (Result.Err).
- *
- * @param value The error value.
- * @param is_boxed True if value is a heap pointer.
- * @return HPointer to the Err value.
- */
+/// Returns `Err value` (constructor 1), with the value boxed when `is_boxed` is true and an Int when it is
+/// false. A GC point.
 inline HPointer err(Unboxable value, bool is_boxed) {
     std::vector<Unboxable> vals = {value};
     u64 mask = is_boxed ? 0 : 1;
@@ -1573,13 +1411,10 @@ inline HPointer err(Unboxable value, bool is_boxed) {
 // Record Allocation
 // ============================================================================
 
-/**
- * Allocates a fixed-layout Record.
- *
- * @param values Vector of field values (in canonical field order; up to RECORD_MAX_FIELDS).
- * @param kinds  One 2-bit kind per field; fields >= 32 go to the ext kind words (HEAP_019).
- * @return HPointer to the allocated Record.
- */
+/// Returns the record with fields `values`, in the record type's field order, whose slot kinds are
+/// `kinds`, one per field, or `{}` when `values` is empty. Aborts if there are more than
+/// `RECORD_MAX_FIELDS` fields. The boxed fields are rooted across the allocation. A GC point when there
+/// are fields.
 inline HPointer record(const std::vector<Unboxable>& values, const std::vector<u8>& kinds) {
     assert(kinds.size() == values.size());
     if (values.empty()) {
@@ -1590,8 +1425,8 @@ inline HPointer record(const std::vector<Unboxable>& values, const std::vector<u
     return Allocator::instance().wrap(obj);
 }
 
-// u64 overload: `unboxed_mask` is the 2-bit-per-slot header bitmap (slots 0..31);
-// slots past it are boxed.
+/// Returns what the `kinds` overload returns, with the kinds of fields 0 to 31 given 2 bits each in
+/// `unboxed_mask`. Fields past 31 are boxed.
 inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
     if (values.empty()) {
         return emptyRecord();
@@ -1607,18 +1442,13 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
 // ByteBuffer Allocation
 // ============================================================================
 
-/**
- * Allocates an immutable ByteBuffer.
- *
- * @param data   Pointer to byte data.
- * @param length Number of bytes.
- * @return HPointer to the allocated ByteBuffer.
- *
- * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
- * it may run a minor GC, a major GC, or (on the large split path, D4) a
- * minor then a major before it copies. `data` must therefore not point into
- * the GC heap unless it is a rooted, pinned large body.
- */
+/// Returns a Bytes value holding a copy of the `length` bytes at `data`, or the empty Bytes when `length`
+/// is 0. With a null `data` nothing is copied, and the large path zeroes the body.
+///
+/// A Bytes value whose object would be at least the large-object threshold is built by
+/// `Allocator::allocLargeByteBuffer`, as a nursery header and a pinned body; any other is one
+/// `Tag_ByteBuffer`. A GC point, and the bytes are copied after the collections it may run. `data` must
+/// therefore not point into the collected heap, unless it points into a rooted large body.
 inline HPointer allocByteBuffer(const u8* data, size_t length) {
     if (length == 0) return emptyBytes();
     auto& allocator = Allocator::instance();
@@ -1638,45 +1468,32 @@ inline HPointer allocByteBuffer(const u8* data, size_t length) {
     return allocator.wrap(buf);
 }
 
-/**
- * Result of `allocByteBufferBlank`. Mirrors BlankString: a freshly
- * allocated ByteBuffer with uninitialized `bytes[]`. The caller must
- * write all `length` bytes BEFORE the next allocation in this thread.
- * Sub-LOT bytes pointer dangles after a minor GC; large-path bodies are
- * pinned and remain stable.
- */
+/// A new Bytes value whose bytes have not been written yet, with a pointer to write them through.
+///
+/// `bytes` is where the `length` bytes go; the caller writes all of them before anything else allocates.
+/// For a buffer in the nursery, `bytes` points into the object and is stale after the next allocation on
+/// this thread; for a large buffer it points into the pinned body and stays valid. `hp` is the value
+/// itself, an HPointer the caller must root as any other. For `length` 0, `hp` is the empty Bytes and
+/// `bytes` is null.
 struct BlankByteBuffer {
     HPointer hp;
     u8* bytes;
     u32 length;
 };
 
-/**
- * Allocates a ByteBuffer of `length` bytes with uninitialized payload,
- * returning the handle plus a writable pointer. Pairs with the same
- * two-pass count→allocate→fill pattern used by allocStringBlank, allowing
- * direct decoders/encoders to bypass an intermediate std::vector copy.
- *
- * Safety contract: do not allocate between getting `bytes` and finishing
- * the write. For payloads routing through the large-object split path
- * the body is pinned in old gen and `bytes` remains stable.
- *
- * GC contract (plans/large-body-gc-trigger.md D5): this call is a GC point -
- * it may run a minor GC, a major GC, or (on the large split path, D4) a
- * minor then a major. Any heap pointer the caller holds across it must be
- * rooted; a source it copies from afterwards must not point into the GC heap
- * unless it is a rooted, pinned large body.
- */
+/// Allocates a Bytes value of `length` bytes and returns it with a pointer to write them through, so that
+/// an encoder can write straight into the object. The size split is as for `allocByteBuffer`. A GC point,
+/// so any HPointer the caller holds across it must be rooted.
+///
+/// Nothing is written to the bytes on the small path; the large path zeroes them. The result's `bytes` is valid
+/// only as `BlankByteBuffer` says.
 inline BlankByteBuffer allocByteBufferBlank(size_t length) {
-    // Empty Bytes is the embedded constant (HEAP_071); nothing to write.
     if (length == 0) return BlankByteBuffer{emptyBytes(), nullptr, 0};
     auto& allocator = Allocator::instance();
 
     size_t total_size = sizeof(ByteBuffer) + length;
     total_size = (total_size + 7) & ~7;
 
-    // Mirror allocByteBuffer's split: only payloads at/over the LOT take
-    // the split-header path.
     if (total_size >= allocator.getLargeObjectThreshold()) {
         HPointer hp = allocator.allocLargeByteBuffer(nullptr, length);
         void* header_obj = allocator.resolve(hp);
@@ -1691,12 +1508,7 @@ inline BlankByteBuffer allocByteBufferBlank(size_t length) {
     return BlankByteBuffer{hp, buf->bytes, static_cast<u32>(length)};
 }
 
-/**
- * Allocates a zero-initialized ByteBuffer.
- *
- * @param length Number of bytes.
- * @return HPointer to the allocated ByteBuffer.
- */
+/// Returns a Bytes value of `length` zero bytes, or the empty Bytes when `length` is 0. A GC point.
 inline HPointer allocByteBufferZero(size_t length) {
     if (length == 0) return emptyBytes();
     auto& allocator = Allocator::instance();
@@ -1717,29 +1529,25 @@ inline HPointer allocByteBufferZero(size_t length) {
     return allocator.wrap(buf);
 }
 
-/**
- * Returns the length of a ByteBuffer in any form (Tag_ByteBuffer,
- * Tag_LargeByteHeader, Tag_ByteBufferSlice). header.size carries the
- * logical length for all three.
- */
+/// Returns the length in bytes of the Bytes object `buf`, in any of its three forms (`Tag_ByteBuffer`,
+/// `Tag_LargeByteHeader`, `Tag_ByteBufferSlice`), from its `header.size`, or 0 for null, which is how
+/// `resolveBytesOrNull` returns the empty Bytes.
 inline size_t byteBufferLength(void* buf) {
     if (!buf) return 0;
     Header* hdr = static_cast<Header*>(buf);
     return hdr->size;
 }
 
-/**
- * Returns a pointer to the byte data of a ByteBuffer, resolving through a
- * Tag_LargeByteHeader to its Tag_ByteBuffer body or through a
- * Tag_ByteBufferSlice to base + offset.
- */
+/// Returns the first byte of the Bytes object `buf`, in any of its three forms, or null for null. For a
+/// large buffer, or a slice of one, the pointer is into the pinned body; otherwise it is into a nursery or
+/// old-generation object and is stale once a collection may have moved it.
 inline const u8* byteBufferData(void* buf) {
     if (!buf) return nullptr;
     Header* hdr = static_cast<Header*>(buf);
     if (hdr->tag == Tag_ByteBufferSlice) {
         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(buf);
         void* base = Allocator::instance().resolve(slc->base);
-        // The base is a flat Tag_ByteBuffer or a Tag_LargeByteHeader.
+        // A slice made by `makeByteBufferSlice` never has a slice as its base.
         Header* basehdr = static_cast<Header*>(base);
         if (basehdr->tag == Tag_LargeByteHeader) {
             return largeBytesData(static_cast<LargeByteHeader*>(base)) + slc->offset;
@@ -1758,12 +1566,9 @@ inline const u8* byteBufferData(void* buf) {
 // Array Allocation
 // ============================================================================
 
-/**
- * Allocates a mutable Array with specified capacity.
- *
- * @param capacity  Maximum number of elements.
- * @return HPointer to the allocated Array (length starts at 0).
- */
+/// Allocates an array with room for `capacity` elements, of length 0 and element kind boxed. It is not a
+/// builder. The caller fills it with `arrayPush` or `arrayPushKind` before it survives a collection, or
+/// uses `allocArrayBuilder` when the fill may allocate. A GC point.
 inline HPointer allocArray(size_t capacity) {
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
@@ -1778,34 +1583,25 @@ inline HPointer allocArray(size_t capacity) {
 }
 
 // ============================================================================
-// Builder Bit Helpers (HEAP_BUILDER_001..003)
+// Builder Bit Helpers
 // ============================================================================
 //
-// Builder objects are pinned to the nursery while a runtime kernel is mutating
-// them in place across closure calls. The bit gates promotion in
-// NurserySpace::evacuate so a half-built container can never become an old-gen
-// parent of nursery-resident children.
+// A builder, as the file comment defines it, is an object a kernel may keep writing into across
+// allocations and calls back into Elm. The header bit keeps it young (HEAP_BUILDER_001), so a half-built
+// object never becomes an old-generation object pointing at young ones.
 
-/**
- * Sets `builder = 1` and resets `age = 0` to maintain HEAP_BUILDER_002. Both
- * writes are required: the invariant `builder ⇒ age == 0` is checked in
- * minor-GC evacuation under ECO_HEAP_VALIDATE.
- */
+/// Makes the object whose header is `h` a builder: sets its `builder` bit and sets its age to 0, since a
+/// builder's age must stay 0 (HEAP_BUILDER_002). The object must be young.
 inline void mark_as_builder(Header* h) {
     h->builder = 1;
     h->age = 0;
 }
 
-/**
- * Clears the builder bit. After this returns, the cell ages from 0 like a
- * fresh allocation and may promote on a subsequent minor GC. Under
- * ECO_HEAP_VALIDATE, asserts the cell is still in the nursery — clearing
- * builder on an old-gen object would mean HEAP_BUILDER_001 was already
- * violated, but the assert documents the intent.
- */
+/// Clears the `builder` bit of the object whose header is `h`, after which it ages and may be promoted
+/// like any other object. In `ECO_HEAP_VALIDATE` builds, asserts that the object is still young, in the
+/// nursery or the young large-object space.
 inline void clear_builder(Header* h) {
 #if ECO_HEAP_VALIDATE
-    // threaded-gc-04b HEAP_062: or a young large object (a large builder).
     assert((Allocator::instance().isInNursery(h) ||
             Allocator::instance().getCurrentThreadHeap()->getOldGen().isYoungLarge(h)) &&
            "HEAP_BUILDER_001: clear_builder on non-nursery object");
@@ -1813,18 +1609,15 @@ inline void clear_builder(Header* h) {
     h->builder = 0;
 }
 
-/**
- * RAII guard that marks an object as a builder on construction and clears
- * the bit on scope exit. Use this for the duration of a kernel's mutation
- * window so every exit path (return, exception, early break) clears the
- * bit before the result becomes reachable to user Elm code (HEAP_BUILDER_003).
- *
- * Holds an `HPointer*` (not a raw object pointer) so it can re-resolve the
- * cell on destruction — the underlying object may have been relocated by a
- * minor GC during the guarded scope.
- */
+/// A scope during which an object is a builder, so that every way out of a kernel's fill clears the bit
+/// before Elm code can reach the object (HEAP_BUILDER_003).
+///
+/// The guard keeps the address of the caller's HPointer variable, not the object, and resolves it again
+/// when it clears the bit, since a collection may have moved the object meanwhile. The variable must
+/// therefore be rooted, and must outlive the guard. A guard can be neither copied nor moved.
 class BuilderGuard {
 public:
+    /// Makes the object `*hp` names a builder. `*hp` must be a young heap object, not a constant.
     explicit BuilderGuard(HPointer* hp) : hp_(hp), active_(true) {
         void* obj = Allocator::instance().resolve(*hp_);
         assert(obj && "BuilderGuard: object must resolve at construction");
@@ -1834,9 +1627,8 @@ public:
     BuilderGuard(const BuilderGuard&) = delete;
     BuilderGuard& operator=(const BuilderGuard&) = delete;
 
-    /// Manually clear the builder bit before the guard goes out of scope.
-    /// Useful when a kernel publishes the result on the last iteration and
-    /// wants to drop builder semantics before the function returns.
+    /// Clears the builder bit now rather than at destruction, for a kernel that hands the object on before
+    /// the guard's scope ends. Does nothing if called before.
     void clear() {
         if (!active_) return;
         active_ = false;
@@ -1846,23 +1638,17 @@ public:
         }
     }
 
+    /// Clears the builder bit, unless `clear` already has.
     ~BuilderGuard() { clear(); }
 
 private:
-    HPointer* hp_;
-    bool active_;
+    HPointer* hp_;   // The caller's variable naming the object.
+    bool active_;    // Whether the bit has yet to be cleared.
 };
 
-/**
- * Allocates a mutable Array with specified capacity AND sets the builder
- * bit so the GC will not promote the array while it is being mutated in
- * place. Caller must clear the bit (via BuilderGuard or clear_builder)
- * before the array becomes reachable to user code (HEAP_BUILDER_003).
- *
- * Use this for the "alloc + mutate across closure calls" pattern. One-shot
- * allocators that fill the array atomically before any GC point can stay
- * on `allocArray`.
- */
+/// Allocates an array as `allocArray` does and makes it a builder, for a kernel whose fill may allocate
+/// or call back into Elm. The caller must clear the bit, with a `BuilderGuard` or `clear_builder`, before
+/// Elm code can reach the array (HEAP_BUILDER_003). A GC point.
 inline HPointer allocArrayBuilder(size_t capacity) {
     HPointer hp = allocArray(capacity);
     void* obj = Allocator::instance().resolve(hp);
@@ -1871,21 +1657,14 @@ inline HPointer allocArrayBuilder(size_t capacity) {
     return hp;
 }
 
-/**
- * Allocates an Array and initializes it with boxed pointers.
- *
- * @param elements Vector of HPointers.
- * @return HPointer to the allocated Array.
- */
+/// Returns an array holding the HPointers in `elements`, in order, with element kind boxed. The values must
+/// be current on entry; they are copied into a rooted buffer before the allocation. A GC point.
 inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     size_t capacity = elements.size();
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    // Element count can exceed 64; the eco_alloc_with_roots single-call
-    // hptr_mask only covers 64 slots. Keep an outer batch rooting via
-    // StackRootRangeGuard around the whole construction so the inner
-    // helper's slow-path rooting is redundant-but-harmless.
+    // eco_alloc_with_roots roots at most 64 slots, so the copy is rooted with one all-ones record instead.
     std::vector<HPointer> rooted = elements;
     Elm::StackRootRangeGuard guard(rooted.data(), rooted.size(), ~uint64_t{0});
 
@@ -1894,24 +1673,18 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(rooted.size());
     arr->padding = 0;
-    arr->header.unboxed = 0;  // All elements are boxed pointers
+    arr->header.unboxed = 0;
     for (size_t i = 0; i < rooted.size(); ++i) {
         arr->elements[i].p = rooted[i];
     }
 #if ECO_HEAP_VALIDATE
-    // All-boxed: validate every element write.
     for (size_t i = 0; i < rooted.size(); ++i)
         validateNurseryHPtr(arr->elements[i].p);
 #endif
     return Allocator::instance().wrap(arr);
 }
 
-/**
- * Allocates an Array and initializes it with unboxed integers.
- *
- * @param elements Vector of i64 values.
- * @return HPointer to the allocated Array.
- */
+/// Returns an array holding the Ints in `elements`, in order, with element kind Int. A GC point.
 inline HPointer arrayFromInts(const std::vector<i64>& elements) {
     size_t capacity = elements.size();
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
@@ -1921,7 +1694,7 @@ inline HPointer arrayFromInts(const std::vector<i64>& elements) {
         eco_alloc_with_roots(Tag_Array, total_size, nullptr, 0, 0));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
-    arr->header.unboxed = 1;  // Uniform kind: Int (kind 01)
+    arr->header.unboxed = 1;  // Int
     arr->padding = 0;
     for (size_t i = 0; i < elements.size(); ++i) {
         arr->elements[i].i = elements[i];
@@ -1929,67 +1702,54 @@ inline HPointer arrayFromInts(const std::vector<i64>& elements) {
     return Allocator::instance().wrap(arr);
 }
 
-/**
- * Returns the length of an Array.
- */
+/// Returns the number of elements in the array object `arr`.
 inline size_t arrayLength(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     return a->length;
 }
 
-/**
- * Returns the capacity of an Array.
- */
+/// Returns the number of elements the array object `arr` has room for.
 inline size_t arrayCapacity(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     return a->header.size;
 }
 
-/**
- * Pushes a value onto an Array (must have capacity).
- *
- * Arrays are uniform: all elements must be either boxed or unboxed.
- * The first push sets the unboxed flag; subsequent pushes must be consistent.
- *
- * @param arr      Pointer to the Array.
- * @param value    Value to push.
- * @param is_boxed True if value is a heap pointer.
- * @return True if successful, false if at capacity.
- */
+/// Appends `value` to the array object `arr` and returns true, or returns false if the array is full.
+///
+/// All of an array's elements have one slot kind. The first push sets it, to boxed when `is_boxed` is true
+/// and to Int when it is false; later pushes must agree, and nothing checks that they do. `arr` must be a
+/// builder or must not yet have survived a collection; only builds with the P1 census check. Does not allocate.
 inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) {
         return false;  // At capacity
     }
 #if P1_CENSUS_COMPILED
-    p1::noteWrite(arr, "arrayPush");   // threaded-gc-04 detector W
+    p1::noteWrite(arr, "arrayPush");
 #endif
 
-    // Per-write stale-pointer tripwire (boxed slots only).
     if (is_boxed) validateNurseryHPtr(value.p);
 
     size_t idx = a->length;
     a->elements[idx] = value;
 
-    // Set uniform kind on first push (0=boxed, 1=Int for legacy callers).
     if (idx == 0) {
         a->header.unboxed = is_boxed ? 0 : 1;
     }
-    // Note: subsequent pushes must be consistent (not enforced here)
 
     a->length++;
     return true;
 }
 
-// Variant of arrayPush that takes an explicit kind (0=boxed, 1=Int, 2=Float, 3=Char).
+/// Appends `value`, of slot kind `kind` (low 2 bits used), as `arrayPush` does: the first push sets the
+/// array's kind and later pushes must agree, unchecked.
 inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     if (a->length >= a->header.size) return false;
 #if P1_CENSUS_COMPILED
-    p1::noteWrite(arr, "arrayPushKind");   // threaded-gc-04 detector W
+    p1::noteWrite(arr, "arrayPushKind");
 #endif
 
-    // Per-write stale-pointer tripwire (boxed slots only).
     if ((kind & 0x3) == 0) validateNurseryHPtr(value.p);
 
     size_t idx = a->length;
@@ -2001,34 +1761,21 @@ inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
     return true;
 }
 
-/**
- * Gets an element from an Array.
- *
- * @param arr   Pointer to the Array.
- * @param index Index of element to get.
- * @return The element value (undefined if index >= length).
- */
+/// Returns element `index` of the array object `arr`. `index` must be less than the length; nothing
+/// checks.
 inline Unboxable arrayGet(void* arr, size_t index) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     return a->elements[index];
 }
 
-/**
- * Checks if an array's elements are unboxed.
- *
- * Arrays are uniform: either ALL elements are unboxed or ALL are boxed.
- *
- * @param arr   Pointer to the Array.
- * @return True if all elements are unboxed primitives, false if all are boxed pointers.
- */
+/// Returns whether the elements of the array object `arr` are unboxed, that is, whether its one element
+/// kind is not boxed.
 inline bool arrayIsUnboxed(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     return (a->header.unboxed & 0x3) != 0;
 }
 
-/**
- * Returns the uniform-kind code for an Array's elements (0=boxed, 1=Int, 2=Float, 3=Char).
- */
+/// Returns the slot kind of every element of the array object `arr`.
 inline u32 arrayElementKind(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
     return a->header.unboxed & 0x3;
@@ -2038,21 +1785,12 @@ inline u32 arrayElementKind(void* arr) {
 // Closure Allocation
 // ============================================================================
 
-/**
- * Allocates a Closure (function value).
- *
- * @param evaluator   Function pointer to the evaluator.
- * @param max_values  Maximum number of captured values.
- * @return HPointer to the allocated Closure.
- */
-/**
- * Allocates a Closure (function value) with an explicit `result_kind`.
- *
- * `result_kind` records the C-ABI return type of `evaluator` (ParamKind:
- * 0 = PK_Boxed / HPtr, 1 = PK_Int, 2 = PK_Float, 3 = PK_Char). Stored
- * on the closure header so every closure-invocation entry point can
- * cast `closure->evaluator` correctly without per-call-site plumbing.
- */
+/// Allocates a closure over the kernel evaluator `evaluator` with room for `max_values` arguments and
+/// none yet captured. Aborts if `max_values` exceeds `CLOSURE_MAX_ARITY`. A GC point.
+///
+/// `result_kind` is the slot kind `evaluator` returns (low 2 bits used), kept in the closure so that code
+/// calling it reads the result correctly. The closure's descriptor comes from `ecoDescForKernelEvaluator`.
+/// Arguments are added with `closureCapture` before the closure survives a collection.
 inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
                                u8 result_kind) {
     if (max_values > CLOSURE_MAX_ARITY) {
@@ -2060,13 +1798,11 @@ inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
                      max_values, CLOSURE_MAX_ARITY);
         std::abort();
     }
-    // Closure layout v2 (HEAP_078): max_values value slots, then
-    // K = extWords(max_values, CLOSURE_HDR_SLOTS) ext kind words.
+    // max_values value slots, then K extension kind words (HEAP_078).
     const u32 K = extWords(max_values, CLOSURE_HDR_SLOTS);
     size_t total_size = sizeof(Closure) + (static_cast<size_t>(max_values) + K) * sizeof(Unboxable);
 
-    // Captures are filled later via closureCapture; nothing to root here
-    // (evaluator is a code pointer).
+    // Nothing to root: the arguments come later, and the evaluator is not a heap value.
     Closure* cl = static_cast<Closure*>(
         eco_alloc_with_roots(Tag_Closure, total_size, nullptr, 0, 0));
     cl->header.size = max_values + K;
@@ -2075,8 +1811,7 @@ inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
     cl->result_kind = result_kind & 0x3;
     cl->unboxed = 0;
     cl->evaluator = ecoDescForKernelEvaluator(evaluator, max_values, result_kind);
-    // Kernel closure slots >= CLOSURE_HDR_SLOTS are boxed (closureCapture never
-    // writes an ext word, HEAP_077): all K words are zero.
+    // closureCapture never writes an extension word, so every slot past the own bitmap is boxed (HEAP_077).
     u64* ext = reinterpret_cast<u64*>(&cl->values[max_values]);
     for (u32 j = 0; j < K; ++j) ext[j] = 0;
 #if ECO_HEAP_VALIDATE
@@ -2086,41 +1821,32 @@ inline HPointer allocClosureK(EvalFunction evaluator, u32 max_values,
     return Allocator::instance().wrap(cl);
 }
 
+/// Allocates a closure as `allocClosureK` does, for an evaluator that returns a boxed value. A GC point.
 inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
     return allocClosureK(evaluator, max_values, /*result_kind=*/0);
 }
 
-/**
- * Appends a captured value to a Closure.
- *
- * @param closure   Pointer to the Closure.
- * @param value     Value to capture.
- * @param is_boxed  True if value is a heap pointer.
- * @return True if successful, false if at capacity.
- */
-// `kind`: 2-bit slot kind. 0 = boxed HPointer, 1 = Int, 2 = Float, 3 = Char.
-// Only the first CLOSURE_HDR_SLOTS (20) slots have a kind in the 40-bit
-// inline field; closureCapture never writes an ext word, so a typed capture
-// past them aborts (B6 / HEAP_077, release builds too) instead of being
-// traced as a pointer.
+/// Appends `value`, of kind `kind`, as the next argument of the closure object `closure` and returns
+/// true, or returns false if the closure already holds `max_values` arguments.
+///
+/// Only the first `CLOSURE_HDR_SLOTS` (20) slots have kinds in the closure's own bitmap, and this never
+/// writes an extension kind word, so a capture of any kind but boxed at slot 20 or beyond aborts, in
+/// every build. `closure` must not yet have survived a collection, or must be a builder; only builds with
+/// the P1 census check. Does not allocate.
 inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     Closure* cl = static_cast<Closure*>(closure);
     if (cl->n_values >= cl->max_values) {
         return false;
     }
 #if P1_CENSUS_COMPILED
-    p1::noteWrite(closure, "closureCapture");   // threaded-gc-04 detector W
+    p1::noteWrite(closure, "closureCapture");
 #endif
 
-    // Per-write stale-pointer tripwire (boxed captures only). Catches the
-    // common bug of capturing an HPointer that has gone stale across a
-    // prior allocation in the caller.
     if (kind == PK_Boxed) validateNurseryHPtr(value.p);
 
     size_t idx = cl->n_values;
     if (kind != PK_Boxed && idx >= CLOSURE_HDR_SLOTS) {
-        // B6 / HEAP_077: kernel closures keep slots past the inline kinds boxed; a typed
-        // capture here would be traced as a pointer. Permanent.
+        // The slot would read as boxed and be traced as a pointer.
         std::fprintf(stderr, "[eco] FATAL: closureCapture of a typed value at slot %zu "
                              "(inline kinds cover %u)\n", idx, CLOSURE_HDR_SLOTS);
         std::abort();
@@ -2134,10 +1860,7 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     cl->n_values++;
 
 #if ECO_HEAP_VALIDATE
-    // Class 2 — closure capture bitmap consistency: the just-set bit at
-    // position `idx` must match `kind`. Catches mis-encoded bitmaps at
-    // the construction site. Slots past the inline kinds read boxed
-    // (closureSlotKind), and only boxed captures reach them (abort above).
+    // The kind just stored must read back as `kind`.
     {
         u64 stored = closureSlotKind(cl, static_cast<u32>(idx));
         u64 expected = (kind == PK_Boxed) ? 0ULL : static_cast<u64>(kind);
@@ -2157,14 +1880,14 @@ inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     return true;
 }
 
-// Boolean-friendly overload: true = boxed, false = legacy Int (kind 1).
+/// Appends `value` as `closureCapture` does, with kind boxed when `is_boxed` is true and Int when it is
+/// false.
 inline bool closureCapture(void* closure, Unboxable value, bool is_boxed) {
     return closureCapture(closure, value, is_boxed ? PK_Boxed : PK_Int);
 }
 
-// Boxes an Unboxable slot back into an HPointer based on its 2-bit kind.
-// For kind==0 the value is already an HPointer and returned directly;
-// for Int/Float/Char kinds, allocates the appropriate boxed primitive.
+/// Returns the slot `v`, of slot kind `kind`, as an HPointer: `v.p` itself for kind 0 (or any kind above
+/// 3), or a new boxed Int, Float or Char for kinds 1 to 3, which makes it a GC point.
 inline HPointer boxElement(Unboxable v, u32 kind) {
     switch (kind) {
         case 1: return allocInt(v.i);
@@ -2178,6 +1901,7 @@ inline HPointer boxElement(Unboxable v, u32 kind) {
 // Task / Process / StackFrame Allocation
 // ============================================================================
 
+/// The constructor index of a Task object.
 enum TaskCtor : u16 {
     Task_Succeed  = 0,
     Task_Fail     = 1,
@@ -2187,22 +1911,24 @@ enum TaskCtor : u16 {
     Task_Receive  = 5,
 };
 
+/// The constructor index of a stack frame, the Custom that `stackFrame` builds.
 static constexpr u16 CTOR_StackFrame = 0xFFFE;
+/// The constructor index of an effect router. The same value as `CONSTANT_TAG`, which is reported for
+/// the Empty constant.
 static constexpr u16 CTOR_Router     = 0xFFFD;
 
+/// The constructor index of a node of an effect bag.
 enum FxBagTag : u16 {
     Fx_Leaf = 0,
     Fx_Node = 1,
     Fx_Map  = 2,
 };
 
-// Allocate a Task whose `value` is a boxed HPointer (kind 0).
+/// Returns a Task with constructor `ctor` whose four fields `value`, `callback`, `kill` and `innerTask`
+/// are all HPointers, rooted across the allocation. Its id is 0. A GC point.
 inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
                           HPointer kill, HPointer innerTask) {
     size_t total_size = (sizeof(Task) + 7) & ~7;
-    // All four fields are HPointers. Pack them as roots; the helper roots
-    // only on slow path. Reading values back out post-call picks up GC
-    // relocations.
     uint64_t roots[4];
     std::memcpy(&roots[0], &value, 8);
     std::memcpy(&roots[1], &callback, 8);
@@ -2221,14 +1947,13 @@ inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
     return Allocator::instance().wrap(t);
 }
 
-// Allocate a Task whose `value` is an unboxed primitive (kind 1=Int, 2=Float,
-// 3=Char). Other fields (callback/kill/innerTask) are always boxed pointers.
+/// Returns a Task as `allocTask` does, except that `value` is unboxed, of slot kind `valueKind` (low 2
+/// bits used; 0 would mark it boxed although it is not rooted). A GC point.
 inline HPointer allocTaskUnboxed(u16 ctor, Unboxable value, u8 valueKind,
                                  HPointer callback, HPointer kill,
                                  HPointer innerTask) {
     size_t total_size = (sizeof(Task) + 7) & ~7;
-    // value is unboxed; only callback/kill/innerTask are HPointers to root.
-    // Pack value at slot 0 (mask bit 0 cleared), HPointer fields at 1..3.
+    // Slot 0 holds the unboxed value, so mask bit 0 is clear.
     uint64_t roots[4];
     std::memcpy(&roots[0], &value, 8);
     std::memcpy(&roots[1], &callback, 8);
@@ -2247,6 +1972,8 @@ inline HPointer allocTaskUnboxed(u16 ctor, Unboxable value, u8 valueKind,
     return Allocator::instance().wrap(t);
 }
 
+/// Returns a Process with id `id` and the HPointer fields `root`, `stack` and `mailbox`, rooted across the
+/// allocation. A GC point.
 inline HPointer allocProcess(u64 id, HPointer root, HPointer stack, HPointer mailbox) {
     size_t total_size = (sizeof(Process) + 7) & ~7;
     uint64_t roots[3];
@@ -2262,37 +1989,35 @@ inline HPointer allocProcess(u64 id, HPointer root, HPointer stack, HPointer mai
     return Allocator::instance().wrap(p);
 }
 
+/// Returns a stack frame, a Custom with constructor `CTOR_StackFrame` and fields `expectedTag` (an Int),
+/// `callback` and `rest`, the two HPointers rooted across the allocation. A GC point.
 inline HPointer stackFrame(u64 expectedTag, HPointer callback, HPointer rest) {
     std::vector<Unboxable> fields(3);
     fields[0].i = static_cast<i64>(expectedTag);
     fields[1].p = callback;
     fields[2].p = rest;
-    return custom(CTOR_StackFrame, fields, 0x1);  // bit 0 = field 0 is unboxed
+    return custom(CTOR_StackFrame, fields, 0x1);  // Field 0 is kind 1 (Int); the others are boxed.
 }
 
 // ============================================================================
 // Type Checking Helpers
 // ============================================================================
 
-/**
- * Returns the tag of a heap object.
- */
+/// Returns the tag of the heap object `obj`.
 inline Tag getTag(void* obj) {
     Header* hdr = static_cast<Header*>(obj);
     return static_cast<Tag>(hdr->tag);
 }
 
-/**
- * Returns true if the object is a Cons cell.
- */
+/// Returns whether the heap object `obj` is a cons cell. A chunk view, the other kind of list node, is
+/// not.
 inline bool isCons(void* obj) {
     return getTag(obj) == Tag_Cons;
 }
 
-/**
- * Returns true if the object is any String form
- * (Tag_String / Tag_StringSlice / Tag_StringRope / Tag_LargeStringHeader).
- */
+/// Returns whether the heap object `obj` is a String in any of its six forms: `Tag_String`,
+/// `Tag_StringSlice`, `Tag_StringRope`, `Tag_LargeStringHeader`, `Tag_StringUtf8View` or
+/// `Tag_StringUtf8Leaf`.
 inline bool isString(void* obj) {
     Tag t = getTag(obj);
     return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope ||
@@ -2300,50 +2025,34 @@ inline bool isString(void* obj) {
            t == Tag_StringUtf8View || t == Tag_StringUtf8Leaf;
 }
 
-/**
- * Returns true iff `obj` is a heap String of logical length 0 (header.size is
- * the UTF-16 length on every String form). HEAP_071: no producer allocates
- * one -- "" is the Empty constant -- but every equality/ordering path still
- * treats one as equal to the Empty constant (SD-26), checking it only on the
- * branch where exactly one side is a constant.
- */
+/// Returns whether `obj` is a String object of length 0. No helper allocates one, since `""` is the Empty
+/// constant (HEAP_071), but the equality and ordering code treats one as equal to `""` and uses this to
+/// find it. Returns false for null.
 inline bool isZeroLengthString(void* obj) {
     return obj && isString(obj) && static_cast<Header*>(obj)->size == 0;
 }
 
-/**
- * Returns true iff the object is a flat string leaf (Tag_String) — i.e. has
- * an inline `chars[]` array directly readable. Tag_LargeStringHeader is
- * NOT a leaf in this sense (callers must resolve through `body`); use
- * Tag_LargeStringHeader's body for raw chars[] access.
- */
+/// Returns whether the heap object `obj` is a `Tag_String` leaf, whose UTF-16 units are inside the object.
+/// A large String is not; `stringData` and `flatStringView` read either.
 inline bool isStringLeaf(void* obj) {
     return getTag(obj) == Tag_String;
 }
 
 
-/**
- * Read-only view of a ByteBuffer in any structural form:
- *   - Tag_ByteBuffer        -> data = bb->bytes,            length = bb->header.size
- *   - Tag_LargeByteHeader   -> data = body->bytes,          length = hdr->size
- *   - Tag_ByteBufferSlice   -> data = base.data + slc->offset, length = slc->header.size
- *
- * The returned `data` pointer is valid only until the next allocation
- * by this thread for sub-LOT byte buffers (which can be moved by a minor
- * GC); split-header bodies are pinned in old gen and the pointer is stable.
- * Callers in hot loops must avoid allocating between the view call and the
- * final byte access.
- */
+/// The bytes of a Bytes value, as a pointer and a length, whatever form the value has.
+///
+/// A view does not own its bytes. For a large buffer, or a slice of one, `data` points into the pinned
+/// body and stays valid while the value is reachable. Otherwise it points into a heap object and is stale
+/// after the next allocation on this thread, which may move it. A null `data` with length 0 is the empty
+/// Bytes.
 struct ByteBufferView {
     const u8* data;
     size_t length;
 };
 
-/**
- * The payload of a flat byte buffer: a Tag_ByteBuffer or a Tag_LargeByteHeader
- * (HEAP_026 split form; plans/large-object-space.md D4: the body is read raw and
- * the length is always the outer header's). Not for slices: use byteBufferView.
- */
+/// Returns a view of the bytes of `obj`, which must be a `Tag_ByteBuffer` or a `Tag_LargeByteHeader`; a
+/// slice is asserted against and is read with `byteBufferView`. The length is always the outer object's
+/// `header.size`.
 inline ByteBufferView flatBytesView(void* obj) {
     Header* hdr = static_cast<Header*>(obj);
     assert(hdr->tag != Tag_ByteBufferSlice &&
@@ -2355,51 +2064,42 @@ inline ByteBufferView flatBytesView(void* obj) {
     return ByteBufferView{bb->bytes, bb->header.size};
 }
 
+/// Returns a view of the bytes of the Bytes object `obj`, in any of its three forms, or an empty view for
+/// null.
 inline ByteBufferView byteBufferView(void* obj) {
     if (!obj) return ByteBufferView{nullptr, 0};
     Header* hdr = static_cast<Header*>(obj);
     if (hdr->tag == Tag_ByteBufferSlice) {
         ElmByteBufferSlice* slc = static_cast<ElmByteBufferSlice*>(obj);
         void* base = Allocator::instance().resolve(slc->base);
-        // Construction collapses slice-of-slice; the base is a flat
-        // Tag_ByteBuffer or a Tag_LargeByteHeader (makeByteBufferSlice keeps
-        // a large header as the base).
+        // A slice made by `makeByteBufferSlice` never has a slice as its base.
         return ByteBufferView{flatBytesView(base).data + slc->offset, slc->header.size};
     }
     return flatBytesView(obj);
 }
 
-/**
- * Constant-safe resolve for a Bytes value. Empty Bytes is the embedded Empty
- * constant (HEAP_071), which Allocator::resolve must never see; it resolves
- * here to nullptr, which byteBufferView / byteBufferLength read as (nullptr, 0).
- */
+/// Returns the object the Bytes value `hp` names, or null when `hp` is a constant, which for a Bytes value
+/// means the empty Bytes. `Allocator::resolve` must not be given a constant. `byteBufferView`,
+/// `byteBufferLength` and `byteBufferData` read null as the empty Bytes.
 inline void* resolveBytesOrNull(HPointer hp) {
     if (hp.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(hp);
 }
 
-/**
- * Allocates a Tag_ByteBufferSlice over `base` for `length` bytes starting
- * at `offset`. Slice-of-slice collapses: if `base` resolves to another
- * Tag_ByteBufferSlice, the resulting slice points at the inner base with
- * `offset + inner.offset`. If `base` is a Tag_LargeByteHeader the slice
- * keeps that as its base — the view layer follows the indirection.
- *
- * Returns the embedded empty-Bytes constant for length==0 (HEAP_071).
- *
- * Threshold: for very small slices (under MAKE_BYTEBUFFER_SLICE_MIN_LEN)
- * the slice header itself wastes more space than a direct copy, so we
- * collapse to a flat ByteBuffer. Tuned to match Tag_StringSlice behaviour.
- */
+/// The length in bytes below which `makeByteBufferSlice` copies the bytes rather than make a slice.
 static constexpr size_t MAKE_BYTEBUFFER_SLICE_MIN_LEN = 32;
 
+/// Returns the `length` bytes of the Bytes value `base` starting at `offset`, or the empty Bytes when
+/// `length` is 0. The range must lie within `base`; nothing checks.
+///
+/// Below `MAKE_BYTEBUFFER_SLICE_MIN_LEN` bytes the result is a copy. Otherwise it is a slice, an object
+/// that refers to the bytes of its base. When `base` is itself a slice, the new slice refers to that
+/// slice's base instead, so a slice's base is never a slice. `base` is rooted across the allocation, and
+/// the bytes of a copy are read before it. A GC point.
 inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
     auto& allocator = Allocator::instance();
     if (length == 0) return emptyBytes();
 
-    // Collapse slice-of-slice. Resolve base; if it's another slice,
-    // absorb its offset.
     void* base_obj = allocator.resolve(base);
     if (base_obj) {
         Header* h = static_cast<Header*>(base_obj);
@@ -2410,12 +2110,9 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
         }
     }
 
-    // Tiny slices: flatten to a copy. Snapshot the payload to the C stack
-    // BEFORE allocating (Pattern 3): allocByteBuffer allocates first and
-    // memcpys after, so a GC during the alloc could move/reclaim the
-    // unrooted source buffer and leave `src->bytes + offset` dangling.
+    // The bytes are copied to the C++ stack first because allocByteBuffer copies only after it allocates,
+    // and the source is not rooted (Pattern 3).
     if (length < MAKE_BYTEBUFFER_SLICE_MIN_LEN) {
-        // Re-resolve base post-collapse — possible Tag_LargeByteHeader.
         void* obj = allocator.resolve(base);
         const u8* src = flatBytesView(obj).data;
         u8 tmp[MAKE_BYTEBUFFER_SLICE_MIN_LEN];
@@ -2438,16 +2135,17 @@ inline HPointer makeByteBufferSlice(HPointer base, u32 offset, u32 length) {
     return allocator.wrap(slc);
 }
 
-/**
- * The units of a flat string: a Tag_String leaf or a Tag_LargeStringHeader
- * (plans/large-object-space.md D4: the body is read raw and the length is
- * always the outer header's). For a hot path that indexes chars directly;
- * slices and ropes go through StringOps (charAt / toStdU16String / ensureFlat).
- */
+/// The UTF-16 units of a String held in one piece, as a pointer and a length.
+///
+/// A view does not own its units. For a large String `chars` points into the pinned body; for a leaf it
+/// points into the object and is stale after the next allocation on this thread, which may move it.
 struct U16View {
     const u16* chars;
     u32 length;
 };
+/// Returns a view of the units of `obj`, which must be a `Tag_String` leaf or a `Tag_LargeStringHeader`
+/// (asserted); slices, ropes and the UTF-8 forms are read through `StringOps`. The length is always the
+/// outer object's `header.size`.
 inline U16View flatStringView(void* obj) {
     Header* hdr = static_cast<Header*>(obj);
     assert((hdr->tag == Tag_String || hdr->tag == Tag_LargeStringHeader) &&
@@ -2455,23 +2153,20 @@ inline U16View flatStringView(void* obj) {
     return U16View{flatStringChars(obj), hdr->size};
 }
 
-/**
- * Returns true if the object is any byte buffer form (Tag_ByteBuffer,
- * Tag_LargeByteHeader, or Tag_ByteBufferSlice).
- */
+/// Returns whether the heap object `obj` is a Bytes value in any of its three forms: `Tag_ByteBuffer`,
+/// `Tag_LargeByteHeader` or `Tag_ByteBufferSlice`.
 inline bool isByteBuffer(void* obj) {
     Tag t = getTag(obj);
     return t == Tag_ByteBuffer || t == Tag_LargeByteHeader ||
            t == Tag_ByteBufferSlice;
 }
 
+/// Returns whether the heap object `obj` is a Bytes slice.
 inline bool isByteBufferSlice(void* obj) {
     return getTag(obj) == Tag_ByteBufferSlice;
 }
 
-/**
- * Returns true if the object is an ElmArray.
- */
+/// Returns whether the heap object `obj` is an array.
 inline bool isArray(void* obj) {
     return getTag(obj) == Tag_Array;
 }

@@ -1,14 +1,20 @@
-/**
- * Byte Fusion Runtime ABI for Elm Compiler.
- *
- * This header defines the C ABI functions used by the bf MLIR dialect lowering.
- * All heap values are represented as u64 (eco.value) at the ABI boundary.
- * Internal pointer conversion happens only inside ElmBytesRuntime.cpp.
- *
- * These functions are the ONLY code allowed to access ByteBuffer/ElmString
- * header layout directly. Generated MLIR/LLVM code must call these helpers
- * instead of using GEPs into the structures.
- */
+// The C-linkage functions that compiled byte-fusion code calls when it needs the runtime: to allocate or
+// measure a Bytes buffer, to convert between Strings and UTF-8 bytes, to fall back to the runtime's
+// encoder walker, and to build a Maybe or reverse a list.
+//
+// Byte-fusion code reads and writes the bytes of a buffer directly, through a raw cursor, but it never
+// looks inside a heap object. Everything that depends on how a Bytes value or a String is laid out (the
+// flat, large-header and slice forms of Bytes, the UTF-16 and UTF-8 forms of String) is done here, by
+// calling the `Elm::alloc` and `Elm::StringOps` helpers that own those layouts.
+//
+// Every heap value crosses this boundary as an `HPtr`, the 64-bit HPointer word that `Heap.hpp` defines.
+// Some functions are GC points: they allocate on the Elm heap, which may run a collection that moves any
+// nursery object, so a caller must root every other HPointer it holds across them, and any raw pointer
+// into a nursery object, such as the one `elm_bytebuffer_data` returns, is stale afterwards. Each
+// function's comment says whether it is one.
+//
+// The header declares `u8` and `u32` at global scope and names `Elm::HPtr`, so it can be included only
+// from C++, despite the `extern "C"` block.
 
 #pragma once
 #include <stdint.h>
@@ -18,158 +24,118 @@
 extern "C" {
 #endif
 
+/// An unsigned 8-bit byte.
 typedef uint8_t  u8;
+/// An unsigned 32-bit integer, the width of every length and count in this interface.
 typedef uint32_t u32;
 using Elm::HPtr;
 
 // ============================================================================
-// ByteBuffer operations (heap values are u64)
+// ByteBuffer operations
 // ============================================================================
 
-/**
- * Allocate ByteBuffer with byteCount bytes.
- * Returns eco.value (u64) representing the allocated ByteBuffer.
- */
+/// Allocates a Bytes value of `byteCount` bytes, or returns the Empty constant when `byteCount` is 0.
+/// When `byteCount` plus the buffer header, rounded up to 8, reaches the large-object threshold, the
+/// buffer is a nursery header with a pinned body, which is zeroed; otherwise it is one nursery object
+/// whose contents are not written. A GC point.
 HPtr elm_alloc_bytebuffer(u32 byteCount);
 
-/**
- * Return ByteBuffer byte length.
- * Takes eco.value (u64) representing a ByteBuffer.
- */
+/// Returns the length in bytes of the Bytes value `bb`, in any of its forms, or 0 for any embedded
+/// constant, which includes the empty Bytes. Not a GC point.
 u32 elm_bytebuffer_len(HPtr bb);
 
-/**
- * Return pointer to first payload byte.
- * Takes eco.value (u64) representing a ByteBuffer.
- * Returns raw pointer (for cursor setup only - not an eco.value).
- *
- * SAFETY: The returned pointer does NOT survive GC. Callers that hold it
- * across any allocation will read freed/moved memory. For GC-safe access,
- * use elm_bytebuffer_with_data, which guarantees the buffer body is stable
- * during the callback by virtue of being a non-allocating runtime call.
- */
+/// Returns a pointer to the first byte of the Bytes value `bb`, in any of its forms, or null for any
+/// embedded constant. Not a GC point.
+///
+/// For a large buffer, or a slice of one, the pointer is into the pinned body, which a collection does not
+/// move. For any other buffer, in the nursery or the old generation, it is stale once a collection may
+/// have moved the buffer, so after any GC point.
 u8* elm_bytebuffer_data(HPtr bb);
 
-/**
- * Callback variant of elm_bytebuffer_data. Invokes `fn(data, length, ctx)`
- * with a pointer to the payload that is guaranteed stable for the duration
- * of the call — the callback MUST NOT allocate on the Elm heap. Handles all
- * ByteBuffer forms (flat, large-header, slice).
- *
- * Intended for new code paths that read a buffer's bytes inline; existing
- * elm_bytebuffer_data callers remain on the raw-pointer form until each
- * call site is audited for GC safety.
- */
+/// A function given the bytes of a buffer by `elm_bytebuffer_with_data`: `data` points at `length` bytes,
+/// and `ctx` is the pointer the caller passed. `data` is valid only during the call.
 typedef void (*elm_bytebuffer_callback)(const u8* data, u32 length, void* ctx);
+
+/// Calls `fn` once with the bytes of the Bytes value `bb`, in any of its forms, and `ctx`, or with null
+/// and 0 when `bb` is an embedded constant. Does nothing if `fn` is null. Not a GC point itself.
+///
+/// `fn` must not allocate on the Elm heap: the pointer it is given is not re-derived, so it stays valid
+/// only while nothing can move the buffer. Nothing checks this.
 void elm_bytebuffer_with_data(HPtr bb, elm_bytebuffer_callback fn, void* ctx);
 
-/**
- * Set / clear the builder bit of a ByteBuffer that fused code fills across
- * GC points (bf.builder.begin / bf.builder.end, BFOPS_039). `begin` is
- * called right after elm_alloc_bytebuffer, `end` after the last write and
- * before the buffer is published (HEAP_BUILDER_001..003): while the bit is
- * set the GC keeps the buffer young and never tenures it, so writes into it
- * after a GC do not break HEAP_SNAPSHOT_001. No-ops on the empty constant.
- */
+/// Makes the Bytes object `bb` a builder, an object still being filled that Elm code cannot yet see, or
+/// does nothing when `bb` is an embedded constant. Not a GC point.
+///
+/// A builder is not promoted, so a half-built object never becomes an old-generation object pointing at
+/// young ones; the rules are those of `Elm::alloc::mark_as_builder`, and the object must be young. Every
+/// builder must be ended with `elm_bytebuffer_builder_end` before Elm code can see it.
 void elm_bytebuffer_builder_begin(HPtr bb);
+
+/// Ends the builder state that `elm_bytebuffer_builder_begin` set on `bb`, after which it ages and is
+/// promoted like any object, or does nothing when `bb` is an embedded constant. Not a GC point.
 void elm_bytebuffer_builder_end(HPtr bb);
 
 // ============================================================================
-// String operations (heap values are u64)
+// String operations
 // ============================================================================
 
-/**
- * Return UTF-8 byte width of an ElmString.
- * Takes eco.value (u64) representing an ElmString.
- * Returns the number of bytes needed to represent the string in UTF-8.
- */
+/// Returns the number of bytes `elm_utf8_copy` writes for the String `elmString`: its UTF-8 length,
+/// counting each unpaired surrogate as three bytes. Not a GC point.
 u32 elm_utf8_width(HPtr elmString);
 
-/**
- * Copy ElmString as UTF-8 bytes to dst buffer.
- * Takes eco.value (u64) representing an ElmString and a destination buffer.
- * Returns number of bytes written.
- *
- * IMPORTANT: Caller must ensure dst has at least elm_utf8_width(elmString) bytes.
- */
+/// Writes the String `elmString` to `dst` as UTF-8 and returns the number of bytes written.
+///
+/// `dst` must have room for `elm_utf8_width(elmString)` bytes. A surrogate pair is written as one 4-byte
+/// sequence, and an unpaired surrogate as the 3-byte encoding of its own value, which is not valid UTF-8.
+/// Not a GC point.
 u32 elm_utf8_copy(HPtr elmString, u8* dst);
 
-/**
- * Decode the UTF-8 bytes [offset, offset + len) of a ByteBuffer's data into
- * an ElmString.
- * Returns eco.value (u64) representing the ElmString, or 0 on failure.
- *
- * Takes the buffer, not a raw pointer: the source is Elm heap memory (a
- * nursery ByteBuffer under the large-object threshold can move), and this
- * helper allocates between its validation and copy passes. It roots the
- * buffer across that allocation and re-derives the data pointer after it
- * (BFOPS_039).
- *
- * Failure semantics: Returns 0 on invalid UTF-8 input.
- * eco.value == 0 is guaranteed to never represent a valid Elm heap value
- * (null pointer is invalid in the Elm runtime).
- */
+/// Returns the String decoded from the `len` bytes at `offset` in the Bytes value `buffer`, or the null
+/// word 0 if those bytes are not valid UTF-8. A GC point when `len` is not 0 and
+/// the bytes are valid.
+///
+/// `buffer` must hold at least `offset + len` bytes; nothing checks it. Overlong encodings, encoded
+/// surrogates and code points above U+10FFFF count as invalid. A valid result is always a UTF-16 String,
+/// or the Empty constant when `len` is 0, and 0 is never an Elm value, so it cannot be mistaken for one.
+/// The buffer is taken as an HPointer rather than a pointer to its bytes because the function allocates
+/// partway through; it roots `buffer` across that allocation and finds its bytes again afterwards.
 HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len);
 
 // ============================================================================
 // Encoder-tree operations (bytes-fusion escape hatch)
 // ============================================================================
 
-/**
- * Compute the total byte width of a Bytes.Encode.Encoder tree.
- * Takes eco.value (u64) representing a runtime Encoder Custom.
- *
- * Used by the bf.encoder.width MLIR op to size the destination buffer
- * when the compile-time reifier couldn't recognise an encoder subtree.
- *
- * GC-safe: no allocation. The tree is walked once via cached widths
- * in Seq/Utf8 leaves and primitive sizes elsewhere.
- */
+/// Returns the number of bytes `elm_encoder_write_into` writes for `encoder`, a `Bytes.Encode.Encoder`
+/// value.
+///
+/// For a sequence or a String encoder this is the width cached in the encoder itself, so the call does
+/// not walk the tree. Defined by the Bytes kernel, not in this component. Not a GC point.
 u32 elm_encoder_size(HPtr encoder);
 
-/**
- * Write a Bytes.Encode.Encoder tree's bytes into dst.
- * Takes eco.value (u64) representing a runtime Encoder Custom and a
- * destination pointer. Returns the number of bytes written (matches
- * elm_encoder_size for any encoder tree).
- *
- * Used by the bf.write.encoder MLIR op to delegate unfusable encoder
- * subtrees to the existing runtime walker.
- *
- * SAFETY: dst must have at least elm_encoder_size(encoder) bytes.
- * GC-safe: no Eco-heap allocation. The walker uses Allocator::resolve
- * for HPointer traversal; the destination is a raw pointer into a
- * caller-owned buffer that the walker never re-roots.
- */
+/// Writes the bytes of `encoder`, a `Bytes.Encode.Encoder` value, to `dst` and returns how many were
+/// written.
+///
+/// `dst` must have room for `elm_encoder_size(encoder)` bytes. Defined by the Bytes kernel, not in this
+/// component. Not a GC point, so a `dst` into a nursery buffer stays valid throughout.
 u32 elm_encoder_write_into(HPtr encoder, u8* dst);
 
 // ============================================================================
-// Maybe operations (heap values are u64)
+// Maybe operations
 // ============================================================================
 
-/**
- * Return Nothing as eco.value (u64).
- * Returns the embedded constant for Nothing.
- */
+/// Returns `Nothing`, which is the Empty constant. Not a GC point.
 HPtr elm_maybe_nothing(void);
 
-/**
- * Return Just(value) as eco.value (u64).
- * Takes the value to wrap and returns Just containing that value.
- */
+/// Returns `Just value`, with `value` stored as a boxed field. A GC point; `value` itself is rooted across
+/// the allocation.
 HPtr elm_maybe_just(HPtr value);
 
 // ============================================================================
-// List operations (heap values are u64)
+// List operations
 // ============================================================================
 
-/**
- * Reverse a list.
- * Takes eco.value (u64) representing a list.
- * Returns eco.value (u64) representing the reversed list.
- *
- * Used by fused byte decoders to reverse the accumulator after loop decode.
- */
+/// Returns the elements of `list` in reverse order, keeping each element's slot kind, as
+/// `Elm::ListOps::reverse` does. A GC point.
 HPtr elm_list_reverse(HPtr list);
 
 #ifdef __cplusplus

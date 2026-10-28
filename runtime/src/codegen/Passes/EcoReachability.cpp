@@ -1,19 +1,15 @@
 //===- EcoReachability.cpp - Closed-world reachability on the MLIR side ---===//
 //
-// plans/mlir-split-backend-03-reachability.md Part II R3, CGEN_081.
+// When the output is closed-world, every symbol that matters is reachable from
+// a known set of roots, so anything else can go and anything reached that is
+// not a root can stop being visible outside the module. This pass does that on
+// the llvm-dialect module, before translation to LLVM IR; the contract is on
+// `eco::createEcoReachabilityPass` in Passes.h.
 //
-// For closed-world output (an executable, or an object with
-// --internalize-keep) this does in MLIR what internalizeAndDCE did on the
-// translated LLVM module: every symbol op not reachable from the roots is
-// erased (definitions, globals and declarations — GlobalDCE semantics), and
-// every reached definition other than a root becomes Internal. Translation
-// then sees ~23 % fewer functions, and the result is recorded as the module
-// flag "eco-reach" = "v1" so the backend only sweeps dead constant users
-// instead of re-running internalize + GlobalDCE.
-//
-// Edges come from EcoSymbolGraph, which mirrors LLVM's view (an unused
-// addressof is no use). Plan 00 SP4 measured the reached set equal to the
-// LLVM GlobalDCE survivors on the self-compile.
+// Reachability is a breadth-first search over `eco::symgraph::Graph`, whose
+// edges model the module as LLVM will see it (an `llvm.mlir.addressof` with no
+// uses is no edge). The search starts from the named roots that exist, plus the
+// targets of references held by top-level operations that are not symbols.
 //
 //===----------------------------------------------------------------------===//
 #include "../Passes.h"
@@ -35,18 +31,24 @@ using namespace mlir;
 
 namespace {
 
+/// Returns whether the environment variable `n` is set to a value other than
+/// the empty string and "0".
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
+/// The closed-world reachability pass, holding the names of its roots.
 struct EcoReachabilityPass
     : public PassWrapper<EcoReachabilityPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoReachabilityPass)
 
+    /// Creates a pass with no roots, which changes nothing.
     EcoReachabilityPass() = default;
+    /// Creates a pass whose roots are the symbols named in `roots`.
     explicit EcoReachabilityPass(std::vector<std::string> roots)
         : roots(std::move(roots)) {}
+    /// Creates a copy with the same roots, as MLIR does when it clones a pass.
     EcoReachabilityPass(const EcoReachabilityPass &o)
         : PassWrapper(o), roots(o.roots) {}
 
@@ -55,8 +57,13 @@ struct EcoReachabilityPass
         return "Closed-world reachability + internalization (CGEN_081)";
     }
 
+    /// Names of the root symbols, by their MLIR names. A name with no
+    /// top-level symbol is ignored.
     std::vector<std::string> roots;
 
+    /// Fails, after emitting an error, if a reached LLVM function or global
+    /// definition has a linkage other than External, Internal or Private, or a
+    /// non-default visibility; nothing has been changed at that point.
     void runOnOperation() override;
 };
 
@@ -69,8 +76,7 @@ void EcoReachabilityPass::runOnOperation() {
 
     eco::symgraph::Graph g = eco::symgraph::build(module);
 
-    // 1. Roots. None present (library-shaped input): change nothing, so the
-    //    link fails exactly as it does today.
+    // If none of the named roots exists, the module is left unchanged.
     std::vector<char> isRoot(g.nodes.size(), 0), reached(g.nodes.size(), 0);
     std::vector<uint32_t> q;
     for (const std::string &r : roots) {
@@ -89,7 +95,6 @@ void EcoReachabilityPass::runOnOperation() {
             q.push_back(i);
         }
 
-    // 2. BFS.
     for (size_t h = 0; h < q.size(); ++h) {
         uint32_t n = q[h];
         for (uint32_t e = g.outBegin[n]; e < g.outBegin[n + 1]; ++e) {
@@ -101,8 +106,8 @@ void EcoReachabilityPass::runOnOperation() {
         }
     }
 
-    // 3. Linkage asserts on reached definitions: internalize (and CGEN_074's
-    //    isInterposable) assume nothing but external/internal/private.
+    // Reject linkages and visibilities the internalization below does not
+    // handle, before anything has been changed.
     for (size_t i = 0; i < g.nodes.size(); ++i) {
         if (!reached[i] || !g.nodes[i].isDef)
             continue;
@@ -131,8 +136,9 @@ void EcoReachabilityPass::runOnOperation() {
         }
     }
 
-    // 4. Erase the unreached symbol ops: drop bodies in parallel (isolated
-    //    regions, no cross-op SSA), then unlink serially in module order.
+    // Bodies are dropped in parallel, which is safe because each symbol op's
+    // regions are isolated and no SSA value crosses between them. Unlinking
+    // from the module is serial, in module order.
     std::vector<Operation *> dead;
     for (size_t i = 0; i < g.nodes.size(); ++i)
         if (!reached[i])
@@ -147,7 +153,6 @@ void EcoReachabilityPass::runOnOperation() {
     for (Operation *op : dead)
         op->erase();
 
-    // 5. Internalize reached non-root definitions.
     unsigned nInternalized = 0;
     for (size_t i = 0; i < g.nodes.size(); ++i) {
         if (!reached[i] || isRoot[i] || !g.nodes[i].isDef)
@@ -166,7 +171,7 @@ void EcoReachabilityPass::runOnOperation() {
         }
     }
 
-    // 6. The stamp.
+    // Appended to the last existing module-flags op, or to a new one.
     auto flag = LLVM::ModuleFlagAttr::get(
         ctx, LLVM::ModFlagBehavior::Warning, StringAttr::get(ctx, "eco-reach"),
         StringAttr::get(ctx, "v1"));

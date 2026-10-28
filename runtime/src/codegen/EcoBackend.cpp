@@ -4,8 +4,8 @@
 
 #include "LoweringStats.h"
 #include "Passes/EcoPtrIntVerify.h" // for addEcoGCPipeline
-#include "Passes/EcoCapHoistCore.h"  // CGEN_074 core + config (shared with EcoCapHoistPlan)
-#include "Passes/EcoMarkerFacts.h"   // marker table (plan 01 P3)
+#include "Passes/EcoCapHoistCore.h"  // CGEN_074 core and switches (shared with EcoCapHoistPlan)
+#include "Passes/EcoMarkerFacts.h"   // marker table
 #include "Passes/EcoSlotCastBarriers.h" // REP_LLVM_002: barrier switch <-> gcfree-guard coupling
 
 #include "mlir/ExecutionEngine/OptUtils.h" // for makeOptimizingTransformer
@@ -43,7 +43,7 @@
 #include "llvm/IR/CFG.h"                        // GraphTraits<Function*> (CAPHOIST)
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeReader.h"
-#include <cstdlib>  // getenv/strtoul (E1.3 threshold override)
+#include <cstdlib>  // getenv/strtoul ($cap inline threshold override)
 #include <fstream>  // ECO_CAP_INLINE_LIST delta-debug hook
 #include <queue>
 #include <map>
@@ -65,7 +65,7 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h" // SplitBlockAndInsertIfThen
 #include "../allocator/Heap.hpp"                   // TAG_BITS, Elm::Tag_Forward
 
-#include <cstddef>  // offsetof (kernel-opt-04 header-size probe)
+#include <cstddef>  // offsetof (string-length header offset)
 #include <cstdint>
 
 #include <array>    // call-census bucket filter
@@ -80,9 +80,9 @@ using namespace llvm;
 
 namespace eco {
 
-// Plan 05 (EcoSplit): the partition a worker thread lowers; -1 outside a
-// partition worker. Every diagnostic file a worker writes gets a `.p<i>`
-// suffix so N threads never truncate the same path (review R9).
+// The index of the partition this thread lowers, or -1 on a thread that is
+// not a partition worker. It only affects the names of diagnostic files (see
+// `partitionDumpPath`), so concurrent workers never write the same path.
 static thread_local int tlPartitionIndex = -1;
 
 void setPartitionIndex(int i) { tlPartitionIndex = i; }
@@ -95,8 +95,11 @@ std::string partitionDumpPath(StringRef path) {
 
 namespace {
 
-// RAII sub-phase timing scope that is a no-op when `stats` is null.
+// A timing scope for one backend sub-phase, recorded under `name` from
+// construction to destruction, or nothing at all when `stats` is null.
 struct MaybeScope {
+    // Opens the scope on `stats` when it is non-null; `stats` must outlive
+    // this object.
     MaybeScope(eco::LoweringStats *stats, llvm::StringRef name) {
         if (stats)
             scope.emplace(*stats, name);
@@ -104,36 +107,23 @@ struct MaybeScope {
     std::optional<eco::LoweringStats::Scope> scope;
 };
 
-// True when the caller NAMED an env variable, whatever its value. The
-// GC-free / capacity-hoisting passes are default-ON, so their one-line
-// summaries would otherwise print on every ordinary build; gating the
-// summaries on this keeps normal `eco make` output clean while every A/B
-// recipe — which always sets the variable explicitly, on every arm — still
-// gets its non-vacuity line.
+// Returns whether the environment variable `key` is set to a non-empty value,
+// whatever that value is. The GC-free and capacity-hoisting switches are on
+// by default, so their one-line summaries are printed only when the variable
+// was named explicitly, and an ordinary build prints nothing.
 bool envNamed(const char *key) {
     const char *e = ::getenv(key);
     return e && *e;
 }
 
-// GC-free function propagation (plans/gc-free-function-propagation.md).
-//
-// ECO_GCFREE_LEAF: unset (DEFAULT) or "1"/any other value = stamp
-// gc-leaf-function on provably GC-free generated functions so RS4GC skips
-// statepointing calls to them; "0" = off (escape hatch); "c" = census only
-// (analysis runs, nothing is stamped, the module is byte-identical to an
-// off run).
-//
-// Lowering-affecting in stamp mode: census/A-B workflows must rebuild via
-// the delete-outputs discipline (ninja is env-blind, tier2-opt.md Phase 1).
-//
-// Defined HERE (not next to propagateGcFreeLeafAttrs, ~:1419) because the
-// stamp-mode structural assert lives in runRS4GCAndMaybeFramePointers
-// (~:651), ~750 lines earlier than that function.
-// GcFreeMode / gcFreeLeafMode(), CapHoistMode / capHoistMode(),
-// capHoistMaxBytes() and capHoistFoldOwnMarkers() live in
-// Passes/EcoCapHoistCore.{h,cpp}: the MLIR planning pass (EcoCapHoistPlan)
-// reads the same switches (plans/mlir-split-backend-01-cap-hoist-plan.md P2).
+// The GC-free and capacity-hoisting switches (`gcFreeLeafMode`,
+// `capHoistMode`, `capHoistMaxBytes`, `capHoistFoldOwnMarkers`) are defined
+// in `Passes/EcoCapHoistCore.h`, because the MLIR planning pass reads the
+// same switches.
 
+// Writes `m` as text IR to `path0` (suffixed by `partitionDumpPath` on a
+// partition worker) and reports the outcome on stderr under `tag`. A file
+// that cannot be opened is reported and otherwise ignored.
 void dumpIRTo(const Module &m, const std::string &path0, const char *tag) {
     const std::string path = partitionDumpPath(path0);
     std::error_code ec;
@@ -149,7 +139,7 @@ void dumpIRTo(const Module &m, const std::string &path0, const char *tag) {
 }
 
 //===----------------------------------------------------------------------===//
-// Call-kind survivor census (plans/call-survivor-census.md).
+// Call-kind survivor census.
 //
 // Counts SURVIVING call instructions — what remains after every inliner and
 // DCE has run — as opposed to the MLIR-lowering-time `fast` counter, which is
@@ -162,9 +152,7 @@ void dumpIRTo(const Module &m, const std::string &path0, const char *tag) {
 // Gated on ECO_CALL_CENSUS at lowering time: unset => zero IR emitted, the
 // binary is bit-identical to an uninstrumented build. The value "1"/"all"
 // counts every bucket; a comma list ("elm,cap,helper") counts only those
-// buckets (the rest still get static site tallies). The census workflow is
-// the only consumer — never set this under the E2E harness (env-blind
-// binary cache, same rule as ECO_LSS_DISPATCH_SITE_COUNTERS).
+// buckets (the rest still get static site tallies).
 //
 // Buckets (enum MIRRORED in runtime/src/allocator/RuntimeExports.cpp — keep
 // in sync):
@@ -180,11 +168,15 @@ void dumpIRTo(const Module &m, const std::string &path0, const char *tag) {
 //   indirect non-constant callee — expected ~0 in generated code
 //===----------------------------------------------------------------------===//
 
+// The census buckets above. The numbering is shared with the runtime's
+// `kCallCensusKindNames` and must change with it; `CK_COUNT` is a count.
 enum CallCensusKind : uint8_t {
     CK_Elm = 0, CK_Kernel, CK_Cap, CK_Helper,
     CK_Runtime, CK_Extern, CK_Indirect, CK_COUNT
 };
 
+// Returns the bucket name `k` is printed and selected by, or "?" for a value
+// outside the enumeration.
 const char *callCensusKindName(uint8_t k) {
     switch (k) {
     case CK_Elm:      return "elm";
@@ -198,6 +190,8 @@ const char *callCensusKindName(uint8_t k) {
     return "?";
 }
 
+// Returns whether `ECO_CALL_CENSUS` is set to a non-empty value other than
+// "0". Read once per process.
 bool callCensusEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_CALL_CENSUS");
@@ -206,9 +200,10 @@ bool callCensusEnabled() {
     return on;
 }
 
-// Bucket filter from the env value. "1"/"all" => everything; otherwise a
-// comma list of bucket names. An unrecognised token counts nothing (loud in
-// the static line: counted=0).
+// Returns whether bucket `k` is counted at run time under the value of
+// `ECO_CALL_CENSUS`: every bucket for "1", "all" or an empty value, otherwise
+// the buckets named in its comma list. An unrecognised name selects nothing.
+// Read once per process.
 bool callCensusKindCounted(uint8_t k) {
     static const auto counted = [] {
         std::array<bool, CK_COUNT> c{};
@@ -229,10 +224,9 @@ bool callCensusKindCounted(uint8_t k) {
     return counted[k];
 }
 
-// The dispatch-machinery entry points emitted into generated code
-// (EcoToLLVMClosures.cpp: emitInlineClosureCall / the generic funnel).
-// eco_pap_extend_l is deliberately ABSENT: it never dispatches
-// (RuntimeExports.cpp "No dispatch here — this grows a PAP") => runtime.
+// Returns whether `n` names one of the closure-dispatch entry points that
+// generated code calls. `eco_pap_extend_l` is deliberately absent: it grows a
+// partial application and never dispatches, so it counts as runtime.
 bool callCensusIsTrampoline(StringRef n) {
     return n == "eco_apply_closure" || n == "eco_apply_closure_eval" ||
            n == "eco_apply_closure_typed" ||
@@ -240,6 +234,8 @@ bool callCensusIsTrampoline(StringRef n) {
            n == "eco_closure_call_saturated_eval";
 }
 
+// Returns whether `n` names one of the libm or libc functions the census
+// counts as extern.
 bool callCensusIsExtern(StringRef n) {
     static const std::set<std::string> externs = {
         "acos", "asin", "atan", "atan2", "sin", "cos", "tan", "exp",
@@ -249,9 +245,10 @@ bool callCensusIsExtern(StringRef n) {
     return externs.count(n.str()) != 0;
 }
 
-// Classify a RESOLVED call target (statepoint-unwrapped, casts stripped).
-// By NAME, never isDeclaration(): after the partition split a cross-partition
-// Elm callee is a declaration in the calling partition (plan AR-4).
+// Returns the census bucket of the call target `fn`, already unwrapped from
+// any statepoint and stripped of casts; null is an indirect call. The bucket
+// is chosen by name, never by `isDeclaration()`, because in a partition a
+// callee defined in another partition is a declaration.
 uint8_t callCensusClassify(const Function *fn) {
     if (!fn)
         return CK_Indirect;
@@ -270,13 +267,16 @@ uint8_t callCensusClassify(const Function *fn) {
     return CK_Elm;
 }
 
-// Instrument one (partition) module. Runs concurrently on disjoint modules in
-// disjoint LLVMContexts from the split workers; the only shared state is the
-// mutex-guarded stderr tally. The increment is a plain non-atomic
-// load/add/store (single-mutator workload; census-grade under future
-// threads), touches no GC pointer (safe before a statepoint), and inserting
-// BEFORE a call is legal even for musttail (constraints only bind what
-// follows the call).
+// Adds the call census to `m`: a counter increment before each counted call
+// that survives, the tables naming each site, and a constructor that
+// registers them with `eco_call_census_register`. Prints the per-bucket
+// static tally to stderr. Does nothing if `m` is already instrumented.
+//
+// May run concurrently on distinct modules; the stderr tally is the only
+// shared state and is printed under a mutex. The increment is a plain
+// non-atomic load, add and store, it touches no GC pointer, and inserting it
+// before a call is legal even for `musttail`, whose constraints bind only
+// what follows the call.
 void instrumentCallCensus(Module &m) {
     if (m.getNamedGlobal("__eco_census_counts"))
         return; // idempotence guard
@@ -339,7 +339,7 @@ void instrumentCallCensus(Module &m) {
         return; // empty filler partitions register nothing
 
     // Pass 2 — materialize tables + the registration ctor. All private;
-    // liveness is rooted by the ctor's call into the runtime (AR-8).
+    // the ctor's call into the runtime keeps them alive.
     LLVMContext &ctx = m.getContext();
     auto *i64Ty = Type::getInt64Ty(ctx);
     auto *i8Ty = Type::getInt8Ty(ctx);
@@ -406,6 +406,9 @@ void instrumentCallCensus(Module &m) {
     }
 }
 
+// Emits `m` as an object file at `path` using `tm`, adding the call census
+// first when it is enabled. Returns an error if the file cannot be opened or
+// `tm` cannot emit objects.
 Error emitObjectFile(Module &m, TargetMachine &tm, const std::string &path) {
     if (callCensusEnabled())
         instrumentCallCensus(m);
@@ -442,23 +445,34 @@ OptimizationLevel toOptLevel(CodeGenOptLevel lvl) {
     }
 }
 
-// ECO_OPT_PASS_TIMES=1: exclusive wall time per new-PM pass (and analysis),
-// summed over every partition worker, printed by eco-boot-native at exit.
-// Diagnostic only; nothing is registered when the variable is unset.
+// Per-pass optimizer timing. When `ECO_OPT_PASS_TIMES` is set, every pipeline
+// run in this file charges each new-pass-manager pass and analysis its
+// exclusive wall time, and the totals over all threads are printed by
+// `printOptPassTimes`. Nothing is registered when the variable is unset.
+
+// Returns whether `ECO_OPT_PASS_TIMES` is set, to any value. Read once per
+// process.
 bool optPassTimesEnabled() {
     static const bool on = ::getenv("ECO_OPT_PASS_TIMES") != nullptr;
     return on;
 }
+// The process-wide pass-time totals, keyed by pass name.
 struct OptPassTimesGlobal {
-    std::mutex mu;
+    std::mutex mu;  // guards `total`
     llvm::StringMap<std::pair<double, uint64_t>> total; // seconds, calls
 };
+// Returns the process-wide totals, created on first use and never destroyed
+// before exit.
 OptPassTimesGlobal &optPassTimesGlobal() {
     static OptPassTimesGlobal g;
     return g;
 }
-// One pipeline run on one thread: a stack of open passes, so each pass is
-// charged its own time minus the time of the passes nested inside it.
+// The pass timings of one pipeline run on one thread, added to the
+// process-wide totals when the timer is destroyed. Each pass is charged its
+// own time minus the time of the passes nested inside it.
+//
+// `attach` registers callbacks that capture `this`, so the timer must outlive
+// every pipeline run with the callbacks it was attached to.
 struct OptPassTimer {
     using Clock = std::chrono::steady_clock;
     struct Frame {
@@ -469,7 +483,10 @@ struct OptPassTimer {
     std::vector<Frame> stack;
     llvm::StringMap<std::pair<double, uint64_t>> local;
 
+    // Opens a frame for the pass or analysis `name`.
     void push(std::string name) { stack.push_back({std::move(name), Clock::now()}); }
+    // Closes the innermost frame and charges its exclusive time; does
+    // nothing when no frame is open.
     void pop() {
         if (stack.empty())
             return;
@@ -482,6 +499,7 @@ struct OptPassTimer {
         if (!stack.empty())
             stack.back().child += el;
     }
+    // Registers this timer's callbacks on `pic`.
     void attach(PassInstrumentationCallbacks &pic) {
         pic.registerBeforeNonSkippedPassCallback(
             [this](StringRef p, Any) { push(p.str()); });
@@ -503,11 +521,12 @@ struct OptPassTimer {
         }
     }
 };
-// No-inline per-partition pipeline (Dev tier): honour explicit `alwaysinline`
-// attrs, then run the standard per-function simplification pipeline
-// (InstCombine / SROA / GVN / SimplifyCFG / LICM / vectorizers …) with NO CGSCC
-// inliner. That fused inliner+simplification is the bulk of an -O2 pipeline's
-// wall-clock; dropping the inliner makes the rest embarrassingly parallel.
+// Optimizes `m` in place with the Dev tier's pipeline: `alwaysinline` calls
+// are inlined, then the standard per-function simplification pipeline runs at
+// O1 when `devOptO1` is set and otherwise at the level `toOptLevel` gives for
+// `optLevel`. No cost-model inliner runs. The fused inliner and simplification
+// is most of an -O2 pipeline's time, and without it each function is
+// optimized on its own. Always returns success.
 Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
                                   CodeGenOptLevel optLevel, bool devOptO1) {
     PassInstrumentationCallbacks pic;
@@ -537,14 +556,15 @@ Error runNoInlineFunctionPipeline(Module &m, TargetMachine *tm,
     return Error::success();
 }
 
-// Eco's -O<n> module pipeline (plans/backend-lowering-optimization.md A3).
-// Same shape as mlir::makeOptimizingTransformer (buildPerModuleDefaultPipeline
-// with unrolling + interleaving on) EXCEPT:
-//   - SLP and loop vectorization OFF: eco code is pointer-chasing; 0.06 % of
-//     the produced instructions touched vector registers while SLP alone was
-//     11 % of opt time;
-//   - CalledValuePropagation skipped: it only attaches !callees metadata, and
-//     after RS4GC every indirect call is a gc.statepoint.
+// Optimizes `m` in place with eco's whole-module pipeline at the level
+// `toOptLevel` gives for `optLevel`. Always returns success.
+//
+// This is LLVM's per-module default pipeline with loop unrolling and
+// interleaving on, as `mlir::makeOptimizingTransformer` builds it, except
+// that SLP and loop vectorization are off, because eco code is pointer
+// chasing and little gain from vector registers is expected, and
+// CalledValuePropagation is skipped, because it only attaches `!callees`
+// metadata and after RS4GC every indirect call is a statepoint.
 Error runEcoModuleOpt(Module &m, TargetMachine *tm, CodeGenOptLevel optLevel) {
     OptimizationLevel ol = toOptLevel(optLevel);
     PipelineTuningOptions pto;
@@ -583,9 +603,8 @@ Error runEcoModuleOpt(Module &m, TargetMachine *tm, CodeGenOptLevel optLevel) {
     return Error::success();
 }
 
-// Optimize one partition module in place according to the parallel-opt tier.
-// Dev  = no-inline function pipeline (fast, lower quality).
-// Cgu  = full -O2 per partition (keeps intra-partition CGSCC inlining).
+// Optimizes one partition module in place for the tier `mode`: `Cgu` runs
+// `runEcoModuleOpt`, and any other value runs `runNoInlineFunctionPipeline`.
 Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
                               CodeGenOptLevel optLevel, bool devOptO1) {
     if (mode == ParallelOpt::Cgu) {
@@ -594,33 +613,15 @@ Error optimizePartitionModule(Module &m, TargetMachine *tm, ParallelOpt mode,
     return runNoInlineFunctionPipeline(m, tm, optLevel, devOptO1);
 }
 
-// Split the (already RS4GC'd + optimized) module into N partitions and emit
-// each to its own object file on its own thread. Object emission (ISel /
-// MC / codegen) is the single largest phase of the AOT backend and is
-// per-function work, so splitting it across cores is a near-linear win.
-//
-// When `perPartitionMode != None`, each partition is additionally OPTIMIZED in
-// its worker thread (before emission) — this is how the opt stage itself is
-// parallelized (the whole-module -O2 is skipped upstream and replaced with a
-// cheap IPO prologue + this per-partition optimization).
-//
-// Correctness notes:
-//   - PreserveLocals=false: llvm::SplitModule EXTERNALIZES (single definition,
-//     unique name) any local global referenced across partitions rather than
-//     duplicating it, so GC-root globals (eco.global cells, the type graph and
-//     its private satellite arrays) keep exactly one definition — no
-//     premature-reclamation landmine.
-//   - Each partition is round-tripped through bitcode into its OWN LLVMContext
-//     (LLVMContext is not thread-safe) and gets its OWN TargetMachine
-//     (MCContext / AsmPrinter state is not shareable across threads).
-//   - RS4GC ran once on the whole module BEFORE the split, so statepoints and
-//     the frame-pointer attr are already in place and are preserved losslessly
-//     through bitcode. Each partition emits a .llvm_stackmaps blob for its own
-//     functions; the linker concatenates them and StackMap::parse reads all
-//     blobs (multi-blob loop).
-// (X) join (plan 02 Q7, F5): a gc-leaf DECLARATION in one partition is only
-// as good as its owner's stamped DEFINITION in another; no per-partition check
-// can see that link. Each worker reports after its RS4GC; the driver joins.
+// The (X) join. With GC-free stamping, a `gc-leaf-function` declaration in
+// one partition is sound only if the function's definition, in whichever
+// partition owns it, carries the stamp too, and no check inside one partition
+// can see that link. Each partition reports what it defines, stamps and
+// declares as leaf after its RS4GC, and the reports are joined afterwards.
+
+// Records in `r` the defined functions of `m`, the defined ones stamped
+// `gc-leaf-function`, and the declarations carrying that attribute. Records
+// nothing unless GC-free mode is Stamp.
 static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
     if (gcFreeLeafMode() != GcFreeMode::Stamp)
         return;
@@ -637,6 +638,11 @@ static void collectGcLeafReport(const Module &m, GcLeafPartitionReport &r) {
     }
 }
 
+// Joins `reports`: returns an error naming the first gc-leaf declaration
+// whose function is defined in some partition but stamped in none. A
+// declaration with no definition in any report is a runtime or kernel
+// function and is trusted. Returns success at once unless GC-free mode is
+// Stamp, and prints counts when `ECO_GCFREE_PLAN_STATS` is set and not "0".
 Error checkCrossPartitionGcLeaf(
     const std::vector<GcLeafPartitionReport> &reports) {
     if (gcFreeLeafMode() != GcFreeMode::Stamp)
@@ -668,6 +674,33 @@ Error checkCrossPartitionGcLeaf(
     return Error::success();
 }
 
+// Splits `m` with `llvm::SplitModule` into `numPartitions` parts and emits
+// part i to `paths[i]`, each on its own thread. Object emission is per
+// function and the largest phase of the AOT backend, so it divides well
+// across cores. `paths` must have `numPartitions` entries. The split modifies
+// `m` itself: its local symbols are given external linkage.
+//
+// Each worker runs, in order:
+//   - RS4GC with `*partitionRS4GC`, when it is non-null; when it is null the
+//     caller must have run RS4GC on `m` already, and statepoints and
+//     frame-pointer attributes carry through bitcode unchanged;
+//   - the per-partition optimization for `perPartitionMode`, unless it is
+//     `None`; under `Dev`, `devEmitCG` (when not `~0u`) replaces `optLevel`
+//     for the worker's target machine, and `devOptO1` is as for
+//     `runNoInlineFunctionPipeline`;
+//   - object emission.
+// After every worker has finished, the gc-leaf reports are joined as
+// `checkCrossPartitionGcLeaf` describes. Returns the first worker error in
+// partition order, otherwise the result of the join. `stats`, when non-null,
+// is recorded into from every worker.
+//
+// Correctness rests on three facts. The split runs with `PreserveLocals`
+// false, so a local global referenced from several parts is externalized with
+// one definition rather than copied, and GC-root globals keep exactly one
+// definition. Each part travels as bitcode into its own `LLVMContext` and gets
+// its own `TargetMachine`, because neither can be shared across threads. Each
+// part emits its own stack map section, and the runtime's stack-map parser
+// reads every section the linker concatenates.
 Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
                            const std::vector<std::string> &paths,
                            CodeGenOptLevel optLevel,
@@ -716,14 +749,10 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
             nextFail++;
             return;
         }
-        // Per-partition RS4GC (+ frame pointers): when the caller skipped the
-        // whole-module RS4GC (parallel-opt modes), each worker statepoints its
-        // own partition here — RS4GC is per-function and consults only callee
-        // DECLARATION attrs (gc-leaf-function), which CloneModule preserved,
-        // so partition-local RS4GC is semantically identical to whole-module
-        // (design doc finding: per-partition RS4GC confirmed safe). It runs
-        // BEFORE opt, preserving the RS4GC-before-optimization GC invariant
-        // per partition.
+        // RS4GC works function by function and reads only the callees'
+        // `gc-leaf-function` attributes, which the split preserves, so
+        // running it per partition gives the same result as on the whole
+        // module. It runs before optimization here, as everywhere else.
         if (partitionRS4GC) {
             MaybeScope s(stats, "  partition RS4GC (sum over workers)");
             runRS4GCAndMaybeFramePointers(*mod, *partitionRS4GC);
@@ -784,8 +813,8 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
     }
 
     // Any unused partition slots (produced < numPartitions) get an empty
-    // object so the linker still finds every expected path. In practice
-    // SplitModule always produces exactly numPartitions parts, but guard it.
+    // object so the linker still finds every expected path. A failure here is
+    // ignored.
     for (unsigned i = produced; i < numPartitions; ++i) {
         LLVMContext ctx;
         Module empty("eco-empty-partition", ctx);
@@ -807,12 +836,10 @@ Error emitObjectFilesSplit(Module &m, unsigned numPartitions,
 }
 
 
-// Externalize every module-local symbol to a single ExternalLinkage +
-// HiddenVisibility definition — replicates llvm::SplitModule's
-// PreserveLocals=false behaviour so cross-partition references resolve at link
-// time when each partition keeps only its own definitions. (eco's module has
-// no aliases/comdats/ifuncs and no unnamed globals, so this is the whole job;
-// the defensive name/alias/ifunc handling mirrors SplitModule for safety.)
+// Gives every local symbol of `m` external linkage with hidden visibility,
+// and a name if it has none, as `llvm::SplitModule` does with `PreserveLocals`
+// false, so references between partitions resolve at link time when each
+// partition keeps only its own definitions.
 void externalizeAllLocals(Module &m) {
     auto ext = [](GlobalValue &GV) {
         if (GV.hasLocalLinkage()) {
@@ -836,14 +863,11 @@ void externalizeAllLocals(Module &m) {
 
 } // namespace
 
-// Plan 05 (EcoSplit): the driver-level join of the workers' gc-leaf reports.
 Error joinPartitionGcLeafReports(
     const std::vector<GcLeafPartitionReport> &reports) {
     return checkCrossPartitionGcLeaf(reports);
 }
 
-// The shared split policy on a defined-function count, so EcoSplit can apply
-// it to the MLIR module before translation (plan 05 U4).
 unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
                                       bool eligible) {
     if (!eligible || request == 1)
@@ -859,12 +883,7 @@ unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
     if (numDefinedFns < kMinFnsToSplit)
         return 1;
     unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-    // Auto uses all cores. The old min(cores,16) cap existed because
-    // llvm::SplitModule's serial split + N bitcode serializations grew with N
-    // and ate the emission gain past ~16. The default tiers now partition in
-    // MLIR (EcoSplit, plan 05: no serialization at all), and a 24-core
-    // self-host sweep showed backend time still dropping at N=24 (dev
-    // 12.4->10.1 s from N=16, no plateau). See backendstats-runs.txt.
+    // Auto uses every core, with no fixed cap.
     unsigned want = (request == 0) ? cores : request;
     // ~1 partition per 2000 functions, at least 2 once we've decided to split.
     unsigned bySize = std::max(2u, numDefinedFns / 2000u);
@@ -873,12 +892,8 @@ unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
 
 namespace {
 
-// Decide how many object-emission partitions to use. This is the split policy
-// that used to live inline in eco-boot.cpp; hoisting it here means every driver
-// (eco-boot, the unified `eco` native driver, ecoc) gets the same partitioned
-// codegen for free. `request`: 0 = auto, 1 = off, N = explicit. `eligible` is
-// true only for plain executable output. See
-// design_docs/backend-parallel-optimization.md §8.1.
+// Returns the partition count `choosePartitionCountForCount` gives for the
+// number of functions `m` defines.
 unsigned choosePartitionCount(const Module &m, unsigned request, bool eligible) {
     unsigned numDefinedFns = 0;
     for (const Function &F : m)
@@ -914,15 +929,12 @@ std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
     // Emit each function/data global into its own section so a later
     // `--gc-sections` link can trim dead code at section granularity. Harmless
     // for shared-lib output. (The .llvm_stackmaps section must be KEPT
-    // explicitly at link time — see linkExecutable — since nothing relocates
-    // into it.)
+    // explicitly at link time, since nothing relocates into it.)
     targetOpts.FunctionSections = true;
     targetOpts.DataSections = true;
     auto codeGenOpt = static_cast<CodeGenOptLevel>(std::min(optLevel, 3u));
 
-    // Pin CPU/features (kEcoTargetCPU) — no host detection. Host detection
-    // baked the build machine's AVX-512 into emitted binaries, which then
-    // SIGILL'd on x86-64-v3 CPUs.
+    // Pinned CPU and features, never the host's: see kEcoTargetCPU.
     TargetMachine *tm = target->createTargetMachine(
         Triple(triple), kEcoTargetCPU, kEcoTargetFeatures, targetOpts,
         Reloc::PIC_, CodeModel::Small, codeGenOpt);
@@ -935,10 +947,12 @@ std::unique_ptr<TargetMachine> createEcoTargetMachine(Module &module,
     return std::unique_ptr<TargetMachine>(tm);
 }
 
-// Local check (plan 02 Q7, F6-F8): before RS4GC, in every flavour, every
-// stamped definition may only make calls RS4GC will not statepoint. This is
-// independent of hasGC(), so it also covers functions RS4GC never processes
-// (__eco_init_globals), where the post-RS4GC assert below is vacuous.
+// Stops the process with a fatal error if a definition in `m` stamped
+// `gc-leaf-function` has interposable or `available_externally` linkage, or
+// makes a call that `llvm::callsGCLeafFunction` does not count as leaf, that
+// is, a call RS4GC would statepoint. The check does not depend on `hasGC()`,
+// so it also covers functions RS4GC never processes, where the check after
+// RS4GC in `runRS4GCAndMaybeFramePointers` finds nothing.
 static void checkStampedBodies(Module &m) {
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
@@ -991,13 +1005,12 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
     if (!opts.postDumpPath.empty())
         dumpIRTo(m, opts.postDumpPath, "rs4gc");
 
-    // GCFREE self-check (plans/gc-free-function-propagation.md §2.6): a
-    // stamped function that RS4GC still statepointed means the fixpoint was
-    // unsound — a wrongly-stamped function that allocates leaves unrelocated
+    // A stamped function that RS4GC still statepointed means the GC-free
+    // fixpoint was unsound: a wrongly stamped function that allocates leaves
     // stale pointers in its callers. RS4GC processes a function on hasGC()
-    // alone (a callee's own gc-leaf attr does NOT stop it), so this scan is
-    // a real check, not a vacuous one. Placed after the post-RS4GC dump so a
-    // failing build still leaves the IR on disk. Stamp mode only.
+    // alone, not on the function's own gc-leaf attribute, so this scan can
+    // fail. It follows the post-RS4GC dump so a failing build still leaves
+    // the IR on disk.
     if (gcFreeLeafMode() == GcFreeMode::Stamp) {
         for (Function &f : m) {
             if (f.isDeclaration() || !f.hasFnAttribute("gc-leaf-function"))
@@ -1013,20 +1026,15 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
         }
     }
 
-    // Frame pointers for GC root discovery. Blanket mode (default):
-    // frame-pointer=all on every defined function. ECO_FP_LEAF: only on
-    // functions that can hold GC-relevant frame state — ones containing a
-    // statepoint (their stackmap records are read mid-walk) or a stack-range
-    // registration (shadow-root prologue AND the rooted arg/capture-array
-    // sites in EcoToLLVMClosures.cpp; the over-stamp is deliberate — do NOT
-    // tighten this to an entry-block-only scan). Statepoint-free functions
-    // can never be on the stack during a GC walk (all their calls are
-    // gc-leaf, so no GC can begin beneath them), and the walker is CFI-driven
-    // anyway (ThreadLocalHeap.cpp collectStackRootsFromStackMap +
-    // StackUnwind.cpp), so they may release rbp as an allocatable register.
-    // plans/gc-free-function-propagation.md §3.
+    // Leaf-selective frame pointers (the default; ECO_FP_LEAF=0 puts the
+    // attribute on every definition): a function gets frame-pointer=all only
+    // if it contains a statepoint, whose stack-map record is read during a
+    // stack walk, or a call to eco_gc_push_stack_range anywhere in its body.
+    // Do not narrow that second test to the entry block: the rooted argument
+    // and capture arrays register ranges outside it. A statepoint-free
+    // function makes only gc-leaf calls, so no collection can start beneath
+    // it, and it may use the frame-pointer register freely.
     if (opts.addFramePointerAttr) {
-        // Default-ON since 2026-08-09; ECO_FP_LEAF=0 is the escape hatch.
         static const bool fpLeaf = [] {
             const char *e = ::getenv("ECO_FP_LEAF");
             return !e || !*e || !(e[0] == '0' && e[1] == '\0');
@@ -1077,12 +1085,6 @@ void runRS4GCAndMaybeFramePointers(Module &m, const RS4GCOptions &opts) {
 }
 
 void internalizeAndDCEForExecutable(Module &m) {
-    // Preserve exactly the two symbols the C entry lib (eco_entry.cpp) resolves
-    // by name: the program entry and the GC-root/type-graph initializer. Every
-    // other generated symbol (Elm top-level functions, __eco_type_graph,
-    // __eco_root_module, string globals, ...) is reached only internally from
-    // these two or their call graph, so internalizing them is safe and lets
-    // GlobalDCE drop the unreachable remainder.
     internalizeAndDCE(m, {"eco_main", "__eco_init_globals"});
 }
 
@@ -1092,12 +1094,9 @@ bool hasReachabilityStamp(const Module &m) {
 
 static void stripReachabilityStamp(Module &m);
 
-// CGEN_081 (plans/mlir-split-backend-03-reachability.md R5): EcoReachability
-// already erased and internalized in MLIR, so the LLVM side keeps only
-// GlobalDCE's dead-constant-user sanitizer (translation's folder can leave
-// dangling ConstantExprs that would flip Function::hasAddressTaken for
-// CGEN_074). Under ECO_REACH_VALIDATE=1 the old internalize + GlobalDCE runs
-// as an oracle and must change nothing.
+// Removing dead constant users matters because translation's constant folder
+// can leave unused ConstantExprs that make Function::hasAddressTaken true,
+// and capacity hoisting (CGEN_074) reads that.
 Error finishReachability(Module &m, ArrayRef<std::string> keep,
                          bool partition) {
     if (!hasReachabilityStamp(m))
@@ -1113,8 +1112,8 @@ Error finishReachability(Module &m, ArrayRef<std::string> keep,
         const char *e = ::getenv("ECO_REACH_VALIDATE");
         return e && *e && !(e[0] == '0' && e[1] == '\0');
     }();
-    // Plan 05 R20: per partition the oracle would internalize + GlobalDCE
-    // away every definition only another partition references.
+    // In a partition the oracle would internalize and delete every
+    // definition that only another partition references, so it is skipped.
     if (!validate || partition)
         return Error::success();
     StringMap<GlobalValue::LinkageTypes> before;
@@ -1190,8 +1189,8 @@ void internalizeAndDCE(Module &m, ArrayRef<std::string> keep) {
     MPM.run(m, MAM);
 }
 
-// Plan P2 (--inline-deref). Expand each `__eco_resolve_fwd` marker call into an
-// inline forwarding-check diamond:
+// Replaces each `__eco_resolve_fwd` marker call in `m` with an inline
+// forwarding check:
 //
 //     %hdr   = load i32, ptr addrspace(1) %h, align 8   ; object header word
 //     %tag   = and i32 %hdr, TAG_MASK
@@ -1203,13 +1202,11 @@ void internalizeAndDCE(Module &m, ArrayRef<std::string> keep) {
 //   cont:
 //     %base = phi [ %h, %head ], [ %r, %fwd ]   ; replaces the marker result
 //
-// Runs on the whole module at the very start of runEcoBackend — i.e. before ANY
-// RewriteStatepointsForGC pass (whole-module serial, deferred, or per-partition)
-// and before module splitting — so RS4GC sees the fully-expanded diamond and
-// tracks %base / the field pointers derived from it as ordinary GC pointers.
-// The header load stays in addrspace(1); no ptrtoint is introduced. Callee
-// eco_follow_forward is gc-leaf so RS4GC inserts no statepoint around the cold
-// call. Idempotent / cheap when there are no markers (flag off).
+// Must run before every RS4GC flavour, so that RS4GC tracks %base and the
+// field pointers derived from it as ordinary GC pointers. The header load
+// stays in addrspace(1) and no ptrtoint is introduced. `eco_follow_forward` is
+// gc-leaf, so RS4GC puts no statepoint around the cold call. Does nothing when
+// the marker has no uses.
 static void expandInlineDerefs(Module &m) {
     Function *marker = m.getFunction("__eco_resolve_fwd");
     if (!marker || marker->use_empty())
@@ -1264,20 +1261,21 @@ static void expandInlineDerefs(Module &m) {
     }
 }
 
-// Capacity-check hoisting decisions (plans/capacity-check-hoisting.md,
-// CGEN_074) — the output of applyCapacityHoisting, consumed by
-// expandInlineAllocs to pick the expansion form per marker. Empty (or null)
-// means "expand everything as HEAP_034 diamonds", i.e. today's behaviour.
+// Which `__eco_alloc_inline` markers may expand to an unchecked bump because
+// capacity-check hoisting (CGEN_074) has already guaranteed their nursery
+// space. Produced by `applyCapacityHoisting` and read by `expandInlineAllocs`.
+// Empty means every marker keeps its checked form.
 struct CapHoistDecisions {
     // M1: functions whose ENTIRE marker population expands unchecked. Their
     // capacity guarantee is established by their callers (or, transitively,
     // by their callers' callers).
     DenseSet<Function *> coveredFns;
     // M2: individual markers inside NON-covered functions that a
-    // caller-local ensure diamond covers. Disjoint from coveredFns by
-    // construction — covered functions are never run-scanned (plan §2.3).
+    // caller-local ensure diamond covers. Disjoint from coveredFns, because
+    // covered functions are never scanned for runs.
     DenseSet<CallInst *> uncheckedMarkers;
 
+    // Returns whether `marker` expands unchecked.
     bool isUnchecked(CallInst *marker) const {
         return coveredFns.contains(marker->getFunction()) ||
                uncheckedMarkers.contains(marker);
@@ -1285,28 +1283,24 @@ struct CapHoistDecisions {
 };
 
 //===----------------------------------------------------------------------===//
-// Bump-state access (plans/inline-bump-state-tls.md)
+// Bump-state access
 //
 // Both bump-state consumers — the HEAP_034 allocation diamond
 // (expandInlineAllocs) and the CGEN_074 hoisted capacity check
 // (applyCapacityHoisting) — need the address of the calling thread's
-// {ptr, end} struct. `eco_bump_state()`'s body is already call-free, but it
-// lives in EcoRuntimeStatic, invisible to LLVM here (no LTO), so every use
-// paid a call/ret plus the caller-saved clobber a call forces at the site.
-// The survivor census measured 10,462,396,845 of them on one self-compile —
-// the largest single row in the census.
-//
-// `eco_tl_bump_state` (defined in Allocator.cpp) caches exactly what
-// eco_bump_state() returns and is written only by Allocator::setThreadHeap,
-// so it cannot drift from `tl_heap_`. Caching the ADDRESS is sound because it
-// is thread-stable (`nursery_` is a direct member of ThreadLocalHeap, `bump_`
-// a direct member of NurserySpace, so `&bump_` never moves); the CONTENTS are
-// still re-loaded per use, exactly as before.
+// {ptr, end} struct. `eco_bump_state()` returns it, but its body is in the
+// runtime library, which LLVM cannot see here, so each use would be an
+// out-of-line call. In AOT code the address is instead loaded from the
+// initial-exec TLS variable `eco_tl_bump_state`, which the runtime keeps
+// equal to what `eco_bump_state()` returns. The address is stable for a
+// thread; the CONTENTS are still re-loaded per use.
 //
 // NOT for the JIT: ORC cannot resolve an initial-exec TLS reference from
 // JIT'd code, so callers pass allowTls=false there and keep the call.
 //===----------------------------------------------------------------------===//
 
+// Returns whether the TLS bump-state load may be used: true unless
+// `ECO_INLINE_BUMP_STATE` is exactly "0". Read once per process.
 static bool bumpStateInlineEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_INLINE_BUMP_STATE");
@@ -1315,6 +1309,8 @@ static bool bumpStateInlineEnabled() {
     return on;
 }
 
+// Returns `m`'s declaration of the runtime's initial-exec TLS variable
+// `eco_tl_bump_state`, adding one if there is none.
 static GlobalVariable *getOrCreateBumpStateTls(Module &m) {
     if (auto *gv = m.getGlobalVariable("eco_tl_bump_state", /*AllowInternal=*/true))
         return gv;
@@ -1327,8 +1323,8 @@ static GlobalVariable *getOrCreateBumpStateTls(Module &m) {
     return gv;
 }
 
-// Emit the bump-state address at `b`'s insert point. `tls` non-null selects
-// the TLS load; otherwise the runtime call is kept.
+// Emits the bump-state address at `b`'s insert point and returns it: a load
+// from `tls` when it is non-null, otherwise a call to `bumpStateCallee`.
 static Value *emitBumpStateAddr(IRBuilder<> &b, GlobalVariable *tls,
                                 FunctionCallee bumpStateCallee) {
     if (!tls)
@@ -1337,9 +1333,9 @@ static Value *emitBumpStateAddr(IRBuilder<> &b, GlobalVariable *tls,
     return b.CreateAlignedLoad(b.getPtrTy(0), slot, Align(8), "eco.bump.state");
 }
 
-// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034).
-// Expand each `__eco_alloc_inline(SIZE)` marker call into the bump-pointer
-// fast/slow diamond:
+// Replaces each `__eco_alloc_inline(SIZE)` marker call in `m` with inline
+// nursery allocation (HEAP_034), by default the bump-pointer fast/slow
+// diamond:
 //
 //     %state = call ptr @eco_bump_state()          ; memory(none) gc-leaf
 //     %top   = load ptr addrspace(1), ptr %state   ; bump.ptr at +0
@@ -1354,13 +1350,13 @@ static Value *emitBumpStateAddr(IRBuilder<> &b, GlobalVariable *tls,
 // The single compare preserves ALL GC-trigger semantics: NurserySpace's
 // bump.end is pre-clamped to min(from-space extent end, proactive-GC
 // threshold trip) (computeAllocEnd), so both space exhaustion and threshold
-// trips miss into the statepointed slow call, which collects (HEAP_042: the
-// from-space is one contiguous extent, so a miss never means "step to the
-// next block").
+// trips miss into the statepointed slow call, which collects. The from-space
+// is one contiguous extent (HEAP_042), so a miss never means "step to the
+// next block".
 //
 // Address-space discipline: the bump slots are loaded/stored as
-// `ptr addrspace(1)` directly (the HPointer word IS the raw address, plan
-// D1), so this expansion introduces NO ptrtoint/inttoptr — out of
+// `ptr addrspace(1)` directly (the HPointer word IS the raw address), so this
+// expansion introduces NO ptrtoint/inttoptr — out of
 // REP_LLVM_001(b)'s provenance rules and fold-immune (REP_LLVM_002) by
 // construction, exactly like expandInlineDerefs.
 //
@@ -1373,19 +1369,21 @@ static Value *emitBumpStateAddr(IRBuilder<> &b, GlobalVariable *tls,
 // partially-initialized object (no safepoint between the phi and the
 // stores).
 //
-// Runs with the other marker expansions at the top of runEcoBackend —
-// before the `$cap` inline prepass, before partition splitting, and before
-// every RS4GC flavour. Idempotent / cheap when there are no markers
-// (ECO_INLINE_ALLOC=0 emits none).
+// Must run before every RS4GC flavour. Does nothing when the marker has no
+// uses; otherwise erases the marker declaration afterwards.
 //
-// `decisions` (capacity-check hoisting, CGEN_074) selects the UNCHECKED form
-// for markers whose capacity was already guaranteed by a dominating ensure:
-// bump with no end-load, no compare, no slow edge and no phi. Null / empty
-// (the default, ECO_ALLOC_HOIST unset) means every marker keeps its diamond.
+// `decisions`, when non-null, selects the UNCHECKED form for the markers it
+// covers: a bump with no end-load, no compare, no slow edge and no phi. Every
+// other marker keeps its diamond.
 //
-// `allowTls` (plans/inline-bump-state-tls.md) selects how `%state` is
-// obtained: a TLS load of `eco_tl_bump_state` (AOT) or the
-// `eco_bump_state()` call (JIT, or ECO_INLINE_BUMP_STATE=0).
+// `allowTls` selects how `%state` is obtained: a TLS load of
+// `eco_tl_bump_state` when it is true and `bumpStateInlineEnabled`, otherwise
+// the `eco_bump_state()` call. It must be false for JIT code, because ORC
+// cannot resolve an initial-exec TLS reference.
+//
+// Stops the process with a fatal error if a marker's size is not a constant
+// multiple of 8 in (0, 4096], or if the number of unchecked expansions
+// differs from what `decisions` covers.
 static void expandInlineAllocs(Module &m,
                                const CapHoistDecisions *decisions = nullptr,
                                bool allowTls = false) {
@@ -1416,22 +1414,6 @@ static void expandInlineAllocs(Module &m,
         bs->addFnAttr("gc-leaf-function");
     }
 
-    // plans/inline-bump-state-tls.md: read the bump-state address straight out
-    // of TLS instead of calling into the runtime for it. eco_bump_state's body
-    // is already call-free, but it lives in EcoRuntimeStatic — invisible to
-    // LLVM here (no LTO) — so every allocation paid a call/ret plus the
-    // caller-saved clobber a call forces at each allocation site. The survivor
-    // census measured 10,462,396,845 of them on one self-compile: the largest
-    // single row in the whole census.
-    //
-    // `eco_tl_bump_state` (Allocator.cpp) caches exactly what eco_bump_state()
-    // returns and is written only by Allocator::setThreadHeap, so it cannot
-    // drift from tl_heap_. The address is thread-stable (nursery_ and bump_ are
-    // both direct members), so caching the ADDRESS is sound; its CONTENTS still
-    // get re-loaded per allocation below, exactly as before.
-    //
-    // NOT for the JIT: ORC cannot resolve an initial-exec TLS reference from
-    // JIT'd code, so `allowTls` is false there and the call is kept.
     const bool useTlsBumpState = allowTls && bumpStateInlineEnabled();
     GlobalVariable *bumpStateTls =
         useTlsBumpState ? getOrCreateBumpStateTls(m) : nullptr;
@@ -1456,7 +1438,7 @@ static void expandInlineAllocs(Module &m,
         if (auto *ci = dyn_cast<CallInst>(u))
             calls.push_back(ci);
 
-    // Bookkeeping cross-check for CGEN_074 (plan §2.6): how many markers the
+    // Bookkeeping cross-check for CGEN_074: how many markers the
     // decisions claim, vs how many unchecked forms we actually emit.
     unsigned expectUnchecked = 0, gotUnchecked = 0;
     if (decisions)
@@ -1535,18 +1517,14 @@ static void expandInlineAllocs(Module &m,
 }
 
 //===----------------------------------------------------------------------===//
-// GC shadow-root-stack expansion (plans/gc-root-registration-cost.md, Phase 1)
+// GC shadow-root-stack expansion
 //
-// `eco_gc_push_stack_range` is the hottest symbol of the whole self-compile —
-// 14.53% self on ~1.99 B events, one per closure-dispatch entry, with
-// `eco_gc_stack_range_point` (0.87%) and `eco_gc_restore_stack_range_point`
-// (1.28%) bracketing it. All three live in libEcoRuntimeStatic, which is not
-// LTO'd against generated code, so every args-array call site paid three
-// out-of-line calls (plus the caller-saved clobber each forces) to do a few
-// stores.
-//
-// The shadow stack is now three initial-exec TLS cursors (RootSet.hpp), so the
-// whole protocol is inline memory traffic:
+// Generated code registers each argument array with the shadow root stack
+// through three runtime calls, `eco_gc_stack_range_point`,
+// `eco_gc_push_stack_range` and `eco_gc_restore_stack_range_point`, which
+// LLVM cannot see into. The shadow stack's cursor is an initial-exec TLS
+// variable (`RootSet`), so in AOT code the protocol can be inline memory
+// traffic instead:
 //
 //   point()   -> %p = threadlocal.address @eco_tl_root_sp ; load ptr
 //   push(b,n,m) -> load sp ; store b/+0, n/+8, m/+16 ; store sp+24
@@ -1554,27 +1532,29 @@ static void expandInlineAllocs(Module &m,
 //
 // The restore point is the cursor itself (StackRootRangeRec is trivially
 // destructible, so there is nothing to unwind), which is why restore collapses
-// to a single store. The `size_t` ABI is unchanged — the token is now a pointer
-// value rather than an index — so the out-of-line forms stay valid and the JIT,
-// which cannot resolve an initial-exec TLS reference from ORC-compiled code,
-// keeps calling them (`allowTls` false there, exactly as for the bump state).
+// to a single store. The token is the cursor's address as a `size_t`, the same
+// value the out-of-line forms use, so inline and out-of-line sites can mix.
+// The JIT, which cannot resolve an initial-exec TLS reference from
+// ORC-compiled code, keeps calling them (`allowTls` false there, as for the
+// bump state).
 //
 // Why this is NOT redundant with RS4GC: an args array is a storage boundary,
 // and REP_LLVM_001 permits `ptr addrspace(1)` -> `i64` there. The moment a GC
 // pointer is ptrtoint'd into the array it stops being an SSA pointer and
-// statepoint coverage ends; the shadow range is the patch for exactly that hole
-// (EcoToLLVMClosures.cpp:1079-1086, the Stage 7 unsafeIndex crash). This pass
-// changes only HOW the range is registered, never WHETHER it is.
+// statepoint coverage ends; the shadow range covers exactly that hole. This
+// pass changes only HOW the range is registered, never WHETHER it is.
 //
 // No addrspace(1) value is created, loaded or stored here: the base is an
 // alloca in addrspace(0) and the other two fields are plain i64. The expansion
 // is therefore invisible to RS4GC and outside REP_LLVM_001 entirely.
 //
 // Conservative by construction — a site is expanded only when `count` is a
-// non-zero constant <= 64 (the runtime's own assert) and the base is provably
+// non-zero constant <= 64 (the runtime's own limit) and the base is provably
 // non-null. Anything else keeps the call, which still does the right thing.
 //===----------------------------------------------------------------------===//
 
+// Returns whether the root-stack calls may be inlined: true unless
+// `ECO_TLS_ROOT_STACK` is exactly "0". Read once per process.
 static bool rootStackInlineEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_TLS_ROOT_STACK");
@@ -1583,6 +1563,8 @@ static bool rootStackInlineEnabled() {
     return on;
 }
 
+// Returns `m`'s declaration of the runtime's initial-exec TLS variable
+// `eco_tl_root_sp`, adding one if there is none.
 static GlobalVariable *getOrCreateRootSpTls(Module &m) {
     if (auto *gv = m.getGlobalVariable("eco_tl_root_sp", /*AllowInternal=*/true))
         return gv;
@@ -1595,8 +1577,8 @@ static GlobalVariable *getOrCreateRootSpTls(Module &m) {
     return gv;
 }
 
-// True when `v` cannot be null, using only facts every emission site supplies
-// (all seven pass an alloca, directly or through a constant GEP).
+// Returns whether `v`, after stripping casts and GEPs, is an alloca or a
+// global, and so cannot be null. Any other value counts as possibly null.
 static bool isProvablyNonNullStackPtr(Value *v) {
     v = v->stripPointerCastsAndAliases();
     if (isa<AllocaInst>(v) || isa<GlobalValue>(v))
@@ -1606,6 +1588,10 @@ static bool isProvablyNonNullStackPtr(Value *v) {
     return false;
 }
 
+// Replaces the root-stack calls in `m` with inline TLS traffic as described
+// above. Does nothing unless `allowTls` is true and `rootStackInlineEnabled`;
+// `allowTls` must be false for JIT code. A push whose count or base fails the
+// conditions above keeps its call.
 static void expandRootRangeOps(Module &m, bool allowTls) {
     if (!allowTls || !rootStackInlineEnabled())
         return;
@@ -1684,7 +1670,7 @@ static void expandRootRangeOps(Module &m, bool allowTls) {
 }
 
 //===----------------------------------------------------------------------===//
-// `$sat` fast-path diamond (plans/gc-root-registration-cost.md, Phase 3)
+// `$sat` fast-path diamond
 //
 // The MLIR lowering brackets each array-building apply with a marker pair:
 //
@@ -1714,20 +1700,22 @@ static void expandRootRangeOps(Module &m, bool allowTls) {
 //   slow:   ... the generic sequence ...
 //   cont:   %r   = phi [%rf, fast], [%slowResult, slow]
 //
-// `%c3` is what makes passing the args UNBOXED sound (REP_ABI_001, plan §5.4):
+// `%c3` is what makes passing the args UNBOXED sound (REP_ABI_001):
 // it proves the closure's declared slot kinds for the remaining slots equal the
-// site's static assumption. `%c1b` is the guard §5.3 does not state but needs —
-// `unboxed` describes only 25 slots, so a wider closure's kind bits must not be
+// site's static assumption. `%c1b` is needed as well —
+// `unboxed` describes only 20 slots, so a wider closure's kind bits must not be
 // compared at all, or the mask test could pass on unrelated bits. It also makes
 // sat[] readable: a descriptor has sat[] only when stage_arity <= SAT_MAX_ARITY
 // (empty above it), and every compiled closure has max_values == stage_arity.
 //
-// Everything the fast edge skips is exactly what §5.5 lists. The pointer args
-// stay `ptr addrspace(1)` into the call, so RS4GC covers them as ordinary SSA
+// The fast edge skips the argument array and its root registration. The
+// pointer args stay `ptr addrspace(1)` into the call, so RS4GC covers them as ordinary SSA
 // values with no shadow-stack registration at all — which is why this pass MUST
 // run before every RS4GC flavour.
 //===----------------------------------------------------------------------===//
 
+// Returns whether `$sat` brackets are expanded into diamonds: true unless
+// `ECO_SAT_FAST` is exactly "0". Read once per process.
 static bool satFastBackendEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_SAT_FAST");
@@ -1736,6 +1724,12 @@ static bool satFastBackendEnabled() {
     return on;
 }
 
+// Replaces each `__eco_sat_begin` / `__eco_sat_end` bracket in `m` with the
+// diamond above, then erases the marker declarations once unused. A bracket
+// is dropped instead, leaving only the generic sequence, when the fast path
+// is switched off, the end marker is not in the begin marker's block, an
+// operand that must be constant is not, or the new-argument count is not in
+// 1..8. Prints counts to stderr when `ECO_PAP_HISTO` is set.
 static void expandSatMarkers(Module &m) {
     Function *beginF = m.getFunction("__eco_sat_begin");
     Function *endF = m.getFunction("__eco_sat_end");
@@ -1834,10 +1828,10 @@ static void expandSatMarkers(Module &m) {
         Value *rem = b.CreateSub(mx, n, "eco.clo.rem");
         Value *c1 = b.CreateICmpEQ(rem, b.getInt64(N));
         // `unboxed` describes 20 slots; a wider closure's kinds are not
-        // readable, and its descriptor's sat[] is empty (2.6.8).
+        // readable, and its descriptor's sat[] is empty.
         Value *c1b = b.CreateICmpULE(mx, b.getInt64(Elm::SAT_MAX_ARITY));
         Value *c2 = b.CreateICmpEQ(rk, b.getInt64(rcC->getZExtValue()));
-        // B20: a shift >= 64 gives poison, and `and(false, poison)` is poison;
+        // A shift >= 64 gives poison, and `and(false, poison)` is poison;
         // branching on it is UB. Clamp the shift operand so it is in range even
         // when the guard fails.
         Value *nSafe = b.CreateSelect(c1b, n, b.getInt64(0), "eco.clo.nsafe");
@@ -1913,28 +1907,11 @@ static void expandSatMarkers(Module &m) {
 
 
 
-// P2.5 R1b (plans/allocator-resolve-inlining.md). Expand each
-// `__eco_get_tag_inline` marker call into the open-coded eco_get_tag
-// semantics (replicated EXACTLY from RuntimeExports.cpp):
-//
-//   embedded constant (ptr_ind set) -> Bool -> its i1 value; "empty" ->
-//     CONSTANT_TAG (0xFFFD);
-//   heap object -> Tag_Custom -> ctor (low 16 bits of the word at +8;
-//     the upper bits are the unboxed bitmap — load u16, never i32);
-//     Tag_Cons -> 1; anything else -> 0.
-//
-// The marker exists because eco.get_tag sits INSIDE single-block scf regions
-// (loopified tail recursion — the hot Dict/Set case loops), where the MLIR
-// lowering cannot create blocks; here at the LLVM level block structure is
-// free. The heap arm resolves via a `__eco_resolve_fwd` marker call, so this
-// MUST run BEFORE expandInlineDerefs (which then expands those) — and, like
-// it, before the `$cap` prepass and every RS4GC flavour. The transient
-// ptrtoint feeds only a same-block bit-test chain (REP_LLVM_001(c)/(d)); it
-// has no foldable inttoptr partner because every slot decode is barriered or
-// typed (REP_LLVM_002 §7.6). Idempotent / cheap when there are no markers.
-// Chunked-list projections (plans/chunked-list-representation.md §6).
-// Expand `__eco_list_head_inline` / `__eco_list_tail_inline` markers into a
-// cell-fast / chunk-slow diamond:
+// Replaces each call to the marker `markerName` in `m` with a chunked-list
+// projection diamond, fast for a cons cell and slow for a chunk. The fast edge
+// loads the cell word at `slotOffset`; the slow edge calls the runtime helper
+// `slowName`, declared gc-leaf when `slowIsGcLeaf` is set. For the head and
+// tail markers that is:
 //
 //   base = __eco_resolve_fwd(v); tag = header(base) & mask;
 //   tag == Tag_Cons ?  load the cell slot (head +8 / tail +16) through the
@@ -1944,11 +1921,12 @@ static void expandSatMarkers(Module &m) {
 //                      NOT gc-leaf, so RS4GC statepoints it like any
 //                      allocating call — the HEAP_034 slow-edge pattern).
 //
-// Cells dominate spines (~99.8% measured on the flag-on self-compile), so
-// the fast edge carries branch weights. Markers exist for the same reason as
+// The cell edge is weighted as the likely one. Markers exist for the same
+// reason as
 // __eco_get_tag_inline: the projections sit inside single-block scf regions.
 // MUST run before expandInlineDerefs (emits __eco_resolve_fwd) and before
-// every RS4GC flavour. Only chunk-compiled modules contain these markers.
+// every RS4GC flavour. Erases the marker declaration; stops the process with
+// a fatal error if a use survives.
 static void expandListProjMarker(Module &m, const char *markerName,
                                  uint64_t slotOffset, const char *slowName,
                                  bool slowIsGcLeaf) {
@@ -2031,7 +2009,9 @@ static void expandListProjMarker(Module &m, const char *markerName,
     marker->eraseFromParent();
 }
 
-// Expand the mixed-spine CURSOR markers (EcoListCursor pass):
+// Replaces each call to the list-cursor marker `markerName` in `m` with its
+// inline expansion; `variant` says which marker it is, as the parameter's
+// comment lists. The markers, emitted by the EcoListCursor pass, are:
 //
 //   __eco_list_cur_inline(node, idx)       element at position, !eco.value
 //   __eco_list_cur_{i64,f64,char}_inline   unboxed element variants (char = i32)
@@ -2039,9 +2019,8 @@ static void expandListProjMarker(Module &m, const char *markerName,
 //                                          while the run lasts / chunk next)
 //   __eco_list_step_idx_inline(node, idx)  next index (0 on node change)
 //
-// Every edge is a pure load — stepping THROUGH a chunk allocates nothing
-// (the whole point: it replaces the per-element eco_list_tail_hybrid view
-// materialization). All markers are gc-leaf shaped and fully expanded here,
+// Every edge is a pure load, so stepping THROUGH a chunk allocates nothing,
+// unlike `eco_list_tail_hybrid`. All markers are gc-leaf shaped and fully expanded here,
 // before every RS4GC flavour. Positions are normalized: idx > 0 only inside
 // a chunk with idx < run, so the cell edges may assume idx == 0.
 static void expandListCursorMarker(Module &m, const char *markerName,
@@ -2198,6 +2177,7 @@ static void expandListCursorMarker(Module &m, const char *markerName,
     marker->eraseFromParent();
 }
 
+// Expands every list-cursor marker in `m`.
 static void expandListCursorMarkers(Module &m) {
     expandListCursorMarker(m, "__eco_list_cur_inline", 0);
     expandListCursorMarker(m, "__eco_list_cur_i64_inline", 1);
@@ -2207,7 +2187,7 @@ static void expandListCursorMarkers(Module &m) {
     expandListCursorMarker(m, "__eco_list_step_idx_inline", 5);
 }
 
-// kernel-opt-04. Byte offset of Header::size inside the 8-byte object header.
+// The byte offset of `Header::size` inside the 8-byte object header.
 // HEAP_025/HEAP_032: for EVERY String form this word IS the logical UTF-16
 // length. Deliberately NOT the array length offset (8, layout::ArrayLengthOffset)
 // -- arrays keep their length in a field AFTER the header, so a copy-paste from
@@ -2216,22 +2196,9 @@ static constexpr uint64_t kHeaderSizeFieldOffset = offsetof(Elm::Header, size);
 static_assert(kHeaderSizeFieldOffset == 4,
               "Header::size moved; expandStringLenMarkers reads it directly");
 
-// Expand each `__eco_string_len_inline` marker into the exact observable
-// semantics of Elm_Kernel_String_length (StringExports.cpp:18-27):
-//
-//   ptr_ind set (ANY embedded constant) -> 0
-//       Empty  : the kernel's alloc::isEmptyString guard returns 0 directly.
-//       Others : Export::toPtr maps them to nullptr and StringOps::length's
-//                `if (!str) return 0;` returns 0 (unreachable for a String).
-//   otherwise -> resolve forwarding (HEAP_030) + load u32 at header offset 4
-//                + zext to i64   (no per-tag dispatch, HEAP_025/HEAP_032)
-//
-// The ptr_ind test -- not a whole-word `== 0x6` -- is what makes this exact: the
-// word test would dereference address 4/5 for a Bool constant where the kernel
-// returns 0. Chain shape and same-BB discipline are copied verbatim from
-// expandGetTagMarkers' isConst. Marker (not an MLIR diamond) because
-// eco.string.length sits inside single-block scf regions -- same rationale as
-// __eco_get_tag_inline. MUST run before expandInlineDerefs. Cheap with no markers.
+// Returns whether value-equality markers expand to the inline diamond: true
+// unless `ECO_VALUE_EQ_INLINE` is exactly "0", which leaves a bare call.
+// Read once per process.
 static bool valueEqInlineEnabled() {  // ECO_VALUE_EQ_INLINE=0 -> bare call
     static const bool on = [] {
         const char *e = ::getenv("ECO_VALUE_EQ_INLINE");
@@ -2240,12 +2207,15 @@ static bool valueEqInlineEnabled() {  // ECO_VALUE_EQ_INLINE=0 -> bare call
     return on;
 }
 
+// Returns whether `Elm_Kernel_Utils_equal` is stamped gc-leaf by switch, as
+// `valueEqGcLeafEnv` in `Passes/EcoCapHoistCore.h` decides.
 static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
-    return valueEqGcLeafEnv(); // shared with the MLIR planners (plan 02 F10)
+    return valueEqGcLeafEnv(); // shared with the MLIR planners
 }
 
-// Expand each `__eco_value_eq(a, b) -> i1` marker into the word-equality diamond
-// (kernel-opt-03 Phase 2). MUST run before EVERY RewriteStatepointsForGC flavour
+// Replaces each `__eco_value_eq(a, b) -> i1` marker call in `m` with the
+// word-equality diamond below, or with a bare call to `Elm_Kernel_Utils_equal`
+// when `valueEqInlineEnabled` is false. MUST run before EVERY RewriteStatepointsForGC flavour
 // and before propagateGcFreeLeafAttrs (CGEN_072), so the fixpoint sees arm 3 as a
 // call to a gc-leaf declaration rather than an unknown marker.
 //
@@ -2254,22 +2224,19 @@ static bool valueEqGcLeafEnabled() {  // ECO_VALUE_EQ_GCLEAF=1 -> stamp
 //   test: %aw = ptrtoint %a ; %bw = ptrtoint %b        (REP_LLVM_001(d): the i64s
 //         %any = icmp ne (and (or %aw,%bw), 4), 0       are consumed by or/and/icmp
 //         %evh = Empty (0x6) on one side, heap on the   in this SAME block)
-//                other (SD-26: may be a zero-length String)
+//                other (may be a zero-length String)
 //         br (%any & !%evh), cont, slow
 //   slow: %r  = call @Elm_Kernel_Utils_equal(%a, %b)
 //         %rb = icmp eq %r, inttoptr(0x5)
 //         br cont
 //   cont: %res = phi i1 [true, head], [false, test], [%rb, slow]
 //
-// NOTE (kernel-opt-03 Phase-0 census, 2026-08-11): the inline arms were measured
-// at 6.47% of non-Bool traffic against a 25% bar, so when Phase-3 emission is
-// eventually landed the shipped default should be ECO_VALUE_EQ_INLINE=0 (the bare
-// call below). Nothing emits eco.value.eq today, so the default here is moot and
-// is left ON so the codegen fixture exercises the diamond.
-// `planVeq`: the planned value-eq predicate (eco-gcfree-plan / eco-cap-plan
-// stamp). When it holds, the Utils_equal declaration is stamped even if this
-// module had to create it (plan 02 O5), so a module (or, later, a partition)
-// that lacks the MLIR declaration reaches the planner's answer.
+// Whether or not there are markers, the module's `Elm_Kernel_Utils_equal`
+// declaration, which is added only when the marker is declared, is stamped
+// gc-leaf when `valueEqGcLeafEnabled` or `planVeq` holds. `planVeq` is
+// the value-eq predicate the MLIR plan stamped (eco-gcfree-plan or
+// eco-cap-plan), so a module reaches the planner's answer. Erases the marker
+// declaration; stops the process with a fatal error if a use survives.
 static void expandValueEqFastPath(Module &m, bool planVeq) {
     LLVMContext &ctx = m.getContext();
     Type *i1Ty = Type::getInt1Ty(ctx), *i64Ty = Type::getInt64Ty(ctx);
@@ -2302,7 +2269,7 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
     for (CallInst *ci : calls) {
         Value *a = ci->getArgOperand(0), *b = ci->getArgOperand(1);
         IRBuilder<> b0(ci);
-        if (!valueEqInlineEnabled()) {  // A/B shape: today's codegen
+        if (!valueEqInlineEnabled()) {  // bare call
             Value *r = b0.CreateCall(eqCallee, {a, b}, "eq.r");
             Value *tc = b0.CreateIntToPtr(ConstantInt::get(i64Ty, trueWord), as1);
             ci->replaceAllUsesWith(b0.CreateICmpEQ(r, tc, "eq.res"));
@@ -2325,7 +2292,7 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
         Value *any = tb.CreateICmpNE(
             tb.CreateAnd(tb.CreateOr(aw, bw), ConstantInt::get(i64Ty, constBit)),
             ConstantInt::get(i64Ty, 0), "eq.anyconst");
-        // SD-26 (HEAP_071): the Empty constant equals a zero-length heap
+        // HEAP_071: the Empty constant equals a zero-length heap
         // String, so Empty vs a heap pointer is not decided by the words: it
         // takes the slow arm (Utils_equal checks the length). Every other
         // pair with a constant is unequal.
@@ -2360,6 +2327,22 @@ static void expandValueEqFastPath(Module &m, bool planVeq) {
     marker->eraseFromParent();
 }
 
+// Replaces each `__eco_string_len_inline` marker call in `m` with the
+// observable semantics of `Elm_Kernel_String_length`:
+//
+//   ptr_ind set (ANY embedded constant) -> 0
+//       Empty  : the kernel's alloc::isEmptyString guard returns 0 directly.
+//       Others : Export::toPtr maps them to nullptr and StringOps::length's
+//                `if (!str) return 0;` returns 0 (unreachable for a String).
+//   otherwise -> resolve forwarding (HEAP_030) + load u32 at header offset 4
+//                + zext to i64   (no per-tag dispatch, HEAP_025/HEAP_032)
+//
+// The ptr_ind test -- not a whole-word `== 0x6` -- is what makes this exact: the
+// word test would dereference address 4/5 for a Bool constant where the kernel
+// returns 0. Marker (not an MLIR diamond) because eco.string.length sits
+// inside single-block scf regions, as for __eco_get_tag_inline. MUST run
+// before expandInlineDerefs. Erases the marker declaration; stops the process
+// with a fatal error if a use survives.
 static void expandStringLenMarkers(Module &m) {
     Function *marker = m.getFunction("__eco_string_len_inline");
     if (!marker || marker->use_empty()) {
@@ -2422,6 +2405,8 @@ static void expandStringLenMarkers(Module &m) {
     marker->eraseFromParent();
 }
 
+// Expands the list head and tail projection markers in `m`. The tail helper
+// may allocate, so it is not gc-leaf.
 static void expandListProjMarkers(Module &m) {
     expandListProjMarker(m, "__eco_list_head_inline", /*slotOffset=*/8,
                          "eco_list_head_hybrid", /*slowIsGcLeaf=*/true);
@@ -2429,6 +2414,26 @@ static void expandListProjMarkers(Module &m) {
                          "eco_list_tail_hybrid", /*slowIsGcLeaf=*/false);
 }
 
+// Replaces each `__eco_get_tag_inline` marker call in `m` with open-coded
+// `eco_get_tag` semantics, which must stay identical to the runtime's
+// `eco_get_tag`:
+//
+//   embedded constant (ptr_ind set) -> Bool -> its i1 value; "empty" ->
+//     CONSTANT_TAG (0xFFFD);
+//   heap object -> Tag_Custom -> ctor (low 16 bits of the word at +8;
+//     the upper bits are the unboxed bitmap — load i16, never i32);
+//     Tag_Cons -> 1; anything else -> 0.
+//
+// The marker exists because eco.get_tag sits INSIDE single-block scf regions
+// (loopified tail recursion), where the MLIR
+// lowering cannot create blocks; here at the LLVM level block structure is
+// free. The heap arm resolves via a `__eco_resolve_fwd` marker call, so this
+// MUST run BEFORE expandInlineDerefs (which then expands those) — and, like
+// it, before the `$cap` prepass and every RS4GC flavour. The transient
+// ptrtoint feeds only a same-block bit-test chain (REP_LLVM_001(c)/(d)); it
+// has no foldable inttoptr partner because every slot decode is barriered or
+// typed (REP_LLVM_002). Erases the marker declaration; stops the process
+// with a fatal error if a use survives.
 static void expandGetTagMarkers(Module &m) {
     Function *marker = m.getFunction("__eco_get_tag_inline");
     if (!marker || marker->use_empty()) {
@@ -2516,13 +2521,12 @@ static void expandGetTagMarkers(Module &m) {
             ob.CreateICmpEQ(tag, ConstantInt::get(i32Ty, (uint64_t)Elm::Tag_Cons));
         // Chunked-list modules: a Tag_ConsChunk view is also the list Cons
         // constructor (ctor 1) for case dispatch. The extra compare is
-        // emitted ONLY when the module enables chunk production (detected
-        // via the injected eco_enable_list_chunks call), so non-chunk
-        // binaries keep today's diamond byte-for-byte.
+        // emitted ONLY when the module enables chunk production, shown by a
+        // used eco_enable_list_chunks declaration or the module flag
+        // `eco-list-chunks`, so other modules are unchanged.
         {
-            // Plan 05: under EcoSplit only `main`'s partition sees the
-            // injected call, so the whole-module fact also travels as the
-            // module flag `eco-list-chunks` (review R13).
+            // Under EcoSplit only `main`'s partition sees the injected call,
+            // which is why the module flag is also read.
             Function *chunksEnable = m.getFunction("eco_enable_list_chunks");
             if ((chunksEnable && !chunksEnable->use_empty()) ||
                 m.getModuleFlag("eco-list-chunks")) {
@@ -2555,73 +2559,11 @@ static void expandGetTagMarkers(Module &m) {
     marker->eraseFromParent();
 }
 
-// E1.3 (LSS dispatch-value plan §5): force-inline small `$cap` fast-evaluator
-// bodies BEFORE any RS4GC. Once a call is statepointed no inliner will touch
-// it (the per-partition -O2 runs post-RS4GC), which is exactly why the E1.1
-// audit found 9,449 un-inlined direct `$cap` calls despite 55 % of bodies
-// being ≤64 B — this pre-statepoint prepass is the ONLY point in the pipeline
-// where `$cap` inlining can happen. The order (inline → statepoint) is the
-// standard upstream one, so relocation semantics (REP_LLVM_001) are
-// unaffected; the merged bodies are statepointed and then optimized normally.
-//
-// Bodies at or under the instruction threshold get `alwaysinline` (honoured by
-// the whole-module AlwaysInlinerPass run here, pre-split — so would-be
-// cross-partition pairs inline too); larger bodies get `inlinehint` for any
-// later cost-model inliner. `$cap` symbols are address-taken (closure
-// evaluator fields), so the bodies survive for indirect dispatch regardless.
-// ECO_CAP_INLINE_MAX_INSTS overrides the threshold (0 = hint-only, no
-// forcing) for A/B tuning without a rebuild.
-
-// NO signature-coercing direct-call fold here — that was tried and it
-// MISCOMPILES (2026-07-20, "Pointer below heap base" at self-compile minor
-// GC #52): rebuilding a mismatched `$cap` site with ptrtoint/inttoptr
-// coercions and then INLINING it splices the crossings into open code, so an
-// i64 derived from `ptrtoint ptr addrspace(1)` becomes live across the
-// inlined body's statepoints — a REP_LLVM_001(a) violation by construction.
-// Mismatched-view sites (the erased/boxed i64<->ptr classes) therefore stay
-// in their AddressOf+indirect form and are simply not inlined (the pre-E1.3
-// status quo, sound). Matching-signature sites need no fold at all: MLIR
-// translation resolves their called operand to the Function with a matching
-// FTy, so `getCalledFunction()` works and the AlwaysInliner below can eat
-// them directly. Recovering the mismatched population would require callee
-// cloning at the callee's REAL boxedness (AbiCloning-family work), not
-// site-side casts.
-
-// The GC-call-free guard is CONDITIONAL as of E1.3 v3 (REP_LLVM_002,
-// plans/fold-proof-boxed-slot-crossings.md): with slot-cast barriers ON
-// (ECO_SLOT_CAST_BARRIERS default), every boxed-slot i64<->ptr<1> crossing
-// is an opaque gc-leaf barrier call this pass's AlwaysInliner cannot fold,
-// so BOTH annihilation classes below are structurally impossible and
-// GC-bearing bodies inline soundly — the guard is lifted. It is FORCED back
-// on when barriers are disabled (ECO_SLOT_CAST_BARRIERS=0 would otherwise
-// reconstruct the miscompiles) and available for A/B via
-// ECO_CAP_INLINE_GCFREE_ONLY=1. The two bisected, IR-verified miscompile
-// classes that used to force it unconditionally (both now fold-proof):
-//
-// 1. Capture-load annihilation (Terminal_Main_lambda_15194$cap): unpack
-//    sites loaded boxed slots as i64+inttoptr; the body's boundary ptrtoint
-//    folded with it during inlining (ptrtoint(inttoptr(x)) -> x) — raw i64s
-//    crossed the inlined body's statepoints invisible to RS4GC. FIXED at the
-//    source: the three unpack sites (ProjectClosureOpLowering,
-//    emitFastClosureCall, getOrCreateWrapper) now emit TYPED
-//    ptr addrspace(1) loads (E1.3 v2 — keep; sound and prerequisite).
-//
-// 2. INTERIOR boundary annihilation (Terminal_Main_lambda_14615$cap): the
-//    SAME fold fires on every other boxed-slot idiom pair INSIDE an inlined
-//    body — e.g. a tuple-projection (load i64 + inttoptr) feeding an
-//    args-slot store (ptrtoint + store) across a direct call: the tracked
-//    hop folds away, the raw i64 state pointer crosses the statepoint, and
-//    a stale pointer lands in the GC-registered args buffer ("Invalid tag
-//    value" at evacuate). Standalone bodies never fold (nothing simplifies
-//    pre-RS4GC); InlineFunction's SimplifyInstruction does. FIXED by v3:
-//    every boxed-slot crossing is now emitted as an opaque gc-leaf barrier
-//    (EcoToLLVMInternal.h slot* helpers, REP_LLVM_002) that the inliner
-//    cannot fold; StripEcoCastBarriers restores the bare casts strictly
-//    post-RS4GC (addEcoGCPipeline placement).
-//
-// With no statepoint inside the body there is nothing to be live across, so
-// the GC-call-free class is sound regardless of folding — which is why it
-// remains the forced fallback when barriers are disabled.
+// Returns whether every call in `f` is to an intrinsic or to a function
+// carrying `gc-leaf-function`. An indirect call counts as one that may GC.
+// A body with no call that may GC holds no statepoint after RS4GC, so nothing
+// can be live across one, and inlining it before RS4GC is sound however
+// casts in it fold.
 static bool bodyIsGCCallFree(const Function &f) {
     for (const BasicBlock &bb : f)
         for (const Instruction &i : bb)
@@ -2638,8 +2580,11 @@ static bool bodyIsGCCallFree(const Function &f) {
     return true;
 }
 
-// RS4GC's leaf predicate as the pre-stamp ANALYSES must read it (plan 02,
-// the E6 path). callsGCLeafFunction reads gc-leaf off the called OPERAND with
+// Returns whether the call `cb` counts as a gc-leaf call for the GC-free and
+// capacity-hoisting analyses. This is `llvm::callsGCLeafFunction`, except that
+// a call that is not direct but whose operand, stripped of casts, is a defined
+// function or one carrying a capacity-hoisting fact counts as not leaf.
+// callsGCLeafFunction reads gc-leaf off the called OPERAND with
 // no type check, so once EcoGcFreePropagation has stamped definitions, a
 // type-mismatched (non-direct) call to a stamped GENERATED function reads as
 // leaf. Capacity hoisting and the gc-free twin must see such a call exactly
@@ -2659,26 +2604,26 @@ static bool leafForAnalysis(const CallBase *cb, const TargetLibraryInfo &TLI) {
     return llvm::callsGCLeafFunction(cb, TLI);
 }
 
-// GC-free function propagation (plans/gc-free-function-propagation.md):
-// stamp gc-leaf-function on generated functions that provably cannot GC.
-// Runs once per module at the pre-RS4GC choke point; every RS4GC flavour
-// then skips statepointing direct calls to stamped functions.
+// Finds the defined functions of `m` that cannot GC and, when `mode` is
+// Stamp, stamps them `gc-leaf-function`, so that every RS4GC flavour skips
+// statepointing direct calls to them. Census mode stamps nothing. Prints a
+// summary when `mode` is Census or `ECO_GCFREE_LEAF` is named, and writes
+// name lists when `ECO_GCFREE_LEAF_DUMP` or `ECO_GCFREE_ALL_DUMP` is set.
 //
-// Poison = any call RS4GC would statepoint whose callee is not a defined
-// function in this module; poison propagates callee->caller to a fixed
-// point (an optimistic worklist: a cycle of poison-free functions stays
-// GC-free, which is correct — mutual recursion without allocation cannot
-// GC). The leaf predicate is llvm::callsGCLeafFunction, i.e. literally the
-// one RS4GC consults per call site, so the analysis cannot disagree with
-// the pass about what a leaf call is.
+// A function is poisoned by interposable linkage, a landing pad, an invoke or
+// callbr, or a call that `leafForAnalysis` does not count as leaf and whose
+// callee is not a defined, non-interposable function of `m`. Poison
+// propagates from callee to caller to a fixed point; a cycle of unpoisoned
+// functions stays GC-free, which is correct, since recursion without
+// allocation cannot GC.
 //
 // At this point in the pipeline allocation is visible ONLY as calls: the
 // inline-alloc diamond's slow edge (eco_alloc_inline_slow, deliberately
 // not gc-leaf), eco_gc_alloc_region_slow, the boxed eco_alloc_* family,
 // and kernel externs. There is no write barrier and no safepoint poll.
 //
-// Twin mode (`twinFree` non-null, plan 02 Q5): the validate oracle for the
-// MLIR producer. Nothing is stamped or reported; a call to a defined,
+// Twin mode (`twinFree` non-null): the validation oracle for the MLIR
+// producer. Nothing is stamped or reported; a call to a defined,
 // non-interposable callee is an edge BEFORE callsGCLeafFunction is consulted,
 // so the MLIR stamps already on definitions cannot make the twin agree
 // vacuously. The free set is returned in *twinFree.
@@ -2783,8 +2728,8 @@ static void propagateGcFreeLeafAttrs(
         for (Function *f : freeFns)
             out << f->getName().str() << "\n";
     }
-    // Spike oracle (plans/mlir-split-backend-00-spikes.md): every function
-    // still DEFINED at this point (the $cap prepass deletes inlined bodies).
+    // Every function still DEFINED at this point (the $cap prepass may have
+    // deleted inlined bodies).
     if (const char *dump = ::getenv("ECO_GCFREE_ALL_DUMP")) {
         std::ofstream out(partitionDumpPath(dump));
         for (Function &f : m)
@@ -2805,25 +2750,9 @@ static void propagateGcFreeLeafAttrs(
                      << (mode == GcFreeMode::Stamp ? "stamp" : "census")
                      << ")\n";
 
-    // plans/list-map-mlir-template.md Goal 3 sizing. Counted HERE because
-    // this is the only point where the fixpoint's verdict exists.
-    //
-    // SCOPE, stated exactly: this is the whole devirtualized fast-clone
-    // population (`*$cap`), not template callees alone — `runEcoBackend`
-    // receives only the LLVM module, so the MLIR-side list of which clones a
-    // templated loop actually calls is not available here without a new
-    // EcoBackendJob field. A `$cap` clone is stamped iff it is
-    // allocation-free and call-clean, which is precisely the property that
-    // makes a templated loop over it statepoint-free, so this bounds the
-    // Goal-3 pool from above; the template-specific figure is the front end's
-    // `mapTemplate{... allocFreeCallbacks=}`, and the two are reconciled in
-    // the plan's Phase-3 record rather than conflated here.
-    //
-    // It UNDERCOUNTS in one known direction, and the direction matters:
-    // a small callback (<= ECO_CAP_INLINE_MAX_INSTS) was already spliced into
-    // its caller by the pre-RS4GC $cap inline prepass and has no surviving
-    // clone to stamp. Such a loop is statepoint-free too — trivially, with no
-    // stamp involved — so a low number here is not evidence against Goal 3.
+    // How many surviving `$cap` clones are stamped. The count covers every
+    // `$cap` clone, not only those a templated loop calls, and it omits
+    // small clones the `$cap` prepass already inlined and deleted.
     if (envNamed("ECO_CAP_GCLEAF_REPORT")) {
         unsigned capTotal = 0, capLeaf = 0;
         for (Function &f : m) {
@@ -2840,27 +2769,31 @@ static void propagateGcFreeLeafAttrs(
 }
 
 // ---------------------------------------------------------------------
-// Capacity-check hoisting (plans/capacity-check-hoisting.md, CGEN_074).
+// Capacity-check hoisting (CGEN_074).
 //
-// Census step: compute the coverable set (functions whose ONLY GC hazard
-// is their own bounded fixed-size inline allocation), their byte budgets,
-// and the run structure M1/M2 would instrument. Mutates NOTHING — the
-// transformation lands in a later step.
+// An inline allocation normally checks the nursery's remaining space itself.
+// A function whose ONLY GC hazard is its own bounded, fixed-size inline
+// allocation is "coverable": its total, its byte budget, can be checked once
+// in advance. M1 makes a coverable function's markers unchecked and has its
+// callers ensure its budget before calling it; M2 checks a straight-line run
+// of markers and covered calls inside one block once, at the run's head.
 //
-// Runs at the pre-expandInlineAllocs choke point, where __eco_alloc_inline
-// markers still carry their constant sizes and every other GC hazard is
-// already visible as a real call.
+// It runs before expandInlineAllocs, while `__eco_alloc_inline` markers still
+// carry their constant sizes and every other GC hazard is already visible as
+// a real call.
 // ---------------------------------------------------------------------
 
-// gc-leaf does NOT imply bump-state-transparent: these consume nursery
-// headroom despite their attr, so they void a capacity guarantee (plan
-// §2.1). eco_alloc_*_fast is declaration-only today; region_fast is live.
+// Returns whether `f` is non-null and is one of the functions the marker
+// table lists as consuming nursery headroom. gc-leaf does NOT imply leaving
+// the bump state alone: these functions void a capacity guarantee despite
+// their attribute.
 static bool isHeadroomBreaker(const Function *f) {
     return f && markers::isHeadroomBreaker(f->getName());
 }
 
-// Blocks that sit inside a CFG cycle: a marker there can execute an
-// unbounded number of times, so its bytes are not a static budget.
+// Adds to `inCycle` every block of `f` that sits inside a CFG cycle, self
+// loops included. A marker there can execute an unbounded number of times, so
+// its bytes are not a static budget.
 static void computeBlockCycles(Function &f,
                                SmallPtrSetImpl<BasicBlock *> &inCycle) {
     for (scc_iterator<Function *> it = scc_begin(&f); !it.isAtEnd(); ++it)
@@ -2870,8 +2803,10 @@ static void computeBlockCycles(Function &f,
 }
 
 namespace {
+// Why a function's budget is unbounded (top), as counted in the summary.
 enum class TopReason { None, Loop, Cycle, Budget, Other };
 
+// What the compute-mode analysis knows about one defined function.
 struct CapHoistInfo {
     uint64_t ownBytes = 0;
     uint64_t budget = 0;
@@ -2886,6 +2821,7 @@ struct CapHoistInfo {
     unsigned numSites = 0; // direct call sites from non-covered callers
 };
 
+// Per-node state for a Tarjan SCC walk. Nothing in this file uses it.
 struct TarjanNode {
     unsigned index = 0;
     unsigned low = 0;
@@ -2894,7 +2830,7 @@ struct TarjanNode {
 };
 
 // One straight-line run: a maximal ordered subsequence of ELEMENTS within a
-// single basic block with no intervening breaker (plan §2.3). Recorded by the
+// single basic block with no intervening breaker. Recorded by the
 // scan, emitted afterwards — SplitBlockAndInsertIfThen at a run head moves the
 // run's tail into a new block, so an emit-while-scanning loop would re-visit
 // the moved tail, re-form the run and never terminate. Instruction pointers
@@ -2907,13 +2843,14 @@ struct CapHoistRun {
     unsigned elems = 0;
     unsigned covCalls = 0;
     SmallVector<CallInst *, 4> ownMarkers;  // M2: expand these unchecked
-    SmallVector<CallInst *, 4> covCallSites; // for the §2.6(a) assert
+    SmallVector<CallInst *, 4> covCallSites; // for the coverage assert
 };
 } // namespace
 
-// ---- Plan-given mode (plans/mlir-split-backend-01-cap-hoist-plan.md P6) ----
-// Facts the MLIR planner (EcoCapHoistPlan) stamped as passthrough string
-// attributes: "eco-cap-budget"="N" | "eco-cap-top", plus "eco-cap-covered".
+// ---- Plan-given mode ----
+// What the MLIR planner (EcoCapHoistPlan) stamped on one function, as
+// passthrough string attributes: "eco-cap-budget"="N" or "eco-cap-top", plus
+// "eco-cap-covered". `has` is false when the function carries none of them.
 struct CapFact {
     bool has = false;
     bool top = false;
@@ -2921,6 +2858,9 @@ struct CapFact {
     uint64_t budget = 0;
 };
 
+// Returns the capacity-hoisting facts stamped on `f`, or an error if the
+// budget is not a decimal number, `eco-cap-top` appears with a budget or
+// `eco-cap-covered`, or a covered function's budget is 0.
 static Expected<CapFact> readCapFact(const Function &f) {
     CapFact cf;
     const AttributeList al = f.getAttributes();
@@ -2953,6 +2893,8 @@ static Expected<CapFact> readCapFact(const Function &f) {
     return cf;
 }
 
+// Returns the string value of `m`'s module flag `key`, or nothing if the flag
+// is absent or not a string.
 static std::optional<std::string> moduleFlagString(const Module &m,
                                                    StringRef key) {
     if (auto *md = dyn_cast_or_null<MDString>(m.getModuleFlag(key)))
@@ -2960,12 +2902,13 @@ static std::optional<std::string> moduleFlagString(const Module &m,
     return std::nullopt;
 }
 
+// Returns the capacity-hoisting plan flag of `m`, if the MLIR planner set one.
 static std::optional<std::string> capPlanFlag(const Module &m) {
     return moduleFlagString(m, caphoist::kPlanFlag);
 }
 
-// Remove one string module flag (plan stamps are pass-local and must not
-// reach the object).
+// Removes the module flag `key` from `m`, if present. Plan stamps are for this
+// backend only and must not reach the object.
 static void stripModuleFlag(Module &m, StringRef key) {
     NamedMDNode *flags = m.getModuleFlagsMetadata();
     if (!flags || !m.getModuleFlag(key))
@@ -2983,13 +2926,14 @@ static void stripModuleFlag(Module &m, StringRef key) {
         flags->addOperand(op);
 }
 
+// Removes the `eco-reach` module flag from `m`, if present.
 static void stripReachabilityStamp(Module &m) {
     stripModuleFlag(m, "eco-reach");
 }
 
-// Drop the plan's attributes and module flag once expandInlineAllocs has
-// consumed the decisions (P6.8): they are pass-local, and leaving them would
-// renumber `attributes #N` groups in -emit=llvm dumps.
+// Removes the capacity-hoisting attributes from every function of `m`, and
+// the plan flag. Called once expandInlineAllocs has used the decisions; left
+// on, they would renumber `attributes #N` groups in text dumps.
 static void stripCapPlan(Module &m) {
     for (Function &f : m) {
         f.removeFnAttr(caphoist::kAttrBudget);
@@ -2999,11 +2943,12 @@ static void stripCapPlan(Module &m) {
     stripModuleFlag(m, caphoist::kPlanFlag);
 }
 
-// The marker table's expansion-callee column (EcoMarkerFacts.h,
-// plan 02 Q3) checked against the module's DECLARATIONS: callsGCLeafFunction
-// on a direct call reduces to the callee's own attribute (Eco emits no
-// call-site gc-leaf), so this equals a per-call walk at O(#decls). `veq` is
-// the planned value-eq predicate; without a plan its row is not checked.
+// Returns an error naming the first declaration in `m` whose gc-leaf
+// attribute disagrees with `markers::expansionCalleeLeaf`, the marker table's
+// answer for the functions marker expansion calls. Eco puts gc-leaf only on
+// callees, never on call sites, so checking declarations equals checking
+// every call. `veq` is the planned value-eq predicate; when it is empty,
+// `Elm_Kernel_Utils_equal` is not checked.
 static Error checkMarkerDecls(const Module &m, std::optional<bool> veq) {
     for (const Function &f : m) {
         if (!f.isDeclaration())
@@ -3024,9 +2969,13 @@ static Error checkMarkerDecls(const Module &m, std::optional<bool> veq) {
     return Error::success();
 }
 
-// Step 13 when EcoGcFreePropagation stamped the module (plan 02 Q5): the
-// stamps are already on the definitions, so this only checks, reports and
-// strips the plan flag.
+// Finishes GC-free stamping for a module that EcoGcFreePropagation already
+// stamped in MLIR: checks the marker declarations, optionally validates the
+// stamps against the LLVM-level analysis, reports, and removes the plan flag.
+// `m` must carry a gc-free plan flag that parses. Returns an error if a
+// marker declaration disagrees, or if validation (`gcFreeValidateEnabled`,
+// whole modules only, not when `partition` is set) finds a stamped function
+// that can reach a GC.
 static Error finishGcFreePlan(Module &m, bool partition) {
     auto gcPlan = gcfree::parseStamp(*moduleFlagString(m, gcfree::kPlanFlag));
     if (auto err = checkMarkerDecls(m, gcPlan->valueEqLeaf))
@@ -3042,9 +2991,9 @@ static Error finishGcFreePlan(Module &m, bool partition) {
             stamped.push_back(&f);
     }
 
-    // Per partition the twin reads every cross-partition declaration's
-    // stamp as a leaf, so it would silently stop checking those edges
-    // (plan 05 R11): the whole-module path (ECO_MLIR_SPLIT=0) runs it.
+    // In a partition the twin would read every cross-partition declaration's
+    // stamp as a leaf and silently stop checking those edges, so only a
+    // whole module is validated.
     if (gcFreeValidateEnabled() && !partition) {
         DenseSet<const Function *> twin;
         propagateGcFreeLeafAttrs(m, GcFreeMode::Census, &twin);
@@ -3093,6 +3042,8 @@ static Error finishGcFreePlan(Module &m, bool partition) {
     return Error::success();
 }
 
+// Returns whether `ECO_CAPHOIST_VALIDATE` is set to a non-empty value other
+// than "0". Read once per process.
 static bool capHoistValidateEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_CAPHOIST_VALIDATE");
@@ -3101,6 +3052,24 @@ static bool capHoistValidateEnabled() {
     return on;
 }
 
+// Decides capacity-check hoisting (CGEN_074) for `m` and, when `mode` is On,
+// applies it: inserts the hoisted ensure checks before each run and fills
+// `*decisions` with the markers `expandInlineAllocs` may expand unchecked.
+// Census mode only reports. `allowTls` is as for `expandInlineAllocs`.
+//
+// When `m` carries the MLIR planner's plan flag, the stamped per-function
+// facts are used and verified locally (plan-given mode). Otherwise the
+// decision is computed here with `caphoist::solve` (compute mode), which
+// needs the whole program and so is refused when `partition` is set.
+// `closedWorld` must match the value the plan was computed with.
+// `ECO_CAPHOIST_VALIDATE` adds the compute-mode result as a twin check of a
+// whole-module plan.
+//
+// Returns an error for a malformed or mismatched plan, facts without a plan,
+// a generated definition already gc-leaf in compute mode, an untrusted
+// gc-leaf declaration without facts, facts that fail local verification or
+// the twin check, or a covered function used outside a guaranteed site.
+// Other internal consistency checks stop the process with a fatal error.
 static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                                    CapHoistDecisions *decisions,
                                    bool allowTls, bool closedWorld,
@@ -3109,8 +3078,8 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     TargetLibraryInfoImpl TLII(m.getTargetTriple());
     TargetLibraryInfo TLI(TLII);
     const uint64_t K = capHoistMaxBytes();
-    // Spike oracle (plans/mlir-split-backend-00-spikes.md, I2): per-phase
-    // times and a full per-function dump, only when the variable is set.
+    // Per-phase times and a full per-function dump, only when
+    // ECO_CAPHOIST_FULL_DUMP is set.
     const char *spikeDump = ::getenv("ECO_CAPHOIST_FULL_DUMP");
     auto spikeT0 = std::chrono::steady_clock::now();
     auto spikeT = [&]() {
@@ -3123,7 +3092,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     unsigned spikeBrkBudget0 = 0;
     std::map<std::string, unsigned> spikeBrkByCallee;
 
-    // ---- Mode selection (P6.1) ---------------------------------------
+    // ---- Mode selection ----------------------------------------------
     DenseMap<const Function *, CapFact> facts;
     for (Function &f : m) {
         auto cf = readCapFact(f);
@@ -3154,22 +3123,22 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                                  facts.begin()->first->getName().str().c_str());
     }
     const bool planGiven = plan.has_value();
-    // Plan 05 R13: compute mode needs the whole program; a partition must
-    // carry the MLIR plan when hoisting transforms.
+    // Compute mode needs the whole program; a partition must carry the MLIR
+    // plan when hoisting transforms.
     if (partition && !planGiven && mode == CapHoistMode::On)
         return createStringError(
             std::errc::invalid_argument,
             "capacity hoisting: an EcoSplit partition without a plan stamp");
     // The compute-mode twin cannot run on a partition (its cross-partition
-    // callees are declarations, plan 05 §1.7).
+    // callees are declarations).
     const bool validate = planGiven && capHoistValidateEnabled() && !partition;
     auto hasFacts = [&](const Function *f) {
         return planGiven && f && facts.count(f);
     };
 
     if (!planGiven && mode == CapHoistMode::On) {
-        // R2 mirror (02 O1): compute-mode Phase A is stamp-agnostic (it
-        // tests a generated defined callee BEFORE gc-leaf, plan 02 Q6), but
+        // Compute-mode Phase A is stamp-agnostic (it tests a generated
+        // defined callee BEFORE gc-leaf), but
         // the transform's Phase D still reads gc-leaf as transparent, which
         // is only sound while no generated definition carries gc-leaf. The
         // census (=c) never transforms, so stamped definitions are fine there.
@@ -3182,7 +3151,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     "definition '%s' is already gc-leaf",
                     f.getName().str().c_str());
     } else if (planGiven) {
-        // R1 gap (02 F11): a declaration that is gc-leaf without eco-cap
+        // A declaration that is gc-leaf without eco-cap
         // facts must be a runtime/kernel name, or a generated callee whose
         // copied facts were lost would read as a transparent leaf.
         for (Function &f : m)
@@ -3194,13 +3163,13 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     "capacity hoisting: untrusted gc-leaf declaration '%s' "
                     "without eco-cap facts",
                     f.getName().str().c_str());
-        // P6.6: the marker table must agree with what the expansions emitted.
+        // The marker table must agree with what the expansions emitted.
         if (auto err = checkMarkerDecls(m, plan->valueEqLeaf))
             return err;
     }
 
     // ---- Phase A: local scan -----------------------------------------
-    // `r1` selects the plan-given classification order (R1): a callee that
+    // `r1` selects the plan-given classification order: a callee that
     // carries eco-cap facts is a callee edge (its contribution comes from
     // the facts), tested BEFORE callsGCLeafFunction, so a covered callee
     // that is also gc-leaf can never be skipped as transparent.
@@ -3278,10 +3247,10 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                             fi.selfEdge = true;
                         continue;
                     }
-                    // Compute mode is stamp-agnostic (plan 02 Q6): a
-                    // generated defined callee is an edge BEFORE its gc-leaf
-                    // stamp is consulted. Unstamped, this is today's order
-                    // exactly (a defined callee is leaf only when stamped).
+                    // Compute mode is stamp-agnostic: a generated defined
+                    // callee is an edge BEFORE its gc-leaf stamp is
+                    // consulted. On an unstamped module the order makes no
+                    // difference (a defined callee is leaf only when stamped).
                     if (!r1 && callee && !callee->isDeclaration() &&
                         !callee->isInterposable() &&
                         !markers::isTrustedLeafDecl(callee->getName())) {
@@ -3340,8 +3309,8 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
              exclBudget = 0, exclOther = 0;
 
     if (validate) {
-        // P7: today's compute-mode A-C on the same module, ignoring the plan;
-        // every definition must agree with its stamped facts.
+        // Run compute-mode A-C on the same module, ignoring the plan; every
+        // definition must agree with its stamped facts.
         DenseMap<Function *, CapHoistInfo> vinfo;
         runPhaseA(vinfo, /*r1=*/false);
         solveInfo(vinfo);
@@ -3383,7 +3352,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
             tA = spikeT();
         solveInfo(info);
     } else {
-        // ---- §4.3 local verification (P6.4) --------------------------
+        // ---- local verification of the stamped facts ------------------
         runPhaseA(info, /*r1=*/true);
         if (spikeDump)
             tA = spikeT();
@@ -3434,7 +3403,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                     return fail("own bytes plus callee budgets exceed (or, "
                                 "under validate, differ from) its budget");
                 // An EcoSplit import copy (available_externally) is a copy
-                // of an owner that its own partition verifies (plan 05 §1.4).
+                // of an owner that its own partition verifies.
                 if (!fp->hasLocalLinkage() &&
                     !fp->hasAvailableExternallyLinkage())
                     return fail("covered function without local linkage");
@@ -3477,8 +3446,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
         const bool isCov = planGiven ? facts.find(fp)->second.covered
                                      : fi.eligible;
         if (!isCov) {
-            // Finite nonzero budget but uninstrumentable callers — the
-            // population a v2 callee-cloning extension would recover.
+            // Finite nonzero budget but uninstrumentable callers.
             if (fi.addrTaken)
                 ++exclAddr;
             else if (fi.nonLocal)
@@ -3488,7 +3456,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
         covered.insert(fp);
         coverableFns.push_back(fp);
     }
-    // Callee views used by Phase D / D2 / §2.6: in plan-given mode they come
+    // Callee views used by Phase D, D2 and the checks: in plan-given mode they come
     // from the facts, so they work for DECLARATIONS too (a covered callee in
     // another partition after the split).
     auto calleeCovered = [&](Function *c) {
@@ -3596,9 +3564,9 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
                         ++it->second.numSites;
                     continue;
                 }
-                // R1/R3: a generated callee (eco-cap facts) that is not
-                // covered is a breaker even if it is gc-leaf, exactly as an
-                // unstamped budget-0 callee is today.
+                // A generated callee (eco-cap facts) that is not covered is
+                // a breaker even if it is gc-leaf, as an unstamped budget-0
+                // callee is in compute mode.
                 if (hasFacts(callee)) {
                     flushRun();
                     continue;
@@ -3637,7 +3605,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
         // and re-derive the scanner's own conclusion instruction by
         // instruction. This is the check that would catch a scanner that let
         // a statepoint-capable call, or a gc-leaf-but-headroom-consuming one
-        // (plan §2.1: gc-leaf does NOT imply bump-state-transparent), sit
+        // (gc-leaf does NOT imply leaving the bump state alone), sit
         // inside a covered region.
         for (const CapHoistRun &run : runs) {
             DenseSet<const CallInst *> owns(run.ownMarkers.begin(),
@@ -3691,8 +3659,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
             bs->setSpeculatable();
             bs->addFnAttr("gc-leaf-function");
         }
-        // plans/inline-bump-state-tls.md: the hoisted ensure reads the bump
-        // state too, so it takes the same TLS path as the alloc diamond.
+        // The hoisted ensure reads the bump state too, so it takes the same TLS path as the alloc diamond.
         GlobalVariable *bumpStateTls =
             (allowTls && bumpStateInlineEnabled()) ? getOrCreateBumpStateTls(m)
                                                    : nullptr;
@@ -3745,10 +3712,10 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
 
         decisions->coveredFns.insert(covered.begin(), covered.end());
 
-        // §2.6(a): every direct call site to a covered function is either
+        // Check (a): every direct call site to a covered function is either
         // inside another covered function (whose own guarantee subsumes it)
-        // or a member of an emitted run. Covered functions are never
-        // address-taken, so every use IS a matched-FTy direct call.
+        // or a member of an emitted run. Any other use of a covered
+        // function is rejected below with an error.
         DenseSet<const CallInst *> runMembers;
         for (const CapHoistRun &run : runs)
             runMembers.insert(run.covCallSites.begin(), run.covCallSites.end());
@@ -3773,7 +3740,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
             }
         }
 
-        // §2.6(b): no covered function may retain a statepoint-capable or
+        // Check (b): no covered function may retain a statepoint-capable or
         // headroom-consuming call. A callee is admissible when it is covered
         // (its budget is inside ours) or provably GC-free (budget 0, which
         // CGEN_072's fixpoint stamps gc-leaf, so RS4GC skips it).
@@ -3820,7 +3787,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
             }
         }
 
-        // §2.6(c): ownership is exclusive — a covered function's markers are
+        // Check (c): ownership is exclusive — a covered function's markers are
         // covered by ITS caller, never by a run inside itself.
         for (CallInst *mk : decisions->uncheckedMarkers)
             if (covered.count(mk->getFunction()))
@@ -3837,8 +3804,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     // ---- Phase E: census ---------------------------------------------
     // Nullary-ctor slice: exactly one 16 B marker whose constant header
     // word carries Tag_Custom (size 16 alone is ambiguous — BoxedPrim and
-    // RecordBase are also 16). This is the slice the cheaper CAF-slot
-    // alternative competes for.
+    // RecordBase are also 16).
     unsigned nullaryFns = 0, nullarySites = 0;
     for (Function *fp : coverableFns) {
         const CapHoistInfo &fi = info.find(fp)->second;
@@ -3877,7 +3843,7 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
             out << fp->getName().str() << ";" << fi.budget << ";"
                 << fi.numSites << ";coverable\n";
         }
-        // The v2-cloning population, for sizing that extension.
+        // Functions with a finite nonzero budget that are not eligible.
         for (Function *fp : defined) {
             const CapHoistInfo &fi = info.find(fp)->second;
             if (fi.top || fi.budget == 0 || fi.eligible)
@@ -3920,6 +3886,35 @@ static Error applyCapacityHoisting(Module &m, CapHoistMode mode,
     return Error::success();
 }
 
+// Inlines small `$cap` fast-evaluator bodies into their direct callers, in
+// the whole module, before any RS4GC. A statepointed call is not inlined, so
+// this is the only point where calls to `$cap` bodies that may collect can be
+// inlined.
+// Inlining before statepointing is LLVM's ordinary order, so relocation
+// (REP_LLVM_001) is unaffected.
+//
+// A defined `$cap` function without `noinline` is marked `alwaysinline` when
+// its instruction count is at most the threshold, 64 unless
+// `ECO_CAP_INLINE_MAX_INSTS` says otherwise (0 marks nothing), and, when
+// `ECO_CAP_INLINE_GCFREE_ONLY` is set or slot-cast barriers are off,
+// `bodyIsGCCallFree` holds. When `ECO_CAP_INLINE_LIST` names a file, exactly
+// the functions listed in it are marked instead, with no threshold and no
+// GC-free test. The marked names are added to `*marked` when it is non-null.
+// If anything was marked, LLVM's AlwaysInliner runs, and then `alwaysinline`
+// is removed from every `$cap` function. `$cap` functions are address-taken
+// by closure evaluator fields, so their bodies survive for indirect calls.
+//
+// GC-bearing bodies are inlined only because slot-cast barriers are on by
+// default. Without them, inlining folds `ptrtoint(inttoptr(x))` pairs at
+// boxed-slot crossings, and a raw i64 copy of a GC pointer becomes live
+// across a statepoint of the inlined body, which RS4GC cannot relocate. The
+// barriers are opaque gc-leaf calls the inliner cannot fold, removed only
+// after RS4GC. That is why the GC-free test is forced when they are off.
+//
+// Only call sites whose signature matches the callee are inlined. A site
+// with a mismatched view of the callee stays an indirect call: rebuilding it
+// with ptrtoint/inttoptr casts and inlining it would put a raw i64 across
+// statepoints, which RS4GC cannot relocate.
 static void runCapInlinePrepass(Module &m,
                                 std::set<std::string> *marked = nullptr) {
     unsigned maxInsts = 64;
@@ -3946,15 +3941,9 @@ static void runCapInlinePrepass(Module &m,
             continue;
         if (f.hasFnAttribute(Attribute::NoInline))
             continue;
-        // No InlineHint arm: nothing pre-RS4GC consumes a hint, and any attr
-        // surviving into the post-RS4GC worker pipelines invites the
-        // E1.4-forbidden inlining — attrs are strictly pass-local here.
-        // REP_LLVM_002 coupling: the GC-call-free restriction applies only
-        // for A/B (ECO_CAP_INLINE_GCFREE_ONLY=1) or FORCED when slot-cast
-        // barriers are off — barriers-off + GC-bearing inlining is the
-        // known-unsound combination (both bisected miscompiles). The old
-        // ECO_CAP_INLINE_NO_GCFREE_GUARD escape is deleted: there is no
-        // sound configuration it could enable that the default doesn't.
+        // No inlinehint: nothing before RS4GC reads a hint, and an attribute
+        // surviving into the post-RS4GC pipelines would invite inlining of
+        // statepointed bodies.
         static const bool gcfreeOnly =
             (::getenv("ECO_CAP_INLINE_GCFREE_ONLY") != nullptr) ||
             !slotCastBarriersEnabled();
@@ -3990,16 +3979,11 @@ static void runCapInlinePrepass(Module &m,
     MPM.addPass(AlwaysInlinerPass());
     MPM.run(m, MAM);
 
-    // STRIP the inline attrs now that the pre-RS4GC inline pass has consumed
-    // them. Leaving them on would arm the POST-RS4GC per-partition pipelines
-    // (Dev's explicit AlwaysInlinerPass, Cgu's -O2 inliner) on `$cap` bodies
-    // that are statepointed by then — the E1.4-forbidden post-RS4GC inlining
-    // that breaks relocation semantics. The attrs exist only for this pass.
-    //
-    // E1.4 still forbids inlining a STATEPOINTED body post-RS4GC, which is the
-    // hazard here. CGEN_072 carves out the complementary case: a stamped
-    // GC-free body holds no statepoint, so inlining it post-RS4GC is safe and
-    // is deliberately left enabled under ECO_GCFREE_LEAF=1.
+    // Strip the attribute now that it has been used. Left on, it would make
+    // the post-RS4GC pipelines (Dev's AlwaysInlinerPass, Cgu's -O2 inliner)
+    // inline `$cap` bodies that are statepointed by then, which breaks
+    // relocation. A GC-free body stamped by CGEN_072 holds no statepoint, so
+    // the cost-model inliner may still inline it after RS4GC.
     for (Function &f : m) {
         if (f.isDeclaration() || !f.getName().ends_with("$cap"))
             continue;
@@ -4007,8 +3991,11 @@ static void runCapInlinePrepass(Module &m,
     }
 }
 
-// plans/mlir-split-backend-00-spikes.md SP5: emulate front-end constant
-// thunks (plan 04) on LLVM IR, before the IPO prologue. Diagnostic only.
+// A diagnostic experiment: replaces calls to zero-argument functions whose
+// single block returns an integer or floating-point constant with no side
+// effects by that constant. At `level` 2 or more it also constant-folds such
+// bodies and repeats, up to 16 rounds; below 2 it makes one round. Prints the
+// counts to stderr.
 static void spikeFoldThunks(Module &m, int level) {
     const DataLayout &DL = m.getDataLayout();
     unsigned replacedCalls = 0, foldedBodies = 0, rounds = 0;
@@ -4075,10 +4062,10 @@ static void spikeFoldThunks(Module &m, int level) {
 
 Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     EcoBackendResult *result) {
-    // CGEN_081: a reachability stamp the driver did not consume (ecoc
-    // paths) must not reach the object.
+    // CGEN_081: a reachability stamp the caller did not consume must not
+    // reach the object.
     stripReachabilityStamp(m);
-    // Plan 02 (CGEN_072): did EcoGcFreePropagation stamp this module?
+    // CGEN_072: did EcoGcFreePropagation stamp this module?
     std::optional<gcfree::Stamp> gcPlan;
     if (auto flag = moduleFlagString(m, gcfree::kPlanFlag)) {
         gcPlan = gcfree::parseStamp(*flag);
@@ -4111,7 +4098,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
             if (auto cs = caphoist::parsePlanStamp(*capFlag))
                 planVeq = cs->valueEqLeaf;
 
-    // P2.5 R1b: expand get_tag markers FIRST (their heap arms emit
+    // Expand get_tag markers FIRST (their heap arms emit
     // __eco_resolve_fwd calls the next expansion consumes).
     expandGetTagMarkers(m);
     // Chunked-list projection markers (must precede expandInlineDerefs —
@@ -4119,26 +4106,25 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     expandListProjMarkers(m);
     // Mixed-spine cursor markers (EcoListCursor): same discipline.
     expandListCursorMarkers(m);
-    // kernel-opt-04: eco.string.length markers. Same discipline again -- the
+    // eco.string.length markers. Same discipline again -- the
     // heap arm emits a __eco_resolve_fwd call that expandInlineDerefs consumes.
     expandStringLenMarkers(m);
-    // kernel-opt-03: eco.value.eq markers. Emits no __eco_resolve_fwd, but must
+    // eco.value.eq markers. Emits no __eco_resolve_fwd, but must
     // still precede RS4GC and propagateGcFreeLeafAttrs so arm 3 is seen as a call
     // to a gc-leaf declaration rather than an unknown marker.
     expandValueEqFastPath(m, planVeq);
-    // Scratch-stack helpers (chunked-list Tier-B templates): mark and the
-    // pushes never GC-allocate, so exempt them from RS4GC statepointing.
+    // Scratch-stack helpers (chunked-list templates): mark and the pushes
+    // never GC-allocate, so exempt them from RS4GC statepointing.
     // eco_scratch_finish allocates and must statepoint normally.
     for (const char *leaf : {"eco_scratch_mark", "eco_scratch_push_boxed",
                              "eco_scratch_push_scalar"}) {
         if (Function *lf = m.getFunction(leaf))
             lf->addFnAttr("gc-leaf-function");
     }
-    // Plan P2: expand inline-deref markers before RS4GC / partition splitting.
+    // Expand inline-deref markers, after every expansion that emits them.
     expandInlineDerefs(m);
 
-    // Capacity-check hoisting (plans/capacity-check-hoisting.md, CGEN_074):
-    // must run HERE — after every other marker expansion (so all remaining
+    // Capacity-check hoisting (CGEN_074): must run HERE — after every other marker expansion (so all remaining
     // GC hazards are real calls) but BEFORE expandInlineAllocs, while
     // __eco_alloc_inline markers still carry their constant sizes.
     // Census mode is analysis-only and runs regardless of ECO_GCFREE_LEAF;
@@ -4174,15 +4160,14 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // CGEN_074's decisions select the unchecked form per marker; empty when
     // hoisting is off or census-only.
     // TLS bump-state only for AOT object emission: ORC cannot resolve an
-    // initial-exec TLS reference from JIT'd code (plans/inline-bump-state-tls.md).
+    // initial-exec TLS reference from JIT'd code.
     expandInlineAllocs(m, &capHoist,
                        /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
-    // The plan's attributes and module flag are consumed (P6.8).
+    // The plan's attributes and module flag are consumed.
     stripCapPlan(m);
 
 
-    // GC shadow-root-stack registration (plans/gc-root-registration-cost.md):
-    // replace the point/push/restore calls that bracket every args-array call
+    // GC shadow-root-stack registration: replace the point/push/restore calls that bracket every args-array call
     // site with inline TLS cursor traffic. Same placement rationale as the
     // bump-state inlining above — AOT object emission only, since ORC cannot
     // resolve an initial-exec TLS reference from JIT'd code. Creates no
@@ -4190,12 +4175,12 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     expandRootRangeOps(m,
                        /*allowTls=*/job.kind == BackendKind::EmitObjectFile);
 
-    // `$sat` fast-path diamond (plans/gc-root-registration-cost.md Phase 3).
+    // `$sat` fast-path diamond.
     // MUST precede every RS4GC flavour: the fast edge passes `ptr addrspace(1)`
     // arguments straight into the call, and RS4GC is what covers them there.
     expandSatMarkers(m);
 
-    // Plan 05 (EcoSplit) §1.3: owned functions another partition references
+    // Partition worker: owned functions another partition references
     // become External + hidden BEFORE the prepass, so AlwaysInliner cannot
     // delete an inlined internal `$cap` body that is still needed elsewhere.
     if (job.partition) {
@@ -4207,9 +4192,9 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 }
     }
 
-    std::set<std::string> capMarked; // plan 06 B4: what the prepass marked
+    std::set<std::string> capMarked; // what the prepass marked
 
-    // E1.3: `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
+    // `$cap` inline prepass — must precede EVERY RS4GC flavour (serial,
     // deferred, and per-partition; all are downstream of this point). Skipped
     // at -O0 only.
     if (job.optLevel != CodeGenOptLevel::None) {
@@ -4219,9 +4204,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         runCapInlinePrepass(m, job.partition ? &capMarked : nullptr);
     }
 
-    // Plan 06 B4: export the late `$cap`s that survived the prepass; record
-    // the deleted ones and any marked import copy that survived (the driver
-    // turns a marked survivor of a deleted body into a named error).
+    // Export the late `$cap`s that survived the prepass; record the deleted
+    // ones and any marked import copy that survived.
     if (job.partition) {
         for (Function &f : m)
             if (!f.isDeclaration() && f.hasAvailableExternallyLinkage() &&
@@ -4240,18 +4224,17 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         }
     }
 
-    // Plan 05 §1.3: EcoSplit import copies (available_externally) exist only
-    // to be inlined by the prepass. Whatever survives becomes a declaration
-    // again — unconditionally (also at -O0): a statepointed copy must never
-    // reach the post-RS4GC inliner (02 F8 / E1.4).
+    // EcoSplit import copies (available_externally) exist only to be inlined
+    // by the prepass. Whatever survives becomes a declaration again,
+    // unconditionally (also at -O0): a statepointed copy must never reach the
+    // post-RS4GC inliner.
     for (Function &f : m)
         if (!f.isDeclaration() && f.hasAvailableExternallyLinkage()) {
             f.deleteBody();
             f.setLinkage(GlobalValue::ExternalLinkage);
         }
 
-    // GC-free function propagation (plans/gc-free-function-propagation.md):
-    // must run at THIS choke point — post-marker-expansion + post-$cap-
+    // GC-free function propagation: must run at THIS choke point — post-marker-expansion + post-$cap-
     // prepass (allocation is visible as non-gc-leaf calls). Whole-module when
     // unsplit (attrs then ride CloneModule / lazy deleteBody to every RS4GC
     // flavour: serial, deferred, workers, single-partition inline); under the
@@ -4260,8 +4243,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     if (gcFreeLeafMode() != GcFreeMode::Off) {
         MaybeScope s(job.stats, "  gc-free leaf propagation (serial)");
         if (gcPlan) {
-            // The MLIR stamps are the product (plan 02 Q5); the LLVM fixpoint
-            // only runs as their validate twin.
+            // The MLIR stamps are the product; the LLVM fixpoint only runs
+            // as their validation twin.
             if (auto err = finishGcFreePlan(m, job.partition != nullptr))
                 return err;
         } else {
@@ -4272,13 +4255,12 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         }
     }
 
-    // Plan 05 R13: the whole-module chunks fact was consumed by the get-tag
-    // expansion; it must not reach the object.
+    // The whole-module chunks fact was consumed by the get-tag expansion; it
+    // must not reach the object.
     stripModuleFlag(m, "eco-list-chunks");
 
-    // Plan 05 §1.5: per partition, today's late externalization (it used to
-    // run once, whole-module, before the bitcode serialize): every local
-    // becomes External + hidden so cross-partition references link.
+    // Partition worker: every local becomes External + hidden so
+    // cross-partition references link.
     if (job.partition) {
         for (GlobalValue &gv : m.global_values())
             if (!gv.hasName())
@@ -4288,7 +4270,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                     "externalized name would collide across partitions)");
         externalizeAllLocals(m);
     }
-    // Plan 05 R3: no import copy may reach RS4GC, in any mode.
+    // No import copy may reach RS4GC, in any mode.
     for (Function &f : m)
         if (f.hasAvailableExternallyLinkage())
             return createStringError(
@@ -4307,7 +4289,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // with it automatically (they live inside runRS4GCAndMaybeFramePointers).
     // Never combined with parallel-opt: the per-partition workers would then
     // optimize statepoint-free IR with no per-partition RS4GC to follow — GC
-    // would break. Parallel-opt forces RS4GC-before (design doc §5).
+    // would break. Parallel-opt forces RS4GC-before.
     const bool deferRS4GC =
         job.rs4gcAfterOpt && job.kind == BackendKind::EmitObjectFile &&
         job.parallelOpt == ParallelOpt::None;
@@ -4316,8 +4298,7 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     // per-partition workers: RS4GC is per-function (consults only callee
     // declaration attrs, preserved by the partition split), so statepointing
     // each partition in parallel is semantically identical to the whole-module
-    // run — and the cheap-IPO prologue + split then operate on statepoint-free
-    // IR (smaller, faster to serialize). Each worker runs RS4GC BEFORE its
+    // run, and the split then operates on statepoint-free IR. Each worker runs RS4GC BEFORE its
     // optimization, preserving the GC ordering invariant per partition.
     // Diagnostic RS4GC IR dumps force the whole-module path so --dump-*-rs4gc-ir
     // keeps meaning "the module", not "one partition".
@@ -4341,20 +4322,15 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         return Error::success();
 
     case BackendKind::EmitObjectFile: {
-        // ECO_SPIKE_THUNK_FOLD=1|2 (plans/mlir-split-backend-00-spikes.md,
-        // SP5): emulate plan 04's front-end constant thunks on LLVM IR.
-        // 1 = phase 1 (calls to literal-bodied arity-0 thunks -> constant);
-        // 2 = phase 1+2 (closed scalar thunk bodies constant-folded too).
+        // ECO_SPIKE_THUNK_FOLD=1|2: the diagnostic experiment of
+        // spikeFoldThunks. 1 = calls to literal-bodied arity-0 thunks become
+        // constants; 2 = closed scalar thunk bodies are constant-folded too.
         if (const char *e = ::getenv("ECO_SPIKE_THUNK_FOLD"))
             spikeFoldThunks(m, std::atoi(e));
-        // No serial whole-module IPO under the parallel tiers (cgu, dev).
-        // The cheap-IPO prologue (IPSCCP + GlobalDCE, ~6 s serial) was
-        // retired by plan 04 (plans/mlir-split-backend-04-constant-thunks.md,
-        // CGEN_082): its measured value was propagating constant thunks'
-        // return values, which the front end now folds at every reference,
-        // deleting the calls too (self-compile 108.11 s without it vs 108.25 s
-        // with it before 04); its GlobalDCE removed 0.05 % of the functions,
-        // since closed-world reachability already ran (CGEN_081).
+        // No serial whole-module IPO under the parallel tiers (cgu, dev):
+        // the front end folds constant thunks at every reference (CGEN_082)
+        // and closed-world reachability already ran (CGEN_081), so IPSCCP and
+        // GlobalDCE here would find little.
         if (!parallelOptEnabled && job.optLevel != CodeGenOptLevel::None &&
             job.tm) {
             MaybeScope s(job.stats, "  whole-module opt (serial)");
@@ -4365,9 +4341,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         if (deferRS4GC)
             runRS4GCAndMaybeFramePointers(m, rs4gcOpts);
 
-        // Decide the partition count here (shared policy — see
-        // choosePartitionCount / design_docs/backend-parallel-optimization.md
-        // §8.1) rather than in each driver.
+        // Decide the partition count here (the shared policy of
+        // choosePartitionCount) rather than in each driver.
         unsigned numParts =
             choosePartitionCount(m, job.splitCodegen, job.splitEligible);
         // When parallel-opt is enabled the per-partition workers optimize;
@@ -4399,11 +4374,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
                 paths.emplace_back(p.str());
                 owned.emplace_back(p.str());
             }
-            // The lazy bitcode split (externalize + serialize once + per-worker
-            // lazy re-parse) was retired by plan 05 (EcoSplit): the default
-            // tiers partition in MLIR before translation. This SplitModule
-            // path remains for --parallel-opt=none, --rs4gc-after-opt,
-            // ECO_MLIR_SPLIT=0 and single-threaded MLIR contexts.
+            // This SplitModule path is the fallback for a module that was
+            // not already partitioned in MLIR by EcoSplit.
             if (auto err = emitObjectFilesSplit(
                     m, numParts, paths, job.optLevel, perPart,
                     job.devEmitCodeGenLevel, job.devOptO1, job.stats,
@@ -4423,8 +4395,8 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
         // chose a single partition (small module / split off), run the
         // per-partition pipeline here inline — the whole-module -O2 was
         // skipped (and RS4GC too when rs4gcInWorkers).
-        // Under EcoSplit (plan 05) this is the partition worker's pipeline;
-        // the scopes keep the old "(sum over workers)" stats rows.
+        // Under EcoSplit this is the partition worker's pipeline, and the
+        // scopes record into the "(sum over workers)" stats rows.
         LoweringStats *workerStats = job.partition ? job.stats : nullptr;
         if (rs4gcInWorkers) {
             MaybeScope s(workerStats, "  partition RS4GC (sum over workers)");
@@ -4452,22 +4424,13 @@ Error runEcoBackend(Module &m, const EcoBackendJob &job,
     }
 
     case BackendKind::JITInvokePacked: {
-        // JIT path: always run makeOptimizingTransformer (level 0 is a no-op-ish
-        // pipeline; matches the pre-Phase-4 behaviour of ecoc::runJIT and
-        // EcoRunner::executeJIT). `tm` is typically nullptr — the JIT picks
-        // up the real TargetMachine through EcoJIT::create, and the lambda
-        // runs after DL is already on the module.
+        // JIT path: always run makeOptimizingTransformer at job.optLevel
+        // (level 0 does little). `job.tm` may be null.
         //
-        // The "invalid optimization/size level 288/0" cantFail abort that used
-        // to strike here flakily (previously observed on Windows, then on the
-        // Linux fork-per-test runner) was NOT an MLIR OptUtils static-state
-        // bug: it was a dangling reference. EcoJITOptions::transformer was a
-        // non-owning llvm::function_ref bound to a temporary lambda; by the
-        // time EcoJIT::create invoked it, the temporary was gone, so job was
-        // built by a dead lambda and job.optLevel read stack garbage (288).
-        // Fixed by making transformer an owning std::function (EcoJIT.h). The
-        // Windows skip below is now redundant but retained conservatively
-        // pending a Windows test run.
+        // `job` must stay alive for the whole call: a caller that reaches
+        // this through a non-owning callable bound to a temporary reads a
+        // dead `job` and passes a garbage opt level here. The Windows skip
+        // below is kept until it has been tested on Windows.
 #if defined(_WIN32)
         return Error::success();
 #else

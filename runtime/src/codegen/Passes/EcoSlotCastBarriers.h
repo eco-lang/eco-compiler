@@ -1,22 +1,18 @@
 //===- EcoSlotCastBarriers.h - Fold-proof boxed-slot cast barriers --------===//
 //
-// REP_LLVM_002 (plans/fold-proof-boxed-slot-crossings.md).
+// A boxed slot is a 64-bit word that holds a heap pointer. Converting it to a
+// GC-tracked `ptr addrspace(1)` and back with raw `inttoptr` and `ptrtoint` is
+// unsafe before statepoint rewriting (RS4GC): when inlining brings such a pair
+// together, LLVM's simplifier folds `ptrtoint(inttoptr(x))` to `x`. That leaves
+// a raw `i64` holding a pointer live across the inlined body's safepoints, where
+// RS4GC cannot see it, and the value is stale after any collection there.
 //
-// A raw `inttoptr`/`ptrtoint` pair met across an inlining seam is annihilated
-// by InlineFunction's SimplifyInstruction (`ptrtoint(inttoptr(x)) -> x`),
-// leaving a raw i64 live across the spliced body's statepoints — invisible to
-// RS4GC and stale after any GC inside the body (two bisected, IR-verified
-// miscompiles: capture unpacking and tuple-projection -> args-slot store).
-// Boxed-SLOT i64 <-> ptr addrspace(1) crossings are therefore emitted as
-// calls to two DECLARE-ONLY gc-leaf barrier functions the inliner cannot
-// fold through; StripEcoCastBarriers (EcoPtrIntVerify.cpp) rewrites every
-// barrier call back to the bare cast strictly post-RS4GC, so codegen and the
-// per-partition -O2 see exactly the pre-barrier IR.
-//
-// This header is shared by the MLIR-side emission helpers
-// (EcoToLLVMInternal.h), the LLVM-side strip pass, and the backend's `$cap`
-// inline prepass (EcoBackend.cpp), which couples the GC-call-free guard to
-// the barrier switch.
+// This component names the two barrier functions used instead of those casts.
+// Each is a declaration with no body, marked gc-leaf (it does not collect), so
+// no pass before RS4GC can fold through a call to it. After RS4GC,
+// `StripEcoCastBarriers` (EcoPtrIntVerify.cpp) replaces every call with the
+// bare cast and deletes the declaration. This header also holds the switch
+// that turns barrier emission off.
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,15 +23,23 @@
 
 namespace eco {
 
-/// Barrier symbol names. i64 (slot word) -> ptr addrspace(1), and back.
+/// The symbol of the barrier that converts an `i64` slot word to a
+/// `ptr addrspace(1)`.
 inline constexpr const char kSlotToHPtrSym[] = "__eco_slot_to_hptr";
+/// The symbol of the barrier that converts a `ptr addrspace(1)` to an `i64`
+/// slot word.
 inline constexpr const char kHPtrToSlotSym[] = "__eco_hptr_to_slot";
 
-/// Master switch for barrier EMISSION. Default ON; `ECO_SLOT_CAST_BARRIERS=0`
-/// disables it (escape hatch / A-B lever). Disabling is only sound because
-/// `runCapInlinePrepass` (EcoBackend.cpp) then forces the GC-call-free `$cap`
-/// inline guard back on — barriers-off + full-population inlining would
-/// reconstruct the bisected REP_LLVM_001(a) miscompiles.
+/// Returns whether slot crossings are emitted as barrier calls rather than bare
+/// casts. This is true unless the environment variable
+/// `ECO_SLOT_CAST_BARRIERS` is exactly `0`. The variable is read on the first
+/// call and the answer is kept for the life of the process.
+///
+/// Turning barriers off is safe only if no inlining before RS4GC can bring a
+/// cast pair together across a safepoint. When this returns false, the
+/// backend's `$cap` inline prepass (`runCapInlinePrepass`, EcoBackend.cpp)
+/// restricts its size-based selection to functions whose bodies make no
+/// GC-capable calls (an explicit `ECO_CAP_INLINE_LIST` bypasses this).
 inline bool slotCastBarriersEnabled() {
     static const bool enabled = [] {
         const char *e = ::getenv("ECO_SLOT_CAST_BARRIERS");

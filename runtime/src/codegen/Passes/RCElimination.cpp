@@ -1,8 +1,10 @@
-//===- RCElimination.cpp - Remove reference counting placeholders ---------===//
+//===- RCElimination.cpp - Reject reference counting operations -----------===//
 //
-// This pass removes or errors on reference counting placeholder operations
-// (incref, decref, free, reset, reset_ref). These operations are not used in
-// tracing GC mode and should not appear in the IR after this pass.
+// The eco dialect has reference-counting ops (`eco.incref`, `eco.decref`,
+// `eco.decref_shallow`, `eco.free`, `eco.reset`, `eco.reset_ref`), but the
+// backend manages memory with a tracing garbage collector and lowers none of
+// them. This pass is the check that none reaches it. Despite its name, it
+// changes nothing in the IR.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,6 +23,8 @@ using namespace ::eco;
 
 namespace {
 
+/// The `eco-rc-elimination` module pass, whose contract is on
+/// `eco::createRCEliminationPass` in `Passes.h`.
 struct RCEliminationPass
     : public PassWrapper<RCEliminationPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RCEliminationPass)
@@ -35,10 +39,8 @@ struct RCEliminationPass
         ModuleOp module = getOperation();
         bool hasErrors = false;
 
-        // Walk the module and check for reference counting operations.
-        // These should not appear in IR that targets tracing GC. A single
-        // variadic isa<> fast-rejects the common (no RC op) case before the
-        // per-op message dispatch.
+        // The variadic isa<> rejects the common non-RC op before the per-op
+        // message dispatch.
         module.walk([&](Operation *op) {
             if (!isa<IncrefOp, DecrefOp, DecrefShallowOp, FreeOp, ResetOp,
                      ResetRefOp>(op))

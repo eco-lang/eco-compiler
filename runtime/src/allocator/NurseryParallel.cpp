@@ -1,14 +1,16 @@
-// threaded-gc-06 (plans/threaded-gc-06-parallel-minor.md, HEAP_067/HEAP_068):
-// the parallel minor GC. NurserySpace::minorGC keeps its prologue and
-// epilogue; with gc_minor_threads > 1 (or the forced one-worker engine) the
-// root phase and the drain run here instead of the serial Cheney core.
+// The parallel copier of the semi-space minor collection. `NurserySpace::minorGC` calls `minorGCParallel` in place of
+// the serial copier when `chooseMinorWorkers` returns a nonzero thread count, and keeps its own work before and after.
 //
-//   roots (serial, worker 0) -> distribute -> drain on N workers
-//   (markwork::runMarkerLoop, 5b's deques and termination) -> close LABs ->
-//   merge counters, return promotion cursors, apply deferred large-body ops.
+// A run has fixed phases: worker 0 evacuates every root alone; its grey entries are dealt round-robin into the
+// workers' deques; the workers drain the grey work together under `markwork::runMarkerLoop`, which owns stealing
+// and termination; the LABs are closed; and worker 0 merges the workers' counts and applies the large-body
+// operations they deferred. Two workers that reach the same from-space object agree on which copies it through the
+// claim protocol of `MinorWork.hpp`.
 //
-// A from-space object is copied exactly once: CLAIM (CAS header -> BUSY),
-// copy, PUBLISH (release store of the forward word). See MinorWork.hpp.
+// A grey entry (`markwork::objEntry`, `markwork::chunkEntry`) names a copied or reached object still to be scanned,
+// or a later chunk of a large boxed array. Each worker keeps new entries on a private stack. Every 32nd push and every
+// 64th take, if it holds at least 64 and its deque looks empty, it moves half of them to the deque, where others can
+// steal them; it moves all of them there before it goes idle.
 
 #include "NurserySpace.hpp"
 
@@ -41,8 +43,8 @@ static_assert(mw::kTagForward == static_cast<uint64_t>(Tag_Forward),
 
 namespace {
 
-// Tags whose copies have children to scan (scanEntryP's arms). Large
-// headers are handled at copy time (their body bookkeeping is deferred).
+// Returns whether an object with tag `tag` can hold references that `scanEntryP` must follow, so that its copy needs a
+// grey entry. Large string and byte headers are not among them: their body is dealt with when they are copied.
 inline bool tagHasChildren(uint32_t tag) {
     switch (tag) {
         case Tag_Tuple2: case Tag_Tuple3: case Tag_Custom: case Tag_Record:
@@ -56,11 +58,13 @@ inline bool tagHasChildren(uint32_t tag) {
     }
 }
 
+// Returns the header whose bits are the word `w`.
 inline Header headerOf(uint64_t w) {
     Header h;
     std::memcpy(&h, &w, sizeof(h));
     return h;
 }
+// Returns the word whose bits are the header `h`.
 inline uint64_t wordOf(const Header& h) {
     uint64_t w;
     std::memcpy(&w, &h, sizeof(w));
@@ -68,6 +72,7 @@ inline uint64_t wordOf(const Header& h) {
 }
 
 #if ECO_HEAP_VALIDATE
+// Prints a failed parallel-minor check, `what`, with two addresses and two numbers for context, and aborts.
 [[noreturn]] void pmFail(const char* what, const void* a, const void* b = nullptr,
                          uint64_t x = 0, uint64_t y = 0) {
     std::fprintf(stderr, "[heap-validate] %s: %p %p (%llu, %llu)\n", what, a, b,
@@ -108,7 +113,7 @@ void NurserySpace::writeFiller(char* p, size_t bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// Grey entries (5b's policy: private stack, oldest half published)
+// Grey entries
 // ---------------------------------------------------------------------------
 
 void NurserySpace::pushGreyP(MinorWorker& w, uint64_t e) {
@@ -118,9 +123,7 @@ void NurserySpace::pushGreyP(MinorWorker& w, uint64_t e) {
     if ((n & 31) == 0) publishHalfP(w);
 }
 
-// Publishes half of the private work when the deque is empty. LIFO keeps the
-// newest (it pops from the back) and gives away the oldest; FIFO keeps the
-// oldest (it pops at head) and gives away the newest.
+// Each order keeps the half its owner takes next: LIFO takes from the back, FIFO from `head`.
 void NurserySpace::publishHalfP(MinorWorker& w) {
     const size_t n = w.stack.size() - w.head;
     if (n < 64 || !w.deque.emptyApprox()) return;
@@ -146,10 +149,15 @@ void NurserySpace::publishAllP(MinorWorker& w) {
 }
 
 // TLA-REGION(NP.MinorEnv) begin
+// The environment `markwork::runMarkerLoop` drives in a parallel minor: participant `i` is `minor_workers_[i]`, an
+// entry is scanned by `scanEntryP`, and a worker's private stack is published to its deque by `publishAllP`.
 struct NurserySpace::MinorEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
     mk::MarkerCounters& counters(unsigned i) { return ns.minor_workers_[i]->ctr; }
+    // Returns an entry of worker `i`'s private stack in its order, or else one taken from its deque. Every 64th take
+    // may publish half of what remains, and a FIFO stack's consumed prefix is erased once it is at least 4096
+    // entries and half the stack.
     uint64_t takeOwn(unsigned i) {
         MinorWorker& w = *ns.minor_workers_[i];
         if (w.stack.size() != w.head) {
@@ -173,23 +181,20 @@ struct NurserySpace::MinorEnv {
         }
         return w.deque.take();
     }
+    // Returns an entry stolen from worker `v`'s deque.
     uint64_t stealFrom(unsigned v) { return ns.minor_workers_[v]->deque.steal(); }
-    // Only STEALABLE work wakes an idle worker (as built, P§10.1): a private
-    // stack is the owner's alone, and an owner publishes everything before it
-    // goes idle, so termination never needs it. Counting it (5b's marker does)
-    // made every idle worker wake, fail to steal and re-idle in a tight loop
-    // while one worker walked a long serial chain -- bouncing that worker's
-    // `priv` line and the ticket/state words, 5-40x slower than serial on
-    // such minors, growing with N (E2).
+    // Returns whether any deque looks non-empty. Private stacks are not counted, though the marker loop's contract
+    // allows it: no other worker can take private entries, and an owner publishes them all before it goes idle.
+    // Counting them would wake idle workers only to fail to steal while one worker walks a long chain.
     bool anyWork() {
         for (unsigned i = 0; i < ns.par_n_; ++i) {
             if (!ns.minor_workers_[i]->deque.emptyApprox()) return true;
         }
         return false;
     }
-    // P§3.6: the entry is a copy we just wrote (hot); the cold loads are its
-    // children's from-space headers. With minor_prefetch_children, issue them
-    // while the entry waits in the 16-deep ring.
+    // Prefetches the from-space objects that the entry's first few boxed fields refer to, for list cells, pairs and
+    // custom values, when `prefetch_children_` is set. The entry itself is a recent copy; its children are the
+    // likely cache misses of its scan.
     void prefetch(uint64_t e) {
         if (!ns.prefetch_children_ || mk::isChunk(e)) return;
         void* obj = mk::entryAddr(e);
@@ -222,12 +227,16 @@ struct NurserySpace::MinorEnv {
                 break;
         }
     }
+    // Scans `e` for worker `self`.
     void scan(unsigned self, uint64_t e) { ns.scanEntryP(*ns.minor_workers_[self], e); }
+    // Moves worker `self`'s private entries to its deque.
     void publishAll(unsigned self) { ns.publishAllP(*ns.minor_workers_[self]); }
 };
 // TLA-REGION(NP.MinorEnv) end
 
 namespace {
+// The arguments `minorWorkerEntry` receives through the gang: the nursery and the run's slice control, neither owned
+// and neither null. Both must outlive the `gang->run` call.
 struct MinorRunArgs {
     NurserySpace* ns;
     mk::SliceControl* ctl;
@@ -241,7 +250,7 @@ void NurserySpace::minorWorkerEntry(void* ctx, unsigned member) {
 }
 
 // ---------------------------------------------------------------------------
-// Claim, copy, publish (P§3.3)
+// Claim, copy, publish
 // ---------------------------------------------------------------------------
 
 uint64_t NurserySpace::waitPublishedP(MinorWorker& w, void* obj) {
@@ -255,7 +264,7 @@ void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool par
 #if ECO_HEAP_VALIDATE
     if (hd.tag > Tag_Forward) pmFail("parallel minor: invalid tag in a claimed object", obj, nullptr, hd.tag);
 #endif
-    const size_t size = getObjectSizeFromHeader(&hd);   // never getObjectSize(obj): it reads BUSY
+    const size_t size = getObjectSizeFromHeader(&hd);   // not getObjectSize(obj): its header now reads BUSY
     void* dst;
     const bool promote = shouldPromote(&hd);
     if (promote) {
@@ -277,8 +286,7 @@ void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool par
 #endif
     } else {
 #if ECO_HEAP_VALIDATE
-        // PM5 (the serial in_phase3_ assertion): a promoted parent's child is
-        // at least as old as the parent, so it promotes too.
+        // PM5: a child of a promoted parent is expected to be old enough to promote too; if not, abort.
         if (parent_old) {
             pmFail(hd.builder ? "PM5: builder reached as child of a promoted parent (HEAP_BUILDER_003)"
                               : "PM5: child of a promoted object has age < promotion_age",
@@ -297,7 +305,7 @@ void* NurserySpace::copyClaimed(MinorWorker& w, void* obj, uint64_t hw, bool par
 #endif
     }
     if (hd.tag == Tag_LargeStringHeader || hd.tag == Tag_LargeByteHeader) {
-        // Deferred to worker 0 after the join (P§3.9): promote-all, then seen.
+        // The body is promoted or marked seen by worker 0 after the workers join (`minorGCParallel`).
         const HPointer body = static_cast<LargeStringHeader*>(obj)->body;
         (promote ? w.lb_promoted : w.lb_seen).push_back(body);
     }
@@ -350,7 +358,6 @@ void NurserySpace::evacuateP(MinorWorker& w, HPointer& slot, bool parent_old) {
 }
 // TLA-REGION(NP.evacuateP) end
 
-// JIT roots: raw 64-bit addresses (roots only: worker 0, before the gang).
 void NurserySpace::evacuateRawP(MinorWorker& w, uint64_t& raw) {
     if (isConstantBits(raw)) return;
     void* obj = reinterpret_cast<void*>(raw);
@@ -372,8 +379,7 @@ void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) 
         ++w.ylos_reach_calls;
         if (m->color == minor_color_) return;   // already reached this minor
         m->color = minor_color_;
-        // CR-019: a sweep slice under promo_mu_ may read this header word:
-        // relaxed atomic whole-word load/store (HEAP_062).
+        // A sweep slice may read this header word concurrently, so it is loaded and stored as one relaxed atomic word.
         Header hv = loadHeaderRelaxed(obj);
         if (!hv.builder && hv.age >= promotion_age_) {
             par_oldgen_->promoteYoungLarge(obj);   // invalidates m
@@ -401,7 +407,7 @@ void NurserySpace::reachYoungLargeP(MinorWorker& w, void* obj, bool parent_old) 
 // TLA-REGION(NP.reachYoungLargeP) end
 
 // ---------------------------------------------------------------------------
-// Scanning an entry (P§3.7)
+// Scanning an entry
 // ---------------------------------------------------------------------------
 
 // TLA-REGION(NP.spineRunP) begin
@@ -605,7 +611,7 @@ void NurserySpace::scanEntryP(MinorWorker& w, uint64_t e) {
 // TLA-REGION(NP.scanEntryP) end
 
 // ---------------------------------------------------------------------------
-// The per-minor choice (P§3.2) and the parallel minor (P§3.1)
+// The per-minor choice and the parallel minor
 // ---------------------------------------------------------------------------
 
 unsigned NurserySpace::chooseMinorWorkers(OldGenSpace& oldgen) {
@@ -619,11 +625,10 @@ unsigned NurserySpace::chooseMinorWorkers(OldGenSpace& oldgen) {
 #endif
         return 0;
     }
-    // The to-space bound (P§3.2, as built): survivors <= s; a LAB is retired
-    // only with at most lab/64 left and after at least lab - lab/64 bytes of
-    // it were used, so retirements <= s / (lab - lab/64) + n (the + n covers a
-    // short last LAB per worker), each wasting <= lab/64; plus one open tail
-    // per worker at the end. Exact, so to-space cannot overflow.
+    // The to-space bound: survivors take at most `s` bytes. A LAB is retired only with at most lab/64 bytes left,
+    // so retirements number at most s / (lab - lab/64) + n (the + n covers a short last LAB per worker), each
+    // wasting at most lab/64; each worker also leaves one open LAB at the end. Within this bound to-space cannot
+    // overflow.
     const size_t lab = config_->minor_lab_bytes;
     const size_t rmax = lab / 64;
     const size_t waste = (s / (lab - rmax) + n) * rmax + static_cast<size_t>(n) * lab;
@@ -660,9 +665,9 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
         minor_workers_[i]->index = i;
     }
 
-    // (2) The pre-drain sweep slice (P§3.8.5): the per-promotion budget of the
-    // serial path, times the previous minor's promotions (an object count).
     fifo_order_ = config_->minor_fifo_order;
+    // A sweep slice before the copy, if the old generation is sweeping: the serial copier's per-promotion budget
+    // times the number of objects the previous minor promoted.
     if (oldgen.gc_phase_ == GCPhase::Sweeping) {
         const size_t d = oldgen.config_->minor_sweep_divisor;
         const size_t per = (d == 0) ? 0 : oldgen.config_->sweep_work_budget / d;
@@ -679,13 +684,12 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
     if (T) rec->par_sweep_ns = lap();
 #endif
 
-    // (1) Set up to-space and the promotion context.
     tospace_.reset(toBase(), toBase() + slice_.capacity, config_->minor_lab_bytes);
     OldGenSpace::PromoCtx& ctx = oldgen.promoCtx();
     oldgen.beginParallelPromotion(ctx, n);
     par_ctx_ = &ctx;
 
-    // (3) Roots, serial, on worker 0 -- the serial phases in the same order.
+    // Roots, on worker 0 alone, in the serial copier's order.
     MinorWorker& w0 = *minor_workers_[0];
     for (HPointer* root : root_set.getRoots()) evacuateP(w0, *root, false);
 #if ENABLE_GC_PHASE_TIMERS
@@ -743,8 +747,7 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
 #endif
     }
 
-    // (4) Distribute worker 0's greys round-robin (no member runs yet; the
-    // gang start is a mutex release/acquire).
+    // Deal worker 0's grey entries round-robin. No member runs yet, and starting the gang publishes the pushes.
     {
         std::vector<uint64_t> greys;
         greys.swap(w0.stack);
@@ -754,7 +757,6 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
         for (size_t i = h0; i < greys.size(); ++i) minor_workers_[(i - h0) % n]->deque.push(greys[i]);
     }
 
-    // (5) The drain.
     gc::GCMarkGang* gang = n > 1 ? &oldgen.ensureGang() : nullptr;
     const unsigned jitter = gang ? gang->jitterUs() : 0;
     mk::SliceControl ctl(mk::kDrainBudget, n, jitter, n);
@@ -781,7 +783,6 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
         w.deque.reset();   // retires grown arrays: nothing runs any more
     }
 
-    // (6) Close the LABs: trim the one at the top, fill the others' tails.
     uint64_t filler = 0;
     {
         minorwork::Lab labs[OldGenSpace::kMaxMinorWorkers];
@@ -797,7 +798,7 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
     scan_ptr_ = copy_ptr_;
     filler_bytes_to_ = filler;
 
-    // (7) Merge, in worker order.
+    // Merge, in worker order.
     uint64_t n_prom = 0, n_surv = 0, b_surv = 0;
     uint64_t min_units = UINT64_MAX, max_units = 0;
     young_large_scan_.clear();
@@ -832,7 +833,7 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
 #endif
     }
     last_minor_promoted_ = n_prom;
-    // Deferred large-body operations (P§3.9): promote-all, then mark-seen.
+    // Deferred large-body operations: every promotion before any sighting.
     for (unsigned i = 0; i < n; ++i)
         for (const HPointer& b : minor_workers_[i]->lb_promoted) oldgen.promoteLargeHeader(b);
     for (unsigned i = 0; i < n; ++i)
@@ -861,7 +862,7 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
 #endif
 
 #if ECO_HEAP_VALIDATE
-    // (8) PM1 / PM2 / PM3 over the to-space prefix.
+    // PM1 (copies counted), PM2 (no slot left pointing into from-space), PM3 (to-space parses, fillers counted).
     {
         uint64_t objs = 0, bytes = 0, fill = 0;
         for (char* p = toBase(); p < copy_ptr_;) {
@@ -902,7 +903,7 @@ void NurserySpace::minorGCParallel(OldGenSpace& oldgen, const StackMapRoots& sta
     }
 #endif
 #if ENABLE_GC_STATS
-    stats.pmin.drain_ns_sum += 0;   // drain/sweep sums come from the phase timers (P§3.12)
+    stats.pmin.drain_ns_sum += 0;   // no-op: drain time is added in NurserySpace.cpp
 #endif
     par_oldgen_ = nullptr;
 }

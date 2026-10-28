@@ -1,6 +1,8 @@
 //===- BFTypes.cpp - ByteFusion type implementations ----------------------===//
 //
-// This file implements the BF dialect types.
+// Compiles the TableGen-generated definitions of the BF dialect types. The
+// list of types the dialect registers is included separately, by
+// `BFDialect.cpp`.
 //
 //===----------------------------------------------------------------------===//
 

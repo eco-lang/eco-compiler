@@ -1,8 +1,5 @@
-// threaded-gc-03: GC helper-thread pool. See GCHelperPool.hpp and
-// plans/threaded-gc-03-helper-threads.md P§3.1-3.4.
-
 #include "GCHelperPool.hpp"
-#include "GCFork.hpp"     // the one pthread_atfork registration (HEAP_075)
+#include "GCFork.hpp"     // the one pthread_atfork registration
 #include "TlaTrace.hpp"   // compiled-out hooks (trace builds only)
 
 #include <cassert>
@@ -32,17 +29,23 @@
 
 namespace Elm::gc {
 
-// TLA+ model M6's trace hooks (test/tla/M6-lifecycle/MAPPING.md, A5): the pool's
-// job protocol and the fork handlers. Compiled out unless ECO_TLA_TRACE; in a
-// trace build they log only while an M6 harness sets tla_m6, so other models'
-// logs are unchanged. A job's state is logged versioned by the serial of its
-// current post (serial * 4 + state), so no two writes of it store one value.
+// Trace hooks for the TLA+ model M6, which models the pool's job protocol and the fork handlers. They compile to
+// nothing unless ECO_TLA_TRACE is set, and in a trace build they log only while a harness for M6 sets tla_m6, so
+// traces taken for the other models are unchanged. The names in the `// M6:` comments below are the model's
+// actions that each event stands for. A job's state is logged as `serial * 4 + state`, where serial numbers the
+// job's posts, so that no two writes of the state log the same value.
 #if ECO_TLA_TRACE_ENABLED
+/// Whether the M6 hooks log; set by an M6 trace harness.
 bool tla_m6 = false;
+/// A counter that orders the M6 events which carry it.
 std::atomic<int64_t> tla_m6_tick{0};
+/// Logs a trace event, as `ECO_TLA_TRACE` does, while `tla_m6` is set. Expands to a statement.
 #define M6_TRACE(...) do { if (::Elm::gc::tla_m6) ECO_TLA_TRACE(__VA_ARGS__); } while (0)
+/// Takes the next value of the M6 event counter.
 #define M6_TICK ::Elm::gc::tla_m6_tick.fetch_add(1)
+/// Builds the logged value of `job` in state `st`: the serial of its current post times 4, plus `st`.
 #define M6_JV(job, st) (::Elm::tlatrace::bound(&(job), 6) * 4 + static_cast<int64_t>(st))
+/// Builds the trace key that names `job`'s state.
 #define M6_JKEY(job) ::Elm::tlatrace::key("J", &(job))
 #else
 #define M6_TRACE(...) ((void)0)
@@ -50,18 +53,21 @@ std::atomic<int64_t> tla_m6_tick{0};
 
 namespace {
 
+/// Writes `msg` to stderr with the `[gc-helper]` prefix and aborts the process.
 [[noreturn]] void poolAbort(const char* msg) {
     std::fprintf(stderr, "[gc-helper] %s\n", msg);
     std::fflush(stderr);
     std::abort();
 }
 
+/// Raises `a` to `v` if `v` is larger, with relaxed ordering.
 void fetchMax(std::atomic<uint64_t>& a, uint64_t v) {
     uint64_t cur = a.load(std::memory_order_relaxed);
     while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
     }
 }
 
+/// Advances the xorshift64 generator state `*s` and returns the new value. Used only for jitter delays.
 uint64_t xorshift(uint64_t* s) {
     uint64_t x = *s;
     x ^= x << 13;
@@ -83,11 +89,7 @@ void HelperJob::resetForReuse() {
 }
 
 GCHelperPool& GCHelperPool::instance() {
-    // Leaky singleton: the object (and any worker std::thread objects it
-    // holds) is never destroyed, so no joinable-thread destructor ever runs
-    // at exit. Workers parked in cv_work_ die with the process (POSIX); Win64
-    // exits via TerminateProcess (eco_entry.cpp) for the same reason the
-    // platform service threads need it.
+    // Never destroyed, so the destructor of a joinable std::thread never runs at exit.
     static GCHelperPool* inst = new GCHelperPool();
     return *inst;
 }
@@ -115,9 +117,8 @@ uint64_t GCHelperPool::threadCpuNs() {
 
 void GCHelperPool::configure(HelperMode mode, unsigned threads, int pin_cpu,
                              unsigned jitter_us) {
-    // HEAP_075: the pool is GCFork's innermost layer. Registered before m_ is taken
-    // (the first registration takes glibc's atfork lock, which a concurrent fork holds
-    // while its prepare waits for runtime locks).
+    // Registered before m_ is taken: the first registration takes the C library's atfork
+    // lock, which a concurrent fork holds while its prepare handlers wait for runtime locks.
     static const ForkHooks kPoolHooks{&GCHelperPool::atforkPrepare, &GCHelperPool::atforkParent,
                                       &GCHelperPool::atforkChild};
     registerForkLayer(kForkPool, kPoolHooks);
@@ -149,7 +150,7 @@ void GCHelperPool::startWorkersLocked() {
 
 void GCHelperPool::runJob(HelperJob& job, bool on_worker, uint64_t* rng) {
     if (on_worker && jitter_us_ > 0) {
-        // Determinism probe (GC_DET_001): never read by any decision.
+        // A test that no decision depends on helper timing (GC_DET_001).
         const uint64_t us = xorshift(rng) % jitter_us_;
         std::this_thread::sleep_for(std::chrono::microseconds(us));
     }
@@ -184,18 +185,18 @@ void GCHelperPool::post(HelperJob& job) {
     }
 
     {
-        // CR-003 (plans/threaded-gc-register-fixes.md §7.2 step 3, HEAP_058): the
-        // Idle->Posted CAS and the enqueue are ONE m_ section, so a fork's prepare (which
-        // drains and keeps m_) never copies a job that is Posted but in no queue.
+        // The Idle->Posted CAS and the enqueue are one m_ section, so a fork's prepare (which
+        // drains and keeps m_) never sees a job that is Posted but in no queue.
         std::lock_guard<std::mutex> lk(m_);
         uint32_t expect = HelperJob::Idle;
         if (!job.state.compare_exchange_strong(expect, HelperJob::Posted,
                                                std::memory_order_acq_rel)) {
             poolAbort("post: job is not Idle");
         }
-        // M6: the CAS, now under m_ (M_PostCas); the probe is a harness pause point (it
-        // fires under m_ and the caller's thread_mutex_: a pause there must be bounded).
-        // (old is read before bind() gives the post its serial: argument order is unspecified.)
+        // M6: the CAS under m_ (M_PostCas). The probe is a point where a harness may pause
+        // this thread; it is inside m_, so such a pause must be bounded.
+        // m6_old is read before bind() gives the post its serial, because the order in which
+        // arguments are evaluated is unspecified.
         ECO_TLA_TRACE_ONLY(const int64_t m6_old = ::Elm::gc::tla_m6 ? M6_JV(job, HelperJob::Idle) : 0;)
         M6_TRACE("pool.cas", "job", ::Elm::tlatrace::obj(&job), "rmw", M6_JKEY(job),
                  "old", m6_old, "new", ::Elm::tlatrace::bind(&job, 6) * 4 + HelperJob::Posted);
@@ -214,7 +215,7 @@ void GCHelperPool::post(HelperJob& job) {
 }
 
 void GCHelperPool::workerLoop(unsigned index) {
-    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::nameThread("eco-gc", index);)   // M7's trace
+    ECO_TLA_TRACE_ONLY(::Elm::tlatrace::nameThread("eco-gc", index);)   // names the thread in the trace
 #if !defined(_WIN32)
     {
         char name[16];
@@ -307,10 +308,10 @@ void GCHelperPool::drain() {
 
 void GCHelperPool::atforkPrepare() {
     GCHelperPool& p = instance();
-    // CR-003 / CR-015 (§7.2 step 3, HEAP_058): drain and lock in ONE section. No job may
-    // be half-done across fork (the child could never finish it). The allocator layer
-    // already holds thread_mutex_ (every post runs under it), and Running jobs finish:
-    // workers need only m_, which the wait releases.
+    // Drain and lock in one section: no job may be queued or running across the fork,
+    // because the child has no worker to finish it. The wait releases m_, which is all a
+    // worker needs to finish a Running job; the predicate is checked with m_ held, and m_
+    // stays held, so no job can be posted between the drain and the fork.
     p.m_.lock();
     if (p.configured_.load(std::memory_order_acquire) && p.mode_ == HelperMode::Concurrent) {
         std::unique_lock<std::mutex> lk(p.m_, std::adopt_lock);
@@ -318,7 +319,7 @@ void GCHelperPool::atforkPrepare() {
         lk.release();                     // m_ stays held across fork
     }
     M6_TRACE("pool.drained", "clk", "m6", "tick", M6_TICK);   // M6: F_Drain (m_ kept)
-    // M6: a harness pause point, now inside m_ (a pause there must be bounded).
+    // M6: a point where a harness may pause this thread, inside m_ (so the pause must be bounded).
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.pool.drained");)
     M6_TRACE("pool.plock", "clk", "m6", "tick", M6_TICK);    // M6: the same section (a check)
 }
@@ -377,7 +378,7 @@ void GCHelperPool::shutdownForTesting() {
 }
 
 // ===========================================================================
-// threaded-gc-05b: GCMarkGang
+// GCMarkGang
 // ===========================================================================
 
 GCMarkGang& GCMarkGang::instance() {
@@ -386,7 +387,7 @@ GCMarkGang& GCMarkGang::instance() {
 }
 
 void GCMarkGang::configure(unsigned members, unsigned jitter_us) {
-    GCBackgroundGang::registerForkLayerOnce();   // HEAP_075: before m_ (see GCFork.hpp)
+    GCBackgroundGang::registerForkLayerOnce();   // before m_: registering may wait on a fork's prepare
     std::lock_guard<std::mutex> lk(m_);
     if (configured_.load(std::memory_order_relaxed)) {
         if (members != members_ || jitter_us != jitter_us_) {
@@ -452,7 +453,7 @@ void GCMarkGang::memberLoop(unsigned index) {
         const uint64_t c0 = GCHelperPool::threadCpuNs();
         ECO_TLA_TRACE("gang.start", "gang", ::Elm::tlatrace::key("F", this), "gen", seen, "m", index,
                       "get", ::Elm::tlatrace::key("R", this, static_cast<int64_t>(seen)));
-        tl_member_run_ = true;    // CR-025: this thread is inside a pause now
+        tl_member_run_ = true;    // read by onMemberRun()
         fn(ctx, index);
         tl_member_run_ = false;
         ECO_TLA_TRACE("gang.exit", "gang", ::Elm::tlatrace::key("F", this), "gen", seen, "m", index,
@@ -522,10 +523,9 @@ void GCMarkGang::shutdownForTesting() {
 
 void GCMarkGang::atforkPrepare() {
     GCMarkGang& g = instance();
-    // Runs happen only inside a GC pause: taking run_m_ waits out any run and keeps
-    // new ones from starting. GCFork's gangs layer runs this AFTER the background
-    // gangs' prepare and BEFORE the allocator layer's thread_mutex_ (a run's members
-    // take thread_mutex_ under promo_mu_: M7 LockOrder, mutant fork_tm_first).
+    // Taking run_m_ waits out any run and keeps new ones from starting. This runs after
+    // the background gangs' prepare and before the allocator layer takes thread_mutex_,
+    // the order GCFork's ForkLayer sets.
     g.run_m_.lock();
     g.m_.lock();
     M6_TRACE("fork.mprep", "clk", "m6", "tick", M6_TICK);    // M6: G_Mark1 / G_RunM
@@ -552,26 +552,30 @@ void GCMarkGang::atforkChild() {
 }
 
 // ===========================================================================
-// threaded-gc-05c: GCBackgroundGang
+// GCBackgroundGang
 // ===========================================================================
 
 namespace {
+/// Returns the mutex that guards the registry of background gangs. Never destroyed, because
+/// the atexit and fork handlers use it.
 std::mutex& bgRegistryMutex() {
     static std::mutex* m = new std::mutex();    // leaky: used from atexit/atfork
     return *m;
 }
+/// Returns the registry: every background gang constructed and not yet destroyed. Guarded by
+/// bgRegistryMutex(). Never destroyed.
 std::vector<GCBackgroundGang*>& bgRegistry() {
     static auto* v = new std::vector<GCBackgroundGang*>();
     return *v;
 }
-bool bg_hooks_registered = false;               // guarded by bgRegistryMutex()
+bool bg_hooks_registered = false;               // atexit done; guarded by bgRegistryMutex()
 }  // namespace
 
 GCBackgroundGang::GCBackgroundGang(const Options& opt) : opt_(opt) {
     if (opt_.members == 0 || opt_.members > 63) {
         poolAbort("GCBackgroundGang: members must be in [1, 63]");
     }
-    registerForkLayerOnce();                    // HEAP_075: before the registry (GCFork.hpp)
+    registerForkLayerOnce();                    // before the registry lock: may wait on a fork's prepare
     std::lock_guard<std::mutex> lk(bgRegistryMutex());
     if (!bg_hooks_registered) {
         bg_hooks_registered = true;
@@ -621,7 +625,7 @@ void GCBackgroundGang::memberLoop(unsigned index) {
 #endif
 #if defined(__linux__)
     const long tid = static_cast<long>(syscall(SYS_gettid));
-    // One-way (plan F20): set once, never raised again.
+    // Set once, at thread start, and never changed.
     if (opt_.priority >= 1 && opt_.priority <= 19) {
         (void)setpriority(PRIO_PROCESS, static_cast<id_t>(tid), opt_.priority);
     } else if (opt_.priority == 20) {
@@ -671,10 +675,9 @@ void GCBackgroundGang::memberLoop(unsigned index) {
 bool GCBackgroundGang::launch(Fn fn, void* ctx, std::atomic<bool>* stop) {
     {
         std::lock_guard<std::mutex> lk(m_);
-        // CR-013 / CR-004 (§7.2 step 4, HEAP_065): while a fork's prepare holds the gang
-        // (fork_hold_, set before stopAllForFork), a launch is REFUSED, never blocked (a
-        // blocked launch could hold the mutator while the forker asks for thread_mutex_).
-        // The caller treats it as a stopped episode.
+        // While a fork's prepare holds the gang, a launch is refused rather than blocked: a
+        // blocked launch could stall its caller while the forking thread waits for a lock
+        // that caller holds.
         if (fork_hold_) {
             stats_.fork_refusals.fetch_add(1, std::memory_order_relaxed);
             ECO_TLA_TRACE("gang.refuse", "gang", ::Elm::tlatrace::key("B", this), "gen", generation_);
@@ -695,7 +698,7 @@ bool GCBackgroundGang::launch(Fn fn, void* ctx, std::atomic<bool>* stop) {
                       "put", ::Elm::tlatrace::key("L", this, static_cast<int64_t>(generation_)));
     }
     cv_start_.notify_all();
-    cv_done_.notify_all();   // CR-023: a foreign stopAndJoin of the previous generation wakes
+    cv_done_.notify_all();   // wakes a stopAndJoin still waiting on the previous generation
     stats_.launches.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -726,11 +729,11 @@ void GCBackgroundGang::stopAndJoin() {
     std::unique_lock<std::mutex> lk(m_);
     if (!running_.load(std::memory_order_relaxed)) return;
     if (stop_ != nullptr) stop_->store(true, std::memory_order_release);
-    // CR-023 (§7.2 step 5, HEAP_065): wait only for the generation this call stopped.
-    // The owner may join it and relaunch while we wait (launch notifies cv_done_): then
-    // the new episode is not ours to wait out, nor to mark not running.
+    // Wait only for the generation this call stopped. Another thread may join it and
+    // relaunch while we wait (launch notifies cv_done_); the new episode is then not ours
+    // to wait out, nor to mark not running.
     const uint64_t my_gen = generation_;
-    // M6: SJ_Lock (the stop, under m_); the probe tells a harness the stop is set.
+    // M6: SJ_Lock (the stop, under m_). The probe tells a harness the stop is set.
     M6_TRACE("gang.stop", "gang", ::Elm::tlatrace::key("B", this), "gen", generation_, "clk", "m6", "tick", M6_TICK);
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.stopset");)
     const uint64_t t0 = GCHelperPool::nowNs();
@@ -755,7 +758,7 @@ void GCBackgroundGang::stopAllForFork() {
     for (GCBackgroundGang* g : bgRegistry()) {
         if (g->running()) {
             g->stopAndJoin();
-            ECO_TLA_TRACE("stop", "gang", ::Elm::tlatrace::key("B", g));   // M1 trace (a)
+            ECO_TLA_TRACE("stop", "gang", ::Elm::tlatrace::key("B", g));   // records a fork stopping this gang
             g->stats_.fork_stops.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -769,16 +772,16 @@ void GCBackgroundGang::stopAllAtExit() {
 void GCBackgroundGang::atforkPrepare() {
     bgRegistryMutex().lock();
     M6_TRACE("fork.bgreg", "clk", "m6", "tick", M6_TICK);    // M6: G_Reg
-    // CR-013 / CR-004 (§7.2 step 4): the hold BEFORE the stops, so no launch can land
-    // between stopAllForFork and the m_ locks below (a launch now refuses).
+    // The hold comes before the stops, so no launch can start an episode between
+    // stopAllForFork and the m_ locks below: a launch is refused from here on.
     for (GCBackgroundGang* g : bgRegistry()) {
         std::lock_guard<std::mutex> lk(g->m_);
         g->fork_hold_ = true;
     }
     M6_TRACE("fork.bghold", "clk", "m6", "tick", M6_TICK);   // M6: G_Hold
     stopAllForFork();
-    // M6: a harness pause point after the stops, before the m_ locks (CR-004's window,
-    // closed by the hold: a launch there is refused).
+    // M6: a point where a harness may pause after the stops and before the m_ locks; a
+    // launch made during the pause is refused because of the hold.
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.bg.stopped");)
     // Hold every instance's mutex across fork so the child's copy is consistent.
     for (GCBackgroundGang* g : bgRegistry()) g->m_.lock();
@@ -812,9 +815,6 @@ void GCBackgroundGang::atforkChild() {
     M6_TRACE("fork.bchild", "clk", "m6", "tick", M6_TICK);   // M6: G_Fork, child
 }
 
-// HEAP_075: GCFork's gangs layer (kForkGangs). A fixed order: the background gangs'
-// prepare (registry, hold, stops, their m_), then the mark gang's (run_m_, its m_). The
-// parent and child handlers release in the reverse order.
 void GCBackgroundGang::forkGangsPrepare() {
     GCBackgroundGang::atforkPrepare();
     GCMarkGang::atforkPrepare();

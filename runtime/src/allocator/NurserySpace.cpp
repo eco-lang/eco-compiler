@@ -1,36 +1,14 @@
-/**
- * NurserySpace Implementation.
- *
- * Contiguous-extent nursery using Cheney's semi-space copying algorithm
- * (HEAP_042, plans/contiguous-nursery-space.md).
- *
- * The nursery is a mirrored pair of contiguous extents carved from two
- * separate address-space regions:
- *   - the low extent:  a slice of the low half of the nursery region
- *   - the high extent: the same-index slice of the high half
- *
- * This split guarantees all low addresses < all high addresses, which makes
- * membership an O(1) range comparison. Both extents always have the same
- * length (one `slice_.capacity`), so the semi-spaces are equal by
- * construction.
- *
- * One extent is the "from-space" (allocation), the other the "to-space"
- * (copy target during GC). After GC, the roles swap.
- *
- * Allocation: one bump pointer against a limit spanning the WHOLE from-space
- * (O(1)). No block advance exists: a miss means the proactive-GC threshold
- * tripped, or the space is exhausted — either way, minor GC.
- *
- * Minor GC algorithm:
- *   1. Evacuate roots into to-space (or promote to old gen if aged).
- *   2. Cheney scan: `scan_ptr_ < copy_ptr_` over one contiguous region.
- *   3. Process promoted objects (they may point back to nursery).
- *   4. Check occupancy and grow if needed (both extents or neither).
- *   5. Swap from/to roles by flipping from_is_low_.
- *
- * Key optimization: Elm's immutability means no old->young pointers exist,
- * so no write barrier or remembered set is needed.
- */
+// The serial semi-space minor collection, and the parts of `NurserySpace` both modes share: setup, the allocation
+// limit and semi-space growth. The parallel copier, the region minor and the tenure job are in NurseryParallel.cpp,
+// NurseryRegion.cpp and NurseryTenure.cpp.
+//
+// The serial minor is Cheney's algorithm. Copies are made by bumping `copy_ptr_` through to-space, and the copies
+// between `scan_ptr_` and `copy_ptr_` are those not yet scanned, so to-space is its own queue of work. Two kinds of
+// object a minor must also scan do not land in to-space: promoted copies, which are in the old generation, and young
+// large objects, which never move. Each has its own queue (`promoted_buf_`, `young_large_scan_`). The drain takes
+// from the three in turn until all are empty, because scanning an object of one kind can add to the others.
+//
+// The rest of the file is checks compiled only into validate builds, and the survivor-write census.
 
 #include "NurserySpace.hpp"
 #include "HeapChildWalk.hpp"
@@ -51,8 +29,8 @@
 #include <atomic>
 #include <cstdlib>
 #if ECO_HEAP_VALIDATE
-// Used by debugAssertValidNurseryPointer's diagnostic (prints a backtrace).
-// musl (Stage B static build) ships no <execinfo.h>; stub as no-ops there.
+// The validate-build diagnostics print a backtrace. Where <execinfo.h> is missing, as with musl, the three
+// functions are no-ops.
 #if defined(__has_include) && __has_include(<execinfo.h>)
 #  include <execinfo.h>
 #else
@@ -63,31 +41,23 @@
 #endif
 
 #if ECO_HEAP_VALIDATE
-// Track which heap object is currently being scanned during Cheney scan,
-// so stale-pointer diagnostics can identify the parent object.
-// Deliberately thread_local (HEAP_053): it describes what THIS worker is
-// scanning, which is the right meaning once several threads scan one heap.
+// The object this thread is scanning, recorded so that the stale-pointer diagnostics can name the parent of a bad
+// slot. Thread-local (HEAP_053) because each thread that scans records its own object.
 thread_local void* g_scan_parent = nullptr;
 thread_local int g_scan_tag = -1;
 thread_local Elm::u32 g_scan_size = 0;
 #endif
 
-// ---------------------------------------------------------------------------
-// Phase-1 per-site-zeroing tripwire (plans/nursery-per-site-zeroing.md gate 4)
-// ---------------------------------------------------------------------------
-//
-// ECO_NURSERY_POISON=1 makes the post-GC free-region fill write 0xD8 bytes
-// instead of zeroes. Any payload word an allocation site failed to zero then
-// reads back as ECO_POISON_WORD.
-//
-// 0xD8 is NOT arbitrary. An HPointer's bit 2 is `ptr_ind`, and 0xD8 has that
-// bit CLEAR, so a poisoned word is classified as a heap POINTER and is
-// followed into evacuate(), where the check below catches it by name. The
-// obvious choice, 0xDD, has bit 2 SET: every poisoned word would decode as an
-// embedded constant, be skipped, and the tripwire would report nothing
-// however broken the zeroing was. That is the trap this gate exists to avoid.
+/// The word that a payload slot never written by its allocation site holds, once `ECO_NURSERY_POISON=1` has
+/// filled free to-space with the byte 0xD8 (validate builds).
+///
+/// The byte is chosen so that the word is taken for a heap pointer. 0xD8 has bit 2, the `ptr_ind` bit of an
+/// `HPointer`, clear, so `evacuate` follows the word and its check recognises it. A byte with bit 2 set, such as
+/// 0xDD, would make the word an embedded constant, which `evacuate` skips, and the check would never fire.
 static constexpr uint64_t ECO_POISON_WORD = 0xD8D8D8D8D8D8D8D8ull;
 
+/// Returns whether `ECO_NURSERY_POISON` is set to a value starting with `1`. The environment is read on the first
+/// call only.
 bool nursery_poison_enabled() {
     static const bool on =
         []{ const char* e = std::getenv("ECO_NURSERY_POISON");
@@ -106,23 +76,17 @@ NurserySpace::NurserySpace() :
     growth_threshold_(NURSERY_GROWTH_THRESHOLD),
     gc_threshold_(0.0f), from_capacity_bytes_(0), threshold_total_bytes_(0),
     thread_heap_(nullptr) {
-    // Initialization happens in initialize() method.
 }
 
 NurserySpace::~NurserySpace() {
-    // Release the slice slot so a subsequent ThreadLocalHeap (e.g. a freshly
-    // spawned task) can claim it and reuse its committed pages. Without this,
-    // every spawn would consume a slot permanently and the region would
-    // exhaust under spawn-heavy workloads (Issue #40). The pages themselves
-    // stay committed and are recorded as the slot's retained commit.
+    // Freeing the slot lets another heap claim it and reuse its pages, which stay committed as the slot's retained
+    // commit. Without this, every heap ever created would use up a slot for good.
     if (allocator_ && slice_.capacity != 0) {
         allocator_->releaseNurserySlicePair(slice_);
     }
-    releaseRegions();   // threaded-gc-07: the owner ran tenureTeardown first
+    releaseRegions();   // the owner must already have run tenureTeardown
 }
 
-// Shared body of the two initialize() overloads. `allocator_`, `config_` and
-// `thread_heap_` are already set by the caller.
 void NurserySpace::initializeFromConfig() {
     growth_threshold_ = config_->nursery_growth_threshold;
     gc_threshold_     = config_->nursery_gc_threshold;
@@ -136,13 +100,11 @@ void NurserySpace::initializeFromConfig() {
     growth_ceiling_bytes_ =
         config_max_per_side < slice_bytes ? config_max_per_side : slice_bytes;
 
-    // Initial per-side capacity: half the configured nursery, exactly as the
-    // block design's `nursery_block_count / 2` blocks.
     size_t initial = config_->nurseryInitialPerSideBytes();
     if (initial > growth_ceiling_bytes_) initial = growth_ceiling_bytes_;
 
     if (config_->nursery_regions == 1) {
-        // threaded-gc-07 (HEAP_069): the region nursery instead of the pair.
+        // Region mode (HEAP_069): a slice set instead of the pair.
         initRegions();
         return;
     }
@@ -158,10 +120,11 @@ void NurserySpace::initializeFromConfig() {
     updateBounds();
     refreshCapacityCaches();
     bump_.ptr = fromBase();
-    filler_bytes_ = filler_bytes_to_ = 0;   // threaded-gc-06: an empty prefix
+    filler_bytes_ = filler_bytes_to_ = 0;   // no survivor prefix yet
 #if ENABLE_GC_STATS
-    // threaded-gc-06 Step 4 gate: ECO_TEST_PROMO_VIA_CTX=1 turns the identity
-    // switch on for a whole run (stats builds only; never a shipped setting).
+    // Test switches read from the environment once per process, and applied to every nursery: ECO_TEST_PROMO_VIA_CTX=1
+    // sets `test_serial_promo_via_ctx_`, and ECO_TEST_MINOR_ENGINE starting with `P` sets
+    // `test_force_parallel_engine_`.
     {
         static const bool via_ctx = [] {
             const char* e = std::getenv("ECO_TEST_PROMO_VIA_CTX");
@@ -185,23 +148,21 @@ void NurserySpace::initializeFromConfig() {
 void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {
     config_ = config;
     allocator_ = allocator;
-    thread_heap_ = nullptr;  // Legacy single-threaded mode (not using ThreadLocalHeap).
+    thread_heap_ = nullptr;
     initializeFromConfig();
 }
 
 void NurserySpace::initialize(ThreadLocalHeap* heap, const HeapConfig* config) {
     config_ = config;
     thread_heap_ = heap;
-    allocator_ = heap->getParent();  // Reference to Allocator for slice acquisition.
+    allocator_ = heap->getParent();
     initializeFromConfig();
 }
 
 void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
     (void)oldgen;
 
-    // Release the current slice before re-acquiring: the block design leaked
-    // its blocks here (vectors cleared without release), which the slice
-    // layer fixes for free.
+    // Release the address space before `initializeFromConfig` acquires it again.
     if (slice_.capacity != 0) {
         allocator_->releaseNurserySlicePair(slice_);
         slice_ = NurserySlicePair{};
@@ -211,34 +172,26 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
         releaseRegions();
     }
 
-    // Update config if provided.
     if (new_config) {
         config_ = new_config;
     }
 
     initializeFromConfig();
 
-    // Reset the root set.
     root_set.reset();
 
-    // Note: GC stats are not reset here - they accumulate across multiple runs.
-    // (initializeFromConfig refreshes the live nursery_size_bytes snapshot.)
+    // The statistics are kept; `initializeFromConfig` refreshes only `nursery_size_bytes`.
 }
 
 void NurserySpace::updateBounds() {
-    // Exact, gap-free bounds: base .. base + capacity, both sides equal.
     low_end_  = low_base_  ? low_base_  + slice_.capacity : nullptr;
     high_end_ = high_base_ ? high_base_ + slice_.capacity : nullptr;
 }
 
 void *NurserySpace::allocate(size_t size) {
-    // Align to 8 bytes.
     size = (size + 7) & ~7;
 
-    // Fast path: fits before the clamped limit. No wall-clock timing here —
-    // the bump-pointer body is too short for `clock_gettime` brackets to be
-    // anything but pure overhead (~25% of total CPU on the Stage 7 profile).
-    // Slow-path timing is done inside `allocateSlow` below.
+    // Only the slow path is timed (`allocateSlow`), so the fast path carries no clock reads.
     if (bump_.ptr + size <= bump_.end) {
         void* result = bump_.ptr;
         bump_.ptr += size;
@@ -246,11 +199,6 @@ void *NurserySpace::allocate(size_t size) {
         return result;
     }
 
-    // Slow path: signal GC (or take the already-full fail-soft). Wall-clock
-    // the body so its cost lands in total_nursery_alloc_in_mutator_ns rather
-    // than leaking into mutator time. The mutator-only check is correct
-    // because nursery_.allocate is never invoked from inside minorGC
-    // (promotions go to oldgen.allocate).
     return allocateSlow(size);
 }
 
@@ -261,17 +209,8 @@ void* NurserySpace::allocateSlow(size_t size) {
 
     void* result = nullptr;
 
-    // The fast path fell through (bump_.ptr + size > bump_.end). With a
-    // contiguous from-space there is no block to advance to, so this has
-    // exactly one meaning — the clamped limit was reached — and one
-    // response: signal a minor GC by returning null.
-    //
-    // The single exception is the already-full fail-soft (see
-    // computeAllocEnd): if the previous GC left survivors at or past the
-    // threshold, `bump_.end` is the extent end and a GC cannot free
-    // anything new, so re-clamping would GC-loop. That case is already
-    // encoded in `bump_.end`, so nothing to do here — the null return
-    // drives the GC and the post-GC recompute re-applies the fail-soft.
+    // Reaching here means `ptr + size` passed `end`, which `computeAllocEnd` set either where a collection becomes
+    // due or at the extent end. Either way only a collection can make room, so the answer is null.
 
 #if ENABLE_GC_STATS
     if (!minor_gc_running_) {
@@ -284,17 +223,8 @@ void* NurserySpace::allocateSlow(size_t size) {
     return result;
 }
 
-// Capacity guarantee for hoisted allocation checks (HEAP_041,
-// plans/capacity-check-hoisting.md). Establishes `bump_.end - bump_.ptr >= n`
-// WITHOUT allocating anything; returns false when only a minor GC can satisfy
-// the request. Contiguity collapses the block design's advance loop (and its
-// clamp-vs-exhaustion disambiguator) to a single comparison.
-//
-// `end < ptr` is a legal state meaning "must collect" (e.g. a future remote
-// clamp that lands below the bump pointer, design_docs/parallel-gc.md §3.2).
-// The old `size_t(end - ptr) >= n` form underflowed to "plenty of room" there,
-// letting a covered region bump unchecked past the extent. Compare in integer
-// space, ordered, so no out-of-range pointer is ever formed.
+// Compared as integers: `end` below `ptr` is legal and means a collection is due, and `end - ptr` taken as a size
+// would wrap round to a huge headroom.
 bool NurserySpace::ensureHeadroom(size_t n) {
     const uintptr_t p = reinterpret_cast<uintptr_t>(bump_.ptr);
     const uintptr_t e = reinterpret_cast<uintptr_t>(bump_.end);
@@ -302,10 +232,7 @@ bool NurserySpace::ensureHeadroom(size_t n) {
 }
 
 void NurserySpace::failSoftUnclamp() {
-    // Same fail-soft shape as computeAllocEnd's already-full clause: give the
-    // caller the whole remaining extent. Reachable only in tiny test configs
-    // where threshold_total_bytes_ < n (see ThreadLocalHeap::ensureNursery).
-    if (rg_) {   // threaded-gc-07 P§3.8: eden may hold capacity - S_m bytes
+    if (rg_) {   // eden may hold the capacity less S_m
         const size_t room = rg_->S_m < from_capacity_bytes_ ? from_capacity_bytes_ - rg_->S_m : 0;
         bump_.end = rg_->eden_base + room;
         if (bump_.end < bump_.ptr) bump_.end = bump_.ptr;
@@ -315,19 +242,14 @@ void NurserySpace::failSoftUnclamp() {
     bump_.end = fromBase() + from_capacity_bytes_;
 }
 
-// contains(), isInFromSpace(), isInToSpace() are now inline in the header.
 
 size_t NurserySpace::bytesAllocated() const {
     if (!bump_.ptr) return 0;
-    // threaded-gc-07 P§3.8: survived object bytes of the last minor plus eden.
     if (rg_) return rg_->S_m + static_cast<size_t>(bump_.ptr - rg_->eden_base);
     return static_cast<size_t>(bump_.ptr - fromBase());
 }
 
 void NurserySpace::refreshCapacityCaches() {
-    // W2 items 16/18/19/22: GC-invariant values hoisted off the per-object
-    // and per-slot paths. This function already runs at init / reset / grow,
-    // which is exactly when any of them can change.
     if (config_ != nullptr) {
         promotion_age_ = config_->promotion_age;
         use_hybrid_dfs_ = config_->use_hybrid_dfs;
@@ -344,8 +266,8 @@ void NurserySpace::refreshCapacityCaches() {
 
 char* NurserySpace::computeAllocEnd() {
     if (rg_) {
-        // threaded-gc-07 P§3.8: eden gets threshold - S_m (legacy's survivor
-        // prefix is the same object bytes); fail-soft: capacity - S_m.
+        // The survivors are counted as `S_m` object bytes. Eden gets what is left of the threshold, or of the
+        // capacity once `S_m` has reached the threshold.
         const size_t sm = rg_->S_m;
         if (sm >= threshold_total_bytes_) {
             return rg_->eden_base + (sm < from_capacity_bytes_ ? from_capacity_bytes_ - sm : 0);
@@ -354,24 +276,17 @@ char* NurserySpace::computeAllocEnd() {
     }
     char* base = fromBase();
     char* extent_end = base + from_capacity_bytes_;
-    // threaded-gc-06 HEAP_068: OBJECT bytes. The survivor prefix may hold
-    // filler_bytes_ of LAB-tail fillers; counting them would make the next
-    // trigger depend on the copy schedule. At N = 1 filler_bytes_ is 0.
+    // Object bytes (HEAP_068): the fillers in the survivor prefix are not counted, so the limit lies
+    // `filler_bytes_` further on.
     size_t already = static_cast<size_t>(bump_.ptr - base) - filler_bytes_;
     if (already >= threshold_total_bytes_) {
-        // The threshold has already been crossed by survivors of a prior
-        // GC. Tripping the threshold again before the space fills cannot
-        // free any new space (no allocations have happened since the GC
-        // that produced these survivors), so re-engaging it would only
-        // GC-loop. Fail soft: use the full extent, and let genuine
-        // exhaustion drive the GC.
         return extent_end;
     }
     if (filler_bytes_ == 0) return base + threshold_total_bytes_;
     const size_t room = from_capacity_bytes_;
     if (threshold_total_bytes_ + filler_bytes_ > room) {
 #if ENABLE_GC_STATS
-        stats.pmin.alloc_end_capped++;   // must stay 0 on gate runs (P§3.5)
+        stats.pmin.alloc_end_capped++;   // the fillers pushed the limit past the extent end
 #endif
         return extent_end;
     }
@@ -379,9 +294,6 @@ char* NurserySpace::computeAllocEnd() {
 }
 
 void* NurserySpace::copyToSpace(size_t size) {
-    // To-space is one contiguous extent, so this is a pure bump. Overflow is
-    // impossible: both semi-spaces share one `slice_.capacity`, so everything
-    // that fit in from-space fits here.
     if (copy_ptr_ + size <= copy_end_) {
         void* result = copy_ptr_;
         copy_ptr_ += size;
@@ -393,16 +305,13 @@ void* NurserySpace::copyToSpace(size_t size) {
 }
 
 bool NurserySpace::scanHasMore() const {
-    // One contiguous to-space extent: the textbook Cheney test.
     return scan_ptr_ < copy_ptr_;
 }
 
 void NurserySpace::checkAndGrow() {
-    if (rg_) { regionCheckAndGrow(); return; }   // threaded-gc-07 P§3.8
-    // To-space occupancy after copying. Contiguous, so this is pure survivor
-    // bytes with no block-quantization waste in the numerator.
-    // threaded-gc-06 HEAP_068: object bytes (the to-space prefix's fillers
-    // excluded), so growth is identical at every worker count.
+    if (rg_) { regionCheckAndGrow(); return; }
+    // Occupancy in object bytes (HEAP_068): the fillers in to-space are excluded, so growth does not depend on how
+    // many threads copied.
     const size_t bytes_used = static_cast<size_t>(copy_ptr_ - toBase()) - filler_bytes_to_;
     const size_t total_to_capacity = slice_.capacity;
     if (total_to_capacity == 0) return;
@@ -417,11 +326,8 @@ void NurserySpace::checkAndGrow() {
         return;  // Already at the configured / geometric ceiling.
     }
 
-    // Default policy: grow by 50%, quantized to alloc_buffer_size so
-    // nursery_block_count / nursery_max_block_count keep their exact config
-    // meaning (capacity in block-sized units). Truncate against the
-    // remaining room so the last step fills the ceiling exactly rather than
-    // overshooting.
+    // Grow by half, in whole multiples of alloc_buffer_size so that the block counts in the config keep their
+    // meaning, and no further than the ceiling, so that the last step meets it exactly.
     const size_t quantum = config_->alloc_buffer_size;
     size_t delta = slice_.capacity / 2;
     delta -= delta % quantum;
@@ -431,9 +337,7 @@ void NurserySpace::checkAndGrow() {
     if (delta == 0) return;
 
     if (!allocator_->growNurserySlicePair(slice_, delta)) {
-        // Commit refused: skip growth this cycle. Nothing was half-applied —
-        // capacity is unchanged and both extents stay equal (the block design
-        // leaked the blocks it had already acquired here).
+        // Commit refused: the capacity is unchanged and both extents stay equal.
         if (Allocator::heapTraceEnabled()) {
             std::fprintf(stderr,
                 "[heap-trace] nursery grow declined: +%zu KB refused "
@@ -465,47 +369,28 @@ void NurserySpace::checkAndGrow() {
     }
 }
 
-/**
- * Performs a minor garbage collection using Cheney's algorithm.
- *
- * Algorithm phases:
- *   1. Evacuate all roots (from root set) to to-space or old gen (if aged).
- *   2. Cheney scan: walk to-space objects breadth-first, evacuating children.
- *      When use_hybrid_dfs is enabled, list spines are copied contiguously.
- *   3. Process promoted objects (scan their children, may add more promoted objects).
- *   4. Check occupancy and grow nursery if needed.
- *   5. Swap from-space and to-space.
- *
- * Note on old→young pointers: Elm's immutability guarantees no old→nursery
- * pointers can exist. An object can only reference values that already existed
- * when it was created, except recursive closures: a self-capturing closure is
- * patched with its own address and a mutually recursive group is allocated
- * together and cross-wired, with no safepoint in between, so those edges form
- * same-age cycles. Either way any object's children are always the same age as
- * the object or older. When a nursery object reaches promotion_age, all of its
- * transitively-reachable children must also have reached promotion_age and are
- * promoted together in the same phase-3 scan. The assertion in evacuate() enforces
- * this: if phase 3 ever encounters a from-space child whose age < promotion_age,
- * that is a bug (heap corruption), not a case to handle gracefully.
- */
+// The order of a semi-space minor: the roots, the drain to a fixed point (see the file comment), growth, the swap of
+// from-space and to-space, and the sweep of large bodies. When `chooseMinorWorkers` returns a thread count, the
+// parallel copier runs the roots and the drain instead; what follows them is shared.
+//
+// A promoted object's children are normally old enough to be promoted with it, because Elm values are immutable.
+// Kernel mutation and builders can break this. A release build then copies the young child into to-space, where the
+// drain scans it. A validate build aborts: `in_phase3_` is set while a promoted object is scanned, and `evacuate`
+// rejects a child too young to promote.
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots,
                            MinorGCRecord* rec) {
-    ++minor_seq_;   // GCReport::minor_count (HEAP_076): both nursery modes
-    if (rg_) {   // threaded-gc-07 (HEAP_069): the region minor
+    ++minor_seq_;   // counted in both modes (HEAP_076)
+    if (rg_) {   // region mode (HEAP_069)
         minorGCRegion(oldgen, stackmap_roots, rec);
         return;
     }
 #if !ENABLE_GC_PHASE_TIMERS
     (void)rec;
 #endif
-    // Set the cross-allocator in-minor-GC flag (always on, used by the
-    // OldGenSpace::allocate inline-helper attribution counter).
+    // Both flags stay set until the large-body sweep at the end is done.
     minor_gc_running_ = true;
     oldgen.setInMinorGC(true);
 
-    // Flip the split-header body color for this cycle. Every live header
-    // scanned in to-space gets recorded with this color via markLargeBodySeen;
-    // bodies whose recorded color doesn't match at the end are freed.
     minor_color_ = !minor_color_;
     young_large_scan_.clear();
 
@@ -518,28 +403,26 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
 
 #if ECO_HEAP_VALIDATE
-    // Class 3: walk every header in from-space's allocated prefix and
-    // assert tag/size sanity before evacuation begins. Catches mutator-side
-    // header corruption that would otherwise propagate via memcpy.
+    // Checked before anything is copied, so that a corrupt header is reported where the mutator left it rather than
+    // in a copy.
     preEvacuationFromSpaceWalk();
 #endif
 #if P1_CENSUS_COMPILED
-    // threaded-gc-04 P1 census: detector N compares the survivors recorded at
-    // the end of the previous minor GC before anything is evacuated; detector
-    // O verifies the old-gen table every ECO_P1_CENSUS_EVERY minors.
+    // The survivor-write census (see its section below): the survivors recorded at the end of the last minor are
+    // hashed again before anything moves.
+    // `onMinorStart` runs the old-generation detector (`P1Census.hpp`).
     if (censusEnabled()) censusCheck(oldgen);
     p1::onMinorStart(oldgen, ++census_minor_seq_);
 #endif
 
 #if ENABLE_GC_STATS
-    // Capture state before GC.
-    size_t from_space_used = objectBytesAllocated();   // threaded-gc-06: object bytes
+    size_t from_space_used = objectBytesAllocated();
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
 #if ENABLE_GC_PHASE_TIMERS
-    // threaded-gc-00 phase timers. Clock reads at phase boundaries only
-    // (never per object); nothing here feeds a GC decision.
+    // The phase timers read the clock only at phase boundaries, and nothing they measure feeds a collection
+    // decision.
     const bool T = rec != nullptr;
     uint64_t tp = T ? GCStats::nowSinceProcessStartNs() : 0;
     auto lap = [&]() -> uint64_t {
@@ -574,21 +457,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     copy_ptr_ = toBase();
     copy_end_ = toBase() + slice_.capacity;
     scan_ptr_ = toBase();
-    filler_bytes_to_ = 0;   // threaded-gc-06: only a parallel minor writes fillers
+    filler_bytes_to_ = 0;   // only the parallel copier writes fillers
 
-    // Buffer for promoted objects that need scanning.
-    // W5 item 35: reuse the buffer across cycles. Declared locally it mallocs
-    // and doubles from zero inside every pause — this workload promotes ~350K
-    // objects per minor GC, i.e. ~19 reallocs each copying up to 2.8 MB of
-    // pointers, 1,924 times per run. clear() keeps the capacity; deliberately
-    // NOT shrink_to_fit.
+    // Kept across minors: `clear` keeps the capacity, so a minor that promotes many objects does not regrow the
+    // buffer from nothing.
     promoted_buf_.clear();
     std::vector<void*>& promoted_objects = promoted_buf_;
 
-    // threaded-gc-06 (HEAP_067): with gc_minor_threads > 1 (or the forced
-    // one-worker engine) the root phase and the drain run in parallel
-    // (NurseryParallel.cpp). The serial core below is unchanged; it is the
-    // gc_minor_threads = 1 reference and every fallback minor (P§3.2).
+    // The parallel copier (HEAP_067) when `chooseMinorWorkers` returns a thread count; otherwise the serial core
+    // below.
     const unsigned par_n = chooseMinorWorkers(oldgen);
     if (par_n != 0) {
 #if ENABLE_GC_STATS
@@ -600,9 +477,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
     } else {   // ---- the serial core: roots, then the alternating drain ----
 #if ENABLE_GC_STATS
-    // threaded-gc-06 Step 4: the one-worker identity switch -- the serial
-    // copiers promote through worker 0 of a promotion context (P§3.8), which
-    // must reproduce allocate() bit for bit.
+    // `test_serial_promo_via_ctx_`: promote through worker 0 of a one-worker promotion context, which must place
+    // every object where `OldGenSpace::allocate` would.
     promo_w0_ = nullptr;
     if (__builtin_expect(test_serial_promo_via_ctx_, 0) && oldgen.config_->old_gen_bitmap_alloc) {
         OldGenSpace::PromoCtx& ctx = oldgen.promoCtx();
@@ -611,7 +487,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 #endif
 
-    // Phase 1a: Evacuate long-lived roots (may add to promoted_objects).
+    // The roots, in this order. Long-lived roots:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1a: %zu long-lived roots\n", root_set.getRoots().size());
 #endif
@@ -622,7 +498,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     if (T) rec->roots_longlived_jit_ns += lap();
 #endif
 
-    // Phase 1b: Evacuate stackmap-derived roots (discovered from LLVM StackMaps).
+    // Roots found through the LLVM stack maps:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1b: %zu stackmap roots\n", stackmap_roots.get().size());
 #endif
@@ -638,7 +514,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     if (T) rec->roots_stackmap_ns = lap();
 #endif
 
-    // Phase 1c: Evacuate JIT roots (raw 64-bit pointers from JIT-compiled globals).
+    // Compiled code's globals, which hold raw addresses rather than `HPointer`s:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1c: %zu jit roots\n", root_set.getJitRoots().size());
 #endif
@@ -649,7 +525,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     if (T) rec->roots_longlived_jit_ns += lap();
 #endif
 
-    // Phase 1e: Stack root ranges (alloca-backed args arrays from compiled code).
+    // Ranges of stack slots, of which the mask selects the roots:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1e: %zu stack root ranges\n", root_set.getStackRootRanges().size());
 #endif
@@ -669,8 +545,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         }
     }
 
-    // Phase 1e': single-slot stack roots (plan §3.3). Same status as the ranges
-    // above — one HPointer slot each, count and mask implicit.
+    // Single stack slots:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1e': %zu single stack roots\n", root_set.getSingleRoots().size());
 #endif
@@ -681,7 +556,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     if (T) rec->roots_ranges_ns = lap();
 #endif
 
-    // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
+    // External root scanners, last:
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());
 #endif
@@ -716,41 +591,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #if ECO_GC_DEBUG
     std::fprintf(stderr, "[gc] phase 2: Cheney scan starts\n");
 #endif
-    // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
-    // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
-    // within scanObject() without requiring a separate DFS stack.
-    // W5 item 33: the Cheney drain that stood here was REDUNDANT — phase 3's
-    // outer loop below opens with an identical inner `while (scanHasMore())`
-    // and runs unconditionally immediately after, so this loop only ever did
-    // work that the next one would have done anyway.
 
-    // Phase 3: Process promoted objects until buffer is empty.
-    // By Elm's immutability invariant, every child of a promoted object must be
-    // at least as old as the parent and therefore also qualify for promotion.
-    // in_phase3_ arms the assertion in evacuate() that catches any violation.
-    // Use index-based loop since vector may grow during iteration.
+    // The drain: to-space, then the promoted queue, then the young large objects that stay young, and round again
+    // while any of them has work.
     //
-    // The flag is toggled PER INNER LOOP, not once around the whole
-    // alternation. The assertion is about the children of a PROMOTED parent;
-    // a to-space parent's child being younger than promotion_age is the
-    // ordinary case, and arming the assertion across the Cheney drain made
-    // it fire on that — reporting a to-space parent as "parent(old-gen)".
-    // W5 item 33 removed the preliminary drain that used to empty to-space
-    // before the flag was raised, which is what made a latent mislabel start
-    // aborting the heap-validate build.
-    // Drain alternately between to-space and the promoted-objects queue
-    // until both are empty. Scanning a promoted object can copy YOUNG
-    // children into to-space (when the child's age < promotion_age) —
-    // Elm's immutability invariant is supposed to forbid this (children of
-    // a promoted object should be at least as old as the parent), but
-    // kernel-side mutation paths can violate it. Without re-draining,
-    // those new to-space objects would never be scanned and their boxed
-    // slots would remain pointing at from-space, surfacing as stale refs
-    // at the next mutator read. Conversely, scanning a fresh to-space
-    // object can promote an aged child, growing the queue further; hence
-    // the alternation runs to mutual fixed point.
+    // `in_phase3_` is set only while a promoted object is scanned. A young child of a to-space copy or of a young
+    // large object is normal, so the check must be off for those.
     size_t promoted_idx = 0;
-    size_t young_large_idx = 0;   // threaded-gc-04b: YLOS objects staying young
+    size_t young_large_idx = 0;
     while (scanHasMore() || promoted_idx < promoted_objects.size() ||
            young_large_idx < young_large_scan_.size()) {
 #if ENABLE_GC_PHASE_TIMERS
@@ -769,7 +617,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
         while (promoted_idx < promoted_objects.size()) {
 #if ECO_HEAP_VALIDATE
-            in_phase3_ = true;    // promoted parent: the invariant applies
+            in_phase3_ = true;    // promoted parent: its children must be old enough to promote
 #endif
             scanObject(promoted_objects[promoted_idx++], oldgen, &promoted_objects);
         }
@@ -793,7 +641,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         promo_w0_ = nullptr;
     }
 #endif
-    last_minor_promoted_ = promoted_objects.size();   // sizes the next pre-drain sweep
+    last_minor_promoted_ = promoted_objects.size();
 
     }   // ---- end of the serial core ----
 #if ECO_HEAP_VALIDATE
@@ -801,8 +649,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     validatePromotedHaveNoYoungChildren(oldgen, promoted_buf_);   // V2
 #endif
 #if ENABLE_GC_PHASE_TIMERS
-    // Promotion-path old-gen counters for this cycle (Step 7). Taken at drain
-    // exit: every promotion happens inside the root phases or the drain.
+    // Promotion-path old-generation counters for this minor, read at drain exit, after the last promotion.
     if (T) {
         const OldGenSpace::PromoInstr& p1 = oldgen.promoInstr();
         rec->lazy_sweep_calls = p1.sweep.calls - promo0.sweep.calls;
@@ -818,27 +665,16 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     auto t_loop_exit = GC_STATS_TIMER_START();
 #endif
 
-    // Phase 4: Check occupancy and grow if needed.
+    // Growth first, so that the optional clearing of free to-space covers the grown extent.
     checkAndGrow();
 
-    // Safety net: zero free to-space region to prevent ghost headers from
-    // surviving into the next GC cycle. Load-bearing — disabling this
-    // produces "Pointer above heap end!" aborts in evacuate when stale
-    // bytes in the free tail decode as out-of-range raw pointers. Called
-    // after checkAndGrow() so newly added blocks are also zeroed.
     clearToSpaceFreeRegion();
 
 #if ECO_HEAP_VALIDATE
-    // Post-GC heap integrity check: walk all surviving objects in to-space
-    // and verify every boxed child pointer points outside from-space. A
-    // child still in from-space at this point (without a Tag_Forward
-    // header) means GC failed to forward it — diagnostic for stale-pointer
-    // corruption that would surface as a poisoned-region read at the next
-    // mutator phase.
+    // Reports, without aborting, every boxed field of a to-space copy that still refers to a from-space object
+    // whose header is not a forward word: a reference the minor failed to update.
     {
-        {   // One contiguous to-space extent: a single linear walk of the
-            // whole evacuated prefix (the block design needed a per-block
-            // loop with a tail-gap-aware end).
+        {
             char* scan = toBase();
             char* end  = copy_ptr_;
             while (scan < end) {
@@ -949,13 +785,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     }
                     case Tag_Array: {
                         ElmArray* a = static_cast<ElmArray*>(static_cast<void*>(scan));
-                        // Only walk when the array claims boxed elements.
-                        // For an unboxed-tagged array we have no good way to
-                        // tell whether random-looking element bits are real
-                        // pointers (false positives), so we trust the kind
-                        // tag here and rely on the GC-time kind-mismatch
-                        // tripwire (case Tag_Array in evacuate) to flag
-                        // arrays whose tag is lying.
+                        // Only an array whose kind says boxed is walked. The kind-mismatch check in `scanObject`
+                        // reports an unboxed array whose elements look like from-space objects.
                         if ((a->header.unboxed & 0x3) == 0) {
                             for (u32 i = 0; i < a->length; i++)
                                 checkChild(a->elements[i].p, "array", static_cast<int>(i));
@@ -969,8 +800,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         }
     }
 
-    // Post-GC old-gen integrity check: scan every old-gen object and report
-    // any boxed field that still points into (old) from-space.
+    // Reports, without aborting, every boxed field of an old-generation object that still refers into from-space.
     {
         // The GC has not yet flipped from_is_low_, so from-space is still the
         // space we just evacuated FROM.  Objects there are garbage / stale.
@@ -980,8 +810,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
         auto checkOGChild = [&](HPointer &hp, void* parent, const char* field, int idx) {
             if (hp.ptr_ind != 0 || hp.ptr == 0) return;
-            // threaded-gc-04b: an unreached young large object is dead (the
-            // minor-end sweep frees it); its stale slots are not a defect.
+            // A young large object this minor did not reach is dead and is freed by the sweep at the end, so its
+            // stale fields are not a defect.
             if (const auto* m = oldgen.youngLargeMeta(parent); m && m->color != minor_color_)
                 return;
             void* child = Allocator::fromPointerRaw(hp);
@@ -1007,15 +837,9 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             const BlockInfo& blk = oldgen.blocks_.info(blk_id);
             char* scan = blk.start;
             char* end  = blk.end_of_objects;
-            // threaded-gc-02 (HEAP_024 reworded): in bitmap mode a uniform
-            // block is NOT header-parsable — only cells whose start bit is set
-            // hold objects (dead cells keep stale headers, virgin cells none).
-            // A MIXED block is not header-parsable over dead space either
-            // (HEAP_056): the bitmap cursor fills a gap between set bits and
-            // leaves the gap's tail as stale bytes with no header, so the walk
-            // visits set start bits only and steps a granule otherwise.
-            // plans/large-object-space.md D2: a raw LOS block holds header-less
-            // bodies (no pointers); an object LOS block is walked by its bits.
+            // Which cells hold objects. A raw LOS block holds header-less bodies and no references, so it is
+            // skipped. In bitmap mode, and in an object LOS block, only the cells whose bit is set hold objects
+            // (HEAP_024, HEAP_056): a dead cell keeps a stale header and a gap may have none.
             if (blk.los & kLosRaw) continue;
             const bool bitmap_walk =
                 (oldgen.config_->old_gen_bitmap_alloc || blk.los != 0) && !blk.is_large;
@@ -1023,19 +847,15 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
             const size_t ucell = uniform_bitmap
                 ? OldGenSpace::classToSize(blk.size_class) : 8;
             while (scan < end) {
-                // threaded-gc-05c (H2): background markers may write these bytes.
+                // Relaxed: background markers may be setting bits in the same words.
                 if (bitmap_walk && !oldgen.isMarkedInBlockRelaxed(blk_id, scan)) {
                     scan += ucell;
                     continue;
                 }
                 char* const cell_start = scan;
                 Header* h = getHeader(scan);
-                // Only a FULLY-ZERO word is uninitialized/swept filler.
-                // Testing `tag == 0` alone is wrong: Tag_Int == 0, so a
-                // promoted boxed Int (header word 16<<32 — every alloc
-                // path writes size = sizeof(ElmInt)) would be skipped by
-                // 8 and the walk would land on its VALUE word; a value of
-                // 25 decodes as Tag_Free with size 0 = zero stride = hang.
+                // Only an all-zero word is an empty cell. `tag == 0` is not enough: that is `Tag_Int`, and stepping
+                // over a boxed Int by 8 would land on its value word.
                 uint64_t raw_header;
                 memcpy(&raw_header, h, sizeof(raw_header));
                 if (raw_header == 0 || h->tag > Tag_Forward) {
@@ -1048,8 +868,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                 }
                 size_t obj_size = getObjectSize(scan);
                 if (obj_size == 0) {
-                    // Degenerate decode (e.g. Tag_Free size 0) — never a
-                    // real object; resync by 8 rather than loop forever.
+                    // Never a real object; step by 8 rather than loop for ever.
                     scan += 8;
                     continue;
                 }
@@ -1150,25 +969,18 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
 
 #if ECO_HEAP_VALIDATE
-    // (The block design audited block_end_of_objects_ here. Contiguous
-    // to-space has no tail gaps to track, so there is nothing to audit.)
 
     // Paired with the assignment at the start of minorGC.
     in_minor_gc_ = false;
 
-    // Stale-pointer diagnostic aid: poison the just-evacuated from-space's
-    // allocated bytes BEFORE the swap, so any stale mutator HPointer that
-    // still references those bytes lands on recognisable poison (or trips
-    // the detector). See poisonOldFromSpaceUsedRegion for details.
+    // Done before the swap, while `fromBase` is still the space just emptied.
     poisonOldFromSpaceUsedRegion();
 #endif
 
-    // Phase 5: Swap spaces by flipping which is from/to.
+    // Swap from-space and to-space.
     from_is_low_ = !from_is_low_;
 
-    // The from-space changed; refresh capacity-derived caches before deriving
-    // the new bump_.end. (Both extents share one slice_.capacity, so this is
-    // only load-bearing when checkAndGrow just changed it.)
+    // The caches derive from the from-space capacity, which `checkAndGrow` may just have changed.
     refreshCapacityCaches();
 
     // Resume allocation immediately after the survivors: the old to-space
@@ -1177,22 +989,21 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     filler_bytes_ = filler_bytes_to_;
     bump_.ptr = copy_ptr_;
     bump_.end = computeAllocEnd();
-    survivor_end_ = bump_.ptr;   // threaded-gc-05a IM7
+    survivor_end_ = bump_.ptr;   // checked by forEachSurvivor (IM7)
 
     assert(bump_.ptr >= fromBase() && bump_.ptr <= bump_.end &&
            bump_.end <= fromBase() + from_capacity_bytes_ &&
            "post-swap bump state must lie inside the from-space extent");
 
 #if P1_CENSUS_COMPILED
-    // threaded-gc-04 P1 census: record this cycle's survivors (N) and a sample
-    // of its promotions, now final after the drain (O).
+    // Detector N records this minor's survivors; the old-generation detector samples its promotions, whose contents
+    // are now final.
     if (censusEnabled()) censusRecord(oldgen);
     p1::recordPromoted(&oldgen, promoted_buf_);
 #endif
 
 #if ENABLE_GC_STATS
-    // Calculate what happened during this GC.
-    size_t to_space_used = objectBytesAllocated();   // threaded-gc-06: object bytes
+    size_t to_space_used = objectBytesAllocated();
     size_t bytes_freed = from_space_used > to_space_used ? from_space_used - to_space_used : 0;
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
 #if ENABLE_GC_PHASE_TIMERS
@@ -1211,20 +1022,13 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 #endif
 
-    // The recorded pause is the WHOLE minor cycle, promotion allocation
-    // included. Promotions are no longer timed individually (OldGenSpace
-    // ::allocate skips the clock when g_in_minor_gc), so there is nothing
-    // to subtract: the old "pure nursery-copy" figure was this pause minus
-    // a quantity that was mostly the timer overhead itself.
+    // The recorded pause includes promotion allocation, which is not timed separately.
     GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, bytes_freed);
 #endif
 
-    // Reclaim split-header bodies whose nursery header did not survive this
-    // cycle. Skipped only while old-gen COMPACTION is in flight (deferred
-    // until it completes); it runs normally during major-GC mark/sweep. See
-    // OldGenSpace::sweepNurseryLargeBodies. NOTE: this runs after the minor
-    // pause timer stops, so "Minor GC Timing" excludes it (threaded-gc-00
-    // reports it in the pause and phase blocks).
+    // Frees the large bodies whose headers this minor did not reach; `OldGenSpace::sweepNurseryLargeBodies` decides
+    // when to defer. It runs after the statistics' pause timer has stopped, so their minor pause excludes it; the
+    // phase timers record it separately.
 #if ENABLE_GC_PHASE_TIMERS
     const uint64_t t_lb = T ? GCStats::nowSinceProcessStartNs() : 0;
 #endif
@@ -1245,56 +1049,30 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 #endif
 
-    // Clear the cross-allocator in-minor-GC flag last, after the timer
-    // has captured the full minor pause but before control returns to
-    // ThreadLocalHeap::minorGC (which may then fire majorGC).
+    // Cleared only now, after the large-body sweep, which is part of the minor.
     minor_gc_running_ = false;
     oldgen.setInMinorGC(false);
 #if ECO_HEAP_VALIDATE
-    // threaded-gc-01 Step 9: old-gen metadata validators (HEAP_048..052).
+    // Old-generation metadata validators (HEAP_048 to HEAP_052).
     oldgen.validateEveryNthMinor();
 #endif
 }
 
-/**
- * Evacuates an object from from-space to to-space or old gen.
- *
- * Behavior:
- *   - If already forwarded: updates ptr to forwarding target and returns.
- *   - If not in from-space: returns (already evacuated or in old gen).
- *   - Otherwise: copies object to to-space (or promotes to old gen if aged),
- *     leaves forwarding pointer, and updates ptr to new location.
- *
- * Promotion: Objects with age >= promotion_age are copied to old gen and
- * added to promoted_objects for later scanning. Otherwise, they are copied
- * to to-space with age incremented.
- *
- * The original object is replaced with a forwarding pointer (Tag_Forward)
- * to prevent redundant copying if multiple pointers reference it.
- */
 #if ECO_HEAP_VALIDATE
-// U0.5 (borrow-inference Phase 0, plans/borrow-inference-phase0-measurement.md):
-// the §16.2 header-preservation obligation. A minor-GC copy/promotion must carry
-// the header word — INCLUDING `refcount` [16,30] — verbatim, editing ONLY `color`
-// and `age` (D0.4: `pin` is memcpy-preserved, never GC-edited). If a future
-// refactor replaces the `std::memcpy` with a field-wise header construction and
-// forgets `refcount`, promoted survivors silently reset to refcount 0 =
-// "untracked" and RC-1 dies for them. This assertion is that regression tripwire.
-// Load-bearing once alloc-site count-init lands (B4); until then `refcount` is
-// always 0 (unused) so it is trivially true.
+// Asserts that `dst`, a minor's copy of an object whose header was `src`, kept every header field a copy must not
+// change. A copy is a `memcpy`, after which a copier may edit only `age` and `color`; those two are not compared.
 static inline void assertHeaderPreservedAcrossCopy(const Header &src, const Header *dst) {
     assert(dst->tag == src.tag && dst->pin == src.pin &&
            dst->unboxed == src.unboxed && dst->refcount == src.refcount &&
            dst->builder == src.builder && dst->size == src.size &&
            "HEAP: minor-GC copy/promotion must preserve header modulo age/color (U0.5/§16.2)");
-    // `color` and `age` are the ONLY fields GC legitimately edits on a copy (D0.4).
 }
 #endif
 
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
 #if ECO_HEAP_VALIDATE
-    // Gate 4 tripwire: this boxed slot still holds free-region poison, so the
-    // allocation site that produced the parent never zeroed it.
+    // This boxed slot still holds the poison of free to-space, so the allocation site that made its parent never
+    // wrote it.
     if (nursery_poison_enabled()) {
         uint64_t raw_slot;
         memcpy(&raw_slot, &ptr, sizeof(raw_slot));
@@ -1309,12 +1087,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                     g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
             }
             std::fflush(stderr);
-            // ECO_POISON_NONFATAL=1: census mode. Report each distinct
-            // (parent tag, size) once, NULL the slot so the collector stays
-            // sane, and carry on — one run then yields the full distribution
-            // of classes that need their payload zeroed, instead of stopping
-            // at the first one. Answers are meaningless in this mode; only
-            // the census is.
+            // ECO_POISON_NONFATAL=1 reports every such slot, sets it to null and carries on, so that one run lists
+            // every parent left with an unwritten slot. The program's results are then meaningless.
             static const bool nonfatal =
                 []{ const char* e = std::getenv("ECO_POISON_NONFATAL");
                     return e != nullptr && e[0] == '1'; }();
@@ -1330,12 +1104,11 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         }
     }
 #endif
-    // W2 item 20: boxed, non-null slots dominate the traced population, so
-    // both early-outs are the unlikely side.
+    // Boxed, non-null slots are the common case, so both early returns are marked unlikely.
     if (__builtin_expect(ptr.ptr_ind != 0, 0))
         return;  // It's a constant.
     if (__builtin_expect(ptr.ptr == 0, 0))
-        return;  // Null/zero HPointer (e.g. unfilled closure capture slot).
+        return;  // Null.
 
     void *obj = Allocator::fromPointerRaw(ptr);
     if (!obj)
@@ -1347,12 +1120,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     }
 #endif
 
-    // Use cached allocator reference instead of repeated singleton lookup.
-    // Non-heap addresses are legal since HEAP_036: permanent-space objects
-    // (immortal, closed, GC-invisible) may be referenced from anywhere and
-    // need no evacuation. The former hard bounds asserts survive as a
-    // permanent-aware tripwire in validator builds (out-of-range garbage
-    // still aborts there).
+    // An address outside the heap is legal: a permanent-space object (HEAP_036) is never collected and needs no
+    // evacuation. Validate builds abort on an address outside both.
     char *heap_base = heap_base_;
     if (static_cast<char*>(obj) < heap_base ||
         static_cast<char*>(obj) >= heap_base + heap_reserved_) {
@@ -1367,22 +1136,12 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         return;
     }
 
-    // W2 item 17: the from-space test comes FIRST, before the child header is
-    // touched. It is pure arithmetic on a pointer we already hold, whereas the
-    // header load is a cache-line miss on a different object — and in steady
-    // state most edges point at to-space, old gen or permanent space, so most
-    // of those loads were pure waste.
-    //
-    // The old ordering existed so old-gen -> from-space pointers get forwarded.
-    // That still works: such a pointer IS in from-space, so it passes this test
-    // and reaches the header load exactly as before. What changes is only that
-    // pointers NOT in from-space skip the load, and those need no forwarding by
-    // construction — a Tag_Forward is only ever installed on a from-space copy
-    // (the three install sites all write into the object being evacuated OUT of
-    // from-space). The assertion below pins that claim.
+    // The from-space test comes before the header load. It is arithmetic on an address already held, while the load
+    // touches another object, and most references do not point into from-space. Skipping the load for them loses
+    // nothing, because the semi-space copiers write forward words only over from-space objects.
     if (__builtin_expect(!isInFromSpace(obj), 1)) {
-        // threaded-gc-04b: a young large object is not in from-space but is
-        // young; reach it (the pointer stays). A pure compare when empty.
+        // A young large object is outside from-space but young: it is reached in place and the reference stays.
+        // `mayBeYoungLarge` is a range test.
         if (__builtin_expect(oldgen.mayBeYoungLarge(obj), 0))
             (void)reachYoungLarge(obj, oldgen, promoted_objects);
         return;
@@ -1390,7 +1149,6 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     Header *hdr = getHeader(obj);
 
-    // Assert tag is valid.
 #if ECO_HEAP_VALIDATE
     if (hdr->tag > Tag_Forward) {
         uint64_t raw_hptr;
@@ -1428,10 +1186,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         Forward *fwd = static_cast<Forward *>(obj);
         char* tgt = decodeForwardPtr(fwd->header.forward_ptr, heap_base);
 #if ECO_HEAP_VALIDATE
-        // Class 3: forward-chain depth must be exactly 1. The target of a
-        // Tag_Forward must itself be a real (not Tag_Forward) object —
-        // otherwise we have a chain that indicates double evacuation or
-        // corrupted forwarding.
+        // The target of a forward word must not be one itself: a chain means an object was evacuated twice.
         {
             assert(tgt >= heap_base &&
                    tgt < heap_base + heap_reserved_ &&
@@ -1450,29 +1205,19 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         return;
     }
 
-    // Second priority: Only evacuate if in from-space (not to-space!).
-    // This prevents creating forwarding chains by re-evacuating already-moved objects.
-    // W2 item 17: membership was already established above.
     assert(isInFromSpace(obj) && "evacuate: reached the copy path off from-space");
 
-    // Now proceed with evacuation (object is in from-space and not yet forwarded).
 
     size_t size = getObjectSize(obj);
 #if ECO_HEAP_VALIDATE
-    // U0.5: snapshot the source header before any copy/mutation, so each copy
-    // path can assert §16.2 header preservation at its tail.
+    // The source header, before the forward word overwrites it.
     const Header srcHdr = *hdr;
 #endif
     void *new_obj = nullptr;
 
-    // Promote to old gen iff age has reached promotion_age AND neither pin
-    // nor builder forbids it. `builder == 1` keeps in-construction objects
-    // (e.g. JsArray result arrays under indexedMap/initialize) pinned to
-    // the nursery so kernel slot writes never produce old-gen→young edges
-    // (HEAP_BUILDER_001/002). `pin` is orthogonal: pin forbids relocation,
-    // builder forbids promotion.
+    // A builder is never promoted, so that kernel writes into it never make an old object refer to a young one
+    // (HEAP_BUILDER_001/002). `pin` forbids moving an object, `builder` forbids promoting it.
     if (shouldPromote(hdr)) {
-        // Direct allocation to old gen (simplified - no TLAB buffering).
         new_obj = promoteAllocate(oldgen, size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
 
@@ -1480,10 +1225,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age = 0;
-        // Defensive: major GC must not write into nursery headers (see
-        // OldGenSpace::pushMarkRoot / incrementalMark), so the source cell's
-        // color should already be White. Reset anyway to keep the promotion
-        // path independent of that invariant.
+        // The source's colour should already be white; it is reset anyway so that the copy does not depend on
+        // that.
         new_hdr->color = static_cast<u32>(Color::White);
 #if ECO_HEAP_VALIDATE
         assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
@@ -1509,9 +1252,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     // Copy to to_space if not promoted.
     if (!new_obj) {
 #if ECO_HEAP_VALIDATE
-        // Elm's immutability invariant: every child of a promoted object must be
-        // at least as old as the parent, so it must also qualify for promotion.
-        // If we reach here during phase 3 it means the invariant is violated.
+        // `in_phase3_`: the parent is a promoted object, and its child is too young to promote.
         if (in_phase3_) {
             std::fprintf(stderr,
                 "[gc-debug] INVARIANT VIOLATION: phase 3 child not old enough to promote!\n"
@@ -1527,10 +1268,8 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
                     "  parent(old-gen) obj=%p tag=%u size=%u age=%u\n",
                     g_scan_parent, g_scan_tag, (unsigned)g_scan_size,
                     (unsigned)phdr->age);
-                // Start at 0, NOT -1: an old-gen object can sit at the very
-                // first address of a block, and reading the word before it
-                // faults -- which is how this diagnostic used to kill the
-                // process before printing the backtrace it exists to print.
+                // From word 0, not -1: an old-generation object can start a block, and the word before it may not
+                // be readable.
                 uint64_t *pw = reinterpret_cast<uint64_t*>(g_scan_parent);
                 for (int x = 0; x < (int)g_scan_size + 2 && x < 10; x++) {
                     std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
@@ -1547,17 +1286,13 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
             assert(false && "Elm invariant: child of promoted object has age < promotion_age");
         }
 #endif
-        // Allocate in to_space.
         new_obj = copyToSpace(size);
         assert(new_obj && "Failed to copy to to-space during evacuation!");
 
-        // Copy the object with its padding to maintain alignment.
         std::memcpy(new_obj, obj, size);
 
         Header *new_hdr = getHeader(new_obj);
-        // HEAP_BUILDER_002: while builder == 1, age must remain 0. Skip the
-        // increment so the invariant holds across minor cycles. Once the
-        // kernel calls clear_builder, the cell ages from 0 like a fresh
+        // HEAP_BUILDER_002: a builder keeps age 0. Once its builder bit is cleared it ages like a fresh
         // allocation.
         if (!new_hdr->builder) {
             new_hdr->age++;
@@ -1573,8 +1308,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
         GC_STATS_MINOR_INC_SURVIVORS(stats, new_hdr->tag, size, new_hdr->size);
     }
 
-    // Leave forwarding pointer (as logical offset).
-    // IMPORTANT: Set this BEFORE evacuating children to prevent infinite recursion.
+    // Replace the original's header with a forward word, so that later references to it find the copy.
     Forward *fwd = static_cast<Forward *>(obj);
     fwd->header.tag = Tag_Forward;
     fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
@@ -1583,24 +1317,13 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     ptr = Allocator::toPointerRaw(new_obj);
 }
 
-// W2 item 21: evacuateUnboxable is now inline in NurserySpace.hpp.
 
-/**
- * Evacuates a JIT root containing a raw 64-bit heap pointer.
- *
- * In JIT mode, globals store full 64-bit heap pointers rather than
- * HPointer-encoded values. This function handles evacuation for such roots.
- *
- * Embedded constants are identified by having zero in the lower 40 bits
- * and a value 1-7 in bits 40-43.
- */
 void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     // Skip embedded constants (ptr_ind set); only real pointers are evacuated.
     if (isConstantBits(ptr)) {
         return;
     }
 
-    // Treat as raw pointer.
     void *obj = reinterpret_cast<void*>(ptr);
     if (!obj)
         return;
@@ -1613,11 +1336,9 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 
     char *heap_base = heap_base_;
 
-    // Validate pointer is within heap bounds.
+    // An address outside the heap is left as it is. Unlike `evacuate`, validate builds do not check it.
     if (static_cast<char*>(obj) < heap_base ||
         static_cast<char*>(obj) >= heap_base + heap_reserved_) {
-        // Pointer is outside the heap - could be a foreign pointer or error.
-        // For now, skip it to avoid crashes.
         return;
     }
 
@@ -1630,8 +1351,7 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
         return;
     }
 
-    // Only evacuate if in from-space; a young large object is reached in
-    // place (threaded-gc-04b).
+    // Only a from-space object is copied; a young large object is reached in place.
     if (!isInFromSpace(obj)) {
         if (oldgen.mayBeYoungLarge(obj))
             (void)reachYoungLarge(obj, oldgen, promoted_objects);
@@ -1640,12 +1360,12 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 
     size_t size = getObjectSize(obj);
 #if ECO_HEAP_VALIDATE
-    // U0.5: header-preservation tripwire also covers this JIT-root copier.
     const Header srcHdr = *hdr;
 #endif
     void *new_obj = nullptr;
 
-    // Promote to old gen iff aged AND not pinned/builder (HEAP_BUILDER_001).
+    // Promoted as `evacuate` promotes, except that this path neither resets the copy's colour nor transfers a large
+    // body (`promoteLargeHeader`).
     if (shouldPromote(hdr)) {
         new_obj = promoteAllocate(oldgen, size);
         assert(new_obj && "Failed to allocate in old gen during promotion");
@@ -1697,42 +1417,18 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
                                      std::vector<void*> *promoted_objects) {
     HPointer &hp = reinterpret_cast<HPointer&>(encoded);
-    // Constants (constant != 0) are non-heap per HEAP_010/014.
+    // An embedded constant (`ptr_ind` set) is not a heap object.
     if (hp.ptr_ind != 0) {
         return;
     }
     evacuate(hp, oldgen, promoted_objects);
-    // evacuate updates hp in place; encoded now holds relocated HPointer bits.
 }
 
-/**
- * Scans a heap object and evacuates all its children.
- *
- * Uses standard Cheney's BFS with a locality optimization for lists:
- *   - When use_hybrid_dfs is enabled and a Cons cell's tail is in from-space,
- *     the entire list spine is copied contiguously using two-pass copying.
- *   - Pass 1 (evacuateListSpine): Copies Cons cells by following tail pointers
- *   - Pass 2 (evacuateListHeads): Evacuates heads if any were boxed pointers
- *   - This creates contiguous list spines for better cache locality.
- *
- * All other types use standard BFS evacuation.
- */
 #if ECO_HEAP_VALIDATE
-// Class 2 bitmap-mismatch tripwire. Called per slot during scanObject for
-// every bitmap-bearing container (Cons, Tuple2/3, Custom, Record, Closure,
-// DynRecord). When the bitmap claims a slot is unboxed, the slot's bits
-// must NOT decode to a live in-from-space-allocated address — that would
-// mean the kind tag is lying and the GC will leave a real boxed pointer
-// un-forwarded. Trip immediately with a backtrace naming the parent
-// container so the mutator path that mis-tagged it can be identified.
-//
-// **Currently disabled.** Audit found a fundamental false-positive class:
-// for any slot legitimately holding an Int (e.g. record field `c : Int`),
-// random int32 values often have low-40-bit patterns that decode to
-// addresses inside the live nursery. Filtering by target-header tag
-// (must be > Tag_Char) reduces but does not eliminate the rate. Keeping
-// the helper in source for future re-enable behind a stricter check
-// (e.g. requiring the target object to also have plausible body bytes).
+// Would check that a slot whose kind says unboxed does not hold a word that decodes to an object in the allocated
+// part of from-space, which would mean the kind is wrong and the reference would not be updated. It is disabled and
+// returns at once: an Int field's value can decode to such an address by chance, and filtering on the target's tag
+// does not remove all of those false reports. `validateBitmapSlotKindStrict` is the check it would run.
 static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
                                           char* /*heap_base*/,
                                           uintptr_t /*heap_reserved*/,
@@ -1745,7 +1441,8 @@ static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
     return;  // disabled — see comment above
 }
 
-// Reference implementation, kept for documentation. Not invoked.
+// Aborts with a report if `slot`, field `idx` of `parent`, is unboxed but decodes to what looks like an object in the
+// allocated part of from-space. Not called; `validateBitmapSlotKind` describes why.
 [[maybe_unused]] static inline void validateBitmapSlotKindStrict(
     NurserySpace* self,
     char* heap_base,
@@ -1763,17 +1460,8 @@ static inline void validateBitmapSlotKind(NurserySpace* /*self*/,
     if (tgt < heap_base || tgt >= heap_base + heap_reserved) return;
     if (!self->isInFromSpaceAllocatedRegion(tgt)) return;
 
-    // Target-header sanity check: real HPointers point at an object whose
-    // header has a plausible tag and non-zero size. We exclude Tag_Int /
-    // Tag_Float / Tag_Char because primitive boxes are dense in the
-    // nursery and an unboxed Int slot can easily land coincidentally on a
-    // Tag_Int header — a confirmed false-positive case
-    // (BytesRoundtripMixedRecord.elm Record[2] = `c: Int`). The remaining
-    // tags (Cons, Tuple, Custom, Record, DynRecord, FieldGroup, Closure,
-    // Process, Task, ByteBuffer, Array, StringRope/Slice, etc.) have
-    // distinctive layouts that are much less likely to be hit by random
-    // Int bit patterns, so a trip there is strong evidence of a real
-    // wrong-bitmap bug.
+    // Primitive boxes (Int, Float, Char) are dense in the nursery, so an Int field can land on one by chance and
+    // those targets are ignored. Other tags have layouts a random Int is much less likely to hit.
     Header* tgt_hdr = getHeader(tgt);
     if (tgt_hdr->tag <= Tag_Char) return;          // primitive coincidence
     if (tgt_hdr->tag > Tag_Forward) return;
@@ -1805,8 +1493,7 @@ bool NurserySpace::reachYoungLarge(void* obj, OldGenSpace& oldgen,
     // shouldPromote minus pin: YLOS objects are pinned (never moved) but age.
     if (!h->builder && h->age >= promotion_age_) {
         oldgen.promoteYoungLarge(obj);   // invalidates m
-        // Scanned as a promoted parent: by immutability its children are at
-        // least as old, so they promote in this minor too (phase-3 rule).
+        // Scanned as a promoted parent, or as a young one when the caller passes no promotion queue.
         (promoted_objects ? *promoted_objects : young_large_scan_).push_back(obj);
         return true;
     }
@@ -1846,8 +1533,6 @@ void NurserySpace::validateYoungLarge(OldGenSpace& oldgen) const {
 
 void NurserySpace::validatePromotedHaveNoYoungChildren(
         OldGenSpace& oldgen, const std::vector<void*>& promoted) const {
-    // HEAP_005 strict: after the drain, no object promoted this minor points
-    // into the nursery or at a young large object.
     for (void* parent : promoted) {
         visitHeapChildren(parent, [&](HPointer& hp) {
             if (hp.ptr_ind != 0 || hp.ptr == 0) return;
@@ -1875,10 +1560,9 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
     char* hbase = Allocator::instance().getHeapBase();
     uintptr_t hres = Allocator::instance().getHeapReserved();
 #endif
-    // Process children based on tag.
     switch (hdr->tag) {
-        // ====== Wide structures: BFS (inline evacuation) ======
-        // These have multiple fields accessed together; keep siblings contiguous.
+        // Objects with several fields: each boxed field is evacuated in turn, so siblings are copied next to each
+        // other.
 
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);
@@ -1949,25 +1633,11 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
         case Tag_Closure: {
-            // GC scans APPLIED slots only: `n_values`, not `hdr->size`
-            // (== max_values + K: the capacity plus the K ext kind words at
-            // the object's tail, HEAP_078). Slots [n_values, max_values) are
-            // unapplied argument space that no code reads, so tracing them
-            // only exposed uninitialised memory — the reason the closure
-            // payload had to be zeroed at all
-            // (plans/nursery-per-site-zeroing.md).
-            //
-            // INVARIANT every writer of a value slot must keep: at any
-            // safepoint, slots below n_values are written. closureCapture
-            // stores then increments; papCreate codegen and eco_pap_extend_l
-            // publish the count first and fill after, with no safepoint in
-            // between (HEAP_034). eco_store_field* does NOT maintain it and
-            // must never be used on a Closure — its Tag_Closure arm asserts.
-            //
-            // Getting this wrong is silent either way: too low drops a live
-            // capture (use-after-free), too high traces an unwritten slot.
-            // GCPressureTest's "eco_alloc_closure captures stay valid across
-            // minor and major GCs" pins it.
+            // Only the applied slots, below `n_values`, are traced. `hdr->size` also counts the unapplied capacity
+            // and the extension kind words at the tail (HEAP_078), and the slots from `n_values` up may never have
+            // been written. This relies on every writer of a closure keeping the slots below `n_values` written at
+            // every safepoint (HEAP_034): too low a count loses a live capture, too high traces an unwritten slot.
+            // `eco_store_field` and its variants assert rather than write into a closure.
             Closure *cl = static_cast<Closure *>(obj);
 #if ECO_HEAP_VALIDATE
             if (!Elm::closureWellFormed(cl)) {
@@ -2005,8 +1675,8 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
 
-        // ====== Deep structures: Two-pass spine copying for locality ======
-        // Lists form chains; copying spine first keeps cells contiguous.
+        // Lists. With `use_hybrid_dfs_` the tail spine is copied cell after cell (`evacuateListSpine`), so the copy
+        // of a list is contiguous, and the heads after (`evacuateListHeads`).
 
         case Tag_Cons: {
             Cons *c = static_cast<Cons *>(obj);
@@ -2016,9 +1686,6 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 #endif
 
             if (use_hybrid_dfs_) {
-                // Two-pass list copying for optimal locality:
-                // Pass 1: Copy the tail spine contiguously
-                // Pass 2: Copy heads (only if needed)
 
                 // First evacuate this cell's head
                 evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
@@ -2034,11 +1701,11 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                             evacuateListHeads(spine_start, oldgen, promoted_objects);
                         }
                     } else {
-                        // Tail not in from-space - just update the pointer if forwarded
+                        // Not in from-space: `evacuate` reaches a young large object and leaves anything else.
                         evacuate(c->tail, oldgen, promoted_objects);
                     }
                 }
-                // If tail is Nil constant, nothing to do
+                // A constant tail (Nil) needs nothing.
             } else {
                 // Standard BFS: evacuate head and tail normally
                 evacuateUnboxable(c->head, head_boxed, oldgen, promoted_objects);
@@ -2047,11 +1714,8 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             break;
         }
 
-        // Chunked-list forms (plans/chunked-list-representation.md §6):
-        // a view traces its backing + spine continuation; a backing traces
-        // its live element range [hd, capacity) only when the uniform kind
-        // is boxed (scalar backings are pointer-free). Slots below hd are
-        // uninitialized and must never be traced (v1: hd == 0 always).
+        // A chunk view refers to its backing and to the rest of the spine. A backing's elements are traced from
+        // `hd` to its size, and only when their kind is boxed; the slots below `hd` may never have been written.
         case Tag_ConsChunk: {
             ConsChunk *cv = static_cast<ConsChunk *>(obj);
             evacuate(cv->backing, oldgen, promoted_objects);
@@ -2084,8 +1748,6 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Process: {
             Process *p = static_cast<Process *>(obj);
-            // Evacuate all children - no special handling needed.
-            // Process subgraphs will be processed via Cheney's BFS.
             evacuate(p->root, oldgen, promoted_objects);
             evacuate(p->stack, oldgen, promoted_objects);
             evacuate(p->mailbox, oldgen, promoted_objects);
@@ -2096,14 +1758,9 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             ElmArray *arr = static_cast<ElmArray *>(obj);
             bool is_boxed = (arr->header.unboxed & 0x3) == 0;
 #if ECO_HEAP_VALIDATE
-            // Kind-mismatch tripwire: if the array claims unboxed but its
-            // element bit-patterns decode to in-from-space-allocated
-            // addresses (real live objects we're about to evacuate), the
-            // kind tag is lying — those elements are real boxed pointers
-            // that we're about to leave un-forwarded, which is exactly
-            // the bug pattern that produces stale-pointer reads after the
-            // GC swap. Trip immediately so the GC's caller-frame backtrace
-            // names the mutator path that mis-tagged this array.
+            // An array whose kind says unboxed but whose elements decode to plausible objects in the allocated part
+            // of from-space has the wrong kind, and those references would not be updated. Aborts naming the
+            // array.
             if (!is_boxed) {
                 char* hbase = Allocator::instance().getHeapBase();
                 uintptr_t hres = Allocator::instance().getHeapReserved();
@@ -2190,21 +1847,6 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 // List Locality Optimization - Two-Pass Spine Copying
 // ============================================================================
 
-/**
- * Copies a list spine (Cons cells only) contiguously in to-space.
- *
- * This function iterates through a linked list via tail pointers, copying
- * each Cons cell to create a contiguous spine in to-space. This provides
- * excellent cache locality when traversing the list later.
- *
- * The function handles:
- *   - Already-forwarded cells (follows the forward, stops copying)
- *   - Promotion to old gen (aged cells go to old gen)
- *   - Non-Cons tails (delegates to regular evacuate)
- *   - Nil terminator (stops iteration)
- *
- * @return Pointer to first copied Cons in to-space, or nullptr if list was empty
- */
 void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
                                        std::vector<void*> *promoted_objects,
                                        bool &needs_head_pass) {
@@ -2271,13 +1913,11 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         // Copy this Cons cell (may go to old gen if aged)
         size_t size = sizeof(Cons);
 #if ECO_HEAP_VALIDATE
-        // U0.5: header-preservation tripwire also covers the list-spine copier.
         const Header srcHdr = *hdr;
 #endif
         void* new_obj = nullptr;
 
-        // HEAP_BUILDER_001/002: defensively respect pin/builder on Cons,
-        // even though no current kernel marks Cons cells as builders.
+        // HEAP_BUILDER_001/002: pin and builder are respected as for any object.
         if (shouldPromote(hdr)) {
             // Promote to old gen
             new_obj = promoteAllocate(oldgen, size);
@@ -2339,16 +1979,6 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
     return first_copied;
 }
 
-/**
- * Evacuates heads of a previously-copied list spine.
- *
- * This is Pass 2 of the two-pass list copying algorithm. It iterates through
- * the already-copied spine in to-space and evacuates each head that contains
- * a boxed pointer (not unboxed, not a constant).
- *
- * This function should only be called if evacuateListSpine() set needs_head_pass
- * to true, indicating that at least one head requires evacuation.
- */
 void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
                                       std::vector<void*> *promoted_objects) {
     if (!first_cons) return;
@@ -2356,7 +1986,7 @@ void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
     void* current = first_cons;
 
     while (current) {
-        // Verify we're still looking at a Cons cell in to-space or old gen
+        // Stop at anything that is not a list cell.
         Header* hdr = getHeader(current);
         if (hdr->tag != Tag_Cons) break;
 
@@ -2386,30 +2016,20 @@ void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
 }
 
 // ============================================================================
-// Ghost-data safety net: clear free to-space after minor GC
+// Clearing free to-space
 // ============================================================================
 
 void NurserySpace::clearToSpaceFreeRegion() {
-    // One contiguous extent: a single memset of everything past the last
-    // survivor. Load-bearing (not debug-gated) — without it, stale bytes in
-    // the free tail decode as out-of-range raw pointers at the next cycle
-    // and abort in evacuate with "Pointer above heap end!".
-    // PER-SITE ZEROING Phase 1 (plans/nursery-per-site-zeroing.md): the bulk
-    // clear is OFF by default now that every allocation site zeroes its own
-    // payload. Set ECO_NURSERY_BULK_CLEAR=1 to restore the old behaviour —
-    // that is the bisection switch if Phase 1 turns out to be unsound.
+    // Off by default, because allocation sites are expected to write every word of what they allocate.
+    // ECO_NURSERY_BULK_CLEAR=1 turns the clear on.
     static const bool bulk_clear =
         []{ const char* e = std::getenv("ECO_NURSERY_BULK_CLEAR");
             return e != nullptr && e[0] == '1'; }();
 
 #if ECO_HEAP_VALIDATE
-    // ECO_NURSERY_POISON=1 is the zeroing TRIPWIRE
-    // (plans/nursery-per-site-zeroing.md gate 4): it fills the free region
-    // with 0xD8 instead of zero, so any payload word an allocation site
-    // fails to write reads back as ECO_POISON_WORD and the boxed-slot check
-    // in evacuate() aborts naming the parent. It costs a full bulk memset
-    // per cycle, so it is a gate configuration and never a measured one.
-    // Validator builds only — the check it feeds lives there too.
+    // ECO_NURSERY_POISON=1 checks that expectation: the free part is filled with 0xD8 instead of zero, so a word an
+    // allocation site leaves unwritten reads back as `ECO_POISON_WORD`, and `evacuate` aborts naming the parent. It
+    // costs a fill of free to-space every minor.
     const bool poison = nursery_poison_enabled();
     if (!bulk_clear && !poison) return;
 #else
@@ -2430,24 +2050,10 @@ void NurserySpace::clearToSpaceFreeRegion() {
 }
 
 #if ECO_HEAP_VALIDATE
-// Stale-pointer diagnostic aid: fill the just-evacuated from-space's
-// allocated region with a recognisable poison byte so that any stale
-// HPointer the mutator still holds either:
-//   (a) trips the per-resolve detector in `debugAssertValidNurseryPointer`
-//       (which classifies post-swap to-space as "free"), OR
-//   (b) on a path that bypasses Allocator::resolve, dereferences as an
-//       obviously-bogus header (tag = 29, > Tag_Forward) and trips the
-//       `assert(hdr->tag <= Tag_Forward)` in evacuate.
-//
-// The 0xDD byte was picked so the resulting HPointer has constant=13
-// (out of range for valid embedded constants 0-7) which makes
-// NurserySpace::evacuate treat it as a constant and bail early — i.e.
-// the poison itself never trips the GC walker on its own, only the
-// stale references TO it produce useful diagnostics.
-//
-// Cost: O(bytes used by the previous mutator phase) per minor GC. Run
-// only on the from-space *allocated* prefix, not the entire nursery.
-// Compiled in only under ECO_HEAP_VALIDATE — see HeapHelpers.hpp for why.
+// The byte 0xDD makes a stale reference fail loudly. As a header it has tag 29, past `Tag_Forward`, which the tag
+// checks reject. As an `HPointer` it has bit 2 (`ptr_ind`) set, so a poisoned word is itself taken for an embedded
+// constant and skipped. After the swap the poisoned space is to-space, which `debugAssertValidNurseryPointer`
+// rejects outside a minor. The cost is a fill of what from-space held.
 void NurserySpace::poisonOldFromSpaceUsedRegion() {
     constexpr uint8_t kPoisonByte = 0xDD;
     char* base = fromBase();
@@ -2456,21 +2062,8 @@ void NurserySpace::poisonOldFromSpaceUsedRegion() {
 }
 
 // ============================================================================
-// Class 3 — From-space pre-evacuation walk
+// Validate-build checks of from-space and of nursery references
 // ============================================================================
-//
-// Walks every header in from-space's allocated prefix at the start of
-// minorGC. For each cell, asserts:
-//   - tag <= Tag_Forward
-//   - obj + getObjectSize(obj) does not overshoot the allocated end
-// Catches mutator-side header corruption that would otherwise propagate
-// into to-space via memcpy in evacuate.
-//
-// Under the contiguous design this covers the ENTIRE allocated prefix. The
-// block design could only walk the CURRENT block, because earlier blocks
-// carried untracked tail gaps left by slow-path transitions — those gaps no
-// longer exist, so this is a strictly stronger check (and a proportionally
-// more expensive one: O(bytes allocated this cycle) per minor GC).
 void NurserySpace::preEvacuationFromSpaceWalk() {
     char* base = fromBase();
     if (!base) return;
@@ -2499,10 +2092,7 @@ void NurserySpace::preEvacuationFromSpaceWalk() {
             std::fflush(stderr);
             std::abort();
         }
-        // Single-representation tripwire (HEAP_044,
-        // plans/null-cons-hpointer-embedding.md §2.3): nullary ctors are
-        // embedded null-cons constants; a heap Tag_Custom with 0 fields
-        // means some construction path missed the embedding.
+        // A nullary constructor is an embedded constant (HEAP_044), never a heap object.
         if (h->tag == Tag_Custom && h->size == 0) {
             std::fprintf(stderr,
                 "[heap-validate] from-space pre-walk: 0-field Tag_Custom at "
@@ -2517,13 +2107,10 @@ void NurserySpace::preEvacuationFromSpaceWalk() {
     }
 }
 
-// ============================================================================
-// Stale nursery pointer detection (validator-only)
-// ============================================================================
 
 bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
     char* p = static_cast<char*>(ptr);
-    if (rg_) return p >= rg_->eden_base && p < bump_.ptr;   // threaded-gc-07: eden
+    if (rg_) return p >= rg_->eden_base && p < bump_.ptr;   // region mode: eden
     return p >= fromBase() && p < bump_.ptr;
 }
 
@@ -2535,7 +2122,7 @@ bool NurserySpace::isInToSpaceAllocatedRegion(void* ptr) const {
 
 void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     assert(contains(ptr) && "debugAssertValidNurseryPointer called on non-nursery pointer");
-    if (rg_) { regionAssertValidPointer(ptr); return; }   // threaded-gc-07 TV7
+    if (rg_) { regionAssertValidPointer(ptr); return; }   // TV7
 
     bool ok = false;
     if (!in_minor_gc_) {
@@ -2549,7 +2136,7 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     }
 
     if (!ok) {
-        // Compute the HPointer value from the physical address
+        // The word offset from the heap base, for the report.
         char* heap_base = heap_base_;
         uint64_t hptr_val = (reinterpret_cast<char*>(ptr) - heap_base) / 8;
         std::fprintf(stderr, "[gc-debug] STALE hptr value=0x%lx (physical %p, heap_base=%p)\n",
@@ -2598,25 +2185,26 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
 
 #if P1_CENSUS_COMPILED
 // ============================================================================
-// threaded-gc-00 Step 11: survivor-write census
+// The survivor-write census (detector N)
 // ============================================================================
 //
-// Measures P1 (design_docs/parallel-gc.md §7.4.3): does anything write into
-// an object after it has survived a minor GC? The in_phase3_ assertion only
-// sees writes of YOUNGER values; a concurrent promoter would also lose writes
-// of older ones, so this compares whole-object hashes instead. Aggregated
-// process-wide and printed to stderr at exit. Never aborts, never repairs.
+// At the end of each minor the survivors, apart from builders and free cells, are hashed, and at the start of the
+// next each is hashed again; a changed hash is a write into an object that had already survived a minor. The hash
+// leaves out the colour, age and builder bits of the header. The counts are kept for the whole process and, unless
+// a test has forced the census on, printed at exit. In census mode 2, unless a test has forced the census on, the
+// first change aborts.
 
 namespace {
 
+/// The census's process-wide counts and its table of changes by kind. Every field is guarded by `mu`.
 struct SurvivorWriteCensus {
     std::mutex mu;
     uint64_t checked = 0;
     uint64_t mismatched = 0;
     uint64_t skipped_builder = 0;
-    uint64_t base_mismatch = 0;
+    uint64_t base_mismatch = 0;     ///< Checks skipped because from-space had moved since the record.
     uint64_t minors = 0;
-    uint64_t ylos_checked = 0;      // threaded-gc-04b: young large objects
+    uint64_t ylos_checked = 0;      ///< Of `checked`, the young large objects.
     uint64_t ylos_mismatched = 0;
     std::unordered_map<uint64_t, uint64_t> hits;          // packed key -> count
     std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
@@ -2624,24 +2212,29 @@ struct SurvivorWriteCensus {
     bool report_registered = false;
 };
 
+/// Returns the process's census, created on first use and never destroyed, so that it still exists for the exit
+/// report.
 SurvivorWriteCensus& survivorCensus() {
-    // Leaked on purpose: must outlive every nursery and still exist at atexit.
     static SurvivorWriteCensus* g = new SurvivorWriteCensus;
     return *g;
 }
 
+/// Packs `tag`, `sub` and `word` into one key of `hits`.
 inline uint64_t censusKey(int tag, uint32_t sub, uint16_t word) {
     return (static_cast<uint64_t>(tag & 0xFF) << 48) |
            (static_cast<uint64_t>(sub) << 16) | word;
 }
 
-// threaded-gc-04: the header's GC-owned bits (color, age, builder) are masked.
+/// Returns the census hash of the object at `obj`: `p1::hashObject`, which ignores the header's colour, age and
+/// builder bits.
 inline uint64_t censusHash(const char* obj, size_t size) {
     return p1::hashObject(obj, size);
 }
 
+/// Prints the census's counts and its 50 most frequent changes to stderr. `g.mu` must be held.
 void survivorCensusReportLocked(SurvivorWriteCensus& g);
 
+/// Prints the census report, taking the lock. Registered with `atexit`.
 void survivorCensusReport() {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);
@@ -2695,7 +2288,7 @@ void survivorCensusReportLocked(SurvivorWriteCensus& g) {
 
 bool NurserySpace::censusEnabled() const {
     if (census_forced_ >= 0) return census_forced_ == 1;
-    return p1::mode() != 0;   // ECO_P1_CENSUS (ECO_SURVIVOR_WRITE_CENSUS alias)
+    return p1::mode() != 0;
 }
 
 void nurseryCensusForkPrepare() { survivorCensus().mu.lock(); }
@@ -2715,7 +2308,7 @@ void nurseryCensusReport(bool from_signal) {
 }
 
 void NurserySpace::censusRecord(OldGenSpace& oldgen) {
-    // threaded-gc-04b: YLOS objects that stay young are survivors too.
+    // Young large objects that stay young are survivors too; they never move, so they are recorded by address.
     census_ylos_.clear();
     census_ylos_epoch_ = oldgen.majorEpoch();
     for (void* obj : young_large_scan_) {
@@ -2734,7 +2327,7 @@ void NurserySpace::censusRecord(OldGenSpace& oldgen) {
         const size_t sz = getObjectSize(scan);
         if (sz == 0 || scan + sz > end) break;   // pre-walk would have aborted
         const Header* h = getHeader(scan);
-        if (h->tag == Tag_Free) { scan += sz; continue; }   // threaded-gc-06 filler
+        if (h->tag == Tag_Free) { scan += sz; continue; }   // a filler
         CensusEntry e;
         e.offset_q = static_cast<uint32_t>((scan - base) >> 3);
         e.size = static_cast<uint32_t>(sz);
@@ -2764,7 +2357,7 @@ void NurserySpace::censusCheck(OldGenSpace& oldgen) {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);
     g.minors++;
-    // threaded-gc-04b: YLOS survivors (still young, no major since).
+    // Young large objects, unless a major collection has run since they were recorded.
     if (!census_ylos_.empty() && oldgen.majorEpoch() == census_ylos_epoch_) {
         for (const CensusYlosEntry& e : census_ylos_) {
             if (!oldgen.isYoungLarge(e.obj)) continue;
@@ -2841,10 +2434,8 @@ void NurserySpace::censusCheck(OldGenSpace& oldgen) {
     census_.clear();
 }
 
-// threaded-gc-07 TV11: detector N in region form. At minor end every object
-// of the Fresh extent (survivor part and builder area), of the Tenuring
-// extent's survivor part and of the Fresh generation's YLOS objects is
-// hashed; tenureJoin re-hashes them BEFORE the heal (trap 9).
+// Records the survivor parts of the Young and Tenuring extents, the builder area of the age-1 Young extent, and the
+// young large objects of each Young extent's generation that are still young.
 void NurserySpace::censusRecordRegion(OldGenSpace& oldgen) {
     RegionState& R = *rg_;
     R.census.clear();

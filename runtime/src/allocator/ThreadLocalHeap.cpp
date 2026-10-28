@@ -1,10 +1,3 @@
-/**
- * ThreadLocalHeap Implementation.
- *
- * Implements the per-thread heap containing nursery, old gen, and GC stats.
- * Each thread has its own independent GC with no synchronization required.
- */
-
 #include "ThreadLocalHeap.hpp"
 #include "P1Census.hpp"
 #include "Allocator.hpp"
@@ -20,13 +13,12 @@
 #include <cstdlib>
 #include <cstring>
 #if ECO_HEAP_VALIDATE
-#include <execinfo.h>   // threaded-gc-04b ECO_LARGE_PTR_TRACE
+#include <execinfo.h>   // ECO_LARGE_PTR_TRACE backtraces
 #include <fcntl.h>
 #include <unistd.h>
 #endif
-// musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
-// no-ops so the debug paths compile. glibc keeps its real backtrace. See
-// plans/static-link-eco-binary.md.
+// A C library without <execinfo.h>, such as musl, gets no-op stand-ins so that the backtrace calls below compile;
+// they then print no frames.
 #if defined(__has_include) && __has_include(<execinfo.h>)
 #  include <execinfo.h>
 #else
@@ -40,9 +32,8 @@
 
 namespace {
 
-// Latched once per process. Reads ECO_GC_PHASE_PROFILE.
-//   "0" / unset / empty -> disabled
-//   any other value     -> enabled
+// Returns whether ECO_GC_PHASE_PROFILE is set to anything other than empty or "0", read once per process. When it
+// is, each stop-the-world major and each cycle handoff prints a "[gc-profile]" line to stderr.
 inline bool gcPhaseProfileEnabled() {
     static const bool enabled = []{
         const char* e = std::getenv("ECO_GC_PHASE_PROFILE");
@@ -52,6 +43,7 @@ inline bool gcPhaseProfileEnabled() {
     return enabled;
 }
 
+// Returns the nanoseconds from `a` to `b`.
 inline uint64_t nsBetween(
         const std::chrono::high_resolution_clock::time_point& a,
         const std::chrono::high_resolution_clock::time_point& b) {
@@ -65,9 +57,8 @@ namespace Elm {
 ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp: M6 probes log while set
 
 #if ENABLE_GC_STATS
-// Bumps the per-thread counter that matches the trigger reason returned by
-// OldGenSpace::evaluateMajorGCTrigger, so the printed GC summary attributes
-// each major GC to a specific cause.
+// Adds one to the counter in `stats` for the major-collection trigger `reason`. Headroom shares the global-pressure
+// counter, and LiveBudget the garbage counter; None counts nothing.
 static inline void
 recordMajorTriggerReason(GCStats& stats,
                          OldGenSpace::MajorGCTriggerReason reason) {
@@ -76,11 +67,11 @@ recordMajorTriggerReason(GCStats& stats,
             stats.major_gc_occupancy_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::GlobalPressure:
-        case OldGenSpace::MajorGCTriggerReason::Headroom:   // same counter (05c)
+        case OldGenSpace::MajorGCTriggerReason::Headroom:
             stats.major_gc_global_pressure_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::GarbageFraction:
-        case OldGenSpace::MajorGCTriggerReason::LiveBudget:  // same counter
+        case OldGenSpace::MajorGCTriggerReason::LiveBudget:
             stats.major_gc_garbage_triggers++;
             break;
         case OldGenSpace::MajorGCTriggerReason::None:
@@ -89,9 +80,8 @@ recordMajorTriggerReason(GCStats& stats,
 }
 #endif
 
-// Maps the trigger enum onto the event-log reason tag. Separate enums on
-// purpose: the log also has to name causes that never pass through
-// evaluateMajorGCTrigger (hard alloc failure, forced collections).
+// Returns the event-log reason for the trigger `reason`, and Unknown for None. The two enumerations are separate
+// because the log also names causes that are not triggers, such as an allocation failure or a forced collection.
 static inline GCStats::MajorReason
 majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
     switch (reason) {
@@ -111,8 +101,6 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
     return GCStats::MajorReason::Unknown;
 }
 
-// Release-mode abort for a Custom/Record past its wide-object limit (HEAP_019):
-// a 6-bit K would otherwise wrap. Slow paths only.
 [[noreturn]] void ecoFatalWideObject(const char* where, u32 n) {
     std::fprintf(stderr, "[eco] FATAL: %s: %u slots exceeds the wide-object limit (HEAP_019)\n",
                  where, n);
@@ -120,22 +108,8 @@ majorReasonTag(OldGenSpace::MajorGCTriggerReason reason) {
     std::abort();
 }
 
-// Initializes a freshly-allocated object header for the given tag.
-// `size` is the total aligned byte size returned by the allocator. For
-// variable-size types, hdr->size is overwritten with the per-type element
-// count; for fixed-size types it stores the byte size.
-//
-// The header is zeroed first; callers may set additional fields (e.g. pin,
-// color) after this returns.
-//
-// Exposed (non-static) so the generic eco_alloc_with_roots helper in
-// RuntimeExports.cpp can apply the same header-init policy on its fast
-// path (allocateFast does not touch the header; only allocateSlow does
-// via this function).
 void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
     zeroNewObject(hdr, size);
-    // The header is composed locally and written with ONE 8-byte store, so no
-    // reader can see a size without its K (Custom/Record, HEAP_019/HEAP_077).
     Header h{};
     h.tag = tag;
 
@@ -146,21 +120,17 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
         case Tag_StringSlice:
         case Tag_StringRope:
         case Tag_StringUtf8View:
-            // Constructors (StringOps::makeSlice / makeRope / makeUtf8View) set
-            // header.size explicitly to the logical UTF-16 length; nothing to
-            // derive from byte size.
+            // The constructors set header.size to the logical UTF-16 length, which the byte size does not give.
             h.size = 0;
             break;
         case Tag_StringUtf8Leaf:
-            // Inline ASCII bytes: 1 unit per byte, so the logical length is the
-            // payload byte count (mirrors Tag_String's u16 derivation).
+            // One unit per payload byte.
             h.size = static_cast<u32>(size - sizeof(ElmStringUtf8Leaf));
             break;
         case Tag_Custom:
         case Tag_Record: {
-            // Layout C: the byte size covers W = n + K value words; invert it to the
-            // field count n (header.size) and K (header.unboxed), and zero the K ext
-            // words (zeroNewObject cleared only the header word).
+            // The byte size covers W = n + K words; split it into the field count n and the extension words K,
+            // and zero those words, which zeroNewObject left.
             const bool isC = tag == Tag_Custom;
             const size_t base = isC ? sizeof(Custom) : sizeof(Record);
             const u32 cap  = isC ? CUSTOM_HDR_SLOTS : RECORD_HDR_SLOTS;
@@ -191,8 +161,6 @@ void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
     }
     std::memcpy(hdr, &h, sizeof(Header));
 
-    // Per-kind mutator allocation accounting. No-op when ENABLE_GC_STATS=0;
-    // does a thread-local lookup + two array bumps when stats are on.
     GC_STATS_TLH_RECORD_ALLOC(size, tag);
 }
 
@@ -208,20 +176,9 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
 {
     assert(parent && "Parent allocator must not be null");
     assert(config && "Config must not be null");
-    // Note: nursery_base and old_gen_base may be null if memory is allocated
-    // on demand — the nursery claims a slice pair (HEAP_042) and the old gen
-    // acquires buffers when they initialize.
-
-    // Initialize old gen with reference to parent Allocator. The initialize
-    // call now pre-commits `initial_old_gen_size` as one contiguous region
-    // and slices it into pages stored in `unassigned_blocks_` (BBoP).
     old_gen_.initialize(parent_, config_);
-
-    // Initialize nursery with reference to this heap for promotion.
     nursery_.initialize(this, config_);
-
-    // HEAP_053: the old gen's mark path asks THIS heap's nursery, not the
-    // calling thread's (Allocator::isInNursery via tl_heap_).
+    // Marking tells young from old by this heap's nursery, not the calling thread's (HEAP_053).
     old_gen_.bindNursery(&nursery_);
 }
 
@@ -236,12 +193,8 @@ void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t
     }
 #endif
 #if ECO_HEAP_VALIDATE
-    // D6: a trace of large allocation sites (the tool for spotting a kernel
-    // that builds big flat pointer arrays).
-    // ECO_LARGE_PTR_TRACE=1 traces to stderr with a backtrace; any other
-    // non-empty value is a FILE PATH that one line per allocation is appended
-    // to (O_APPEND: forked test children can share it — the runners' children
-    // _exit, so their stats banners never print).
+    // The file is opened for appending so that forked test children, which _exit without printing statistics,
+    // can all write to it. A file that cannot be opened turns the trace off.
     static const int trace_fd = [] {
         const char* e = std::getenv("ECO_LARGE_PTR_TRACE");
         if (e == nullptr || e[0] == '\0') return -1;
@@ -267,24 +220,18 @@ void ThreadLocalHeap::noteLargeAlloc(LargePlacement where, size_t size, uint32_t
 
 // TLA-REGION(TLH.destructor) begin
 ThreadLocalHeap::~ThreadLocalHeap() {
-    // M6 fork harness (det-cr031): a child's exit() reached this heap's teardown (CR-031).
+    // Trace builds only: tells the M6 fork model that a forked child's exit reached this destructor (CR-031).
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.tlh.dtor");)
-    // threaded-gc-07: stop / finish / stats-merge the last tenure job while
-    // the old gen (destroyed before the nursery) still exists.
+    // The old generation is destroyed before the nursery, so the tenure job, which writes into it, is finished
+    // while it still exists.
     nursery_.tenureTeardown(old_gen_);
-    // threaded-gc-04: verify, then drop, this heap's P1 census table.
     p1::forget(old_gen_);
 }
 // TLA-REGION(TLH.destructor) end
 
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
-    // Align to 8 bytes up front so the threshold comparison is meaningful
-    // (matches the alignment performed inside nursery/oldgen allocators).
     size = (size + 7) & ~static_cast<size_t>(7);
 
-    // Large-object path (threaded-gc-04b P§3.1): a pointer-free object goes
-    // to the old gen, pinned; a pointer-bearing one to the nursery up to the
-    // cap, else to the young large-object space. Never born old.
     if (size >= config_->large_object_threshold) {
         switch (placeLarge(size, tag)) {
             case LargePlacement::PointerFree: return allocateLargePinned(size, tag);
@@ -295,20 +242,13 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
         }
     }
 
-    // Fast path. NurserySpace::allocate's bump-pointer compares against
-    // bump_.end, which is pre-clamped to the earlier of (from-space extent
-    // end, proactive-GC threshold trip point) by computeAllocEnd. So a
-    // single compare enforces both space-fit and threshold-fit.
+    // The nursery's limit already accounts for its collection threshold, so one compare checks room and threshold.
     void* obj = nursery_.allocate(size);
     if (obj) {
         initHeaderForTag(getHeader(obj), tag, size);
         return obj;
     }
 
-    // Slow path: nursery returned nullptr. This means either the threshold
-    // tripped or the nursery is genuinely full. minorGC handles both —
-    // after evacuation, the bump pointer resumes after the survivors and a
-    // fresh clamped end is computed.
     minorGC();
     obj = nursery_.allocate(size);
     if (obj) {
@@ -316,14 +256,8 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
         return obj;
     }
 
-    // Still nothing: the survivors left less room below the PROACTIVE
-    // threshold than this object needs. Collecting again cannot help (no
-    // allocation has happened since), so drop the clamp for the rest of
-    // this cycle and use the extent — the same fail-soft computeAllocEnd
-    // applies when survivors already sit past the threshold, and the same
-    // rung ensureNursery has. (The block design masked this case with
-    // block-quantized threshold arithmetic plus a block advance; a
-    // byte-exact clamp over one extent needs it explicitly.)
+    // The survivors left less room below the threshold than this object needs. Collecting again cannot help, as
+    // nothing has been allocated since, so use the rest of the extent.
     nursery_.failSoftUnclamp();
     obj = nursery_.allocate(size);
     if (obj) {
@@ -331,11 +265,8 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
         return obj;
     }
 
-    // Nursery allocation still failed — genuinely out of space. Cannot fall
-    // back to old-gen allocation: the object's fields would be filled in
-    // afterwards, potentially creating old→young pointers that violate
-    // the generational GC invariant. A large object can still go to the
-    // young large-object space, which is young.
+    // The nursery is full. An old-generation object is not an option: its fields, filled in afterwards, could
+    // point at young objects (HEAP_062). The YLOS is young, so a large object can still go there.
     if (size >= config_->large_object_threshold) {
         return allocateYoungLarge(size, tag);
     }
@@ -344,22 +275,14 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
 }
 
 void* ThreadLocalHeap::allocateFast(size_t size) {
-    // Pure bump-pointer: no GC, no threshold check, no header init.
-    // Returns nullptr when nursery has insufficient space.
     size = (size + 7) & ~static_cast<size_t>(7);
-    // threaded-gc-07 (P§3.13): in region mode every nursery object has an
-    // old-gen size class; a larger request takes the caller's slow path,
-    // which places it (SIZE_MAX in legacy mode).
     if (__builtin_expect(size > nursery_.regionLargeCap(), 0)) return nullptr;
     return nursery_.allocate(size);
 }
 
 void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
-    // Slow path: GC then allocate. Called after allocateFast returns nullptr.
     size = (size + 7) & ~static_cast<size_t>(7);
 
-    // Large objects: same placement as allocate(). The Nursery placement
-    // takes the GC-and-retry path below.
     if (size >= config_->large_object_threshold) {
         switch (placeLarge(size, tag)) {
             case LargePlacement::PointerFree: return allocateLargePinned(size, tag);
@@ -378,7 +301,6 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
         return obj;
     }
 
-    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
     nursery_.failSoftUnclamp();
     obj = nursery_.allocate(size);
     if (obj) {
@@ -394,14 +316,6 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
 }
 
 void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
-    // Slow path for the compiled-code inline nursery bump
-    // (eco_alloc_inline_slow, HEAP_034): minor GC + retry, but NO header
-    // init — the caller composes and stores the full header word itself
-    // before its next safepoint. Inline-alloc sizes are compile-time
-    // constants far below the large-object threshold, so assert rather than
-    // route to old gen (the caller's fresh-object stores assume a nursery
-    // placement; old-gen placement would create unremembered old→young
-    // edges).
     size = (size + 7) & ~static_cast<size_t>(7);
     assert(size < config_->large_object_threshold &&
            "allocateSlowRaw: inline-alloc size must be below the LOT threshold");
@@ -413,7 +327,6 @@ void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
         return obj;
     }
 
-    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
     nursery_.failSoftUnclamp();
     obj = nursery_.allocate(size);
     if (obj) {
@@ -425,10 +338,6 @@ void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
 }
 
 void ThreadLocalHeap::ensureNursery(size_t n) {
-    // Cold edge of a hoisted capacity check (HEAP_041,
-    // plans/capacity-check-hoisting.md). Establishes
-    // `bump_.end - bump_.ptr >= n` and allocates NOTHING; the covered run's
-    // unchecked bumps consume the guarantee afterwards.
     assert(n <= 4096 && (n & 7) == 0 &&
            "ensureNursery: budget out of inline-alloc bounds");
     GC_STATS_ENSURE_SLOW_CALL(stats_);
@@ -442,10 +351,8 @@ void ThreadLocalHeap::ensureNursery(size_t n) {
         return;
     }
 
-    // Tiny-config corner: a CLAMPED end that sits below n
-    // (threshold_total_bytes_ < n) would GC-loop here. Fail soft exactly
-    // like computeAllocEnd's already-full clause — hand out the rest of the
-    // from-space extent.
+    // A threshold below `n`, possible only in a very small nursery, would make every collection leave too little
+    // room, so use the rest of the extent.
     nursery_.failSoftUnclamp();
     if (nursery_.ensureHeadroom(n)) {
         return;
@@ -455,14 +362,9 @@ void ThreadLocalHeap::ensureNursery(size_t n) {
 }
 
 void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
-    // Slow path for contiguous region allocation. May GC.
-    // Caller handles header init for each sub-object.
     total = (total + 7) & ~static_cast<size_t>(7);
 
-    // A large closure-group region is several objects, so it cannot go to
-    // the young large-object space (per object); it must fit the nursery
-    // (threaded-gc-04b P§3.2). Bounded by the whole nursery, not the
-    // placement cap: a region is not a large-object tuning decision.
+    // A large region is bounded by the whole nursery, not by the cap placeLarge applies to a single object.
     const bool large = total >= config_->large_object_threshold;
     if (large) {
         noteLargeAlloc(LargePlacement::Region, total, Tag_Closure);
@@ -473,7 +375,6 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     void* obj = nursery_.allocate(total);
     if (obj) return obj;
 
-    // Post-GC threshold fail-soft — see ThreadLocalHeap::allocate.
     nursery_.failSoftUnclamp();
     obj = nursery_.allocate(total);
     if (obj) return obj;
@@ -495,7 +396,8 @@ size_t ThreadLocalHeap::directAllocBudget() const {
     const double f = config_->direct_alloc_minor_budget;
     if (!(f > 0.0)) return 0;
     size_t b = static_cast<size_t>(f * static_cast<double>(nursery_.minorThresholdBytes()));
-    // The cap bound keeps a minor inside the cycle pressure-finish window (D2, G2).
+    // The bound by the cap makes a minor, where a running mark cycle takes its next step, come due after about a
+    // 32nd of the cap has been allocated directly, however large the nursery is.
     const size_t cap = parent_->getOldGenMaxBytes();
     if (cap != 0) b = std::min(b, cap / 32);
     return std::max<size_t>(b, 1);
@@ -503,7 +405,7 @@ size_t ThreadLocalHeap::directAllocBudget() const {
 
 void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
     const uint64_t seq = nursery_.minorSeq();
-    if (seq != direct_debt_seq_) {   // a minor ran since the last note: the debt is paid
+    if (seq != direct_debt_seq_) {   // a minor has run since the last note
         direct_debt_seq_ = seq;
         direct_debt_bytes_ = 0;
     }
@@ -529,13 +431,6 @@ void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
 }
 
 void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
-    // threaded-gc-04b HEAP_062: an old-gen cell that is YOUNG — registered
-    // with the current minor color, so the next minor frees it unless it is
-    // reached. No minor GC here: the caller's raw pointers stay valid unless
-    // the old gen is full and a major runs first (before the cell exists).
-    // Even then nothing moves, but in region mode that major zaps every
-    // survivor it did not reach (HEAP_074): a pointer the caller stores into
-    // the new object must be rooted across this call (HeapHelpers Pattern 1).
     noteLargeAlloc(LargePlacement::Ylos, size, tag);
     void* obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
     if (!obj) {
@@ -551,16 +446,11 @@ void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
 }
 
 void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
-    // size is already 8-byte aligned by the caller. Pointer-free tags only
-    // (threaded-gc-04b V4): a pointer-bearing object is never born old.
-    // plans/large-object-space.md D3: it lives in the LOS object pool as a
-    // kind-2 (old) entry, freed by the major GC when unmarked.
     assert(!tagMayHoldPointers(tag) &&
            "allocateLargePinned: pointer-bearing objects go to the nursery or YLOS");
     noteLargeAlloc(LargePlacement::PointerFree, size, tag);
     void* obj = old_gen_.allocateOldLarge(size, tag);
     if (!obj) {
-        // Try once after a major GC to reclaim space.
 #if ENABLE_GC_STATS
         stats_.major_gc_alloc_failure_triggers++;
 #endif
@@ -576,24 +466,10 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
 }
 
 HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
-    // The caller (HeapHelpers::allocString) guarantees length > 0 and that
-    // the total payload meets the split threshold; this function never
-    // returns the empty-string constant.
-    //
-    // Ordering note (HEAP_026): allocate the nursery header FIRST, then the
-    // old-gen body. The nursery allocate() may trigger a minor GC; if we
-    // reversed this order, the body would be registered in
-    // nursery_owned_bodies_ with no header pointing at it, and the
-    // sweepNurseryLargeBodies at the end of that minor GC would free the
-    // body before we could wire it in (the body's color would be the
-    // pre-flip minor color; the header that would have refreshed it via
-    // markLargeBodySeen does not yet exist).
-    //
-    // Recovery (plans/large-body-gc-trigger.md D4): a failed attempt abandons
-    // its header with a null body (unreachable garbage every GC path skips),
-    // runs a minor (first failure) or a major (second), and the retry starts
-    // again from the header. A third failure is fatal.
-    // plans/large-object-space.md D4 (HEAP_081): the body is the payload only.
+    // A body registered before a minor collection with no header pointing at it would carry the old minor
+    // colour, and the large-body sweep at the end of that collection would free it. So the header comes first, and
+    // nothing between registering the body and storing it in the header can collect. An abandoned header, with
+    // its null body, is unreachable garbage that every collector path skips.
     const size_t body_size = (length * sizeof(u16) + 7) & ~static_cast<size_t>(7);
     for (int attempt = 0;; ++attempt) {
         const size_t header_size = sizeof(LargeStringHeader);
@@ -601,17 +477,10 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
         assert(header_obj && "Failed to allocate large string header in nursery");
         LargeStringHeader* h = static_cast<LargeStringHeader*>(header_obj);
         h->header.size = static_cast<u32>(length);
-        // Body field is null until step 4. A GC that visits the header here
-        // would see hp.ptr == 0 and skip the body slot via the markHPointer /
-        // markLargeBodySeen null guards.
         h->body = hpFromBits(0);  // null HPointer (all fields zero)
         HPointer header_hp = parent_->wrap(header_obj);
 
-        // Step 3: allocate body in old gen. old_gen_.allocate does NOT trigger a
-        // minor GC (only the nursery allocate above does), so header_obj stays
-        // put through this call. registerLargeBody runs with the post-step-1
-        // minor_color_, which matches the value the next minor GC's sweep will
-        // compare against.
+        // This cannot collect, so header_obj stays where it is.
         void* body =
             old_gen_.allocateLargeBody(body_size, length, Tag_String,
                                        nursery_.minor_color_);
@@ -638,9 +507,6 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
             std::memcpy(body, chars, length * sizeof(u16));
         }
 
-        // Step 4: wire body into header. No GC fires between body registration
-        // and this assignment, so the next minor GC scans an already-complete
-        // header → body link.
         h->body = parent_->wrap(body);
         noteDirectAlloc(body_size);
         return header_hp;
@@ -648,8 +514,7 @@ HPointer ThreadLocalHeap::allocLargeString(const u16* chars, size_t length) {
 }
 
 HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
-    // Same ordering and recovery rationale as allocLargeString — see the comment there.
-    // plans/large-object-space.md D4 (HEAP_081): the body is the payload only.
+    // Ordered as allocLargeString is, for the same reason.
     const size_t body_size = (length + 7) & ~static_cast<size_t>(7);
     for (int attempt = 0;; ++attempt) {
         const size_t header_size = sizeof(LargeByteHeader);
@@ -695,11 +560,8 @@ HPointer ThreadLocalHeap::allocLargeByteBuffer(const u8* data, size_t length) {
 }
 
 void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
-    // Allocate directly in old generation - for permanent objects like string literals.
     size = (size + 7) & ~static_cast<size_t>(7);
     if (size >= config_->large_object_threshold) {
-        // plans/large-object-space.md D3: a large permanent-space fallback
-        // lives in the LOS object pool (kind 2), never in an ordinary block.
         void* big = old_gen_.allocateOldLarge(size, tag);
         assert(big && "Failed to allocate a large permanent object in old gen.");
         return big;
@@ -710,7 +572,8 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
         Header* hdr = getHeader(obj);
         u32 saved_color = hdr->color;
         initHeaderForTag(hdr, tag, size);
-        Header h = loadHeaderRelaxed(hdr);   // whole-word fix-up (hygiene; no concurrent reader)
+        // Restores the colour OldGenSpace::allocate gave the object, which initHeaderForTag cleared.
+        Header h = loadHeaderRelaxed(hdr);
         h.color = saved_color;
         storeHeaderRelaxed(hdr, h);
         return obj;
@@ -725,18 +588,13 @@ bool ThreadLocalHeap::shouldCollectAtSafepoint() const {
         return true;
     if (isNurseryNearFull(config_->nursery_gc_threshold))
         return true;
-    // 75% old-gen occupancy trigger: stop at the next safepoint so we can
-    // run a major GC before this thread's old gen is exhausted.
     return old_gen_.shouldTriggerMajorGC();
 }
 
 void ThreadLocalHeap::collectAtSafepoint() {
     force_gc_ = false;
-    // Minor GC is now threshold-gated: without this, a forced safepoint
-    // (e.g. from a single `force_gc_ = true`) could run a minor GC when
-    // the nursery is near-empty, which is wasted work. `minorGC()` itself
-    // chains into a major GC when the 75% old-gen trigger is live, so
-    // covering the non-nursery-full case is enough here.
+    // A minor collection evaluates the major triggers itself at its end, so the major is needed here only when
+    // the nursery is not full.
     if (isNurseryNearFull(config_->nursery_gc_threshold)) {
         minorGC();
     } else {
@@ -751,17 +609,18 @@ void ThreadLocalHeap::collectAtSafepoint() {
 }
 
 #if ENABLE_GC_PHASE_TIMERS
-// threaded-gc-00: brackets the OUTERMOST minorGC/majorGC call on this thread,
-// so a minor that triggers a major is recorded as one contiguous pause.
+// A scope that times a pause: constructed at the start of every minorGC/majorGC/majorGCAndShrink call, it records
+// one pause when the outermost call ends, so a minor that runs a major is one pause. `h` must outlive it.
 struct GCPauseScope {
     ThreadLocalHeap& h;
+    // Starts timing if this is the outermost call, and notes whether this call is a major.
     GCPauseScope(ThreadLocalHeap& heap, bool is_major) : h(heap) {
         if (h.gc_depth_++ == 0) {
             h.pause_start_ns_ = GCStats::nowSinceProcessStartNs();
             h.pause_saw_minor_ = false;
             h.pause_saw_major_ = false;
             h.pause_saw_t0_ = h.pause_saw_slice_ = h.pause_saw_handoff_ = false;
-            h.pause_cpu_start_ns_ = gc::GCHelperPool::threadCpuNs();   // 05c P§3.13
+            h.pause_cpu_start_ns_ = gc::GCHelperPool::threadCpuNs();
         }
         (is_major ? h.pause_saw_major_ : h.pause_saw_minor_) = true;
     }
@@ -769,16 +628,14 @@ struct GCPauseScope {
         if (--h.gc_depth_ == 0) {
             const uint64_t now = GCStats::nowSinceProcessStartNs();
             uint8_t kind = h.pause_saw_minor_ ? (h.pause_saw_major_ ? 1 : 0) : 2;
-            // threaded-gc-05a: a minor pause that carried cycle work.
-            // Precedence: major > handoff > t0 > slice.
+            // A minor pause that carried cycle work takes the kind of that work: handoff, then t0, then step.
             if (kind == 0) {
                 if (h.pause_saw_handoff_) kind = 5;
                 else if (h.pause_saw_t0_) kind = 3;
                 else if (h.pause_saw_slice_) kind = 4;
             }
             h.recordPause(h.pause_start_ns_, now - h.pause_start_ns_, kind);
-            // threaded-gc-05c (P§3.13): mutator CPU in and outside pauses, for
-            // the interference figure (mode 2 vs mode 0).
+            // The mutator's CPU time, in pauses and in total.
             const uint64_t cpu = gc::GCHelperPool::threadCpuNs();
             ConcMarkStats& c = h.old_gen_.getStats().cm;
             c.mutator_pause_cpu_ns += cpu - h.pause_cpu_start_ns_;
@@ -804,12 +661,13 @@ void ThreadLocalHeap::recordMinorPhases(MinorGCRecord& rec) {
 }
 #endif
 
-// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.5): the helper
-// sync point at the end of the OUTERMOST pause. Declared after GCPauseScope so
-// it destructs first: sync-mode helper work is inside the pause bracket.
+// A scope that ends a pause: constructed in every minorGC/majorGC/majorGCAndShrink call, it reports the sync point
+// (Allocator::onGCPauseEnd) when the outermost call ends. Declared after GCPauseScope in each function, so it is
+// destroyed first and the sync point's own work is timed as part of the pause. `h` and `parent` must outlive it.
 struct PauseEndHook {
     ThreadLocalHeap& h;
     Allocator* parent;
+    // Enters one level of the pause.
     PauseEndHook(ThreadLocalHeap& heap, Allocator* p) : h(heap), parent(p) {
         ++h.pause_depth_;
     }
@@ -823,11 +681,8 @@ struct PauseEndHook {
 };
 
 // TLA-REGION(TLH.majorGCAndShrink) begin
-// plans/frontend-heap-release.md §3.4 (HEAP_076): one pause, one sync point.
-// The outermost PauseEndHook here makes the nested majorGC's hook an inner
-// one, so its sync point (onGCPauseEnd, had_major = true) runs once, after
-// the sweep and the forced shrink, and the shrink's releases are Pending
-// before it. The caller discards them after the pause (AL.releaseDiscard).
+// This function's PauseEndHook is the outermost, so the nested majorGC's is an inner one and the single sync point
+// comes after the sweep and the shrink.
 ThreadLocalHeap::ReleaseTimings ThreadLocalHeap::majorGCAndShrink() {
 #if ECO_HEAP_VALIDATE
     assertOwner("majorGCAndShrink");
@@ -840,14 +695,13 @@ ThreadLocalHeap::ReleaseTimings ThreadLocalHeap::majorGCAndShrink() {
 #if ENABLE_GC_PHASE_TIMERS
     GCPauseScope pause_scope(*this, /*is_major=*/true);
 #endif
-    PauseEndHook pause_end(*this, parent_);   // outermost: ONE onGCPauseEnd, had_major = true
+    PauseEndHook pause_end(*this, parent_);
     auto now = []() -> uint64_t {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
     };
     ReleaseTimings t{};
     uint64_t s = now();
-    // Nested (depth 2): joins the tenure job and finishes a live cycle by Join.
     majorGC(GCStats::MajorReason::Explicit);
     t.gc_ns = now() - s;
     s = now();
@@ -894,8 +748,7 @@ void ThreadLocalHeap::minorGC() {
     rec.frames_walked = sw.frames_walked;
     rec.frames_matched = sw.frames_matched;
     rec.stack_slots = sw.slots;
-    // threaded-gc-07 (P§3.15): join and MERGE the previous tenure job
-    // before anything else touches the heap.
+    // The previous tenure job is joined and merged before the minor touches the heap.
     if (nursery_.regionMode()) {
         rec.rg_region = 1;
         nursery_.tenureJoin(old_gen_, 0, &rec);
@@ -907,9 +760,7 @@ void ThreadLocalHeap::minorGC() {
     if (nursery_.regionMode()) nursery_.tenureJoin(old_gen_, 0, nullptr);
     nursery_.minorGC(old_gen_, stack_map_roots_, nullptr);
 #endif
-    // threaded-gc-07 (trap 2 / trap 6): the tenure job of this minor is built
-    // and launched on EVERY return path below, after any cycle start, cycle
-    // step, handoff or STW major of this pause.
+    // This minor's tenure job is launched on every return path below, after any cycle work or major in this pause.
     struct TenureLaunchScope {
         ThreadLocalHeap& h;
         ~TenureLaunchScope() {
@@ -919,24 +770,16 @@ void ThreadLocalHeap::minorGC() {
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC end");
     }
-    // threaded-gc-05c Part B (P§3.11): the promotion-rate estimate, at every
-    // minor end, before the cycle step or the trigger.
+    // Before the cycle step and the triggers, which read the estimate.
     old_gen_.notePacingMinorEnd();
 
-    // 75% occupancy trigger: minor GC promotes into old gen, so allocated
-    // bytes can cross the initiating threshold here. Safepoint polling is
-    // not dense in MLIR-generated code, so we also check at the end of
-    // every minor GC to avoid filling the old gen before the next
-    // safepoint fires.
-    //
-    // threaded-gc-05a (HEAP_063): while an incremental cycle runs, this minor
-    // end is one of its steps instead (triggers are suppressed; a pause that
-    // runs a handoff does not evaluate them again).
+    // A minor promotes into the old generation, so this is where its triggers come to hold. While a cycle runs,
+    // the minor end is a step of it instead, and a pause that runs the handoff does not evaluate the triggers.
     if (old_gen_.cycleActive()) {
         stepMarkCycle();
         return;
     }
-    if (__builtin_expect(test_force_major_trigger_, 0)) {   // tests only
+    if (__builtin_expect(test_force_major_trigger_, 0)) {
         test_force_major_trigger_ = false;
         if (useMarkCycle()) startMarkCycle(GCStats::MajorReason::Forced);
         else majorGC(GCStats::MajorReason::Forced);
@@ -967,43 +810,33 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     PauseEndHook pause_end(*this, parent_);
     ECO_TLA_TRACE("major", "cyc", old_gen_.cycleActive());   // M1 trace: J_Join
     pause_had_major_ = true;
-    // threaded-gc-07 (P§3.16): a STW major joins and merges the tenure job
-    // first; its mark then greys the copy of every forwarded tenuring object.
+    // The tenure job is joined and merged first, so the mark sees its copies.
     if (nursery_.regionMode()) nursery_.tenureJoin(old_gen_, 1, nullptr);
-    // threaded-gc-05a (P§3.8): a join. A running incremental cycle frees only
-    // what was dead at its t0; an allocation failure or an explicit major
-    // needs everything dead now. Finish the cycle, then run the requested STW
-    // major as usual (two majors: an emergency path).
+    // A cycle frees only what was dead at its t0, and a major run for an allocation failure or on request must free
+    // everything dead now, so a running cycle is finished first and the major then runs as well.
     if (old_gen_.cycleActive()) {
         finishMarkCycleNow(OldGenSpace::CycleFinish::Join);
     }
     const bool profile_phases = gcPhaseProfileEnabled();
 
-    // Dump sizes at major GC so the reproduction log makes it easy to see
-    // whether a major GC actually ran before the old-gen assert fired. The
-    // dump is a compile-time no-op unless the build was configured with
-    // `-DECO_HEAP_TRACE=ON` (the trace must then still be enabled at runtime
-    // via the `ECO_HEAP_TRACE` env var).
+    // Unlike minorGC's, this dump and the one at the end are not conditional on heapTraceEnabled(), so a build with
+    // ECO_HEAP_TRACE prints them on every major.
     parent_->dumpHeapState("majorGC begin");
 
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
-    // Snapshot the old-gen state BEFORE the pause so the event log can show
-    // what each collection walked into, not just what it left behind.
+    // The old generation as the major found it.
     stats_.beginMajorGCEvent(reason,
                              old_gen_.getAllocatedBytes(),
                              old_gen_.getCommittedBytes());
 #endif
 
-    // Per-phase profiling state (zero-cost when profile_phases is false —
-    // the rusage calls and clock reads still happen but their cost is
-    // negligible compared to the GC pause itself).
+    // The clock is read whether or not profiling is on; getrusage only when it is.
     auto t_enter = std::chrono::high_resolution_clock::now();
     long pf_enter_minor = 0, pf_enter_major = 0;
     long ctx_enter_vol = 0, ctx_enter_invol = 0;
 #if defined(RUSAGE_THREAD)
-    // RUSAGE_THREAD is Linux-only; on Darwin the per-thread fault/context-
-    // switch counters simply read as 0 in the phase profile.
+    // Without RUSAGE_THREAD the fault and context-switch counts print as 0.
     struct rusage ru_enter;
     if (profile_phases && getrusage(RUSAGE_THREAD, &ru_enter) == 0) {
         pf_enter_minor = ru_enter.ru_minflt;
@@ -1015,23 +848,15 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 
     collectStackRootsFromStackMap();
 
-    // Hoist nursery_.getRootSet() to a single resolution per major GC. The
-    // accessor itself is cheap, but the previous code re-fetched it four
-    // times (once for jit_roots, once for stack root ranges, once for
-    // external scanners, plus the implicit hits in collectRoots) — visible
-    // in profiles when major GC fires often.
     RootSet& root_set = nursery_.getRootSet();
 
-    // Collect long-lived roots from this thread.
     const std::unordered_set<HPointer*>& roots = collectRoots();
     const std::unordered_set<uint64_t*>& jit_roots = root_set.getJitRoots();
 
     auto t_after_root_collect = std::chrono::high_resolution_clock::now();
 
-    // threaded-gc-04: verify the P1 census's old-gen table before marking.
     p1::verifyOldGen(old_gen_, "major-start");
 
-    // Start marking phase with long-lived and JIT roots.
 #if ENABLE_GC_STATS
     old_gen_.startMark(roots, jit_roots, *parent_, stats_);
 #else
@@ -1042,10 +867,6 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     size_t stackrange_roots_pushed = 0;
     size_t external_roots_pushed = 0;
 
-    // Mark stackmap-derived roots, stack root ranges, single-slot stack roots
-    // and external roots (Scheduler run queue, PlatformRuntime state, MVar
-    // slots, Eco kernel Runtime state) — threaded-gc-05a D1: one enumeration
-    // shared with the incremental cycle's t0 snapshot.
     forEachMajorRoot(root_set, [&](HPointer& hp, int kind) {
         old_gen_.markHPointer(hp);
         if (kind == 0) ++stackmap_roots_pushed;
@@ -1055,12 +876,9 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 
     auto t_after_root_push = std::chrono::high_resolution_clock::now();
 
-    // Continue with marking and sweep.
     Elm::MajorGCPhaseProfile phase_profile;
 #if ENABLE_GC_STATS
-    // Always take the profiling overload in stats builds: the per-major event
-    // log needs the mark/sweep split, and the extra cost is a handful of clock
-    // reads against a pause measured in tens of milliseconds.
+    // Statistics builds always take the phase times, which the per-major event log needs.
     (void)profile_phases;
     old_gen_.finishMarkAndSweep(stats_, phase_profile);
 #else
@@ -1071,8 +889,8 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     }
 #endif
 
-    // CR-017 / HEAP_074: nursery_visited_ is exactly the young objects this major reached;
-    // every other survivor of a Young extent is dead and its old children may now be free.
+    // A survivor this major did not reach is dead, and the old objects it refers to may now be freed, so it is
+    // turned into a filler (HEAP_074, CR-017).
     if (nursery_.regionMode()) nursery_.zapDeadAfterMajor(old_gen_);
 
     auto t_done = std::chrono::high_resolution_clock::now();
@@ -1126,11 +944,7 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         const uint64_t total_ns      = nsBetween(t_enter, t_done);
         const uint64_t root_scan_ns  = nsBetween(t_enter, t_after_root_collect);
         const uint64_t root_push_ns  = nsBetween(t_after_root_collect, t_after_root_push);
-        // Time inside finishMarkAndSweep that wasn't accounted for as mark or
-        // sweep (e.g. computeFragmentationStats + adjustCapacityAfterMajorGC,
-        // both invoked inside sweep()). The phase_profile.sweep_ns covers the
-        // entire sweep() call including those, but we also report the
-        // measured wall-clock for the finishMarkAndSweep block as a sanity check.
+        // The wall-clock time of finishMarkAndSweep, printed beside its own mark and sweep figures as a check.
         const uint64_t finish_ns     = nsBetween(t_after_root_push, t_done);
         const uint64_t accounted_ns  = root_scan_ns + root_push_ns
                                      + phase_profile.mark_ns
@@ -1138,9 +952,7 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         const int64_t  unaccounted_ns =
             static_cast<int64_t>(total_ns) - static_cast<int64_t>(accounted_ns);
 
-        // Phase profiling (gcPhaseProfileEnabled) is independent of
-        // ENABLE_GC_STATS, but the major-GC sequence counter lives in stats_,
-        // which only exists in stats-enabled builds. Fall back to 0 otherwise.
+        // The major's sequence number exists only in statistics builds; 0 otherwise.
 #if ENABLE_GC_STATS
         const unsigned long long major_gc_seq = (unsigned long long)stats_.major_gc_count;
 #else
@@ -1194,27 +1006,18 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
 // TLA-REGION(TLH.majorGC) end
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
-    // LIVE per-side capacity, not the CONFIGURED one: the nursery grows
-    // adaptively, and measuring a grown nursery against its initial size
-    // reported "near full" from ~20% occupancy onward. Callers: the
-    // safepoint gating in collectAtSafepoint (reachable only via
-    // __eco_safepoint_poll, which compiled code does not emit today) and
-    // the synthetic benchmark driver's pacing loop (main.cpp).
-    size_t total_capacity = nursery_.from_capacity_bytes_;  // friend access
-    size_t usage = nursery_.objectBytesAllocated();   // threaded-gc-06 HEAP_068
+    // The current capacity, not the configured one, since the nursery grows. Object bytes exclude fillers
+    // (HEAP_068).
+    size_t total_capacity = nursery_.from_capacity_bytes_;
+    size_t usage = nursery_.objectBytesAllocated();
     return usage >= static_cast<size_t>(total_capacity * threshold);
 }
 
-// ===========================================================================
-// threaded-gc-05a: the incremental mark cycle driver (HEAP_063,
-// plans/threaded-gc-05a-incremental-marking.md P§3.1-P§3.8).
-// ===========================================================================
+// The mark cycle driver (HEAP_063).
 
 template <typename F>
 void ThreadLocalHeap::forEachMajorRoot(RootSet& root_set, F&& f) {
-    // kind 0: stack-map slots.
     for (HPointer* slot : stack_map_roots_.get()) f(*slot, 0);
-    // kind 1: stack root ranges (masked), then single-slot stack roots.
     for (const auto& range : root_set.getStackRootRanges()) {
         HPointer* base = range.base;
         uint64_t mask = range.hpointer_mask;
@@ -1223,7 +1026,7 @@ void ThreadLocalHeap::forEachMajorRoot(RootSet& root_set, F&& f) {
         }
     }
     for (HPointer* slot : root_set.getSingleRoots()) f(*slot, 1);
-    // kind 2: external root scanners (off-heap stores; HEAP_SNAPSHOT_002).
+    // External scanners report words of stores outside the heap (HEAP_SNAPSHOT_002).
     for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([&f](uint64_t& ref) {
             HPointer hp;
@@ -1233,6 +1036,7 @@ void ThreadLocalHeap::forEachMajorRoot(RootSet& root_set, F&& f) {
     }
 }
 
+// Returns the steady clock's time in nanoseconds.
 static inline uint64_t cycleNowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -1257,13 +1061,12 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
 #else
     (void)reason;
 #endif
-    // Fresh stack roots: the minor just updated every slot in place.
+    // The list is rebuilt; the minor that just ran updated the slots in place, so they hold the new addresses.
     collectStackRootsFromStackMap();
     RootSet& root_set = nursery_.getRootSet();
     p1::verifyOldGen(old_gen_, "cycle-start");
 
-    // threaded-gc-05b P§3.8: with incremental_mark off, a cycle exists only to
-    // run the mark on N markers -- T = 0, the whole cycle in this pause.
+    // With incremental marking off, the cycle exists only to mark on several threads, and has no steps.
     const uint32_t slices = config_->incremental_mark ? config_->incremental_mark_slices : 0;
     old_gen_.beginMarkCycle(*parent_, slices);
     ECO_TLA_TRACE("t0", "T", slices);   // M1 trace: P_T0 (the snapshot's greys follow)
@@ -1271,22 +1074,20 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     cycle_mark_ns_ = 0;
     cycle_inpause_ns_ = 0;
 
-    // P§3.2: the snapshot. Old-gen targets of every root and off-heap store
-    // are greyed; young targets are dropped (snapshot mode) because every
-    // young object is walked below.
+    // The snapshot: the old objects every root refers to are greyed. Young targets are dropped in snapshot mode,
+    // because the old objects every young object refers to are greyed below.
     old_gen_.setSnapshotMode(true);
     for (HPointer* root : root_set.getRoots()) old_gen_.markHPointer(*root);
     for (uint64_t* root : root_set.getJitRoots()) old_gen_.markJitRootRaw(*root, *parent_);
     forEachMajorRoot(root_set, [&](HPointer& hp, int kind) {
-        if (kind == 2 && test_snapshot_skip_external_) return;   // negative control
+        if (kind == 2 && test_snapshot_skip_external_) return;
         old_gen_.markHPointer(hp);
     });
     old_gen_.snapshotYoungLarge();
     size_t surv_bytes = 0;
     size_t survivors = 0;
-    if (!test_snapshot_skip_young_walk_) {                        // negative control
-        // threaded-gc-07 (P§3.16, trap 7): region mode walks Fresh AND
-        // Tenuring (young at t0, promoted after it by the next job).
+    if (!test_snapshot_skip_young_walk_) {
+        // In region mode this includes the Tenuring extent, which is young at t0 and promoted after it.
         survivors = nursery_.forEachYoung(
             [&](void* obj) { old_gen_.markChildren(obj); }, &surv_bytes);
     }
@@ -1298,19 +1099,17 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
     (void)survivors;
 #endif
 #if ECO_HEAP_VALIDATE
-    // IM1 (record half): every old-gen object reachable at t0, found by an
-    // independent tracer, must be marked at the handoff.
+    // IM1: every old object reachable at t0 must be marked at the handoff; record them now, unless there are too
+    // many.
     {
         bool complete = false;
         old_gen_.cycle_t0_reach_ = traceOldReachableForValidation(&complete);
         if (!complete) old_gen_.cycle_t0_reach_.clear();
     }
 #endif
-    // threaded-gc-05c (P§3.5): hand the grey set to the background markers
-    // (conc_mark 2) or mark it all now (conc_mark 1). After every other t0
-    // action, IM1's record half included: nothing the mutator does in this
-    // pause may race with a marker.
-    ECO_TLA_TRACE("t0end", "greys", old_gen_.markStackSize());   // no marker runs yet (IM14)
+    // Last of the t0 work, because background markers may start here and nothing else in this pause may run
+    // beside them.
+    ECO_TLA_TRACE("t0end", "greys", old_gen_.markStackSize());   // no marker is running yet (IM14)
     old_gen_.afterSnapshot();
     notePauseCycleWork(0);
     const uint64_t dur = cycleNowNs() - t_start;
@@ -1323,7 +1122,7 @@ void ThreadLocalHeap::startMarkCycle(GCStats::MajorReason reason) {
         if (dur > im.t0_ns_max) im.t0_ns_max = dur;
     }
 #endif
-    // T = 0: the whole cycle inside the t0 pause (the E0 equivalence arm).
+    // No steps: the whole cycle runs in this pause.
     if (slices == 0) {
         finishMarkCycleNow(OldGenSpace::CycleFinish::Schedule);
     }
@@ -1345,13 +1144,12 @@ void ThreadLocalHeap::stepMarkCycle() {
     const bool conc = old_gen_.concurrentCycle();
     (void)old_gen_.cycleStep();
 #if ECO_HEAP_VALIDATE
-    // IM6 reads every accumulator: only when no background member runs (05c trap 7).
+    // IM6 reads every marker's totals, so only while no background marker runs.
     if (old_gen_.bgEpisode() != OldGenSpace::BgEpisode::Running) {
         old_gen_.validateCycleUniformLive("mark slice", /*exact=*/false);
     }
 #endif
-    // threaded-gc-05c: a concurrent step with no in-pause mark work is a plain
-    // minor pause (kind 0), and its time is not a slice.
+    // A concurrent step that did no marking in the pause leaves it a plain minor pause, and is not timed.
     if (conc && !old_gen_.lastStepHadPauseWork()) return;
     notePauseCycleWork(1);
     const uint64_t dur = cycleNowNs() - t_start;
@@ -1388,7 +1186,8 @@ void ThreadLocalHeap::finishMarkCycleNow(OldGenSpace::CycleFinish why) {
 // TLA-REGION(TLH.completeMarkCycle) begin
 void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 #if ECO_HEAP_VALIDATE
-    // IM1 (check half) and IM2, before anything is freed.
+    // IM1 and IM2, checked before anything is freed: everything reachable at t0, and everything reachable now,
+    // is marked.
     old_gen_.assertAllMarked(old_gen_.cycle_t0_reach_, "IM1 reachable at t0");
     old_gen_.cycle_t0_reach_.clear();
     {
@@ -1420,7 +1219,7 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
     ECO_TLA_TRACE("handoff", "k", span_minors,
                   "why", why == OldGenSpace::CycleFinish::Pressure ? "pressure"
                          : why == OldGenSpace::CycleFinish::Join ? "join" : "schedule");
-    pause_had_major_ = true;   // one major per cycle for the decommit clock
+    pause_had_major_ = true;   // the sync point counts a cycle as one major
     notePauseCycleWork(2);
     const uint64_t dur = cycleNowNs() - t_start;
     if (gcPhaseProfileEnabled()) {
@@ -1465,8 +1264,8 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
             stats_.major_gc_events[stats_.major_gc_events_used - 1];
         gcEventLogMajor(ev.seq, ev.start_ns, ev.total_ns, ev.mark_ns, ev.sweep_ns,
                         ev.root_scan_ns + ev.root_push_ns, gcMajorReasonName(ev.reason));
-        // threaded-gc-05c (P§3.13): progress and pacing columns ride in the
-        // reason field as key=value pairs (the row layout is fixed).
+        // The event log's row layout is fixed, so the cycle's progress and pacing go in its reason field as
+        // key=value pairs.
         const OldGenSpace::CycleProgress cp = old_gen_.cycleProgress();
         char reason[256];
         std::snprintf(reason, sizeof reason,
@@ -1487,10 +1286,7 @@ void ThreadLocalHeap::completeMarkCycle(OldGenSpace::CycleFinish why) {
 // TLA-REGION(TLH.completeMarkCycle) end
 
 #if ECO_HEAP_VALIDATE
-// IM1/IM2: an INDEPENDENT tracer (its own visited set, visitHeapChildren
-// rather than markChildren) from every root, through young and old objects.
-// Returns the old-gen objects reached; `complete` is false when the walk hit
-// the 5 M-object cap (the caller then skips the check).
+// Independent of the mark: its own visited set, and visitHeapChildren rather than markChildren.
 std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complete) {
     constexpr size_t kCap = 5'000'000;
     std::unordered_set<void*> seen;
@@ -1525,8 +1321,6 @@ std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complet
 #endif
 
 const std::unordered_set<HPointer*>& ThreadLocalHeap::collectRoots() {
-    // Returns only long-lived roots. Stackmap roots and stack root ranges
-    // are marked via explicit loops in majorGC().
     return nursery_.getRootSet().getRoots();
 }
 
@@ -1547,22 +1341,14 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
     StackMapRoots& sm_roots = stack_map_roots_;
     sm_roots.clear();
 
-    // Walk the call stack using libunwind.
-    // For each frame, look up the IP in the stack map and process
-    // Indirect locations (GC roots spilled to the stack).
-    //
-    // The unwinder's IP for a non-top frame is the return address,
-    // which matches the key used by StackMap::findRecord().
-    // Bias is 0 on x86-64 Linux (verified empirically).
+    // What to add to a frame's IP to get the key the stack map records it under. For each caller frame the
+    // unwinder gives the return address, which is that key.
     static constexpr int kIpToReturnAddressBias = 0;
 
     using namespace StackUnwind;
     Context ctx;
     Cursor cur(ctx);
 
-    // Hoist Allocator::instance() above the unwind loop. The original code
-    // re-resolved TLS once per stackmap location processed; on stack-walk-
-    // heavy paths (many roots per frame) this showed up in profiles.
     Allocator& alloc = Allocator::instance();
 
     do {
@@ -1586,16 +1372,11 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
             auto* slot = reinterpret_cast<HPointer*>(addr);
 
             HPointer potential = *slot;
-            // Embedded-constant HPointers (False/True/Empty) are not
-            // heap-allocated and do not need GC. Skip them (ptr_ind set) before
-            // calling resolve(), which asserts ptr_ind == 0.
+            // An embedded constant is not a heap object, and resolve() asserts it is not given one.
             if (potential.ptr_ind != 0) {
                 continue;
             }
-            // Null HPointers are legitimately tracked by RS4GC (e.g.
-            // unfilled closure capture slots, statically-null derived
-            // pointers). resolve(null) would dereference heap_base, which
-            // is part of the reserved-but-not-committed address range.
+            // A slot the stack map lists may hold null, and resolve() must not be given it.
             if (potential.ptr == 0) {
                 continue;
             }
@@ -1610,7 +1391,6 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
 #if ECO_GC_DEBUG
     fprintf(stderr, "[gc-stackmap-summary] stack roots pushed: %zu\n",
             sm_roots.get().size());
-    // Print all stackmap roots with their values
     for (size_t ri = 0; ri < sm_roots.get().size(); ++ri) {
         HPointer* slot = sm_roots.get()[ri];
         HPointer val = *slot;
@@ -1619,7 +1399,6 @@ ThreadLocalHeap::StackWalkCounts ThreadLocalHeap::collectStackRootsFromStackMap(
         fprintf(stderr, "[gc-stackmap-root] root[%zu] slot=%p val=0x%016lx (ptr=0x%lx const=%u)\n",
                 ri, (void*)slot, raw, (unsigned long)val.ptr, (unsigned)val.constant);
     }
-    // Print all stack root ranges with their values
     RootSet& roots = nursery_.getRootSet();
     for (size_t ri = 0; ri < roots.getStackRootRanges().size(); ++ri) {
         auto& range = roots.getStackRootRanges()[ri];

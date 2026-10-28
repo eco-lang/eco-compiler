@@ -1,9 +1,8 @@
-// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md P§3.12,
-// HEAP_070): the promotion grant. A tenure job allocates its copies from
-// uniform blocks in state kAllocTenure, chosen in the hand-over pause and
-// owned by the job until the merge. The collector touches only the cursors
-// cached here (block start, bitmap slot, cell size and count): never blocks_,
-// the page index, partial_, the free lists or any stats the mutator updates.
+// The tenure grants of `OldGenSpace` (HEAP_070). A tenure job copies objects into uniform blocks
+// lent to it in state Tenure, from grantTenure until returnTenureGrant. While it runs, its threads
+// use only the grant: the cursors cached in it (block start, bitmap, cell size and count) and its
+// counters, never the block table, the page index, the queues, the free lists or the old
+// generation's statistics. Those are written here only by grantTenure and returnTenureGrant.
 
 #include "OldGenSpace.hpp"
 
@@ -19,7 +18,9 @@ namespace Elm {
 
 namespace {
 
-// OldGenSpace.cpp's padCellSlack (a later demotion walks the cell as mixed).
+/// Writes a free-cell header over the slack after an object of `requested_size` bytes at `obj` in a
+/// `cell_size`-byte cell, as OldGenSpace.cpp's padCellSlack does, so that the block still parses by
+/// object size if it is later demoted to mixed.
 inline void padSlack(void* obj, size_t requested_size, size_t cell_size) {
     requested_size = (requested_size + 7) & ~static_cast<size_t>(7);
     if (cell_size <= requested_size) return;
@@ -32,6 +33,8 @@ inline void padSlack(void* obj, size_t requested_size, size_t cell_size) {
     trailing->color = static_cast<u32>(Color::White);
 }
 
+/// Prints a fatal tenure-grant error naming `what`, class `cls` and the two numbers `a` and `b`, and
+/// aborts.
 [[noreturn]] void grantFatal(const char* what, size_t cls, uint64_t a, uint64_t b) {
     std::fprintf(stderr, "[gc] FATAL: tenure grant: %s (class %zu, %llu / %llu)\n", what, cls,
                  (unsigned long long)a, (unsigned long long)b);
@@ -86,7 +89,7 @@ bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGran
             static_cast<uint64_t>(slack_participants) *
                 tenureChunkCells(static_cast<uint32_t>(classToSize(cls) / 8));
         uint64_t free_cells = 0;
-        // (1) Reuse first (W6): the FRONT of partial_[cls], as refillCursor pops it.
+        // (1) Reuse first: queued blocks, from the front of the queue, as refillCursor takes them.
         std::vector<BlockId>& q = partial_[cls];
         size_t& h = partial_head_[cls];
         while (free_cells < need && h < q.size()) {
@@ -94,13 +97,12 @@ bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGran
             if (!blocks_.isLive(id)) continue;
             BlockInfo& b = blocks_.info(id);
             if (b.alloc_state != kAllocQueued || b.is_large || b.size_class != cls) continue;
-            // A handoff's classifyBlocksAfterMark queues any uniform block with
-            // free cells that is not already Queued -- including the mutator's
-            // own Current cursor block (its state is overwritten). Granting it
-            // would let the collector and the mutator allocate in one block.
+            // classifyBlocksAfterMark queues uniform blocks with free cells, the class cursor's
+            // own Current block included (its state is overwritten). Granting that block would
+            // let the job and the mutator allocate in one block.
             if (cursor_[cls].block == id) continue;
 #if ECO_HEAP_VALIDATE
-            // IM13 / TV5: mid-cycle, partial_ holds only post-t0 blocks.
+            // IM13 / TV5: mid-cycle, the queues hold only blocks made after t0.
             if (isT0Block(id)) {
                 std::fprintf(stderr, "[heap-validate] TV5: the tenure grant took t0 block %u "
                              "during a mark cycle\n", id.v);
@@ -111,7 +113,8 @@ bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGran
             free_cells += take(cls, id);
         }
         if (h == q.size()) { q.clear(); h = 0; }
-        // Negative control (TV5): a t0 block granted mid-cycle.
+        // A negative control for the TV5 check: in a validating build, aborts as a grant of a t0
+        // block would when a class block in state None existed at t0. Nothing is granted.
         if (__builtin_expect(test_grant_t0_block_, 0) && cycleActive()) {
             test_grant_t0_block_ = false;
             for (size_t pos = 0; pos < blocks_.size(); ++pos) {
@@ -128,11 +131,11 @@ bool OldGenSpace::grantTenure(const uint32_t count[NUM_SIZE_CLASSES], TenureGran
 #endif
             }
         }
-        // (2) Growth: virgin blocks (never above the reuse rung).
+        // (2) Growth: new blocks, once the queue is used up.
         while (free_cells < need) {
             const BlockId id = materializeVirginBlock(cls);
             if (!id.valid()) {
-                // Near the old-gen cap: no virgin block. The caller falls back.
+                // No new block: the grant stays active with what it has.
                 g.granted_cells += free_cells;
                 g.active = true;
                 ++active_tenure_grants_;
@@ -175,8 +178,8 @@ void* OldGenSpace::grantAllocate(TenureGrant& g, size_t cls, size_t requested_si
         c.next_cell = k + 1;
         const size_t cell = c.cell_bytes;
         char* p = c.base + static_cast<size_t>(k) * cell;
-        // The bit is the allocation record, and mid-cycle the mark
-        // (allocate-black): a post-t0 block, never touched by markers.
+        // The bit is the allocation record and, mid-cycle, the mark (allocated black). The block
+        // was made after t0, so no marker writes its bitmap.
         bitscan::setBit(c.bits, static_cast<size_t>(k) * c.stride_bits);
         std::memset(p, 0, sizeof(Header));
         c.pending_live += cell;
@@ -201,12 +204,10 @@ void* OldGenSpace::grantAllocate(TenureGrant& g, size_t cls, size_t requested_si
 // TLA-REGION(OGT.grantAllocateShared) begin
 void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, size_t cls,
                                        size_t requested_size) {
-    // A chunk owns >= 128 bitmap bytes (two cache lines): 64-cell chunks of
-    // small classes are 8-16 bitmap bytes, and members setting bits in one
-    // line ping-ponged it (measured: 77 % of this function on the load).
-    // Always a multiple of 64 cells, so a chunk owns whole 64-bit bitmap
-    // words: the scans read a word at a time (bitscan::loadWord), so whole
-    // bytes would not be enough (CR-022).
+    // CR-022: a chunk is tenureChunkCells() cells, whole 64-bit words of the bitmap, so threads
+    // never write the same word; the scans read a word at a time, so owning whole bytes would not
+    // be enough. For the small classes, chunks of more than 64 cells make it less likely that two
+    // threads write one cache line.
     std::vector<TenureCursor>& v = g.blocks[cls];
     TenureMemberCursor::Cls& mc = m.c[cls];
     for (;;) {
@@ -218,7 +219,7 @@ void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, si
                 ++mc.used;
                 const size_t cell = b.cell_bytes;
                 char* p = b.base + static_cast<size_t>(k) * cell;
-                bitscan::setBit(b.bits, static_cast<size_t>(k) * b.stride_bits);   // our bytes only
+                bitscan::setBit(b.bits, static_cast<size_t>(k) * b.stride_bits);   // inside this thread's chunk
                 std::memset(p, 0, sizeof(Header));
 #if ENABLE_GC_STATS
                 const size_t sz = (requested_size + 7) & ~static_cast<size_t>(7);
@@ -237,7 +238,8 @@ void* OldGenSpace::grantAllocateShared(TenureGrant& g, TenureMemberCursor& m, si
             mc.bi = -1;
             mc.used = 0;
         }
-        // Claim the next chunk: CAS on block index << 32 | unit.
+        // Claim the next chunk: a CAS on the claim word, block index << 32 | chunk number. A block
+        // with no chunk left moves the word to the next block.
         std::atomic<uint64_t>& cw = g.claim[cls].w;
         uint64_t w = cw.load(std::memory_order_relaxed);
         for (;;) {
@@ -309,8 +311,8 @@ void OldGenSpace::returnTenureGrant(TenureGrant& g) {
             }
             c.pending_live = c.pending_allocs = 0;
         }
-        // Requeue in REVERSE grant order at the front: the first-granted
-        // block is served first (W6: reuse before growth).
+        // Requeue at the front in reverse grant order, so the first block granted is the first
+        // reused; queued blocks were granted before new ones.
         for (size_t i = v.size(); i > 0; --i) {
             TenureCursor& c = v[i - 1];
             BlockInfo& b = blocks_.info(c.block);

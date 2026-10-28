@@ -1,16 +1,21 @@
 //===- JoinpointNormalization.cpp - Classify joinpoints for SCF lowering --===//
 //
-// This pass analyzes and classifies joinpoints for SCF lowering eligibility.
-// It marks looping, single-exit joinpoints with normalized continuations as
-// SCF-candidates by adding a unit attribute "scf_candidate".
+// EcoControlFlowToSCF turns an `eco.joinpoint` into an `scf.while` only when the joinpoint has the shape of a
+// loop, and this pass decides which ones do. It only labels: it changes no control flow, despite its name.
 //
-// Classification:
-// 1. Looping vs non-looping: Does the joinpoint body contain a jump back to itself?
-// 2. Single-exit vs multi-exit: Does the joinpoint have exactly one exit path?
-// 3. Normalized continuation: Does the continuation start with a jump to this joinpoint?
+// An `eco.joinpoint` is a local label with an id. It has two regions: the body, entered by an `eco.jump` naming that
+// id, whose entry-block arguments are the jump's arguments; and the continuation, the code after the joinpoint. A
+// joinpoint is a candidate when all of these hold:
 //
-// Only joinpoints that are looping, single-exit, and have normalized continuation
-// are marked as SCF-candidates.
+// - it loops: some `eco.jump` nested anywhere in its body names its own id;
+// - its continuation is normalized: the first op of the continuation's entry block is an `eco.jump` to its id;
+// - its body is either a simple case dispatch or single-exit (both defined at the predicates below).
+//
+// A candidate gets the unit attribute `scf_candidate`, and a candidate that is a simple case dispatch also gets
+// `scf_case_loop`. Nothing else is written, and no attribute is removed.
+//
+// Jumps are matched to joinpoints by comparing ids alone. That is sound because a jump targets an enclosing
+// joinpoint with its id (invariant CGEN_030) and ids are unique within a function (CGEN_031).
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,9 +33,7 @@ using namespace ::eco;
 
 namespace {
 
-/// Check if a joinpoint is looping (has a self-jump in its body).
-/// Algorithm from the design doc: walk the body and look for eco.jump
-/// with target == joinpoint id.
+/// Returns whether any `eco.jump` nested anywhere in `op`'s body targets `op`'s own id.
 bool isLoopingJoinpoint(JoinpointOp op) {
     auto jpId = op.getId();
     bool hasLoopingJump = false;
@@ -46,26 +49,25 @@ bool isLoopingJoinpoint(JoinpointOp op) {
     return hasLoopingJump;
 }
 
-/// Check if a joinpoint is single-exit (has exactly one reachable eco.return).
-/// This is a simplified check - we just count return ops in the body region.
+/// Returns whether `op`'s body contains exactly one `eco.return`.
+///
+/// Every `eco.return` nested anywhere in the body is counted, including those inside case alternatives and nested
+/// joinpoints, whether or not it is reachable. Returns in the continuation are not counted.
 bool isSingleExitJoinpoint(JoinpointOp op) {
     int returnCount = 0;
 
     op.getBody().walk([&](ReturnOp ret) {
         returnCount++;
-        // If we've seen more than one, we can stop
         if (returnCount > 1)
             return WalkResult::interrupt();
         return WalkResult::advance();
     });
 
-    // Single exit means exactly one return in the body
-    // (The continuation may also have returns, but they come after the joinpoint)
     return returnCount == 1;
 }
 
-/// Check if the continuation is normalized - starts with a single eco.jump
-/// to the current joinpoint.
+/// Returns whether the first op of the entry block of `op`'s continuation is an `eco.jump` to `op`'s id. An empty
+/// continuation or entry block is not normalized.
 bool hasNormalizedContinuation(JoinpointOp op) {
     Region &cont = op.getContinuation();
 
@@ -76,7 +78,6 @@ bool hasNormalizedContinuation(JoinpointOp op) {
     if (entryBlock.empty())
         return false;
 
-    // The first operation should be eco.jump to this joinpoint
     Operation *firstOp = &entryBlock.front();
     if (auto jump = dyn_cast<JumpOp>(firstOp)) {
         return jump.getTarget() == op.getId();
@@ -85,12 +86,12 @@ bool hasNormalizedContinuation(JoinpointOp op) {
     return false;
 }
 
-/// Check if a joinpoint's body is a simple case dispatch pattern:
-/// - Top-level eco.case on a loop variable
-/// - One alternative exits (eco.return)
-/// - Other alternatives loop back (eco.jump to same joinpoint)
+/// Returns whether `op`'s body is a simple case dispatch: the entry block holds an `eco.case`, before any terminator,
+/// and among that case's alternatives at least one ends in `eco.return` and at least one ends in an `eco.jump` to
+/// `op`'s id.
 ///
-/// This is the canonical loop pattern that maps well to scf.while.
+/// Only the first `eco.case` of the entry block is examined, and only the terminator of each alternative's first
+/// block. Other alternatives, such as ones ending in a jump to another joinpoint, do not disqualify the body.
 bool hasSimpleCaseDispatch(JoinpointOp op) {
     Region &body = op.getBody();
 
@@ -101,16 +102,13 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
     if (entryBlock.empty())
         return false;
 
-    // Look for a single eco.case at the top of the body
-    // (may have some setup ops before it, but the main control flow should be case)
+    // Ops before the case, such as constants and projections, are skipped.
     CaseOp topLevelCase = nullptr;
     for (Operation &bodyOp : entryBlock) {
         if (auto caseOp = dyn_cast<CaseOp>(&bodyOp)) {
             topLevelCase = caseOp;
             break;
         }
-        // Skip pure operations (arith.constant, eco.project, etc.)
-        // but not control flow
         if (bodyOp.hasTrait<OpTrait::IsTerminator>())
             break;
     }
@@ -118,9 +116,6 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
     if (!topLevelCase)
         return false;
 
-    // Check the case alternatives:
-    // - At least one should exit (eco.return)
-    // - At least one should loop (eco.jump to same joinpoint)
     bool hasExitBranch = false;
     bool hasLoopBranch = false;
     auto jpId = op.getId();
@@ -129,7 +124,6 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
         if (alt.empty())
             continue;
 
-        // Look at the terminator
         Block &altBlock = alt.front();
         if (altBlock.empty())
             continue;
@@ -147,6 +141,7 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
     return hasExitBranch && hasLoopBranch;
 }
 
+/// The module pass that labels every `eco.joinpoint` in the module, nested ones included.
 struct JoinpointNormalizationPass
     : public PassWrapper<JoinpointNormalizationPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(JoinpointNormalizationPass)
@@ -157,35 +152,24 @@ struct JoinpointNormalizationPass
         return "Classify joinpoints for SCF lowering eligibility";
     }
 
+    /// Adds `scf_candidate`, and `scf_case_loop` where it applies, to each candidate joinpoint in the module.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = module.getContext();
 
-        // Walk all joinpoints and classify them
         module.walk([&](JoinpointOp op) {
-            // Check classification criteria
             bool looping = isLoopingJoinpoint(op);
             bool singleExit = isSingleExitJoinpoint(op);
             bool normalizedCont = hasNormalizedContinuation(op);
             bool simpleCaseDispatch = hasSimpleCaseDispatch(op);
 
-            // A joinpoint is SCF-candidate if:
-            // - It is looping (has a self-jump)
-            // - Its continuation is normalized (starts with jump to self)
-            // - AND either:
-            //   (a) It has a simple case dispatch pattern (exit/loop branches), OR
-            //   (b) It is single-exit
-            //
-            // For case dispatch patterns, the exit is handled by the case,
-            // so we don't need the single-exit check.
+            // A case dispatch exits through its own alternatives, so it needs no single-exit check.
             bool isCandidate = looping && normalizedCont &&
                                (simpleCaseDispatch || singleExit);
 
             if (isCandidate) {
-                // Mark as SCF candidate with unit attribute
                 op->setAttr("scf_candidate", UnitAttr::get(ctx));
 
-                // If it has the simple case dispatch pattern, mark that too
                 if (simpleCaseDispatch) {
                     op->setAttr("scf_case_loop", UnitAttr::get(ctx));
                 }

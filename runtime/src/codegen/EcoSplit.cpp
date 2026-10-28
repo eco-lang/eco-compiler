@@ -1,6 +1,13 @@
 //===- EcoSplit.cpp - Partition in MLIR, translate and lower in parallel --===//
 //
-// plans/mlir-split-backend-05-ecosplit.md Part II U1/U2 (CGEN_083).
+// The split has to agree with the partition-worker mode of `runEcoBackend`
+// about one case. An exported `$cap` that nothing takes the address of is
+// called only by direct calls whose types match. Every partition holding a
+// copy of it sees the same body after the same expansions, so the `$cap`
+// prepass marks it for inlining in all of them or in none. Such a function is
+// therefore exported *late*: its owner exports it only if it survives the
+// prepass. If it was deleted, every importer must have inlined its copies too,
+// and `lowerMlirSplit` checks that after the workers join.
 //
 //===----------------------------------------------------------------------===//
 #include "EcoSplit.h"
@@ -43,23 +50,29 @@ namespace eco {
 
 namespace {
 
+/// Returns whether environment variable `n` is exactly `0`.
 bool envZero(const char *n) {
     const char *e = ::getenv(n);
     return e && e[0] == '0' && e[1] == '\0';
 }
+/// Returns whether environment variable `n` is set, not empty and not `0`.
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-// The `$cap` prepass threshold (runCapInlinePrepass): 0 disables it.
+/// Returns the `$cap` prepass's instruction threshold, from
+/// `ECO_CAP_INLINE_MAX_INSTS` or 64 by default. At 0 no import copies are made.
+/// It repeats `runCapInlinePrepass`'s reading of the variable; the two must
+/// change together.
 unsigned capInlineMaxInsts() {
     if (const char *e = ::getenv("ECO_CAP_INLINE_MAX_INSTS"))
         return (unsigned)strtoul(e, nullptr, 10);
     return 64;
 }
 
-// The `eco-cap-*` entries of an op's passthrough, canonicalized (01 S6).
+/// Returns the `eco-cap-*` entries of `op`'s `passthrough` attribute as one
+/// string, sorted, so that two ops' facts can be compared for equality.
 std::string capFacts(Operation *op) {
     std::vector<std::string> facts;
     if (auto pt = op->getAttrOfType<ArrayAttr>("passthrough"))
@@ -83,6 +96,7 @@ std::string capFacts(Operation *op) {
     return out;
 }
 
+/// Removes every valueless entry `key` from `op`'s `passthrough` attribute.
 void dropPassthrough(Operation *op, StringRef key) {
     auto pt = op->getAttrOfType<ArrayAttr>("passthrough");
     if (!pt)
@@ -94,29 +108,36 @@ void dropPassthrough(Operation *op, StringRef key) {
     op->setAttr("passthrough", ArrayAttr::get(op->getContext(), keep));
 }
 
+/// The clock the split's timings use.
 using Clock = std::chrono::steady_clock;
+/// Returns the seconds elapsed since `t`.
 double secs(Clock::time_point t) {
     return std::chrono::duration<double>(Clock::now() - t).count();
 }
 
+/// The partitions of a module, with what each must export; each vector has
+/// one entry per partition.
 struct SplitPlan {
     std::vector<OwningOpRef<ModuleOp>> mods;
+    /// Owned functions another partition declares or copies, other than those
+    /// in `exportsLate`.
     std::vector<std::vector<std::string>> exports;
-    // Plan 06 B4: exported `$cap`s nothing takes the address of — exported
-    // only AFTER the owner's prepass, if they still exist.
+    /// Owned functions to export only if they survive the owner's prepass.
     std::vector<std::vector<std::string>> exportsLate;
 };
 
-// U1: ownership, imports, exports, clone, S6, census.
+/// Builds `N` partitions of `src`, as `EcoSplit.h`'s file comment describes,
+/// making import copies only when `imports` is set. `N` must be at least 1.
+/// `src` is not changed. Returns an error if a declaration or copy fails the
+/// fact check. With `ECO_MLIR_SPLIT_STATS` set to a value other than empty or
+/// `0`, prints a summary of the split to stderr.
 llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports) {
     auto T0 = Clock::now();
     MLIRContext *ctx = src.getContext();
     symgraph::Graph g = symgraph::build(src, /*keepUnusedAddressOf=*/true);
     const size_t n = g.nodes.size();
 
-    // Op counts of the defined functions (the LPT cost). Plan 06 C2 measured a
-    // fitted instruction-count cost FLAT (better instruction balance, same
-    // finish spread and wall), so the plain op count stays.
+    // Op counts of the defined functions (the LPT cost).
     std::vector<uint32_t> defFns;
     for (uint32_t i = 0; i < n; ++i)
         if (g.nodes[i].isFunc && g.nodes[i].isDef)
@@ -151,7 +172,8 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
             heap.push({l.first + cost[f], l.second});
         }
     }
-    // Globals: the owner of their first referrer in module order, else 0.
+    // Globals: the owner of their first already-placed referrer in module
+    // order, else 0.
     for (uint32_t i = 0; i < n; ++i) {
         if (owner[i] < 0)
             continue;
@@ -176,7 +198,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
         if (owner[i] >= 0)
             role[owner[i]][i] = 1;
 
-    // Imports: the Call-bit closure into `$cap` bodies owned elsewhere
+    // Imports: the closure over direct-call edges into `$cap` bodies owned elsewhere
     // (AlwaysInliner inlines recursively), only when the prepass will run.
     std::vector<uint64_t> importCount(N, 0);
     if (imports) {
@@ -234,12 +256,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
                 g.nodes[i].isFunc)
                 exported[owner[i]][i] = 1;
 
-    // Plan 06 B4: a `$cap` with no Address/CallMismatch in-edge is referenced
-    // only by matched direct calls. Every partition holding a copy sees the
-    // same body after the same expansions, so the prepass marks it in all of
-    // them or in none; when the owner's AlwaysInliner deletes it, every
-    // importer inlined its copies too (S1: 2,262 / 2,262, 0 false). Such a
-    // function is exported late, by its owner, only if it survived.
+    // A `$cap` with no address-taking in-edge is exported late (file comment).
     std::vector<char> addressTaken(n, 0);
     for (uint32_t i = 0; i < n; ++i)
         for (uint32_t e = g.outBegin[i]; e < g.outBegin[i + 1]; ++e)
@@ -248,7 +265,9 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
     for (uint32_t t : g.extraTakes)
         addressTaken[t] = 1;
 
-    // The one whole-module expansion gate (review R13).
+    // The one whole-module expansion gate: a reference to
+    // `eco_enable_list_chunks` from any symbol becomes the `eco-list-chunks`
+    // module flag in every partition.
     bool listChunks = false;
     {
         int ce = g.lookup(StringAttr::get(ctx, "eco_enable_list_chunks"));
@@ -263,8 +282,9 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
         if (!op.getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName()))
             nonSymbol.push_back(&op);
 
-    // Test hook (G8): drop `eco-cap-covered` from the declarations / copies
-    // of one symbol, or of every symbol with `*`, to prove S6 fires.
+    // Test hook: drop `eco-cap-covered` from the declarations / copies
+    // of one symbol, or of every symbol with `*`, so that tests can see the
+    // fact check fail.
     const char *faultCovered = ::getenv("ECO_SPLIT_FAULT_DROP_COVERED");
     auto faultHits = [&](StringRef name) {
         return faultCovered &&
@@ -356,9 +376,7 @@ llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports
             }
     });
 
-    // 01 S6: a declaration or import copy must carry exactly its owner's
-    // eco-cap-* facts — a dropped `covered` bit is heap corruption, not a
-    // missed optimization. Release-build hard error.
+    // The fact check is an error in every build type, not an assertion.
     for (unsigned p = 0; p < N; ++p)
         if (!s6[p].empty())
             return llvm::createStringError(
@@ -413,7 +431,7 @@ unsigned mlirSplitPartitionCount(ModuleOp module, const EcoBackendJob &job) {
 llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
                            unsigned N, EcoBackendResult *result) {
     MLIRContext *ctx = module.getContext();
-    // Registered ONCE, before any worker translates (review R7).
+    // Registered once, before any worker translates concurrently.
     registerBuiltinDialectTranslation(*ctx);
     registerLLVMDialectTranslation(*ctx);
 
@@ -433,8 +451,8 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
     }
 
     // The source module is no longer needed: destroy its body off the
-    // critical path (it was a serial 1.17 s teardown, review R8). The
-    // partitions are independent clones; attributes and types are immortal.
+    // critical path. The partitions are independent clones; attributes and
+    // types live in the shared context.
     std::thread teardown([module]() mutable {
         for (Operation &op : llvm::make_early_inc_range(*module.getBody())) {
             op.dropAllReferences();
@@ -515,7 +533,7 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
             EcoBackendJob job = base;
             job.tm = tm.get();
             job.objectFilePath = paths[i];
-            job.splitEligible = true; // the parallel tier (review R1)
+            job.splitEligible = true; // keeps the parallel tier
             job.splitCodegen = 1;     // ... but never split again
             job.partition = &info[i];
             EcoBackendResult r;
@@ -545,9 +563,9 @@ llvm::Error lowerMlirSplit(ModuleOp module, const EcoBackendJob &base,
                 return llvm::createStringError(std::errc::io_error, "%s",
                                                e.c_str());
     }
-    // Plan 06 B4: an importer that could not fully inline a marked copy of a
-    // body its owner deleted would leave an undefined reference at link —
-    // name it here instead.
+    // An importer that could not fully inline a marked copy of a body its
+    // owner deleted would leave an undefined reference at link; name it here
+    // instead.
     {
         llvm::StringSet<> deleted;
         for (auto &pi : info)

@@ -1,7 +1,3 @@
-/**
- * String Operations Implementation.
- */
-
 #include "StringOps.hpp"
 #include <vector>
 
@@ -9,7 +5,7 @@ namespace Elm {
 namespace StringOps {
 
 // ============================================================================
-// Constructors and Flatten Helpers (Phase 1)
+// Constructors of the forms, and flattening
 // ============================================================================
 
 HPointer makeLeafFromBuffer(const u16* data, u32 len) {
@@ -23,8 +19,8 @@ HPointer makeSlice(HPointer base, u32 offset, u32 len) {
     size_t total_size = sizeof(ElmStringSlice);
     total_size = (total_size + 7) & ~7;
 
-    // base is the only HPointer needing rooting; pack it as the single
-    // root. Helper roots only on slow path.
+    // eco_alloc_with_roots keeps `base` alive through roots[] and updates it there if a
+    // collection moves it.
     uint64_t roots[1];
     std::memcpy(&roots[0], &base, sizeof(base));
 
@@ -40,7 +36,6 @@ HPointer makeSlice(HPointer base, u32 offset, u32 len) {
 HPointer makeRope(HPointer left, HPointer right) {
     auto& allocator = Allocator::instance();
 
-    // Empty-canonicalisation: if either side is empty, return the other.
     auto sizeOf = [&](HPointer hp) -> u32 {
         if (alloc::isEmptyString(hp)) return 0;
         if (alloc::isEmbeddedConstant(hp)) return 0;
@@ -54,8 +49,8 @@ HPointer makeRope(HPointer left, HPointer right) {
     if (leftLen == 0) return right;
     if (rightLen == 0) return left;
 
-    // Pre-compute height + leafCount before we allocate (resolved pointers
-    // become invalid after a GC, but the integers we read are scalars).
+    // Read the children's heights and leaf counts before allocating, while the resolved pointers
+    // are still valid.
     auto heightLeafOf = [&](HPointer hp) -> std::pair<u32, u32> {
         if (alloc::isEmbeddedConstant(hp)) return {0, 0};
         void* obj = Allocator::resolveFast(hp);
@@ -76,7 +71,6 @@ HPointer makeRope(HPointer left, HPointer right) {
     size_t total_size = sizeof(ElmStringRope);
     total_size = (total_size + 7) & ~7;
 
-    // Pack left/right as roots; helper handles slow-path rooting.
     uint64_t roots[2];
     std::memcpy(&roots[0], &left,  sizeof(left));
     std::memcpy(&roots[1], &right, sizeof(right));
@@ -95,8 +89,8 @@ HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len) {
     if (len == 0) return alloc::emptyString();
     auto& allocator = Allocator::instance();
 
-    // Collapse view-of-slice / view-of-view so `base` is a leaf / buffer /
-    // large-header, never itself a slice or view (mirrors makeByteBufferSlice).
+    // A slice or view as base is replaced by its own base, as alloc::makeByteBufferSlice does for
+    // Bytes slices.
     void* base_obj = Allocator::resolveFast(base);
     if (base_obj) {
         Header* h = static_cast<Header*>(base_obj);
@@ -128,10 +122,6 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
     if (len == 0) return alloc::emptyString();
     auto& allocator = Allocator::instance();
 
-    // Master switch: when UTF-8 strings are disabled, widen to a UTF-16 leaf.
-    // This is the single "from raw bytes" chokepoint (fromInt/fromFloat, the
-    // slice tiny path, read_string's short path), so gating it here — plus the
-    // read_string view gate — means no UTF-8 form is ever created when off.
     if (!allocator.getConfig().utf8_strings_enabled) {
         std::vector<u16> wide(len);
         Utf8::widenAscii(bytes, len, wide.data());
@@ -140,20 +130,16 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
 
     size_t total_size = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~7;
     if (total_size >= allocator.getLargeObjectThreshold()) {
-        // No large UTF-8 form in v1: widen to a UTF-16 leaf (which routes to
-        // the split-header path). `bytes` is read into `wide` before any Elm
-        // allocation, so a GC in allocString cannot invalidate it.
+        // There is no large UTF-8 form, so this becomes a large UTF-16 String. `bytes` is copied
+        // into `wide` before the allocation, so a collection cannot invalidate it.
         std::vector<u16> wide(len);
         Utf8::widenAscii(bytes, len, wide.data());
         return alloc::allocString(wide.data(), len);
     }
 
-    // `bytes` may point into a movable heap object (a ByteBuffer payload or a
-    // UTF-8 leaf); the allocation below can trigger a minor GC that relocates
-    // it, so such a source is snapshotted first. Most callers (fromInt,
-    // fromFloat, fromChar, tinyFromU16, tryMakeAsciiString) pass C-stack,
-    // rodata or C-heap bytes that never move: those are copied directly, with
-    // no malloc. A short heap source goes to a C-stack buffer; len < LOT here.
+    // Bytes inside the heap range may move in the allocation below, so they are copied first: to
+    // the stack when short, and otherwise to C++ memory. Bytes outside it are copied straight into
+    // the leaf.
     const u8* src = bytes;
     u8 small[256];
     std::vector<u8> big;
@@ -177,24 +163,21 @@ HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len) {
     return allocator.wrap(leaf);
 }
 
-// The UTF-8 ingestion gate (BB-1). Declared in HeapHelpers.hpp; defined here so
-// it can use makeUtf8LeafFromBytes / makeUtf8View. `data` is C-heap memory (a
-// std::string's buffer), stable across the ByteBuffer allocation below.
+// Declared, with its contract, in HeapHelpers.hpp; defined here because it builds the UTF-8 forms
+// with makeUtf8LeafFromBytes and makeUtf8View.
 bool tryMakeAsciiString(const char* data, size_t len, HPointer* out) {
     auto& allocator = Allocator::instance();
     if (!allocator.getConfig().utf8_strings_enabled) return false;
-    if (len == 0 || len > 0xFFFFFFFFull) return false;  // empty handled by caller
+    if (len == 0 || len > 0xFFFFFFFFull) return false;
     const u8* bytes = reinterpret_cast<const u8*>(data);
-    if (!Utf8::allAscii(bytes, len)) return false;  // all-ASCII => valid UTF-8
+    if (!Utf8::allAscii(bytes, len)) return false;
     size_t leafSize = (sizeof(ElmStringUtf8Leaf) + len + 7) & ~static_cast<size_t>(7);
     if (leafSize < allocator.getLargeObjectThreshold()) {
         *out = makeUtf8LeafFromBytes(bytes, static_cast<u32>(len));
         return true;
     }
-    // Large ASCII: a leaf would widen (see makeUtf8LeafFromBytes's LOT arm), so
-    // copy into a ByteBuffer (routes >= LOT to the pinned split-header form) and
-    // return a whole-buffer zero-copy view. `data` is C-heap, stable across the
-    // buffer allocation; makeUtf8View roots the buffer internally.
+    // makeUtf8LeafFromBytes would widen a leaf this large to UTF-16, so the bytes go into large
+    // Bytes instead, and the String is a view of all of them.
     HPointer buf = alloc::allocByteBuffer(bytes, len);
     *out = makeUtf8View(buf, 0, static_cast<u32>(len));
     return true;
@@ -211,7 +194,7 @@ AsciiOut allocAsciiOut(size_t len) {
         leaf->header.size = static_cast<u32>(len);
         return AsciiOut{allocator.wrap(leaf), leaf->bytes, static_cast<u32>(len), true};
     }
-    // >= LOT: write into a pinned split-header ByteBuffer body, wrap as a view.
+    // At or above the threshold, allocByteBufferBlank makes large Bytes, whose body is pinned.
     alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(len);
     return AsciiOut{bb.hp, bb.bytes, static_cast<u32>(len), false};
 }
@@ -222,34 +205,29 @@ HPointer finishAsciiOut(const AsciiOut& out) {
         assert(!(out.dst[i] & 0x80) && "AsciiOut result must be all-ASCII");
 #endif
     if (out.isLeaf) return out.hp;
-    // Buffer case: the payload is already written; makeUtf8View roots out.hp
-    // across its own allocation and does not read the payload.
+    // makeUtf8View keeps out.hp alive across its allocation and does not read the bytes.
     return makeUtf8View(out.hp, 0, out.len);
 }
 
 HPointer flattenToLeaf(HPointer s) {
-    if (alloc::isEmbeddedConstant(s)) return s;  // Const_EmptyString stays embedded
+    if (alloc::isEmbeddedConstant(s)) return s;
 
     auto& allocator = Allocator::instance();
     void* obj = Allocator::resolveFast(s);
     if (!obj) return alloc::emptyString();
 
     Header* hdr = static_cast<Header*>(obj);
-    if (hdr->tag == Tag_String) return s;  // already a leaf
-    // Split-header forms are conceptually leaves: their body is a flat
-    // Tag_String. Returning the header preserves the split optimisation
-    // (flatten consumers should not need to materialise an inline copy).
+    if (hdr->tag == Tag_String) return s;
+    // A large String is already flat; copying it would only make another large String.
     if (hdr->tag == Tag_LargeStringHeader) return s;
     if (hdr->size == 0) return alloc::emptyString();
 
-    // Materialise the bytes BEFORE allocation (the resolved void* is invalid
-    // after a GC). Read with offset for slice; full chars[] for leaf.
+    // Copy the units out before allocating, while `obj` is still valid.
     if (isUtf8(obj))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_ENSURE_FLAT, hdr->size);
     std::u16string buf = toStdU16String(obj);
 
-    // No need to root `s` here: we never read `obj` again after the alloc,
-    // and `buf` lives on the C stack (not the Elm heap).
+    // Nothing on the Elm heap is read after the allocation, so `s` need not be rooted.
     return alloc::allocString(reinterpret_cast<const u16*>(buf.data()),
                               buf.size());
 }
@@ -259,35 +237,31 @@ HPointer ensureFlat(HPointer s) {
     void* obj = Allocator::resolveFast(s);
     if (!obj) return s;
     Header* hdr = static_cast<Header*>(obj);
-    if (hdr->tag == Tag_String) return s;  // already flat
-    if (hdr->tag == Tag_LargeStringHeader) return s;  // split-header is leaf-like
+    if (hdr->tag == Tag_String) return s;
+    if (hdr->tag == Tag_LargeStringHeader) return s;
     if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
-        // ensureFlat consumers (e.g. the parser) cast the result to
-        // ElmString* and index chars[], so a UTF-8 form must always widen to a
-        // UTF-16 leaf regardless of size — never pass through structurally.
-        // (This widen is counted by GC_STATS_UTF8_WIDEN inside toStdU16String,
-        // which flattenToLeaf calls — do not double-count it here.)
+        // Widened whatever its length, so a result that is not a slice or rope is always a flat
+        // UTF-16 form. The widening is counted in flattenToLeaf, so it is not counted here.
         return flattenToLeaf(s);
     }
     if (hdr->size <= Allocator::instance().getConfig().string_flatten_limit) {
         return flattenToLeaf(s);
     }
-    // Oversized: keep the structural form to bound memory.
+    // Too long to copy: the slice or rope is returned as it is.
     return s;
 }
 
 // ============================================================================
-// slice — builds a Tag_StringSlice for non-tiny ranges over leaves; collapses
-// slice-of-slice into a single slice over the underlying leaf base.
+// Slicing
 // ============================================================================
 
-// Tiny-slice materializer for UTF-16 sources (H1, seed elimination follow-up:
-// design_docs/utf8-widen-attribution.md). The range is being copied anyway, so
-// narrow all-ASCII content into a UTF-8 leaf instead of a UTF-16 one:
-// identifiers sliced out of UTF-16 leaves (every name parsed from a source file
-// whose ASCII gate failed on a single non-ASCII char) otherwise reseed
-// mixed-encoding append chains throughout the compiler. Non-ASCII ranges (and
-// ranges beyond the stack buffer) keep the UTF-16 copy.
+// Returns a new String holding the `n` UTF-16 units at `p`, or the Empty constant when `n` is 0.
+// The result is a UTF-8 leaf when the units are all ASCII, `n` is at most 512 (the stack buffer)
+// and UTF-8 Strings are enabled, so that an ASCII run cut from a UTF-16 String does not make the
+// operations it later enters widen; otherwise it is a UTF-16 String. The UTF-8 path copies the
+// units to the stack before it allocates; the UTF-16 path passes `p` to alloc::allocString, which
+// copies them after its allocation, so `p` must not point into the collected heap unless it is
+// into a large body. A GC point.
 static HPointer tinyFromU16(const u16* p, size_t n) {
     auto& allocator = Allocator::instance();
     if (n > 0 && n <= 512 && allocator.getConfig().utf8_strings_enabled) {
@@ -342,13 +316,11 @@ HPointer slice(void* str, i64 start, i64 end) {
         return makeUtf8View(baseHp, baseOffset, static_cast<u32>(slice_len));
     }
 
-    // Tiny slice: flatten directly into a leaf — avoids slice metadata for
-    // short ranges and matches the prior behaviour.
+    // A short range is copied: a slice object would cost about as much as the copy.
     if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
         if (hdr->tag == Tag_String) {
-            // Direct copy from the source pointer — no intermediate vector.
-            // ASCII content narrows to a UTF-8 leaf (H1).
             ElmString* s = static_cast<ElmString*>(str);
+            // Known defect: breaks tinyFromU16's requirement on `p`; see `slice` in StringOps.hpp.
             return tinyFromU16(s->chars + start, slice_len);
         }
         if (hdr->tag == Tag_LargeStringHeader) {
@@ -364,16 +336,14 @@ HPointer slice(void* str, i64 start, i64 end) {
             assert((static_cast<Header*>(baseObj)->tag == Tag_String ||
                     static_cast<Header*>(baseObj)->tag == Tag_LargeStringHeader) &&
                    "Tag_StringSlice base must be a Tag_String or a Tag_LargeStringHeader");
-            // Both forms keep the logical length in their own header.size.
             assert(static_cast<u64>(baseOffset) + static_cast<u64>(start) +
                        static_cast<u64>(slice_len) <=
                    static_cast<u64>(static_cast<Header*>(baseObj)->size) &&
                    "slice range exceeds underlying leaf");
+            // Known defect when the base is a UTF-16 leaf: breaks tinyFromU16's requirement on `p`.
             return tinyFromU16(flatStringChars(baseObj) + baseOffset + start, slice_len);
         }
-        // Rope: walk leaf segments via forEachSegment, advancing past `start`
-        // logical positions and writing the next `slice_len` units into the
-        // result. Avoids per-char charAt tag dispatch.
+        // A rope: skip `start` units of its segments and copy the next `slice_len`.
         HPointer srcHp = allocator.wrap(str);
         alloc::BlankString out;
         {
@@ -400,26 +370,18 @@ HPointer slice(void* str, i64 start, i64 end) {
         return out.hp;
     }
 
-    // Large slice over a leaf: build a Tag_StringSlice over the source.
     if (hdr->tag == Tag_String) {
         HPointer baseHp = allocator.wrap(str);
         return makeSlice(baseHp, static_cast<u32>(start), static_cast<u32>(slice_len));
     }
-    // Large slice over a split-header: keep the slice's `base` pointing at
-    // the Tag_LargeStringHeader itself, NOT at the body. The body's lifetime
-    // is governed by nursery_owned_bodies_ + sweepNurseryLargeBodies, which
-    // tracks reachability via the header. If we set base = h->body, dropping
-    // the original header (and any intervening references) would let
-    // sweepNurseryLargeBodies free the body even though the slice still
-    // references it. Reads through the slice resolve through the header
-    // (charAt / toStdU16String handle this case).
+    // The slice's base is the large String's header, never its body: a body is kept alive only
+    // through its header, so a slice referring to the body would not stop it being freed.
     if (hdr->tag == Tag_LargeStringHeader) {
         HPointer headerHp = allocator.wrap(str);
         return makeSlice(headerHp, static_cast<u32>(start), static_cast<u32>(slice_len));
     }
 
-    // Large slice over a slice: collapse to a single slice over the deepest
-    // leaf base by adding offsets.
+    // A slice of a slice is a slice of the inner slice's base.
     if (hdr->tag == Tag_StringSlice) {
         ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
         HPointer baseHp = slc->base;
@@ -427,10 +389,8 @@ HPointer slice(void* str, i64 start, i64 end) {
         return makeSlice(baseHp, baseOffset, static_cast<u32>(slice_len));
     }
 
-    // Rope: walk by child lengths and rebuild a rope-of-slices for the cut
-    // pieces, sharing fully-included subtrees. Done via recursion on the
-    // resolved children. We snapshot the rope's children up front because
-    // makeSlice/makeRope both allocate.
+    // A rope: recurse into the child that holds the range, or slice both and join them. The
+    // recursion depth is at most the rope's height.
     HPointer self = allocator.wrap(str);
     Elm::StackRootGuard rootSelf(&self);
     void* topObj = Allocator::resolveFast(self);
@@ -443,7 +403,6 @@ HPointer slice(void* str, i64 start, i64 end) {
     u32 leftLen = leftObj ? static_cast<Header*>(leftObj)->size : 0;
 
     if (static_cast<u64>(end) <= leftLen) {
-        // Entire range is in the left subtree; recurse.
         return slice(leftObj, start, end);
     }
     if (static_cast<u64>(start) >= leftLen) {
@@ -464,20 +423,16 @@ HPointer slice(void* str, i64 start, i64 end) {
 }
 
 // ============================================================================
-// concat / join / indexes / split / toList / uncons / map / filter / foldl /
-// foldr / toStdString — all updated to handle slice inputs by snapshotting
-// via toStdU16String / charAt before any allocation.
+// The remaining operations
 // ============================================================================
 
-// Build a balanced rope from a pre-collected vector of element HPointers
-// using the merge-stack algorithm. Each new element is pushed onto a stack;
-// adjacent stack entries of similar size are merged. This avoids the
-// degenerate O(n^2) shape of left-leaning chains and produces a
-// reasonably balanced tree with O(log n) merges per push.
+// Returns the Strings in `parts` joined in order, as a tree of ropes: the Empty constant for none,
+// and the one String itself for one.
 //
-// The vector itself must be GC-rooted by the caller (use
-// StackRootRangeGuard with mask=all-1s). Each merge uses makeRope, which
-// itself roots its arguments across allocation, so this loop is safe.
+// Each String is pushed onto a stack, and while the top entry is no longer than the one below it
+// the two are joined into one rope. Joining like-sized neighbours keeps the tree balanced, where
+// appending one at a time would make it as deep as `parts` is long. The caller must root `parts`,
+// which is read after allocations; the stack is rooted here. A GC point.
 static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
     if (parts.empty()) return alloc::emptyString();
     if (parts.size() == 1) return parts[0];
@@ -489,11 +444,6 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
         return obj ? static_cast<Header*>(obj)->size : 0;
     };
 
-    // Merge adjacent stack entries while top.size() <= second.size().
-    // The merge stack itself holds HPointers that must survive each makeRope
-    // allocation; without rooting `stack.data()`, a GC inside makeRope would
-    // leave the entries we haven't yet merged dangling at their from-space
-    // addresses.
     std::vector<HPointer> stack;
     stack.reserve(parts.size());
     for (auto& hp : parts) {
@@ -527,11 +477,10 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
     return stack[0];
 }
 
-// H3 (chain healing, see H2 in append): a freshly-built UTF-16 leaf whose
-// content is all ASCII converts to a UTF-8 form, so one UTF-16 element in a
-// concat/join list stops poisoning the result (and thus every later chain the
-// result enters). Input must be a fresh flat Tag_String leaf (or the empty
-// constant / split-header, which pass through untouched).
+// Returns the UTF-16 leaf `leafHp` as a new UTF-8 form when its units are all ASCII and UTF-8
+// Strings are enabled, and `leafHp` unchanged otherwise, including when it is not a UTF-16 leaf.
+// This keeps an ASCII result built through UTF-16, because one element was a UTF-16 String, from
+// making the operations it later enters widen. A GC point.
 static HPointer healAsciiResult(HPointer leafHp) {
     auto& allocator = Allocator::instance();
     if (!allocator.getConfig().utf8_strings_enabled) return leafHp;
@@ -543,7 +492,6 @@ static HPointer healAsciiResult(HPointer leafHp) {
     u16 acc = 0;
     for (size_t i = 0; i < n; ++i) acc |= s->chars[i];
     if (acc >= 0x80 || n == 0) return leafHp;
-    // Convert: root the leaf across the AsciiOut allocation, re-resolve, copy.
     AsciiOut out;
     { Elm::StackRootGuard guard(&leafHp); out = allocAsciiOut(n); }
     ElmString* s2 = static_cast<ElmString*>(Allocator::resolveFast(leafHp));
@@ -554,12 +502,10 @@ static HPointer healAsciiResult(HPointer leafHp) {
 HPointer concat(HPointer stringList) {
     auto& allocator = Allocator::instance();
 
-    // First pass: calculate total length using header.size for any string tag.
+    // First pass, without allocating: the total length, and whether every element is UTF-8.
     size_t total_len = 0;
     size_t count = 0;
-    bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
-    // Hybrid spines: ListCursor walks cells + chunk views (elements are
-    // boxed strings). Non-allocating pass.
+    bool allUtf8 = true;
     for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
         if (!alloc::isEmptyString(lc.current().p)) {
             void* strObj = Allocator::resolveFast(lc.current().p);
@@ -573,14 +519,9 @@ HPointer concat(HPointer stringList) {
 
     if (total_len == 0) return alloc::emptyString();
 
-    // Pattern B: stringList is NOT a field of the result string — it's
-    // walked AFTER the allocation to populate result->chars. So we must
-    // keep it live across the allocate via the helper's slow-path
-    // rooting, then re-read the (possibly relocated) handle from roots[].
+    // The list is walked again after the allocation, so it is rooted across it in both copy paths
+    // below and re-read afterwards.
     if (total_len <= allocator.getConfig().string_flatten_limit) {
-        // All-UTF-8 elements => byte-concat into a UTF-8 result. W4.b. Pattern
-        // B: root the list across allocAsciiOut, then walk (no alloc) copying
-        // each element's ASCII bytes.
         if (allUtf8 && allocator.getConfig().utf8_strings_enabled) {
             HPointer listHp = stringList;
             AsciiOut out;
@@ -610,8 +551,6 @@ HPointer concat(HPointer stringList) {
         std::memcpy(&stringList, &roots[0], sizeof(stringList));
         result->header.size = static_cast<u32>(total_len);
 
-        // Second pass: copy each element's segments straight into result->chars
-        // via the tag-aware visitor — no per-element std::u16string alloc.
         size_t offset = 0;
         for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
             if (!alloc::isEmptyString(lc.current().p)) {
@@ -628,8 +567,6 @@ HPointer concat(HPointer stringList) {
         return healAsciiResult(allocator.wrap(result));
     }
 
-    // Large total: collect element HPointers and build a balanced rope.
-    // Skipping empty children matches the existing concat semantics.
     std::vector<HPointer> parts;
     parts.reserve(count);
     for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
@@ -641,8 +578,7 @@ HPointer concat(HPointer stringList) {
         }
     }
 
-    // Root all parts in one batch range across rope construction. mask=all-1s
-    // tells the GC every slot is a boxed HPointer.
+    // An all-ones mask marks every slot as an HPointer.
     Elm::StackRootRangeGuard partsGuard(parts.data(), parts.size(), ~0ULL);
     return buildBalancedRope(parts);
 }
@@ -651,15 +587,14 @@ HPointer join(void* sep, HPointer stringList) {
     auto& allocator = Allocator::instance();
     size_t sep_len = sep ? static_cast<Header*>(sep)->size : 0;
 
-    // Wrap separator as HPointer for the rope-building path; rooted via
-    // stackRootRange below. The wrap() must happen before any GC.
+    // Wrapped before anything allocates, while `sep` is still valid; each path below roots it.
     HPointer sepHp = sep ? allocator.wrap(sep) : alloc::emptyString();
 
-    // First pass: count strings and total length.
+    // First pass, without allocating: the element count, the total length of the elements, and
+    // whether every element is UTF-8.
     size_t total_len = 0;
     size_t count = 0;
-    bool allUtf8 = true;  // all non-empty elements are UTF-8 forms (W4.b)
-    // Hybrid spines: ListCursor walks cells + chunk views.
+    bool allUtf8 = true;
     for (alloc::ListCursor lc(stringList); !lc.done(); lc.next()) {
         if (!alloc::isEmptyString(lc.current().p)) {
             void* strObj = Allocator::resolveFast(lc.current().p);
@@ -673,17 +608,13 @@ HPointer join(void* sep, HPointer stringList) {
 
     if (count == 0) return alloc::emptyString();
     total_len += sep_len * (count - 1);
-    // A non-empty list can still join to "": every element empty and the
-    // separator empty or never emitted (e.g. `String.join sep [""]`, which
-    // `String.replace` reaches for an empty input). The result is the Empty
-    // constant, never a zero-length object (HEAP_071; allocAsciiOut asserts).
+    // A non-empty list joins to "" when every element is empty and the separator is empty or
+    // never written, as for one empty element. The result must then be the Empty constant, never a
+    // zero-length object (HEAP_071; allocAsciiOut asserts it).
     if (total_len == 0) return alloc::emptyString();
-    // The separator (when it contributes) must also be UTF-8 for a byte-join.
     bool sepUtf8 = (sep_len == 0) || (sep && isUtf8(sep));
 
     if (total_len <= allocator.getConfig().string_flatten_limit) {
-        // All-UTF-8 elements + UTF-8 separator => byte-join. W4.b. Root the
-        // list and separator across allocAsciiOut, then walk (no alloc).
         if (allUtf8 && sepUtf8 && allocator.getConfig().utf8_strings_enabled) {
             HPointer listHp = stringList;
             AsciiOut out;
@@ -713,9 +644,6 @@ HPointer join(void* sep, HPointer stringList) {
         size_t total_size = sizeof(ElmString) + data_size;
         total_size = (total_size + 7) & ~7;
 
-        // Pattern B: both stringList and sepHp are walked AFTER the allocate
-        // to populate result->chars; root them via the helper's slow-path
-        // mechanism and re-read post-call.
         uint64_t roots[2];
         std::memcpy(&roots[0], &stringList, sizeof(stringList));
         std::memcpy(&roots[1], &sepHp, sizeof(sepHp));
@@ -750,7 +678,6 @@ HPointer join(void* sep, HPointer stringList) {
         return healAsciiResult(allocator.wrap(result));
     }
 
-    // Large total: build a balanced rope with `sep` interleaved between elems.
     std::vector<HPointer> parts;
     parts.reserve(count * 2);
     bool first = true;
@@ -799,7 +726,8 @@ HPointer indexes(void* needle, void* haystack) {
             indices.push_back(static_cast<i64>(i));
         }
     } else if (needle_len <= haystack_len) {
-        // BMH for longer needles; naive otherwise.
+        // Boyer-Moore-Horspool for a needle of 4 or more units, and a direct scan otherwise. The skip
+        // table is indexed by a unit's low byte, so units that share it share an entry.
         if (needle_len >= 4) {
             u32 skip[256];
             for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(needle_len);
@@ -812,7 +740,7 @@ HPointer indexes(void* needle, void* haystack) {
                 while (j > 0 && hPtr[i + j - 1] == nPtr[j - 1]) --j;
                 if (j == 0) {
                     indices.push_back(static_cast<i64>(i));
-                    ++i;  // contains() found-overlap semantics: advance by 1
+                    ++i;  // By one, so that overlapping occurrences are found too.
                 } else {
                     i += skip[hPtr[i + needle_len - 1] & 0xFF];
                 }
@@ -848,9 +776,8 @@ HPointer split(void* sep, void* str) {
         return toList(str);
     }
 
-    // Both UTF-8 => byte search + slice()-based parts, which stay UTF-8 (no
-    // widen, parts share the source). W4.f. Mixed encodings fall through to the
-    // UTF-16 snapshot path below.
+    // Both UTF-8: search the bytes, and make each piece with slice(), so pieces stay UTF-8 and
+    // long ones share the source. Mixed forms fall through to the UTF-16 copy below.
     if (isUtf8(str) && isUtf8(sep) &&
         Allocator::instance().getConfig().utf8_strings_enabled) {
         auto& allocator = Allocator::instance();
@@ -888,9 +815,8 @@ HPointer split(void* sep, void* str) {
         HPointer srcHp = allocator.wrap(str);
         auto& rs = allocator.getRootSet();
         size_t saved = rs.stackRangePoint();
-        // ONE all-boxed record for the whole presized buffer (an all-ones
-        // mask covers a range of any length; unfilled slots hold the Nil
-        // constant, which the GC skips) — plans/kernel-root-stack-bounded-rooting.md.
+        // One record roots the whole buffer: an all-ones mask covers a range of any length, and
+        // the slots not yet filled hold the Empty constant, which a collection skips.
         rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
         rs.pushStackRootRange(&srcHp, 1, ~0ULL);
         size_t start = 0;
@@ -907,10 +833,7 @@ HPointer split(void* sep, void* str) {
         return alloc::listFromPointers(parts);
     }
 
-    // Snapshot both strings before any allocation. toStdU16String handles
-    // both leaf and slice tags and produces a contiguous std::u16string,
-    // which is already a contiguous read-only u16 buffer — no need to
-    // duplicate it into a std::vector.
+    // Copy both into C++ memory before anything allocates.
     if (isUtf8(str))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_SPLIT_MIXED, str_len);
     if (isUtf8(sep))
@@ -920,12 +843,10 @@ HPointer split(void* sep, void* str) {
     const u16* strData = reinterpret_cast<const u16*>(strU16.data());
     const u16* sepData = reinterpret_cast<const u16*>(sepU16.data());
 
-    // Boyer-Moore-Horspool skip-table search for needles ≥ 4 chars.
-    // For shorter needles the skip-table build cost outweighs the savings,
-    // so we fall back to the naive byte-by-byte scan in those cases.
+    // Boyer-Moore-Horspool for a separator of 4 or more units, and a direct scan otherwise.
     std::vector<size_t> splitPositions;
     if (sep_len >= 4) {
-        // Build skip table indexed by haystack char (mod 256 to bound size).
+        // Indexed by a unit's low byte, so units that share it share an entry.
         u32 skip[256];
         for (u32 i = 0; i < 256; ++i) skip[i] = static_cast<u32>(sep_len);
         for (size_t i = 0; i + 1 < sep_len; ++i) {
@@ -933,7 +854,6 @@ HPointer split(void* sep, void* str) {
         }
         size_t i = 0;
         while (i + sep_len <= str_len) {
-            // Compare from the end.
             size_t j = sep_len;
             while (j > 0 && strData[i + j - 1] == sepData[j - 1]) --j;
             if (j == 0) {
@@ -962,8 +882,7 @@ HPointer split(void* sep, void* str) {
     std::vector<HPointer> parts(numParts, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    // ONE all-boxed record for the whole presized buffer (unfilled slots hold
-    // the Nil constant, which the GC skips).
+    // One record roots the whole buffer; unfilled slots hold the Empty constant.
     rs.pushStackRootRange(parts.data(), parts.size(), ~0ULL);
 
     size_t start = 0;
@@ -987,9 +906,7 @@ HPointer toList(void* str) {
     size_t len = buf.size();
     if (len == 0) return alloc::listNil();
 
-    // `buf` is already a contiguous u16 buffer; no need to duplicate it
-    // into a separate std::vector<u16>. One element per code point (a valid
-    // surrogate pair is one character).
+    // Count the code points first so that the rooted buffer is sized once.
     const u16* chars = reinterpret_cast<const u16*>(buf.data());
     size_t count = 0;
     for (size_t i = 0; i < len; ++count) (void)nextCodePoint(chars, len, i);
@@ -1012,17 +929,14 @@ HPointer uncons(void* str) {
     Header* hdr = static_cast<Header*>(str);
     if (hdr->size == 0) return alloc::nothing();
 
-    // Read the first char (code point) before any allocation. charAt does not
-    // allocate. A valid surrogate pair is one Char and the rest drops both
-    // units; UTF-8 forms are ASCII (HEAP_032) so `used` is 1 there.
+    // Read the first code point before anything allocates. A UTF-8 form is ASCII (HEAP_032), so
+    // `used` is 1 there, which the UTF-8 branches below rely on.
     size_t used = 0;
     u32 firstChar = codePointAt(str, hdr->size, used);
     u32 restLen = hdr->size - static_cast<u32>(used);
 
-    // Bypass slice()'s tiny-path *flattening* copy: build a Tag_StringSlice
-    // directly when the source is a leaf, large-header, or another slice.
-    // This makes a long fold-with-uncons over a string O(n) total allocation
-    // instead of O(n²) (each tail slice would otherwise copy its full body).
+    // Share rather than going through slice(), which would copy a short rest. Uncons applied to
+    // each rest in turn then allocates in total in proportion to the length, not its square.
     HPointer rest;
     if (restLen == 0) {
         rest = alloc::emptyString();
@@ -1037,14 +951,12 @@ HPointer uncons(void* str) {
             u32 newOffset = slc->offset + static_cast<u32>(used);
             rest = makeSlice(baseHp, newOffset, restLen);
         } else if (hdr->tag == Tag_StringUtf8Leaf) {
-            // ASCII: rest is a UTF-8 view advanced by one byte over the leaf.
             HPointer baseHp = allocator.wrap(str);
             rest = makeUtf8View(baseHp, 1, restLen);
         } else if (hdr->tag == Tag_StringUtf8View) {
             ElmStringUtf8View* v = static_cast<ElmStringUtf8View*>(str);
             rest = makeUtf8View(v->base, v->offset + 1, restLen);
         } else {
-            // Rope: defer to slice() which handles rope-aware partitioning.
             rest = slice(str, static_cast<i64>(used), static_cast<i64>(hdr->size));
         }
     }
@@ -1063,10 +975,8 @@ HPointer map(CharToCharMapper mapFunc, void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
-    // Per code point: a mapped Char may need a different number of UTF-16
-    // units than its source, so build the result in a C-heap buffer
-    // (`mapFunc` is a non-allocating C function, so the snapshot cannot go
-    // stale) and allocate once.
+    // A mapped Char may take a different number of units than its source, so the result is
+    // built in C++ memory and allocated once at the end.
     auto buf = toStdU16String(str);
     const u16* p = reinterpret_cast<const u16*>(buf.data());
     size_t n = buf.size();
@@ -1081,25 +991,21 @@ HPointer filter(CharPredicate pred, void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
-    // Two-pass: count survivors to allocate the right-sized result, then
-    // copy survivors into it. Avoids both std::vector and std::u16string.
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
 
-    // UTF-8 in => UTF-8 out: a subset of ASCII is ASCII. W4.d. `pred` is a
-    // non-allocating C predicate (the existing arms hold raw segment pointers
-    // across pred calls), so the utf8Bytes pointer is stable across the count
-    // pass; the copy pass re-fetches after allocAsciiOut.
+    // UTF-8: count what is kept, allocate once, then copy it. `pred` does not allocate, so the bytes
+    // stay put during the count; they are fetched again after allocAsciiOut.
     if (isUtf8(str) && allocator.getConfig().utf8_strings_enabled) {
         auto pr = utf8Bytes(Allocator::resolveFast(srcHp));
         u32 kept = 0;
         for (u32 i = 0; i < pr.second; ++i)
             if (pred(static_cast<u32>(pr.first[i]))) ++kept;
         if (kept == 0) return alloc::emptyString();
-        if (kept == len) return allocator.wrap(Allocator::resolveFast(srcHp));  // all kept
+        if (kept == len) return allocator.wrap(Allocator::resolveFast(srcHp));
         AsciiOut out;
         { Elm::StackRootGuard guard(&srcHp); out = allocAsciiOut(kept); }
-        auto pr2 = utf8Bytes(Allocator::resolveFast(srcHp));  // re-fetch post-alloc
+        auto pr2 = utf8Bytes(Allocator::resolveFast(srcHp));
         u32 w = 0;
         for (u32 i = 0; i < pr2.second; ++i) {
             u8 c = pr2.first[i];
@@ -1108,9 +1014,7 @@ HPointer filter(CharPredicate pred, void* str) {
         return finishAsciiOut(out);
     }
 
-    // UTF-16: per code point (a surrogate pair is one Char, and a segment
-    // boundary of a rope may split a pair, so snapshot first). `pred` is a
-    // non-allocating C predicate, so the snapshot cannot go stale.
+    // UTF-16: copied first, because a surrogate pair may straddle two segments of a rope.
     auto buf = toStdU16String(Allocator::resolveFast(srcHp));
     const u16* p = reinterpret_cast<const u16*>(buf.data());
     size_t n = buf.size();
@@ -1132,9 +1036,8 @@ HPointer filter(CharPredicate pred, void* str) {
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
     if (!str) return acc;
     Unboxable result = acc;
-    // UTF-8: iterate bytes (zext to u32) instead of widening. `fold` may
-    // allocate, so snapshot the bytes to the C stack first (same discipline as
-    // the toStdU16String snapshot on the UTF-16 path). W4.e.
+    // `fold` may allocate, so the bytes are copied into C++ memory first, as the units are on the
+    // UTF-16 path.
     if (isUtf8(str)) {
         auto pr = utf8Bytes(str);
         std::string snap(reinterpret_cast<const char*>(pr.first), pr.second);
@@ -1170,7 +1073,7 @@ Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
 
 std::string toStdString(void* str) {
     if (!str) return {};
-    // UTF-8 (ASCII) forms: the bytes are already valid UTF-8 — copy directly.
+    // ASCII bytes are already UTF-8.
     {
         Header* hdr = static_cast<Header*>(str);
         if (hdr->tag == Tag_StringUtf8View || hdr->tag == Tag_StringUtf8Leaf) {
@@ -1182,9 +1085,7 @@ std::string toStdString(void* str) {
     const u16* p = reinterpret_cast<const u16*>(buf.data());
     const size_t n = buf.size();
 
-    // First pass: count UTF-8 bytes. ASCII dominates most strings, so the
-    // worst-case 3x reservation almost always over-allocates by 3x; a
-    // single count pass replaces that with the exact size.
+    // First pass: the exact UTF-8 length, so that the result is allocated once at its size.
     size_t out_bytes = 0;
     for (size_t i = 0; i < n; ++i) {
         u16 c = p[i];
@@ -1234,26 +1135,21 @@ std::string toStdString(void* str) {
 
 
 // ============================================================================
-// Cold halves of equal / compare (plan S9): slices, large headers, ropes and
-// UTF-8-vs-UTF-16 pairs. The hot inline paths in StringOps.hpp have already
-// handled empty operands, the both-UTF-16-leaf case and the both-UTF-8 case.
+// The out-of-line halves of equal and compare
 // ============================================================================
 
 bool equalSlow(void* a, void* b) {
     Header* ha = static_cast<Header*>(a);
-    // Single-segment-on-each-side fast path (pure UTF-16): leaf / slice /
-    // large-split-header without flattening. UTF-8 forms return {nullptr,0}
-    // from singleSegmentView, so at least one side reaching here as UTF-8
-    // falls through to the width-aware walk below.
+    // Each side one contiguous run of UTF-16 units. singleSegmentView gives null for a UTF-8 form
+    // or rope, which then takes the segment walk below.
     auto [aPtr, aLen] = singleSegmentView(a);
     auto [bPtr, bLen] = singleSegmentView(b);
     if (aPtr && bPtr) {
         return std::memcmp(aPtr, bPtr, ha->size * sizeof(u16)) == 0;
     }
 
-    // General width-aware lockstep: handles ropes that may mix UTF-8 and
-    // UTF-16 children, and any UTF-8-vs-UTF-16 pairing. Stable pointers,
-    // allocation-free beyond two small segment vectors.
+    // Walk both Strings' segments side by side, unit by unit. Nothing here allocates on the Elm
+    // heap, so the segment pointers stay valid.
     std::vector<SegView> aSegs, bSegs;
     aSegs.reserve(16); bSegs.reserve(16);
     collectSegs(a, aSegs);
@@ -1281,7 +1177,6 @@ int compareSlow(void* a, void* b) {
         return 0;
     };
 
-    // Single-segment-on-each-side fast path (pure UTF-16).
     auto [aPtr, aLen] = singleSegmentView(a);
     auto [bPtr, bLen] = singleSegmentView(b);
     if (aPtr && bPtr) {
@@ -1291,9 +1186,7 @@ int compareSlow(void* a, void* b) {
         return static_cast<int>(aLen) - static_cast<int>(bLen);
     }
 
-    // General width-aware lockstep (ropes possibly mixing UTF-8 / UTF-16, or
-    // any UTF-8-vs-UTF-16 pairing). ASCII bytes widen to u16 units, matching
-    // UTF-16 unit order.
+    // As in equalSlow. A byte compares as the unit it stands for.
     std::vector<SegView> aSegs, bSegs;
     aSegs.reserve(16); bSegs.reserve(16);
     collectSegs(a, aSegs);

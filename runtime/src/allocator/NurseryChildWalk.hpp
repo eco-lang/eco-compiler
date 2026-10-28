@@ -1,21 +1,34 @@
 #pragma once
 
-// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md P§3.11): the
-// nursery's per-tag child-slot walk, factored from phase 6's scanEntryP arms
-// (the legacy scanObject / scanEntryP are left untouched). The region drain's
-// validators, the tenure engine and TV2 share it.
+// The minor collector's definition of which slots of an object are its children. The region
+// drain's validators, the tenure engine and the hand-over closure check on a Tenuring extent
+// call it; `NurserySpace::scanObject` and `scanEntryP` keep their own per-tag walks.
 //
-// f(HPointer& slot) is called for every BOXED child slot the minor GC traces:
-// Unboxable fields only when their kind bit says boxed, Closure slots below
-// n_values only, the live range of a boxed ListBacking, the elements of a
-// boxed Array. A large header's body is NOT a child (it lives in the old gen
-// and is tracked by the body index, HEAP_026).
+// A child slot is a slot that may hold an HPointer: a field whose slot kind (00 boxed, 01 Int,
+// 10 Float, 11 Char) is boxed, or a pointer field that has no kind. `forEachChildSlot` visits
+// exactly these, per tag, and `nurseryTagHasChildren` names the tags for which it can visit any.
+//
+// A large String or Bytes header's `body` is not a child. The body is a header-less payload in
+// the old generation, tracked by the large-body index rather than traced (HEAP_026, HEAP_081).
+// A Process's three pointers are children.
 
 #include "AllocatorCommon.hpp"
 #include "Heap.hpp"
 
 namespace Elm {
 
+/// Calls `f(HPointer&)` once for each child slot of the object at `obj`, in slot order.
+///
+/// Per tag: a tuple's fields, a Cons head, a Custom's or Record's values, and a Task's `value`
+/// are visited only when their kind is boxed. A Closure's slots are visited below `n_values` only,
+/// and then only the boxed ones. A ListBacking's elements `[hd, header.size)` and an Array's
+/// `[0, length)` are visited only when the uniform kind in `header.unboxed` bits 1:0 is boxed.
+/// Every DynRecord value and its `fieldgroup` are visited; its kind bitmap is not read.
+/// The other pointer fields (Cons tail, ConsChunk, Task, Process, slice, view and rope links)
+/// are always visited. Any other tag, including large String and Bytes headers, visits nothing.
+///
+/// A visited slot may hold null, an embedded constant or a pointer outside the nursery, so `f`
+/// must filter those itself. `f` gets a reference into the object and may rewrite the slot.
 template <typename F>
 inline void forEachChildSlot(void* obj, F&& f) {
     Header* hdr = getHeader(obj);
@@ -34,7 +47,7 @@ inline void forEachChildSlot(void* obj, F&& f) {
             break;
         }
         case Tag_Custom: {
-            // Header-bitmap slots, then the tail (ext kind words, HEAP_019).
+            // Kinds of the first slots are in the header word, the rest in ext words (HEAP_019).
             Custom* c = static_cast<Custom*>(obj);
             const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
             for (u32 i = 0; i < h; i++)
@@ -59,7 +72,7 @@ inline void forEachChildSlot(void* obj, F&& f) {
             break;
         }
         case Tag_Closure: {
-            Closure* cl = static_cast<Closure*>(obj);   // APPLIED slots only
+            Closure* cl = static_cast<Closure*>(obj);   // Only the applied arguments.
             for (u32 i = 0; i < cl->n_values; i++)
                 if (closureSlotKind(cl, i) == 0) f(cl->values[i].p);
             break;
@@ -117,7 +130,9 @@ inline void forEachChildSlot(void* obj, F&& f) {
     }
 }
 
-// Tags with at least one potential child slot (the drain pushes only these).
+/// Returns whether an object with tag `tag` can have a child slot, that is, whether
+/// `forEachChildSlot` has a case for it. An object of such a tag may still visit nothing, for
+/// example an Array of unboxed Ints.
 inline bool nurseryTagHasChildren(uint32_t tag) {
     switch (tag) {
         case Tag_Tuple2: case Tag_Tuple3: case Tag_Custom: case Tag_Record:

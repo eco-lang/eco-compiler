@@ -1,9 +1,3 @@
-// Win64 implementation of the small VM primitives the allocator uses.
-// See PlatformVirtualMemory.hpp for the contract.
-//
-// The reserve / commit-subrange / decommit / release pattern was verified
-// against the eco mmap model by experiments/win-jit-smoke/ (E-W2 spike).
-
 #include "PlatformVirtualMemory.hpp"
 
 #include <cstdint>
@@ -41,10 +35,6 @@ void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit) {
 }
 
 void* commitAt(void* addr, std::size_t size) {
-    // VirtualAlloc with MEM_COMMIT and an address inside an existing
-    // reservation commits the subrange and returns the same address. If the
-    // address isn't inside a reservation it returns nullptr — same failure
-    // shape as POSIX MAP_FAILED gets translated to.
     return VirtualAlloc(addr, size, MEM_COMMIT, PAGE_READWRITE);
 }
 
@@ -58,21 +48,19 @@ bool decommit(void* addr, std::size_t size) {
 }
 
 bool discardPages(void*, std::size_t) {
-    return true;   // parity with Allocator.cpp's Win64 madvise stub
+    return true;   // nothing is dropped; see the header
 }
 
 bool populatePagesWrite(void*, std::size_t) {
-    return false;  // no MADV_POPULATE_WRITE equivalent; U2 disables itself
+    return false;  // no equivalent of MADV_POPULATE_WRITE is used here
 }
 
 std::size_t processResidentBytes() {
-    return 0;      // unavailable (plans/frontend-heap-release.md §3.2)
+    return 0;      // not implemented on Win64
 }
 
 bool releaseReservation(void* addr, std::size_t /*size*/) {
-    // MEM_RELEASE requires size == 0 and releases the entire reservation
-    // identified by `addr`. POSIX munmap takes a size; we accept it for
-    // symmetry but ignore it.
+    // MEM_RELEASE requires a size of 0 and releases the reservation at `addr`.
     return VirtualFree(addr, 0, MEM_RELEASE) != 0;
 }
 

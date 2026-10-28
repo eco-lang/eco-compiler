@@ -1,4 +1,3 @@
-// Large-object space: free space inside LOS blocks (plans/large-object-space.md D2).
 #include "LargeObjectSpace.hpp"
 
 #include <cassert>
@@ -68,7 +67,7 @@ size_t LargeObjectSpace::findRun(const BlockMeta& m, size_t need, size_t align) 
         if (test(m, g)) { ++g; continue; }
         const size_t s = g;
         while (g < per_block_ && !test(m, g)) ++g;
-        const size_t e = g;   // free run [s, e)
+        const size_t e = g;   // Free run [s, e).
         const size_t a = (s + align - 1) / align * align;
         if (a + need <= e && (e - s) < best_len) {
             best_len = e - s;

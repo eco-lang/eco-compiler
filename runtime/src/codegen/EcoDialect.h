@@ -1,6 +1,18 @@
 //===- EcoDialect.h - Eco dialect declaration -----------------------------===//
 //
-// This file declares the Eco dialect and its types.
+// The Eco MLIR dialect, `eco`, is the form a compiled Elm program takes on its
+// way to LLVM, and this header is where C++ code gets the dialect class,
+// `eco::EcoDialect`, and the dialect's types. Its operations are declared in
+// `EcoOps.h`.
+//
+// The dialect and its types are defined in TableGen (`Ops.td`), and this header
+// only includes the generated declarations. The types are `eco.value`
+// (`eco::ValueType`), a boxed Elm value word that is either a pointer to a
+// heap object or an embedded constant, and the aggregates `eco.tuple2`,
+// `eco.tuple3`, `eco.record`, `eco.custom`, `eco.cons` and `eco.closure_env`,
+// which are SSA-only values lowered to LLVM structs, never heap objects.
+// Loading the dialect into an `MLIRContext` registers all of these types and
+// every operation in `EcoOps.h`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,8 +26,8 @@
 
 #include "eco/EcoDialect.h.inc"
 
-// Auto-generated type declarations. The definitions are pulled in by
-// EcoDialect.cpp.
+// Generated type declarations. Their definitions are compiled in
+// `EcoDialect.cpp`.
 #define GET_TYPEDEF_CLASSES
 #include "eco/EcoTypes.h.inc"
 

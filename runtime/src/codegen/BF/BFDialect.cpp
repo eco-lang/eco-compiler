@@ -1,7 +1,4 @@
 //===- BFDialect.cpp - ByteFusion dialect implementation ------------------===//
-//
-// This file implements the BF dialect initialization.
-//
 //===----------------------------------------------------------------------===//
 
 #include "BFDialect.h"
@@ -17,6 +14,7 @@ using namespace bf;
 // BF Dialect
 //===----------------------------------------------------------------------===//
 
+// Registers every type and operation that TableGen generated for the dialect.
 void BFDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST

@@ -1,8 +1,11 @@
-// PlatformPaths.hpp — executable-path discovery, the platform seam for what
-// was previously five direct readlink("/proc/self/exe") call sites (Darwin
-// has no procfs; Win64 has no procfs and no path-style readlink). Header-only
-// so eco-kernel-cpp can use it without library wiring. See
-// plans/build-on-mac.md (M2 work items) and plans/build-on-windows.md (item 11).
+// PlatformPaths.hpp - where the running executable is.
+//
+// Each operating system answers "where is the running executable" differently:
+// Linux reads the /proc/self/exe link, Darwin asks dyld and resolves the
+// answer with realpath, and Windows asks GetModuleFileNameW and converts the
+// UTF-16 result to UTF-8. This header hides that behind two functions that
+// return a path with '/' separators on every platform. It is header-only, so
+// it can be used without linking against any runtime library.
 
 #pragma once
 
@@ -14,9 +17,6 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// Win32 has no PATH_MAX in the POSIX sense; MAX_PATH (260) is too small for
-// modern long paths. The widechar API takes a buffer length and tells us how
-// many chars it wrote, so we pick a generous size and grow if truncated.
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #else
@@ -27,16 +27,14 @@ namespace eco::platform {
 
 #if !defined(_WIN32)
 namespace detail {
+/// Returns the platform's native directory separator.
 inline char dirSep() { return '/'; }
 }
 #else
 namespace detail {
+/// Returns the platform's native directory separator.
 inline char dirSep() { return '\\'; }
-// Convert a Windows-narrow path to forward slashes for callers that join
-// with '/'. The Win32 exe path returned by GetModuleFileNameW is canonical
-// — drive letter + '\' separators — and downstream code (e.g. paths fed to
-// Node's require, MLIR locations) handles both separators, so normalizing
-// is convenient but optional.
+/// Returns `s` with every backslash replaced by a forward slash.
 inline std::string toForwardSlashes(std::string s) {
     for (char& c : s) if (c == '\\') c = '/';
     return s;
@@ -44,15 +42,19 @@ inline std::string toForwardSlashes(std::string s) {
 }
 #endif
 
-// Absolute path of the running executable, or "" if it cannot be determined
-// (callers treat that as "no exe path" and fall back — see e.g.
-// EcoBootConfig.cpp's runtimeDir()).
+/// Returns the path of the running executable, or "" if it cannot be
+/// determined.
+///
+/// On Linux it is the target of /proc/self/exe, and a path of PATH_MAX bytes
+/// or more is silently cut short. On Darwin it is the dyld path resolved by
+/// realpath, or the unresolved dyld path if realpath fails. On Windows it is
+/// the module path converted to UTF-8, with backslashes turned into forward
+/// slashes; a path that does not fit in 32768 UTF-16 units is not detected
+/// and comes back cut short.
 inline std::string currentExecutablePath() {
 #if defined(_WIN32)
-    // GetModuleFileNameW(NULL) returns the running executable's path in the
-    // current code page; we widen-to-narrow via WideCharToMultiByte(CP_UTF8)
-    // so the result round-trips through Node/Elm string handling. Grow the
-    // buffer until the API reports it fit (writes fewer chars than buffer).
+    // GetModuleFileNameW reports truncation by filling the whole buffer, so
+    // the buffer doubles until the result is shorter than it.
     std::wstring wbuf;
     DWORD len = 0;
     for (DWORD cap = 512; cap <= 32768; cap *= 2) {
@@ -60,7 +62,6 @@ inline std::string currentExecutablePath() {
         len = GetModuleFileNameW(NULL, wbuf.data(), cap);
         if (len == 0) return {};
         if (len < cap) { wbuf.resize(len); break; }
-        // Truncated: GetModuleFileNameW returned cap (buffer full) — grow.
     }
     if (len == 0 || len >= wbuf.size() + 1) return {};
     int u8 = WideCharToMultiByte(CP_UTF8, 0, wbuf.data(), (int)wbuf.size(),
@@ -75,8 +76,8 @@ inline std::string currentExecutablePath() {
     uint32_t size = sizeof(buf);
     if (_NSGetExecutablePath(buf, &size) != 0)
         return {};
-    // _NSGetExecutablePath may return a symlink-y / non-canonical path;
-    // realpath matches readlink(/proc/self/exe)'s resolved behavior.
+    // _NSGetExecutablePath may return a path through symlinks; realpath
+    // resolves it, as the kernel does for /proc/self/exe.
     char real[PATH_MAX];
     if (::realpath(buf, real) != nullptr)
         return std::string(real);
@@ -91,14 +92,10 @@ inline std::string currentExecutablePath() {
 #endif
 }
 
-// dirname of the running executable, or "" on failure. (Both behaviors the
-// previous per-site implementations had: Runtime.cpp returned the path
-// unchanged when it contained no '/', EcoBootConfig.cpp returned "." — a
-// path from currentExecutablePath() is absolute, so the case cannot arise.)
-//
-// Note: on Windows the path returned by currentExecutablePath() has already
-// been normalised to forward slashes, so a single find_last_of('/') works on
-// all platforms.
+/// Returns the directory that holds the running executable: the path from
+/// `currentExecutablePath` up to its last '/'. Returns "" if the path cannot
+/// be determined, and also for an executable directly under "/", and "." if
+/// the path contains no '/'.
 inline std::string currentExecutableDir() {
     std::string exe = currentExecutablePath();
     if (exe.empty())

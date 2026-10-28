@@ -1,11 +1,30 @@
 //===- EcoPAPSimplify.cpp - PAP optimization pass -------------------------===//
 //
-// This pass optimizes partial application patterns in the ECO dialect:
-// - Converts saturated papCreate+papExtend to direct calls (P1)
-// - Elides multi-use papCreates whose every use is a saturated typed
-//   papExtend, rewriting each use to a direct call (P4, plan H4.1)
-// - Fuses papExtend chains (P2)
-// - Enables DCE of unused closures (P3 - via canonical DCE)
+// A partial application that is built only to be applied straight away costs a heap allocation for nothing, and
+// this pass removes such allocations from the eco dialect before it is lowered.
+//
+// A closure is made by `eco.papCreate`, which names an evaluator function, its `arity` and the values it captures.
+// `eco.papExtend` applies a closure to further arguments, its newargs. An extend is in typed mode when it carries
+// `remaining_arity`, the number of arguments the closure still needs; it is saturated when it supplies exactly that
+// many, and then it calls the evaluator instead of building a new closure. An extend without `remaining_arity` is in
+// generic mode: whether it saturates is decided at run time from the closure, so it may call code. The evaluator a
+// `papCreate` names takes the captures first and then the parameters (for a capturing closure this is its `$cap`
+// clone), which is what lets a saturated application be written as an ordinary call.
+//
+// Five rewrite patterns follow from those facts:
+// - `SaturatedPapToCallPattern` turns a single-use create applied by a saturated typed extend into `eco.call`.
+// - `MultiUsePapElisionPattern` does the same for a create with several uses, all of them saturated typed extends.
+// - `FusePapExtendChainPattern` merges an extend of an extend into one extend.
+// - `FuseCreateIntoExtendPattern` merges a non-saturating typed extend of a create into one create.
+// - `DeadPapExtendPattern` erases an unused, non-saturating typed extend.
+// `papCreate` is `Pure`, so a create left with no uses is removed by the rewrite driver; `papExtend` is not, because a
+// saturating extend calls code, so the patterns erase the extends they make dead themselves.
+//
+// No pattern touches a create with `self_capture_indices`. Such a closure captures itself: the create stores a
+// placeholder (Unit) in the self slot, which is overwritten with the closure's own pointer after allocation, so
+// forwarding its captures elsewhere would pass the placeholder. The two fusion patterns recompute `slot_kinds` for
+// the closure op they build from its operands' SSA types, and keep it within the closure size limits of
+// `PapCreateOp::verify` and `PapExtendOp::verify`, since nothing guarantees the verifier runs after this pass.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,12 +45,13 @@ using namespace eco;
 
 namespace {
 
-/// HEAP_078: stage arity <= CLOSURE_MAX_ARITY (Heap.hpp), so a fused extend
-/// has at most 2047 newargs and a fused create at most 2046 captures.
+/// The largest number of values one closure op may carry, equal to `Elm::CLOSURE_MAX_ARITY` (HEAP_078).
+///
+/// A fused extend may have at most this many newargs, and a fused create at most one fewer captures.
 constexpr size_t kClosureMaxArity = 2047;
 
-/// `slot_kinds` (§S.5) of closure operands from their SSA types:
-/// i64 -> 1, f64 -> 2, i32 (Char) -> 3, everything else -> 0 (codegen slotKindOf).
+/// Returns the `slot_kinds` entry for each of `vals`, from its SSA type: 1 for `i64` (Int), 2 for `f64` (Float),
+/// 3 for `i32` (Char), and 0 (boxed) for anything else, `i1` included.
 static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
     SmallVector<int8_t> kinds;
     kinds.reserve(vals.size());
@@ -42,31 +62,17 @@ static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
     return kinds;
 }
 
-//===----------------------------------------------------------------------===//
-// Pattern P1: Saturated papCreate + papExtend -> direct eco.call
-//===----------------------------------------------------------------------===//
-//
-// Match:
-//   %c = eco.papCreate @f(%captured...) { arity = A, num_captured = C }
-//   %r = eco.papExtend %c(%newArgs...) { remaining_arity = K }
-// Where K == newArgs.size() (saturated) AND %c has single use
-//
-// Rewrite to:
-//   %r = eco.call @f(%captured..., %newArgs...)
-//
-/// Check if a function uses the args-array calling convention.
-/// Returns true if the function signature is: (ptr) -> i64 or (ptr) -> ptr
-/// These functions are meant to be called through the closure evaluator, not directly.
+/// Returns whether `funcOp` is an `llvm.func` taking one pointer and returning `i64` or a pointer.
+///
+/// Such a function takes its arguments as one array, so the patterns that make direct calls leave a closure whose
+/// evaluator looks like this alone. A `func.func` never matches.
 static bool usesArgsArrayConvention(Operation *funcOp) {
     if (auto llvmFunc = dyn_cast<LLVM::LLVMFuncOp>(funcOp)) {
         auto funcType = llvmFunc.getFunctionType();
-        // Must have exactly one parameter
         if (funcType.getNumParams() != 1)
             return false;
-        // Parameter must be a pointer
         if (!isa<LLVM::LLVMPointerType>(funcType.getParamType(0)))
             return false;
-        // Return type must be i64 or ptr
         auto retType = funcType.getReturnType();
         if (auto intTy = dyn_cast<IntegerType>(retType))
             return intTy.getWidth() == 64;
@@ -75,65 +81,59 @@ static bool usesArgsArrayConvention(Operation *funcOp) {
     return false;
 }
 
+/// A rewrite of a saturated typed extend of a single-use create into a direct call.
+///
+///   %c = eco.papCreate @f(%captured...)
+///   %r = eco.papExtend %c(%newargs...) { remaining_arity = K }   // K == |newargs|
+/// becomes
+///   %r = eco.call @f(%captured..., %newargs...)
+///
+/// The call's result type is the extend's, which CGEN_056 makes equal to the evaluator's return type. It does not
+/// fire for a self-capturing create, an evaluator missing from `symTable`, or an args-array evaluator. The create,
+/// left unused, is removed by the driver.
 struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
-    const mlir::SymbolTable &symTable;
+    const mlir::SymbolTable &symTable; ///< The module's symbol table, which must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `symTable`.
     SaturatedPapToCallPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
         : OpRewritePattern(ctx), symTable(symTable) {}
 
+    /// Rewrites `extendOp` into a call when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
-        // Skip generic-mode papExtend (no remaining_arity) — saturation unknown at compile time
         auto remainingArityAttr = extendOp.getRemainingArityAttr();
         if (!remainingArityAttr)
             return failure();
 
         auto newargs = extendOp.getNewargs();
 
-        // Check saturation: remaining_arity == newargs count
         int64_t remainingArity = remainingArityAttr.getInt();
         if (static_cast<int64_t>(newargs.size()) != remainingArity)
             return failure();  // Not saturated
 
-        // Find defining papCreate
         auto createOp = extendOp.getClosure().getDefiningOp<PapCreateOp>();
         if (!createOp)
             return failure();  // Closure not from papCreate
 
-        // Check single use - safe to inline
         if (!extendOp.getClosure().hasOneUse())
             return failure();  // Closure used elsewhere
 
-        // Do NOT optimize away self-capturing closures. The papCreate stores
-        // a placeholder (Unit) for the self-reference slot, which gets
-        // backpatched at runtime with the closure's own HPointer. Inlining
-        // the captures as direct call args would pass the unpatched Unit
-        // placeholder, breaking recursion.
         if (createOp->hasAttr("self_capture_indices"))
             return failure();
 
-        // The direct call targets the closure's evaluator (`$cap` for a
-        // capturing closure), whose params are captures + params.
         FlatSymbolRefAttr calleeAttr = createOp.getFunctionAttr();
 
-        // Look up the target function to verify it has a compatible signature.
-        // Skip transformation if the function uses the args-array calling convention
-        // (i.e., llvm.func with (ptr) -> i64), as those are meant for closure calls.
         auto targetFunc = symTable.lookup(calleeAttr.getValue());
         if (!targetFunc)
             return failure();  // Function not found - let later passes handle it
 
-        // Skip if target uses args-array convention (not compatible with direct calls)
         if (usesArgsArrayConvention(targetFunc))
             return failure();
 
-        // Build combined operand list: captured + newargs.
         SmallVector<Value> allOperands;
         allOperands.append(createOp.getCaptured().begin(),
                           createOp.getCaptured().end());
         allOperands.append(newargs.begin(), newargs.end());
 
-        // CGEN_056: saturated papExtend result type == callee's func.func return type
-        // (enforced by Elm codegen, verified by PapExtendSaturatedResultType test)
         Type resultType = extendOp.getResult().getType();
 
         auto callOp = rewriter.create<CallOp>(
@@ -145,53 +145,35 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
             nullptr);  // remaining_arity
 
         rewriter.replaceOp(extendOp, callOp.getResults());
-        // papCreate will be DCE'd since it now has no uses
         return success();
     }
 };
 
-//===----------------------------------------------------------------------===//
-// Pattern P4: multi-use papCreate elision (HOF-elimination plan H4.1)
-//===----------------------------------------------------------------------===//
-//
-// Generalizes P1 from "single use" to "every use qualifies". Match a
-// papCreate whose EVERY use is the closure operand (#0) of a saturated
-// typed-mode papExtend; rewrite each such papExtend to a direct call with
-// the papCreate's capture operands forwarded (P1's per-use rewrite), then
-// erase the papCreate. This is the population P1 cannot touch: closures
-// applied more than once (both branches of a case, loop bodies) — the
-// front-end inliner (H1/H2.5) deliberately leaves multi-use closures alone
-// because collapsing them there would duplicate code; here each use becomes
-// a direct call with no duplication and the allocation disappears.
-//
-// The DECISION content is unchanged and stays front-end: which target is
-// callable directly comes from the papCreate's own `function` attribute
-// (the `$cap` clone for a capturing closure), exactly as P1 consumes it. Any other use — the closure stored as a newarg of some
-// papExtend, captured by another papCreate, passed to a call — disqualifies
-// the whole papCreate (escape).
-//
+/// A rewrite of a create with several uses, every one of them as the closure of a saturated typed extend, into one
+/// direct call per use.
+///
+/// Each extend is rewritten as `SaturatedPapToCallPattern` rewrites one, and the create is erased. A create with
+/// zero or one use is left to the driver and to `SaturatedPapToCallPattern`. Any other use (the create passed as a
+/// newarg, captured, or given to a call) means the closure escapes, and nothing is rewritten. The same exclusions as
+/// `SaturatedPapToCallPattern` apply.
 struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
-    const mlir::SymbolTable &symTable;
+    const mlir::SymbolTable &symTable; ///< The module's symbol table, which must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `symTable`.
     MultiUsePapElisionPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
         : OpRewritePattern(ctx), symTable(symTable) {}
 
+    /// Rewrites every use of `createOp` into a call and erases it when it matches, and fails, changing nothing,
+    /// otherwise.
     LogicalResult matchAndRewrite(PapCreateOp createOp,
                                   PatternRewriter &rewriter) const override {
         Value pap = createOp.getResult();
 
-        // Single-use is P1's territory (cheaper, extend-rooted); dead creates
-        // are the greedy driver's DCE territory.
         if (pap.use_empty() || pap.hasOneUse())
             return failure();
 
-        // Same non-negotiables as P1: self-capturing closures get their
-        // self slot backpatched at runtime — forwarding captures would pass
-        // the unpatched Unit placeholder.
         if (createOp->hasAttr("self_capture_indices"))
             return failure();
 
-        // The direct call targets the closure's evaluator (`$cap` for a
-        // capturing closure), whose params are captures + params.
         FlatSymbolRefAttr calleeAttr = createOp.getFunctionAttr();
 
         auto targetFunc = symTable.lookup(calleeAttr.getValue());
@@ -200,11 +182,8 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
         if (usesArgsArrayConvention(targetFunc))
             return failure();
 
-        // Every use must be the closure operand (#0) of a saturated
-        // typed-mode papExtend. Collect the extends (deduped: one closure
-        // use per extend by construction — any second use of %pap on the
-        // same op would be a newarg use with operand index != 0, which
-        // disqualifies below).
+        // Every use is checked before anything is rewritten. An extend appears here at most once: a second use of
+        // %pap on the same op would be a newarg, with operand number other than 0, which fails.
         SmallVector<PapExtendOp> extends;
         for (OpOperand &use : pap.getUses()) {
             auto ext = dyn_cast<PapExtendOp>(use.getOwner());
@@ -220,8 +199,6 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
             extends.push_back(ext);
         }
 
-        // Rewrite every use to a direct call (P1's operand construction,
-        // applied per use).
         for (PapExtendOp ext : extends) {
             auto newargs = ext.getNewargs();
 
@@ -230,7 +207,6 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
                                createOp.getCaptured().end());
             allOperands.append(newargs.begin(), newargs.end());
 
-            // CGEN_056: saturated papExtend result type == callee return type.
             Type resultType = ext.getResult().getType();
 
             rewriter.setInsertionPoint(ext);
@@ -249,43 +225,34 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
     }
 };
 
-//===----------------------------------------------------------------------===//
-// Pattern P2: papExtend chain fusion
-//===----------------------------------------------------------------------===//
-//
-// Match:
-//   %c1 = eco.papExtend %c0(%a...) { remaining_arity = K1 } (NOT saturated)
-//   %c2 = eco.papExtend %c1(%b...) { remaining_arity = K2 }
-// Where %c1 has single use
-//
-// Rewrite to:
-//   %c2 = eco.papExtend %c0(%a..., %b...) { remaining_arity = K1 }
-//
+/// A rewrite of an extend whose closure is a single-use extend into one extend with both sets of newargs.
+///
+///   %c1 = eco.papExtend %c0(%a...)
+///   %c2 = eco.papExtend %c1(%b...)
+/// becomes
+///   %c2 = eco.papExtend %c0(%a..., %b...)
+///
+/// When both extends are typed, the fused extend is typed, with the first one's `remaining_arity`,
+/// `_fast_evaluator` and `_call_kind`; it does not fire if the first one saturates. When either is generic, the fused
+/// extend is generic, with no `remaining_arity` or `_fast_evaluator`, `_call_kind` `segmentation_unknown`, and the
+/// second extend's `_result_kind`. That rests on the runtime's generic apply continuing through saturation: it calls
+/// the closure once it has enough arguments and applies the rest to the result, so one extend with `%a ++ %b`
+/// behaves as the two in sequence. `_gencall_reason` is taken from the second extend, else the first, else set to
+/// 10 for a generic fusion. It does not fire when the fused newargs would exceed `kClosureMaxArity`.
 struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
+    /// Replaces `extendOp` and the extend that produced its closure with one fused extend when it matches, and fails
+    /// otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
-        // Find defining papExtend (chain case)
         auto prevExtend = extendOp.getClosure().getDefiningOp<PapExtendOp>();
         if (!prevExtend)
             return failure();  // Not a chain
 
-        // Check single use of intermediate closure
         if (!extendOp.getClosure().hasOneUse())
             return failure();
 
-        // Typed×typed chains fuse to a typed extend (the original P2).
-        // Chains with a GENERIC link (no remaining_arity) fuse to a GENERIC
-        // extend: the runtime's multi-arg generic apply chains through
-        // mid-chain saturation (it applies until the closure saturates,
-        // calls, and continues with the result — the compiler's own
-        // emission of `f a s1` as ONE 2-arg generic extend depends on
-        // exactly this), so `extend(extend(c, xs), ys)` and
-        // `extend(c, xs ++ ys)` are observationally identical while the
-        // fused form allocates ONE intermediate PAP instead of two. This is
-        // the dominant flag-on (H6.2 arity-raise) allocation shape and
-        // exists flag-off as well.
         auto prevRemainingAttr = prevExtend.getRemainingArityAttr();
         auto curRemainingAttr = extendOp.getRemainingArityAttr();
         bool bothTyped = static_cast<bool>(prevRemainingAttr) && static_cast<bool>(curRemainingAttr);
@@ -293,44 +260,26 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         auto prevNewargs = prevExtend.getNewargs();
         auto curNewargs = extendOp.getNewargs();
 
-        // A TYPED prev that saturates would have called already — leave it
-        // to P1 (typed case) and never fold a call boundary into a typed
-        // fusion. A generic prev's saturation is unknown at compile time,
-        // which is fine: the chaining argument above covers it.
+        // A typed first extend that saturates is a call, and a typed fusion must not fold a call away. A generic
+        // first extend may saturate too, but the fused extend is then generic and makes the same call.
         if (prevRemainingAttr) {
             int64_t prevRemaining = prevRemainingAttr.getInt();
             if (static_cast<int64_t>(prevNewargs.size()) >= prevRemaining)
                 return failure();
         }
 
-        // Build fused newargs: prev.newargs + this.newargs
         SmallVector<Value> fusedNewargs;
         fusedNewargs.append(prevNewargs.begin(), prevNewargs.end());
         fusedNewargs.append(curNewargs.begin(), curNewargs.end());
 
-        // Verifier limit (PapExtendOp::verify: newargs <= CLOSURE_MAX_ARITY,
-        // HEAP_078). Release builds do not re-verify after passes, so the
-        // pattern must not exceed it (B16; mirrors FuseCreateIntoExtend's cap).
         if (fusedNewargs.size() > kClosureMaxArity)
             return failure();
 
-        // Per-slot kinds from SSA types (source-of-truth approach), as
-        // `slot_kinds` (§S.5): 0=boxed (!eco.value), 1=Int (i64),
-        // 2=Float (f64), 3=Char (i32).
         SmallVector<int8_t> fusedKinds = slotKindsOf(fusedNewargs);
 
-        // Get result type from current extendOp
         Type resultType = extendOp.getResult().getType();
 
-        // Create the fused papExtend. Typed×typed keeps the original typed
-        // form (remaining_arity from the first extend + typed attribute
-        // propagation); any generic link produces a GENERIC fused extend:
-        // no remaining_arity, no typed closure claims (the intermediate's
-        // identity is a runtime value), segmentation_unknown call kind, and
-        // the CURRENT extend's _result_kind (the final result's ABI claim).
-        // PapExtendOp build signature: (result, closure, newargs, remaining_arity,
-        //   slot_kinds, _fast_evaluator, _call_kind). Typed×typed keeps the
-        //   first extend's _call_kind.
+        // Builder arguments: result, closure, newargs, remaining_arity, slot_kinds, _fast_evaluator, _call_kind.
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
             resultType,                             // Result type
@@ -347,8 +296,6 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
                 fusedOp->setAttr("_result_kind", resultKindAttr);
             }
         }
-        // Generic-call reason census (staging plan P0.4): keep a tag when either
-        // link had one; a generic fusion of untagged links is reason 10 (fused).
         if (auto reasonAttr = extendOp->getAttr("_gencall_reason"))
             fusedOp->setAttr("_gencall_reason", reasonAttr);
         else if (auto prevReason = prevExtend->getAttr("_gencall_reason"))
@@ -357,64 +304,30 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
             fusedOp->setAttr("_gencall_reason", rewriter.getI64IntegerAttr(10));
 
         rewriter.replaceOp(extendOp, fusedOp.getResult());
-        // Erase the orphaned intermediate explicitly: papExtend has no
-        // purity trait (a saturating extend calls code), so the driver's
-        // DCE can NEVER remove it — left in place it executes at runtime
-        // as an allocate-and-discard PAP and keeps the papCreate
-        // multi-use, blocking P1/P4 on the fused extend. Safe: typed
-        // prevs are proven non-saturating (pure allocation); a generic
-        // prev's possible mid-chain call is SUBSUMED by the fused generic
-        // extend (same callee, same argument order), not skipped.
+        // The first extend is now unused, but it is not Pure, so the driver would leave it to run as a discarded
+        // allocation and keep a create it extends multi-use. Erasing it loses nothing: a typed one was checked not to
+        // saturate, and a generic one's possible call is made by the fused extend, with the same arguments in order.
         rewriter.eraseOp(prevExtend);
         return success();
     }
 };
 
-//===----------------------------------------------------------------------===//
-// Pattern P6: non-saturating papExtend(papCreate) -> single papCreate
-// (H6.2.5 M1 — single-alloc raised partials)
-//===----------------------------------------------------------------------===//
-//
-// Match:
-//   %c = eco.papCreate @f(%caps...) { arity = A, num_captured = C }
-//   %r = eco.papExtend %c(%args...) { remaining_arity = R }
-// where |args| < R (strictly non-saturating) and %c has a single use.
-//
-// Rewrite:
-//   %r = eco.papCreate @f(%caps..., %args...) { arity = A,
-//                                               num_captured = C + |args| }
-//
-// Object equivalence: the runtime treats capture slots and applied-arg
-// slots uniformly — `values[0..n_values)` are spliced with the call's
-// args and the evaluator receives all `max_values` args
-// (invokeSaturatedTyped / spliceArgsForSaturatedCall), and
-// eco_pap_extend_l COPIES the base values and appends. So
-// create(caps)+extend(args) and create(caps++args) produce identical
-// heap objects; the fused form performs ONE plain allocation instead of
-// a create (interned or real) plus an alloc+copy+kind-convert extend.
-// This is the dominant raised escaping-partial shape flag-on (H6.2:
-// papCreate of an interned raised combinator + one non-saturating
-// known-segmentation extend). Composition: a later saturating extend
-// now sees a papCreate base directly, unlocking P1/P4 on two-stage
-// chains that the intermediate extend used to hide.
-//
-// Fences:
-// - Strictly non-saturating only: saturated extends are P1's domain;
-//   generic extends (no remaining_arity) may saturate at runtime and
-//   are never touched (mirrors P5's reasoning).
-// - No self_capture_indices on the create (runtime backpatch of the
-//   self slot is wired at create-lowering; stay conservative — the
-//   raised-partial target population is zero-capture anyway).
-// - Fused count must stay a strict PAP (< arity; guaranteed by
-//   non-saturation) and fit the 2046-capture limit
-//   (PapCreateOp::verify limits, HEAP_078).
-// - The fused `slot_kinds` are recomputed from operand SSA types (P2's
-//   source-of-truth rule; PapCreateOp::verify enforces kind == SSA type
-//   per slot).
-//
+/// A rewrite of a non-saturating typed extend of a single-use create into one create that captures the newargs too.
+///
+///   %c = eco.papCreate @f(%caps...) { arity = A, num_captured = C }
+///   %r = eco.papExtend %c(%args...) { remaining_arity = R }   // 0 < |args| < R
+/// becomes
+///   %r = eco.papCreate @f(%caps..., %args...) { arity = A, num_captured = C + |args| }
+///
+/// This assumes that the runtime treats a closure's captured values and its applied arguments alike, so the two
+/// forms build the same closure, the second with one allocation. The new create is a clone of the old one, keeping
+/// its other attributes, with new operands, `num_captured` and `slot_kinds`. It does not fire for a generic extend,
+/// a self-capturing create, a result that is not `!eco.value`, or when the fused captures would reach `arity` or
+/// exceed `kClosureMaxArity - 1`.
 struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
+    /// Replaces `extendOp` and its create with one create when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         auto remainingArityAttr = extendOp.getRemainingArityAttr();
@@ -426,7 +339,6 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         if (newargs.empty())
             return failure();  // Nothing to fuse
 
-        // Strictly non-saturating only (saturated is P1's domain).
         int64_t remaining = remainingArityAttr.getInt();
         if (static_cast<int64_t>(newargs.size()) >= remaining)
             return failure();
@@ -439,8 +351,6 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         if (createOp->hasAttr("self_capture_indices"))
             return failure();
 
-        // A non-saturating extend returns a boxed closure; so does
-        // papCreate. Anything else is a front-end inconsistency — bail.
         if (!isa<eco::ValueType>(extendOp.getResult().getType()))
             return failure();
 
@@ -452,15 +362,11 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
             fusedCaptured > static_cast<int64_t>(kClosureMaxArity) - 1)
             return failure();  // Verifier limits (strict PAP, 2046 captures)
 
-        // Fused values: caps ++ newargs; kinds from SSA types.
         SmallVector<Value> allOperands;
         allOperands.append(caps.begin(), caps.end());
         allOperands.append(newargs.begin(), newargs.end());
         SmallVector<int8_t> fusedKinds = slotKindsOf(allOperands);
 
-        // Clone the create (keeps function/arity/_result_kind/
-        // _fast_evaluator/_closure_kind verbatim) at the extend's
-        // position, then rewrite operands + capture bookkeeping.
         rewriter.setInsertionPoint(extendOp);
         Operation *cloned = rewriter.clone(*createOp.getOperation());
         cloned->setOperands(allOperands);
@@ -468,29 +374,19 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
         cloned->setAttr("slot_kinds", rewriter.getDenseI8ArrayAttr(fusedKinds));
 
         rewriter.replaceOp(extendOp, cloned->getResult(0));
-        // The original create's only use was the extend — erase it
-        // explicitly (it is Pure, so DCE would also get it).
         rewriter.eraseOp(createOp);
         return success();
     }
 };
 
-//===----------------------------------------------------------------------===//
-// Pattern P5: dead non-saturating papExtend removal
-//===----------------------------------------------------------------------===//
-//
-// Match:
-//   %r = eco.papExtend %c(%args...) { remaining_arity = K }   (K > args, %r unused)
-//
-// Erase it. A strictly non-saturating typed extend is a pure PAP
-// allocation — if the result is unused the allocation is pure waste that
-// no other DCE can remove (papExtend carries no purity trait because the
-// SATURATING form calls arbitrary code). Generic-mode extends (no
-// remaining_arity) may saturate at runtime and are never touched.
-//
+/// A rewrite that erases a typed extend whose result is unused and which does not saturate.
+///
+/// Such an extend only allocates a closure, but `papExtend` is not `Pure`, so the driver does not remove it. A
+/// generic extend, or one that saturates, may call code and is kept.
 struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
+    /// Erases `extendOp` when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         if (!extendOp.getResult().use_empty())
@@ -509,10 +405,7 @@ struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
     }
 };
 
-//===----------------------------------------------------------------------===//
-// Pass definition
-//===----------------------------------------------------------------------===//
-
+/// The module pass `eco-pap-simplify`, which applies the five patterns above greedily.
 struct EcoPAPSimplifyPass
     : public PassWrapper<EcoPAPSimplifyPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoPAPSimplifyPass)
@@ -523,11 +416,12 @@ struct EcoPAPSimplifyPass
         return "Optimize PAP patterns: saturated->call, chain fusion";
     }
 
+    /// Rewrites the module's closure ops with the five patterns, and signals failure if the greedy driver does not
+    /// converge.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         MLIRContext *ctx = &getContext();
 
-        // Build symbol table once for O(1) lookups in patterns
         mlir::SymbolTable symTable(module);
 
         RewritePatternSet patterns(ctx);
@@ -538,14 +432,8 @@ struct EcoPAPSimplifyPass
         patterns.add<DeadPapExtendPattern>(ctx);
         FrozenRewritePatternSet frozen(std::move(patterns));
 
-        // P1/P2 root on eco.papExtend and P4 on eco.papCreate, so seed the
-        // driver with ONLY those ops instead of every op in the module (the
-        // whole-module greedy driver spent ~1s/self-host-build
-        // folding+DCE-probing ~12MB of ops that can never match). The seeded
-        // driver still follows the rewrite cascade: P2-fused papExtends are
-        // newly created ops (re-tried for saturation), and
-        // papCreate/papExtend producers of replaced ops get enqueued and
-        // DCE'd exactly as the module driver did.
+        // Every pattern is rooted on papExtend or papCreate, so only those ops are given to the driver, not the
+        // whole module. The driver still visits the ops a rewrite creates, and the producers of ops it replaces.
         SmallVector<Operation *> seeds;
         module.walk([&](PapExtendOp op) { seeds.push_back(op); });
         module.walk([&](PapCreateOp op) { seeds.push_back(op); });

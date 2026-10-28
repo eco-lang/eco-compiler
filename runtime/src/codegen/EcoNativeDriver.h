@@ -1,13 +1,32 @@
 //===- EcoNativeDriver.h - Library API for MLIR-to-native lowering -------===//
 //
-// Extracted from eco-boot.cpp so the same pipeline can be used by:
-//   1. eco-boot-native binary (CLI tool)
-//   2. The unified `eco` binary (via the Eco_Kernel_NativeDriver_lowerAndLink
-//      kernel intrinsic, which forwards through EcoNativeAPI.h)
+// A program written in Elm is compiled to eco-dialect MLIR, and something has
+// to turn that MLIR into a binary that runs. This component is that step, as a
+// library, so that any program linking it can produce a native binary without
+// starting the compiler's own driver.
 //
-// The library does not own LLVM target init, MLIR context creation, or stats
-// printing — callers handle those, then call compileMlirFileToExecutable() to
-// run the pipeline.
+// It does two things. It lowers: it reads MLIR (text or bytecode, from a file
+// or from memory), runs the Eco pass pipeline (`buildEcoToLLVMPipeline`),
+// translates the result to LLVM IR and hands it to the LLVM backend
+// (`runEcoBackend`), which writes one or more object files. It links: it runs
+// a linker as a child process to combine those objects with the runtime and
+// kernel archives into the output. Lowering happens in the calling process;
+// linking always starts another process.
+//
+// What the compile entry points produce depends only on the extension of the
+// output path. `.o` is a relocatable object file and nothing is linked.
+// `.so` and `.node` are shared libraries, linked with the embedding entry point instead of a
+// `main()`; a `.node` file also gets the Node.js addon glue and a CommonJS
+// loader written beside it. Anything else is an executable, linked with the
+// standalone entry point. Only an executable is closed-world: nothing outside
+// the binary can call into it, so the lowering may internalize and delete
+// every function that `main` and `__eco_init_globals` cannot reach, and may
+// split the program into partitions lowered on separate threads.
+//
+// How the link is done is decided per platform: a direct invocation of
+// `ld.lld` or the configured system linker on Linux, the clang driver on
+// macOS, and clang-cl with lld-link on Windows. Shared-library output is
+// supported only on Linux.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,93 +40,107 @@ namespace eco {
 
 class LoweringStats;
 
+/// The settings for one lowering and link, apart from the input and output
+/// paths.
+///
+/// A default-constructed `EcoNativeOptions` gives an -O2 build with the
+/// partition count and parallel-optimization tier chosen automatically. The
+/// numeric fields stand for LLVM and backend enumerations and are kept as
+/// plain integers so that this header does not include LLVM; nothing checks
+/// that a value is in range.
 struct EcoNativeOptions {
-    // LLVM optimization level (0-3). Matches the -O option on eco-boot-native.
+    /// The LLVM optimization level, 0 to 3. A value above 3 is treated as 3.
     unsigned optLevel = 2;
 
-    // Parallel object-emission partition policy (executable output only):
-    // 0 = auto (cores, gated >= 4000 fns), 1 = off, N = explicit.
-    // Decided in the shared backend (choosePartitionCount). Auto by default so
-    // the unified `eco` path — which builds a default EcoNativeOptions in the C
-    // ABI entry points — gets the parallel-emission win without Elm changes.
+    /// The requested number of partitions to emit in parallel: 0 for
+    /// automatic, 1 for none, or an explicit count, with the meaning
+    /// `EcoBackendJob::splitCodegen` gives it. Applies to executable output
+    /// only.
     unsigned splitCodegen = 0;
 
-    // Parallel-optimization tier (executable output only), mapped to
-    // eco::ParallelOpt in the driver: 0 = none (whole-module -O2 then
-    // codegen-only split), 1 = dev (no-inline per-partition), 2 = cgu (full -O2
-    // per partition — default, plans/backend-lowering-optimization.md A1).
-    // Kept as unsigned so this header stays LLVM-free.
+    /// The parallel-optimization tier: 1 for `ParallelOpt::Dev`, 2 for
+    /// `ParallelOpt::Cgu`, and any other value for `ParallelOpt::None`.
+    /// Applies to executable output only.
     unsigned parallelOpt = 2;
 
-    // Dev tier only (parallelOpt==1): override the per-partition object-
-    // emission CodeGen opt level. ~0u = follow optLevel; 0=None, 1=Less,
-    // 2=Default. Kept as unsigned so this header stays LLVM-free.
+    /// Under the Dev tier, the codegen level that
+    /// `EcoBackendJob::devEmitCodeGenLevel` describes: 0 None, 1 Less,
+    /// 2 Default, or `~0u` to follow `optLevel`.
     unsigned devEmitCodeGenLevel = ~0u;
 
-    // Dev tier only: run the no-inline per-partition pipeline at O1.
+    /// Under the Dev tier, run the per-partition optimization at O1.
     bool devOptO1 = false;
 
-    // Echo subcommand lines (link step) to stderr.
+    /// Write progress lines, including the linker command line, to standard
+    /// error.
     bool verbose = false;
 
-    // Diagnostic IR dumps. Empty = no dump.
+    /// Where to write the LLVM IR as text before RS4GC; empty for no dump.
     std::string preRS4GCDumpPath;
+    /// Where to write the LLVM IR as text after RS4GC; empty for no dump.
     std::string postRS4GCDumpPath;
 
-    // Root module name baked into the program as the `__eco_root_module`
-    // symbol. The N-API addon (eco_node_addon.cpp) reads it to name the
-    // `Elm.<RootModule>` export so host JS uses the same module path as the
-    // JS target. Empty = omit the symbol; the addon falls back to "Main".
+    /// The name of the program's root Elm module, stored in a shared-library
+    /// output as the symbol `__eco_root_module`. Empty means the symbol is not
+    /// created. Executables and object files ignore it.
     std::string rootModule;
 
-    // Optional timing collector. The library appends scopes here; callers print.
+    /// Where to record the time of each phase, or null for no timing. It is
+    /// written during the call and never printed here, and must outlive the
+    /// call.
     LoweringStats *stats = nullptr;
 
-    // Opt-in: add `--gc-sections` to the executable link (Linux only) to trim
-    // dead sections from the linked runtime/kernel archives. Requires the
-    // .llvm_stackmaps section to be explicitly KEEP'd (done automatically when
-    // this is set) — nothing relocates into it, so a plain --gc-sections would
-    // strip it and silently break GC root scanning. Binary-size win only (does
-    // not speed compilation); OFF by default until broadly validated.
+    /// Whether to link an executable with `--gc-sections`, to drop unused
+    /// sections from the linked archives. The linker would otherwise discard
+    /// `.llvm_stackmaps`, which nothing refers to but which the collector
+    /// needs to find stack roots, so a linker script that keeps it is added
+    /// as well; if that script cannot be written, a warning is printed and
+    /// `--gc-sections` is not used. Honoured only by the Linux link and not
+    /// for shared libraries.
     bool gcSections = false;
 };
 
-// Initialize the native LLVM target + asm printer + asm parser. Idempotent
-// across calls; safe to invoke from main() of a host that already did this.
+/// Registers LLVM's native target, assembly printer and assembly parser.
+///
+/// Calls after the first return at once. The flag that records the first
+/// call is not synchronized, so two threads must not make the first call at
+/// the same time.
 void initializeLLVMNativeTarget();
 
-// MLIR text file → linked native executable (ELF / Mach-O / PE-COFF).
-// Returns 0 on success, nonzero on failure (with diagnostics on stderr).
-// Steps:
-//   1. Parse MLIR with the Eco dialect registry.
-//   2. Run the Eco→LLVM pass pipeline.
-//   3. Translate to LLVM IR (with main→eco_main rename).
-//   4. Create TargetMachine, run RS4GC + opt + object emission.
-//   5. Link with the runtime/kernel static libraries (linkExecutable: the
-//      system linker directly on Linux, the clang driver on macOS,
-//      clang-cl + lld-link on Windows).
+/// Lowers the MLIR in the file at `mlirPath` and links it at `outputPath`, as
+/// the file comment describes. Returns 0 on success and 1 on failure, with
+/// the reason written to standard error.
+///
+/// The file may hold MLIR text or bytecode. The call registers the native
+/// target and creates its own MLIRContext, which lives until it returns.
 int compileMlirFileToExecutable(const std::string &mlirPath,
                                 const std::string &outputPath,
                                 const EcoNativeOptions &opts);
 
-// MLIR in memory → linked native executable (behind
-// eco_native_lower_and_link_bytes). Same pipeline as the file variant, just
-// sourced from a buffer; `eco make` uses the file variant instead.
+/// Lowers the `mlirLen` bytes of MLIR at `mlirBytes` and links them at
+/// `outputPath`, as `compileMlirFileToExecutable` does for a file. The bytes
+/// are read only during the call.
 int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
                                   const std::string &outputPath,
                                   const EcoNativeOptions &opts);
 
-// Link an already-emitted object file into a native executable. Exposed so the
-// eco-boot-native `--emit=obj` + re-link fast path can reuse the link step.
-// sharedLib: link a shared library (-shared, embed entry, no main())
-// instead of a PIE executable. Used for .so/.node output targets.
+/// Links the object file `objectFile` with the runtime and kernel archives
+/// into `outputPath`, as the vector overload does for one object.
 int linkExecutable(const std::string &objectFile,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,
                    bool sharedLib = false);
 
-// Multi-object variant: link N object files (one per parallel-codegen
-// partition — see EcoBackendJob::splitCodegen) into one executable/shared lib.
+/// Links `objectFiles` with the runtime and kernel archives into an
+/// executable at `outputPath`, or into a shared library when `sharedLib` is
+/// true. Returns 0 on success and 1 on failure, with the reason written to
+/// standard error.
+///
+/// The linker runs as a child process and the call waits for it. A shared
+/// library is linked with the embedding entry point in place of `main()`,
+/// and, when `outputPath` ends in `.node`, with the Node.js addon glue and a
+/// CommonJS loader written next to it with the extension `.js`. On macOS and
+/// Windows a shared library is refused. The object files are not deleted.
 int linkExecutable(const std::vector<std::string> &objectFiles,
                    const std::string &outputPath,
                    const EcoNativeOptions &opts,

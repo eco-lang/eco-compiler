@@ -1,20 +1,24 @@
-// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md, HEAP_069 /
-// HEAP_070): the region nursery. An eden plus k + 2 survivor extents per heap
-// (k = the tenure age, threaded-gc-07b); a minor evacuates eden (and the
-// previous fill's builder area) into the Free extent, RECORDS references into
-// the extent filled k minors ago (the hand-over) and into the ageing extents
-// in between, RESOLVES references into the extent tenured during the last
-// epoch, and retires that one. The tenure job (NurseryTenure.cpp) marks the
-// ageing extents and promotes the hand-over extent's live objects off-header.
+// The minor collection of region mode, with region mode's setup, growth, and the two hooks a stop-the-world major
+// collection calls (`majorRedirect`, `zapDeadAfterMajor`). NurseryRegions.hpp defines the extents, their states and
+// the roles an address can have.
 //
-//   minor m:  Free -> Fill (G_m), Young(a < k) -> Age, Young(k) -> Hand (G_{m-k}),
-//             Tenuring -> Retire (G_{m-k-1})
-//   end:      Fill -> Young(1), Age: a + 1, Hand -> Tenuring (job m), Retire -> Free
+// A minor collection gives each survivor extent a role from its state, and moves it on at the end. With k the
+// tenure age and m the number of this minor:
 //
-// The drain runs on phase 6's engine (markwork::runMarkerLoop, LABs,
-// Tag_Free fillers, the header claim/publish protocol) at any worker count,
-// with its own child classification (P§3.4's rule table). The pause never
-// promotes.
+//   during minor m:  the first Free extent      -> Fill    (eden's survivors, prior fill's builders: generation m)
+//                    Young of age k             -> Hand    (the hand-over: generation m-k)
+//                    any other Young            -> Age
+//                    Tenuring                   -> Retire  (generation m-k-1, already tenured)
+//   at its end:      Fill -> Young of age 1, Age -> age + 1, Hand -> Tenuring, Retire -> Free
+//
+// What the minor does with a reference depends on the role of its target (`evacuateR`). An object in eden, or in
+// the builder area of the previous fill, is copied into the fill: a survivor upwards from the fill's base, a
+// builder downwards from its end into the fill's builder area. Objects in the Hand and Age extents stay where they
+// are, and the references to them are recorded for the tenure job. A reference into the Retire extent is replaced
+// by the old-generation copy its tenure job made. The minor itself never promotes.
+//
+// The copying runs on `markwork::runMarkerLoop` through `RegionEnv`, on one thread or on the old generation's gang,
+// with the claim and publish protocol of MinorWork.hpp deciding which thread copies each object.
 
 #include "NurserySpace.hpp"
 
@@ -43,17 +47,20 @@ using region::Role;
 
 namespace {
 
+// Returns the header whose bits are the word `w`.
 inline Header headerOfWord(uint64_t w) {
     Header h;
     std::memcpy(&h, &w, sizeof(h));
     return h;
 }
+// Returns the bits of `h` as one word.
 inline uint64_t wordOfHeader(const Header& h) {
     uint64_t w;
     std::memcpy(&w, &h, sizeof(w));
     return w;
 }
 
+// Prints `what` and the four values to stderr as a fatal region-nursery error, then aborts.
 [[noreturn]] void regionFatal(const char* what, const void* a = nullptr, const void* b = nullptr,
                               uint64_t x = 0, uint64_t y = 0) {
     std::fprintf(stderr, "[gc] FATAL: region nursery: %s (%p %p %llu %llu)\n", what, a, b,
@@ -63,10 +70,9 @@ inline uint64_t wordOfHeader(const Header& h) {
 }
 
 #if ECO_HEAP_VALIDATE
-// HEAP_074 tripwire (validate builds): a minor reached a Hand / Age survivor that a
-// STW major found dead and zapped: a Tag_Free header, or the zap's 0xD8 poison when
-// the reference points inside a coalesced filler. Only an unrooted reference held
-// across majorGC (a resurrection) can lead here.
+// Aborts if `obj`, a Hand or Age survivor that `slot` refers to, was turned into a filler by
+// `zapDeadAfterMajor` (HEAP_074): its header has `Tag_Free`, or its first word is the zap's 0xD8
+// poison because it lies inside a filler that covers several dead objects.
 inline void regionZappedTripwire(void* obj, HPointer& slot) {
     uint64_t hw;
     std::memcpy(&hw, obj, sizeof(hw));
@@ -75,9 +81,11 @@ inline void regionZappedTripwire(void* obj, HPointer& slot) {
 }
 #endif
 
-// Largest size class the old gen has for this config (HEAP_069's region cap,
-// P§3.13): classes cover 8..256 B, then 512 B << k up to the largest power of
-// two <= large_object_threshold (OldGenSpace's computeNumSizeClasses).
+// Returns the size of the largest old-generation size class for `c`, and stores the number of
+// classes in `*n_classes` if that is not null. After the small classes, the medium classes double
+// from MEDIUM_CLASS_BASE for as long as they do not exceed `c.large_object_threshold`. The region
+// minor aborts at a survivor larger than this (HEAP_069), which would have no old-generation
+// size class to be tenured into.
 size_t largestClassBytes(const HeapConfig& c, size_t* n_classes) {
     size_t n = NUM_SMALL_CLASSES;
     size_t cap = MAX_SMALL_SIZE;
@@ -95,7 +103,7 @@ size_t largestClassBytes(const HeapConfig& c, size_t* n_classes) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The ring (P§3.3)
+// Extent roles
 // ---------------------------------------------------------------------------
 
 void RegionState::rebuildRoles(bool in_minor_roles) {
@@ -116,8 +124,8 @@ void RegionState::rebuildRoles(bool in_minor_roles) {
         }
         role_of_k[X.k] = static_cast<uint8_t>(r);
     }
-    // In a minor the previous fill's builder area is PrevBuilders (evacuated
-    // like eden); every other builder area but the Fresh one is stale.
+    // In a minor the previous fill's builder area is PrevBuilders, evacuated
+    // like eden. Every other builder area takes its extent's role.
     prev_k = ~0u;
     prev_bld_off = SIZE_MAX;
     if (in_minor_roles && prev >= 0) {
@@ -178,8 +186,8 @@ void NurserySpace::initRegions() {
     bump_.end = computeAllocEnd();
 #if ENABLE_GC_STATS
     stats.nursery_size_bytes = 2 * R.set.capacity;
-    // E2 determinism probe (stats builds only; never a shipped setting): every
-    // tenure job stops after this many items and is finished by help.
+    // A test hook, in statistics builds only: ECO_TEST_TENURE_STOP_AFTER
+    // makes every tenure job stop early (test_tenure_force_stop_after_).
     {
         static const uint64_t stop_after = [] {
             const char* e = std::getenv("ECO_TEST_TENURE_STOP_AFTER");
@@ -200,8 +208,9 @@ void NurserySpace::regionCheckAndGrow() {
     RegionState& R = *rg_;
     const size_t cap = R.set.capacity;
     if (cap == 0) return;
-    // The same float comparison as legacy checkAndGrow on the same object
-    // bytes (P§3.8): growth events and the final capacity are object class.
+    // The same float comparison as the semi-space checkAndGrow, on object
+    // bytes (S_m counts no fillers), so growth does not depend on how many
+    // threads copied.
     const float occupancy = static_cast<float>(R.S_m) / static_cast<float>(cap);
     if (occupancy <= growth_threshold_) return;
     if (cap >= growth_ceiling_bytes_) return;
@@ -283,7 +292,7 @@ void NurserySpace::zapDeadAfterMajor(OldGenSpace& og) {
         if (gap != nullptr) flush(gap, X.surv_top);
     }
 #if P1_CENSUS_COMPILED
-    R.census.clear();   // defensive: detector N re-hashes only at a join, which precedes this
+    R.census.clear();
 #endif
     const uint64_t dt = gc::GCHelperPool::nowNs() - t0;
     R.rs.major_zaps++;
@@ -343,14 +352,19 @@ void NurserySpace::regionAssertValidPointer(void* ptr) const {
 #endif
 
 // ---------------------------------------------------------------------------
-// The region drain (P§3.5 steps 3-6)
+// The region drain
 // ---------------------------------------------------------------------------
 
 // TLA-REGION(NR.RegionEnv) begin
+// The environment through which `markwork::runMarkerLoop` drains a region minor's grey entries. Member i
+// works from `minor_workers_[i]`: its private stack first, then its deque, then steals; each entry is
+// scanned by `scanEntryR`. It refers to `ns`, which must outlive it.
 struct NurserySpace::RegionEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
     mk::MarkerCounters& counters(unsigned i) { return ns.minor_workers_[i]->ctr; }
+    // Returns member i's next own entry, publishing half of its private stack
+    // to its deque every 64 pops.
     uint64_t takeOwn(unsigned i) {
         MinorWorker& w = *ns.minor_workers_[i];
         if (w.stack.size() != w.head) {
@@ -363,11 +377,13 @@ struct NurserySpace::RegionEnv {
         return w.deque.take();
     }
     uint64_t stealFrom(unsigned v) { return ns.minor_workers_[v]->deque.steal(); }
-    bool anyWork() {   // only stealable work wakes an idle worker (6-P§10.1)
+    bool anyWork() {   // only stealable work wakes an idle worker
         for (unsigned i = 0; i < ns.par_n_; ++i)
             if (!ns.minor_workers_[i]->deque.emptyApprox()) return true;
         return false;
     }
+    // Prefetches the eden and PrevBuilders children of the object entry `e`
+    // (for a Custom, of its first four fields), when prefetching is enabled.
     void prefetch(uint64_t e) {
         if (!ns.prefetch_children_ || mk::isChunk(e)) return;
         void* obj = mk::entryAddr(e);
@@ -408,6 +424,8 @@ struct NurserySpace::RegionEnv {
 // TLA-REGION(NR.RegionEnv) end
 
 namespace {
+// What `regionWorkerEntry` gives each gang member of a region minor. Both
+// pointers must outlive the gang run.
 struct RegionRunArgs {
     NurserySpace* ns;
     mk::SliceControl* ctl;
@@ -450,8 +468,9 @@ void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void*
     if (hd.tag > Tag_Forward) regionFatal("invalid tag in a claimed object", obj, nullptr, hd.tag);
 #endif
     const size_t size = getObjectSizeFromHeader(&hd);
-    // TV9 (every build): nothing in eden or a builder area has survived as a
-    // non-builder, so the pause never promotes (P§3.5).
+    // TV9 (every build): every object in eden or a builder area has age 0,
+    // since a builder's copy keeps age 0. The copy below gets age 1 at most,
+    // so the pause never promotes.
     if (__builtin_expect(hd.age != 0, 0)) regionFatal("TV9: an eden / builder-area object with age != 0", obj, nullptr, hd.age, hd.tag);
     char* dst;
     uint32_t col;
@@ -465,14 +484,14 @@ void* NurserySpace::copyClaimedR(MinorWorker& w, region::RegionWorker& rw, void*
     } else {
         const size_t cls = OldGenSpace::sizeClass(size);
         if (__builtin_expect(size > region_large_cap_ || cls >= NUM_SIZE_CLASSES, 0)) {
-            // TV9 (every build): the region cap makes this unreachable (P§3.13).
+            // TV9 (every build): the region cap makes this unreachable.
             regionFatal("TV9: a nursery object without an old-gen size class", obj, nullptr, size, hd.tag);
         }
         dst = mw::labAllocate(tospace_, w.lab, w.lc, size, &NurserySpace::writeFiller);
         hd.age = 1;
         if (size < 16) {
             ++rw.under16;
-            // A 16-byte shadow granule (lever L6) needs every survivor >= 16 B.
+            // A 16-byte shadow granule needs every survivor >= 16 B.
             // HEAP_071 makes that hold for every heap: validate builds abort at
             // any granule so a new header-only layout fails the validate gate.
             if (ECO_HEAP_VALIDATE || R.shadow_shift > 3) regionFatal("a survivor under 16 B with a 16-byte shadow granule", obj, nullptr, size, hd.tag);
@@ -546,8 +565,10 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
 #if ECO_HEAP_VALIDATE
             regionZappedTripwire(obj, slot);   // HEAP_074
 #endif
-            // P§3.6: heap slots the pause will not rescan -> H; roots and
-            // builder slots (rescanned at the next minor) -> S (trap 8).
+            // A slot in a survivor copy or a young large object that stays
+            // young goes to H so the merge can rewrite it. For
+            // any other holder (a root, a builder, a hand-over YLOS object)
+            // only the target goes to S.
             if (col == kColSurv || col == kColYoungYlos) rw.H.push_back(reinterpret_cast<uint64_t*>(&slot));
             else rw.S.push_back(obj);
             return;
@@ -555,9 +576,9 @@ void NurserySpace::evacuateR(MinorWorker& w, region::RegionWorker& rw, HPointer&
 #if ECO_HEAP_VALIDATE
             regionZappedTripwire(obj, slot);   // HEAP_074
 #endif
-            // threaded-gc-07b: an ageing object stays; it is a mark source of
-            // this minor's job (never a heal slot: a fill-copy holder is found
-            // by the mark of its own target's hand-over).
+            // An ageing object stays; it is a mark source of this minor's job
+            // (never a heal slot: a fill-copy holder is found by the mark of
+            // its own target's hand-over).
             rw.SA.push_back(obj);
             return;
         case Role::Retire:
@@ -583,8 +604,8 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
         OldGenSpace::LargeBodyMeta* m = par_oldgen_->youngLargeMeta(obj);
         if (m == nullptr) return;   // an old object inside the bounding box
         ++w.ylos_reach_calls;
-        // A hand-over member (generation m-1): reached, scanned read-only
-        // (its Hand targets go to S); promoted at the next merge (P§3.14).
+        // A hand-over member (generation m-k): reached, scanned read-only
+        // (its Hand targets go to S); promoted at the next merge.
         const long k = tw::ylosFind(R.hand_ylos, obj);
         if (k >= 0) {
             if (R.hand_ylos_reached[static_cast<size_t>(k)]) return;
@@ -592,9 +613,9 @@ void NurserySpace::reachYoungLargeR(MinorWorker& w, region::RegionWorker& rw, vo
             ++rw.ylos_handover_reached;
             e = mk::objEntry(obj, kColHandYlos);
         } else if (!R.age_ylos.empty() && tw::ylosFind(R.age_ylos, obj) >= 0) {
-            // threaded-gc-07b: an ageing generation's member (coloured by the
-            // hand-over preparation, so this test comes first): the job's mark
-            // scans it; the pause only records it.
+            // An ageing generation's member (coloured by the hand-over
+            // preparation, so this test comes before the colour test): the
+            // job's mark scans it; the pause only records it.
             rw.SA.push_back(obj);
             return;
         } else {
@@ -754,7 +775,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     R.in_minor = true;
 #if ECO_HEAP_VALIDATE
     in_minor_gc_ = true;
-    // Class 3 pre-walk of eden (region form of preEvacuationFromSpaceWalk).
+    // Pre-walk of eden (region form of preEvacuationFromSpaceWalk).
     for (char* p = R.eden_base; p < bump_.ptr;) {
         const Header* h = getHeader(p);
         const size_t sz = getObjectSize(p);
@@ -790,7 +811,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     ++R.minor_seq;
     ++R.rs.minors;
 
-    // ---- beginMinor (P§3.3) ----
+    // ---- assign this minor's roles ----
     R.fill = R.hand = R.retire = R.prev = -1;
     unsigned nonfree = 0;
     for (unsigned u = 0; u < R.n_surv; ++u) {
@@ -817,7 +838,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     R.bld_bottom.store(R.fill_end, std::memory_order_relaxed);
     R.rebuildRoles(true);
 
-    // ---- hand-over preparation (P§3.5 step 4, P§3.14) ----
+    // ---- hand-over preparation ----
     R.hand_ylos.clear();
     R.hand_ylos_reached.clear();
     if (R.hand >= 0) {
@@ -842,7 +863,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
                   [](const tw::YlosEntry& a, const tw::YlosEntry& b) { return a.obj < b.obj; });
         R.hand_ylos_reached.assign(R.hand_ylos.size(), 0);
     }
-    // threaded-gc-07b: the ageing generations keep their large bodies and YLOS
+    // The ageing generations keep their large bodies and YLOS
     // objects until their own hand-over (re-coloured every minor; the sweep
     // frees neither), and their YLOS members form this minor's age snapshot.
     R.age_ylos.clear();
@@ -865,7 +886,8 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     std::sort(R.age_ylos.begin(), R.age_ylos.end(),
               [](const tw::YlosEntry& a, const tw::YlosEntry& b) { return a.obj < b.obj; });
 
-    // ---- worker count (6-P§3.2's space test on eden + PrevBuilders bytes) ----
+    // ---- worker count: one unless eden + PrevBuilders bytes are enough and
+    // the fill holds them with an estimate of LAB waste ----
     const size_t eden_bytes = static_cast<size_t>(bump_.ptr - R.eden_base);
     const size_t hb_bytes = R.prev >= 0 ? R.x[R.prev].bld_bytes : 0;
     const size_t s_in = eden_bytes + hb_bytes;
@@ -892,9 +914,8 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
         R.rw[i].reset();
     }
 
-    // The pre-drain sweep slice (6-P§3.8.5): the same budget per promotion,
-    // times the objects the job merged at this minor tenured (= legacy's
-    // promotions at the previous minor).
+    // A lazy-sweep slice before the drain: sweep_work_budget /
+    // minor_sweep_divisor per object in last_minor_promoted_.
     if (oldgen.gc_phase_ == GCPhase::Sweeping) {
         const size_t d = oldgen.config_->minor_sweep_divisor;
         const size_t per = (d == 0) ? 0 : oldgen.config_->sweep_work_budget / d;
@@ -915,7 +936,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     if (T) rec->par_sweep_ns = lap();
 #endif
 
-    // ---- roots, serial on worker 0, in the legacy order ----
+    // ---- roots, serial on worker 0, in the semi-space minor's order ----
     MinorWorker& w0 = *minor_workers_[0];
     region::RegionWorker& rw0 = R.rw[0];
     for (HPointer* root : root_set.getRoots()) evacuateR(w0, rw0, *root, kColRoot);
@@ -997,7 +1018,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     if (top > bld_lo) regionFatal("the fill overflowed: survivors collided with the builder area", top, bld_lo);
     copy_ptr_ = top;
 
-    // ---- merge, in worker order (P§3.5 step 6) ----
+    // ---- merge the workers' results, in worker order ----
     std::vector<void*> S_all;
     std::vector<uint64_t*> H_all;
     std::vector<void*> SA_all;
@@ -1065,8 +1086,8 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     }
 #endif
 #if ECO_HEAP_VALIDATE
-    // PM1/PM3 over the fill; the region rule table: no copy points into eden,
-    // a builder area of the hand-over extent, the retiring extent or stale.
+    // PM1/PM3 over the fill, and PM2: no copy points into eden, the previous
+    // fill's builder area, the retiring extent, or a Stale address.
     {
         uint64_t objs = 0, fill_seen = 0;
         auto checkChildren = [&](char* p) {
@@ -1119,11 +1140,11 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
     }
 #endif
 
-    // ---- epilogue (P§3.5 step 7) ----
+    // ---- epilogue ----
     checkAndGrow();   // -> regionCheckAndGrow (S_m / capacity)
 
-    // Retire G_{m-2}: nothing points into it (P§3.7). Resolve before
-    // retiring (trap 10): this is the last reader of its shadow.
+    // Free the retiring extent (G_{m-k-1}). The drain has already resolved
+    // every reference into it that it met, the last reads of its shadow.
     if (R.retire >= 0) {
         region::Extent& Xr = R.x[R.retire];
 #if ECO_HEAP_VALIDATE
@@ -1134,7 +1155,7 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
         Xr.state = region::XState::Free;
     }
 
-    // Eden: flip (quarantine for an epoch) or reuse in place (P§3.8).
+    // Eden: flip to the other eden, leaving this one unused for a minor, or reuse in place.
     {
 #if ENABLE_GC_STATS
         const uint64_t tz = GCStats::nowSinceProcessStartNs();
@@ -1250,12 +1271,12 @@ void NurserySpace::minorGCRegion(OldGenSpace& oldgen, const StackMapRoots& stack
 
 #if ECO_HEAP_VALIDATE
 // TV2: hand-over closure. Every child of every object in the new Tenuring
-// extent's survivor part is in that part, old, permanent, a constant, or a
-// young large object; never another nursery extent. And HEAP_005: no old
-// object points into the region nursery.
+// extent's survivor part is in that part or outside the region nursery.
+// TV2Y covers the Young extents. On every 64th call, HEAP_005: no marked
+// object in a uniform old-generation block points into the region nursery.
 void NurserySpace::regionEndMinorValidate(OldGenSpace& oldgen) {
     RegionState& R = *rg_;
-    // TV2Y (threaded-gc-07b): every non-free object of a Young extent points,
+    // TV2Y: every non-free object of a Young extent points,
     // inside the slot block, only into a Young or Tenuring survivor part or the
     // Fresh builder area: a dead ageing object is zapped at the merge after
     // the hand-over that found it dead, before it can hold a retired address.

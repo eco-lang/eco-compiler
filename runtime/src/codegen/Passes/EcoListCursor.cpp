@@ -1,28 +1,42 @@
 //===- EcoListCursor.cpp - Mixed-spine (node, idx) cursors for while walks ===//
 //
-// Chunked lists (plans/chunked-list-representation.md §6 L1.3, final item):
-// compiled scf.while loops that WALK a list carry the spine as a single
-// value, so stepping through a chunk view materializes a successor view per
-// element (eco_list_tail_hybrid — an allocation plus a statepointed call
-// where cells pay a pure load). This pass rewrites such loops to carry a
-// (node, idx) pair instead:
+// Walking a chunked list one element at a time allocates, and this pass removes that allocation from compiled
+// loops.
 //
-//   element  -> __eco_list_cur*_inline(node, idx)   pure loads
-//   step     -> __eco_list_step_{node,idx}_inline   pure loads, no allocation
-//   emptiness -> unchanged get_tag on the node (positions are normalized:
-//                idx > 0 only inside a chunk with idx < run)
+// A chunked list mixes two kinds of spine node: ordinary cons cells, and chunks, which hold a run of elements in
+// one object. As a single list value, a position inside a chunk can only be a chunk view, so taking the tail of a
+// chunk with `__eco_list_tail_inline` makes a new view for every element (through `eco_list_tail_hybrid`). This
+// pass rewrites an `scf.while` loop that walks a list so that it carries a cursor instead: a pair (node, idx) of
+// the spine node and an i64 index into it. The loop's list argument becomes the node, and one i64 loop argument is
+// added for each walked list, starting at 0.
 //
-// The markers are expanded into cell-fast/chunk inline diamonds in
-// EcoBackend (expandListCursorMarkers) before RS4GC, so the cell edge stays
-// exactly today's inline loads and NOTHING here is statepointed. If the
-// remaining list escapes the loop (the while result is used), ONE call to
-// eco_list_pos_view materializes the position as a real list value — one
-// allocation per loop exit instead of one per element stepped.
+// - An element read (`__eco_list_head_inline` or `eco_cons_head_{i64,f64,char}`) on the walked argument becomes the
+//   matching `__eco_list_cur*_inline(node, idx)` marker.
+// - Each tail call in the step tree (defined below) becomes a `__eco_list_step_node_inline` /
+//   `__eco_list_step_idx_inline` pair.
+// - A tag test (`__eco_get_tag_inline` or `eco_get_tag`) on the node is left unchanged. That this still tests
+//   emptiness rests on the markers keeping positions normalized, as `expandListCursorMarker` in EcoBackend.cpp
+//   states: idx is non-zero only inside a chunk, before the end of its run.
+// - Where the loop's result for a walked list is used, one `eco_list_pos_view(node, idx)` call after the loop
+//   turns the final position back into a list value. That function allocates a view only when idx is non-zero.
 //
-// Runs AFTER EcoToLLVMPass (list projections are already marker calls) and
-// BEFORE the SCF tail conversions. The pass is a no-op
-// unless the module declares __eco_list_tail_inline, which only
-// chunk-compiled modules contain — flag-off output is untouched.
+// The markers are not functions. EcoBackend's `expandListCursorMarkers` expands them before RS4GC into loads and
+// gc-leaf helper calls, so stepping allocates nothing and adds no statepoint.
+//
+// A loop is rewritten only for the walks the analysis accepts, and the analysis is most of this file. A walk is a
+// loop argument of type `ptr addrspace(1)` that the condition forwards at its own position and that the yield
+// steps along a step tree. The step tree is the expression the yield passes at that position: its leaves are the
+// argument itself (no step on that path) or a `__eco_list_tail_inline` call on it whose result has one use, and its
+// interior nodes are results of `scf.if` / `scf.index_switch`, each with one use, whose every region yields a valid
+// subtree at the same result index. Every other use of the argument, in either region, must be an element read, a
+// tag test, the condition operand, or a leaf of the tree. A loop in which two walks share a step-tree operation is
+// left unchanged, because rebuilding that operation once per walk would leave the first walk's index value
+// dangling.
+//
+// It runs after the pass from `createEcoToLLVMPass`, whose output it reads as marker calls, and before the one
+// from `createEcoTailConversionsPass`, which lowers `scf`. It does nothing unless the module declares
+// `__eco_list_tail_inline`. With `ECO_LIST_CURSOR_DEBUG` set to any value it prints counts of loops seen, rewritten
+// and rejected for most reasons, and a histogram of the operations behind rejected uses, to stderr.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,13 +60,19 @@ using namespace mlir;
 
 namespace {
 
+/// The tail-projection marker. A call to it is a step, and its declaration in a module is what turns the pass on.
 constexpr const char *kTailMarker = "__eco_list_tail_inline";
+/// The boxed head-projection marker, an element read that becomes `__eco_list_cur_inline`.
 constexpr const char *kHeadMarker = "__eco_list_head_inline";
+/// The marker that returns the node of the position after (node, idx).
 constexpr const char *kStepNode = "__eco_list_step_node_inline";
+/// The marker that returns the index of the position after (node, idx).
 constexpr const char *kStepIdx = "__eco_list_step_idx_inline";
+/// The runtime function that returns the list value at position (node, idx), allocating when idx is non-zero.
 constexpr const char *kPosView = "eco_list_pos_view";
 
-/// Maps a head-projection callee to its cursor-read marker, or null.
+/// Returns the cursor-read marker that replaces a head read through `callee`, or null if `callee` is not a head
+/// read. The returned string is a literal.
 const char *curMarkerFor(StringRef callee) {
     if (callee == kHeadMarker) return "__eco_list_cur_inline";
     if (callee == "eco_cons_head_i64") return "__eco_list_cur_i64_inline";
@@ -61,31 +81,37 @@ const char *curMarkerFor(StringRef callee) {
     return nullptr;
 }
 
+/// Returns whether `callee` reads a value's tag; such a read of a walked argument is left unchanged.
 bool isGetTagCallee(StringRef callee) {
     return callee == "__eco_get_tag_inline" || callee == "eco_get_tag";
 }
 
+/// One walk the analysis accepted in a loop: a list argument of the `scf.while`, with the operations on it that
+/// the rewrite replaces.
+///
+/// The pointers refer into the loop being analysed and are used only until that loop has been rewritten.
 struct WalkArg {
-    unsigned pos;                              // iter-arg position
-    SmallVector<LLVM::CallOp, 4> tailCalls;    // per-arm steps
-    SmallVector<LLVM::CallOp, 4> headCalls;    // element reads (both regions)
-    // Operand slots through which the walked arg may legitimately appear on
-    // the step tree (identity yields).
+    unsigned pos;                              ///< Position of the argument among the loop's inits.
+    SmallVector<LLVM::CallOp, 4> tailCalls;    ///< Leaf tail calls of the step tree.
+    SmallVector<LLVM::CallOp, 4> headCalls;    ///< Element reads, in either region.
+    /// The yield operands at which the step tree's leaf is the argument itself.
     SmallPtrSet<OpOperand *, 8> identSlots;
-    // Every op on the step tree (tail calls + interior scf.if/index_switch).
-    // Used by analyze to reject loops where two walk positions SHARE an
-    // interior op: walkStep's hasOneUse test is per RESULT, so one scf.if
-    // feeding two positions through different results validates for both --
-    // and rebuildStep would then rebuild it twice, the second rebuild erasing
-    // the first rebuild's op while the first walk's saved idx Value (a plain
-    // copy, not a use, so RAUW never repairs it) dangles into the yield
-    // rebuild. Shared trees could not arise before kernel-opt-10: it takes a
-    // dedup pass (M4 CSE) merging two step scf.ifs made structurally
-    // identical by the projection folder.
+    /// Every operation on the step tree: tail calls and interior `scf.if` / `scf.index_switch`.
+    ///
+    /// The one-use test in `walkStep` is per result, so one `scf.if` can feed two walks through two of its results
+    /// and pass for both. `rebuildStep` would then rebuild it once per walk, and the second rebuild erases the op
+    /// whose new index result the first walk has already recorded as a plain `Value`, which no replacement of uses
+    /// repairs. `runOnOperation` compares these sets to skip such loops.
     SmallPtrSet<Operation *, 8> treeOps;
+    /// Whether the step tree has at least one tail call. A walk with none never steps and is not rewritten.
     bool anyStep = false;
 };
 
+/// The module pass that rewrites list-walking `scf.while` loops to carry (node, idx) cursors, as the file comment
+/// describes.
+///
+/// The counters and lists below are statistics for `ECO_LIST_CURSOR_DEBUG`. They are not reset between runs, so a
+/// pass object run twice reports totals.
 struct EcoListCursorPass
     : public PassWrapper<EcoListCursorPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoListCursorPass)
@@ -101,6 +127,10 @@ struct EcoListCursorPass
                         scf::SCFDialect>();
     }
 
+    /// Returns the `llvm.func` named `name` in `m`, first declaring it at the end of the module with result `res`
+    /// and arguments `args` if there is none. An existing function is returned whatever its type.
+    ///
+    /// A declaration made here has no attributes, so it is not marked `gc-leaf-function`.
     LLVM::LLVMFuncOp ensureFn(ModuleOp m, StringRef name, Type res,
                               ArrayRef<Type> args) {
         if (auto f = m.lookupSymbol<LLVM::LLVMFuncOp>(name))
@@ -111,6 +141,7 @@ struct EcoListCursorPass
         return b.create<LLVM::LLVMFuncOp>(m.getLoc(), name, ft);
     }
 
+    /// Rewrites every accepted loop in the module, in module order, inner loops before the loops that contain them.
     void runOnOperation() override {
         ModuleOp m = getOperation();
         if (!m.lookupSymbol<LLVM::LLVMFuncOp>(kTailMarker))
@@ -121,11 +152,8 @@ struct EcoListCursorPass
         dbg = debug;
         declsMade = false;
 
-        // Plan 07 P5: collect the loops per function in parallel chunks, then
-        // concatenate in module order — the same list (and post-order) the
-        // serial m.walk produced (only function bodies hold scf.while), so
-        // the serial analyze/rewrite below is unchanged. The walk over the
-        // ~4M ops was 90 % of this pass; the rewrites are cheap.
+        // Only the search for loops runs in parallel, one chunk of top-level ops at a time; concatenating the
+        // per-op lists keeps module order and post-order. Analysis and rewriting are serial.
         SmallVector<Operation *> tops;
         for (Operation &op : *m.getBody())
             if (op.getNumRegions() && !op.getRegion(0).empty())
@@ -146,9 +174,7 @@ struct EcoListCursorPass
             whiles++;
             SmallVector<WalkArg, 2> walks;
             analyze(w, walks);
-            // Disjointness: if any two walks share a step-tree op, skip the
-            // whole loop (conservative -- it stays un-rewritten and correct).
-            // See the treeOps comment on WalkArg for why sharing is fatal.
+            // A loop whose walks share a step-tree op is left as it is; see `WalkArg::treeOps`.
             bool shared = false;
             for (unsigned i = 0; i + 1 < walks.size() && !shared; ++i)
                 for (unsigned j = i + 1; j < walks.size() && !shared; ++j)
@@ -181,18 +207,18 @@ struct EcoListCursorPass
         }
     }
 
-    bool dbg = false;
+    bool dbg = false;       ///< Whether `ECO_LIST_CURSOR_DEBUG` is set, so rejected uses are recorded.
+    /// Whether this run has declared the cursor markers and `eco_list_pos_view`. They are declared once, at the first
+    /// rewrite, because each symbol lookup scans the module.
     bool declsMade = false;
     unsigned cPtrArgs = 0, cCondFwd = 0, cBadUse = 0, cNoStep = 0,
              cTreeFail = 0, cSharedTree = 0;
-    SmallVector<Operation *, 16> badUseOps;
-    std::map<std::string, unsigned> badCallees;
+    SmallVector<Operation *, 16> badUseOps;   ///< Owners of rejected uses, recorded only when `dbg` is set.
+    std::map<std::string, unsigned> badCallees;   ///< Never written or read.
 
-    /// Validates the step tree hanging off the while-yield at position p:
-    /// leaves are the walked arg itself (identity — no step this path) or a
-    /// __eco_list_tail_inline call on it; interior nodes are single-use
-    /// scf.if / scf.index_switch results whose every region yields a valid
-    /// subtree at the same index. Records identity slots and tail calls.
+    /// Returns whether `v`, the value passed at `slot`, is a valid step tree for the walked argument `argP`, as the
+    /// file comment defines one. Records the tree's leaves and operations in `wa`; on failure `wa` may hold part of
+    /// the tree.
     bool walkStep(Value v, Value argP, OpOperand &slot, WalkArg &wa) {
         if (v == argP) {
             wa.identSlots.insert(&slot);
@@ -234,6 +260,8 @@ struct EcoListCursorPass
         return false;
     }
 
+    /// Appends to `walks` each list argument of `w` that can be walked with a cursor, in argument order, and
+    /// adds to the debug counters.
     void analyze(scf::WhileOp w, SmallVectorImpl<WalkArg> &walks) {
         auto condOp = w.getConditionOp();
         auto yieldOp = w.getYieldOp();
@@ -256,7 +284,6 @@ struct EcoListCursorPass
             WalkArg wa;
             wa.pos = p;
 
-            // Step tree from the yield at p.
             if (!walkStep(yieldOp->getOperand(p), afterArg,
                           yieldOp->getOpOperand(p), wa)) {
                 cTreeFail++;
@@ -267,9 +294,8 @@ struct EcoListCursorPass
                 continue;
             }
 
-            // Every remaining use of the walked arg must be a projection,
-            // the condition forward, a recorded identity slot, or one of
-            // the recorded tail calls.
+            // Every other use, in either region, must be the condition operand, a leaf of the step tree, a tag
+            // test or an element read.
             bool ok = true;
             auto classify = [&](Value arg) {
                 for (OpOperand &u : arg.getUses()) {
@@ -316,10 +342,12 @@ struct EcoListCursorPass
         }
     }
 
-    /// Rebuilds the step tree hanging off `v` so that every path also
-    /// produces the NEXT index: tail calls become step_node/step_idx pairs,
-    /// identity leaves keep curIdx, and scf.if / index_switch interior nodes
-    /// gain one extra i64 result. Returns {newNodeValue, idxValue}.
+    /// Rebuilds the step tree `v` of the walked argument `argP` at index `curIdx` so that it also yields the next
+    /// index, and returns the new tree's node and index values.
+    ///
+    /// A tail call becomes a step-node and step-index pair, an identity leaf keeps `curIdx`, and each interior
+    /// `scf.if` / `scf.index_switch` is replaced by a copy with one more i64 result, its old results' uses moved to
+    /// the copy. `v` must be a tree `walkStep` accepted. `topB` is not used.
     std::pair<Value, Value> rebuildStep(Value v, Value argP, Value curIdx,
                                         OpBuilder &topB) {
         MLIRContext *ctx = v.getContext();
@@ -384,6 +412,9 @@ struct EcoListCursorPass
         return {nd->getResult(rIdx), nd->getResult(newTys.size() - 1)};
     }
 
+    /// Replaces `w` with a loop that carries one i64 index per walk in `walks`, starting at 0, and rewrites each
+    /// walk's element reads and step tree to use it. A used result of a walked argument is replaced by an
+    /// `eco_list_pos_view` call after the loop. `w` is erased.
     void rewrite(ModuleOp m, scf::WhileOp w, ArrayRef<WalkArg> walks) {
         MLIRContext *ctx = m.getContext();
         Location loc = w.getLoc();
@@ -391,9 +422,7 @@ struct EcoListCursorPass
         Type i64 = b.getI64Type();
         auto as1 = LLVM::LLVMPointerType::get(ctx, 1);
 
-        // Once per run: each ensureFn is a linear module.lookupSymbol (the
-        // decls sit at the module END, so even a hit scans everything), and
-        // per-loop calls made this pass quadratic at self-host scale.
+        // Once per run: each lookup scans the module, and the declarations sit at its end.
         if (!declsMade) {
             declsMade = true;
             ensureFn(m, kStepNode, as1, {as1, i64});
@@ -441,7 +470,7 @@ struct EcoListCursorPass
             condOp.erase();
         }
 
-        // Head reads first (they reference the PRE-step position).
+        // Element reads first: they read the position before the step.
         for (unsigned i = 0; i < k; ++i) {
             const WalkArg &wa = walks[i];
             Value beforeArg = nw.getBefore().getArgument(wa.pos);
@@ -462,10 +491,8 @@ struct EcoListCursorPass
             }
         }
 
-        // Step trees: rebuild the yield with per-position idx results. Keep
-        // the OLD yield's operands current while rebuilding — replacing an
-        // interior scf.if remaps its other results' uses in the old yield,
-        // so the operand snapshot must be taken only afterwards.
+        // Rebuilding an interior op moves its other results' uses in the old yield, so the yield's operands are
+        // copied only after every tree is rebuilt.
         auto yieldOp = nw.getYieldOp();
         SmallVector<Value> idxYields;
         for (unsigned i = 0; i < k; ++i) {

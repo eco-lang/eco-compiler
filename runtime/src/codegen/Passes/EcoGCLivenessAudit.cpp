@@ -1,8 +1,9 @@
 //===- EcoGCLivenessAudit.cpp - Post-EcoGCPrepare purity audit pass -------===//
 //
-// Debug-only verification pass, positioned in the pipeline immediately after
-// EcoGCPrepare, before EcoToLLVM. It checks that no eco.call still carries
-// the kernel-opt-12 purity attr (`eco.cse_safe`), which EcoGCPrepare strips.
+// The pipeline runs this pass directly after EcoGCPrepare, with no pass
+// between, so an `eco.call` still carrying `eco.cse_safe` here means
+// EcoGCPrepare failed to strip it. No other pass has run yet to add it back.
+// The pass checks nothing about liveness, despite its name.
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,6 +19,8 @@ using namespace mlir;
 
 namespace {
 
+/// The per-function pass that reports each `eco.call` still carrying
+/// `eco.cse_safe` as an error and then fails.
 struct EcoGCLivenessAuditPass
     : public PassWrapper<EcoGCLivenessAuditPass, OperationPass<func::FuncOp>> {
 
@@ -29,6 +32,8 @@ struct EcoGCLivenessAuditPass
                "purity attr (debug-only)";
     }
 
+    /// Skips external functions. Without `ECO_LOWERING_VALIDATION` it returns
+    /// at once.
     void runOnOperation() override {
 #ifndef ECO_LOWERING_VALIDATION
         return;
@@ -38,8 +43,6 @@ struct EcoGCLivenessAuditPass
 
         bool hadError = false;
 
-        // kernel-opt-12: purity attrs must not survive EcoGCPrepare. If one
-        // does, a purity consumer has been ordered after the strip.
         func.walk([&](eco::CallOp call) {
             if (call->hasAttr(eco::kCseSafeAttrName)) {
                 call->emitError("[gc-purity] 'eco.cse_safe' survived "

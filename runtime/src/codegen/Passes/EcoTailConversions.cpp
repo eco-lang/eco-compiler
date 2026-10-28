@@ -1,45 +1,26 @@
 //===- EcoTailConversions.cpp - Chunked parallel tail conversions ---------===//
 //
-// The conversion tail of the eco pipeline. It runs after EcoToLLVM and
-// EcoListCursor, replacing three upstream passes:
-//   - SCFToControlFlowPass and ArithToLLVMConversionPass, which used to be
-//     nested on llvm.func;
-//   - ConvertControlFlowToLLVMPass, which used to be module-anchored and
-//     serial.
-// See plans/backend-lowering-optimization.md step B2.
+// After EcoToLLVM, LLVM-dialect function bodies can still hold scf, cf and arith ops, and unrealized casts left
+// between the types of earlier conversions. This pass lowers those ops to the LLVM dialect and removes the casts.
+// It does the work of the upstream SCFToControlFlow, ArithToLLVM, ControlFlowToLLVM and ReconcileUnrealizedCasts
+// passes in one module pass. Only `llvm.func` bodies are converted; in other top-level ops only casts are
+// reconciled.
 //
-// Why this exists:
-//   - The nested form cost about 98k x 2 pass-manager invocations. Each one
-//     rebuilt a type converter, a pattern set and a conversion target, and
-//     about 40 % of them ran on wrappers or declarations.
-//   - cf->llvm ran serially over the whole module.
+// Each `llvm.func` with a body is converted on its own, and functions are split into chunks that run in parallel
+// under MLIR's thread pool. A chunk builds its own type converter, pattern sets and conversion targets, and the
+// pass struct has no data members, so no conversion state is shared between threads or kept between chunks.
 //
-// This pass is ModuleOp-anchored and does the same per-function work as
-// those three passes, IN PARALLEL over chunks of functions:
-//   - Each chunk builds ONE LLVMTypeConverter and frozen pattern sets on its
-//     own stack. No conversion state outlives its chunk or is shared between
-//     threads.
-//   - Per function, step 1 is SCF -> CF, using exactly the upstream
-//     SCFToControlFlowPass target and patterns.
-//   - Per function, step 2 is Arith + CF -> LLVM in ONE partial conversion,
-//     using the upstream patterns under LLVMConversionTarget. Both sets are
-//     1:1 op conversions.
+// Per function there are three steps:
+//   1. scf to cf, with the upstream SCFToControlFlow patterns and target. The patterns are applied directly by a
+//      `PatternRewriter`, not by the conversion driver; see `lowerScfToCf` for why and for when it falls back.
+//   2. arith and cf to LLVM, in one partial conversion under `LLVMConversionTarget` with the default
+//      `LowerToLLVMOptions`.
+//   3. Reconciliation of the function's unrealized casts. A cast's operands and results are SSA values, which do
+//      not cross functions, so this is done per function. Casts in top-level ops that are not functions are
+//      reconciled afterwards, serially.
 //
-// HISTORY, read before changing:
-//   - A previous version of this file fused all three conversions into a
-//     single applyPartialConversion. It kept its converter per pass CLONE.
-//   - It corrupted memory, Heisenbug-style, even single-threaded, and was
-//     parked. That design is gone.
-//   - What is different here: SCF->CF is a separate conversion; nothing lives
-//     in pass members; state is scoped to the chunk lambda.
-//
-// cf.assert is NOT lowered: its pattern needs a module-level global. Eco
-// never emits cf.assert (audited for the July tuning work). If one ever
-// appears it stays illegal and fails the module verifier loudly.
-//
-// Casts are reconciled here too: per function inside the chunks, then
-// serially for any non-function top-level op (ReconcileUnrealizedCastsPass is
-// no longer in the pipeline).
+// The cf patterns do not include the one for `cf.assert`, which needs a module-level global. A `cf.assert` is
+// not legalized here and is left in place.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,26 +47,16 @@ using namespace mlir;
 
 namespace {
 
+/// Returns whether `op` is one of the scf ops that step 1 lowers to cf.
 bool isScfToLower(Operation *op) {
     return isa<scf::ForallOp, scf::ForOp, scf::IfOp, scf::IndexSwitchOp,
                scf::ParallelOp, scf::WhileOp, scf::ExecuteRegionOp>(op);
 }
 
-/// SCF -> CF for one function with the upstream SCFToControlFlow patterns,
-/// applied by a listener-free rewriter (see the loop for the order). Each
-/// pattern is a plain OpRewritePattern that only splits the op's block and
-/// inlines its regions, so the pointers collected up front stay valid. Patterns
-/// that would create NEW scf ops (forall/parallel lowering) are not expected
-/// in eco output; if any remains, the function falls back to the conversion
-/// driver, which handles it as it always did.
-/// Parents before children (a parent pattern may expect its regions' front
-/// block to still end in scf.yield), but siblings in one block LAST-FIRST.
-/// Each lowering is local — split the op's block at the op, inline its
-/// regions before the continuation — so sibling order does not change the
-/// final block layout (byte-identical output, checked), but a split then
-/// moves only the ops up to the next, already-lowered sibling: linear
-/// instead of O(#ifs x block length) parent-pointer updates (the 0.4 s
-/// single-thread tail left after the listener fix).
+/// Appends to `out` every scf op to lower that is nested anywhere under `op`, not including `op` itself.
+///
+/// A parent comes before the ops nested in it, and ops in the same block come last first. `lowerScfToCf` relies
+/// on that order.
 void collectScfOps(Operation *op, SmallVectorImpl<Operation *> &out) {
     for (Region &r : op->getRegions())
         for (Block &b : r)
@@ -97,6 +68,22 @@ void collectScfOps(Operation *op, SmallVectorImpl<Operation *> &out) {
             }
 }
 
+/// Lowers every scf op in function `f` to cf, and returns failure if one could not be lowered.
+///
+/// `applicator` must hold `frozen`, the SCFToControlFlow patterns, and `rewriter` must have no listener. `target`
+/// and `frozen` are what the conversion driver uses when this falls back to it. `ops` is scratch storage and is
+/// overwritten.
+///
+/// The patterns are applied without the conversion driver because its rewriter always has a listener, and with
+/// a listener each block split moves the ops after the split point one at a time. A listener-free split is a
+/// single list splice. Each lowering splits the op's block at the op and inlines its regions before the
+/// continuation, so the pointers collected up front stay valid. Parents are lowered before their children
+/// because a parent's pattern may expect its regions' blocks to still end in `scf.yield`. Siblings are lowered
+/// last first so that each split moves only the ops up to the next sibling, which is already lowered.
+///
+/// The function is handed to `applyPartialConversion` instead in two cases: a fold that replaces an op, which
+/// would erase nested ops still on the list, and scf ops left after the pass over the list, such as ones a
+/// pattern created.
 LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
                            PatternRewriter &rewriter,
                            SmallVectorImpl<Operation *> &ops,
@@ -108,12 +95,8 @@ LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
         return success();
     SmallVector<OpFoldResult> folded;
     for (Operation *op : ops) {
-        // Fold first, as the conversion driver legalizes an illegal op
-        // (DialectConversionFoldingMode::BeforePatterns): scf.if's folder
-        // swaps `if (xor c, true)` into `if c` IN PLACE. Repeat while it
-        // folds in place. A replacing fold (none is expected for these ops)
-        // would erase nested ops still on the list, so hand the rest of the
-        // function to the conversion driver instead.
+        // Fold first, as the conversion driver does before applying patterns: scf.if's folder rewrites
+        // `if (xor c, true)` into `if c` in place. Repeat while it folds in place.
         for (unsigned n = 0; n < 8; ++n) {
             folded.clear();
             if (failed(op->fold(folded)))
@@ -138,6 +121,7 @@ LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
     return success();
 }
 
+/// The pass created by `createEcoTailConversionsPass`, registered as `eco-tail-conversions`.
 struct EcoTailConversionsPass
     : public PassWrapper<EcoTailConversionsPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoTailConversionsPass)
@@ -172,7 +156,7 @@ struct EcoTailConversionsPass
             size_t lo = funcs.size() * c / nChunks;
             size_t hi = funcs.size() * (c + 1) / nChunks;
 
-            // Step 1 state: exactly SCFToControlFlowPass's target + patterns.
+            // Step 1 state: the target and patterns of the upstream SCFToControlFlow pass.
             RewritePatternSet scfPatterns(ctx);
             populateSCFToControlFlowConversionPatterns(scfPatterns);
             FrozenRewritePatternSet scfFrozen(std::move(scfPatterns));
@@ -183,9 +167,7 @@ struct EcoTailConversionsPass
             scfTarget.markUnknownOpDynamicallyLegal(
                 [](Operation *) { return true; });
 
-            // Step 2 state: Arith + CF -> LLVM under LLVMConversionTarget,
-            // with the default LowerToLLVMOptions (same as both upstream
-            // passes with no index-bitwidth override).
+            // Step 2 state: no index-bitwidth override, as in both upstream passes.
             LowerToLLVMOptions options(ctx);
             LLVMTypeConverter converter(ctx, options);
             RewritePatternSet llvmPatterns(ctx);
@@ -196,13 +178,6 @@ struct EcoTailConversionsPass
             FrozenRewritePatternSet llvmFrozen(std::move(llvmPatterns));
             LLVMConversionTarget llvmTarget(*ctx);
 
-            // Plan 07 P4: step 1 applies the SAME patterns without the
-            // conversion driver. A ConversionPatternRewriter always has a
-            // listener, so every splitBlock moved the rest of the block one
-            // op at a time and recorded each move; a block with k scf.ifs and
-            // n ops cost O(k*n) recorded moves (~1,000 string-literal
-            // diamonds in one 34k-op block = a 1.4 s single-thread tail).
-            // A listener-free PatternRewriter splits with one ilist splice.
             PatternApplicator scfApplicator(scfFrozen);
             scfApplicator.applyDefaultCostModel();
             PatternRewriter scfRewriter(ctx);
@@ -217,9 +192,7 @@ struct EcoTailConversionsPass
                     failedAny = true;
                     return;
                 }
-                // Reconcile this function's casts here, in parallel: cast
-                // chains are SSA values, so they never cross functions
-                // (replaces the serial ReconcileUnrealizedCastsPass sweep).
+                // Cast chains are SSA values, so they do not cross functions.
                 casts.clear();
                 f->walk([&](UnrealizedConversionCastOp c) { casts.push_back(c); });
                 if (!casts.empty())
@@ -238,7 +211,7 @@ struct EcoTailConversionsPass
             return;
         }
 
-        // Casts outside function bodies (global initializers), serially.
+        // Casts outside function bodies, such as in global initializers.
         SmallVector<UnrealizedConversionCastOp> rest;
         for (Operation &top : *module.getBody())
             if (!isa<LLVM::LLVMFuncOp>(top))

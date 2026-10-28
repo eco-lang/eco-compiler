@@ -1,11 +1,20 @@
 //===- UndefinedFunction.cpp - Validate no undefined function references ===//
 //
-// This pass validates that all functions referenced by eco.call operations are
-// defined or declared in the module. This enforces invariant CGEN_011: no
-// undefined function symbols may escape MLIR codegen.
+// A direct `eco.call` names its callee by symbol, and a name that the module
+// neither defines nor declares would reach LLVM as an undefined symbol. This
+// pass is the check for that: invariant CGEN_011 says no such name may leave
+// MLIR codegen.
 //
-// If any undefined functions are found, the pass fails with error messages
-// listing the undefined functions and their call sites.
+// A function counts as defined or declared only if it is a `func.func` directly
+// in the module body. A `func.func` inside a nested op, and an `llvm.func` at
+// any level, do not count. Every `eco.call` in the module, at any depth, is
+// checked. An `eco.call` with no `callee` attribute is an indirect call through
+// a closure and is skipped, and no other op that names a function is looked
+// at.
+//
+// The check is on names only. Whether a call matches the callee's signature is
+// checked by `CallOp::verifySymbolUses`, not here, and the pass adds no
+// declarations.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +35,8 @@ using namespace ::eco;
 
 namespace {
 
+/// The module pass that reports direct `eco.call` callees missing from the
+/// module.
 struct UndefinedFunctionPass
     : public PassWrapper<UndefinedFunctionPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(UndefinedFunctionPass)
@@ -36,40 +47,40 @@ struct UndefinedFunctionPass
         return "Validate all called functions are defined or declared (CGEN_011)";
     }
 
+    /// Emits one error per callee name that is not a top-level `func.func`,
+    /// at the first call to it, and fails the pass if there was any. The module
+    /// is not changed.
     void runOnOperation() override {
         ModuleOp module = getOperation();
 
-        // Step 1: Collect all defined/declared function names. func.func ops
-        // are direct children of the module body, so iterate the top level
-        // (O(top-level)) rather than a recursive walk over every op. Names are
-        // uniqued StringAttrs — a DenseSet gives identity (pointer) comparison
-        // with no per-name heap allocation (vs the old std::set<std::string>).
+        // Only the module body's own ops are scanned, not a recursive walk.
+        // Names are uniqued StringAttrs, so the set compares them by pointer.
         llvm::DenseSet<StringAttr> definedFunctions;
         for (auto funcOp : module.getBody()->getOps<func::FuncOp>())
             definedFunctions.insert(funcOp.getSymNameAttr());
 
-        // Step 2: Find all eco.call ops referencing undefined functions.
+        // A missing callee and the location of the first call to it found.
         struct UndefinedCall {
             StringAttr name;
             Location loc;
         };
         llvm::SmallVector<UndefinedCall, 4> undefinedCalls;
-        llvm::DenseSet<StringAttr> reportedFunctions; // Avoid duplicate reports
+        llvm::DenseSet<StringAttr> reportedFunctions;
 
         module.walk([&](CallOp callOp) {
             auto calleeAttr = callOp.getCalleeAttr();
             if (!calleeAttr)
-                return; // Indirect call, skip.
+                return;
 
             StringAttr calleeName = calleeAttr.getAttr();
             if (!definedFunctions.contains(calleeName)) {
-                // Only report each function once, but track all locations
+                // Each missing name is reported once, at the first call the
+                // walk reaches; later calls to it are not recorded.
                 if (reportedFunctions.insert(calleeName).second)
                     undefinedCalls.push_back({calleeName, callOp.getLoc()});
             }
         });
 
-        // Step 3: Fail if any undefined functions found.
         if (!undefinedCalls.empty()) {
             for (const auto &call : undefinedCalls) {
                 emitError(call.loc) << "undefined function: " << call.name.getValue()

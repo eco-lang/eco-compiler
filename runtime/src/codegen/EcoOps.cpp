@@ -1,14 +1,13 @@
-//===- EcoOps.cpp - Eco dialect operations --------------------------------===//
+// The hand-written parts of the Eco ops declared in `Ops.td`.
 //
-// This file implements the operations in the Eco dialect.
-//
-//===----------------------------------------------------------------------===//
+// The op classes are generated, and their declarations are in generated code, so each member function defined here
+// carries its comment at its definition.
 
 #include "EcoOps.h"
 
 #include <cstdlib>
 #include "EcoDialect.h"
-#include "../allocator/Heap.hpp"  // NULL_CONS_MAX (HEAP_044)
+#include "../allocator/Heap.hpp"  // NULL_CONS_MAX and the field and arity limits
 
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Builders.h"
@@ -25,7 +24,8 @@ using namespace eco;
 // SymbolUserOpInterface: verifySymbolUses
 //===----------------------------------------------------------------------===//
 
-/// Helper: verify a FlatSymbolRefAttr resolves to a symbol in the module.
+/// Checks that `sym` names a symbol visible from `op`, and reports an error on `op` naming the symbol as a `desc`
+/// if it does not. A null `sym` passes.
 static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
                                   SymbolTableCollection &symbolTable,
                                   StringRef desc) {
@@ -35,17 +35,16 @@ static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
   return success();
 }
 
+/// Checks a direct call's callee: it must exist, and when it is a `func.func` the call's operand and result types
+/// must equal its signature exactly (CGEN_011). An indirect call passes. A callee already lowered to an `llvm.func`
+/// is not compared.
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto callee = getCalleeAttr();
   if (!callee)
     return success();
   if (failed(verifySymRef(*this, callee, symbolTable, "function")))
     return failure();
-  // SD-6 (REP_ABI_001, CGEN_011): a direct call's operand and result types
-  // must be the callee's func.func signature exactly; otherwise the mismatch
-  // surfaces only as LLVM's "Calling a function with a bad signature!" (or
-  // not at all). A callee that is already an llvm.func (mid-lowering) is not
-  // checked here.
+  // Unchecked, a mismatch would surface only as LLVM's "Calling a function with a bad signature!", or not at all.
   auto fn = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, callee);
   if (!fn)
     return success();
@@ -73,10 +72,11 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
+/// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
+/// declaration in the module (CGEN_057).
 LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
     return failure();
-  // CGEN_057: kernel functions must have declarations
   auto funcName = getFunctionAttr().getValue();
   if (funcName.starts_with("Elm_Kernel_")) {
     if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, getFunctionAttr()))
@@ -86,26 +86,36 @@ LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
   return success();
 }
 
-/// Where a closure value came from: the papCreate's evaluator and arity, and
-/// how many of its parameters are already filled (captures plus the newargs
-/// of partial typed extends on the way).
 namespace {
+/// Where a closure value came from: the `eco.papCreate` that made it, and how many of its evaluator's parameters
+/// are already filled. `offset` counts the captures plus the arguments of every partial typed `eco.papExtend` between
+/// that creation and the value.
 struct PapOrigin {
   FlatSymbolRefAttr function;
   int64_t arity = 0;
   size_t offset = 0;
 };
-/// Found: `origin` is set. Cycle: the value only reaches itself through
-/// block arguments (no offset added), so it says nothing on its own.
+/// The outcome of tracing a closure value back to its creation.
+///
+/// `Found` means the origin was filled in. `Cycle` means the value reaches only itself, through block arguments that
+/// add no arguments on the way, so it neither confirms nor contradicts an origin found by another path. `Unknown`
+/// means no single origin could be established.
 enum class TraceResult { Unknown, Found, Cycle };
 } // namespace
 
+/// Traces `clo` back through partial typed `eco.papExtend`s and through block arguments to the `eco.papCreate` that
+/// made it, and on `Found` writes that creation and the filled-parameter count to `origin`. A block argument is
+/// `Found` only when every incoming value that is not a cycle traces to the same function, arity and offset.
+/// `visiting` holds the block arguments already entered, and is how a cycle is recognised.
 static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
                                       llvm::SmallPtrSetImpl<Value> &visiting);
 
-/// The values a block argument receives: from the eco.jumps to its joinpoint
-/// (when it is a joinpoint parameter) or from the branch terminators of its
-/// predecessor blocks. Returns false when some incoming value is unknown.
+/// Appends to `in` the values `arg` can receive: the matching operand of each `eco.jump` that targets its joinpoint,
+/// when `arg` is a parameter of a joinpoint body, and otherwise the matching operand of each predecessor's branch.
+///
+/// Returns false, with `in` possibly part filled, when any incoming value cannot be named or there is none. That
+/// includes an argument of an entry block outside a joinpoint, which is a function or region parameter, and any
+/// block of a joinpoint other than its body's entry block.
 static bool collectIncoming(BlockArgument arg, SmallVectorImpl<Value> &in) {
   Block *block = arg.getOwner();
   unsigned idx = arg.getArgNumber();
@@ -194,18 +204,25 @@ static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
   return found ? TraceResult::Found : TraceResult::Cycle;
 }
 
+/// Checks a `eco.papExtend` against the functions it names or reaches.
+///
+/// A `_fast_evaluator`, when present, must resolve. For a typed extend (one with `remaining_arity`), when the fast
+/// evaluator is a `func.func`:
+/// - the `_capture_abi` types must equal its leading parameter types (CGEN_CLOSURE_005);
+/// - on a saturated extend, the new arguments must equal the parameters after those, and the result type its result
+///   type when the arguments complete the signature (CGEN_003, CGEN_056).
+///
+/// Separately, when the closure traces to one `eco.papCreate` whose function is a `func.func` taking exactly `arity`
+/// parameters, the new arguments must equal that function's parameters at the traced offset, and the result type
+/// its result type when the extend is saturated and the arguments complete the signature. A generic extend, and a
+/// closure whose origin cannot be traced, are not compared.
 LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
     if (failed(verifySymRef(*this, fast, symbolTable, "fast evaluator")))
       return failure();
 
-  // CGEN_CLOSURE_005: a typed papExtend stamped with `_fast_evaluator` and
-  // `_capture_abi` is lowered (emitFastClosureCall) by loading one value slot
-  // per `_capture_abi` entry at that type and calling the fast clone with
-  // (captures..., newargs...). So the `_capture_abi` types must equal the
-  // fast clone's leading parameter types, element for element; otherwise the
-  // mismatch surfaces only as an LLVM signature error, or as a capture read
-  // at the wrong kind. Checked when the clone is a func.func in this module.
+  // The lowering loads one capture per `_capture_abi` entry at that type and calls the fast evaluator with the
+  // captures followed by the new arguments, so a mismatch here would read a capture at the wrong kind.
   if (getRemainingArityAttr()) {
     auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
     auto captureAbi = getOperation()->getAttrOfType<ArrayAttr>("_capture_abi");
@@ -232,18 +249,8 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
     }
   }
 
-  // CGEN_003: a typed papExtend's real newargs fill evaluator params, so their
-  // SSA types must be the target func.func's param types (the closure's slot
-  // kinds for uncaptured params come from that signature, and EcoPAPSimplify
-  // turns a saturated extend into a direct eco.call with these operands — a
-  // mismatch otherwise surfaces only as LLVM's "Calling a function with a bad
-  // signature!"). CGEN_056: a saturated typed extend's result type is the
-  // evaluator's result type. The evaluator is known from two sources, each
-  // checked when present: the `_fast_evaluator` stamp of a saturated site
-  // (what emitFastClosureCall calls, with the `_capture_abi` captures first),
-  // and the papCreate the closure traces to (traceClosureOrigin: through
-  // partial typed extends and through block arguments whose incoming values
-  // all trace to the same creation, SD-7). Generic mode is unknown.
+  // The new arguments fill evaluator parameters, and a saturated extend may become a direct `eco.call` with these
+  // operands, so their types must be the evaluator's parameter types.
   auto remainingArityAttr = getRemainingArityAttr();
   if (!remainingArityAttr)
     return success();
@@ -288,8 +295,7 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
   llvm::SmallPtrSet<Value, 8> visiting;
   if (traceClosureOrigin(getClosure(), origin, visiting) != TraceResult::Found)
     return success();
-  // The evaluator (`$cap` for a capturing closure) takes
-  // (captures..., params...).
+  // The evaluator takes the captures followed by the remaining parameters.
   auto callee = symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, origin.function);
   if (!callee)
     return success();
@@ -300,6 +306,8 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
                       saturated && origin.offset + newargs.size() == nInputs);
 }
 
+/// Checks that every entry of `functions` is a symbol reference to an existing symbol, and that one named
+/// `Elm_Kernel_*` has a `func.func` declaration (CGEN_057).
 LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto funcs = getFunctions();
   for (Attribute a : funcs) {
@@ -308,7 +316,6 @@ LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTa
       return emitOpError("functions attribute must contain FlatSymbolRefAttr entries");
     if (failed(verifySymRef(*this, sym, symbolTable, "sibling function")))
       return failure();
-    // CGEN_057: kernel functions must have declarations
     auto fn = sym.getValue();
     if (fn.starts_with("Elm_Kernel_")) {
       if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, sym))
@@ -316,19 +323,20 @@ LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTa
                << "' has no func.func declaration; compiler must emit one (CGEN_057)";
     }
   }
-  // fast_evaluators equals functions (PapCreateGroupOp::verify).
+  // `fast_evaluators` needs no lookup of its own: `PapCreateGroupOp::verify` requires it to equal `functions`.
   return success();
 }
 
+/// Checks that the closure's function exists.
 LogicalResult AllocateClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getFunctionAttr(), symbolTable, "function");
 }
 
+/// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
+/// declaration (CGEN_057).
 LogicalResult MakeClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
     return failure();
-  // Mirror PapCreateOp::verifySymbolUses kernel-existence check (CGEN_057):
-  // kernel functions must have a func.func declaration in the module.
   auto funcName = getFunctionAttr().getValue();
   if (funcName.starts_with("Elm_Kernel_")) {
     if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, getFunctionAttr()))
@@ -338,16 +346,19 @@ LogicalResult MakeClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable
   return success();
 }
 
+/// Checks that the global's initializer, if it names one, exists.
 LogicalResult GlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto init = getInitializerAttr())
     return verifySymRef(*this, init, symbolTable, "initializer");
   return success();
 }
 
+/// Checks that the global being read exists.
 LogicalResult LoadGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
 }
 
+/// Checks that the global being written exists.
 LogicalResult StoreGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
 }
@@ -356,8 +367,17 @@ LogicalResult StoreGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable
 // Operation Verifiers
 //===----------------------------------------------------------------------===//
 
+/// Checks an `eco.case`.
+///
+/// There is one alternative per tag. `case_kind` is present and agrees with the scrutinee type: `ctor` or `str` for
+/// `!eco.value`, `bool` or `ctor` for `i1` (whose tags must be 0 or 1), `int` for `i64`, and `chr` for `i32`; no
+/// other scrutinee type is accepted. A `str` case has one string pattern per alternative except the last, which is
+/// the default. The case has at least one result (CGEN_010), and each alternative is one block ending in
+/// `eco.yield` whose operand types equal the result types (CGEN_028).
+///
+/// With the environment variable `ECO_LAX_CASE_VERIFY` set to any value, a yield type mismatch is a warning instead
+/// of an error, so that invalid IR can still be printed for diagnosis.
 LogicalResult CaseOp::verify() {
-  // Verify that the number of alternative regions matches the number of tags.
   if (getTags().size() != getAlternatives().size()) {
     return emitOpError("number of tags (")
            << getTags().size()
@@ -365,25 +385,21 @@ LogicalResult CaseOp::verify() {
            << getAlternatives().size() << ")";
   }
 
-  // Get case_kind attribute - REQUIRED
   auto caseKindAttr = getCaseKindAttr();
   if (!caseKindAttr) {
     return emitOpError("requires 'case_kind' attribute");
   }
   StringRef caseKind = caseKindAttr.getValue();
 
-  // Validate case_kind is known
   if (caseKind != "ctor" && caseKind != "int" &&
       caseKind != "chr" && caseKind != "str" && caseKind != "bool") {
     return emitOpError("invalid case_kind '") << caseKind
            << "'; expected one of 'ctor', 'int', 'chr', 'str', 'bool'";
   }
 
-  // Validate scrutinee type / case_kind compatibility
   Type scrutineeType = getScrutinee().getType();
 
   if (isa<eco::ValueType>(scrutineeType)) {
-    // !eco.value: allow case_kind in {"ctor", "str"}
     if (caseKind != "ctor" && caseKind != "str") {
       return emitOpError("!eco.value scrutinee requires case_kind 'ctor' or 'str', got '")
              << caseKind << "'";
@@ -392,13 +408,10 @@ LogicalResult CaseOp::verify() {
     unsigned width = intType.getWidth();
 
     if (width == 1) {
-      // i1 (Bool): allow case_kind in {"bool", "ctor"}
-      // "ctor" for Chain lowering compatibility, "bool" for Bool fanout
       if (caseKind != "bool" && caseKind != "ctor") {
         return emitOpError("i1 scrutinee requires case_kind 'bool' or 'ctor', got '")
                << caseKind << "'";
       }
-      // Validate tags are 0 or 1 for i1
       for (int64_t tag : getTags()) {
         if (tag != 0 && tag != 1) {
           return emitOpError("i1 scrutinee requires tags in {0, 1}, got ")
@@ -406,13 +419,11 @@ LogicalResult CaseOp::verify() {
         }
       }
     } else if (width == 64) {
-      // i64 (Int): require case_kind "int"
       if (caseKind != "int") {
         return emitOpError("i64 scrutinee requires case_kind 'int', got '")
                << caseKind << "'";
       }
     } else if (width == eco::kEcoCharBits) {
-      // i32 (Char): require case_kind "chr"
       if (caseKind != "chr") {
         return emitOpError("i32 (Char) scrutinee requires case_kind 'chr', got '")
                << caseKind << "'";
@@ -426,7 +437,6 @@ LogicalResult CaseOp::verify() {
            << scrutineeType;
   }
 
-  // Verify string_patterns for case_kind="str"
   if (caseKind == "str") {
     auto patternsAttr = getStringPatternsAttr();
     if (!patternsAttr) {
@@ -436,14 +446,12 @@ LogicalResult CaseOp::verify() {
     size_t numAlts = getAlternatives().size();
     size_t numPatterns = patternsAttr.size();
 
-    // string_patterns should have N-1 elements (last alt is default)
     if (numPatterns + 1 != numAlts) {
       return emitOpError("string_patterns has ")
              << numPatterns << " elements but expected " << (numAlts - 1)
              << " (one per non-default alternative)";
     }
 
-    // Verify all elements are StringAttr
     for (Attribute attr : patternsAttr) {
       if (!isa<StringAttr>(attr)) {
         return emitOpError("string_patterns must contain only string attributes");
@@ -451,14 +459,11 @@ LogicalResult CaseOp::verify() {
     }
   }
 
-  // CGEN_010 invariant: eco.case is SSA value-producing with explicit result types.
-  // eco.case must have at least one result (no void cases).
   auto resultTypes = getResultTypes();
   if (resultTypes.empty()) {
     return emitOpError("must have at least one result type; void cases are not supported");
   }
 
-  // Verify that each region has exactly one block with eco.yield terminator.
   size_t altIndex = 0;
   for (auto &region : getAlternatives()) {
     if (region.empty()) {
@@ -476,15 +481,12 @@ LogicalResult CaseOp::verify() {
       return emitOpError("alternative block must have a terminator");
     }
 
-    // CGEN_028: Alternatives must terminate with eco.yield only.
-    // eco.return, eco.jump, eco.crash are forbidden inside eco.case alternatives.
     if (!isa<YieldOp>(terminator)) {
       return emitOpError("alternative ")
              << altIndex << " must terminate with 'eco.yield', got '"
              << terminator->getName() << "'";
     }
 
-    // Validate eco.yield operand types match case result types
     auto yieldOp = cast<YieldOp>(terminator);
     auto yieldTypes = yieldOp.getOperandTypes();
     if (yieldTypes.size() != resultTypes.size()) {
@@ -494,8 +496,6 @@ LogicalResult CaseOp::verify() {
     }
     for (size_t i = 0; i < resultTypes.size(); ++i) {
       if (yieldTypes[i] != resultTypes[i]) {
-        // ECO_LAX_CASE_VERIFY=1: demote to a warning so invalid IR can be
-        // dumped for diagnosis (--emit=mlir); never set in real builds.
         if (::getenv("ECO_LAX_CASE_VERIFY")) {
           mlir::emitWarning(getLoc())
               << "LAX: alternative " << altIndex << " eco.yield operand " << i
@@ -516,15 +516,15 @@ LogicalResult CaseOp::verify() {
   return success();
 }
 
+/// Checks that an `eco.yield` is inside an `eco.case` (CGEN_053) and that its operand types equal that case's result
+/// types. `ECO_LAX_CASE_VERIFY` turns a type mismatch into a warning, as for `CaseOp::verify`.
 LogicalResult YieldOp::verify() {
-  // CGEN_053: eco.yield may only appear inside eco.case alternative regions.
-  // HasParent<"::eco::CaseOp"> trait handles this, but we double-check.
+  // The `HasParent` trait in `Ops.td` already requires the direct parent to be an `eco.case`.
   auto parentCaseOp = (*this)->getParentOfType<CaseOp>();
   if (!parentCaseOp) {
     return emitOpError("must be inside an eco.case alternative region");
   }
 
-  // Verify yield types match parent case result types
   auto caseResultTypes = parentCaseOp.getResultTypes();
   auto yieldTypes = getOperandTypes();
 
@@ -536,7 +536,6 @@ LogicalResult YieldOp::verify() {
 
   for (size_t i = 0; i < caseResultTypes.size(); ++i) {
     if (yieldTypes[i] != caseResultTypes[i]) {
-      // ECO_LAX_CASE_VERIFY=1: diagnostic dumps only (see CaseOp verifier).
       if (::getenv("ECO_LAX_CASE_VERIFY")) {
         mlir::emitWarning(getLoc())
             << "LAX: operand " << i << " has type " << yieldTypes[i]
@@ -554,18 +553,17 @@ LogicalResult YieldOp::verify() {
 }
 
 
+/// Checks that a joinpoint's body region is not empty. Uniqueness of joinpoint ids (CGEN_031) is not checked here.
 LogicalResult JoinpointOp::verify() {
-  // Verify that the body region is not empty.
   if (getBody().empty()) {
     return emitOpError("body region must not be empty");
   }
   return success();
 }
 
+/// Checks that a null-cons constant's tag fits the 10-bit constructor index of a null-cons word, 0 to
+/// `NULL_CONS_MAX` (HEAP_044).
 LogicalResult ConstantNullConsOp::verify() {
-  // 10-bit null_cons_idx capacity (HEAP_044). The Elm side crashes first with
-  // a better message (Compiler.Data.CtorTag.checkNullConsCapacity); this is
-  // the MLIR-level backstop.
   if (getTag() < 0 || getTag() > static_cast<int64_t>(NULL_CONS_MAX)) {
     return emitOpError("null-cons tag ")
            << getTag() << " outside the 10-bit null_cons_idx range [0, "
@@ -575,12 +573,12 @@ LogicalResult ConstantNullConsOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Custom/Record slot kinds (plans/wide-object-tail-kind-words-phase-3.md 3B.2)
+// Custom/Record slot kinds
 //===----------------------------------------------------------------------===//
 
-/// 3D-D3: the u64 kind bitmaps left the op definitions in Phase 3D; a leftover
-/// one would be carried as an unregistered discardable attribute and silently
-/// ignored (a stale pre-3C .mlir cache, or a missed fixture). Reject it.
+/// Rejects `op` if it carries `unboxed_bitmap`, `newargs_unboxed_bitmap` or `unboxed_bitmaps`. It is called only
+/// on ops that do not declare these attributes, where MLIR would otherwise keep one as an unregistered attribute
+/// that nothing reads; on those ops `slot_kinds` carries the layout instead.
 static LogicalResult rejectStaleBitmapAttr(Operation *op) {
   for (StringRef n : {"unboxed_bitmap", "newargs_unboxed_bitmap", "unboxed_bitmaps"})
     if (op->hasAttr(n))
@@ -590,8 +588,8 @@ static LogicalResult rejectStaleBitmapAttr(Operation *op) {
   return success();
 }
 
-/// Kind of a Custom/Record field's MLIR type (= codegen slotKindOf):
-/// i64 -> 1 Int, f64 -> 2 Float, i32 -> 3 Char, everything else -> 0 boxed.
+/// Returns the slot kind of a field of type `t`: 1 for `i64`, 2 for `f64`, 3 for `i32`, and 0 (boxed) for any other
+/// type, including `i1`, which callers reject separately.
 static uint8_t fieldKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
@@ -600,8 +598,11 @@ static uint8_t fieldKind(Type t) {
 }
 
 
-/// Checks the operand types of `slots` (the fields) and
-/// `slot_kinds` (one entry per field) against them (REP_BOUNDARY_002).
+/// Checks that `kinds` has one entry per type in `slots`, each the slot kind of that type (REP_BOUNDARY_002).
+///
+/// A field of type `i1` is rejected: Bool must be boxed first. A boxed field must be `!eco.value` or a value-level
+/// aggregate (tuple, record, custom or cons), which the construct lowering boxes. `what` names a field in
+/// diagnostics.
 static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
                                      ArrayRef<int8_t> kinds, StringRef what) {
   if (kinds.size() != slots.size())
@@ -609,13 +610,10 @@ static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
            << " entries but there are " << slots.size() << " " << what << "s";
   for (unsigned i = 0; i < slots.size(); ++i) {
     Type t = slots[i];
-    // B14: Bool is boxed in heap fields (REP_CLOSURE_001 / FORBID_CLOSURE_001).
     if (t.isInteger(1))
       return op->emitOpError(what) << " " << i
              << " has i1 type: Bool must be boxed to !eco.value before construction";
     const uint8_t k = fieldKind(t);
-    // Aggregate-typed fields are boxed (kind 0): the construct lowering boxes
-    // them via eco.to_heap so the slot holds an HPointer like any boxed field.
     if (k == 0 && !isa<eco::ValueType, eco::Tuple2Type, eco::Tuple3Type,
                         eco::RecordType, eco::CustomType, eco::ConsType>(t))
       return op->emitOpError(what) << " " << i
@@ -631,13 +629,14 @@ static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
   return success();
 }
 
+/// Checks a custom-type construction: no stale bitmap attribute, at least one field (CGEN_079), one operand per
+/// field, at most `CUSTOM_MAX_FIELDS` fields (HEAP_019), and slot kinds that match the operand types.
+///
+/// A nullary constructor is an embedded null-cons constant, `eco.constant.null_cons`. A zero-field construct would
+/// give the same value a second, heap, representation, which comparison by word equality would treat as different.
 LogicalResult CustomConstructOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
-  // Nullary ctors are embedded null-cons constants (HEAP_044,
-  // plans/null-cons-hpointer-embedding.md §2.3): a 0-field construct would
-  // mint a second (heap) representation and silently break the word-equality
-  // fast paths. The compiler emits eco.constant.null_cons instead.
   if (getSize() == 0) {
     return emitOpError(
         "0-field custom construction is forbidden (CGEN_079): nullary "
@@ -653,7 +652,6 @@ LogicalResult CustomConstructOp::verify() {
            << size << ")";
   }
 
-  // HEAP_019: slots 0..23 in the header bitmap, the rest in <= 63 tail kind words.
   if (size > static_cast<int64_t>(Elm::CUSTOM_MAX_FIELDS)) {
     return emitOpError("size (") << size << ") exceeds Custom's "
            << Elm::CUSTOM_MAX_FIELDS << "-field limit (HEAP_019)";
@@ -663,6 +661,9 @@ LogicalResult CustomConstructOp::verify() {
                          getSlotKinds(), "field");
 }
 
+/// Checks a record construction: no stale bitmap attribute, one operand per field, at most `RECORD_MAX_FIELDS`
+/// fields (HEAP_019), and slot kinds that match the operand types. `slot_kinds` is only checked; the lowering takes
+/// the kinds from the operand types.
 LogicalResult RecordConstructOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -674,29 +675,24 @@ LogicalResult RecordConstructOp::verify() {
            << fieldCount << ")";
   }
 
-  // HEAP_019: 32 header slots + <= 63 tail kind words; 2047 (not 2048) so the
-  // record-alias constructor (arity = field count) fits CLOSURE_MAX_ARITY.
   if (fieldCount > static_cast<int64_t>(Elm::RECORD_MAX_FIELDS)) {
     return emitOpError("field_count (") << fieldCount << ") exceeds Record's "
            << Elm::RECORD_MAX_FIELDS << "-field limit (HEAP_019)";
   }
 
-  // REP_BOUNDARY_002: the lowering derives the kinds from the operand types,
-  // so slot_kinds is a check of the front end's layout, never trusted.
   return verifySlotKinds(getOperation(), getFields().getTypes(),
                          getSlotKinds(), "field");
 }
 
 //===----------------------------------------------------------------------===//
-// Tuple / Cons header kinds (SD-4, CGEN_026)
+// Tuple / Cons header kinds (CGEN_026)
 //===----------------------------------------------------------------------===//
 
-/// Kind of one Tuple2/Tuple3/Cons-head operand, or failure. The lowerings
-/// copy `unboxed_bitmap` / `head_kind` straight into the heap header but store
-/// each field by its SSA type, so the two must agree or the GC traces a raw
-/// primitive as a pointer (or skips a real one). Bool (i1) never reaches a
-/// heap field (CGEN_009, REP_CLOSURE_001); aggregate operands are boxed by the
-/// lowering (kind 0), like verifySlotKinds.
+/// Returns the slot kind of a tuple field or cons head of type `t`, or reports an error on `op` and fails when `t` is
+/// `i1` or a boxed type other than `!eco.value` or a value-level aggregate. `what` names the operand in diagnostics.
+///
+/// The tuple and cons lowerings copy `unboxed_bitmap` or `head_kind` into the heap header but store each field by its
+/// SSA type, so the two must agree, or the collector would trace a raw number as a pointer or skip a real one.
 static FailureOr<uint8_t> heapOperandKind(Operation *op, Type t,
                                           StringRef what) {
   if (t.isInteger(1)) {
@@ -713,8 +709,8 @@ static FailureOr<uint8_t> heapOperandKind(Operation *op, Type t,
   return k;
 }
 
-/// CGEN_026: a tuple's unboxed_bitmap equals the operand kinds, slot i at
-/// bits [2i, 2i+1], and has no bits beyond the last slot.
+/// Checks that a tuple's `bitmap` equals the slot kinds of `slots`, slot `i` in bits `2i` and `2i+1`, with no bit set
+/// beyond the last slot (CGEN_026).
 static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
                                        int64_t bitmap) {
   int64_t want = 0;
@@ -732,16 +728,20 @@ static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
   return success();
 }
 
+/// Checks that the pair's `unboxed_bitmap` matches its operand types.
 LogicalResult Tuple2ConstructOp::verify() {
   Type slots[2] = {getA().getType(), getB().getType()};
   return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
 }
 
+/// Checks that the triple's `unboxed_bitmap` matches its operand types.
 LogicalResult Tuple3ConstructOp::verify() {
   Type slots[3] = {getA().getType(), getB().getType(), getC().getType()};
   return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
 }
 
+/// Checks that a cons cell's `head_kind` is the slot kind of its head's type, and that `head_unboxed` is true
+/// exactly when that kind is not boxed.
 LogicalResult ListConstructOp::verify() {
   FailureOr<uint8_t> k =
       heapOperandKind(getOperation(), getHead().getType(), "head");
@@ -758,11 +758,10 @@ LogicalResult ListConstructOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// Closure slot kinds (plans/wide-object-tail-kind-words.md §S.5, Phase 2)
+// Closure slot kinds
 //===----------------------------------------------------------------------===//
 
-/// Kind of a closure operand's MLIR type (same mapping as codegen slotKindOf):
-/// i64 -> 1 Int, f64 -> 2 Float, i32 -> 3 Char, everything else -> 0 boxed.
+/// Returns the slot kind of a closure operand of type `t`. The mapping is the same as `fieldKind`'s.
 static uint8_t operandKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
@@ -770,9 +769,10 @@ static uint8_t operandKind(Type t) {
   return 0;
 }
 
-/// CGEN_003: every closure operand is !eco.value, i64, f64 or i32 (Bool is
-/// boxed, REP_CLOSURE_001; closure ops never take aggregates). `slot_kinds`
-/// has one entry per operand, equal to the operand's type kind.
+/// Checks that every operand stored in a closure is `!eco.value`, `i64`, `f64` or `i32`, and that `kinds` has one
+/// entry per operand equal to its slot kind (CGEN_003). An `i1` operand is rejected because Bool must be boxed
+/// (REP_CLOSURE_001); aggregates are rejected as boxed but not `!eco.value`. `what` names an operand in
+/// diagnostics.
 static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
                                         ArrayRef<int8_t> kinds, const char *what) {
   for (auto [i, v] : llvm::enumerate(operands)) {
@@ -798,23 +798,24 @@ static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
   return success();
 }
 
-/// HEAP_078 limits: stage arity <= CLOSURE_MAX_ARITY (2047), so at most 2046
-/// captured values (a PAP has at least one parameter left).
+/// The largest arity a closure may have, set by the width of the closure header's arity field (HEAP_078).
 static constexpr int64_t kClosureMaxArity = Elm::CLOSURE_MAX_ARITY;
+/// The largest number of values a closure may capture: one less than the largest arity, because a partial
+/// application always has at least one parameter left.
 static constexpr int64_t kClosureMaxCaptures = Elm::CLOSURE_MAX_ARITY - 1;
 
+/// Checks a closure creation: no stale bitmap attribute, a `_fast_evaluator` equal to `function` when present, one
+/// operand per `num_captured`, fewer captures than `arity`, both within the closure limits, and slot kinds that match
+/// the captured operands. The kernel declaration check is in `verifySymbolUses`.
 LogicalResult PapCreateOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
-  // A capturing closure's evaluator is its `$cap` clone, named by both
-  // `function` and `_fast_evaluator`.
   if (auto fast = get_fastEvaluatorAttr()) {
     if (fast != getFunctionAttr())
       return emitOpError("_fast_evaluator '") << fast.getValue()
              << "' must equal function '" << getFunction() << "'";
   }
 
-  // Verify that num_captured matches the number of captured operands.
   int64_t numCaptured = getNumCaptured();
   int64_t capturedCount = static_cast<int64_t>(getCaptured().size());
   if (capturedCount != numCaptured) {
@@ -824,7 +825,6 @@ LogicalResult PapCreateOp::verify() {
            << numCaptured << ")";
   }
 
-  // Verify that num_captured is less than arity (PAPs have fewer args than arity).
   int64_t arity = getArity();
   if (numCaptured >= arity) {
     return emitOpError("num_captured (")
@@ -833,7 +833,6 @@ LogicalResult PapCreateOp::verify() {
            << arity << ")";
   }
 
-  // Closure limits (HEAP_078: n_values:11 | max_values:11).
   if (numCaptured > kClosureMaxCaptures) {
     return emitOpError("num_captured (")
            << numCaptured
@@ -845,15 +844,20 @@ LogicalResult PapCreateOp::verify() {
            << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // Per-slot kinds (CGEN_003).
   if (failed(verifyClosureKinds(getOperation(), getCaptured(), getSlotKinds(),
                                 "capture")))
     return failure();
 
-  // CGEN_057 kernel existence check is now in verifySymbolUses (O(1) cached).
   return success();
 }
 
+/// Checks a closure application on its own, without looking at where the closure came from.
+///
+/// There must be no stale bitmap attribute, no more new arguments than the closure arity limit, and slot kinds that
+/// match them. Without `remaining_arity` (generic mode), whether the application is saturated is decided at run time
+/// from the closure header, so the result may be `!eco.value` or a primitive (`i64`, `f64` or `i32`). With it (typed
+/// mode), a partial application must yield `!eco.value`, the new closure, and a saturated one `!eco.value` or a
+/// primitive, never `i1`. The comparison with the evaluator's signature is in `verifySymbolUses`.
 LogicalResult PapExtendOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -865,25 +869,12 @@ LogicalResult PapExtendOp::verify() {
            << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
 
-  // Per-slot kinds (CGEN_003) and REP_CLOSURE_001.
   if (failed(verifyClosureKinds(getOperation(), newargs, getSlotKinds(),
                                 "newarg")))
     return failure();
 
-  // === Generic mode: remaining_arity absent ===
-  // In generic mode, saturation is determined at runtime from the closure header.
-  // We only enforce local invariants (bitmap, REP_CLOSURE_001) — no definition-chain
-  // walk, no arity consistency, no evaluator parameter type checks.
-  //
-  // Result type may be `!eco.value` (the conservative case, used when the
-  // call could be under-saturated and produce a closure HPtr) OR a primitive
-  // (i64 / f64 / i32) when Mono types the call as a primitive — i.e. the
-  // call applies enough args to land on a primitive return at runtime. In
-  // that case the JIT lowers `lowerGenericApply` with a matching
-  // `desired_kind` and `eco_apply_closure_eval` writes the primitive
-  // straight into the result slot. Well-typed IR cannot reach the
-  // under-saturated branch with a primitive result type — the runtime
-  // additionally asserts this in debug builds.
+  // A primitive result in generic mode is a promise from the compiler that the application is saturated at run time;
+  // nothing here can check it.
   auto remainingArityAttr = getRemainingArityAttr();
   if (!remainingArityAttr) {
     Type resultType = getResult().getType();
@@ -898,12 +889,6 @@ LogicalResult PapExtendOp::verify() {
     return success();
   }
 
-  // Typed mode: remaining_arity present (SD-8, CGEN_056). A partial extend
-  // builds a new closure, so its result is !eco.value; a saturated one
-  // returns the evaluator's result, an ABI type (REP_ABI_001): !eco.value or
-  // i64/f64/i32, never i1 (Bool is boxed, CGEN_009). verifySymbolUses checks
-  // the saturated result against the evaluator's signature when it is known.
-  // CGEN_057 kernel existence is checked by PapCreateOp::verifySymbolUses (O(1)).
   Type resultType = getResult().getType();
   int64_t remainingArity = remainingArityAttr.getInt();
   if (static_cast<int64_t>(newargs.size()) < remainingArity) {
@@ -921,6 +906,21 @@ LogicalResult PapExtendOp::verify() {
   return success();
 }
 
+/// Checks a group of sibling closures created together, which may capture one another.
+///
+/// A cross edge is a triple (producer, consumer, slot): sibling `consumer` captures sibling `producer` in capture slot
+/// `slot`. In each sibling, the captures that are not siblings come first, `capture_counts[i]` of them, and are the
+/// op's operands, sibling by sibling in order; the sibling captures fill the slots after them.
+///
+/// The checks are: at least two siblings; every per-sibling array of that length; `functions` equal to
+/// `fast_evaluators`; each sibling's `slot_kinds` a `DenseI8ArrayAttr` of length `num_captured`; `cross_edges` a
+/// multiple of three long, with producer and consumer in range and the slot within the consumer's captures and boxed;
+/// `num_captured` equal to `capture_counts` plus the sibling's incoming cross edges; captures and arity within the
+/// closure limits and fewer captures than arity; and kinds that match the operand captures, with every sibling slot
+/// boxed.
+///
+/// The entries of `cross_edges`, `num_captured`, `capture_counts` and `arities` are assumed to be integer attributes
+/// and are not checked to be.
 LogicalResult PapCreateGroupOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -936,7 +936,6 @@ LogicalResult PapCreateGroupOp::verify() {
   auto captureCounts = getCaptureCounts();
   auto crossEdges = getCrossEdges();
 
-  // Per-sibling arrays must all have size numSiblings.
   if (functions.size() != numSiblings ||
       fastEvaluators.size() != numSiblings ||
       arities.size() != numSiblings ||
@@ -946,7 +945,6 @@ LogicalResult PapCreateGroupOp::verify() {
     return emitOpError("per-sibling attribute arrays must all have length ")
            << numSiblings;
   }
-  // Each sibling's evaluator is its `$cap` clone, named by both arrays.
   for (size_t i = 0; i < numSiblings; ++i)
     if (functions[i] != fastEvaluators[i])
       return emitOpError("functions[") << i << "] must equal fast_evaluators["
@@ -958,12 +956,10 @@ LogicalResult PapCreateGroupOp::verify() {
     return cast<DenseI8ArrayAttr>(slotKinds[i]).asArrayRef();
   };
 
-  // cross_edges must be flat triples of I64 attrs.
   if (crossEdges.size() % 3 != 0)
     return emitOpError("cross_edges must be flat triples, length ")
            << crossEdges.size() << " is not a multiple of 3";
 
-  // Count cross-edges per consumer to validate num_captured relation.
   SmallVector<int64_t, 8> crossEdgeInDegree(numSiblings, 0);
   for (size_t i = 0; i < crossEdges.size(); i += 3) {
     int64_t producer = cast<IntegerAttr>(crossEdges[i]).getInt();
@@ -978,9 +974,6 @@ LogicalResult PapCreateGroupOp::verify() {
       return emitOpError("cross_edges slot ") << slot
              << " out of range for consumer " << consumer
              << " with num_captured " << consumerCap;
-    // Cross-edge slot must be boxed. slot_kinds has one kind per slot,
-    // [0, num_captured): the non-sibling captures [0, capture_counts), then
-    // the sibling captures, which are boxed.
     {
       ArrayRef<int8_t> ks = siblingKinds(consumer);
       if (slot < static_cast<int64_t>(ks.size()) && ks[slot] != 0)
@@ -991,7 +984,6 @@ LogicalResult PapCreateGroupOp::verify() {
     crossEdgeInDegree[consumer] += 1;
   }
 
-  // Per-sibling num_captured == capture_counts[i] + cross-edge in-degree for i.
   int64_t totalCaptures = 0;
   for (size_t i = 0; i < numSiblings; ++i) {
     int64_t cap = cast<IntegerAttr>(numCaptured[i]).getInt();
@@ -1022,18 +1014,12 @@ LogicalResult PapCreateGroupOp::verify() {
            << ") must equal sum of capture_counts ("
            << totalCaptures << ")";
 
-  // Per-slot kind check on the captures (mirrors papCreate).
-  // Non-sibling captures occupy the low slots [0..cc); sibling captures
-  // (cross-edge consumers) live at the remaining slots and are boxed.
   auto captures = getOperands();
   size_t operandCursor = 0;
   for (size_t i = 0; i < numSiblings; ++i) {
     int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
     auto sibCaptures = captures.slice(operandCursor, static_cast<size_t>(cc));
     {
-      // plans/wide-object-tail-kind-words-phase-2.md step 2.1: one kind per
-      // closure slot, length num_captured; the non-sibling captures are
-      // checked against their operand types, the sibling slots are boxed.
       ArrayRef<int8_t> ks = siblingKinds(i);
       int64_t cap = cast<IntegerAttr>(numCaptured[i]).getInt();
       if (static_cast<int64_t>(ks.size()) != cap)
@@ -1055,18 +1041,15 @@ LogicalResult PapCreateGroupOp::verify() {
   return success();
 }
 
+/// Checks a read of a closure's capture: the index is not negative, and when the operand is a `!eco.closure_env` the
+/// index is within its captures and the result type is the capture's type. A `!eco.value` operand's index is not
+/// bounds-checked.
 LogicalResult ProjectClosureOp::verify() {
-  // Verify index is non-negative
   int64_t index = getIndex();
   if (index < 0) {
     return emitOpError("index must be non-negative, got ") << index;
   }
 
-  // Operand may be either !eco.value (heap closure) or !eco.closure_env
-  // (value-level env, Phase 0 plumbing). The TableGen constraint
-  // Eco_ClosureOrEnv enforces this at the operand level; here we just
-  // additionally bounds-check the index against the env's capture count
-  // when we have a value-level operand.
   Type closureType = getClosure().getType();
   if (auto envTy = dyn_cast<eco::ClosureEnvType>(closureType)) {
     if (static_cast<size_t>(index) >= envTy.getCaptures().size()) {
@@ -1074,7 +1057,6 @@ LogicalResult ProjectClosureOp::verify() {
              << " out of range for closure env with "
              << envTy.getCaptures().size() << " captures";
     }
-    // Result type must match the env's slot type at this index.
     Type expected = envTy.getCaptures()[index];
     if (getResult().getType() != expected) {
       return emitOpError("result type ") << getResult().getType()
@@ -1088,14 +1070,17 @@ LogicalResult ProjectClosureOp::verify() {
   return success();
 }
 
+/// Checks a call's attributes against its form.
+///
+/// `eco.cse_safe` is accepted only on a direct call that is not `musttail`. A direct call (with `callee`) must not
+/// have `remaining_arity`; its signature is checked in `verifySymbolUses`. An indirect call applies its first operand,
+/// which must be `!eco.value`, to the rest, and its `remaining_arity` must be present, positive and equal to the
+/// number of those other operands.
 LogicalResult CallOp::verify() {
   auto operands = getOperands();
   auto calleeAttr = getCalleeAttr();
   auto remainingArityAttr = getRemainingArityAttr();
 
-  // kernel-opt-12: the purity attr's structural preconditions. A surviving
-  // 'eco.cse_safe' after EcoGCPrepare is reported by EcoGCLivenessAudit
-  // (validation builds).
   if ((*this)->hasAttr(kCseSafeAttrName)) {
     if (!calleeAttr)
       return emitOpError("'eco.cse_safe' is only valid on a direct call "
@@ -1105,18 +1090,14 @@ LogicalResult CallOp::verify() {
       return emitOpError("'eco.cse_safe' must not be set on a musttail call");
   }
 
-  // Case 1: Direct call (callee present)
   if (calleeAttr) {
     if (remainingArityAttr) {
       return emitOpError("must not have both 'callee' and 'remaining_arity' attributes");
     }
 
-    // The signature check against the callee (SD-6) is in verifySymbolUses,
-    // which gets a cached symbol table.
     return success();
   }
 
-  // Case 2: Indirect call (closure application)
   if (operands.empty()) {
     return emitOpError("indirect call must have at least one operand (closure)");
   }
@@ -1149,18 +1130,13 @@ LogicalResult CallOp::verify() {
 // MemoryEffectOpInterface: CallOp
 //===----------------------------------------------------------------------===//
 
-// kernel-opt-12. `eco.cse_safe` present => report NO effects, which licenses
-// exactly {merge duplicates, erase if unused}. It does NOT license
-// speculation: we implement no ConditionallySpeculatable, so isSpeculatable()
-// stays false and LICM-style motion is impossible.
-//
-// Attr ABSENT => conservative read+write on the default resource. This is the
-// correctness-critical branch: declaring the interface at all removes the
-// "no interface => unknown effects" default, so every unstamped call must
-// claim effects explicitly or the whole program's calls become erasable.
-// The equivalence "read+write == no interface" is discharged empirically by
-// test/codegen/call_purity_attr_conservative.mlir, which was green BEFORE
-// this hunk landed.
+/// Appends a call's memory effects to `effects`: none when it carries `eco.cse_safe`, and otherwise a read and a
+/// write of the default resource.
+///
+/// Reporting no effects lets MLIR merge identical calls and erase unused ones. It does not let a call be hoisted or
+/// executed speculatively, because `CallOp` does not implement `ConditionallySpeculatable`. A call without the
+/// attribute must report effects explicitly: an op that implements this interface and reports nothing is treated as
+/// having no effects, so every call would become erasable.
 void CallOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
     if ((*this)->hasAttr(kCseSafeAttrName))
@@ -1171,34 +1147,23 @@ void CallOp::getEffects(
 }
 
 //===----------------------------------------------------------------------===//
-// Projection Folders (kernel-opt-10)
+// Projection Folders
 //===----------------------------------------------------------------------===//
 //
-// eco.project.X %c[i]  where %c = eco.construct.X(..., f_i, ...)   ==>   f_i
-// eco.get_tag %c       where %c = eco.construct.custom {tag = N}   ==>   N
+// A projection whose operand is defined directly by a construct op folds to the construct's operand:
 //
-// Legality: heap aggregates are write-once. The dialect states "No write
-// barriers needed due to Elm's immutability" (Ops.td) and RCElimination
-// hard-errors on every in-place mutator, so the field operand IS the value the
-// projection would load. get_tag's runtime contract (eco_get_tag,
-// RuntimeExports.cpp) returns Custom::ctor for a Tag_Custom object, which is
-// exactly the construct's `tag` attr.
+//   eco.project.X %c[i]  where %c = eco.construct.X(..., f_i, ...)   ==>   f_i
+//   eco.get_tag %c       where %c = eco.construct.custom {tag = N}   ==>   N
 //
-// A fold returns an EXISTING value (or an attr) and never builds IR — the only
-// thing fold() may do. Dominance is free: the field is an operand of a defining
-// op that already dominates the projection.
+// This relies on the object not being modified between construction and projection. The operand already dominates
+// the projection, because it dominates the construct.
 //
-// The guard demands EXACT SSA type equality. The construct verifiers tie the
-// 2-bit slot kind to the field's SSA type, BUT a kind=0 (boxed) slot legally
-// accepts an aggregate-typed operand which the construct lowering boxes via
-// eco.to_heap — there the projected !eco.value is NOT the operand, so the
-// fold must bail. Type equality is exactly that test. (An i1 field is not
-// accepted: verifySlotKinds rejects it, Bool is boxed first — B14.)
-//
-// The index guard is against the DECLARED field count (which the construct
-// verifiers tie to fields.size()).
+// The operand is the projected value only when the two have the same type. A boxed slot may hold an aggregate-typed
+// operand that the construct lowering boxes with `eco.to_heap`, and then the projection yields an `!eco.value` that
+// is not the operand, so no fold is made.
 
-/// Shared guard: index within the declared field count and types identical.
+/// Returns `fields[index]` when `index` is within `declaredCount`, `fields` has at least that many entries, and the
+/// field's type is `resultTy`, and otherwise a null value, meaning no fold.
 static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
                                   int64_t index, Type resultTy) {
     if (index < 0 || index >= declaredCount)
@@ -1211,18 +1176,19 @@ static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
     return f;
 }
 
+/// Folds a projection whose operand is defined directly by an `eco.construct.custom` to the projected field operand.
 OpFoldResult CustomProjectOp::fold(FoldAdaptor) {
     auto ctor = getContainer().getDefiningOp<eco::CustomConstructOp>();
     if (!ctor)
         return {};
-    // I64Attr accessors return uint64_t; cast so the guard's <0 arm catches a
-    // wrapped absurd value.
+    // The accessors return `uint64_t`; the cast lets the guard's negative test catch a wrapped value.
     return foldConstructedField(ctor.getFields(),
                                 static_cast<int64_t>(ctor.getSize()),
                                 static_cast<int64_t>(getFieldIndex()),
                                 getResult().getType());
 }
 
+/// Folds a projection whose operand is defined directly by an `eco.construct.record` to the projected field operand.
 OpFoldResult RecordProjectOp::fold(FoldAdaptor) {
     auto ctor = getRecord().getDefiningOp<eco::RecordConstructOp>();
     if (!ctor)
@@ -1233,6 +1199,7 @@ OpFoldResult RecordProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
+/// Folds a pair projection whose operand is defined directly by its construct op to the projected field operand.
 OpFoldResult Tuple2ProjectOp::fold(FoldAdaptor) {
     auto ctor = getTuple().getDefiningOp<eco::Tuple2ConstructOp>();
     if (!ctor)
@@ -1242,6 +1209,7 @@ OpFoldResult Tuple2ProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
+/// Folds a triple projection whose operand is defined directly by its construct op to the projected field operand.
 OpFoldResult Tuple3ProjectOp::fold(FoldAdaptor) {
     auto ctor = getTuple().getDefiningOp<eco::Tuple3ConstructOp>();
     if (!ctor)
@@ -1251,11 +1219,11 @@ OpFoldResult Tuple3ProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
-/// kernel-opt-10: the two list folds are gated separately because folding a
-/// list projection changes the loop shapes EcoListCursor pattern-matches, and
-/// the fold+CSE composition crashed that pass's rewrite on the self-compile
-/// module (each pass alone was clean). Default OFF; ECO_MLIR_FOLD_LIST=1 is
-/// the experiment switch. 137 static sites of the 5,131-site pool.
+/// Returns whether the list head and tail folds are on: true when `ECO_MLIR_FOLD_LIST` is set to a non-empty value
+/// other than `0`. The variable is read once per process.
+///
+/// They are off by default because folding a list projection changes the loop shapes that the EcoListCursor pass
+/// matches.
 static bool listFoldsEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_MLIR_FOLD_LIST");
@@ -1264,44 +1232,51 @@ static bool listFoldsEnabled() {
     return on;
 }
 
+/// Folds the head of a cons cell defined directly by `eco.construct.list` to its head operand, when list folds
+/// are on.
 OpFoldResult ListHeadOp::fold(FoldAdaptor) {
     if (!listFoldsEnabled())
         return {};
     auto ctor = getList().getDefiningOp<eco::ListConstructOp>();
     if (!ctor)
         return {};
-    // head_unboxed/head_kind are redundant here: type equality already implies
-    // the slot kind, because ListConstructOp derives head_kind from the head
-    // operand's SSA type.
+    // Type equality also implies the slot kind, because `ListConstructOp::verify` ties `head_kind` to the head type.
     SmallVector<Value, 1> f{ctor.getHead()};
     return foldConstructedField(f, 1, 0, getResult().getType());
 }
 
+/// Folds the tail of a cons cell defined directly by `eco.construct.list` to its tail operand, when list folds
+/// are on.
 OpFoldResult ListTailOp::fold(FoldAdaptor) {
     if (!listFoldsEnabled())
         return {};
     auto ctor = getList().getDefiningOp<eco::ListConstructOp>();
     if (!ctor)
         return {};
-    SmallVector<Value, 1> f{ctor.getTail()}; // tail is always !eco.value
+    SmallVector<Value, 1> f{ctor.getTail()};
     return foldConstructedField(f, 1, 0, getResult().getType());
 }
 
+/// Folds the tag of a custom value defined directly by an `eco.construct.custom` to that construct's `tag`,
+/// as an attribute that the fold driver turns into a constant.
 OpFoldResult GetTagOp::fold(FoldAdaptor) {
     auto ctor = getValue().getDefiningOp<eco::CustomConstructOp>();
     if (!ctor)
         return {};
-    // eco_get_tag returns Custom::ctor for Tag_Custom — the construct's tag.
-    // Returned as an attr; the driver pass materializes the arith.constant.
+    // At run time the tag of a custom object is the constructor index stored by the construct.
     return IntegerAttr::get(getResult().getType(),
                             static_cast<int64_t>(ctor.getTag()));
 }
 
 //===----------------------------------------------------------------------===//
-// Value-level Aggregate Op Verifiers (Phase 0 escape-analysis plumbing)
+// Value-level Aggregate Op Verifiers
 //===----------------------------------------------------------------------===//
+//
+// A value-level aggregate (`!eco.tuple2`, `!eco.record`, `!eco.closure_env`, ...) is an SSA value whose type lists
+// the types of its elements, not yet an object on the heap.
 
-// Helper: verify that `actual` matches the result type's element list `expected`.
+/// Checks that `actual` has the same length as `expected` and equal types in order. `label` names an element in
+/// diagnostics.
 static LogicalResult verifyAggElements(Operation *op,
                                        ArrayRef<Type> actual,
                                        ArrayRef<Type> expected,
@@ -1321,6 +1296,7 @@ static LogicalResult verifyAggElements(Operation *op,
   return success();
 }
 
+/// Checks that the operand types equal the element types of the resulting pair type.
 LogicalResult Tuple2MakeOp::verify() {
   auto resTy = cast<eco::Tuple2Type>(getResult().getType());
   Type expected[2] = { resTy.getFirst(), resTy.getSecond() };
@@ -1328,6 +1304,7 @@ LogicalResult Tuple2MakeOp::verify() {
   return verifyAggElements(getOperation(), actual, expected, "operand");
 }
 
+/// Checks that the operand types equal the element types of the resulting triple type.
 LogicalResult Tuple3MakeOp::verify() {
   auto resTy = cast<eco::Tuple3Type>(getResult().getType());
   Type expected[3] = { resTy.getFirst(), resTy.getSecond(), resTy.getThird() };
@@ -1335,6 +1312,7 @@ LogicalResult Tuple3MakeOp::verify() {
   return verifyAggElements(getOperation(), actual, expected, "operand");
 }
 
+/// Checks that the field operand types equal the field types of the resulting record type.
 LogicalResult RecordMakeOp::verify() {
   auto resTy = cast<eco::RecordType>(getResult().getType());
   SmallVector<Type, 8> actual;
@@ -1342,14 +1320,14 @@ LogicalResult RecordMakeOp::verify() {
   return verifyAggElements(getOperation(), actual, resTy.getFields(), "field");
 }
 
+/// Checks that the field operand types equal the field types of the resulting custom type, and that the tag is in
+/// 0 to 65535, the range of the 16-bit tag it will have on the heap.
 LogicalResult CustomMakeOp::verify() {
   auto resTy = cast<eco::CustomType>(getResult().getType());
   SmallVector<Type, 8> actual;
   for (Value f : getFields()) actual.push_back(f.getType());
   if (failed(verifyAggElements(getOperation(), actual, resTy.getFields(), "field")))
     return failure();
-  // tag must be non-negative; the heap encoding uses 16 bits so guard
-  // against absurd values that would silently truncate at to_heap time.
   int64_t tag = getTag();
   if (tag < 0 || tag > 0xFFFF) {
     return emitOpError("tag (") << tag << ") must fit in 16 bits";
@@ -1357,6 +1335,8 @@ LogicalResult CustomMakeOp::verify() {
   return success();
 }
 
+/// Checks that the head and tail types equal those of the resulting cons type, and that the tail type is
+/// `!eco.value`.
 LogicalResult ConsMakeOp::verify() {
   auto resTy = cast<eco::ConsType>(getResult().getType());
   if (getHead().getType() != resTy.getHead()) {
@@ -1367,7 +1347,6 @@ LogicalResult ConsMakeOp::verify() {
     return emitOpError("tail SSA type ") << getTail().getType()
            << " does not match cons tail element type " << resTy.getTail();
   }
-  // Phase 0 constraint: tail is fixed to !eco.value.
   if (!isa<eco::ValueType>(resTy.getTail())) {
     return emitOpError("cons tail element type must be !eco.value in this phase, got ")
            << resTy.getTail();
@@ -1375,10 +1354,12 @@ LogicalResult ConsMakeOp::verify() {
   return success();
 }
 
+/// Checks an `eco.list.map`: `in_kind` and `out_kind` are slot kinds, 0 to 3 (REP_HEAP_002); captures appear only
+/// with a `callee`; and a named callee is a `func.func` whose parameters are the captures' types followed by one
+/// element. The element parameter's type is not compared.
+///
+/// The callee is looked up without a symbol table cache, once per op verified.
 LogicalResult ListMapOp::verify() {
-  // 2-bit slot kinds, both axes (REP_HEAP_002). Rejecting out-of-range here
-  // is the guard against the ListOps::take kind-collapse defect class: a
-  // boolean "is boxed" smuggled in as a kind would pass silently otherwise.
   for (auto [what, kind] :
        {std::make_pair("in_kind", getInKind()),
         std::make_pair("out_kind", getOutKind())}) {
@@ -1388,18 +1369,12 @@ LogicalResult ListMapOp::verify() {
     }
   }
 
-  // Captures are only meaningful alongside a devirtualized callee: the
-  // expansion passes them positionally to that symbol (captures-then-params),
-  // and with no callee there is nothing to pass them to.
   if (!getCalleeAttr() && !getCaptures().empty()) {
     return emitOpError("captures require a callee attribute; a generic-apply "
                        "eco.list.map must have none, got ")
            << getCaptures().size();
   }
 
-  // The callee, when named, must resolve to a real function whose parameter
-  // row is exactly captures-then-one-element. Catching arity disagreement
-  // here turns a silent miscompile at a licensed site into a verifier error.
   if (auto callee = getCalleeAttr()) {
     auto fn = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
         getOperation(), callee);
@@ -1427,6 +1402,7 @@ LogicalResult ListMapOp::verify() {
   return success();
 }
 
+/// Checks that the capture operand types equal the capture types of the resulting closure environment type.
 LogicalResult ClosureEnvMakeOp::verify() {
   auto resTy = cast<eco::ClosureEnvType>(getResult().getType());
   SmallVector<Type, 8> actual;
@@ -1434,24 +1410,26 @@ LogicalResult ClosureEnvMakeOp::verify() {
   return verifyAggElements(getOperation(), actual, resTy.getCaptures(), "capture");
 }
 
+/// Checks a move of a value-level aggregate to the heap.
+///
+/// A closure environment is rejected (CGEN_062): `eco.make.closure` builds closures. The operand must be a tuple,
+/// record, custom or cons value, with no stale bitmap attribute. A record or custom value must have no more fields
+/// than its heap limit (HEAP_019), and its field types must be storable; `slot_kinds`, if given, must match them, and
+/// is only checked, because the lowering takes the kinds from the field types. Other aggregates must not carry
+/// `slot_kinds`.
 LogicalResult ToHeapOp::verify() {
-  // CGEN_062: !eco.closure_env operands are rejected; closure realisation
-  // goes through eco.make.closure.
   Type valTy = getValue().getType();
   if (isa<eco::ClosureEnvType>(valTy)) {
     return emitOpError("eco.to_heap rejects !eco.closure_env operands; use "
                        "eco.make.closure to realise heap closures (CGEN_062)");
   }
-  // The TableGen Eco_DataAggregate constraint already restricts to
-  // tuple2/3/record/custom/cons; this is just defensive belt-and-braces.
+  // The operand constraint in `Ops.td` already restricts the type to these.
   if (!isa<eco::Tuple2Type, eco::Tuple3Type, eco::RecordType,
            eco::CustomType, eco::ConsType>(valTy)) {
     return emitOpError("operand must be a data aggregate, got ") << valTy;
   }
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
-  // Record/custom: the lowering derives the heap kinds from the element
-  // types; slot_kinds (optional, 3D-D2) is a check only.
   const bool isRec = isa<eco::RecordType>(valTy);
   if (isRec || isa<eco::CustomType>(valTy)) {
     ArrayRef<Type> fields = isRec ? cast<eco::RecordType>(valTy).getFields()
@@ -1460,8 +1438,7 @@ LogicalResult ToHeapOp::verify() {
     if (fields.size() > cap)
       return emitOpError(isRec ? "record" : "custom") << " aggregate has "
              << fields.size() << " fields; limit is " << cap << " (HEAP_019)";
-    // Absent slot_kinds: check the derived kinds, i.e. only that every field
-    // type is storable (i1 boxed first, B14).
+    // Without `slot_kinds`, checking the derived kinds checks only that every field type is storable.
     SmallVector<int8_t> derived;
     for (Type t : fields) derived.push_back(static_cast<int8_t>(fieldKind(t)));
     auto ks = getSlotKinds();
@@ -1473,10 +1450,9 @@ LogicalResult ToHeapOp::verify() {
   return success();
 }
 
+/// Checks that a load of a heap object into a value-level aggregate produces a tuple, record, custom or cons value,
+/// and never a closure environment (CGEN_063).
 LogicalResult FromHeapOp::verify() {
-  // CGEN_063 mirror of CGEN_062: !eco.closure_env results are rejected;
-  // closure environments are produced by eco.make.closure_env (or read out
-  // of the closure header at lower levels), not from heap-aggregate loads.
   Type resTy = getResult().getType();
   if (isa<eco::ClosureEnvType>(resTy)) {
     return emitOpError("eco.from_heap rejects !eco.closure_env results; "
@@ -1490,12 +1466,12 @@ LogicalResult FromHeapOp::verify() {
   return success();
 }
 
+/// Checks a closure built from a closure environment: fewer captures than `arity`, both within the closure limits,
+/// and no `i1` capture (REP_CLOSURE_001).
 LogicalResult MakeClosureOp::verify() {
   auto envTy = cast<eco::ClosureEnvType>(getEnv().getType());
   int64_t numCaptures = static_cast<int64_t>(envTy.getCaptures().size());
   int64_t arity = getArity();
-  // Mirror PapCreateOp constraints: num_captured < arity, both within
-  // closure-header bit limits.
   if (numCaptures >= arity) {
     return emitOpError("env captures (") << numCaptures
            << ") must be less than arity (" << arity << ")";
@@ -1508,7 +1484,6 @@ LogicalResult MakeClosureOp::verify() {
     return emitOpError("arity (") << arity
            << ") exceeds closure arity limit (" << kClosureMaxArity << ")";
   }
-  // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary.
   for (size_t i = 0; i < envTy.getCaptures().size(); ++i) {
     Type ty = envTy.getCaptures()[i];
     if (ty.isInteger(1)) {
@@ -1524,21 +1499,20 @@ LogicalResult MakeClosureOp::verify() {
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.case %scrutinee : type [tag0, tag1, ...] -> (result_type0, ...) { attr-dict } { region0 }, { region1 }, ...
+/// Prints an `eco.case` as
+/// `eco.case %scrutinee : type [tag0, tag1, ...] -> (result_type0, ...) {attr-dict} {region0}, {region1}, ...`,
+/// with every attribute other than `tags` in the attribute dictionary.
 void CaseOp::print(OpAsmPrinter &p) {
   p << " " << getScrutinee() << " : " << getScrutinee().getType() << " [";
   llvm::interleaveComma(getTags(), p);
   p << "]";
 
-  // Print result types: -> (type0, type1, ...)
   p << " -> (";
   llvm::interleaveComma(getResultTypes(), p);
   p << ")";
 
-  // Print attr-dict (excluding "tags" which is already printed)
   p.printOptionalAttrDict((*this)->getAttrs(), {"tags"});
 
-  // Print regions
   for (Region &region : getAlternatives()) {
     p << " ";
     p.printRegion(region, /*printEntryBlockArgs=*/false,
@@ -1548,6 +1522,8 @@ void CaseOp::print(OpAsmPrinter &p) {
   }
 }
 
+/// Parses the form `CaseOp::print` writes. At least one tag is required, and one region is read per tag. An empty
+/// result list `-> ()` parses, and is then rejected by the verifier.
 ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand scrutinee;
   Type scrutineeType;
@@ -1556,7 +1532,6 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.parseType(scrutineeType))
     return failure();
 
-  // Parse [tag0, tag1, ...]
   SmallVector<int64_t> tags;
   if (parser.parseLSquare())
     return failure();
@@ -1577,12 +1552,10 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 
   result.addAttribute("tags", parser.getBuilder().getDenseI64ArrayAttr(tags));
 
-  // Parse result types: -> (type0, type1, ...)
   SmallVector<Type> resultTypes;
   if (parser.parseArrow() || parser.parseLParen())
     return failure();
 
-  // Handle empty result list case: -> ()
   if (failed(parser.parseOptionalRParen())) {
     Type firstType;
     if (parser.parseType(firstType))
@@ -1602,24 +1575,20 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 
   result.addTypes(resultTypes);
 
-  // Parse optional attr-dict
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Parse each region
   for (size_t i = 0; i < tags.size(); ++i) {
     Region *region = result.addRegion();
     if (parser.parseRegion(*region, /*arguments=*/{}, /*argTypes=*/{}))
       return failure();
 
-    // Parse optional comma between regions
     if (i < tags.size() - 1) {
       if (parser.parseComma())
         return failure();
     }
   }
 
-  // Resolve scrutinee operand with the parsed type
   if (parser.resolveOperand(scrutinee, scrutineeType, result.operands))
     return failure();
 
@@ -1630,11 +1599,13 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 // Custom Assembly Format: JoinpointOp
 //===----------------------------------------------------------------------===//
 
-// Format: eco.joinpoint id(%arg0: type0, %arg1: type1) result_types [type0, ...] { body } continuation { cont }
+/// Prints a joinpoint as
+/// `eco.joinpoint id(%arg0: type0, ...) result_types [type0, ...] {body} continuation {cont} {attr-dict}`, where the
+/// argument list is the body's entry block arguments and is left out when there are none, and `result_types` is left
+/// out when absent. The body region must not be empty.
 void JoinpointOp::print(OpAsmPrinter &p) {
   p << " " << getId();
 
-  // Print block arguments if any
   Block &bodyEntry = getBody().front();
   if (!bodyEntry.getArguments().empty()) {
     p << "(";
@@ -1644,7 +1615,6 @@ void JoinpointOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
-  // Print result_types if present
   if (auto resultTypes = getJpResultTypes()) {
     p << " result_types [";
     llvm::interleaveComma(*resultTypes, p, [&](Attribute attr) {
@@ -1664,14 +1634,13 @@ void JoinpointOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), {"id", "jpResultTypes"});
 }
 
+/// Parses the form `JoinpointOp::print` writes. The arguments become the body's entry block arguments.
 ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Parse the joinpoint id
   int64_t id;
   if (parser.parseInteger(id))
     return failure();
   result.addAttribute("id", parser.getBuilder().getI64IntegerAttr(id));
 
-  // Parse optional block arguments: (arg0: type0, arg1: type1)
   SmallVector<OpAsmParser::Argument> regionArgs;
   if (succeeded(parser.parseOptionalLParen())) {
     do {
@@ -1686,7 +1655,6 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
       return failure();
   }
 
-  // Parse optional result_types [type0, type1, ...]
   if (succeeded(parser.parseOptionalKeyword("result_types"))) {
     if (parser.parseLSquare())
       return failure();
@@ -1711,12 +1679,10 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
                         parser.getBuilder().getArrayAttr(resultTypeAttrs));
   }
 
-  // Parse body region with arguments
   Region *body = result.addRegion();
   if (parser.parseRegion(*body, regionArgs))
     return failure();
 
-  // Parse "continuation" keyword and continuation region
   if (parser.parseKeyword("continuation"))
     return failure();
 
@@ -1724,7 +1690,6 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
   if (parser.parseRegion(*continuation, /*arguments=*/{}, /*argTypes=*/{}))
     return failure();
 
-  // Parse optional attr-dict
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 

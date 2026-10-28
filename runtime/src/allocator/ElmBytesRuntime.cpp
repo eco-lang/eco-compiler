@@ -1,19 +1,3 @@
-/**
- * Byte Fusion Runtime ABI Implementation.
- *
- * This file implements the C ABI functions for the bf MLIR dialect.
- * All eco.value ↔ pointer conversions are encapsulated here.
- *
- * Layout access rules:
- * - These functions are the ONLY code allowed to access header.size and
- *   struct internals directly for Elm::ByteBuffer/Elm::ElmString.
- * - Generated MLIR/LLVM code calls these helpers instead of GEPs.
- *
- * Implementation approach:
- * - Delegates to existing runtime infrastructure where possible
- * - UTF-8 encoding/decoding logic matches BytesOps.cpp
- */
-
 #include "ElmBytesRuntime.h"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
@@ -24,7 +8,7 @@
 #include <string>
 #include <vector>
 
-// Note: Don't use `using namespace Elm;` to avoid conflict with global u64 typedef
+// Names from `Elm` are qualified in full, because the header also declares `u8` and `u32` at global scope.
 
 // ============================================================================
 // Internal Helper: eco.value ↔ pointer/Elm::HPointer conversion
@@ -32,27 +16,26 @@
 
 namespace {
 
-// Convert eco.value (uint64_t) to Elm::HPointer (bitcast)
+/// Returns the HPointer whose word is `val`.
 inline Elm::HPointer u64ToHPointer(uint64_t val) {
     Elm::HPointer hp;
     std::memcpy(&hp, &val, sizeof(hp));
     return hp;
 }
 
-// Convert Elm::HPointer to eco.value (uint64_t) (bitcast)
+/// Returns the word of `hp`.
 inline uint64_t hpointerToU64(Elm::HPointer hp) {
     uint64_t result;
     std::memcpy(&result, &hp, sizeof(result));
     return result;
 }
 
-// Convert eco.value (uint64_t) to raw pointer
-// For heap objects (constant=0), resolves via Elm::Allocator
-// For embedded constants (constant!=0), returns nullptr
+/// Returns the heap object the word `val` refers to, or null when `val` is an embedded constant
+/// (`ptr_ind` set). The null word 0 is not a constant and is passed to `resolve`.
 inline void* u64ToPtr(uint64_t val) {
     Elm::HPointer hp = u64ToHPointer(val);
     if (hp.ptr_ind != 0) {
-        return nullptr;  // Embedded constant has no heap object
+        return nullptr;
     }
     return Elm::Allocator::instance().resolve(hp);
 }
@@ -66,11 +49,6 @@ inline void* u64ToPtr(uint64_t val) {
 extern "C" {
 
 HPtr elm_alloc_bytebuffer(u32 byteCount) {
-    // Use the LOT-aware blank-buffer helper: payloads at/over the
-    // threshold route through the split-header path (pinned old-gen body),
-    // sub-LOT stays inline in nursery. Without this, the fast-path inline
-    // allocation skipped LOT routing and oversized buffers were evacuated
-    // by every minor GC until promoted.
     Elm::alloc::BlankByteBuffer bb = Elm::alloc::allocByteBufferBlank(byteCount);
     return Elm::HPtr::fromBits(hpointerToU64(bb.hp));
 }
@@ -78,17 +56,13 @@ HPtr elm_alloc_bytebuffer(u32 byteCount) {
 u32 elm_bytebuffer_len(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return 0;
-    // byteBufferLength handles all three forms (flat / large-header / slice);
-    // resolveByteBufferBody deliberately asserts on a Tag_ByteBufferSlice, so a
-    // slice argument (e.g. Bytes.width of a Bytes.Decode.bytes result) aborted.
+    // Not `resolveByteBufferBody`, which asserts on a slice.
     return static_cast<u32>(Elm::alloc::byteBufferLength(ptr));
 }
 
 u8* elm_bytebuffer_data(HPtr bbVal) {
     void* ptr = u64ToPtr(bbVal.toBits());
     if (!ptr) return nullptr;
-    // Slice form needs to advance past the slice's `offset`; byteBufferData
-    // handles flat / large-header / slice transparently.
     return const_cast<u8*>(Elm::alloc::byteBufferData(ptr));
 }
 
@@ -100,8 +74,6 @@ void elm_bytebuffer_with_data(HPtr bbVal, elm_bytebuffer_callback fn, void* ctx)
         return;
     }
     auto v = Elm::alloc::byteBufferView(ptr);
-    // Callback is documented not to allocate on the Elm heap, so the view's
-    // data pointer is stable for the duration of this call.
     fn(v.data, static_cast<u32>(v.length), ctx);
 }
 
@@ -124,19 +96,18 @@ void elm_bytebuffer_builder_end(HPtr bbVal) {
 u32 elm_utf8_width(HPtr strVal) {
     Elm::HPointer hp = u64ToHPointer(strVal.toBits());
     if (Elm::alloc::isEmptyString(hp)) {
-        return 0;  // Empty string constant
+        return 0;
     }
 
     void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;
 
-    // UTF-8 (ASCII) forms: byte width == logical length. O(1).
+    // A UTF-8 form holds only ASCII, so its length in units is its width in bytes.
     if (Elm::StringOps::isUtf8(ptr)) {
         return static_cast<u32>(Elm::StringOps::length(ptr));
     }
 
-    // Materialise contiguous UTF-16 via StringOps; this transparently handles
-    // both flat leaves and slices so we don't need to read s->chars directly.
+    // Copied out to C++ memory so that every UTF-16 form (leaf, slice, rope) is read the same way.
     auto buf = Elm::StringOps::toStdU16String(ptr);
     size_t len = buf.size();
     if (len == 0) return 0;
@@ -181,7 +152,7 @@ u32 elm_utf8_copy(HPtr strVal, u8* dst) {
     void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;
 
-    // UTF-8 (ASCII) forms: bytes are already the UTF-8 encoding — copy direct.
+    // A UTF-8 form holds only ASCII, which is already its UTF-8 encoding.
     if (Elm::StringOps::isUtf8(ptr)) {
         auto pr = Elm::StringOps::utf8Bytes(ptr);
         std::memcpy(dst, pr.first, pr.second);
@@ -235,9 +206,8 @@ HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len) {
         return Elm::HPtr::fromBits(hpointerToU64(empty));
     }
 
-    // Pass 1: validate UTF-8 and count UTF-16 code units. `src` points into
-    // the buffer's body, which is Elm heap memory: it stays valid only until
-    // the allocation below.
+    // Pass 1 validates and counts UTF-16 units. `src` may point into a nursery buffer, so it is valid only
+    // until the allocation below.
     const u8* src = elm_bytebuffer_data(buffer) + offset;
     size_t units = 0;
     for (u32 i = 0; i < len; ) {
@@ -274,10 +244,9 @@ HPtr elm_utf8_decode(HPtr buffer, u32 offset, u32 len) {
         }
     }
 
-    // Pass 2: allocate ElmString of exact size and decode directly into
-    // chars[]. The allocation may run a GC that moves the buffer (a nursery
-    // ByteBuffer under the large-object threshold), so the buffer is rooted
-    // across it and `src` is re-derived afterwards (BFOPS_039).
+    // Pass 2 decodes straight into the new String. The allocation may move a nursery buffer, so the buffer is
+    // rooted across it and `src` is found again afterwards. The bytes were validated by pass 1, so this pass
+    // checks nothing.
     Elm::HPointer bufHp = u64ToHPointer(buffer.toBits());
     Elm::alloc::BlankString bs;
     {
@@ -323,19 +292,12 @@ HPtr elm_maybe_nothing() {
 }
 
 HPtr elm_maybe_just(HPtr value) {
-    // The value is already an eco.value (HPtr)
-    // We need to wrap it in a Just
-    // Elm::alloc::just expects an Elm::Unboxable and a boolean indicating if it's boxed
-
-    // Convert HPtr back to Elm::HPointer representation for storage in the Custom type
     Elm::HPointer hp = u64ToHPointer(value.toBits());
 
-    // For embedded constants, we store the constant directly
-    // For real pointers, we store the Elm::HPointer
     Elm::Unboxable wrapped;
     wrapped.p = hp;
 
-    Elm::HPointer justVal = Elm::alloc::just(wrapped, true);  // true = value is boxed (heap ptr)
+    Elm::HPointer justVal = Elm::alloc::just(wrapped, true);  // true: boxed
     return Elm::HPtr::fromBits(hpointerToU64(justVal));
 }
 
@@ -346,7 +308,6 @@ HPtr elm_maybe_just(HPtr value) {
 HPtr elm_list_reverse(HPtr listVal) {
     Elm::HPointer list = u64ToHPointer(listVal.toBits());
 
-    // Delegate to ListOps::reverse
     Elm::HPointer reversed = Elm::ListOps::reverse(list);
 
     return Elm::HPtr::fromBits(hpointerToU64(reversed));

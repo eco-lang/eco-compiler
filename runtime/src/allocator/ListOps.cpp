@@ -1,7 +1,3 @@
-/**
- * List Operations Implementation.
- */
-
 #include "ListOps.hpp"
 #include <algorithm>
 #include <numeric>
@@ -11,14 +7,15 @@ namespace ListOps {
 
 namespace {
 
-// Length + element-kind uniformity of a hybrid spine, in one non-allocating
-// walk. `kind` is meaningful only when `uniform` and n > 0.
+// The element count of a list and whether every element has the same slot kind. `kind` is that kind,
+// meaningful only when `uniform` is true and `n` is not 0.
 struct SpineShape {
     u32 n = 0;
     bool uniform = true;
     u8 kind = 0;
 };
 
+// Returns the shape of `list`, in one walk that does not allocate.
 SpineShape probeShape(HPointer list) {
     SpineShape s;
     bool first = true;
@@ -35,15 +32,15 @@ SpineShape probeShape(HPointer list) {
     return s;
 }
 
-// A kind-uniform, non-tiny batch becomes a chunk chain when chunks are
-// enabled. Over-cap batches split across ⌈n/max⌉ nursery-born backings
-// (alloc::listChunkChain), preserving the §2.2 nursery-born invariant.
+// Returns whether a result of shape `s` is built as a chunk chain: chunked lists are enabled, the
+// elements share one kind, there are at least 4 of them, and `alloc::chunkChainFits` allows. This is the
+// rule `alloc::listFromUnboxables` applies.
 bool chunkEligible(const SpineShape& s) {
     return eco_g_list_chunks && s.uniform && s.n >= 4 && alloc::chunkChainFits(s.n);
 }
 
-// Backing pointer of a freshly built view, re-resolved AFTER the view
-// allocation (the caller's raw backing pointer may be stale by then).
+// Returns the backing of the chunk view `view`, resolved now. A raw backing pointer taken before the view
+// was allocated may be stale. Nothing in this file calls it.
 ListBacking* resolveViewBacking(HPointer view) {
     auto& allocator = Allocator::instance();
     return static_cast<ListBacking*>(allocator.resolve(
@@ -53,7 +50,6 @@ ListBacking* resolveViewBacking(HPointer view) {
 } // namespace
 
 HPointer head(HPointer list) {
-    // Hybrid spines: the first element may live in a chunk view's backing.
     alloc::ListCursor c(list);
     if (c.done()) {
         return alloc::nothing();
@@ -70,8 +66,6 @@ HPointer tail(HPointer list) {
     void* cell = allocator.resolve(list);
     if (!cell) return alloc::nothing();
 
-    // Hybrid spines: listTailOf handles both Cons cells (pure load) and
-    // chunk views (materializes the successor view — allocating).
     return alloc::just(alloc::boxed(alloc::listTailOf(list)), true);
 }
 
@@ -105,14 +99,9 @@ HPointer last(HPointer list) {
 HPointer map(MapperWithBoxed mapper, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Collect mapped values. The spine, each iteration's head, AND the boxed
-    // mapper results accumulated in `mapped` all cross later mapper callbacks
-    // (which can GC), so all of them must be rooted. `mapped` roots every
-    // boxed result with ONE shadow-stack record however long the list
-    // (alloc::RootedElems, plans/kernel-root-stack-bounded-rooting.md).
+    // The spine, the current element and the results collected so far all cross later mapper calls, which
+    // may collect. `mapped` roots its boxed results with one shadow-stack record however long the list.
     alloc::RootedElems mapped(static_cast<size_t>(length(list)));
-    // RootedListCursor walks hybrid spines (cells + chunk views) and
-    // re-resolves after every callback, so the mapper may GC freely.
     alloc::RootedListCursor cursor(list);
     Unboxable head;
     u8 head_kind;
@@ -135,7 +124,7 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
 HPointer indexedMap(IndexedMapper mapper, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Collect mapped values. See `map` for the rooting rationale.
+    // Rooted as in `map`.
     alloc::RootedElems mapped(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -161,10 +150,7 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
 HPointer filter(Predicate pred, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Collect passing elements. Spine, per-iteration head, AND the
-    // accumulated boxed heads in `passing` must be rooted across pred()
-    // (which can run user code that allocates); `passing` roots them with
-    // one record (see `map`).
+    // Rooted as in `map`.
     alloc::RootedElems passing(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -192,9 +178,7 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect non-Nothing results. mapper() may GC; spine and head must be
-    // rooted across it — and so must the boxed just-values already
-    // accumulated in `results` (one record, see `map`).
+    // Rooted as in `map`.
     alloc::RootedElems results(static_cast<size_t>(length(list)));
     alloc::RootedListCursor cursor(list);
     Unboxable head;
@@ -209,14 +193,12 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
             maybeResult = mapper(head, is_boxed);
         }
 
-        // Check if it's Just (not Nothing). maybeResult is fresh from mapper
-        // and not held across any further allocation in this branch.
+        // `maybeResult` is fresh from `mapper`, and nothing below allocates before its value is copied out.
         if (!alloc::isConstant(maybeResult)) {
             void* justCell = allocator.resolve(maybeResult);
             if (justCell) {
                 Custom* just = static_cast<Custom*>(justCell);
                 if (just->header.tag == Tag_Custom && just->ctor == 0) {
-                    // It's Just - extract the value; slot 0 kind 0 means boxed.
                     u8 val_kind = static_cast<u8>(fieldKind(just->unboxed, 0));
                     results.push(just->values[0], val_kind);
                 }
@@ -233,14 +215,12 @@ HPointer append(HPointer a, HPointer b) {
     if (alloc::isNil(a)) return b;
     if (alloc::isNil(b)) return a;
 
-    // The probe walk is chunks-only so flag-off `++` keeps its single pass.
+    // The shape probe is an extra walk of `a`, made only when chunked lists are enabled.
     if (eco_g_list_chunks) {
         SpineShape s = probeShape(a);
         if (chunkEligible(s)) {
-            // Count-first direct fill (see reverse). The views' lens must be
-            // TOTAL logical lengths (len-consistency invariant), so b's
-            // length is probed inside listChunkChain — the vector path paid
-            // the same walk inside listFromUnboxables.
+            // Allocate the whole chain first, then fill it without allocating, as in `reverse`.
+            // `listChunkChain` walks `b` to give each view its length to the end of the list.
             StackRootGuard guard(&a, &b);
             HPointer head = alloc::listChunkChain(s.n, s.kind, b);
             alloc::ListChainWriter w(head);
@@ -252,8 +232,7 @@ HPointer append(HPointer a, HPointer b) {
         }
     }
 
-    // Small, mixed-kind, or chunks-off: collect a's prefix and build cells
-    // back-to-front (n cells — a reverse-then-recons pass would pay 2n).
+    // Otherwise copy `a`'s elements out and build cons cells back to front onto `b`.
     std::vector<std::pair<Unboxable, u8>> elements;
     for (alloc::ListCursor c(a); !c.done(); c.next()) {
         elements.emplace_back(c.current(), c.currentKind());
@@ -265,9 +244,8 @@ HPointer append(HPointer a, HPointer b) {
 HPointer concat(HPointer listOfLists) {
     if (alloc::isNil(listOfLists)) return alloc::listNil();
 
-    // Chunks: probe every inner list in one non-allocating nested walk, then
-    // fill an exact-size backing directly (no vector, no per-element roots).
-    // The probe is chunks-only so the flag-off path keeps its single pass.
+    // With chunked lists enabled, probe every inner list without allocating, then allocate the whole
+    // chain and fill it straight from the inner lists.
     if (eco_g_list_chunks) {
         SpineShape s;
         bool first = true;
@@ -303,8 +281,6 @@ HPointer concat(HPointer listOfLists) {
         }
     }
 
-    // Flatten all elements (non-allocating nested walks over hybrid spines;
-    // outer elements are lists, i.e. always boxed).
     std::vector<std::pair<Unboxable, u8>> allElements;
     for (alloc::ListCursor outer(listOfLists); !outer.done(); outer.next()) {
         for (alloc::ListCursor inner(outer.current().p); !inner.done();
@@ -321,17 +297,15 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect elements (non-allocating walk over hybrid spines).
     std::vector<std::pair<Unboxable, u8>> elements;
     for (alloc::ListCursor c(list); !c.done(); c.next()) {
         elements.emplace_back(c.current(), c.currentKind());
     }
 
     if (elements.size() <= 1) {
-        return list;  // Nothing to intersperse
+        return list;
     }
 
-    // Expand with separators interleaved
     std::vector<std::pair<Unboxable, u8>> expanded;
     expanded.reserve(elements.size() * 2 - 1);
     for (size_t i = 0; i < elements.size(); ++i) {
@@ -347,7 +321,6 @@ HPointer take(i64 n, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect first n elements (non-allocating walk over hybrid spines).
     std::vector<std::pair<Unboxable, u8>> elements;
     i64 count = 0;
     for (alloc::ListCursor c(list); !c.done() && count < n; c.next(), ++count) {
@@ -365,8 +338,6 @@ HPointer drop(i64 n, HPointer list) {
     HPointer current = list;
     i64 remaining = n;
 
-    // O(spine-nodes) rather than O(n): a chunk view skips its whole run at
-    // once; a mid-run drop materializes ONE successor view (plan §9.3).
     while (remaining > 0 && !alloc::isNil(current) && current.ptr_ind == 0) {
         void* node = allocator.resolve(current);
         if (!node) return alloc::listNil();
@@ -385,8 +356,8 @@ HPointer drop(i64 n, HPointer list) {
                 current = cv->next;
             } else {
                 u32 k = static_cast<u32>(remaining);
-                // Fields are copied by value before the allocation and
-                // consChunkView roots its HPointer args — GC-safe.
+                // The fields are passed by value, read before the allocation, and `consChunkView` roots
+                // its HPointer arguments.
                 return alloc::consChunkView(cv->backing, cv->offset + k,
                                             cv->len - k, cv->next,
                                             static_cast<u8>(hdr->unboxed & 0x3));
@@ -405,8 +376,7 @@ HPointer partition(Predicate pred, HPointer list) {
                              alloc::boxed(alloc::listNil()), 0);
     }
 
-    // Accumulated boxed heads in passing/failing cross later pred() GC
-    // points; each buffer roots them with one record (see `map`).
+    // Rooted as in `map`, with one record per buffer.
     const size_t listLen = static_cast<size_t>(length(list));
     alloc::RootedElems passing(listLen);
     alloc::RootedElems failing(listLen);
@@ -442,11 +412,8 @@ HPointer partition(Predicate pred, HPointer list) {
 
 Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
     Unboxable result = acc;
-    // RootedListCursor keeps the spine rooted and re-resolves across fold
-    // callbacks (hybrid spines). The accumulator type is erased through
-    // Unboxable so we can't tell here whether result.p is a real pointer —
-    // leave it to callers that need it (foldl over a boxed accumulator
-    // should root the slot at the caller).
+    // The accumulator is not rooted: as an `Unboxable` with no kind, nothing here says whether it is a
+    // pointer.
     alloc::RootedListCursor cursor(list);
     Unboxable head;
     u8 head_kind;
@@ -465,12 +432,9 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
 }
 
 Unboxable foldr(Folder fold, Unboxable acc, HPointer list) {
-    // Backward-cursor walk (plan §6): collect spine NODES (chunk runs
-    // collapse to one entry) instead of copying every element, root them as
-    // contiguous ranges, and re-read each element fresh right before its
-    // callback — fold callbacks may allocate and GC freely. The accumulator
-    // is type-erased and consumed/overwritten at each call, so it needs no
-    // root here (see foldl's rationale).
+    // The cursor records the spine nodes, one per cons cell or chunk view, and they are rooted as one range,
+    // so `fold` may allocate. Each element is read again just before its call. Unlike `foldl`, the element
+    // itself is not rooted while `fold` runs. The accumulator is not rooted, as in `foldl`.
     alloc::ListBackwardCursor c(list);
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
@@ -491,13 +455,11 @@ HPointer reverse(HPointer list) {
     if (alloc::isNil(list)) return list;
 
     SpineShape s = probeShape(list);
-    if (s.n <= 1) return list;  // lists are immutable; sharing is safe
+    if (s.n <= 1) return list;
 
     if (chunkEligible(s)) {
-        // Count-first: exact-size chunk chain, then fill straight from a
-        // forward source walk writing last-slot-first — no vector, no
-        // per-element rooting. All allocations happen before the fill, so
-        // the writer's raw pointers cannot go stale.
+        // Allocate the whole chain, then fill it from a forward walk of `list`, last slot first. Nothing
+        // allocates during the fill, so the writer's raw pointers stay valid.
         StackRootGuard guard(&list);
         HPointer head = alloc::listChunkChain(s.n, s.kind, alloc::listNil());
         alloc::ListChainReverseWriter w(head, s.n);
@@ -508,8 +470,7 @@ HPointer reverse(HPointer list) {
         return head;
     }
 
-    // Small or mixed-kind: plain cons accumulation (exactly what the
-    // Elm-level `foldl cons []` compiled to).
+    // Otherwise cons each element onto the result, which reverses the order.
     HPointer result = alloc::listNil();
     StackRootGuard guard(&result);
     alloc::RootedListCursor c(list);
@@ -525,25 +486,19 @@ HPointer reverse(HPointer list) {
 HPointer sort(HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Collect elements (assumes integers for now)
     auto elements = toIntVector(list);
 
-    // Sort
     std::sort(elements.begin(), elements.end());
 
-    // Build result list
     return alloc::listFromInts(elements);
 }
 
 HPointer sortBy(KeyExtractor keyFn, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Root every boxed head for the duration of the key extractions: keyFn
-    // runs user code that can GC and move the snapshotted heads. One record
-    // roots them all (alloc::RootedElems). Sort indices (scalars) rather
-    // than the entries themselves so no boxed value ever passes through
-    // std::sort's unrooted temporaries; the rooted slots are re-read
-    // (post-GC-fixup) per comparison.
+    // `keyFn` may collect, so the elements are held rooted in `elements` and the sort permutes indices
+    // into it. Sorting the values themselves would leave boxed values in std::sort's temporaries, which
+    // the collector cannot see. Each comparison reads the rooted slots afresh.
     alloc::RootedElems elements;
     for (const auto& [val, kind] : toVector(list)) elements.push(val, kind);
 
@@ -552,8 +507,8 @@ HPointer sortBy(KeyExtractor keyFn, HPointer list) {
     std::sort(indices.begin(), indices.end(),
               [&](size_t ia, size_t ib) {
                   i64 ka = keyFn(elements.get(ia), elements.kind(ia) == 0);
-                  // b's entry is read only after a's key extraction — a GC
-                  // there updates the rooted slots in place.
+                  // `ib`'s element is read after `ka` is computed, so it is current even if that call
+                  // collected.
                   i64 kb = keyFn(elements.get(ib), elements.kind(ib) == 0);
                   return ka < kb;
               });
@@ -566,9 +521,7 @@ HPointer sortBy(KeyExtractor keyFn, HPointer list) {
 HPointer sortWith(Comparator cmp, HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    // Same discipline as sortBy: root the boxed heads (one record) and sort
-    // indices so no boxed value crosses the comparator's GC points via
-    // std::sort's unrooted temporaries.
+    // Rooted and sorted by index, as in `sortBy`.
     alloc::RootedElems elements;
     for (const auto& [val, kind] : toVector(list)) elements.push(val, kind);
 
@@ -618,8 +571,7 @@ HPointer map2(HPointer listA, HPointer listB) {
 
     auto& allocator = Allocator::instance();
 
-    // Phase 1: collect raw values (no allocation)
-    // Store 2-bit kinds (0=boxed, 1=Int, 2=Float, 3=Char) from source cons headers.
+    // Copy the elements and their slot kinds out without allocating.
     struct RawPair { Unboxable a; u8 a_kind; Unboxable b; u8 b_kind; };
     std::vector<RawPair> raw;
     {
@@ -635,10 +587,7 @@ HPointer map2(HPointer listA, HPointer listB) {
 
     if (raw.empty()) return alloc::listNil();
 
-    // Phase 2: build tuples and list. The boxed inputs are rooted with ONE
-    // record per column (alloc::RootedElems,
-    // plans/kernel-root-stack-bounded-rooting.md) and re-read after every
-    // allocation.
+    // Root each column with one record, and read each value back after the allocations before it.
     alloc::RootedElems as(raw.size());
     alloc::RootedElems bs(raw.size());
     for (const auto& r : raw) {
@@ -649,7 +598,6 @@ HPointer map2(HPointer listA, HPointer listB) {
     Elm::StackRootGuard result_guard(&result);
 
     for (size_t i = raw.size(); i > 0; --i) {
-        // 2-bit-per-slot bitmap: set each field's kind in its 2-bit slot.
         u32 mask = static_cast<u32>(bitmapSetKind(0, 0, as.kind(i - 1)));
         mask = static_cast<u32>(bitmapSetKind(mask, 1, bs.kind(i - 1)));
         HPointer tuple = alloc::tuple2(as.get(i - 1), bs.get(i - 1), mask);
@@ -666,8 +614,7 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
 
     auto& allocator = Allocator::instance();
 
-    // Phase 1: collect raw values (no allocation)
-    // Store 2-bit kinds (0=boxed, 1=Int, 2=Float, 3=Char) from source cons headers.
+    // Copy the elements and their slot kinds out without allocating.
     struct RawTriple {
         Unboxable a; u8 a_kind;
         Unboxable b; u8 b_kind;
@@ -690,7 +637,7 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
 
     if (raw.empty()) return alloc::listNil();
 
-    // Phase 2: build tuples and list (one root record per column, see map2).
+    // Rooted as in `map2`.
     alloc::RootedElems as(raw.size());
     alloc::RootedElems bs(raw.size());
     alloc::RootedElems cs(raw.size());
@@ -703,7 +650,6 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
     Elm::StackRootGuard result_guard(&result);
 
     for (size_t i = raw.size(); i > 0; --i) {
-        // 2-bit-per-slot bitmap: set each field's kind in its 2-bit slot.
         u32 mask = static_cast<u32>(bitmapSetKind(0, 0, as.kind(i - 1)));
         mask = static_cast<u32>(bitmapSetKind(mask, 1, bs.kind(i - 1)));
         mask = static_cast<u32>(bitmapSetKind(mask, 2, cs.kind(i - 1)));
@@ -721,9 +667,7 @@ HPointer unzip(HPointer listOfPairs) {
     }
 
     auto& allocator = Allocator::instance();
-    // Both columns are rooted (one record each) before either list is
-    // built: building the first list allocates, and the second column's
-    // boxed values must survive that.
+    // Both columns are rooted before either list is built, because building the first allocates.
     alloc::RootedElems firsts;
     alloc::RootedElems seconds;
 

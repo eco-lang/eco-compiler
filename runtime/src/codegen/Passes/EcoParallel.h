@@ -1,11 +1,15 @@
 //===- EcoParallel.h - Chunked parallel loops over the MLIR thread pool ---===//
 //
-// mlir::parallelForEach / parallelFor set up a ParallelDiagnosticHandler and
-// take its order-ID mutex twice PER ELEMENT. Over the ~75k functions of a
-// self-compile that mutex serializes the pool (plan 07 §0: 14 of 24 threads
-// blocked in CapHoistPlan). forEachChunk hands out at most 8 x threads
-// contiguous chunks instead, so the per-element cost is one function call.
-// Diagnostics keep their total order: by chunk, then sequentially inside it.
+// Passes that visit every function of a large module want to do it in parallel,
+// but `mlir::parallelFor` and `mlir::parallelForEach` are costly per element:
+// they install a `ParallelDiagnosticHandler`, which takes an order-ID mutex
+// twice for each element so that diagnostics come out in index order. With tens
+// of thousands of elements that mutex serializes the pool.
+//
+// `forEachChunk` therefore splits the index range into a bounded number of
+// contiguous chunks and runs `mlir::parallelFor` over the chunks, so the mutex
+// is taken per chunk rather than per element. Diagnostics stay ordered: by
+// chunk, then in index order within a chunk, as the callback emits them.
 //
 //===----------------------------------------------------------------------===//
 #ifndef ECO_PASSES_ECOPARALLEL_H
@@ -19,9 +23,18 @@
 
 namespace eco {
 
-/// Run fn(lo, hi) over [0, n) in contiguous chunks, in parallel on the
-/// context's thread pool; serially as fn(0, n) when threading is off or the
-/// range is small. fn must only touch state owned by its indices.
+/// Calls `fn(lo, hi)` for contiguous half-open ranges that together cover
+/// `[0, n)` exactly once, in parallel on `ctx`'s thread pool.
+///
+/// The number of chunks is `ceil(n / minPerChunk)`, capped at 8 times the
+/// context's thread count. When multithreading is disabled on `ctx`, or the
+/// chunk count is 1 (`n <= minPerChunk`), `fn(0, n)` is called once on the
+/// calling thread. Nothing is called when `n` is 0. `minPerChunk` must not be
+/// 0.
+///
+/// Calls may run concurrently on different threads, so `fn` must touch only
+/// state owned by the indices it is given. The call returns after every chunk
+/// has finished. `fn` is captured by reference and not kept after the call.
 template <typename Fn>
 void forEachChunk(mlir::MLIRContext *ctx, size_t n, Fn &&fn,
                   size_t minPerChunk = 16) {

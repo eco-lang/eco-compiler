@@ -1,25 +1,16 @@
-/* PermanentSpace + eco_caf_promote — see PermanentSpace.hpp and
- * plans/caf-permanent-space.md.
- *
- * The deep copier mirrors OldGenSpace::markChildren's per-tag child
- * enumeration exactly (same masks, same caps, same decode via
- * fromPointerRaw). Two-phase for abort-safety:
- *
- *   phase 1  traverse + screen — ANY unsupported tag declines the whole
- *            promotion BEFORE anything is allocated (slot stays rooted,
- *            value stays heap-resident; soundness never depends on copier
- *            completeness).
- *   phase 2a allocate + memcpy every object, build the old→new map.
- *   phase 2b rewrite pointer fields in the copies through the map. The
- *            rewrite gate is identical to the traversal gate, so every
- *            lookup must hit; a miss (bug) or phase-2a OOM abandons the
- *            copied bytes (unreachable, counted) and returns the original.
- *
- * No managed-heap allocation, no Elm callbacks, no GC triggers anywhere in
- * promote — it runs between two straight-line points of the memo guard
- * with no safepoint, so raw traversal of the (rooted, completed, immutable)
- * result graph is safe.
- */
+// `eco_caf_promote` copies a value graph in two phases, so that giving up never leaves anything
+// reachable half-done.
+//
+// Phase 1 walks the graph from the root with `visitHeapChildren`, following every child slot that holds
+// a heap pointer, and records each object once. It allocates nothing. Any object it cannot copy (a large
+// String or Bytes header, whose body is not a heap object, or a tag the walk declines) refuses the whole
+// value, which then stays on the heap and is rooted.
+//
+// Phase 2a allocates a permanent block for each recorded object, copies the object into it, and records
+// the original-to-copy map. Phase 2b walks each copy with the same filter as phase 1 and rewrites each
+// heap pointer to the copy of its target. Because the filters agree, every target is in the map; a miss,
+// or running out of permanent space in phase 2a, abandons the copies already made. They are unreachable,
+// so they are only counted.
 
 #include "PermanentSpace.hpp"
 #include "HeapChildWalk.hpp"
@@ -38,8 +29,10 @@
 
 namespace Elm {
 
-static constexpr std::size_t kPermanentReserve = 8ull << 30;   // 8 GiB VA
-static constexpr std::size_t kPermanentCommitStep = 16ull << 20; // 16 MiB
+/// The size of the permanent space's address reservation: 8 GiB, the most it can ever hold.
+static constexpr std::size_t kPermanentReserve = 8ull << 30;
+/// How much of the reservation `allocate` commits at a time when it needs more: 16 MiB.
+static constexpr std::size_t kPermanentCommitStep = 16ull << 20;
 
 PermanentSpace &PermanentSpace::instance() {
     static PermanentSpace s;
@@ -49,10 +42,8 @@ PermanentSpace &PermanentSpace::instance() {
 bool PermanentSpace::ensureReservedLocked() {
     if (base_.load(std::memory_order_relaxed) != nullptr)
         return true;
-    // Below the HPointer address limit, like the heap itself (raw-address
-    // HPointer words, bits [3,43)). A non-FIXED reservation cannot overlap
-    // the existing heap mapping, so isInHeap stays false for every
-    // permanent address by construction.
+    // Below the HPointer address limit, so a permanent address fits an HPointer word. The reservation is
+    // not at a fixed address, so it cannot overlap the heap's mapping, which keeps isInHeap false for it.
     void *p = Elm::platform::reserveAddressSpaceBelow(kPermanentReserve,
                                                       HPOINTER_ADDRESS_LIMIT);
     if (p == nullptr)
@@ -92,8 +83,6 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
                                          std::uint64_t *slot) {
     using namespace Elm;
 
-    // DEFAULT-ON (Run Z: −5.0 % wall, majors 9→8); ECO_CAF_PERMANENT=0 is
-    // the escape hatch, mirroring ECO_CAF_MEMO.
     static const bool enabled = [] {
         const char *e = std::getenv("ECO_CAF_PERMANENT");
         return e == nullptr || e[0] != '0';
@@ -102,18 +91,13 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
     Allocator &alloc = Allocator::instance();
     PermanentSpace &perm = PermanentSpace::instance();
 
-    // Slots are NOT pre-registered as GC roots (createGlobalRootInitFunction
-    // skips __eco_caf$ globals). This hook is the sole registration point:
-    // root exactly when the stored value stays heap-resident. The slot still
-    // holds 0 at registration time — a registered-but-zero slot is scan-inert,
-    // and the caller's store lands before any subsequent safepoint.
+    // Roots the slot, for a value that stays on the heap.
     const auto rootSlot = [&] {
         alloc.getRootSet().addJitRoot(slot);
         perm.stats.slots_rooted++;
     };
 
-    // Constants and non-heap addresses (statics, already-permanent) are
-    // GC-inert forever: no copy, no root, in EITHER mode.
+    // Embedded constants are never rooted, in either mode.
     if (isConstantBits(bits)) {
         perm.stats.values_constant++;
         return bits;
@@ -130,7 +114,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         return bits;
     }
 
-    // ---- phase 1: traverse + screen (allocates nothing) ----
+    // Phase 1: record the graph, allocating nothing.
     std::vector<void *> order;
     std::unordered_set<void *> visited;
     std::vector<void *> work;
@@ -141,9 +125,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         void *o = work.back();
         work.pop_back();
         order.push_back(o);
-        // plans/large-object-space.md D4 (HEAP_081): a large String/Bytes has a
-        // header-less body that is not a heap object; such values stay
-        // heap-resident (declined) rather than copied object by object.
+        // A large String or Bytes body has no header and is not a heap object, so it cannot be copied.
         {
             const u32 t = static_cast<Header *>(o)->tag;
             if (t == Tag_LargeStringHeader || t == Tag_LargeByteHeader) {
@@ -153,7 +135,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         }
         supported = visitHeapChildren(o, [&](HPointer &hp) {
             if (hp.ptr_ind != 0 || hp.ptr == 0)
-                return; // constant or null (e.g. unfilled capture slot)
+                return; // constant or null
             void *c = alloc.resolve(hp);
             if (c == nullptr || !alloc.isInHeap(c))
                 return;
@@ -163,11 +145,11 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
     }
     if (!supported) {
         perm.stats.values_declined++;
-        rootSlot(); // value stays heap-resident
+        rootSlot();
         return bits;
     }
 
-    // ---- phase 2a: allocate + copy, build the forwarding map ----
+    // Phase 2a: copy each object and map original to copy.
     std::unordered_map<void *, void *> map;
     map.reserve(order.size() * 2);
     std::size_t total = 0;
@@ -177,7 +159,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         if (c == nullptr) {
             perm.stats.values_declined++;
             perm.stats.bytes_abandoned += total;
-            rootSlot(); // value stays heap-resident
+            rootSlot();
             return bits;
         }
         std::memcpy(c, o, sz);
@@ -185,19 +167,19 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
         total += sz;
     }
 
-    // ---- phase 2b: rewrite pointer fields in the copies ----
+    // Phase 2b: point the copies at each other.
     bool fixed = true;
     for (void *o : order) {
         void *c = map[o];
         bool r = visitHeapChildren(c, [&](HPointer &hp) {
             if (!fixed || hp.ptr_ind != 0 || hp.ptr == 0)
-                return; // constant or null — copied verbatim
+                return; // constant or null, kept as copied
             void *t = alloc.resolve(hp);
             if (t == nullptr || !alloc.isInHeap(t))
                 return;
             auto it = map.find(t);
             if (it == map.end()) {
-                fixed = false; // gate mismatch — must not happen
+                fixed = false; // the filter differs from phase 1's
                 return;
             }
             hp = hpFromBits(reinterpret_cast<std::uint64_t>(it->second));
@@ -210,7 +192,7 @@ extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits,
     if (!fixed) {
         perm.stats.values_declined++;
         perm.stats.bytes_abandoned += total;
-        rootSlot(); // value stays heap-resident
+        rootSlot();
         return bits;
     }
 

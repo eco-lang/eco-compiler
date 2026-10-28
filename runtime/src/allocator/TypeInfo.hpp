@@ -1,57 +1,33 @@
-/**
- * Type Graph Structures for Elm Runtime Debug Printing.
- *
- * This file defines type descriptor structures used by eco.dbg to pretty-print
- * Elm values with full type information. The type graph is built at compile time
- * and emitted as LLVM globals via the eco.type_table op.
- *
- * The runtime accesses __eco_type_graph to look up type descriptors by type_id,
- * enabling it to print nested structures like List { inner = { a = 1, b = 2.0 } }
- * without requiring per-object type metadata on the heap.
- *
- * ## Value Representation for Debug Printing
- *
- * There are two distinct contexts where values are interpreted:
- *
- * ### 1. eco_dbg_print_typed ABI (dbg boundary)
- *
- * All values in the `values[]` array passed to eco_dbg_print_typed are
- * HPointer-encoded (boxed !eco.value from MLIR):
- *   - Either a real heap pointer (to ElmInt, ElmFloat, ElmString, etc.)
- *   - Or an embedded constant (True, False, Nil, EmptyString, Unit, etc.)
- *
- * At the dbg boundary, primitives are ALWAYS boxed. The EcoTypeKind/EcoPrimKind
- * describe the Elm *type*, not whether the value is boxed or unboxed.
- * eco_dbg_print_typed never receives raw unboxed primitive bits directly.
- *
- * ### 2. Unboxed fields inside heap objects
- *
- * Certain heap layouts store primitive values unboxed for performance. Each
- * slot's kind is encoded as 2 bits in the container's unboxed bitmap:
- *   `00` = boxed HPointer, `01` = Int (i64), `10` = Float (f64), `11` = Char (u32 code point, zero-extended to 64 bits).
- * Slot i's kind lives at bits [2i, 2i+1].
- *
- *   - Cons: Header.unboxed (6 bits, slot 0 used for head kind)
- *   - Tuple2/Tuple3: Header.unboxed (4 / 6 bits used)
- *   - Record: record->unboxed bitmap (up to 32 typed fields in 64 bits)
- *   - Custom: custom->unboxed bitmap (up to 24 typed fields in 48 bits)
- *   - ElmArray: Header.unboxed (low 2 bits, uniform kind for all elements)
- *   - Closure: closure->unboxed (40 bits: params 0..19) plus
- *     K = extWords(max_values, 20) extension kind words at the object's tail
- *     (32 slots each); read through closureSlotKind / ClosureKinds (HEAP_078)
- *
- * Kind-to-EcoPrimKind mapping for unboxed slots:
- *   bitmap kind == 0  ⇒ slot is boxed HPointer; EcoPrimKind (from the type graph)
- *                        may be Bool, String, or any non-primitive Elm type.
- *   bitmap kind == 1  ⇒ slot is unboxed Int; EcoPrimKind must be Int if present.
- *   bitmap kind == 2  ⇒ slot is unboxed Float; EcoPrimKind must be Float.
- *   bitmap kind == 3  ⇒ slot is unboxed Char; EcoPrimKind must be Char.
- * There is no encoding for unboxed Bool or unboxed String.
- *
- * Only container printers (printList, printTuple, printRecord, printCustom)
- * interpret unboxed bits, and only after consulting the unboxed bitmap AND
- * verifying the type is primitive via the type graph.
- */
+// The debug printer needs to know the Elm type of a value to print it, and the heap does not record types: an
+// object's header says how it is laid out, not which Elm type it belongs to, and many values are embedded
+// constants with no object at all. So the compiler describes every type the program prints in a static table,
+// the type graph, and this header is the layout of that table.
+//
+// The type graph is plain data. The `eco.type_table` op is lowered to LLVM globals in this layout,
+// with `__eco_type_graph` as the root `EcoTypeGraph`, and `__eco_init_globals` hands that root to
+// `eco_register_type_graph`. `eco_dbg_print_typed` then reads it to print values such as
+// `[ { a = 1, b = 2.0 } ]` with their field and constructor names.
+//
+// The table is a set of flat arrays that refer to each other by index:
+//   - `types` holds one `EcoTypeInfo` per type. A type is named by its type id, which is its index here.
+//   - `fields` holds the element types of tuples, the fields of records, and the fields of constructors.
+//   - `ctors` holds the constructors of custom types.
+//   - `function_arg_type_ids` holds the argument types of function types.
+//   - `strings` holds field and constructor names.
+// A record, tuple, constructor, custom type or function type refers to a contiguous run of one of these arrays
+// by a first index and a count. Nothing in this header checks an index; the printer checks some of them with
+// assertions.
+//
+// The emitter (`EcoToLLVMGlobals.cpp`) also writes these structs: it packs `EcoTypeInfo`, `EcoFieldInfo` and
+// `EcoCtorInfo` as little-endian bytes at these offsets, and emits `EcoTypeGraph` as an LLVM struct of the same
+// shape. The `static_assert`s on the sizes pin the C++ sizes that the emitter assumes; nothing checks the
+// emitter against them. The numeric values of the enumerations are shared with the compiler, so none of them
+// may be reordered.
+//
+// A kind in the type graph describes the Elm type, not how a particular value is stored. Whether a slot holds
+// a boxed word or raw Int, Float or Char bits is told by its 2-bit slot kind in the containing object, as
+// `Heap.hpp` defines (Bool and String are never stored unboxed). The printer reads raw bits only where the
+// slot kind says the slot is unboxed, and then takes the primitive kind from the type graph.
 
 #ifndef ECO_TYPE_INFO_H
 #define ECO_TYPE_INFO_H
@@ -64,74 +40,68 @@ namespace Elm {
 // Type Kind Enumerations
 // ============================================================================
 
-/**
- * Discriminates the kind of Elm type represented by an EcoTypeInfo.
- */
+/// The shape of an Elm type, which selects the member of `EcoTypeInfo::data` that describes it.
+///
+/// The emitter writes these values as numbers (`Primitive` is 0, `Polymorphic` is 6), so the order is fixed.
 enum class EcoTypeKind : uint8_t {
-    Primitive,   // Int, Float, Char, Bool, String
-    List,        // List a
-    Tuple,       // (a, b) or (a, b, c)
-    Record,      // { field1 : T1, field2 : T2, ... }
-    Custom,      // type Foo = Bar Int | Baz String
-    Function,    // a -> b -> c
-    Polymorphic, // Type variable with constraint (number, comparable, etc.)
+    Primitive,   ///< One of the types `EcoPrimKind` lists.
+    List,
+    Tuple,       ///< A pair or a triple.
+    Record,
+    Custom,      ///< A custom type (algebraic data type), described by its constructors.
+    Function,    ///< Printed as `<function>`; its argument and result types are not read by the printer.
+    Polymorphic, ///< A type variable left after monomorphization. Printed by `print_value` without type info.
 };
 
-/**
- * Discriminates type variable constraints for polymorphic types.
- * These are used when a type variable with constraint leaks through monomorphization.
- */
+/// The constraint on a type variable that a `Polymorphic` type stands for.
+///
+/// The emitter writes these values as numbers (`Number` is 0, `EcoValue` is 1). The printer does not read them.
 enum class EcoConstraintKind : uint8_t {
-    Number,      // number - can be Int or Float
-    EcoValue,    // unconstrained type variable (falls back to generic printing)
+    Number,      ///< The `number` constraint: the value is an Int or a Float.
+    EcoValue,    ///< No constraint: the value may be of any type.
 };
 
-/**
- * Discriminates primitive types for specialized printing.
- */
+/// Which primitive Elm type a `Primitive` type is.
+///
+/// The values are numbered as in the compiler's `Compiler.Generate.MLIR.TypeTable.primKindToTag`, so the order is
+/// fixed.
 enum class EcoPrimKind : uint8_t {
     Int,
     Float,
     Char,
     Bool,
     String,
-    Unit,  // Elm `()`; always the embedded empty constant. Must match
-           // Compiler.Generate.MLIR.TypeTable.primKindToTag (PKUnit = 5).
+    Unit,  ///< Elm `()`, whose value is an embedded constant rather than a heap object.
 };
 
 // ============================================================================
 // Type Graph Component Structures
 // ============================================================================
 
-/**
- * Describes a field in a record or tuple.
- * For tuples, name_index may be unused (set to 0).
- */
+/// One entry of `EcoTypeGraph::fields`: a field of a record, an element of a tuple, or a field of a constructor.
 struct EcoFieldInfo {
-    uint32_t name_index;  // Index into string table (field name)
-    uint32_t type_id;     // TypeId of field type
+    uint32_t name_index;  ///< Index of the field's name in `EcoTypeGraph::strings`. Read only for record fields.
+    uint32_t type_id;
 };
 static_assert(sizeof(EcoFieldInfo) == 8, "EcoFieldInfo must be 8 bytes");
 
-/**
- * Describes a constructor of a custom type (ADT).
- */
+/// One entry of `EcoTypeGraph::ctors`: a constructor of a custom type, with its name and its fields.
 struct EcoCtorInfo {
-    uint32_t ctor_id;      // Per-type constructor index (0..n-1)
-    uint32_t name_index;   // Constructor name in string table
-    uint32_t first_field;  // Index into global field-type array
-    uint32_t field_count;  // Number of fields this constructor has
+    uint32_t ctor_id;      ///< The constructor's tag, matched against `Custom::ctor` of a heap object.
+    uint32_t name_index;   ///< Index of the constructor's name in `EcoTypeGraph::strings`.
+    uint32_t first_field;  ///< Index of the constructor's first field in `EcoTypeGraph::fields`.
+    uint32_t field_count;
 };
 static_assert(sizeof(EcoCtorInfo) == 16, "EcoCtorInfo must be 16 bytes");
 
-/**
- * Describes a monomorphized Elm type.
- * The `data` union contains kind-specific information.
- */
+/// One entry of `EcoTypeGraph::types`: a single monomorphic Elm type.
+///
+/// `kind` says which member of `data` is meaningful. The printer finds an entry by indexing `types` with a type
+/// id, so `type_id` is expected to equal the entry's own index; nothing checks this.
 struct EcoTypeInfo {
-    uint32_t type_id;      // Unique per monomorphic type
-    EcoTypeKind kind;      // Type kind discriminant
-    uint8_t padding[3];    // Explicit padding for alignment
+    uint32_t type_id;
+    EcoTypeKind kind;
+    uint8_t padding[3];
 
     union {
         // For Primitive types
@@ -142,41 +112,40 @@ struct EcoTypeInfo {
 
         // For List types
         struct {
-            uint32_t elem_type_id;  // TypeId of element type
+            uint32_t elem_type_id;
             uint32_t padding;
         } list;
 
         // For Tuple types
         struct {
-            uint16_t arity;         // 2 or 3
+            uint16_t arity;         // 2 or 3, which is also the number of entries in `fields`.
             uint16_t padding1;
-            uint32_t first_field;   // Index into global field-type array
-            // field_count == arity, stored in first_field entries
+            uint32_t first_field;   // Index of the first element's entry in `EcoTypeGraph::fields`.
         } tuple;
 
         // For Record types
         struct {
-            uint32_t first_field;   // Index into global field info array
-            uint32_t field_count;   // Number of fields
+            uint32_t first_field;   // Index of the first field's entry in `EcoTypeGraph::fields`.
+            uint32_t field_count;
         } record;
 
         // For Custom types (ADTs)
         struct {
-            uint32_t first_ctor;    // Index into ctor array
-            uint32_t ctor_count;    // Number of constructors
+            uint32_t first_ctor;    // Index of the first constructor's entry in `EcoTypeGraph::ctors`.
+            uint32_t ctor_count;
         } custom;
 
         // For Function types
         struct {
-            uint32_t first_arg_type;   // Index into global arg-type array
-            uint16_t arg_count;        // Number of arguments
+            uint32_t first_arg_type;   // Index of the first argument's type id in `function_arg_type_ids`.
+            uint16_t arg_count;
             uint16_t padding;
-            uint32_t result_type_id;   // TypeId of result type
+            uint32_t result_type_id;
         } function;
 
         // For Polymorphic types (type variables with constraints)
         struct {
-            EcoConstraintKind constraint;  // The type constraint
+            EcoConstraintKind constraint;
             uint8_t padding[7];
         } polymorphic;
     } data;
@@ -187,10 +156,10 @@ static_assert(sizeof(EcoTypeInfo) == 20, "EcoTypeInfo must be 20 bytes");
 // Top-Level Type Graph Container
 // ============================================================================
 
-/**
- * The complete type graph for a compiled Elm program.
- * Exported as __eco_type_graph by the eco.type_table lowering.
- */
+/// The root of a program's type graph: the five arrays and their lengths.
+///
+/// Each pointer refers to read-only data emitted with the program. A pointer may be null when its array is
+/// empty, and the matching count is then 0. Each count is the number of entries, not bytes.
 struct EcoTypeGraph {
     const EcoTypeInfo* types;
     uint32_t type_count;

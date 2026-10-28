@@ -5,16 +5,38 @@
 
 namespace Elm {
 
-//===--------------------------------------------------------------------===//
-// Per-tag child walk — mirror of OldGenSpace::markChildren. Shared by
-// PermanentSpace (copy-to-permanent) and the threaded-gc-04b V2 validator.
+// Code that copies a heap object, or checks a collector's work against an independent trace,
+// needs to find the object's children without depending on any one collector's own scan. This
+// component is that walk: one function, `visitHeapChildren`, that reads an object's tag and hands
+// each of its child slots to a callable.
 //
-// `visit` is called for every POTENTIALLY-BOXED child slot (HPointer fields
-// always; Unboxable fields only when the mask says boxed). The lambda owns
-// the constant / non-heap gating. Returns false when the tag is not safe to
-// copy (mutable innards or unknown layout) — the decline ladder.
-//===--------------------------------------------------------------------===//
+// A child slot is a field that may hold an HPointer. For an `HPointer` field that is always so. For
+// an `Unboxable` field it is so only when the field's 2-bit slot kind, read from the header or the
+// object's kind words as `allocator/Heap` lays out, is 00 (boxed). A child slot can still hold an
+// embedded constant or a word that is not a heap address, so the walk does not say that a slot
+// points into the heap; telling those apart is left to the callable.
+//
+// The walk is modelled on the old generation's mark scan, `OldGenSpace::markChildren`, and like it
+// treats the `body` of a large String or Bytes header as a child. It differs in what it refuses.
+// Some tags are declined: the function visits nothing and returns false, so that a caller copying
+// objects can give up on the value. A `Process` is declined because its fields are changed in place
+// while it runs; `Free`, `Forward` and any tag not listed are declined because they are not live
+// objects with a known layout.
 
+/// Calls `visit` on each child slot of the heap object `obj`, and returns whether its tag is one
+/// the walk handles.
+///
+/// `obj` must point at a heap object's header, and that object must not move while the call runs.
+/// `visit` is called as `visit(HPointer&)`, with a reference to the slot inside `obj`, so it may
+/// rewrite the slot; the reference is valid only for that call. It is called once per child slot,
+/// in field order, whatever the slot holds, so it must itself
+/// skip embedded constants and words that are not heap addresses.
+///
+/// Pointer-free objects return true with no call. `Tag_Process`, `Tag_Free`, `Tag_Forward` and
+/// unknown tags return false with no call. Only the live part of a variable-length object is
+/// visited: a `Closure`'s first `n_values` slots, a `ListBacking`'s `elems[hd, header.size)` and an
+/// `ElmArray`'s `elements[0, length)`. Every value of a `DynRecord` is visited, whatever its
+/// `unboxed` field holds.
 template <typename F>
 inline bool visitHeapChildren(void *obj, F &&visit) {
     Header *hdr = getHeader(obj);
@@ -55,9 +77,7 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
             return true;
         }
         case Tag_ListBacking: {
-            // Chunked-list backing: visit live boxed slots [hd, capacity).
-            // A permanent copy freezes the chunk (immutable in v1 anyway);
-            // slack below hd (v1: none) is never visited.
+            // Slots below hd are uninitialized.
             if ((hdr->unboxed & 0x3) == 0) {
                 ListBacking *lb = static_cast<ListBacking *>(obj);
                 for (u32 i = lb->hd; i < hdr->size; i++)
@@ -66,7 +86,8 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
             return true;
         }
         case Tag_Custom: {
-            // Header-bitmap slots, then the tail (ext kind words, HEAP_019).
+            // The first slots take their kinds from the bitmap after the header, the rest from
+            // the extension kind words in the tail.
             Custom *c = static_cast<Custom *>(obj);
             const u32 n = hdr->size, h = n < CUSTOM_HDR_SLOTS ? n : CUSTOM_HDR_SLOTS;
             for (u32 i = 0; i < h; i++)
@@ -92,16 +113,16 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
             return true;
         }
         case Tag_Closure: {
-            // Bounds on n_values, matching the nursery and major scans.
-            // An interned closure singleton has n_values == 0 and never
-            // writes a value slot, so this visits nothing — which is right.
+            // Slots from n_values on hold no applied argument yet. A closure with no
+            // arguments applied therefore has no children.
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < cl->n_values; i++)
                 if (closureSlotKind(cl, i) == 0) visit(cl->values[i].p);
             return true;
         }
         case Tag_Task: {
-            // Immutable post task-purity (kill is copy-on-install).
+            // Not declined: the scheduler installs a kill handle on a copy of a Task, not on
+            // the Task itself.
             Task *t = static_cast<Task *>(obj);
             if ((t->header.unboxed & 0x3) == 0) visit(t->value.p);
             visit(t->callback);
@@ -110,9 +131,7 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
             return true;
         }
         case Tag_Array: {
-            // Mutated during construction only; immutable at rest (Array.set
-            // path-copies). Iterate length like mark; the capacity tail is
-            // uninitialized and copied as raw bytes only.
+            // Slots from length up to the capacity are uninitialized.
             ElmArray *arr = static_cast<ElmArray *>(obj);
             if ((arr->header.unboxed & 0x3) == 0)
                 for (u32 i = 0; i < arr->length; i++)
@@ -141,7 +160,7 @@ inline bool visitHeapChildren(void *obj, F &&visit) {
             visit(static_cast<LargeByteHeader *>(obj)->body);
             return true;
 
-        // Declines: mutable innards (Process) or must-not-appear tags.
+        // Declined: a Process is changed in place; the others are not live objects.
         case Tag_Process:
         case Tag_Free:
         case Tag_Forward:

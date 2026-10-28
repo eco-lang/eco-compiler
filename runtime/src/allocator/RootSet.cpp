@@ -1,11 +1,3 @@
-/**
- * RootSet Implementation.
- *
- * Simple implementation of the root set - a collection of pointer locations
- * that the GC must trace during collection. Thread-local, so no locking needed.
- *
- * Uses unordered_set for O(1) add/remove of long-lived roots.
- */
 
 #include "RootSet.hpp"
 #if !defined(_WIN32)
@@ -23,10 +15,8 @@
 
 namespace Elm {
 
-// The calling thread's shadow stack (plans/gc-root-registration-cost.md O1).
-// constinit: no dynamic-initialization guard on a variable compiled code reads.
-// See RootSet.hpp for why these three are the ONLY representation of the stack
-// and why Allocator::setThreadHeap is their sole publisher.
+// `constinit` keeps these free of a dynamic-initialisation guard, which compiled code, reading them by
+// name, would not run.
 extern "C" constinit thread_local StackRootRangeRec* eco_tl_root_sp
     __attribute__((tls_model("initial-exec"))) = nullptr;
 extern "C" constinit thread_local StackRootRangeRec* eco_tl_root_base
@@ -34,7 +24,6 @@ extern "C" constinit thread_local StackRootRangeRec* eco_tl_root_base
 extern "C" constinit thread_local StackRootRangeRec* eco_tl_root_limit
     __attribute__((tls_model("initial-exec"))) = nullptr;
 
-// Single-slot shadow stack (plan §3.3), same discipline.
 extern "C" constinit thread_local HPointer** eco_tl_root1_sp
     __attribute__((tls_model("initial-exec"))) = nullptr;
 extern "C" constinit thread_local HPointer** eco_tl_root1_base
@@ -51,22 +40,19 @@ extern "C" constinit thread_local HPointer** eco_tl_root1_limit
     std::abort();
 }
 
-// Maps `bytes` of read-write memory followed by one PROT_NONE guard page
-// (plans/kernel-root-stack-bounded-rooting.md §2.3). The bounds check in
-// `ecoRootRangePush` / `ecoRoot1Push` exists only in !NDEBUG and validate
-// builds; the guard page makes a push past the slack fault cleanly in every
-// build instead of writing over whatever malloc placed next. Built on the
-// platform layer (POSIX mmap, Win64 VirtualAlloc): the whole range is
-// reserved unbacked and only the body is committed, so the page after it
-// stays the inaccessible guard.
+// Returns `bytes` rounded up to a whole number of pages: the accessible part of a guarded mapping.
 static std::size_t guardedBody(std::size_t bytes) {
     return (bytes + OS_PAGE_SIZE - 1) / OS_PAGE_SIZE * OS_PAGE_SIZE;
 }
 
+// Returns the size of a guarded mapping of `bytes`: its accessible part plus one guard page.
 static std::size_t guardedSize(std::size_t bytes) {
     return guardedBody(bytes) + OS_PAGE_SIZE;
 }
 
+// Maps at least `bytes` of read-write memory followed by one inaccessible guard page, and returns its start.
+// The whole range is reserved and only the accessible part committed, so the page after it stays
+// inaccessible. Throws `std::bad_alloc`, leaving nothing mapped, if either step fails.
 static void* mapGuarded(std::size_t bytes) {
     const std::size_t total = guardedSize(bytes);
     void* p = platform::reserveAddressSpace(total);
@@ -78,17 +64,18 @@ static void* mapGuarded(std::size_t bytes) {
     return p;
 }
 
+// Releases a mapping that `mapGuarded(bytes)` returned as `p`.
 static void unmapGuarded(void* p, std::size_t bytes) {
     platform::releaseReservation(p, guardedSize(bytes));
 }
 
+// The bytes of the range-stack array, slack included.
 static constexpr std::size_t kRangeBytes =
     sizeof(StackRootRangeRec) * (kRootRangeStackSlots + kRootRangeStackSlack);
+// The bytes of the single-slot-stack array, slack included.
 static constexpr std::size_t kRoot1Bytes =
     sizeof(HPointer*) * (kRoot1StackSlots + kRoot1StackSlack);
 
-// Allocates this thread's shadow-stack backing array. `Allocator::setThreadHeap`
-// publishes base/limit/cursor into TLS; nothing else may.
 RootSet::RootSet() {
     range_storage_ = static_cast<StackRootRangeRec*>(mapGuarded(kRangeBytes));
     try {
@@ -100,9 +87,8 @@ RootSet::RootSet() {
 }
 
 RootSet::~RootSet() {
-    // A RootSet is destroyed with its thread heap, and `setThreadHeap(nullptr)`
-    // has already unpublished the cursors by then; clear them defensively so a
-    // stray push after teardown faults instead of writing freed memory.
+    // Clearing the TLS words keeps a push after teardown from writing into unmapped memory: in an unchecked
+    // build it faults on a null cursor, and with the bounds check it reports an overflow at depth 0.
     if (eco_tl_root_base == range_storage_) {
         eco_tl_root_sp = nullptr;
         eco_tl_root_base = nullptr;
@@ -117,32 +103,26 @@ RootSet::~RootSet() {
     root1_storage_ = nullptr;
 }
 
-// Registers a pointer location as a GC root. O(1) average.
 void RootSet::addRoot(HPointer *root) {
     roots.insert(root);
 }
 
-// Unregisters a pointer location from the root set. O(1) average.
 void RootSet::removeRoot(HPointer *root) {
     roots.erase(root);
 }
 
-// Registers a JIT root (raw 64-bit pointer location). O(1) average.
 void RootSet::addJitRoot(uint64_t *root) {
     jit_roots.insert(root);
 }
 
-// Unregisters a JIT root. O(1) average.
 void RootSet::removeJitRoot(uint64_t *root) {
     jit_roots.erase(root);
 }
 
-// Registers an external root scanner callback.
-// Unnamed scanners (the registration sites in kernel files pinned by the
-// LSS_022 license manifest cannot take a name argument without a re-audit)
-// are labelled by the address of the registering code: a symbol when dladdr
-// can resolve one, otherwise "unnamed@+0x<offset>" within the mapped object,
-// which `nm` resolves offline. Labels are interned for static lifetime.
+// Returns a label for a scanner registered from `caller`, a return address: `unnamed@` followed by the
+// symbol `dladdr` finds for it, or else its offset within the loaded object, or else the address itself
+// (always the address on Windows). Each label is kept in a list that is never freed, so it has static
+// lifetime; a new one is made on every call.
 static const char* labelForUnnamedScanner(void* caller) {
     static std::deque<std::string>* owned = new std::deque<std::string>();
     char buf[256];
@@ -173,7 +153,6 @@ void RootSet::addExternalRootScanner(ExternalRootScanner scanner, const char* na
     external_scanner_names.push_back(name);
 }
 
-// Clears all roots. Used for testing.
 void RootSet::reset() {
     roots.clear();
     jit_roots.clear();

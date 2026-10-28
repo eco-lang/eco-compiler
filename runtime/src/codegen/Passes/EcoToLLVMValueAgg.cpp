@@ -1,29 +1,35 @@
 //===- EcoToLLVMValueAgg.cpp - Value-aggregate lowering patterns ----------===//
 //
-// Phase 0 escape-analysis plumbing. This file implements LLVM lowering for
-// the value-level aggregate ops added in Ops.td:
+// Lowers value aggregates, the tuples, records, custom values, cons cells and
+// closure environments that live in SSA registers instead of on the heap, to
+// the LLVM dialect.
 //
-//   - eco.make.tuple2 / tuple3            (Pure; insertvalue chains)
-//   - eco.make.record / custom            (Pure; insertvalue chains)
-//   - eco.make.cons                       (Pure; insertvalue chain)
-//   - eco.make.closure_env                (Pure; insertvalue chain)
+// A value aggregate has an eco aggregate type (`!eco.tuple2`, a record, custom,
+// cons or `!eco.closure_env` type), which the type converter turns into an LLVM
+// struct. Building one (`eco.make.*`) is a chain of `insertvalue`s and reading
+// a closure environment slot (`eco.project.closure` on an environment) is one
+// `extractvalue`; neither touches the heap.
 //
-//   - eco.to_heap                         (data-aggregate -> !eco.value)
-//                                         dispatches per aggregate kind to
-//                                         the existing eco_alloc_* runtime
-//                                         helpers, mirroring the heap layout
-//                                         produced by eco.construct.* ops.
+// Three operations move values between SSA and the heap, and they are most of
+// this file:
 //
-//   - eco.make.closure                    (!eco.closure_env + function/arity
-//                                         -> !eco.value)
-//                                         the only `make.*` that allocates
-//                                         and returns !eco.value (Q-A-b).
+// - `eco.to_heap` allocates the heap object with the same layout the matching
+//   `eco.construct.*` lowering produces, and stores the fields into it.
+// - `eco.from_heap` loads each field of a heap object and builds the struct.
+// - `eco.make.closure` allocates a Closure whose captures come from a closure
+//   environment.
 //
-// In addition, a small parallel ProjectClosureOp pattern with higher
-// benefit handles operands of type !eco.closure_env (lowered to
-// LLVMStructType). For !eco.value operands it returns failure() so the
-// existing heap-side pattern in EcoToLLVMClosures.cpp takes over.
-// The heavy closure dispatch file is intentionally untouched in Phase 0.
+// Two facts shape these. First, an allocation may collect and move every
+// nursery object, so `eco.to_heap` extracts every field from the struct before
+// the allocation. Second, slot kinds (2 bits per field: 0 boxed, 1 Int, 2 Float,
+// 3 Char; see `slotKindOf`) are derived from the SSA element types, not read
+// from an attribute, except that a cons cell's head kind comes first from the
+// op's `head_kind`.
+//
+// Each allocation has two forms. When `inlineAllocEnabled()` holds (and, for a
+// record, custom or closure, the object is at most 4096 bytes), the object is
+// bump-allocated inline with its header as a constant. Otherwise an
+// `eco_alloc_*` function is called.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,7 +47,8 @@ namespace {
 // Helpers
 //===----------------------------------------------------------------------===//
 
-/// Build an LLVM struct value by chaining undef + insertvalue per field.
+/// Builds a value of the LLVM struct type `structTy` whose field i is
+/// `elements[i]`.
 static Value buildStruct(ConversionPatternRewriter &rewriter, Location loc,
                          Type structTy, ValueRange elements) {
     Value agg = rewriter.create<LLVM::UndefOp>(loc, structTy);
@@ -52,9 +59,12 @@ static Value buildStruct(ConversionPatternRewriter &rewriter, Location loc,
     return agg;
 }
 
-/// Widen an SSA field value to i64 for runtime Unboxable slots, mirroring
-/// EcoToLLVMHeap.cpp::widenFieldToI64. This file does not include that
-/// translation unit so we provide an inline copy.
+/// Returns `val` as the i64 word a store function takes: a boxed value through
+/// `heapStoreValueToI64`, a narrower integer zero-extended, an f64 bitcast, and
+/// anything else unchanged.
+///
+/// `widenFieldToI64` in EcoToLLVMHeap.cpp is a separate copy of this function;
+/// the two must change together.
 static Value widenFieldToI64Local(Value val, Location loc,
                                   ConversionPatternRewriter &rewriter) {
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
@@ -70,10 +80,11 @@ static Value widenFieldToI64Local(Value val, Location loc,
     return val;
 }
 
-/// Compute the 2-bit per-slot kind bitmap for a sequence of element types.
-/// Matches the encoding used by eco.construct.* heap ops: 00 = boxed
-/// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i32). One word:
-/// tuple2/tuple3 only (record/custom use packKinds, layout C).
+/// Returns the slot kinds of `elements`, as `slotKindOf` gives them, packed 2
+/// bits each into one word with the first in the lowest bits.
+///
+/// Used for tuples, whose kinds fit one word; at most 32 elements are allowed,
+/// which is asserted. Records and customs use `packKinds` instead.
 static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     assert(elements.size() <= 32 && "kindBitmapFor: more kinds than one word");
     SmallVector<uint8_t> kinds;
@@ -82,7 +93,7 @@ static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     return static_cast<int64_t>(kindsWord(kinds, 0, elements.size()));
 }
 
-/// Extract field i from a converted aggregate struct as an LLVM Value.
+/// Returns field `index` of the struct value `agg`, of LLVM type `fieldTy`.
 static Value extractField(ConversionPatternRewriter &rewriter, Location loc,
                           Value agg, int64_t index, Type fieldTy) {
     return rewriter.create<LLVM::ExtractValueOp>(
@@ -90,9 +101,10 @@ static Value extractField(ConversionPatternRewriter &rewriter, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// eco.make.tuple2 -> insertvalue chain
+// eco.make.* -> insertvalue chain
 //===----------------------------------------------------------------------===//
 
+/// The lowering of `eco.make.tuple2` to a struct built from its operands, in order.
 struct Tuple2MakeOpLowering : public OpConversionPattern<Tuple2MakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -108,6 +120,7 @@ struct Tuple2MakeOpLowering : public OpConversionPattern<Tuple2MakeOp> {
     }
 };
 
+/// The lowering of `eco.make.tuple3` to a struct built from its operands, in order.
 struct Tuple3MakeOpLowering : public OpConversionPattern<Tuple3MakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -123,6 +136,7 @@ struct Tuple3MakeOpLowering : public OpConversionPattern<Tuple3MakeOp> {
     }
 };
 
+/// The lowering of `eco.make.record` to a struct built from its operands, in order.
 struct RecordMakeOpLowering : public OpConversionPattern<RecordMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -138,6 +152,7 @@ struct RecordMakeOpLowering : public OpConversionPattern<RecordMakeOp> {
     }
 };
 
+/// The lowering of `eco.make.custom` to a struct built from its operands, in order.
 struct CustomMakeOpLowering : public OpConversionPattern<CustomMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -153,6 +168,7 @@ struct CustomMakeOpLowering : public OpConversionPattern<CustomMakeOp> {
     }
 };
 
+/// The lowering of `eco.make.cons` to a struct built from its operands, in order.
 struct ConsMakeOpLowering : public OpConversionPattern<ConsMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -168,6 +184,7 @@ struct ConsMakeOpLowering : public OpConversionPattern<ConsMakeOp> {
     }
 };
 
+/// The lowering of `eco.make.closure_env` to a struct built from its operands, in order.
 struct ClosureEnvMakeOpLowering : public OpConversionPattern<ClosureEnvMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -184,16 +201,19 @@ struct ClosureEnvMakeOpLowering : public OpConversionPattern<ClosureEnvMakeOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.to_heap -> dispatch per aggregate kind to existing eco_alloc_*.
-//
-// Layout produced here is identical to what the corresponding heap
-// `eco.construct.*` op (Tuple2/3/Record/Custom) or `eco.construct.list`
-// op produces, so downstream readers see no difference.
+// eco.to_heap
 //===----------------------------------------------------------------------===//
 
+/// The lowering of `eco.to_heap`, which allocates the heap object for a tuple,
+/// record, custom or cons aggregate and stores its fields.
+///
+/// The object has the layout the corresponding `eco.construct.*` lowering in
+/// EcoToLLVMHeap.cpp writes. A closure environment operand is not handled and
+/// the match fails.
 struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ToHeapOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -216,19 +236,15 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 getTypeConverter()->convertType(elts[0]),
                 getTypeConverter()->convertType(elts[1])
             };
-            // Pre-extract in natural LLVM types (ptr addrspace(1) for boxed
-            // !eco.value, i64/f64/i32/i1 for primitives) — no widening yet.
-            // Boxed-field extracts give us live ptr<1> scalars that RS4GC
-            // will relocate across the alloc safepoint below.
+            // Extracted before the allocation, so that a boxed field is a
+            // scalar ptr addrspace(1) that RS4GC relocates across it.
             Value a = extractField(rewriter, loc, agg, 0, llvmElts[0]);
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
 
-            // Kinds from the element types (to_heap carries no bitmap, 3D).
             int64_t mask = kindBitmapFor(elts);
 
-            // Inline nursery allocation (HEAP_034): marker + constant header
-            // store + fresh field stores; no zero-init needed (no safepoint
-            // can observe the object before its stores).
+            // No zero-initialisation: nothing can collect before the stores
+            // (HEAP_034).
             if (inlineAllocEnabled()) {
                 uint64_t header = value_enc::composeHeader(
                     value_enc::TagTuple2,
@@ -246,9 +262,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto unboxedVal = rewriter.create<LLVM::ConstantOp>(
                 loc, i32Ty, static_cast<int32_t>(mask));
 
-            // Alloc uninit with the bitmap set up-front so a collection
-            // firing between alloc and the post-alloc stores finds zero in
-            // any boxed-kind slot rather than uninitialised garbage.
+            // The kinds are passed to the allocation itself, so the header
+            // is right from the start.
             Value tuple = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocTuple2Uninit(rewriter),
@@ -259,7 +274,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
             auto storeOne = [&](unsigned idx, Value v, Type origTy) {
-                // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store.
+                // The tuple is fresh, so it is stored to directly (HEAP_031).
                 if (inlineDerefExtEnabled()) {
                     emitFreshFieldStore(rewriter, loc, tuple,
                         layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
@@ -278,7 +293,6 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                     rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                         ValueRange{tuple, idxVal, widened});
                 } else {
-                    // !eco.value (ptr addrspace(1)): pass directly, no ptrtoint.
                     rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
                         ValueRange{tuple, idxVal, v});
                 }
@@ -301,10 +315,8 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Value b = extractField(rewriter, loc, agg, 1, llvmElts[1]);
             Value c = extractField(rewriter, loc, agg, 2, llvmElts[2]);
 
-            // Kinds from the element types (to_heap carries no bitmap, 3D).
             int64_t mask = kindBitmapFor(elts);
 
-            // Inline nursery allocation (HEAP_034): see the Tuple2 arm.
             if (inlineAllocEnabled()) {
                 uint64_t header = value_enc::composeHeader(
                     value_enc::TagTuple3,
@@ -334,7 +346,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
             auto storeOne = [&](unsigned idx, Value v, Type origTy) {
-                // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store.
+                // The tuple is fresh, so it is stored to directly (HEAP_031).
                 if (inlineDerefExtEnabled()) {
                     emitFreshFieldStore(rewriter, loc, tuple,
                         layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
@@ -368,17 +380,14 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto rec = dyn_cast<eco::RecordType>(srcTy)) {
             ArrayRef<Type> fields = rec.getFields();
             int64_t fieldCount = static_cast<int64_t>(fields.size());
-            // Layout C (3B.5): kinds always come from the element types (the
-            // attributes are verifier checks only); slots past 31 go in K
-            // ext kind words after the last field (HEAP_019).
+            // Kinds of fields past the 32 in the header go in K extension
+            // kind words after the last field (HEAP_019).
             PackedKinds pk = packKinds(slotKindsOfTypes(fields), layout::RecordHdrSlots);
             const uint64_t K = pk.ext.size();
             const int64_t mask = static_cast<int64_t>(pk.hdrBits);
 
-            // Pre-extract every field as a scalar SSA value BEFORE the alloc
-            // safepoint. With every extract folded back through the
-            // matching insertvalue by FoldExtractValuePass, the FCA goes
-            // dead and is DCE'd — only scalars cross the safepoint.
+            // Extracted before the allocation, so that only scalars are live
+            // across it.
             SmallVector<Value, 8> extracted;
             extracted.reserve(fieldCount);
             for (int64_t i = 0; i < fieldCount; ++i) {
@@ -386,8 +395,6 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
             }
 
-            // Inline nursery allocation (HEAP_034): see the Heap
-            // RecordConstructOpLowering arm.
             uint64_t recByteSize = layout::recordByteSize(static_cast<uint64_t>(fieldCount));
             if (inlineAllocEnabled() && recByteSize <= 4096) {
                 uint64_t header = value_enc::composeHeader(
@@ -424,7 +431,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             for (int64_t i = 0; i < fieldCount; ++i) {
                 Type origTy = fields[i];
                 Value fieldVal = extracted[i];
-                // P2.5 R5 Part 1 (HEAP_031): fresh record -> direct AS1 store.
+                // The record is fresh, so it is stored to directly (HEAP_031).
                 if (inlineDerefExtEnabled()) {
                     emitFreshFieldStore(rewriter, loc, objHPtr,
                         layout::RecordFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
@@ -457,13 +464,13 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto cus = dyn_cast<eco::CustomType>(srcTy)) {
             ArrayRef<Type> fields = cus.getFields();
             int64_t fieldCount = static_cast<int64_t>(fields.size());
-            // Layout C (3B.5): as the Record arm, slots past 23 in ext words.
+            // Kinds of fields past the 24 in the header go in extension kind
+            // words, as for a record.
             PackedKinds pk = packKinds(slotKindsOfTypes(fields), layout::CustomHdrSlots);
             const uint64_t K = pk.ext.size();
             const int64_t mask = static_cast<int64_t>(pk.hdrBits);
 
-            // Pre-extract every field as a scalar SSA value BEFORE the alloc
-            // safepoint — same reasoning as the Record branch above.
+            // Extracted before the allocation, as for a record.
             SmallVector<Value, 8> extracted;
             extracted.reserve(fieldCount);
             for (int64_t i = 0; i < fieldCount; ++i) {
@@ -471,9 +478,9 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 extracted.push_back(extractField(rewriter, loc, agg, i, llvmElt));
             }
 
-            // Inline nursery allocation (HEAP_034): see the Heap
-            // CustomConstructOpLowering arm (ctor|bitmap<<16 meta word folds
-            // the eco_set_unboxed call away).
+            // The constructor tag and the kinds share one word (tag in bits
+            // 0-15, kinds above); on the inline path this replaces the
+            // eco_set_unboxed call.
             uint64_t cusByteSize = layout::customByteSize(static_cast<uint64_t>(fieldCount));
             if (inlineAllocEnabled() && cusByteSize <= 4096) {
                 uint64_t bitmap = static_cast<uint64_t>(mask);
@@ -515,7 +522,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             for (int64_t i = 0; i < fieldCount; ++i) {
                 Type origTy = fields[i];
                 Value fieldVal = extracted[i];
-                // P2.5 R5 Part 1 (HEAP_031): fresh custom -> direct AS1 store.
+                // The object is fresh, so it is stored to directly (HEAP_031).
                 if (inlineDerefExtEnabled()) {
                     emitFreshFieldStore(rewriter, loc, objHPtr,
                         layout::CustomFieldsOffset + i * layout::PtrSize, fieldVal, origTy);
@@ -554,13 +561,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
         if (auto cons = dyn_cast<eco::ConsType>(srcTy)) {
             Type llvmHead = getTypeConverter()->convertType(cons.getHead());
             Type llvmTail = getTypeConverter()->convertType(cons.getTail());
-            // Pre-extract in natural LLVM types. Head may be ptr<1>
-            // (boxed/!eco.value) or i64/f64/i32; tail is always ptr<1>.
+            // Extracted before the allocation, as for a tuple.
             Value head = extractField(rewriter, loc, agg, 0, llvmHead);
             Value tail = extractField(rewriter, loc, agg, 1, llvmTail);
 
-            // Resolve the 2-bit head kind: 0=boxed, 1=Int(i64), 2=Float(f64),
-            // 3=Char(i32). Prefer op's head_kind attr over a type-derived kind.
+            // The head kind is the op's head_kind; when that is boxed, it is
+            // derived from the head type instead.
             uint32_t kind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
             if (kind == 0 && op.getHeadUnboxed()) {
                 Type ht = cons.getHead();
@@ -574,11 +580,9 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 else if (ht.isF64())  kind = 2;
                 else if (eco::isEcoCharType(ht)) kind = 3;
             }
-            // Inline nursery allocation (HEAP_034): see the Heap
-            // ListConstructOpLowering arm. Post-derivation, `kind`
-            // corresponds 1:1 with cons.getHead()'s type, so
-            // emitFreshFieldStore's type dispatch reproduces the kind
-            // switch below exactly.
+            // emitFreshFieldStore chooses the word from the head type, not
+            // from `kind`; the two agree unless head_kind names an unboxed
+            // kind for a head type that is not that kind.
             if (inlineAllocEnabled()) {
                 uint64_t header = value_enc::composeHeader(
                     value_enc::TagCons, kind, layout::ConsSize);
@@ -595,14 +599,13 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             auto kindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
                 static_cast<int32_t>(kind));
 
-            // Alloc uninit with head_kind set up-front so a collection between
-            // alloc and post-alloc stores can scan the head slot correctly.
+            // The head kind is passed to the allocation itself, so the header
+            // is right from the start.
             Value consHPtr = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocConsUninit(rewriter),
                 ValueRange{kindVal});
 
-            // Store head via the helper matching its kind.
             if (kind == 0) {
                 rewriter.create<LLVM::CallOp>(loc,
                     runtime.getOrCreateStoreConsHead(rewriter),
@@ -612,13 +615,12 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                     runtime.getOrCreateStoreConsHeadF64(rewriter),
                     ValueRange{consHPtr, head});
             } else {
-                // kind == 1 (Int/i64) or 3 (Char/i32). Widen narrow types.
+                // Int or Char.
                 Value widened = widenFieldToI64Local(head, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc,
                     runtime.getOrCreateStoreConsHeadI64(rewriter),
                     ValueRange{consHPtr, widened});
             }
-            // Tail is always boxed (next cons cell or nil HPointer).
             rewriter.create<LLVM::CallOp>(loc,
                 runtime.getOrCreateStoreConsTail(rewriter),
                 ValueRange{consHPtr, tail});
@@ -633,26 +635,29 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.from_heap -> resolve HPtr + per-field load + insertvalue chain.
-//
-// Mirror of eco.to_heap. Reads from the heap layout produced by
-// eco.construct.* / eco.to_heap and packs into the value-aggregate
-// struct expected by eco.make.* consumers (and by SROA-friendly
-// downstream code).
+// eco.from_heap
 //===----------------------------------------------------------------------===//
 
+/// The lowering of `eco.from_heap`, which reads every field of a heap tuple,
+/// record, custom or cons object into the struct of its value aggregate type.
+///
+/// The object is read with the layout `eco.to_heap` writes. A closure
+/// environment result is not handled and the match fails.
 struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     FromHeapOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Load one field at `offsetBytes` from the resolved heap pointer
-    /// `ptr`. `slotBaseTy` selects how the slot is interpreted: if the
-    /// destination element type is HPointer-shaped, load i64 then convert;
-    /// otherwise load directly at the destination width (i64 / f64 / i32
-    /// reinterpreted from the i64-wide slot).
+    /// Returns the field at `offsetBytes` in the object at `ptr`, as a value of
+    /// the LLVM type `elemTy`.
+    ///
+    /// `ptr` is either a `ptr addrspace(1)` or an address-space-0 pointer, and
+    /// the field address is in the same space. The 64-bit slot is loaded as i64,
+    /// then turned into a boxed value, bitcast to f64 or truncated to a narrower
+    /// integer; any other `elemTy` is loaded directly at that type.
     Value loadFieldAt(ConversionPatternRewriter &rewriter, Location loc,
                       Value ptr, int64_t offsetBytes, Type elemTy) const {
         auto *ctx = rewriter.getContext();
@@ -661,8 +666,6 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         auto offset = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, offsetBytes);
-        // P2.5 R4: the base may be AS1 (inline-deref marker) or AS0
-        // (out-of-line fallback); the GEP follows the base's addrspace.
         Type gepTy = isHPtrLLVMType(ptr.getType())
                          ? static_cast<Type>(getHPtrLLVMType(*ctx))
                          : static_cast<Type>(ptrTy);
@@ -672,8 +675,6 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
             return heapLoadI64ToValue(rewriter, loc, loaded);
         }
-        // Heap stores the field in a 64-bit slot; load i64, then narrow /
-        // bitcast to the SSA element type.
         Value slot = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
         if (elemTy.isInteger(64)) return slot;
         if (elemTy.isF64())
@@ -682,9 +683,6 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
             if (intTy.getWidth() < 64)
                 return rewriter.create<LLVM::TruncOp>(loc, elemTy, slot);
         }
-        // Fallback: direct load at the requested type. This path covers
-        // unforeseen primitive widths; existing dialect element types are
-        // restricted to the cases above.
         return rewriter.create<LLVM::LoadOp>(loc, elemTy, fieldPtr);
     }
 
@@ -696,16 +694,12 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
         Type structTy = getTypeConverter()->convertType(resTy);
         if (!structTy) return failure();
 
-        // Resolve the aggregate base, then GEP per field. from_heap operands
-        // are real heap objects (embedded constants never reach this op —
-        // the runtime resolve's ECO_HEAP_VALIDATE assert has always enforced
-        // it), so the inline forwarding-check marker applies (P2.5 R4,
-        // plans/allocator-resolve-inlining.md).
+        // The operand must be a heap object, not an embedded constant: both
+        // forms of resolution treat it as an address.
         Value ptr;
         if (inlineDerefExtEnabled()) {
             ptr = inlineResolvedBase(rewriter, loc, adaptor.getValue(), runtime);
         } else {
-            // Out-of-line fallback (A/B leg).
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
             auto resolveCall = rewriter.create<LLVM::CallOp>(
                 loc, resolveFunc, ValueRange{adaptor.getValue()});
@@ -765,16 +759,24 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.make.closure -> eco_alloc_closure + capture stores.
-//
-// Mirrors AllocateClosureOp + papCreate's capture-store sequence (without
-// going through getOrCreateWrapper). The function symbol must already use
-// the closure's expected calling convention.
+// eco.make.closure
 //===----------------------------------------------------------------------===//
 
+/// The lowering of `eco.make.closure`, which allocates a Closure of the op's
+/// arity for the op's function and stores the captures of a closure
+/// environment into it.
+///
+/// The evaluator slot holds the descriptor emitted for the bare function (see
+/// `emitEvalDescAddrForFuncSymbol`), so the function must already take the
+/// closure calling convention; no wrapper is made. The parameter kinds in the
+/// packed word are the capture kinds, with the remaining parameters up to the
+/// arity boxed; kinds past the 20 that fit the packed word go in extension
+/// kind words after the arity slots. The result kind is the op's optional
+/// `_result_kind` attribute, boxed when absent.
 struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     MakeClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                           const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -797,18 +799,9 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
 
         Value envAgg = adaptor.getEnv();
 
-        // Resolve the function symbol and allocate a closure of size `arity`.
-        // Phase 2 (plans/gc-root-registration-cost.md, R7): the evaluator slot
-        // holds the per-evaluator DESCRIPTOR. This path never goes through
-        // getOrCreateWrapper, so it uses the bare-function descriptor emitted
-        // beside the target by the serial pre-pass.
         Value funcPtr = eco::detail::emitEvalDescAddrForFuncSymbol(
             rewriter, loc, runtime, op.getFunction());
 
-        // Kinds (B13, HEAP_078): the evaluator is the bare-function descriptor
-        // (legacy args-array convention, like papCreate's untyped path), so
-        // the kinds are the capture kinds, padded boxed to arity; params
-        // 20.. go to the K ext words at the object's tail.
         SmallVector<uint8_t> capKinds;
         for (Type t : captures)
             capKinds.push_back(slotKindOf(t));
@@ -820,9 +813,8 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
         uint64_t cloByteSize = layout::ClosureBaseSize +
             static_cast<uint64_t>(arity + numExt) * layout::PtrSize;
         if (inlineAllocEnabled() && cloByteSize <= 4096) {
-            // Inline nursery allocation (HEAP_034): see papCreate's arm
-            // (EcoToLLVMClosures.cpp). The packed word store below is the
-            // sole +8 init on this path.
+            // Only the evaluator is stored here; the packed word at offset 8
+            // is stored below, on both paths.
             uint64_t header = value_enc::composeHeader(
                 value_enc::TagClosure, 0, static_cast<uint64_t>(arity + numExt));
             closureHPtr = emitInlineAllocWithHeader(
@@ -843,21 +835,14 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
                 ValueRange{funcPtr, arityConst});
         }
 
-        // Base pointer for the in-place stores. P2.5 R5
-        // (plans/allocator-resolve-inlining.md): the closure was allocated a
-        // few straight-line instructions above with NO intervening safepoint
-        // (the alloc's own safepoint is inside the call; everything below is
-        // pure ops + StoreOps + gc-leaf barrier calls), so the object is
-        // FRESH and cannot carry a forwarding header — no resolve, no
-        // diamond: store directly through the AS1 allocation result (the
-        // shipped array.set fresh-clone precedent, EcoToLLVMHeap.cpp).
+        // Nothing between the allocation and the stores below can collect,
+        // so the closure is fresh and is stored to directly (HEAP_031).
         Value closurePtr;
         Type storeGepTy;
         if (inlineDerefExtEnabled()) {
             closurePtr = closureHPtr;
             storeGepTy = getHPtrLLVMType(*ctx);
         } else {
-            // Out-of-line fallback (A/B leg).
             auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
             auto resolveCall = rewriter.create<LLVM::CallOp>(
                 loc, resolveFunc, ValueRange{closureHPtr});
@@ -865,10 +850,8 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             storeGepTy = ptrTy;
         }
 
-        // Store the packed header field at offset 8, papCreate's encoding
-        // (B13, HEAP_078): n_values:11 | max_values:11 | result_kind:2 |
-        // unboxed:40. result_kind comes from the optional discardable
-        // `_result_kind` (default 0 = boxed), the papCreate convention.
+        // The packed word overwrites the one the out-of-line allocation
+        // wrote (HEAP_078).
         uint8_t resultKind = 0;
         if (auto a = op->getAttrOfType<IntegerAttr>("_result_kind"))
             resultKind = static_cast<uint8_t>(a.getInt() & 3);
@@ -883,12 +866,10 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             loc, storeGepTy, i8Ty, closurePtr, ValueRange{offset8});
         rewriter.create<LLVM::StoreOp>(loc, packedConst, packedPtr);
 
-        // Store captures into values[].
         for (int64_t i = 0; i < numCaptured; ++i) {
             Type llvmElt = getTypeConverter()->convertType(captures[i]);
             Value cap = extractField(rewriter, loc, envAgg, i, llvmElt);
 
-            // Convert to i64 for the closure values[] slot.
             if (auto intTy = dyn_cast<IntegerType>(cap.getType());
                 intTy && intTy.getWidth() < 64) {
                 cap = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, cap);
@@ -906,8 +887,7 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
             rewriter.create<LLVM::StoreOp>(loc, cap, slotPtr);
         }
 
-        // Ext kind words (zeros included, HEAP_077) at values[arity ..
-        // arity+K), in the same no-safepoint window.
+        // Extension kind words, zero words included (HEAP_077).
         for (int64_t j = 0; j < numExt; ++j) {
             int64_t off = layout::ClosureValuesOffset + (arity + j) * layout::PtrSize;
             auto offConst = rewriter.create<LLVM::ConstantOp>(
@@ -925,16 +905,19 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Parallel project.closure pattern for !eco.closure_env operands.
-//
-// Higher benefit than the heap-side ProjectClosureOpLowering in
-// EcoToLLVMClosures.cpp so it gets tried first; returns failure() for
-// non-struct operands so the heap-side pattern then takes over.
+// eco.project.closure on a closure environment
 //===----------------------------------------------------------------------===//
 
+/// The lowering of `eco.project.closure` whose operand is a closure
+/// environment, to an `extractvalue`.
+///
+/// It has benefit 2, so it is tried before the heap-closure lowering in
+/// EcoToLLVMClosures.cpp, and its match fails for an operand that did not
+/// convert to a struct, which leaves the op to that lowering.
 struct ProjectClosureFromEnvLowering
     : public OpConversionPattern<ProjectClosureOp> {
 
+    /// Creates the pattern.
     ProjectClosureFromEnvLowering(EcoTypeConverter &typeConverter,
                                   MLIRContext *ctx)
         : OpConversionPattern<ProjectClosureOp>(typeConverter, ctx,
@@ -945,11 +928,9 @@ struct ProjectClosureFromEnvLowering
                     ConversionPatternRewriter &rewriter) const override {
         Value env = adaptor.getClosure();
         if (!isa<LLVM::LLVMStructType>(env.getType()))
-            return failure(); // heap-closure path handles ptr addrspace(1)
+            return failure();
 
-        // The verifier already bounds-checked the index and matched the
-        // result type against the env slot type, so we just emit
-        // extractvalue.
+        // The verifier has checked the index and the result type.
         Type resultLLVMTy = getTypeConverter()->convertType(op.getResult().getType());
         if (!resultLLVMTy)
             return failure();

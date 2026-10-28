@@ -1,16 +1,42 @@
 //===- EcoMarkerFacts.h - The marker table (may-GC / leafness facts) -------===//
 //
-// One table, read by the MLIR capacity-hoisting planner (EcoCapHoistPlan)
-// and asserted against the expanded module by the LLVM backend
-// (applyCapacityHoisting), so the two views of a marker cannot drift.
-// plans/mlir-split-backend-01-cap-hoist-plan.md §2.2 / Part II P3; plan 02
-// will add the final-view column.
+// Several passes must agree on whether a call can reach a garbage collection,
+// and for some callees the answer is not on the declaration, so this header
+// holds those answers as one table that all of them read.
 //
-// "Hoisting view" = how LLVM Phase A classifies a call AFTER the
-// pre-hoisting expansions (runEcoBackend steps 1-7): a marker that expands
-// into leaf-only code is transparent even when its MLIR declaration carries
-// no gc-leaf passthrough, and a marker declared gc-leaf in MLIR that expands
-// into a statepoint-capable call is NOT.
+// A marker is a declaration-only `__eco_*` function that the LLVM backend
+// replaces with inline code before RS4GC (LLVM's RewriteStatepointsForGC)
+// runs. A call to a marker is never executed, so what matters is the code it
+// expands into. That code may be leaf-only even though the declaration is not
+// gc-leaf, and a declaration may be gc-leaf even though its expansion calls a
+// function that can collect. A gc-leaf function is one that never reaches a
+// collection, and a call to it needs no statepoint. A few runtime functions
+// that are not markers are in the table too.
+//
+// The answer depends on how far the expansions have got, so the table has
+// two views of a callee.
+//
+// The hoisting view (`hoistView`) is how a call is classified after the
+// expansions that run before capacity hoisting. Capacity hoisting
+// (CGEN_074) replaces per-allocation nursery checks with one check of
+// headroom earlier in the function, which is valid only if nothing between
+// the check and the allocations can collect or use up that headroom. The
+// MLIR planner `EcoCapHoistPlan` reads this view.
+//
+// The final view (`finalView`) is how a call is classified once every
+// expansion before RS4GC has run. `EcoGcFreePropagation` reads it to decide
+// which generated functions can be stamped gc-leaf.
+//
+// The rest are checks on the module. `expansionCalleeLeaf` says what the
+// declarations that the expansions call must carry, and the LLVM backend
+// compares it against the module's declarations and reports any
+// disagreement as an error. `isTrustedLeafDecl` names the declarations that may be
+// gc-leaf on their own authority. `isHeadroomBreaker` names the gc-leaf
+// runtime calls that still consume nursery headroom.
+//
+// Each predicate mirrors code elsewhere: the expansions in `EcoBackend.cpp`
+// and the runtime declarations. Nothing ties them together at compile time,
+// so the table changes whenever an expansion does.
 //
 //===----------------------------------------------------------------------===//
 #ifndef ECO_MARKER_FACTS_H
@@ -20,27 +46,40 @@
 
 namespace eco::markers {
 
+/// How the hoisting view classifies a direct call. `FromDecl` means the
+/// callee is not in the table and is classified by its declaration: gc-leaf,
+/// a libm function, or a defined callee.
 enum class Hoist { FromDecl, Leaf, NotLeaf };
 
-// List cursors (Passes/EcoListCursor.cpp): declared without passthrough,
-// expanded by expandListCursorMarkers into diamonds whose only calls are
-// leaf barriers and __eco_resolve_fwd.
+/// Returns whether `c` is one of the list-cursor functions that
+/// `EcoListCursor` emits, all of which both views treat as leaf.
+///
+/// The `__eco_list_cur*` and `__eco_list_step_*_inline` markers are declared
+/// without gc-leaf and expand into loads. `eco_list_pos_view` is a runtime
+/// function, not a marker, and is in the set as well.
 inline bool isCursorMarker(llvm::StringRef c) {
     return c.starts_with("__eco_list_cur") ||
            c == "__eco_list_step_node_inline" ||
            c == "__eco_list_step_idx_inline" || c == "eco_list_pos_view";
 }
 
-// Scratch helpers (Passes/EcoListTemplate.cpp ensureDecl): stamped gc-leaf by
-// the backend before hoisting (EcoBackend.cpp runEcoBackend).
+/// Returns whether `c` is one of the list scratch-stack runtime calls that
+/// cannot collect: `eco_scratch_mark` and the two pushes.
+///
+/// `EcoListTemplate` declares them without gc-leaf, and the LLVM backend
+/// stamps them gc-leaf before capacity hoisting. `eco_scratch_finish`
+/// allocates and is not in the set.
 inline bool isScratchHelper(llvm::StringRef c) {
     return c == "eco_scratch_mark" || c == "eco_scratch_push_boxed" ||
            c == "eco_scratch_push_scalar";
 }
 
-// The TLI arm of llvm::callsGCLeafFunction: libm functions the runtime
-// declares. Plan 00 measured zero TLI-only leaf calls; the list keeps the
-// emulation exact should one appear.
+/// Returns whether `c` is one of the libm functions that LLVM's
+/// `callsGCLeafFunction` treats as gc-leaf through the target library info,
+/// whatever its declaration says.
+///
+/// The passes that classify calls in MLIR cannot ask LLVM, so they use this
+/// list to give the same answer.
 inline bool isLibmLeaf(llvm::StringRef c) {
     static const char *names[] = {
         "asin", "acos",  "atan",  "atan2", "sin",   "cos",  "tan",
@@ -52,19 +91,29 @@ inline bool isLibmLeaf(llvm::StringRef c) {
     return false;
 }
 
-// Runtime entry points that consume nursery headroom even though they are
-// gc-leaf (CGEN_074 "headroom breakers").
+/// Returns whether `c` is a headroom breaker: a runtime allocation entry
+/// point that is gc-leaf but bumps the nursery, so it uses up headroom that a
+/// hoisted capacity check reserved.
+///
+/// These are `eco_gc_alloc_region_fast` and every `eco_alloc_*_fast` name.
 inline bool isHeadroomBreaker(llvm::StringRef c) {
     return c == "eco_gc_alloc_region_fast" ||
            (c.starts_with("eco_alloc_") && c.ends_with("_fast"));
 }
 
-// Hoisting view for a direct call to `callee`. `valueEqLeaf` is true iff
-// ECO_VALUE_EQ_GCLEAF=1 or the module being classified holds a gc-leaf
-// `Elm_Kernel_Utils_equal` declaration (the value-eq expansion calls it).
+/// Returns how a direct call to `callee` is classified after the expansions
+/// that precede capacity hoisting.
+///
+/// `__eco_list_tail_inline` is `NotLeaf`, because its expansion calls
+/// `eco_list_tail_hybrid`, which can collect. `__eco_value_eq` expands into
+/// code that calls `Elm_Kernel_Utils_equal`, so it is `Leaf` only when
+/// `valueEqLeaf` is true, which the caller may set only when that function
+/// is, or will be made, gc-leaf.
+/// Cursor markers and scratch helpers are `Leaf`. Every other callee,
+/// including other markers, is `FromDecl`.
 inline Hoist hoistView(llvm::StringRef callee, bool valueEqLeaf) {
     if (callee == "__eco_list_tail_inline")
-        return Hoist::NotLeaf; // -> eco_list_tail_hybrid (not leaf)
+        return Hoist::NotLeaf;
     if (callee == "__eco_value_eq")
         return valueEqLeaf ? Hoist::Leaf : Hoist::NotLeaf;
     if (isCursorMarker(callee) || isScratchHelper(callee))
@@ -72,17 +121,33 @@ inline Hoist hoistView(llvm::StringRef callee, bool valueEqLeaf) {
     return Hoist::FromDecl;
 }
 
-// Final view (plan 02 §5.1 / Part II Q3): may a call to `callee` reach a GC
-// once every pre-RS4GC expansion has run? Read by EcoGcFreePropagation.
-//   FromDecl      - not a marker: the declaration's gc-leaf / libm / intrinsic
-//   Leaf          - the expansion emits leaf-only code
-//   Poison        - the expansion emits a call that can GC (or an indirect call)
-//   UnlessCovered - leaf only in an eco-cap-covered function (unchecked bump)
-//   ValueEq       - leaf iff the planned value-eq predicate `veq` holds
+/// Whether a call can reach a collection once every expansion before RS4GC
+/// has run, as the final view classifies it.
+///
+/// `FromDecl` means the callee is not in the table and its declaration
+/// decides: gc-leaf, a libm function or a leaf intrinsic. `Leaf` and `Poison`
+/// mean the call cannot and can collect. `UnlessCovered` means leaf only
+/// inside a function that capacity hoisting covers, where the bump is
+/// unchecked. `ValueEq` means leaf only when the planned value-eq predicate
+/// holds.
 enum class Final { FromDecl, Leaf, Poison, UnlessCovered, ValueEq };
 
+/// Returns whether `c` has the `__eco_` prefix that every marker name has.
+///
+/// `EcoGcFreePropagation` rejects a call to a declared function with such a
+/// name that `finalView` classifies as `FromDecl`, so every marker needs a
+/// row in `finalView`.
 inline bool isMarkerName(llvm::StringRef c) { return c.starts_with("__eco_"); }
 
+/// Returns how a call to `c` is classified once every expansion before RS4GC
+/// has run.
+///
+/// `__eco_alloc_inline` expands into a nursery bump whose slow path can
+/// collect, unless capacity hoisting has made the bump unchecked, so it is
+/// `UnlessCovered`. `__eco_value_eq` is `ValueEq`. `__eco_list_tail_inline`,
+/// `__eco_sat_begin` and `__eco_sat_end` are `Poison`. The pointer and
+/// projection markers, the cursor markers and the scratch helpers are `Leaf`.
+/// Anything else is `FromDecl`.
 inline Final finalView(llvm::StringRef c) {
     if (c == "__eco_alloc_inline")
         return Final::UnlessCovered;
@@ -99,9 +164,14 @@ inline Final finalView(llvm::StringRef c) {
     return Final::FromDecl;
 }
 
-// Expansion-callee column: what a declaration that a pre-RS4GC expansion
-// calls must carry. -1 = no row, 0 = must NOT be gc-leaf, 1 = must be gc-leaf.
-// Checked against the module's declarations (EcoBackend.cpp checkMarkerDecls).
+/// Returns whether a declaration of `c`, a function that an expansion before
+/// RS4GC calls, must be gc-leaf: 1 if it must, 0 if it must not, and -1 if
+/// the table says nothing about `c`.
+///
+/// The slow paths `eco_list_tail_hybrid`, `eco_alloc_inline_slow` and
+/// `eco_ensure_nursery_slow` must not be gc-leaf, because they can collect.
+/// `Elm_Kernel_Utils_equal` must be gc-leaf exactly when `veq`, the planned
+/// value-eq predicate, holds.
 inline int expansionCalleeLeaf(llvm::StringRef c, bool veq) {
     if (c == "eco_list_tail_hybrid" || c == "eco_alloc_inline_slow" ||
         c == "eco_ensure_nursery_slow")
@@ -115,10 +185,13 @@ inline int expansionCalleeLeaf(llvm::StringRef c, bool veq) {
     return -1;
 }
 
-// R1 gap (plan 01 §3, plan 02 F11): a declaration may carry gc-leaf without
-// any eco-cap-* fact only if it is a runtime / kernel / intrinsic / libm
-// name. A generated function whose copied declaration lost its eco-cap facts
-// would otherwise read as a transparent leaf.
+/// Returns whether `c` names a function that may be gc-leaf on its own
+/// authority: a runtime, kernel or LLVM intrinsic function, or a libm
+/// function.
+///
+/// The test is by prefix (`eco_`, `__eco_`, `Elm_Kernel_`, `Eco_Kernel_`,
+/// `llvm.`), so it trusts any function so named. Callers reject a gc-leaf
+/// definition with any other name unless a gc-free plan stamped it.
 inline bool isTrustedLeafDecl(llvm::StringRef c) {
     return c.starts_with("eco_") || c.starts_with("__eco_") ||
            c.starts_with("Elm_Kernel_") || c.starts_with("Eco_Kernel_") ||

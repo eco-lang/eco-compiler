@@ -1,6 +1,3 @@
-// threaded-gc-04: the P1 census (detectors O and W, modes, reporting).
-// See P1Census.hpp and plans/threaded-gc-04-frozen-published-heap.md P§3.
-
 #include "P1Census.hpp"
 
 #if P1_CENSUS_COMPILED
@@ -18,20 +15,21 @@
 #include <dlfcn.h>
 
 #include "Allocator.hpp"
-#include "GCFork.hpp"     // CR-032: the census layer of the one fork registration (HEAP_075)
+#include "GCFork.hpp"     // the census fork layer
 #include "GCStats.hpp"
 #include "Heap.hpp"
 #include "OldGenSpace.hpp"
 #include "RuntimeExports.h"
 #include "ThreadLocalHeap.hpp"
-#include "TlaTrace.hpp"   // compiled-out hooks (trace builds only: the M6 fork harness)
+#include "TlaTrace.hpp"   // a probe compiled only in trace builds
 
 namespace Elm {
 ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp
 namespace p1 {
 
-// Befriended by OldGenSpace: the only way the census reads mark bits.
+// The census's access to old-generation mark bits; `OldGenSpace` befriends it.
 struct P1CensusAccess {
+    // Returns whether `obj` is in a block of `og` and marked there now.
     static bool markedNow(const OldGenSpace& og, const void* obj) {
         const BlockId id = og.blockIdFor(obj);
         if (!id.valid()) return false;
@@ -41,11 +39,14 @@ struct P1CensusAccess {
 
 namespace {
 
+// Flushes stderr so the violation message is seen, then aborts.
 [[noreturn]] void censusAbort() {
     std::fflush(stderr);
     std::abort();
 }
 
+// One sampled object in detector O's table, with its hash and signature as
+// last verified.
 struct OEntry {
     char*    obj;
     uint32_t size;
@@ -53,23 +54,30 @@ struct OEntry {
     uint64_t sig;      // wordSignature
 };
 
+// A detector W write site: the helper's name, compared by pointer, and the
+// return address of its call to `noteWrite`.
 struct WKey {
     const char* helper;
     uintptr_t   ret;
     bool operator==(const WKey& o) const { return helper == o.helper && ret == o.ret; }
 };
+// Hashes a `WKey` from both of its fields.
 struct WKeyHash {
     size_t operator()(const WKey& k) const {
         return std::hash<uintptr_t>()(k.ret) ^ (reinterpret_cast<uintptr_t>(k.helper) << 1);
     }
 };
 
+// All census state for the process. `mu` guards the tables, the counters
+// (except the builder-path increment of `w_calls` in `noteWrite`) and
+// `report_registered`; the mode and sampling fields are written once at construction or by the
+// unlocked test setters.
 struct Census {
     std::mutex mu;
     int env_mode = -1;
-    int forced_mode = -1;
+    int forced_mode = -1;      // -1: no override
     uint32_t env_sample = 16;
-    uint32_t forced_sample = 0;
+    uint32_t forced_sample = 0;   // 0: no override
     uint32_t every = 64;
     bool report_registered = false;
 
@@ -84,25 +92,29 @@ struct Census {
 
     std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
     std::vector<uintptr_t> eval_fn;                       // id -> generic fn
-    // CR-032 (§7.2 step 8): set by the census layer's child handler. The tables name
-    // objects of heaps whose mutators do not exist in a forked child: never verified there.
+    // Set in a forked child. The tables name objects of the parent's heaps, so
+    // the child skips the exit report; the other entry points do not check it.
     bool forked_child = false;
 };
 
-// CR-032 (plans/threaded-gc-register-fixes.md §7.2 step 8, HEAP_075): GCFork's census
-// layer (kForkCensus), a leaf after thread_mutex_. The census (and detector N's
-// mutex, its sibling) is held across fork() so the child's copy of the tables is
-// consistent and the mutexes are free there. The hooks read the census through this
-// pointer (set after construction), never through census()'s static guard.
+// The census fork layer (`gc::kForkCensus`), whose locks are taken after
+// `thread_mutex_` and before the helper pool's. The census mutex and detector N's are held across
+// `fork()` so the child's copy of the tables is consistent and both mutexes are
+// free there. The hooks reach the census through `g_census_for_fork`, which is
+// null until the census is constructed, rather than through `census()`, whose
+// first call would construct it inside a fork handler.
 std::atomic<Census*> g_census_for_fork{nullptr};
+// Locks the census mutex, if the census exists, then detector N's.
 void censusForkPrepare() {
     if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.lock();
     nurseryCensusForkPrepare();
 }
+// Unlocks both mutexes in the parent, in the reverse order.
 void censusForkParent() {
     nurseryCensusForkParent();
     if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) c->mu.unlock();
 }
+// Re-creates both mutexes, unlocked, in the child and marks it forked.
 void censusForkChild() {
     nurseryCensusForkChild();
     if (Census* c = g_census_for_fork.load(std::memory_order_acquire)) {
@@ -110,8 +122,11 @@ void censusForkChild() {
         c->forked_child = true;
     }
 }
+// The census fork layer's three handlers.
 const gc::ForkHooks kCensusHooks{&censusForkPrepare, &censusForkParent, &censusForkChild};
 
+// Returns the census, constructing it on the first call: reads and checks the
+// environment, aborting on an invalid value, and registers the fork layer.
 Census& census() {
     // Leaked on purpose: must outlive every heap and still exist at atexit.
     static Census* g = [] {
@@ -154,12 +169,14 @@ Census& census() {
     return *g;
 }
 
+// Returns `h` combined with word `w`.
 inline uint64_t mix(uint64_t h, uint64_t w) {
     h = (h ^ w) * 0x9E3779B97F4A7C15ull;
     return h ^ (h >> 29);
 }
 
-// Header bits owned by the GC / the builder protocol (P§3.3).
+// Returns the mask of header word 0 covering color, age and builder, the bits
+// the collector and the builder protocol change on a survivor.
 uint64_t gcHeaderMask() {
     static const uint64_t mask = [] {
         Header h;
@@ -174,6 +191,7 @@ uint64_t gcHeaderMask() {
     return mask;
 }
 
+// Returns word `i` of `obj`, with the `gcHeaderMask` bits cleared in word 0.
 inline uint64_t loadWord(const char* obj, size_t i) {
     uint64_t w;
     std::memcpy(&w, obj + 8 * i, 8);
@@ -181,17 +199,24 @@ inline uint64_t loadWord(const char* obj, size_t i) {
     return w;
 }
 
+// Returns whether `p` is in the sample of one address in `s`, `s` being a
+// power of two; every address is when `s` is at most 1.
 inline bool sampled(const void* p, uint32_t s) {
     if (s <= 1) return true;
     const uint64_t a = reinterpret_cast<uintptr_t>(p) >> 3;
     return ((a * 0x9E3779B97F4A7C15ull) >> 40 & (s - 1)) == 0;
 }
 
+// Returns the key of `o_hits`: tag in bits 48-55, sub-key in bits 16-47, word
+// in bits 0-15.
 inline uint64_t censusKey(int tag, uint32_t sub, uint16_t word) {
     return (static_cast<uint64_t>(tag & 0xFF) << 48) |
            (static_cast<uint64_t>(sub) << 16) | word;
 }
 
+// Returns the sub-key of `obj` for `o_hits`: a Custom's constructor, a
+// Closure's evaluator id (assigned on first sight, so its generic function can
+// be named in the report), or 0. Requires `g.mu`.
 uint32_t subKeyLocked(Census& g, const char* obj) {
     const Header* h = reinterpret_cast<const Header*>(obj);
     if (h->tag == Tag_Custom) {
@@ -212,6 +237,8 @@ uint32_t subKeyLocked(Census& g, const char* obj) {
     return 0;
 }
 
+// Writes `symbol+0xoffset` for `addr` into `buf`, or `?` when `dladdr` finds no
+// symbol, and returns `buf`.
 const char* symbolFor(uintptr_t addr, char* buf, size_t n) {
     Dl_info info{};
     if (addr && dladdr(reinterpret_cast<void*>(addr), &info) && info.dli_sname) {
@@ -223,6 +250,7 @@ const char* symbolFor(uintptr_t addr, char* buf, size_t n) {
     return buf;
 }
 
+// Re-hashes every entry of `t` as `verifyOldGen` describes. Requires `g.mu`.
 void verifyTableLocked(Census& g, std::vector<OEntry>& t, const char* where) {
     const int m = mode();
     for (OEntry& e : t) {
@@ -251,6 +279,8 @@ void verifyTableLocked(Census& g, std::vector<OEntry>& t, const char* where) {
     }
 }
 
+// Prints the one-line counter summary to `f`, labelled with `minors`.
+// Requires `g.mu`.
 void printSummaryLocked(Census& g, FILE* f, uint64_t minors) {
     size_t entries = 0;
     for (auto& kv : g.tables) entries += kv.second.size();
@@ -263,6 +293,9 @@ void printSummaryLocked(Census& g, FILE* f, uint64_t minors) {
         (unsigned long long)g.w_calls, (unsigned long long)g.w_violations);
 }
 
+// Prints the summary, the 50 most frequent detector O keys, every detector W
+// site, and the address of `eco_alloc_custom` as an anchor for resolving the
+// printed addresses offline. Requires `g.mu`.
 void printTablesLocked(Census& g, FILE* f) {
     printSummaryLocked(g, f, 0);
     std::vector<std::pair<uint64_t, uint64_t>> rows(g.o_hits.begin(), g.o_hits.end());
@@ -291,9 +324,11 @@ void printTablesLocked(Census& g, FILE* f) {
                  (unsigned long)reinterpret_cast<uintptr_t>(&eco_alloc_custom));
 }
 
+// Verifies every table one last time and, unless the mode is 0, prints the
+// tables. Registered with `atexit`; does nothing in a forked child.
 void atexitReport() {
     Census& g = census();
-    if (g.forked_child) return;   // CR-032: the tables name another process's heaps
+    if (g.forked_child) return;
     {
         std::lock_guard<std::mutex> lk(g.mu);
         for (auto& kv : g.tables) verifyTableLocked(g, kv.second, "exit");
@@ -302,6 +337,7 @@ void atexitReport() {
     std::fflush(stderr);
 }
 
+// Registers `atexitReport` with `atexit`, the first time only. Requires `g.mu`.
 void registerReportLocked(Census& g) {
     if (!g.report_registered) {
         g.report_registered = true;
@@ -336,7 +372,7 @@ uint64_t hashObject(const char* obj, size_t size) {
 
 uint64_t wordSignature(const char* obj, size_t size) {
     // One byte per word for the first 8 words (a collision hides a changed
-    // word 1 time in 256; typical objects are 2-4 words).
+    // word 1 time in 256).
     uint64_t sig = 0;
     const size_t n = std::min<size_t>(size / 8, 8);
     for (size_t i = 0; i < n; ++i) {
@@ -352,13 +388,13 @@ void recordPromoted(const OldGenSpace* og, const std::vector<void*>& promoted) {
     const uint32_t s = sample();
     std::lock_guard<std::mutex> lk(g.mu);
     registerReportLocked(g);
-    // M6 fork harness (det-cr032): a pause point while g.mu is held (CR-032).
+    // A trace-build probe point at which the census mutex is held.
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.census.locked");)
     std::vector<OEntry>& t = g.tables[og];
     for (void* p : promoted) {
         if (!sampled(p, s)) continue;
         const char* obj = static_cast<const char*>(p);
-        if (reinterpret_cast<const Header*>(obj)->builder) continue;   // never promoted anyway
+        if (reinterpret_cast<const Header*>(obj)->builder) continue;   // may still be written
         const size_t size = getObjectSize(p);
         if (size == 0 || size > UINT32_MAX) continue;
         t.push_back(OEntry{static_cast<char*>(p), static_cast<uint32_t>(size),
@@ -427,14 +463,12 @@ __attribute__((noinline)) void noteWrite(void* obj, const char* helper) {
     const uintptr_t ret = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
     const Header* h = reinterpret_cast<const Header*>(obj);
     if (h->builder) {
-        census().w_calls++;   // racy only across mutator threads; stats
+        census().w_calls++;   // unlocked: a statistic only
         return;
     }
     Allocator& A = Allocator::instance();
     const bool in_nursery = A.isInNursery(obj);
-    // threaded-gc-04b HEAP_062: a young large object is judged like a
-    // nursery object — a write is a violation once it has survived a minor.
-    // Any other old-gen target is a violation.
+    // A young large object (HEAP_062) is judged like a nursery object, by age.
     ThreadLocalHeap* tlh = A.getCurrentThreadHeap();
     const bool young_large =
         !in_nursery && tlh != nullptr && tlh->getOldGen().isYoungLarge(obj);

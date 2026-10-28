@@ -1,28 +1,34 @@
 //===- EcoToLLVMHeap.cpp - Heap operation lowering patterns ---------------===//
 //
-// This file implements lowering patterns for ECO heap operations:
-// box, unbox, allocate, construct, and project operations.
+// Compiled Elm code builds and reads heap objects itself, without calling the runtime for each field. This file
+// turns the eco operations that box, allocate, construct and project heap values into LLVM-dialect code that
+// does so, and lowers the array operations and a few string and list operations, most of them to runtime
+// calls. `populateEcoHeapPatterns` adds the patterns; `lowerAllocGroups` runs on its own, before the pattern
+// conversion.
 //
-// Allocation takes one of three forms (GC root tracking is handled by LLVM's
-// RewriteStatepointsForGC (RS4GC) pass, which automatically inserts
-// gc.statepoint/gc.relocate around calls to non-gc-leaf functions in
-// functions with gc "eco-gc"; GC pointers are identified as ptr addrspace(1)):
+// Every heap slot is one 64-bit word. Only Int (i64), Float (f64) and Char (i32) are stored unboxed; a Bool is
+// always a boxed `!eco.value`, the True or False embedded constant. In tuples, records and customs each slot's
+// kind is taken from the type its operand had before conversion; a cons cell's head kind comes from the op's
+// verified `head_kind` attribute. The object records the kinds so that the collector knows which slots hold
+// pointers.
 //
-// 1. INLINE NURSERY BUMP (HEAP_034, plans/inline-nursery-allocation.md, the
-//    default): statically-sized construct/box/closure sites emit the
-//    `__eco_alloc_inline(size)` marker + a constant header-word store +
-//    fresh field stores (emitFreshFieldStore). expandInlineAllocs
-//    (EcoBackend.cpp, pre-RS4GC) expands the marker to a bump-pointer
-//    fast/slow diamond against eco_bump_state()'s {ptr, end}; only the
-//    slow edge (eco_alloc_inline_slow) is a statepoint.
-//    `ECO_INLINE_ALLOC=0` restores form 2 (temporary rollout env, N6).
-// 2. UNIFIED RUNTIME CALLS (eco_alloc_*): statepointed calls that handle GC
-//    internally — the fallback for dynamically-sized/fill-later classes
-//    (eco.allocate, allocate_string, allocate_closure,
-//    strings/arrays) and the ECO_INLINE_ALLOC=0 A/B leg.
-// 3. ALLOCATION GROUPS (eco.gc_group_size >= 2, lowerAllocGroups below):
-//    one region fast/slow diamond for a whole group of adjacent allocs
-//    (gc-leaf eco_gc_alloc_region_fast + statepointed region_slow).
+// An object is allocated in one of three ways.
+//
+// 1. Inline. When `inlineAllocEnabled()`, an object of fixed size up to 4096 bytes is allocated with the
+//    `__eco_alloc_inline` marker (`emitInlineAllocWithHeader`), given a constant header word, and then has
+//    every slot stored directly. The backend expands the marker before RS4GC.
+// 2. A runtime call. Otherwise an `eco_alloc_*` function allocates the object. It is not gc-leaf, so RS4GC
+//    makes the call a statepoint. The fields are then stored directly or through gc-leaf store functions.
+// 3. A group. EcoGCPrepare marks a run of adjacent fixed-size allocations with `eco.gc_group_size`, and
+//    `lowerAllocGroups` gives the run one allocation of its total size: the gc-leaf
+//    `eco_gc_alloc_region_fast`, which returns null when it cannot, and otherwise the statepointed
+//    `eco_gc_alloc_region_slow`. Each member is initialised in place by a gc-leaf `eco_init_*_at` call.
+//
+// A collection may copy an object and leave a forwarding word in its place, so a field is read through the
+// forwarding check: the pointer goes through the `__eco_resolve_fwd` marker, which stays in
+// `ptr addrspace(1)` so that RS4GC still tracks it, and the backend expands the marker to an inline test of
+// the header. Every slot is 8-byte aligned (HEAP_028), so slot loads are `align 8`. A projection whose operand
+// is a value-level aggregate, an LLVM struct rather than a heap object, is an `extractvalue`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,30 +44,28 @@ using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
-// Plan D6: the inline-deref layout constants must not drift from the runtime
-// heap layout. Cross-check them against Heap.hpp at compile time.
+// The layout constants this file compiles into code must equal the runtime's in Heap.hpp. Each is checked
+// here at compile time, except the bit positions of the header fields: bit-field packing is
+// implementation-defined, so the test `testHeaderWordComposition` checks those at run time.
 static_assert(eco::detail::value_enc::TagForward == Elm::Tag_Forward,
               "value_enc::TagForward out of sync with Elm::Tag_Forward");
 static_assert(eco::detail::value_enc::TagBits == TAG_BITS,
               "value_enc::TagBits out of sync with TAG_BITS");
-// P2.5 (plans/allocator-resolve-inlining.md R1b): the inline get_tag lowering
-// discriminates on these two tags.
+// The inline get_tag lowering tells these two tags apart.
 static_assert(eco::detail::value_enc::TagCons == Elm::Tag_Cons,
               "value_enc::TagCons out of sync with Elm::Tag_Cons");
 static_assert(eco::detail::value_enc::TagCustom == Elm::Tag_Custom,
               "value_enc::TagCustom out of sync with Elm::Tag_Custom");
-// Null-cons embedding (plans/null-cons-hpointer-embedding.md, HEAP_044): the
-// eco.constant.null_cons lowering and the get_tag diamond compose/decode the
-// word from these; they must not drift from the Heap.hpp field layout.
+// The null-cons constant lowering and the inline get_tag lowering build and decode null-cons words
+// (HEAP_044) from these.
 static_assert(eco::detail::value_enc::NullConsShift == NULL_CONS_SHIFT,
               "value_enc::NullConsShift out of sync with NULL_CONS_SHIFT");
 static_assert(eco::detail::value_enc::NullConsMax == NULL_CONS_MAX,
               "value_enc::NullConsMax out of sync with NULL_CONS_MAX");
 static_assert(eco::detail::value_enc::NullCons == Elm::Const_NullCons,
               "value_enc::NullCons out of sync with Elm::Const_NullCons");
-// Custom/Record layout C (plans/wide-object-tail-kind-words-phase-3.md 3B.1):
-// the codegen and runtime layout constants are pinned equal, and the widest
-// objects stay below the born-old threshold (young: no barrier needed).
+// The record and custom kind-word layout, and the largest record and custom, which must be smaller than
+// 32 KiB, EcoGCPrepare's `GroupLargeObjectThreshold`.
 static_assert(eco::detail::layout::CustomHdrSlots == Elm::CUSTOM_HDR_SLOTS);
 static_assert(eco::detail::layout::RecordHdrSlots == Elm::RECORD_HDR_SLOTS);
 static_assert(eco::detail::layout::SlotsPerExtWord == Elm::SLOTS_PER_EXT_WORD);
@@ -69,10 +73,7 @@ static_assert(eco::detail::layout::recordByteSize(Elm::RECORD_MAX_FIELDS) < 32 *
               "wide records must stay below GroupLargeObjectThreshold (young, no barrier needed)");
 static_assert(eco::detail::layout::customByteSize(Elm::CUSTOM_MAX_FIELDS) < 32 * 1024,
               "wide customs must stay below GroupLargeObjectThreshold (young, no barrier needed)");
-// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034):
-// the converted lowerings compose full header words from these tags. The
-// bitfield SHIFTS cannot be static_assert-ed (implementation-defined
-// packing) — they are pinned at runtime by testHeaderWordComposition.
+// The inline allocations compose header words from these tags.
 static_assert(eco::detail::value_enc::TagInt == Elm::Tag_Int,
               "value_enc::TagInt out of sync with Elm::Tag_Int");
 static_assert(eco::detail::value_enc::TagFloat == Elm::Tag_Float,
@@ -87,7 +88,7 @@ static_assert(eco::detail::value_enc::TagRecord == Elm::Tag_Record,
               "value_enc::TagRecord out of sync with Elm::Tag_Record");
 static_assert(eco::detail::value_enc::TagClosure == Elm::Tag_Closure,
               "value_enc::TagClosure out of sync with Elm::Tag_Closure");
-// Inline-alloc byte-size constants must match the runtime structs.
+// The object sizes the inline allocations use.
 static_assert(eco::detail::layout::Tuple2Size == sizeof(Elm::Tuple2) &&
               eco::detail::layout::Tuple3Size == sizeof(Elm::Tuple3) &&
               eco::detail::layout::ConsSize == sizeof(Elm::Cons) &&
@@ -101,25 +102,17 @@ static_assert(eco::detail::layout::Tuple2Size == sizeof(Elm::Tuple2) &&
 
 namespace {
 
-// Forward declaration: defined further down in this file. Needed earlier by
-// ListConstructOpLowering for the narrow-int head-store path.
+// Defined further down; ListConstructOpLowering uses it.
 static Value widenFieldToI64(Value val, Location loc,
                              ConversionPatternRewriter &rewriter);
 
 //===----------------------------------------------------------------------===//
-// Inline heap dereference (plan P2 / --inline-deref)
-//
-// Instead of `call eco_resolve_hptr` (returns a raw addrspace(0) pointer, out
-// of line, behind a gc-leaf call) followed by GEP + load, the inline path emits
-// a `__eco_resolve_fwd` marker call that stays in addrspace(1) — so RS4GC keeps
-// tracking the derived pointer — then the GEP + load directly on that as1
-// pointer. The marker is expanded to an inline forwarding-check diamond by the
-// ExpandInlineDeref LLVM pass (before RS4GC), turning the common no-forward case
-// into a header load + predicted-not-taken branch with no call. All loads are
-// `align 8` (HEAP_028: every heap slot is 8-byte aligned).
+// Inline heap reads, through the forwarding check
 //===----------------------------------------------------------------------===//
 
-/// Resolve `hptr` (as1) to its object base (as1) via the inline marker.
+/// Returns the address of the object `hptr` names, after following a forwarding word, as the result of the
+/// `__eco_resolve_fwd` marker. `hptr` must name a heap object, not an embedded constant. This is the same as
+/// `inlineResolvedBase`.
 static Value emitResolvedBase(Value hptr, Location loc,
                               ConversionPatternRewriter &rewriter,
                               const EcoRuntime &runtime) {
@@ -128,7 +121,7 @@ static Value emitResolvedBase(Value hptr, Location loc,
         .getResult();
 }
 
-/// Inline field pointer: resolved-base + byteOffset, typed as1.
+/// Returns a `ptr addrspace(1)` to byte `byteOffset` of the object `hptr` names, after the forwarding check.
 static Value emitInlineFieldPtr(Value hptr, Value byteOffset, Location loc,
                                 ConversionPatternRewriter &rewriter,
                                 const EcoRuntime &runtime) {
@@ -140,8 +133,8 @@ static Value emitInlineFieldPtr(Value hptr, Value byteOffset, Location loc,
                                         ValueRange{byteOffset});
 }
 
-/// Inline boxed field load: resolve + GEP(constant offset) + load i64 (align 8)
-/// + inttoptr to as1. Returns the field's !eco.value (as1) SSA value.
+/// Returns the boxed slot at byte `offsetBytes` of the object `hptr` names, read through the forwarding check,
+/// as a `ptr addrspace(1)`. The loaded word becomes a pointer through `heapLoadI64ToValue`.
 static Value emitInlineBoxedLoad(Value hptr, int64_t offsetBytes, Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  const EcoRuntime &runtime) {
@@ -154,8 +147,8 @@ static Value emitInlineBoxedLoad(Value hptr, int64_t offsetBytes, Location loc,
     return heapLoadI64ToValue(rewriter, loc, loaded);
 }
 
-/// Inline primitive field load: resolve + GEP(constant offset) + typed load
-/// (align 8). `primTy` is i64/f64/i32 (Char).
+/// Returns the unboxed slot at byte `offsetBytes` of the object `hptr` names, read through the forwarding check
+/// as a `primTy`, which is i64, f64 or i32.
 static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
                                 Location loc,
                                 ConversionPatternRewriter &rewriter,
@@ -169,13 +162,14 @@ static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
 }
 
 //===----------------------------------------------------------------------===//
-// Allocation coalescing helpers (Phase 4 infrastructure)
+// Allocation sizes for groups
 //===----------------------------------------------------------------------===//
 
-/// Compute the aligned allocation size for a given Eco allocation op.
-/// Returns 0 if the size cannot be statically determined.
+/// Returns the size in bytes, a multiple of 8, of the object `op` allocates, or 0 for an op whose size is not
+/// known here, including a box of a Bool. It must agree byte for byte with `getFixedAllocSizeForGrouping` in
+/// EcoGCPrepare.cpp, which sizes the same groups; the two are separate copies.
 static int64_t computeAllocSize(Operation *op) {
-    constexpr int64_t HeaderSize = 8;
+    constexpr int64_t HeaderSize = 8; // Bytes in an object header.
 
     if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
         int64_t size = HeaderSize + allocStr.getLength() * 2;
@@ -184,8 +178,7 @@ static int64_t computeAllocSize(Operation *op) {
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;
-    // Layout C (HEAP_019): 16 + 8 * (n + K); must agree with EcoGCPrepare's
-    // getFixedAllocSizeForGrouping byte-for-byte.
+    // Includes the extension kind words (HEAP_019).
     if (auto recOp = dyn_cast<eco::RecordConstructOp>(op))
         return static_cast<int64_t>(layout::recordByteSize(recOp.getFieldCount()));
     if (auto customOp = dyn_cast<eco::CustomConstructOp>(op))
@@ -200,12 +193,21 @@ static int64_t computeAllocSize(Operation *op) {
 }
 
 //===----------------------------------------------------------------------===//
-// eco.box -> call eco_alloc_* + ptrtoint
+// eco.box
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.box`, which turns an Int (i64), Float (f64), Char (i32) or Bool (i1) into an
+/// `!eco.value`.
+///
+/// An Int, Float or Char becomes a 16-byte object of tag Int, Float or Char that holds the value in the word
+/// after its header. When `inlineAllocEnabled()` the object is allocated inline (HEAP_034) and a Char is stored
+/// zero-extended to the whole word; otherwise `eco_alloc_int`, `eco_alloc_float` or `eco_alloc_char` makes it.
+/// A Bool allocates nothing: it becomes the True or False embedded constant (CGEN_019). Any other operand type
+/// fails with an error.
 struct BoxOpLowering : public OpConversionPattern<BoxOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     BoxOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                   const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -221,11 +223,6 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         Type inputType = input.getType();
         Value result;
 
-        // Inline nursery allocation (HEAP_034): boxed Int/Float/Char are
-        // header + one payload slot; emitFreshFieldStore's type dispatch
-        // (i64 direct, f64 bitcast, i32 Char zext — the zext fully defines the
-        // Char word: code point + zero padding, HEAP/REP_HEAP_002).
-        // Bool (i1) keeps the embedded-constant path below (CGEN_019).
         if (inlineAllocEnabled() &&
             (inputType.isInteger(64) || inputType.isF64() ||
              eco::isEcoCharType(inputType))) {
@@ -243,25 +240,21 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         }
 
         if (inputType.isInteger(64)) {
-            // Box i64 -> eco_alloc_int with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocInt(rewriter),
                 ValueRange{input});
         } else if (inputType.isF64()) {
-            // Box f64 -> eco_alloc_float with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocFloat(rewriter),
                 ValueRange{input});
         } else if (eco::isEcoCharType(inputType)) {
-            // Box i32 (char) -> eco_alloc_char with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocChar(rewriter),
                 ValueRange{input});
         } else if (inputType.isInteger(1)) {
-            // Box i1 (bool) -> use embedded constant True/False (no allocation)
             auto hptrTy = getHPtrLLVMType(*ctx);
             Value trueI64 = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::True));
@@ -280,12 +273,18 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.unbox -> inttoptr + gep + load
+// eco.unbox
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.unbox`, which reads the Int, Float, Char or Bool out of an `!eco.value`.
+///
+/// For a Bool result the operand is compared with the True constant, so any other word gives false. For any
+/// other result the operand must name a boxed object of that kind, and the value is loaded from the word after
+/// its header, through the forwarding check.
 struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     UnboxOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                     const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -301,7 +300,6 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
         Value input = adaptor.getValue();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-        // Special case for i1 (Bool): boxed bools are embedded constants
         if (resultType == i1Ty) {
             auto hptrTy = getHPtrLLVMType(*ctx);
             Value trueI64 = rewriter.create<LLVM::ConstantOp>(
@@ -313,8 +311,6 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
             return success();
         }
 
-        // Inline: resolve (as1) + GEP(+8) + typed load (align 8). Boxed
-        // Int/Float/Char are heap objects; the forward check applies.
         Value result = emitInlinePrimLoad(input, layout::HeaderSize,
                                           resultType, loc, rewriter, runtime);
         rewriter.replaceOp(op, result);
@@ -323,12 +319,14 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.allocate -> call eco_allocate + ptrtoint
+// eco.allocate
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.allocate` to a call of `eco_allocate` with the op's size and the Custom tag.
 struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     AllocateOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -353,12 +351,15 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.allocate_string -> call eco_alloc_string
+// eco.allocate_string
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.allocate_string` to a call of `eco_alloc_string` with the op's length,
+/// passed as an i32.
 struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     AllocateStringOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -383,12 +384,19 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.construct.list -> call eco_alloc_cons
+// eco.construct.list
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.construct.list`, which makes a cons cell from a head and a tail.
+///
+/// The op's `head_kind` (0 boxed, 1 Int, 2 Float, 3 Char) goes into the cell's header, so that the collector
+/// knows whether the head slot holds a pointer. When `inlineAllocEnabled()` the cell is allocated inline and
+/// both slots are stored directly. Otherwise `eco_alloc_cons_uninit` allocates it with the head kind already
+/// set, and the head and tail are stored by the `eco_store_cons_head*` and `eco_store_cons_tail` calls.
 struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ListConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -402,18 +410,10 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 
         Value headLLVM = adaptor.getHead();
         Value tailVal  = adaptor.getTail();
-        // 2-bit kind: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i32).
         uint32_t headKind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
 
-        // Inline nursery allocation (HEAP_034): marker + header (head kind
-        // in Header.unboxed) + fresh head/tail stores — cons goes from
-        // THREE runtime calls per cell (alloc + head store + tail store,
-        // the R5 Part 1 leftovers) to zero on the fast path. The head
-        // operand's type corresponds 1:1 with head_kind (Bool heads are
-        // always boxed !eco.value, REP invariants; ListConstructOp::verify
-        // checks both, SD-4), so emitFreshFieldStore's
-        // type dispatch reproduces the kind switch below exactly. No
-        // zero-init: no safepoint can observe the cell before its stores.
+        // ListConstructOp::verify ties head_kind to the head's type, so storing by type stores what the kind
+        // says. Nothing can collect before both stores, so the cell is not zeroed.
         if (inlineAllocEnabled()) {
             uint64_t header = value_enc::composeHeader(
                 value_enc::TagCons, headKind, layout::ConsSize);
@@ -429,16 +429,14 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 
         auto headKindVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
 
-        // Alloc uninit with head_kind set up-front so a collection between
-        // alloc and the post-alloc head store finds null in the head slot
-        // (rather than uninitialised garbage) when the head is boxed.
+        // eco_alloc_cons_uninit sets head_kind and zeroes both slots, so the cell is valid for a collection
+        // before the stores below.
         Value consHPtr = emitAllocWithSafepoint(
             op, rewriter, runtime,
             runtime.getOrCreateAllocConsUninit(rewriter),
             ValueRange{headKindVal});
 
         if (headKind == 0) {
-            // Boxed head: pass ptr addrspace(1) directly.
             rewriter.create<LLVM::CallOp>(loc,
                 runtime.getOrCreateStoreConsHead(rewriter),
                 ValueRange{consHPtr, headLLVM});
@@ -447,13 +445,13 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
                 runtime.getOrCreateStoreConsHeadF64(rewriter),
                 ValueRange{consHPtr, headLLVM});
         } else {
-            // kind == 1 (Int/i64) or 3 (Char/i32): widen narrow → i64.
+            // kind == 1 (Int/i64) or 3 (Char/i32).
             Value widened = widenFieldToI64(headLLVM, loc, rewriter);
             rewriter.create<LLVM::CallOp>(loc,
                 runtime.getOrCreateStoreConsHeadI64(rewriter),
                 ValueRange{consHPtr, widened});
         }
-        // Tail is always a boxed HPointer (next cons cell or nil).
+        // The tail is always boxed.
         rewriter.create<LLVM::CallOp>(loc,
             runtime.getOrCreateStoreConsTail(rewriter),
             ValueRange{consHPtr, tailVal});
@@ -463,14 +461,19 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.list_head -> load from Cons.head (offset 8)
-// For primitive result types (i64, f64), uses runtime helpers that handle
-// both boxed and unboxed heads transparently.
+// eco.project.list_head
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.list_head`, which reads the head of a non-empty list.
+///
+/// A value-level cons (an LLVM struct) gives its first element. An Int, Float or Char result is read by
+/// `eco_cons_head_i64`, `eco_cons_head_f64` or `eco_cons_head_char`, which accept a head stored boxed or
+/// unboxed. A boxed result is the `__eco_list_head_inline` marker in a module with `eco.list_chunks`, where the
+/// node may be a chunk view, and otherwise an inline load of the head slot.
 struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ListHeadOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -481,11 +484,8 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         auto loc = op.getLoc();
         Value input = adaptor.getList();
 
-        // Check the original ECO result type to decide how to extract the head.
         Type origResultType = op.getResult().getType();
 
-        // Value-aggregate path: operand is an LLVM struct (from !eco.cons).
-        // Head is field 0; emit extractvalue, no resolve_hptr / runtime helper.
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Type resultType = getTypeConverter()->convertType(origResultType);
             Value result = rewriter.create<LLVM::ExtractValueOp>(
@@ -494,8 +494,6 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // For primitive types (i64, f64, i32 Char), use runtime helpers that handle
-        // both boxed and unboxed heads correctly.
         if (origResultType.isInteger(64)) {
             auto helperFunc = runtime.getOrCreateConsHeadI64(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
@@ -515,11 +513,7 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // Chunked-list modules (eco.list_chunks): the node may be a chunk
-        // view. Emit the inline MARKER; expandListProjMarkers (EcoBackend)
-        // opens it into a cell-fast (inline slot load) / chunk-slow (hybrid
-        // helper call) diamond at the LLVM level, where block structure is
-        // unconstrained. Same blind-8-byte semantics as the inline load.
+        // The backend expands the marker into an inline load for a cons cell and a helper call for a chunk view.
         if (runtime.listChunks) {
             auto markerFunc = runtime.getOrCreateListHeadInlineMarker(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc,
@@ -528,7 +522,6 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // For !eco.value (HPointer): inline resolve + GEP(head) + load i64 + wrap.
         rewriter.replaceOp(op, emitInlineBoxedLoad(input, layout::ConsHeadOffset,
                                                    loc, rewriter, runtime));
         return success();
@@ -536,12 +529,18 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.list_tail -> load from Cons.tail (offset 16)
+// eco.project.list_tail
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.list_tail`, which reads the tail of a non-empty list.
+///
+/// A value-level cons gives its second element. In a module with `eco.list_chunks` the result is the
+/// `__eco_list_tail_inline` marker, since the tail of a chunk view may be a new view that has to be allocated.
+/// Otherwise it is an inline load of the tail slot.
 struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ListTailOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -552,8 +551,6 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
         auto loc = op.getLoc();
         Value input = adaptor.getList();
 
-        // Value-aggregate path: operand is an LLVM struct (from !eco.cons).
-        // Tail is field 1; emit extractvalue.
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Type resultType = getTypeConverter()->convertType(op.getResult().getType());
             Value result = rewriter.create<LLVM::ExtractValueOp>(
@@ -562,11 +559,8 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
             return success();
         }
 
-        // Chunked-list modules (eco.list_chunks): tail on a chunk view may
-        // MATERIALIZE a successor view. Emit the inline MARKER; the expanded
-        // diamond's cell edge is today's inline load, and only the chunk
-        // edge calls the allocating hybrid helper (statepointed, HEAP_034
-        // slow-edge pattern).
+        // The backend expands the marker into an inline load for a cons cell and, for a chunk view, a call that
+        // may allocate.
         if (runtime.listChunks) {
             auto markerFunc = runtime.getOrCreateListTailInlineMarker(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc,
@@ -582,13 +576,15 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Helper: widen an SSA field value to i64 for runtime Unboxable slots.
-// Only Int (i64), Float (f64), and Char (i32) are unboxed in heap fields.
-// i64 and ptr (eco.value → i64) pass through unchanged.
+// Field widening
 //===----------------------------------------------------------------------===//
 
-/// Widen an SSA field value to i64 for runtime Unboxable slots.
-/// Caller must consume the result immediately in a store or gc-leaf call argument.
+/// Returns `val` as the 64-bit word a heap slot holds: a `ptr addrspace(1)` through `heapStoreValueToI64`, a
+/// narrower integer zero-extended, an f64 bitcast, and anything else, an i64 included, unchanged.
+///
+/// The word of a boxed value is not tracked by the collector, so the caller must use it at once, in a store or
+/// as an argument to a gc-leaf call. EcoToLLVMValueAgg.cpp has its own copy of this function; the two must
+/// change together.
 static Value widenFieldToI64(Value val, Location loc,
                              ConversionPatternRewriter &rewriter) {
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
@@ -605,12 +601,20 @@ static Value widenFieldToI64(Value val, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// eco.construct.tuple2 -> call eco_alloc_tuple2
+// eco.construct.tuple2
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.construct.tuple2`.
+///
+/// The op's `unboxed_bitmap`, two bits of slot kind per field, is copied into the header. When
+/// `inlineAllocEnabled()` the tuple is allocated inline and both fields are stored directly. Otherwise
+/// `eco_alloc_tuple2_uninit` allocates it, and the fields are stored directly when `inlineDerefExtEnabled()`,
+/// or else by the `eco_store_tuple_field*` calls. Each field's word is chosen by the type its operand had
+/// before conversion.
 struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     Tuple2ConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                               const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -622,11 +626,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        // Alloc-uninit + per-field-store pattern. Boxed (`!eco.value`)
-        // operands stay ptr<1> across the alloc safepoint, so RS4GC
-        // relocates them like any other live GC pointer; the FCA of
-        // ptr<1>s that the old all-in-one ABI required (via ptrtoint) is
-        // avoided entirely.
+        // Boxed operands stay `ptr addrspace(1)` across the allocation call, so RS4GC relocates them.
         Value aLLVM = adaptor.getA();
         Value bLLVM = adaptor.getB();
         Type aOrig = op.getA().getType();
@@ -634,10 +634,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
 
         int64_t unboxedMask = op.getUnboxedBitmap();
 
-        // Inline nursery allocation (HEAP_034): bump-diamond marker + one
-        // constant header store + fresh field stores — zero calls on the
-        // fast path. sizeField for Tuple2 = byte size (initHeaderForTag
-        // default arm).
+        // A tuple's header size field holds its byte size.
         if (inlineAllocEnabled()) {
             uint64_t header = value_enc::composeHeader(
                 value_enc::TagTuple2,
@@ -666,8 +663,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
         auto storeOne = [&](unsigned idx, Value v, Type origTy) {
-            // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store
-            // (Tuple2/Tuple3 fields both start at +8).
+            // A fresh tuple may be written directly (HEAP_031).
             if (inlineDerefExtEnabled()) {
                 emitFreshFieldStore(rewriter, loc, tuple,
                     layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
@@ -686,8 +682,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
                 rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                     ValueRange{tuple, idxVal, widened});
             } else {
-                // !eco.value → ptr addrspace(1): pass directly, no ptrtoint.
-                rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
+                    rewriter.create<LLVM::CallOp>(loc, storeFieldBoxed,
                     ValueRange{tuple, idxVal, v});
             }
         };
@@ -699,12 +694,14 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
 };
 
 //===----------------------------------------------------------------------===//
-// eco.construct.tuple3 -> call eco_alloc_tuple3
+// eco.construct.tuple3
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.construct.tuple3`, as `Tuple2ConstructOpLowering` does for two fields.
 struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     Tuple3ConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                               const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -725,7 +722,6 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
 
         int64_t unboxedMask = op.getUnboxedBitmap();
 
-        // Inline nursery allocation (HEAP_034): see the Tuple2 arm.
         if (inlineAllocEnabled()) {
             uint64_t header = value_enc::composeHeader(
                 value_enc::TagTuple3,
@@ -756,8 +752,7 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto storeFieldF64   = runtime.getOrCreateStoreTupleFieldF64(rewriter);
 
         auto storeOne = [&](unsigned idx, Value v, Type origTy) {
-            // P2.5 R5 Part 1 (HEAP_031): fresh tuple -> direct AS1 store
-            // (Tuple2/Tuple3 fields both start at +8).
+            // A fresh tuple may be written directly (HEAP_031).
             if (inlineDerefExtEnabled()) {
                 emitFreshFieldStore(rewriter, loc, tuple,
                     layout::HeaderSize + int64_t(idx) * layout::PtrSize, v, origTy);
@@ -789,12 +784,18 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.tuple2 -> load from Tuple2.a/b
+// eco.project.tuple2
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.tuple2`, which reads field 0 or 1 of a tuple.
+///
+/// A value-level aggregate (an LLVM struct) gives its element. Otherwise the slot is loaded through the
+/// forwarding check, as an `!eco.value` or as an i64, f64 or i32; any other result type, Bool included,
+/// fails with an error.
 struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     Tuple2ProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -807,9 +808,6 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
         int64_t field = op.getField();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-        // Value-aggregate path: operand is an LLVM struct (lowered from
-        // !eco.tuple2). Emit extractvalue instead of the heap-load
-        // sequence.
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{field});
@@ -819,7 +817,6 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 
         int64_t offsetBytes = layout::Tuple2FirstOffset + field * layout::PtrSize;
 
-        // Tuple slots are simple (resolve + load raw slot), boxed or primitive.
         if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
             !resultType.isF64() && !eco::isEcoCharType(resultType))
             return op.emitOpError(
@@ -836,12 +833,18 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.tuple3 -> load from Tuple3 fields
+// eco.project.tuple3
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.tuple3`, which reads field 0, 1 or 2 of a tuple.
+///
+/// A value-level aggregate (an LLVM struct) gives its element. Otherwise the slot is loaded through the
+/// forwarding check, as an `!eco.value` or as an i64, f64 or i32; any other result type, Bool included,
+/// fails with an error.
 struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     Tuple3ProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -854,7 +857,6 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
         int64_t field = op.getField();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-        // Value-aggregate path: operand is an LLVM struct (from !eco.tuple3).
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{field});
@@ -880,12 +882,21 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.construct.record -> call eco_alloc_record, then store fields
+// eco.construct.record
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.construct.record`.
+///
+/// Each slot's kind comes from the type its operand had before conversion; the op's kind attributes are only
+/// checked by the verifier. The first `layout::RecordHdrSlots` kinds are packed into the word after the header,
+/// and the rest into extension kind words after the last field (HEAP_019). When `inlineAllocEnabled()`, a
+/// record of at most 4096 bytes is allocated inline, and its kind word, fields and extension words are stored
+/// directly. Otherwise `eco_alloc_record` allocates it with the packed kinds, and the fields and extension
+/// words are stored directly when `inlineDerefExtEnabled()`, or else by the `eco_store_record_field*` calls.
 struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     RecordConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                               const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -903,9 +914,6 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto storeF64Func = runtime.getOrCreateStoreRecordFieldF64(rewriter);
 
         int64_t fieldCount = op.getFieldCount();
-        // Layout C (3B.4.1): kinds derive from the ORIGINAL operand types (the
-        // attributes are verifier checks only); slots past 31 go in K ext
-        // kind words after the last field (HEAP_019).
         PackedKinds pk = packKinds(
             slotKindsOfTypes(op.getFields().getTypes()),
             layout::RecordHdrSlots);
@@ -914,10 +922,8 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
 
         auto fields = adaptor.getFields();
 
-        // Inline nursery allocation (HEAP_034): marker + header (sizeField =
-        // field count) + unboxed-bitmap meta word + fresh field stores.
-        // Oversized records (> the expansion's 4096-byte bound) keep the
-        // call path.
+        // The header's size field holds the field count, and its unboxed field the number of extension words.
+        // 4096 bytes is the largest object the inline expansion accepts.
         uint64_t recByteSize = layout::recordByteSize(static_cast<uint64_t>(fieldCount));
         if (inlineAllocEnabled() && recByteSize <= 4096) {
             uint64_t header = value_enc::composeHeader(
@@ -947,12 +953,11 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
             runtime.getOrCreateAllocRecord(rewriter),
             ValueRange{fieldCountVal, unboxedBitmapVal});
 
-        // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
         for (int64_t i = 0; i < fieldCount; i++) {
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];
-            // P2.5 R5 Part 1 (HEAP_031): fresh record -> direct AS1 store.
+            // A fresh record may be written directly (HEAP_031).
             if (inlineDerefExtEnabled()) {
                 emitFreshFieldStore(rewriter, loc, objHPtr,
                     layout::RecordFieldsOffset + i * layout::PtrSize, fieldVal, origType);
@@ -967,18 +972,15 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
             } else if (origType.isInteger(1) || eco::isEcoCharType(origType)) {
-                // Bool (i1) or Char (i32): after type conversion, Bool may be
-                // ptr<1> (embedded constant). widenFieldToI64 handles all cases.
                 Value widened = widenFieldToI64(fieldVal, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, widened});
             } else {
-                // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
+                // A boxed field is passed as `ptr addrspace(1)`.
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{objHPtr, idx, fieldVal});
             }
         }
-        // Ext kind words (eco_alloc_record sized and zeroed them; HEAP_031 window).
         emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::RecordFieldsOffset,
                                   static_cast<uint64_t>(fieldCount), pk.ext, storeI64Func);
 
@@ -988,12 +990,18 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.record -> load from Record.values[index]
+// eco.project.record
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.record`, which reads a field of a record by index.
+///
+/// A value-level aggregate (an LLVM struct) gives its element. Otherwise the slot is loaded through the
+/// forwarding check, as an `!eco.value` or as an i64, f64 or i32; any other result type, Bool included,
+/// fails with an error.
 struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     RecordProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1006,7 +1014,6 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
         int64_t index = op.getFieldIndex();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-        // Value-aggregate path: operand is an LLVM struct (from !eco.record).
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{index});
@@ -1032,12 +1039,21 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.construct.custom -> call eco_alloc_custom, then store fields
+// eco.construct.custom
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.construct.custom`, which makes a value of a custom type from a constructor tag
+/// and its fields.
+///
+/// Kinds are found and packed as for a record, with `layout::CustomHdrSlots` kinds in the header word. When
+/// `inlineAllocEnabled()`, a value of at most 4096 bytes is allocated inline, and the word after its header
+/// holds the constructor tag in its low 16 bits and the packed kinds above them. Otherwise `eco_alloc_custom`
+/// allocates it from the tag and field count, the fields and extension words are stored as for a record, and
+/// `eco_set_unboxed` then writes the packed kinds if any of them is not boxed.
 struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     CustomConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                               const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1056,16 +1072,12 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(rewriter);
 
         int64_t opSize = op.getSize();
-        // Layout C (3B.4.2): kinds from the ORIGINAL operand types; slots past
-        // 23 go in K ext kind words after the last field (HEAP_019).
         PackedKinds pk = packKinds(
             slotKindsOfTypes(op.getFields().getTypes()),
             layout::CustomHdrSlots);
         const uint64_t K = pk.ext.size();
 
-        // Inline nursery allocation (HEAP_034): marker + header (sizeField =
-        // field count) + ctor|bitmap<<16 meta word (folds the separate
-        // eco_set_unboxed call away) + fresh field stores.
+        // As for a record; the meta word also carries the constructor tag.
         uint64_t cusByteSize = layout::customByteSize(static_cast<uint64_t>(opSize));
         if (inlineAllocEnabled() && cusByteSize <= 4096) {
             uint64_t bitmap = pk.hdrBits;
@@ -1100,13 +1112,11 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             runtime.getOrCreateAllocCustom(rewriter),
             ValueRange{tag, size});
 
-        // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
         for (int64_t i = 0; i < opSize; i++) {
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];
-            // P2.5 R5 Part 1 (HEAP_031): fresh custom -> direct AS1 store —
-            // the measured hot class (Dict RBNode constructs).
+            // A fresh custom may be written directly (HEAP_031).
             if (inlineDerefExtEnabled()) {
                 emitFreshFieldStore(rewriter, loc, objHPtr,
                     layout::CustomFieldsOffset + i * layout::PtrSize, fieldVal, origType);
@@ -1125,17 +1135,15 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, widened});
             } else {
-                // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
+                // A boxed field is passed as `ptr addrspace(1)`.
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{objHPtr, idx, fieldVal});
             }
         }
 
-        // Ext kind words (eco_alloc_custom sized and zeroed them; HEAP_031 window).
         emitExtKindWordStoresCall(rewriter, loc, objHPtr, layout::CustomFieldsOffset,
                                   static_cast<uint64_t>(opSize), pk.ext, storeI64Func);
 
-        // Set unboxed bitmap if non-zero
         int64_t bitmap = static_cast<int64_t>(pk.hdrBits);
         if (bitmap != 0) {
             auto bitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
@@ -1149,12 +1157,18 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
 };
 
 //===----------------------------------------------------------------------===//
-// eco.project.custom -> load from Custom.values[index]
+// eco.project.custom
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.project.custom`, which reads a field of a custom value by index.
+///
+/// A value-level aggregate (an LLVM struct) gives its element. Otherwise the slot is loaded through the
+/// forwarding check, as an `!eco.value` or as an i64, f64 or i32; any other result type, Bool included,
+/// fails with an error.
 struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     CustomProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1167,7 +1181,6 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
         int64_t index = op.getFieldIndex();
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
 
-        // Value-aggregate path: operand is an LLVM struct (from !eco.custom).
         if (isa<LLVM::LLVMStructType>(input.getType())) {
             Value result = rewriter.create<LLVM::ExtractValueOp>(
                 loc, resultType, input, ArrayRef<int64_t>{index});
@@ -1193,12 +1206,15 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.array.length -> resolve + GEP + load length field
+// eco.array.length
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.array.length`: the array's 32-bit length, read through the forwarding check
+/// and zero-extended to an Int.
 struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArrayLengthOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                           const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1213,15 +1229,12 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 
         Value input = adaptor.getArray();
 
-        // Inline: resolve (as1) + GEP to the length field at offset 8.
         auto offset = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
         Value fieldPtr = emitInlineFieldPtr(input, offset, loc, rewriter, runtime);
 
-        // Load u32 length (offset 8 is 8-aligned; natural i32 alignment).
         Value len32 = rewriter.create<LLVM::LoadOp>(loc, i32Ty, fieldPtr, 4);
 
-        // Zero-extend to i64 (Elm Int)
         Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, len32);
 
         rewriter.replaceOp(op, len64);
@@ -1230,12 +1243,14 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.string.append / eco.list.append -> typed runtime calls
+// eco.string.append / eco.list.append
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.string.append` to a call of `eco_string_append`.
 struct StringAppendOpLowering : public OpConversionPattern<StringAppendOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     StringAppendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1250,9 +1265,11 @@ struct StringAppendOpLowering : public OpConversionPattern<StringAppendOp> {
     }
 };
 
+/// The pattern that lowers `eco.list.append` to a call of `eco_list_append`.
 struct ListAppendOpLowering : public OpConversionPattern<ListAppendOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ListAppendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1268,12 +1285,15 @@ struct ListAppendOpLowering : public OpConversionPattern<ListAppendOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.string.length -> __eco_string_len_inline marker (expanded pre-RS4GC)
+// eco.string.length
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.string.length` to the `__eco_string_len_inline` marker when
+/// `stringLenInlineEnabled()`, and otherwise to a call of `Elm_Kernel_String_length`.
 struct StringLengthOpLowering : public OpConversionPattern<StringLengthOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     StringLengthOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1291,12 +1311,18 @@ struct StringLengthOpLowering : public OpConversionPattern<StringLengthOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.array.get -> resolve + GEP to elements[index] + load + type conversion
+// eco.array.get
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.array.get`, which reads element `index` of an array.
+///
+/// The element is the slot `index` words past the start of the elements, read through the forwarding check as
+/// an `!eco.value` or an i64, f64 or i32; any other element type fails with an error. `index` is not checked
+/// against the length.
 struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArrayGetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1318,7 +1344,6 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
             !eco::isEcoCharType(origResultType))
             return op.emitOpError("unsupported element type for eco.array.get");
 
-        // Element pointer = resolve(array) + ArrayElementsOffset + index*8.
         // Array elements are a uniform kind; both boxed and primitive reads are
         // a simple slot load.
         auto baseOffset = rewriter.create<LLVM::ConstantOp>(
@@ -1343,12 +1368,19 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.array.set -> clone array + resolve + GEP + store
+// eco.array.set
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.array.set`, which returns a copy of an array with element `index` replaced.
+///
+/// `eco_clone_array` makes the copy. `eco_array_set_fix_kind` then sets the copy's element kind to that of the
+/// new value, since a copy whose kind says boxed, such as one made from an empty array, would otherwise have
+/// an Int element traced as a pointer. The element is stored directly into the copy, without the forwarding
+/// check. `index` is not checked against the length.
 struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
 
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArraySetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1365,16 +1397,10 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         Value indexVal = adaptor.getIndex();
         Value valueVal = adaptor.getValue();
 
-        // Clone the array via runtime helper (handles GC-safe allocation)
         auto cloneFunc = runtime.getOrCreateCloneArray(rewriter);
         auto cloneCall = rewriter.create<LLVM::CallOp>(loc, cloneFunc, ValueRange{arrayVal});
         Value newArrayHPtr = cloneCall.getResult();
 
-        // Update the cloned array's header.unboxed to match the value
-        // kind we're about to store. Without this, an `Array.empty`-
-        // derived array (header.unboxed=0) that receives a raw-i64 store
-        // would keep unboxed=0 while elements[] holds an int; the next
-        // minor GC would then mis-trace that int as an HPointer.
         Type setValueType = op.getValue().getType();
         uint32_t intendedKind = 0;
         if (isa<eco::ValueType>(setValueType))      intendedKind = 0;
@@ -1388,52 +1414,37 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         rewriter.create<LLVM::CallOp>(
             loc, fixKindFn, ValueRange{newArrayHPtr, kindConst});
 
-        // Compute element pointer: base + ArrayElementsOffset + index * 8.
         auto baseOffset = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
         auto elemSize = rewriter.create<LLVM::ConstantOp>(
             loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
         auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
         auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
-        // newArrayHPtr is a freshly-cloned object (never forwarded): its as1
-        // word is the address, so GEP directly — no resolve/forward check.
+        // The copy was made by the clone call above, so the pointer is used without the forwarding check.
         auto hptrTy = getHPtrLLVMType(*ctx);
         Value elemPtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, newArrayHPtr,
                                                      ValueRange{totalOffset});
 
-        // Normalize value to i64 for storage in Unboxable slot
         Type origValueType = op.getValue().getType();
         Value raw;
         if (isa<eco::ValueType>(origValueType)) {
-            // eco.value: ptr<1> from adaptor, convert to i64
             raw = heapStoreValueToI64(rewriter, loc, valueVal);
         } else if (origValueType.isInteger(64)) {
-            // Int: already i64
             raw = valueVal;
         } else if (origValueType.isF64()) {
-            // Float: bitcast f64 to i64
             raw = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, valueVal);
         } else if (eco::isEcoCharType(origValueType)) {
-            // Char: zero-extend the i32 code point to i64
             raw = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, valueVal);
         } else {
             return op.emitError("unsupported value type for eco.array.set");
         }
 
-        // Store into the element slot. When the value is boxed (i.e. the
-        // original ECO type was eco.value, normalised to i64 via
-        // heapStoreValueToI64 above), tag the StoreOp with `eco.boxed_slot`
-        // so the EcoBoxedStoreVerify pass can insert a stale-HPointer
-        // barrier in front of the store. This is the only direct LLVM
-        // StoreOp that writes a boxed slot from compiled Elm — every other
-        // boxed-slot write goes through eco_store_field/_record_field,
-        // which already self-validate.
+        // A boxed store is tagged `eco.boxed_slot`, which EcoBoxedStoreVerify reads.
         auto storeOp = rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr,
                                                       layout::Alignment);
         if (isa<eco::ValueType>(origValueType))
             storeOp->setAttr("eco.boxed_slot", rewriter.getUnitAttr());
 
-        // Return new array as eco.value (i64 HPointer)
         rewriter.replaceOp(op, newArrayHPtr);
         return success();
     }
@@ -1441,14 +1452,12 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
 
 //===----------------------------------------------------------------------===//
 // eco.array.empty / singleton / push / slice / append_n
-//
-// Each lowers to a call to a typed runtime trampoline that takes unboxed
-// primitives directly. The variant of singleton/push is chosen by the
-// element operand's MLIR type (mirroring eco.array.set).
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.array.empty` to a call of `elm_array_empty`.
 struct ArrayEmptyOpLowering : public OpConversionPattern<ArrayEmptyOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArrayEmptyOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1463,8 +1472,11 @@ struct ArrayEmptyOpLowering : public OpConversionPattern<ArrayEmptyOp> {
     }
 };
 
+/// The pattern that lowers `eco.array.singleton` to a call of `elm_array_singleton_int`, `_float`, `_char` or
+/// `_box`, chosen by the element's type before conversion. Any other type fails with an error.
 struct ArraySingletonOpLowering : public OpConversionPattern<ArraySingletonOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArraySingletonOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1492,8 +1504,11 @@ struct ArraySingletonOpLowering : public OpConversionPattern<ArraySingletonOp> {
     }
 };
 
+/// The pattern that lowers `eco.array.push` to a call of `elm_array_push_int`, `_float`, `_char` or `_box`,
+/// chosen by the element's type before conversion. Any other type fails with an error.
 struct ArrayPushOpLowering : public OpConversionPattern<ArrayPushOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArrayPushOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1523,8 +1538,10 @@ struct ArrayPushOpLowering : public OpConversionPattern<ArrayPushOp> {
     }
 };
 
+/// The pattern that lowers `eco.array.slice` to a call of `elm_array_slice`.
 struct ArraySliceOpLowering : public OpConversionPattern<ArraySliceOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArraySliceOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1541,8 +1558,10 @@ struct ArraySliceOpLowering : public OpConversionPattern<ArraySliceOp> {
     }
 };
 
+/// The pattern that lowers `eco.array.append_n` to a call of `elm_array_append_n`.
 struct ArrayAppendNOpLowering : public OpConversionPattern<ArrayAppendNOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     ArrayAppendNOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1563,8 +1582,10 @@ struct ArrayAppendNOpLowering : public OpConversionPattern<ArrayAppendNOp> {
 // eco.string.from_int / from_float
 //===----------------------------------------------------------------------===//
 
+/// The pattern that lowers `eco.string.from_int` to a call of `elm_string_from_int`.
 struct StringFromIntOpLowering : public OpConversionPattern<StringFromIntOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     StringFromIntOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1580,8 +1601,10 @@ struct StringFromIntOpLowering : public OpConversionPattern<StringFromIntOp> {
     }
 };
 
+/// The pattern that lowers `eco.string.from_float` to a call of `elm_string_from_double`.
 struct StringFromFloatOpLowering : public OpConversionPattern<StringFromFloatOp> {
-    const EcoRuntime &runtime;
+    const EcoRuntime &runtime; ///< Declares the runtime functions and markers; must outlive the pattern.
+    /// Creates the pattern, which keeps a reference to `runtime`.
     StringFromFloatOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                               const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1600,22 +1623,17 @@ struct StringFromFloatOpLowering : public OpConversionPattern<StringFromFloatOp>
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// Allocation Group Lowering
+// Allocation group lowering
 //===----------------------------------------------------------------------===//
 
-/// Convert an !eco.value or ptr<1> SSA value to i64 by inserting the
-/// appropriate cast. Returns the value as-is if already i64.
-/// For eco.value inputs that are actually unrealized casts from ptr<1>,
-/// look through the cast to avoid creating unresolvable cast chains.
+/// Returns `v` as an i64 slot word: unchanged if it is an i64, through `slotValueToI64` if it is a
+/// `ptr addrspace(1)` or an unrealized cast of one, and otherwise as a new unrealized cast to i64.
 static Value castToI64(OpBuilder &builder, Location loc, Value v) {
     if (v.getType().isInteger(64))
         return v;
     if (isHPtrLLVMType(v.getType())) {
-        // REP_LLVM_002: group-init boxed-slot store side — fold-proof.
         return slotValueToI64(builder, loc, v);
     }
-    // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
-    // If so, look through the cast and convert the original ptr<1>.
     if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
         if (castOp.getNumOperands() == 1 &&
             isHPtrLLVMType(castOp.getOperand(0).getType())) {
@@ -1627,38 +1645,31 @@ static Value castToI64(OpBuilder &builder, Location loc, Value v) {
         .getResult(0);
 }
 
-/// Convert an !eco.value SSA value to ptr<1> for passing to runtime functions
-/// that expect HPTR_TY. If already ptr<1>, return as-is.
-/// For eco.value inputs from unrealized casts, look through the cast.
+/// Returns `v` as a `ptr addrspace(1)`: unchanged if it is one, decoded by `slotI64ToValue` if it is an i64 slot
+/// word, the operand of an unrealized cast from a `ptr addrspace(1)`, and otherwise a new unrealized cast.
 static Value castToHPtr(OpBuilder &builder, Location loc, Value v) {
     if (isHPtrLLVMType(v.getType()))
         return v;
     auto hptrTy = LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
     if (v.getType().isInteger(64))
-        // REP_LLVM_002: an i64 here is a slot-word HPointer — fold-proof
-        // decode (over-barriering is sound; strips to the identical cast).
         return slotI64ToValue(builder, loc, v);
-    // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
     if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
         if (castOp.getNumOperands() == 1 &&
             isHPtrLLVMType(castOp.getOperand(0).getType()))
             return castOp.getOperand(0);
     }
-    // Fallback: unrealized cast
     return builder.create<UnrealizedConversionCastOp>(loc, hptrTy, v)
         .getResult(0);
 }
 
-/// Widen a primitive SSA value to i64 for Unboxable slot storage.
-/// i64 passes through. ptr<1> → ptrtoint. f64 → bitcast. i32 (Char)/i1 → zext.
-/// For eco.value: cast to ptr<1> first (via castToHPtr which looks through
-/// materialization casts or creates an unrealized cast), then ptrtoint.
+/// Returns `v` as the 64-bit word an `eco_init_*_at` call takes for a field: an i64 unchanged, a
+/// `ptr addrspace(1)` or `!eco.value` through `slotValueToI64`, a narrower integer zero-extended, an f64
+/// bitcast, and anything else through `castToI64`.
 static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
     Type ty = v.getType();
     if (ty.isInteger(64)) return v;
     if (isHPtrLLVMType(ty))
-        // REP_LLVM_002: group-init boxed-slot store side — fold-proof.
         return slotValueToI64(builder, loc, v);
     if (isa<eco::ValueType>(ty)) {
         // Go through ptr<1> first, then to i64. This avoids creating
@@ -1676,10 +1687,13 @@ static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
     return castToI64(builder, loc, v);
 }
 
-/// Emit the init-at-pointer call for one group member at the given raw pointer.
-/// Returns the HPointer (i64) result.
-/// Field stores for record/custom ops are NOT emitted here — they go in the
-/// merge block so they don't need to be duplicated across fast/slow paths.
+/// Initialises the group member `op` at `objPtr`, a raw pointer into the group's region, with the matching
+/// gc-leaf `eco_init_*_at` call, and returns the object's `ptr addrspace(1)`.
+///
+/// A record's or custom's fields are not stored here but by `emitFieldStoresForOp`, in the merge block, so that
+/// they are emitted once rather than on both paths. `op` must be a box of an Int, Float or Char, an
+/// `eco.allocate_string`, or a cons, tuple, record or custom construction; anything else reaches
+/// `llvm_unreachable`.
 static Value emitInitAtPtr(
     OpBuilder &builder, Location loc,
     Operation *op, Value objPtr,
@@ -1753,9 +1767,7 @@ static Value emitInitAtPtr(
     if (auto recOp = dyn_cast<RecordConstructOp>(op)) {
         auto fieldCount = builder.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(recOp.getFieldCount()));
-        // Header bitmap from the operand types (layout C); eco_init_record_at
-        // computes K and zero-fills the ext words (the region was carved with
-        // computeAllocSize, which includes K).
+        // Kinds from the operand types. eco_init_record_at zeroes the object, extension words included.
         const uint64_t hdrBits = packKinds(
             slotKindsOfTypes(recOp.getFields().take_front(recOp.getFieldCount()).getTypes()),
             layout::RecordHdrSlots).hdrBits;
@@ -1779,9 +1791,9 @@ static Value emitInitAtPtr(
     llvm_unreachable("unsupported op kind in emitInitAtPtr");
 }
 
-/// Group merge block: store the non-zero ext kind words of a Custom/Record
-/// (eco_init_*_at already zeroed all K of them) through the gc-leaf
-/// `storeI64Func(hptr, n + j, word)`.
+/// Stores each non-zero extension kind word `ext[j]` of the record or custom `hptr`, which has `n` fields, in
+/// slot `n + j` by calling the gc-leaf `storeI64Func`. The zero words are left as the `eco_init_*_at` call,
+/// which zeroes the object, wrote them.
 static void storeNonZeroExtWords(OpBuilder &builder, Location loc, Value hptr,
                                  int64_t n, llvm::ArrayRef<uint64_t> ext,
                                  LLVM::LLVMFuncOp storeI64Func) {
@@ -1795,9 +1807,12 @@ static void storeNonZeroExtWords(OpBuilder &builder, Location loc, Value hptr,
     }
 }
 
-/// Emit field stores for a record or custom op in the merge block.
-/// hptr is the HPointer (i64) from the merge block arg.
-/// memberResultMap maps original op results to their i64 merge-block values.
+/// Stores the fields of the record or custom group member `op` into its object `hptr`, then its non-zero
+/// extension kind words and, for a custom, its packed kinds through `eco_set_unboxed` when any is not boxed.
+/// Does nothing for any other op.
+///
+/// `memberResultMap` maps each member's original result to its merge-block `ptr addrspace(1)`; it is consulted
+/// defensively, since no field can be another member's result.
 static void emitFieldStoresForOp(
     OpBuilder &builder, Location loc,
     Operation *op, Value hptr,
@@ -1820,10 +1835,8 @@ static void emitFieldStoresForOp(
             Value fieldVal = fields[i];
             Type origType = fieldVal.getType();
 
-            // Check if this field is another group member's result
             auto it = memberResultMap.find(fieldVal);
             if (it != memberResultMap.end()) {
-                // Merge-block value is hptr — pass directly (store_field takes hptr val)
                 builder.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{hptr, idx, it->second});
                 continue;
@@ -1840,14 +1853,11 @@ static void emitFieldStoresForOp(
                 builder.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{hptr, idx, fieldVal});
             } else {
-                // eco.value or ptr<1> — cast to hptr for store (avoids unrealized casts)
                 Value valHPtr = castToHPtr(builder, loc, fieldVal);
                 builder.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{hptr, idx, valHPtr});
             }
         }
-        // Ext kind words (layout C): eco_init_record_at zeroed them; store the
-        // non-zero ones in this no-safepoint window (HEAP_031).
         storeNonZeroExtWords(builder, loc, hptr, fieldCount,
             packKinds(slotKindsOfTypes(fields.take_front(fieldCount).getTypes()),
                       layout::RecordHdrSlots).ext,
@@ -1870,7 +1880,6 @@ static void emitFieldStoresForOp(
 
             auto it = memberResultMap.find(fieldVal);
             if (it != memberResultMap.end()) {
-                // Merge-block value is hptr — pass directly
                 builder.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{hptr, idx, it->second});
                 continue;
@@ -1906,7 +1915,17 @@ static void emitFieldStoresForOp(
     }
 }
 
-/// Lower a single allocation group into fast/slow/merge CFG.
+/// Replaces the allocation group `group`, a leader followed by its members in order, with one allocation of
+/// their total size and the initialisation of each member in it.
+///
+/// The block is split before the leader. Its first half calls the gc-leaf `eco_gc_alloc_region_fast`; a null
+/// result branches to a block that calls the statepointed `eco_gc_alloc_region_slow`, and any other to a block
+/// that uses the fast region. Both initialise every member at its offset and pass the members' pointers to a
+/// merge block, which holds the operations that followed the leader. There the record and custom fields are
+/// stored, each member's uses are replaced by its pointer cast to `!eco.value`, and the members are erased.
+///
+/// No member may use another member's result, since the members are initialised before the merge block that
+/// defines those results; EcoGCPrepare closes a group at such a use.
 static void lowerOneAllocGroup(
     SmallVectorImpl<Operation*> &group,
     const EcoRuntime &runtime) {
@@ -1919,7 +1938,6 @@ static void lowerOneAllocGroup(
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     size_t groupSize = group.size();
 
-    // Compute totalBytes and offset prefix sums.
     int64_t totalBytes = 0;
     SmallVector<int64_t, 8> offsets;
     for (auto *op : group) {
@@ -1942,19 +1960,16 @@ static void lowerOneAllocGroup(
     parentRegion->getBlocks().insertAfter(Region::iterator(fastBlock), slowBlock);
     parentRegion->getBlocks().insertAfter(Region::iterator(slowBlock), mergeBlock);
 
-    // Add merge block args: one hptr per group member (HPointers).
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     for (size_t i = 0; i < groupSize; i++)
         mergeBlock->addArgument(hptrTy, loc);
 
-    // Move afterBlock's ops into mergeBlock (merge block IS the continuation).
     mergeBlock->getOperations().splice(
         mergeBlock->end(), afterBlock->getOperations());
     afterBlock->erase();
 
     OpBuilder builder(ctx);
 
-    // --- Entry block: region fast alloc + null check ---
     builder.setInsertionPointToEnd(origBlock);
 
     auto totalBytesVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, totalBytes);
@@ -1971,7 +1986,6 @@ static void lowerOneAllocGroup(
         loc, isNull, slowBlock, ValueRange{},
         fastBlock, ValueRange{});
 
-    // --- Fast block: init each member at offset ---
     builder.setInsertionPointToEnd(fastBlock);
     SmallVector<Value, 8> fastHPtrs;
     for (size_t i = 0; i < groupSize; i++) {
@@ -1983,10 +1997,9 @@ static void lowerOneAllocGroup(
     }
     builder.create<cf::BranchOp>(loc, mergeBlock, fastHPtrs);
 
-    // --- Slow block: safepoint marker + region slow alloc + init ---
     builder.setInsertionPointToEnd(slowBlock);
 
-    // RS4GC handles safepoint insertion around the slow alloc call automatically.
+    // RS4GC makes the slow alloc call a statepoint because the callee is not gc-leaf.
 
     auto totalBytesValSlow = builder.create<LLVM::ConstantOp>(loc, i64Ty, totalBytes);
     auto baseSlowCall = builder.create<LLVM::CallOp>(
@@ -2004,7 +2017,6 @@ static void lowerOneAllocGroup(
     }
     builder.create<cf::BranchOp>(loc, mergeBlock, slowHPtrs);
 
-    // --- Merge block: field stores + result replacement ---
     builder.setInsertionPointToStart(mergeBlock);
 
     llvm::DenseMap<Value, Value> memberResultMap;
@@ -2015,20 +2027,17 @@ static void lowerOneAllocGroup(
         Value mergeArg = mergeBlock->getArgument(i);
         memberResultMap[group[i]->getResult(0)] = mergeArg;
 
-        // Unrealized cast from i64 to !eco.value for external uses.
         Value ecoVal = builder.create<UnrealizedConversionCastOp>(
             loc, ecoValueTy, mergeArg).getResult(0);
         ecoResults.push_back(ecoVal);
     }
 
-    // Emit field stores for record/custom members.
     for (size_t i = 0; i < groupSize; i++) {
         Value hptr = mergeBlock->getArgument(i);
         emitFieldStoresForOp(builder, loc, group[i], hptr,
                              memberResultMap, runtime);
     }
 
-    // Replace original op results with the eco.value casts.
     for (size_t i = 0; i < groupSize; i++)
         group[i]->getResult(0).replaceAllUsesWith(ecoResults[i]);
 
@@ -2037,9 +2046,9 @@ static void lowerOneAllocGroup(
         (*it)->erase();
 }
 
-/// Lower all allocation groups in the module.
+// Only operations directly in a function's top-level blocks are searched.
 void eco::detail::lowerAllocGroups(ModuleOp module, const EcoRuntime &runtime) {
-    // Collect all groups across all functions first, then lower.
+    // Collect every group first: lowering one splits blocks.
     SmallVector<SmallVector<Operation*, 4>> allGroups;
 
     for (auto funcOp : module.getOps<func::FuncOp>()) {
@@ -2077,7 +2086,7 @@ void eco::detail::lowerAllocGroups(ModuleOp module, const EcoRuntime &runtime) {
 }
 
 //===----------------------------------------------------------------------===//
-// Aggregate operand boxing (Phase 1)
+// GC pointers in value-level aggregate types
 //===----------------------------------------------------------------------===//
 
 bool eco::detail::containsGCPointer(Type t) {

@@ -1,6 +1,6 @@
 //===- BFOps.cpp - ByteFusion operation implementations -------------------===//
 //
-// This file implements the BF dialect operations.
+// Compiles the generated definitions; the header describes them.
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,7 +11,6 @@
 using namespace mlir;
 using namespace bf;
 
-// Include enum definitions
 #include "bf/BFEnums.cpp.inc"
 
 #define GET_OP_CLASSES

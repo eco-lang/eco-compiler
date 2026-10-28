@@ -1,9 +1,4 @@
 //===- EcoPipeline.cpp - Shared Eco lowering pipeline ---------------------===//
-//
-// Implementation of the shared pipeline construction API used by both ecoc
-// and EcoRunner.
-//
-//===----------------------------------------------------------------------===//
 
 #include "EcoPipeline.h"
 #include "Passes.h"
@@ -34,11 +29,11 @@
 using namespace mlir;
 
 namespace {
-/// Full-module verify right after EcoPAPSimplify (plans/wide-object-tail-kind-
-/// words-phase-2.md 2.7). eco-boot / the native driver disable the
-/// after-each-pass verifier in release; this pass restores the check for the
-/// closure rewrites (slot_kinds, the 2047/2046 caps) in validate builds and
-/// when ECO_VERIFY_AFTER_PAPSIMPLIFY=1. ecoc verifies after every pass anyway.
+/// A pass that verifies the whole module and fails if verification fails.
+///
+/// It is added right after `EcoPAPSimplify`, so that a driver that turns off
+/// MLIR's verification after each pass still checks the closure rewrites
+/// that pass makes.
 struct VerifyAfterPAPSimplifyPass
     : public PassWrapper<VerifyAfterPAPSimplifyPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VerifyAfterPAPSimplifyPass)
@@ -52,6 +47,9 @@ struct VerifyAfterPAPSimplifyPass
     }
 };
 
+/// Returns whether to add `VerifyAfterPAPSimplifyPass`: always in builds with
+/// `ECO_HEAP_VALIDATE`, and otherwise when `ECO_VERIFY_AFTER_PAPSIMPLIFY` is
+/// set to a non-empty value whose first character is not `0`.
 bool verifyAfterPAPSimplifyEnabled() {
 #if ECO_HEAP_VALIDATE
     return true;
@@ -80,87 +78,68 @@ void loadRequiredDialects(MLIRContext &context) {
 }
 
 void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
-    // Stage 1: Eco -> Eco transformations.
     pm.addPass(eco::createRCEliminationPass());
 
 #ifdef ECO_LOWERING_VALIDATION
-    // Verify closure capture integrity (CGEN_CLOSURE_003):
-    // papCreate consistency + no cross-function SSA refs in lambda bodies.
-    // Must run early, before PAP simplification may rewrite closure ops.
+    // Checks closure captures (CGEN_CLOSURE_003). It must see the closure ops
+    // before EcoPAPSimplify rewrites them.
     pm.addPass(eco::createCheckEcoClosureCapturesPass());
 #endif
 
-    // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
     if (verifyAfterPAPSimplifyEnabled())
         pm.addPass(std::make_unique<VerifyAfterPAPSimplifyPass>());
 
-    // compare + case-on-Order -> direct comparisons (deletes the Order
-    // round-trip). After PAPSimplify so closure-mediated compares are already
-    // direct calls; before UndefinedFunction, which validates the
+    // After EcoPAPSimplify, so compares made through closures are already
+    // direct calls; before UndefinedFunction, which checks the
     // Elm_Kernel_Utils_cmp3 declaration this pass may insert.
     pm.addPass(eco::createEcoCompareCaseRewritePass());
 
-    // Validate that every eco.call callee is defined or declared (CGEN_011);
-    // the pass only reports, it generates no declarations.
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
-// Kernel-opt-10 kill switches.
+/// Returns the setting of the environment switch `name`: `defaultOn` when the
+/// variable is unset or empty, off when it is exactly `0`, and on for any
+/// other value.
 static bool envSwitch(const char *name, bool defaultOn) {
     const char *e = ::getenv(name);
     if (!e || !*e)
         return defaultOn;
     return !(e[0] == '0' && e[1] == '\0');
 }
-// KEPT-DARK — and the reason is now CORRECTNESS, not performance. The 2026-08-13
-// default-on attempt failed three Float container-equality E2E tests: CSE merges
-// two structurally identical NaN-containing constructs into ONE object, and the
-// equality kernel's pointer-fast-path (same as official Elm's `x === y`
-// shortcut) then answers True where the NaN-aware structural walk answers
-// False. Object identity IS observable in Elm — via NaN — so "dedup of an
-// allocation is semantics-preserving" is false, for constructs, for eco.box of
-// f64, and for eco.cse_safe kernel calls returning Float-containing containers
-// (List_reverse). Sound enablement needs Allocate-on-result effects on the
-// allocating pure ops (erasable-if-dead, never merged) plus a
-// no-Float-reachable-in-result axis in KernelFacts. See benchmarks/kernel-opt.md
-// Runs Q/R and test/elm/src/ContainerEquality*FloatTest.elm.
+/// Returns whether to run CSE in the M4 slot: only when `ECO_MLIR_CSE` is set
+/// to a non-empty value other than `0`.
+///
+/// CSE is off by default because it is unsound here. Elm can observe whether
+/// two values are one object: CSE may merge two identical constructs holding
+/// a NaN into one object, and the equality kernel answers True for the same
+/// object without comparing contents, where comparing the two separate
+/// objects answers False, since NaN is not equal to itself. The same holds
+/// for `eco.box` of a float and for `eco.cse_safe` kernel calls that return
+/// containers holding floats.
 static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); }
-static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); } // DEFAULT-ON since 2026-08-13 (Run Q)
+/// Returns whether to run `EcoFoldProject`; on unless `ECO_MLIR_FOLD` is `0`.
+static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); }
 
 void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
-    // Stage 1: Eco -> Eco transformations.
     buildEcoToEcoPipeline(pm, opts);
 
-    // Stage 2: Eco -> Standard MLIR (scf; cf only appears in Stage 3).
+    // Stage 2. Only scf is produced here; cf appears in Stage 3.
     pm.addPass(eco::createJoinpointNormalizationPass());
     pm.addPass(eco::createEcoControlFlowToSCFPass());
-    // Chunked-list Tier-B templates: rewrite cons-accumulation loops to
-    // scratch-stack chunk builds. Runs after SCF conversion (needs
-    // scf.while / scf.if) and before EcoGCPrepare (the inserted runtime
-    // calls take part in normal allocation grouping). No-op without
-    // the eco.list_chunks function attribute.
+    // After SCF conversion, because it matches scf.while and scf.if, and
+    // before EcoGCPrepare, so the runtime calls it inserts are grouped with
+    // the other allocations.
     pm.addPass(eco::createEcoListTemplatePass());
-    // M4/4b (measured): the func-level canonicalizer here was removed. Effect:
-    // MLIR phase -~0.5s, exe +~0.28%, produced functional output byte-identical.
-    // Safe because LLVM's downstream pipeline re-canonicalizes anyway, and
-    // GC roots are computed later by RS4GC, not here. Validated by the full
-    // E2E + self-host byte-identity gate. Re-add createCanonicalizerPass() here if any GC or
-    // codegen regression appears.
-    // pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
-    // Kernel-opt-10 (M4 slot): the module pass EcoFoldProject (default-on) and
-    // a func-nested CSE (default-off, ECO_MLIR_CSE=1). They MUST stay before
-    // EcoGCPrepare, which strips the `eco.cse_safe` purity attr CSE relies on
-    // (the ordering rule below).
+    // The M4 slot. No canonicalizer runs between Stage 2 and the slot: LLVM
+    // canonicalizes again later, and GC roots are found by RS4GC in the
+    // backend, not here.
     //
-    // kernel-opt-12 ordering rule, reproduced verbatim as that plan requires:
-    // purity consumers MAY run anywhere in buildEcoToEcoPipeline or in
-    // buildEcoToLLVMPipeline up to and including THIS slot, and nowhere
-    // after it — `eco.cse_safe` is stripped by EcoGCPrepare precisely here.
-    // Plan 07 P1: FoldProject is a module pass that folds functions in
-    // parallel chunks — a nested pass ran ~57k times under MLIR's global
-    // PassInstrumentor mutex and reported summed CPU time, not wall.
+    // Passes that rely on eco.cse_safe may run anywhere before this point and
+    // in this slot, and nowhere after it, because EcoGCPrepare strips the
+    // attribute. EcoFoldProject is a module pass that folds functions in
+    // parallel chunks itself.
     if (ecoFoldProjectEnabled())
         pm.addPass(eco::createEcoFoldProjectPass());
     if (ecoMlirCseEnabled())
@@ -168,67 +147,49 @@ void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
 }
 
 void buildEcoToLLVMPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
-    // Stages 1-2 plus the M4 optimisation slot. Split out so `ecoc
-    // --emit=mlir-opt` can stop here: it is the last point at which
-    // `eco.construct.*`/`eco.project.*` still exist AND the M4 folders have
-    // run, so it is the only window in which fold-project's effect on Eco-level
-    // ops is observable. `--emit=mlir-eco` is too early (fold-project has not
-    // run) and `--emit=mlir-llvm` too late (the ops are gone).
     buildEcoToOptPipeline(pm, opts);
 
-    // Stage 2.5: GC preparation (allocation grouping, cse_safe fence).
-    // Publish the per-callee cannot-GC fact as a call-local attr first: by here
-    // every kernel decl exists and every kernel call site is final (both
-    // EcoCompareCaseRewrite, which can mint Elm_Kernel_Utils_cmp3, and
-    // UndefinedFunction ran inside buildEcoToEcoPipeline above).
+    // Stage 2.5. EcoMarkGCLeafCalls comes after EcoCompareCaseRewrite (Stage
+    // 1), which can add calls to Elm_Kernel_Utils_cmp3, so those calls are
+    // marked too.
     pm.addPass(eco::createEcoMarkGCLeafCallsPass());
     pm.addPass(eco::createEcoGCPreparePass());
 #ifdef ECO_LOWERING_VALIDATION
     pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());
 #endif
 
-    // Stage 3: Eco -> LLVM Dialect.
+    // Stage 3.
     pm.addPass(eco::createBFToLLVMPass());
     pm.addPass(eco::createEcoToLLVMPass());
-    // Mixed-spine cursors: rewrite list-walking scf.while loops to
-    // (node, idx) stepping. Must run after EcoToLLVM (projections are
-    // marker calls; EcoGCPrepare is done, so the new per-step ops are not
-    // grouped) and before the SCF tail conversions. No-op flag-off.
+    // After EcoToLLVM, which has turned list projections into marker calls,
+    // and after EcoGCPrepare, so the per-step ops it adds are not grouped
+    // with allocations; before the SCF tail conversions, because it rewrites
+    // scf.while loops.
     pm.addPass(eco::createEcoListCursorPass());
 #ifdef ECO_LOWERING_VALIDATION
-    // Insert stale-HPointer barriers in front of direct boxed-slot stores
-    // emitted by EcoToLLVM (currently only eco.array.set). Must run after
-    // EcoToLLVM (which attaches the eco.boxed_slot marker) and before any
-    // pass that might re-canonicalise or drop unknown attributes on
-    // LLVM::StoreOp; running it immediately after the lowering keeps the
-    // window minimal.
+    // Reads the eco.boxed_slot attribute EcoToLLVM puts on boxed-slot
+    // stores, so it runs before any pass that might drop unknown attributes
+    // from those stores.
     pm.addPass(eco::createEcoBoxedStoreVerifyPass());
 #endif
-    // Tail conversions (plans/backend-lowering-optimization.md B2): one
-    // module pass converts scf->cf, then arith+cf->llvm, per function, in
-    // parallel chunks that build their converter/patterns once — replacing
-    // the nested SCFToControlFlow + ArithToLLVM sweeps (~98k x 2 pass
-    // invocations) and the serial module-anchored cf->llvm pass.
-    pm.addPass(eco::createEcoTailConversionsPass());  // also reconciles casts
-    // Closed-world reachability (CGEN_081): erase + internalize in MLIR so
-    // translation never sees the dead ~23 %. Before the capacity and gc-free
-    // planners, which then only see live functions (their answers on live
-    // functions are unchanged: nothing live references a dead symbol).
-    // ECO_REACH_MLIR=0 leaves it to the LLVM internalize + GlobalDCE.
+    // One module pass converts scf to cf, then arith and cf to llvm, and
+    // reconciles unrealized casts, per function in parallel chunks.
+    pm.addPass(eco::createEcoTailConversionsPass());
+    // Erasing dead functions before the planners does not change their
+    // answers for live functions, since nothing live refers to a dead symbol.
     if (opts.reachability && !opts.capRoots.empty()) {
         const char *e = ::getenv("ECO_REACH_MLIR");
         if (!(e && e[0] == '0' && e[1] == '\0'))
             pm.addPass(eco::createEcoReachabilityPass(opts.capRoots));
     }
-    // Capacity hoisting plan (CGEN_074): Phases A-C on the final llvm-dialect
-    // module, stamped as eco-cap-* passthrough + the eco-cap-plan module flag;
-    // the backend verifies and consumes it (plan-given mode). Last, so it sees
-    // every call the pipeline creates.
+    // Capacity hoisting plan (CGEN_074), stamped as eco-cap-* passthrough
+    // attributes and the eco-cap-plan module flag for the backend. After
+    // every pass that adds calls, so it sees them all.
     pm.addPass(eco::createEcoCapHoistPlanPass(opts.capClosedWorld,
                                               opts.capRoots));
-    // GC-free leaf stamps (CGEN_072): reads eco-cap-covered. MUST stay the
-    // last pass that changes llvm-dialect bodies (plan 02 O8) — a later
-    // rewrite could invalidate a stamp that no per-partition check sees.
+    // GC-free leaf stamps (CGEN_072); reads eco-cap-covered. It must stay
+    // the last pass that changes llvm-dialect bodies: a later rewrite could
+    // invalidate a stamp.
     pm.addPass(eco::createEcoGcFreePropagationPass());
 }
 

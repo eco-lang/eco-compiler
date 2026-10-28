@@ -11,18 +11,25 @@ namespace Elm {
 
 namespace {
 
+// A cursor that reads fixed-width integers, in host byte order, from a byte buffer it does not own.
+// The buffer must outlive the reader. Each read checks its bounds only by `assert`; with assertions
+// off, reading past the end is undefined.
 class BinaryReader {
 public:
+    // Creates a reader positioned at the start of the `size` bytes at `data`.
     BinaryReader(const uint8_t* data, size_t size)
         : data_(data), size_(size), pos_(0) {}
 
+    // Returns whether `n` more bytes can be read.
     bool hasRemaining(size_t n) const { return pos_ + n <= size_; }
 
+    // Reads one byte and advances past it.
     uint8_t readU8() {
         assert(hasRemaining(1));
         return data_[pos_++];
     }
 
+    // Reads a 16-bit unsigned integer and advances past it.
     uint16_t readU16() {
         assert(hasRemaining(2));
         uint16_t val;
@@ -31,6 +38,7 @@ public:
         return val;
     }
 
+    // Reads a 32-bit unsigned integer and advances past it.
     uint32_t readU32() {
         assert(hasRemaining(4));
         uint32_t val;
@@ -39,6 +47,7 @@ public:
         return val;
     }
 
+    // Reads a 32-bit signed integer and advances past it.
     int32_t readI32() {
         assert(hasRemaining(4));
         int32_t val;
@@ -47,6 +56,7 @@ public:
         return val;
     }
 
+    // Reads a 64-bit unsigned integer and advances past it.
     uint64_t readU64() {
         assert(hasRemaining(8));
         uint64_t val;
@@ -55,18 +65,21 @@ public:
         return val;
     }
 
+    // Advances past `n` bytes.
     void skip(size_t n) {
         assert(hasRemaining(n));
         pos_ += n;
     }
 
-    // Align position to a multiple of `alignment`.
+    // Advances to the next multiple of `alignment` bytes from the start, unless already at one. It
+    // does not check bounds.
     void alignTo(size_t alignment) {
         size_t rem = pos_ % alignment;
         if (rem != 0)
             pos_ += alignment - rem;
     }
 
+    // Returns the number of bytes read or skipped so far.
     size_t position() const { return pos_; }
 
 private:
@@ -79,8 +92,6 @@ private:
 
 //===----------------------------------------------------------------------===//
 // StackMap parsing (LLVM Stack Map format v3)
-//
-// Reference: https://llvm.org/docs/StackMaps.html#stack-map-format
 //
 // Header:
 //   uint8  version (3)
@@ -106,15 +117,17 @@ private:
 //   Location entries (numLocations, 12 bytes each in v3):
 //     uint16 kind (byte 0 is kind, byte 1 reserved)
 //     uint16 sizeInBytes
-//     uint32 dwarfRegNum
+//     uint16 dwarfRegNum
+//     uint16 reserved
 //     int32  offset/smallConstant
 //   padding (align to 8)
+//   uint16 padding
 //   uint16 numLiveOuts
 //   LiveOut entries (numLiveOuts):
 //     uint16 dwarfRegNum
 //     uint8  reserved
 //     uint8  sizeInBytes
-//   uint32 padding (align to 8)
+//   padding (align to 8)
 //===----------------------------------------------------------------------===//
 
 bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
@@ -127,24 +140,15 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
 
     BinaryReader reader(data, size);
 
-    // A linked binary can carry MULTIPLE concatenated stackmap blobs: when the
-    // object is produced from several LLVM module partitions (parallel
-    // codegen), each partition emits its own .llvm_stackmaps section with its
-    // own v3 header, and the linker concatenates them into one section. Loop
-    // over every blob, accumulating functions/constants/records into the
-    // members. For a single-blob binary this runs exactly once and produces
-    // results identical to the previous single-parse implementation (records_
-    // is keyed by absolute return address, and partition function-address
-    // ranges are disjoint, so accumulation across blobs never collides).
+    // Records from all blobs go into one table keyed by absolute return address.
     bool parsedAny = false;
     while (reader.hasRemaining(16)) {
-        // Blobs are 8-byte aligned within the section; absorb inter-blob
-        // padding the linker may insert.
+        // Blobs are 8-byte aligned within the section; absorb padding
+        // between blobs.
         reader.alignTo(8);
         if (!reader.hasRemaining(16))
             break;
 
-        // Header
         uint8_t version = reader.readU8();
         // Not a v3 header here => trailing zero padding at the end of the
         // section (or an unsupported version); stop.
@@ -172,12 +176,12 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
             constants[i] = reader.readU64();
         }
 
-    // Records — associate each with its function to compute return addresses
+    // Each function entry owns the next `recordCount` records, in order. Entries with no records are
+    // skipped by the inner loop.
     uint32_t funcIdx = 0;
     uint32_t recordsForFunc = 0;
 
     for (uint32_t i = 0; i < numRecords; i++) {
-        // Advance to next function if needed
         while (funcIdx < numFunctions &&
                recordsForFunc >= functions[funcIdx].recordCount) {
             recordsForFunc = 0;
@@ -197,7 +201,8 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
             // v3 location format (12 bytes):
             //   [0:1]  uint16_t kind (byte 0 is kind, byte 1 reserved)
             //   [2:3]  uint16_t sizeInBytes
-            //   [4:7]  uint32_t dwarfRegNum  (note: 32-bit in v3!)
+            //   [4:5]  uint16_t dwarfRegNum
+            //   [6:7]  uint16_t reserved
             //   [8:11] int32_t  offset/smallConstant
             uint16_t kindField = reader.readU16();
             loc.kind = static_cast<StackMapLocation::Kind>(kindField & 0xFF);
@@ -221,7 +226,8 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
         // Padding to align to 8 bytes after live-outs
         reader.alignTo(8);
 
-        // Compute return address: function base + instruction offset
+        // A record beyond every function entry's count has no function to give it an address, and is
+        // dropped.
         uint64_t returnAddr = 0;
         if (funcIdx < numFunctions) {
             returnAddr = functions[funcIdx].address + record.instructionOffset;
@@ -292,7 +298,6 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
 }
 
 const StackMapRecord* StackMap::findRecord(uint64_t returnAddress) const {
-    // W10 item 56: reject out-of-span frames before hashing. See StackMap.hpp.
     if (returnAddress < addr_lo_ || returnAddress >= addr_hi_)
         return nullptr;
     auto it = records_.find(returnAddress);
@@ -301,7 +306,7 @@ const StackMapRecord* StackMap::findRecord(uint64_t returnAddress) const {
     return &it->second;
 }
 
-// Global stack map instance
+// The instance `globalStackMap()` returns.
 static StackMap g_stackMap;
 
 StackMap& globalStackMap() {

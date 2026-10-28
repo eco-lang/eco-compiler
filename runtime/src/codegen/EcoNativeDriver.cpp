@@ -1,11 +1,16 @@
-//===- EcoNativeDriver.cpp - MLIR-to-ELF library implementation ----------===//
+//===- EcoNativeDriver.cpp - MLIR-to-native library implementation -------===//
 //
-// Shared lowering pipeline used by both eco-boot-native (CLI) and the unified
-// `eco` binary (via Eco_Kernel_NativeDriver_lowerAndLink kernel intrinsic).
+// `pipelineFromMlirModule` takes one of two routes once the Eco pipeline has
+// run. When the output may be split and `mlirSplitPartitionCount` asks for
+// more than one partition, the MLIR module is handed to `lowerMlirSplit`,
+// which partitions, translates and lowers it on worker threads. Otherwise the
+// whole module is translated to LLVM IR here, the MLIR operations are freed,
+// and `runEcoBackend` lowers the LLVM module, splitting it itself if its own
+// policy says so. Unless the output is a `.o` file, the result is then
+// passed to `linkExecutable`.
 //
-// Originally lived inside eco-boot.cpp; extracted into a library so the same
-// pipeline can be invoked in-process from the Elm-compiled compiler without
-// spawning a child process.
+// Most of this file is `linkExecutable`: a link line built argument by
+// argument for each platform and, on Linux, for each link profile.
 //
 //===----------------------------------------------------------------------===//
 
@@ -74,14 +79,17 @@ void linkEcoGCStrategy();
 
 namespace {
 
-// Pull EcoGC strategy linker side-effect in. Same trick eco-boot.cpp uses —
-// instantiating the static here keeps the symbol live in the library.
+/// A static object whose constructor calls `linkEcoGCStrategy`, so that a
+/// binary linking this library also links the translation unit that defines
+/// the Eco GC strategy.
 struct EcoGCStrategyLibLinker {
     EcoGCStrategyLibLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLibLinker;
 
 using namespace mlir;
 
+/// Parses the buffer in `sourceMgr` as an MLIR module in `context`, or prints
+/// an error and returns null.
 OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
                                              llvm::SourceMgr &sourceMgr) {
     auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
@@ -90,15 +98,16 @@ OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
     return module;
 }
 
+/// Runs the Eco-to-LLVM-dialect pass pipeline on `module` in place, and
+/// returns 0 on success or 1 on failure. `capClosedWorld` makes the pipeline
+/// treat the module as a closed world rooted at `main` and
+/// `__eco_init_globals`, and asks for MLIR reachability.
 int runPipeline(ModuleOp module, eco::LoweringStats *stats,
                 bool capClosedWorld) {
     PassManager pm(module->getName());
 
-    // Skip applyPassManagerCLOptions — the library is invoked outside any
-    // CLI-options-aware context (e.g. from the unified `eco` kernel
-    // intrinsic). The call would fail with "no CL options registered" if
-    // we tried it, and it's only relevant for pass-manager debug flags
-    // anyway.
+    // applyPassManagerCLOptions is not called: the pass-manager command-line
+    // options are not registered in every program that links this library.
 
 #ifndef ECO_LOWERING_VALIDATION
     // Release: skip the after-each-pass full-module verifier (O(module) per
@@ -109,14 +118,13 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats,
     if (stats)
         pm.addInstrumentation(stats->makePassInstrumentation());
 
-    // Capacity hoisting plan (CGEN_074): executables are closed-world with
-    // the two entry symbols eco_entry.cpp resolves; must match
-    // job.capClosedWorld below.
+    // Capacity hoisting and reachability are rooted at
+    // the two symbols the standalone entry point calls. capClosedWorld must
+    // equal EcoBackendJob::capClosedWorld in pipelineFromMlirModule.
     eco::EcoPipelineOptions pipeOpts;
     pipeOpts.capClosedWorld = capClosedWorld;
     if (capClosedWorld)
         pipeOpts.capRoots = {"main", "__eco_init_globals"};
-    // CGEN_081: closed-world output erases + internalizes in MLIR.
     pipeOpts.reachability = capClosedWorld;
     eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
@@ -126,14 +134,16 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats,
     return 0;
 }
 
+/// Translates `module` to an LLVM module in `llvmContext` and renames its
+/// `main` to `eco_main`, or prints an error and returns null.
 std::unique_ptr<llvm::Module>
 translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
 
     // Release: skip the whole-module LLVM verifier on the translation output
-    // (O(module) over ~85k functions; the MLIR pipeline already validated the
-    // input). Validation builds keep it. Mirrors pm.enableVerifier(false).
+    // (its cost grows with the module; the MLIR pipeline already validated
+    // the input). Validation builds keep it.
 #ifdef ECO_LOWERING_VALIDATION
     constexpr bool kDisableLLVMVerify = false;
 #else
@@ -146,29 +156,26 @@ translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
         return nullptr;
     }
 
-    // The Elm `main` (a Platform.worker value) is invoked by the C++ entry
-    // wrapper (`eco_entry.cpp`); rename it so it doesn't collide with the
-    // wrapper's literal `main()`.
+    // Rename the module's `main` to `eco_main`, for every output kind, so it
+    // does not collide with a C `main()` linked in beside it.
     if (auto *mainFn = llvmModule->getFunction("main"))
         mainFn->setName("eco_main");
 
     return llvmModule;
 }
 
-// The target CPU/feature pin and TargetMachine factory live in EcoBackend.h
-// (createEcoTargetMachine / kEcoTargetCPU), shared with eco-boot.cpp.
-
-// Output mode selected from the target path's extension:
-//   *.o          → emit the relocatable object only (no link)
-//   *.so, *.node → link a shared library (embed entry, no main())
-//   otherwise    → link a PIE executable (standalone entry)
-// See plans/native-ports-and-embedding.md (Phase 3/4).
+/// Returns whether `path` ends with `suffix`, compared case-sensitively. The
+/// output kind is chosen with it: `.o`, `.so` and `.node`.
 bool pathEndsWith(const std::string &path, const char *suffix) {
     size_t n = std::strlen(suffix);
     return path.size() >= n &&
            path.compare(path.size() - n, n, suffix) == 0;
 }
 
+/// Lowers the parsed `module` and links it at `outputPath`, as
+/// `compileMlirFileToExecutable` describes, and returns 0 or 1. Takes
+/// ownership of `module` and frees it before returning; its MLIRContext must
+/// outlive the call.
 int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                            const std::string &outputPath,
                            const eco::EcoNativeOptions &opts) {
@@ -194,10 +201,8 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
-    // Plan 05 (EcoSplit, CGEN_083): partition in MLIR and translate + lower
-    // every partition in parallel — no whole-module translation, no bitcode
-    // serialize, no per-worker re-parse. Executable output only here (the
-    // driver's split-eligible kind).
+    // EcoSplit: partition in MLIR and translate and lower every
+    // partition in parallel. Only executables are split-eligible.
     {
         const bool objOnly = pathEndsWith(outputPath, ".o");
         const bool shared = pathEndsWith(outputPath, ".so") ||
@@ -266,7 +271,9 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
 
     llvm::LLVMContext llvmContext;
     std::unique_ptr<llvm::Module> llvmModule;
-    llvm::StringMap<bool> reachTaken; // plan 03 R5 validate
+    // Under ECO_REACH_VALIDATE, the MLIR address-taken set, checked against
+    // the LLVM module once reachability is finished.
+    llvm::StringMap<bool> reachTaken;
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
@@ -279,14 +286,9 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
-    // M6: the llvm::Module now depends only on `llvmContext`; nothing below
-    // reads MLIR (root-module bake, TargetMachine init, internalize+DCE,
-    // runEcoBackend, link all take llvm::Module only). Free the ModuleOp
-    // op-graph — the bulk of MLIR-side memory — before the backend/worker
-    // phase. The MLIRContext and the parsed source buffer are owned by the
-    // caller (compileMlirFile/BytesToExecutable) and outlive this call, so this
-    // reset is safe; freeing those two needs a caller restructure (out of scope
-    // for this surgical edit).
+    // Nothing below reads MLIR, so the module's operations, most of the MLIR
+    // memory, are freed before the backend runs. The MLIRContext and the
+    // source buffer belong to the caller and stay alive until it returns.
     module = nullptr;
 
     const bool emitObjOnly = pathEndsWith(outputPath, ".o");
@@ -296,9 +298,8 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
     // Bake the root module name into the program as `__eco_root_module`.
     // The N-API addon declares it as a weak extern and uses it to name the
     // `Elm.<RootModule>` export; without it the addon falls back to "Main".
-    // Shared libraries only: an executable never reads it (it used to be
-    // internalized and GlobalDCE'd), and MLIR reachability (CGEN_081) cannot
-    // see an LLVM-created global.
+    // Shared libraries only: an executable never reads it, and MLIR
+    // reachability cannot see a global created here.
     if (!opts.rootModule.empty() && sharedLib) {
         auto *init = llvm::ConstantDataArray::getString(
             llvmContext, opts.rootModule, /*AddNull=*/true);
@@ -322,10 +323,12 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
             return 1;
     }
 
-    // Executable output only: internalize + GlobalDCE before RS4GC/opt/codegen.
-    // See internalizeAndDCEForExecutable — skipped for .o (relinked later) and
-    // .so/.node (need __eco_root_module / napi exports). When MLIR already did
-    // it (CGEN_081), only the dead-constant sweep remains.
+    // Executable output only: drop what main and the global initializer cannot
+    // reach. When MLIR reachability already did it,
+    // finishReachability only clears what translation left behind; otherwise
+    // internalizeAndDCEForExecutable does it on the LLVM module. Object files
+    // and shared libraries keep every symbol, as other code links against
+    // them.
     if (!emitObjOnly && !sharedLib && eco::hasReachabilityStamp(*llvmModule)) {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
         if (opts.stats)
@@ -366,10 +369,8 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
         objFile = std::string(tempObjPath);
     }
 
-    // Partition policy lives in the shared backend now (choosePartitionCount);
-    // the driver just declares eligibility + the requested split level. This
-    // brings the parallel object-emission win — previously eco-boot-only — to
-    // the unified `eco make` path and self-host stages 6-9.
+    // The backend decides the partition count; the job only says whether the
+    // output is eligible and what was requested.
     eco::EcoBackendResult backendResult;
     {
         std::unique_ptr<eco::LoweringStats::Scope> scope;
@@ -429,7 +430,6 @@ int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
 namespace eco {
 
 void initializeLLVMNativeTarget() {
-    // LLVM's Initialize* functions are idempotent — register once per process.
     static bool inited = false;
     if (inited)
         return;
@@ -450,7 +450,7 @@ int compileMlirFileToExecutable(const std::string &mlirPath,
     MLIRContext context(registry);
 #if defined(_WIN32)
     // Win64: avoid MLIRContext's default worker thread pool — its parked
-    // threads deadlock /MT CRT teardown at process exit. See eco-boot.cpp.
+    // threads deadlock /MT CRT teardown at process exit.
     context.disableMultithreading();
 #endif
     eco::loadRequiredDialects(context);
@@ -491,7 +491,7 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
     MLIRContext context(registry);
 #if defined(_WIN32)
     // Win64: avoid MLIRContext's default worker thread pool — its parked
-    // threads deadlock /MT CRT teardown at process exit. See eco-boot.cpp.
+    // threads deadlock /MT CRT teardown at process exit.
     context.disableMultithreading();
 #endif
     eco::loadRequiredDialects(context);
@@ -519,9 +519,10 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 }
 
 #if defined(__APPLE__)
-// Run `/usr/bin/xcrun <xcrunArgs>` and return its stdout with trailing
-// whitespace trimmed, or "" if xcrun fails. /usr/bin/xcrun ships with macOS
-// itself; it fails when neither Xcode nor the Command Line Tools is installed.
+/// Runs `/usr/bin/xcrun` with `xcrunArgs` and returns its standard output with
+/// trailing whitespace trimmed, or "" if it fails. Its standard error is
+/// discarded. /usr/bin/xcrun ships with macOS itself; it fails when neither
+/// Xcode nor the Command Line Tools is installed.
 static std::string runXcrun(llvm::ArrayRef<llvm::StringRef> xcrunArgs) {
     llvm::SmallString<128> outPath;
     if (llvm::sys::fs::createTemporaryFile("eco-xcrun", "txt", outPath))
@@ -545,15 +546,17 @@ static std::string runXcrun(llvm::ArrayRef<llvm::StringRef> xcrunArgs) {
     return (*buf)->getBuffer().rtrim().str();
 }
 
-// The Apple link driver and SDK, found when eco links rather than baked in
-// at configure time, so an installed bundle works with whatever Xcode or
-// Command Line Tools the user's Mac has. $SDKROOT overrides the SDK, as it
-// does for Apple's own tools. Resolved once per process.
+/// The Apple link driver and SDK path, found at link time rather than at
+/// configure time, so that an installed bundle works with whatever Xcode or
+/// Command Line Tools the machine has. An empty field means it was not found.
 struct DarwinToolchain {
     std::string clang;
     std::string sdkRoot;
 };
 
+/// Returns the Darwin toolchain, looked up through xcrun on the first call
+/// and reused for the life of the process. A non-empty `$SDKROOT` overrides
+/// the SDK path, as it does for Apple's own tools.
 static const DarwinToolchain &darwinToolchain() {
     static const DarwinToolchain tc = [] {
         DarwinToolchain t;
@@ -568,17 +571,17 @@ static const DarwinToolchain &darwinToolchain() {
     return tc;
 }
 
-// Darwin AOT link: invoke clang (found via xcrun at link time) as the
-// link driver and let it figure out crt/SDK details. ld64 is much more
+/// Links `objectFiles` into a Mach-O executable at `outputPath` with clang as
+/// the link driver, and returns 0 or 1. A shared library is refused.
+//
+// clang is used because it knows the crt and SDK details. ld64 is much more
 // integrated than ld.bfd/lld for Mach-O — Apple ships no crt objects (the
 // dynamic loader does startup), and libSystem/libc++/libcurl/libz are
 // SDK .tbd stubs that the SDK path locates. ld64 also ad-hoc-signs arm64
 // outputs automatically, so no codesign step is needed.
 //
-// Stackmaps: ld64 keeps unreferenced sections by default and we never pass
-// -dead_strip — the __LLVM_STACKMAPS,__llvm_stackmaps section survives
-// (verified by experiments/mac-statepoint-smoke; see plans/build-on-mac.md
-// E-M1 results).
+// Stackmaps: ld64 keeps unreferenced sections by default and -dead_strip is
+// never passed, so the __LLVM_STACKMAPS,__llvm_stackmaps section survives.
 static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
                                 const std::string &outputPath,
                                 const EcoNativeOptions &opts,
@@ -586,9 +589,6 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
     using eco::config::resolveFile;
 
     if (sharedLib) {
-        // Mach-O .dylib / .node support is out of scope for M4; plumbing it
-        // is a follow-up that mirrors the Stage D LinkProfile::HostShared
-        // refactor (LinkProfile knob, embed entry, codesign of the dylib).
         llvm::errs()
             << "Error: Darwin shared-library output is not yet supported.\n";
         return 1;
@@ -630,9 +630,8 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
     for (const auto &o : objectFiles)
         args.push_back(o);
 
-    // ld64's symbol-extraction semantics are more aggressive than ld.bfd's:
-    // archive members get pulled only when an already-loaded object refers
-    // to one of their defined symbols. main() in eco_entry.cpp has no such
+    // ld64 pulls an archive member only when an already-loaded object refers
+    // to one of its defined symbols. main() in eco_entry.cpp has no such
     // referrer (the .o is the user's program), so -force_load is required.
     // Similarly EcoKernel_Utils carries the Order LT/EQ/GT singletons that
     // user code may reference indirectly through Basics.compare.
@@ -661,14 +660,11 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
     }
 
     // libzip + OpenSSL (libssl, libcrypto) — not in the macOS SDK. libzip
-    // is vendored statically via FetchContent (see eco-kernel-cpp/
-    // CMakeLists.txt). OpenSSL is brew's openssl@3 keg statics: required
-    // because (a) the vendored libzip's configure pulls in
+    // is vendored statically via FetchContent. OpenSSL is brew's openssl@3
+    // keg statics: required because (a) the vendored libzip's configure pulls in
     // zip_crypto_openssl.c on a brew-equipped host even with
     // ENABLE_OPENSSL=OFF (auto-detect fallback), and (b) Http.cpp's
-    // SHA1-hashing of downloaded zips uses <openssl/sha.h>. Both are
-    // tracked in plans/build-on-mac.md as "eliminate via CommonCrypto" —
-    // for v1 we link them.
+    // SHA1-hashing of downloaded zips uses <openssl/sha.h>.
     //
     // Order matters: libzip first (drags in EVP_* refs), then libssl,
     // then libcrypto (the EVP_* symbols live in libcrypto).
@@ -712,13 +708,15 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
 #endif // __APPLE__
 
 #if defined(_WIN32)
-// Win64 AOT link profile (W4 in plans/build-on-windows.md). Shell out to
-// clang-cl so VS Build Tools + Windows SDK discovery happens via the
-// driver, then drive lld-link via /link with the Win64 library set:
-//   /MT static MSVC CRT, /INCREMENTAL:NO (required for our stackmap match
-//   per E-W1 finding), /SUBSYSTEM:CONSOLE, project .libs, vendored libzip
-//   + curl-with-schannel + zlib, plus the Windows SDK import libs
-//   kernel32/ws2_32/crypt32/bcrypt/secur32. No OpenSSL.
+/// Links `objectFiles` into a PE executable at `outputPath` with clang-cl
+/// driving lld-link, and returns 0 or 1. A shared library is refused. The
+/// linker's output is captured in a temporary file and then copied to
+/// standard error.
+//
+// clang-cl is used so that it finds the VS Build Tools and the Windows SDK.
+// The library set: the static MSVC CRT (/MT), the project libraries, the
+// vendored libcurl (schannel TLS), libzip and zlib, and the Windows SDK
+// import libraries. No OpenSSL.
 static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
                                  const std::string& outputPath,
                                  const eco::EcoNativeOptions& opts,
@@ -726,8 +724,6 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
     using eco::config::resolveFile;
 
     if (sharedLib) {
-        // .dll output is out of scope for v1 — same status as Darwin's
-        // .dylib path. Tracked alongside the N-API addon work.
         llvm::errs()
             << "Error: Windows shared-library output is not yet supported.\n";
         return 1;
@@ -739,10 +735,7 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
         return resolvedStrings.back();
     };
 
-    // Locate clang-cl on PATH (set up by win-build / msvc-dev-cmd). The
-    // VS Build Tools clang-cl ships alongside cl.exe; LLVM 21's clang-cl
-    // (our 'win-llvm-build' install tree) also works. ExecuteAndWait
-    // requires an absolute path, which findProgramByName resolves for us.
+    // ExecuteAndWait needs an absolute path, which findProgramByName gives.
     llvm::ErrorOr<std::string> clangCl = llvm::sys::findProgramByName("clang-cl");
     if (!clangCl) {
         llvm::errs()
@@ -755,8 +748,7 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
     llvm::SmallVector<llvm::StringRef> args;
     args.push_back(*clangCl);
     args.push_back("/nologo");
-    args.push_back("/MT");              // Static MSVC CRT — eco binaries
-                                        // self-contained (no vcredist req).
+    args.push_back("/MT");              // Link the static MSVC CRT.
     args.push_back("/EHsc");
     args.push_back(push(std::string("/Fe:") + outputPath));
     for (const auto &o : objectFiles)
@@ -772,7 +764,6 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
     // functions, and the stackmap section's recorded fnAddresses then point
     // at the thunk slot instead of the real function entry. The whole
     // stackmap-driven GC root scan would mis-locate every frame.
-    // See plans/build-on-windows.md E-W1 findings.
     args.push_back("/INCREMENTAL:NO");
 
     // /WHOLEARCHIVE:<lib> is the MSVC-side equivalent of `-Wl,--whole-archive`
@@ -828,12 +819,10 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
     }
 
     std::string errMsg;
-    // Win64 inherited-handle hang fix. With default (empty) redirects, the
-    // clang-cl/lld-link child inherits this process's stdout/stderr — which,
-    // under the self-host bootstrap, are the build tool's (ninja's) pipe
-    // write-ends. A link descendant can keep an inherited copy of that pipe
-    // handle open past this process's own exit, so the build tool never sees
-    // pipe EOF and the stage hangs regardless of how we exit. Redirect the link
+    // With default redirects the link child inherits this process's stdout
+    // and stderr. When those are a build tool's pipe, a link descendant can
+    // keep an inherited copy of the handle open after this process exits, so
+    // the build tool never sees end of file and hangs. Redirect the link
     // child's stdin to null and stdout+stderr to a temp file: the link subtree
     // then inherits the file handle, never the build pipe. The captured output
     // is dumped afterwards so linker diagnostics still reach the log.
@@ -903,13 +892,12 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     // paths = "", systemLinker = "" on Apple) don't reach the link line.
     return linkExecutableDarwin(objectFiles, outputPath, opts, sharedLib);
 #else
-    // Phase 3: invoke the system linker (ld.bfd) directly rather than the
-    // clang++ driver. Eliminates the clang++ runtime dependency; the linker
-    // path + crt files + libgcc + dynamic linker were all discovered at
-    // CMake configure time and baked into EcoBootConfig.h.
+    // The linker is invoked directly, not through a compiler driver. Every
+    // input is either resolved under the runtime directory (the bundle
+    // profiles) or was found at configure time and recorded in the
+    // generated eco/EcoBootConfig.h (the host profiles).
     //
-    // The arg layout mirrors what clang++ would have emitted, distilled to
-    // just what we need for a PIE ELF binary:
+    // For HostExe the line has the shape a compiler driver would produce:
     //   ld -pie -dynamic-linker=… -o out
     //       Scrt1.o crti.o crtbeginS.o
     //       <objectFile> <project static archives>
@@ -926,30 +914,26 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     //   - libgcc.a / -lgcc_s is repeated to satisfy the cyclic unwinder
     //     dependency the way clang's driver normally does.
 
-    // resolveFile() picks $ECO_RUNTIME_DIR / bundled / buildPath in that
-    // priority; see EcoBootConfig.cpp. Used everywhere a path is needed so
-    // both the build-time eco-boot-native and the installed eco binary
-    // share one code path.
+    // resolveFile() looks in $ECO_RUNTIME_DIR, then the installed bundle,
+    // then the build tree, so a build-tree and an installed binary link alike.
     using eco::config::resolveFile;
 
-    // Stage D: output link profile. The profile used to be implied by the
-    // compile-time bundle flavor (ecoStaticMusl); it is now selected per
-    // output kind so the musl bundle can produce BOTH fully-static
-    // executables (Stage B.5) and glibc-ABI shared libraries (Stage D)
-    // from one binary. See plans/stage-d-hybrid-link-profiles.md.
+    /// The set of link inputs and flags for one output, chosen from the
+    /// output kind and whether this build is the static-musl bundle, so that
+    /// the musl bundle can produce both fully static executables and
+    /// glibc-ABI shared libraries.
     enum class LinkProfile {
-        MuslStaticExe,     // Stage B.5: -static, musl/libc++/compiler-rt
-        HostExe,           // legacy dev/A.5: -pie against host glibc paths
-        HostShared,        // legacy dev .so/.node via the host linker
-        GlibcBundleShared, // Stage D: -shared against the bundled glibc/ tree
+        MuslStaticExe,     ///< -static against the bundle's musl, libc++ and compiler-rt.
+        HostExe,           ///< -pie against the host's glibc.
+        HostShared,        ///< -shared with the host linker and libraries.
+        GlibcBundleShared, ///< -shared against the bundle's glibc/ tree.
     };
     LinkProfile profile;
     if (sharedLib) {
         if (eco::config::ecoStaticMusl) {
-            // A fully-static musl shared object remains a contradiction in
-            // terms (no dynamic section, two libcs in one process); what
-            // changed in Stage D is that the bundle can now carry a second
-            // set of glibc link inputs for exactly this case.
+            // A fully static musl shared object is impossible (no dynamic
+            // section, two libcs in one process), so a shared library needs
+            // the bundle's second, glibc set of link inputs.
             if (!eco::config::hasGlibcOutputProfile()) {
                 llvm::errs()
                     << "Error: this eco bundle lacks the glibc output "
@@ -972,10 +956,9 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
                                profile == LinkProfile::GlibcBundleShared;
     const bool hostProfile = !bundleProfile;
 
-    // Stage C: bundle profiles use the bundled static ld.lld from
-    // lib/eco-runtime/ (a linker is target-ABI-agnostic, so it serves the
-    // Stage D glibc -shared links too). Host profiles use the host linker
-    // discovered at CMake configure time.
+    // Bundle profiles use the bundled static ld.lld (a linker does not depend
+    // on the target libc, so it serves the glibc shared link too). Host
+    // profiles use the host linker discovered at CMake configure time.
     std::string linkerPath = bundleProfile
         ? resolveFile(eco::config::bundledLinker)
         : std::string(eco::config::systemLinker);
@@ -1026,27 +1009,25 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     // hints for -lrt and -lpthread (.deplibs sections). With our
     // explicit-absolute-paths link line we emit no -L dirs, so lld can't
     // resolve them — and doesn't need to (musl folds rt/pthread into
-    // libc; the Stage D shared profile leaves libc symbols undefined by
+    // libc; the glibc shared profile leaves libc symbols undefined by
     // design). Both bundle profiles skip dependent-library resolution.
     if (bundleProfile) {
         args.push_back("--no-dependent-libraries");
     }
 
-    // Stage B.5 musl-static vs Stage A.5 glibc-dynamic-PIE vs -shared.
     // Under MuslStaticExe the binary is fully static (no PT_INTERP, no
     // shared deps), so we drop `-pie` + `-dynamic-linker` and pass
     // `-static` instead.
     if (sharedLib) {
         args.push_back("-shared");
-        // Stage D: the emitted objects carry R_X86_64_64 relocations in
+        // The emitted objects carry R_X86_64_64 relocations in
         // the allocatable .llvm_stackmaps section, which lld refuses in
         // position-independent output unless told otherwise (the host
         // shared profile never hits this — ld.bfd emits the same thing
         // with a DT_TEXTREL warning). The embed runtime REQUIRES those
         // relocations applied in memory (eco_embed.cpp parses the loaded
         // section with loadBase=0), so DT_TEXTREL is the correct
-        // behavior, not a workaround. Follow-up to remove it tracked in
-        // plans/stage-d-hybrid-link-profiles.md.
+        // behavior.
         if (profile == LinkProfile::GlibcBundleShared) {
             args.push_back("-z");
             args.push_back("notext");
@@ -1078,24 +1059,21 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     }
 
     // crt prefix.
-    //   - glibc/Stage A.5: Scrt1.o (PIE startup) + crti.o + crtbeginS.o
+    //   - host glibc: Scrt1.o (PIE startup) + crti.o + crtbeginS.o
     //     (frame-info ctor table for the shared/PIE variant).
-    //   - musl/Stage B.5:  crt1.o  (static startup) + crti.o +
+    //   - musl static:  crt1.o  (static startup) + crti.o +
     //     clang_rt.crtbegin-x86_64.o (compiler-rt non-PIE init markers).
     //   - shared lib: no startup object (no _start), but crti/crtbeginS
-    //     still provide the init/fini scaffolding. Stage D takes them
-    //     from the bundle's glibc/crt tree (harvested from the Debian
-    //     builder), not from the host.
+    //     still provide the init/fini scaffolding. GlibcBundleShared takes
+    //     them from the bundle's glibc/crt tree, not from the host.
     if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::crt1ObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtiObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtbeginObjStatic)));
-        // mimalloc replaces musl's malloc (plans/bundle-runtime-performance.md, B). As an
-        // object ahead of every archive, its malloc/free/... are the definitions the linker
-        // takes, so musl's allocator in libc.a is never pulled in.
+        // mimalloc replaces musl's malloc. As an object ahead of every archive,
+        // its malloc/free/... are the definitions the linker takes, so musl's allocator in libc.a is never pulled in.
         args.push_back(push(resolveFile(eco::config::mimallocObjStatic)));
-        // LLVM libc's memcpy/memmove/memset/bcmp/memcmp replace musl's the same way
-        // (plans/bundle-runtime-performance.md, D).
+        // LLVM libc's memcpy/memmove/memset/bcmp/memcmp replace musl's the same way.
         args.push_back(push(resolveFile(eco::config::memfuncsObjStatic)));
     } else if (profile == LinkProfile::GlibcBundleShared) {
         args.push_back(push(resolveFile(eco::config::glibcCrtiObj)));
@@ -1107,12 +1085,11 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         args.push_back(eco::config::crtbeginObj);
     }
 
-    // The user's compiled .o (one per codegen partition — see
-    // emitObjectFilesSplit; a single object in the non-split case).
+    // The program's object files, one per partition when it was split.
     for (const auto &o : objectFiles)
         args.push_back(o);
 
-    // Project archive set: the Stage D shared profile links the
+    // Project archive set: GlibcBundleShared links the
     // glibc-compiled copies from glibc/project/; everything else uses
     // the original (musl or build-tree) set. Same basenames, same
     // structure — only the subdir differs.
@@ -1174,13 +1151,12 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
 
     args.push_back("--end-group");
 
-    // libc — under MUSL/static we ship libc.a in the bundle as an
-    // absolute path. Under the host profiles we let the linker resolve
-    // via -l. Stage D passes NO libc inputs at all: libc/libm/pthread
-    // symbols stay undefined (allowed for -shared) and bind at load time
-    // from the glibc already in the host process — the same mechanism
-    // the napi_* symbols use. C hosts linking a produced .so must add
-    // -lm themselves (documented in design_docs/distribution.md).
+    // libc: MuslStaticExe links the bundle's libc.a by absolute path. Under
+    // the host profiles the linker resolves it via -l.
+    // GlibcBundleShared passes no libc inputs: libc/libm/pthread symbols stay
+    // undefined (allowed for -shared) and bind at load time from the glibc
+    // already in the host process, as the napi_* symbols do. A C host
+    // linking a produced .so must add -lm itself.
     if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::libcStaticA)));
     } else if (hostProfile) {
@@ -1190,7 +1166,7 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     }
 
     if (profile == LinkProfile::GlibcBundleShared) {
-        // Stage D: glibc-targeting static PIC archives from glibc/.
+        // glibc-targeting static PIC archives from glibc/.
         // libc++abi after libc++ (cxxabi half); z last for forward refs
         // from vendored libzip and libcurl.
         args.push_back(push(resolveFile(eco::config::glibcLibcxxA)));
@@ -1226,18 +1202,18 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
             args.push_back(push(lib));
         args.push_back("-lzip");
         // zlib directly, not only through libzip/libcurl: eco/system's Stream
-        // codecs call it (plans/eco-system-library.md Phase 1 step 1.2).
+        // codecs call it.
         args.push_back("-lz");
     }
 
     // Compiler builtins + unwinder. Four profiles:
-    //   - Stage B.5 (musl/static): compiler-rt builtins.a, clean overlap
+    //   - MuslStaticExe: compiler-rt builtins.a, clean overlap
     //     with libunwind (no --allow-multiple-definition).
-    //   - Stage D (glibc bundle shared): glibc-built compiler-rt builtins
+    //   - GlibcBundleShared: glibc-built compiler-rt builtins
     //     from glibc/, same clean stack.
-    //   - Stage A.5 (glibc/static): libgcc.a + --allow-multiple-definition
+    //   - host glibc, static archives (ecoStatic): libgcc.a + --allow-multiple-definition
     //     (the LLVM libunwind / libgcc_eh `_Unwind_*` overlap workaround).
-    //   - Default (glibc/dynamic): `-lgcc_s libgcc.a -lgcc_s` dance for the
+    //   - host glibc, dynamic: `-lgcc_s libgcc.a -lgcc_s` dance for the
     //     cyclic libgcc.a / libgcc_s.so dependency.
     if (profile == LinkProfile::GlibcBundleShared) {
         args.push_back(push(resolveFile(eco::config::glibcBuiltinsA)));
@@ -1262,9 +1238,8 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         // of glibc's `-lc` GROUP linker script. Since this profile links
         // no libc (other libc symbols bind from the host at load), without
         // this archive a produced .so/.node references `atexit`
-        // (eco_embed's teardown hook) with nothing to resolve it and fails
-        // dlopen with "undefined symbol: atexit" on every glibc host. Its
-        // members reference __cxa_atexit (a real dynamic export) and
+        // (eco_embed's teardown hook) with nothing in the link to resolve
+        // it. Its members reference __cxa_atexit (a real dynamic export) and
         // __dso_handle (from crtbeginS.o), so it adds no NEEDED entry.
         // Placed after the archives that reference it so the linker pulls
         // the needed members.
@@ -1276,7 +1251,7 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         // whole-archived entry libs. Scoped, NOT `ALL`: lld applies
         // --exclude-libs to whole-archived members too, so ALL would
         // demote napi_register_module_v1 and eco_app_* (embed/glue) to
-        // local and break the addon (verified). Hiding does two jobs:
+        // local. Hiding does two jobs:
         //   1. Non-preemptibility: stops Node's libstdc++/libgcc_s from
         //      interposing our static libc++abi/libunwind (operator
         //      new/delete, __cxa_*, _Unwind_*, plain-std:: typeinfos),
@@ -1285,9 +1260,8 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         //      __cpu_model expecting a link-local definition — kernel
         //      archives like ElmKernel_Regex carry exactly that).
         //   2. Export hygiene: kernel/runtime/dep symbols stay out of
-        //      .dynsym. The user program's own symbols (in the .o, not
-        //      an archive) remain exported — trimming them is the D6
-        //      follow-up.
+        //      .dynsym. The program's own symbols (in the .o, not
+        //      an archive) remain exported.
         std::string excludeLibs =
             "--exclude-libs=libc++.a,libc++abi.a,libunwind.a,"
             "libclang_rt.builtins-x86_64.a,libc_nonshared.a,libcurl.a,"
@@ -1306,7 +1280,7 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     }
 
     // crt epilogue: clang_rt.crtend (musl non-PIE) vs crtendS.o (glibc
-    // PIE/shared; Stage D takes it from the bundled glibc/crt tree).
+    // PIE/shared; GlibcBundleShared takes it from the bundled glibc/crt tree).
     if (profile == LinkProfile::MuslStaticExe) {
         args.push_back(push(resolveFile(eco::config::crtendObjStatic)));
         args.push_back(push(resolveFile(eco::config::crtnObjStatic)));
@@ -1322,7 +1296,7 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         // rpath so the produced AOT binary finds libunwind.so at runtime
         // without LD_LIBRARY_PATH. Not needed for the .a path. Host
         // profiles only: ecoStatic is constexpr-true in the musl bundle,
-        // and Stage D links libunwind.a — no rpath either way.
+        // and GlibcBundleShared links libunwind.a.
         args.push_back("-rpath");
         args.push_back(eco::config::unwindLibDir);
     }
@@ -1354,15 +1328,13 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
         llvm::errs() << "[eco-native] linked executable: " << outputPath
                      << "\n";
 
-    // For .node addons, emit a sibling CommonJS shim (<base>.js) so hosts
-    // written against the JS target's `require("./build/elm.js")` resolve
-    // to the native addon unaltered (name the output elm.node to match).
+    // For .node addons, emit a sibling CommonJS shim (<base>.js) that
+    // requires the addon, so `require` of the .js path loads it.
     //
-    // The shim also turns the raw loader error a glibc-ABI addon produces
-    // under musl-libc Node (e.g. Alpine) into a clear message:
-    // process.report's header.glibcVersionRuntime is absent exactly on
-    // musl builds of Node, a stable documented discriminator. See
-    // plans/stage-d-hybrid-link-profiles.md step 6.
+    // When loading fails, the shim treats a missing
+    // process.report header.glibcVersionRuntime as meaning a musl-libc Node
+    // and replaces the loader error with a clearer message. A failure to
+    // write the shim is ignored.
     if (pathEndsWith(outputPath, ".node")) {
         llvm::SmallString<256> shimPath(outputPath.c_str());
         llvm::sys::path::replace_extension(shimPath, ".js");
@@ -1394,7 +1366,7 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
 } // namespace eco
 
 //===----------------------------------------------------------------------===//
-// C ABI implementation
+// C ABI implementation: default EcoNativeOptions, plus `rootModule` if given.
 //===----------------------------------------------------------------------===//
 
 extern "C" int eco_native_lower_and_link(const char *mlirPath,

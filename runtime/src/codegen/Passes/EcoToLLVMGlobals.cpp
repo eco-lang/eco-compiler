@@ -1,8 +1,40 @@
 //===- EcoToLLVMGlobals.cpp - Global variable lowering patterns -----------===//
 //
-// This file implements lowering patterns for ECO global variable operations:
-// global, load_global, store_global, type_table, and the global root
-// initialization function.
+// Lowers the module-level state of an Elm program to LLVM: its globals, its
+// type table, and the caches that let a constant or a string literal be read
+// with a load once its slot is set. The contracts are on the declarations in
+// `EcoToLLVMInternal.h`; this comment says how they are implemented.
+//
+// Every global this file makes to hold an Elm value is an internal i64,
+// initialised to 0. The word 0 means "unset": a heap pointer is a non-zero
+// address and every embedded constant has `ptr_ind` set, so no `!eco.value`
+// word is 0. Reads and writes convert between the i64 and
+// `ptr addrspace(1)` through `globalLoadI64ToValue` and
+// `globalStoreValueToI64` (REP_LLVM_002).
+//
+// `__eco_init_globals` registers every internal i64 global in the module as a
+// GC root, except two kinds of cache slot that register themselves or need no
+// root:
+//
+// - A CAF slot, `__eco_caf$<thunk>`, caches the value of a constant defined at
+//   top level (a CAF), compiled as a function of no arguments. The thunk
+//   stores into it what `eco_caf_promote` returns, and that runtime function
+//   roots the slot itself when the value stays in the collected heap.
+// - A string-literal slot, `__eco_strlit$<literal global>`, is written only by
+//   the runtime's `*_fill` functions, and only with a PermanentSpace word,
+//   which never moves and is never collected, so it needs no root.
+//
+// A rewritten call site reads a slot and makes the call only if it is 0. That
+// test is built as an `scf.if` rather than new blocks, because the functions it
+// is inserted into may still hold `scf` regions, which must stay single-block.
+//
+// The type table becomes `__eco_type_graph`, an 80-byte struct of five
+// (pointer, count, padding) triples. Four of the arrays it points to hold no
+// pointers (types, fields, constructors and function argument type ids) and
+// are emitted as little-endian byte blobs, in the layouts of `EcoTypeInfo`,
+// `EcoFieldInfo` and `EcoCtorInfo` (`allocator/TypeInfo.hpp`) and of u32. The
+// string array holds pointers and is built with `insertvalue`, as is the root
+// struct.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,6 +54,8 @@ namespace {
 // eco.global -> LLVM global variable declaration
 //===----------------------------------------------------------------------===//
 
+/// The pattern that replaces `eco.global` with an internal i64 global of the
+/// same name, initialised to 0, the unset word.
 struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -31,8 +65,6 @@ struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        // eco.value becomes i64 (tagged pointer)
-        // Create an LLVM global initialized to 0 (null)
         auto zeroAttr = rewriter.getI64IntegerAttr(0);
 
         rewriter.replaceOpWithNewOp<LLVM::GlobalOp>(
@@ -51,6 +83,8 @@ struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
 // eco.load_global -> LLVM load from global address
 //===----------------------------------------------------------------------===//
 
+/// The pattern that replaces `eco.load_global` with an i64 load from the global,
+/// converted to `ptr addrspace(1)` by `globalLoadI64ToValue`.
 struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -62,11 +96,9 @@ struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Get address of global
         auto globalAddr = rewriter.create<LLVM::AddressOfOp>(
             loc, ptrTy, op.getGlobal());
 
-        // Load i64 from global then convert to ptr<1>
         auto loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, globalAddr);
         Value result = globalLoadI64ToValue(rewriter, loc, loadedValue.getResult());
 
@@ -79,6 +111,8 @@ struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
 // eco.store_global -> LLVM store to global address
 //===----------------------------------------------------------------------===//
 
+/// The pattern that replaces `eco.store_global` with a store of the value,
+/// converted to i64 by `globalStoreValueToI64`, into the global.
 struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -89,11 +123,9 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
         auto *ctx = rewriter.getContext();
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Get address of global
         auto globalAddr = rewriter.create<LLVM::AddressOfOp>(
             loc, ptrTy, op.getGlobal());
 
-        // Convert ptr<1> to i64 for global storage
         Value valI64 = globalStoreValueToI64(rewriter, loc, adaptor.getValue());
         rewriter.create<LLVM::StoreOp>(loc, valI64, globalAddr);
 
@@ -106,6 +138,13 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
 // eco.type_table -> LLVM globals for type graph
 //===----------------------------------------------------------------------===//
 
+/// The pattern that replaces `eco.type_table` with `__eco_type_graph` and the
+/// private arrays it points to.
+///
+/// If the module already has `__eco_type_graph`, the op is erased and nothing
+/// is emitted. An absent or empty array becomes a null pointer and a count of
+/// 0. An entry of the wrong shape becomes zero bytes, and an attribute that is
+/// not an integer is written as 0.
 struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -116,24 +155,16 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         auto *ctx = rewriter.getContext();
         auto module = op->getParentOfType<ModuleOp>();
 
-        // Check if global already exists
         if (module.lookupSymbol("__eco_type_graph")) {
             rewriter.eraseOp(op);
             return success();
         }
 
-        // Get LLVM types
         auto i8Ty = IntegerType::get(ctx, 8);
         auto i32Ty = IntegerType::get(ctx, 32);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        // Struct byte layouts (emitted directly as byte blobs below, not as
-        // LLVM struct-array globals):
-        //   EcoTypeInfo  = 20 bytes {u32 type_id, u8 kind, u8 pad[3], u8 data[12]}
-        //   EcoFieldInfo =  8 bytes {u32 name_index, u32 type_id}
-        //   EcoCtorInfo  = 16 bytes {u32 ctor_id, u32 name_index, u32 first_field, u32 field_count}
-
-        // EcoTypeGraph: 80 bytes
+        // EcoTypeGraph: 80 bytes.
         auto typeGraphTy = LLVM::LLVMStructType::getLiteral(ctx, {
             ptrTy, i32Ty, i32Ty,  // types, type_count, padding1
             ptrTy, i32Ty, i32Ty,  // fields, field_count, padding2
@@ -142,30 +173,23 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
             ptrTy, i32Ty, i32Ty   // strings, string_count, padding5
         });
 
-        // Extract arrays from op attributes
         auto typesAttr = op.getTypes();
         auto fieldsAttr = op.getFields();
         auto ctorsAttr = op.getCtors();
         auto funcArgsAttr = op.getFuncArgs();
         auto stringsAttr = op.getStrings();
 
-        // Save insertion point and move to module level for global creation
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(module.getBody());
 
-        // The types/fields/ctors/func_args arrays are fully compile-time-known
-        // byte data (arrays of POD structs / u32s with no pointer fields). We
-        // emit each as a single `[N x i8]` global with a raw little-endian
-        // byte-blob StringAttr initializer instead of a chain of
-        // insertvalue/ZeroOp ops. This avoids the O(entries*fields) MLIR op
-        // count AND LLVM's quadratic ConstantFoldInsertValueInstruction during
-        // MLIR->LLVM-IR translation (each insertvalue re-copies the aggregate).
-        // The struct layouts have no internal padding beyond explicit pad
-        // fields (EcoTypeInfo=20B {u32,u8,pad[3],u8[12]}, EcoFieldInfo=8B
-        // {u32,u32}, EcoCtorInfo=16B {4xu32}), so the packed byte sequence is
-        // ABI-identical to the array-of-structs form. Alignment is set
-        // explicitly (an [N x i8] global would otherwise be 1-aligned, but the
-        // runtime reads these via u32-containing struct pointers).
+        // The four pointer-free arrays are each one `[N x i8]` global with a
+        // byte-string initializer, not a chain of `insertvalue` ops: such a
+        // chain costs one op per field, and LLVM copies the aggregate again for
+        // each `insertvalue` when it folds the chain. The structs have no
+        // padding beyond their explicit pad fields, so the packed bytes are the
+        // array-of-structs layout. Alignment is set because an i8 array would
+        // otherwise be 1-aligned, and the runtime reads it through struct
+        // pointers.
         auto appendU32 = [](std::string &b, uint64_t v) {
             b.push_back(char(v & 0xFF));
             b.push_back(char((v >> 8) & 0xFF));
@@ -186,12 +210,12 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
             return ia ? ia.getInt() : 0;
         };
 
-        // Create strings global array
+        // Strings: one NUL-terminated global per string, and an array of
+        // pointers to them.
         uint32_t stringCount = 0;
         LLVM::GlobalOp stringsGlobal = nullptr;
         if (stringsAttr && !stringsAttr->empty()) {
             stringCount = stringsAttr->size();
-            // Create individual string globals and then an array of pointers
             SmallVector<LLVM::GlobalOp> stringGlobals;
             for (size_t i = 0; i < stringCount; i++) {
                 auto strAttr = llvm::dyn_cast<StringAttr>((*stringsAttr)[i]);
@@ -208,14 +232,12 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 stringGlobals.push_back(strGlobal);
             }
 
-            // Create array of string pointers
             auto strPtrArrayTy = LLVM::LLVMArrayType::get(ptrTy, stringCount);
             stringsGlobal = rewriter.create<LLVM::GlobalOp>(
                 loc, strPtrArrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Private, "__eco_strings_array",
                 Attribute());
 
-            // Add initializer region for string pointer array
             Block *strInitBlock = rewriter.createBlock(&stringsGlobal.getInitializerRegion());
             rewriter.setInsertionPointToStart(strInitBlock);
             Value strArray = rewriter.create<LLVM::UndefOp>(loc, strPtrArrayTy);
@@ -227,12 +249,11 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
             rewriter.setInsertionPointToStart(module.getBody());
         }
 
-        // Create func_args global array
+        // Function argument type ids: u32 each.
         uint32_t funcArgCount = 0;
         LLVM::GlobalOp funcArgsGlobal = nullptr;
         if (funcArgsAttr && !funcArgsAttr->empty()) {
             funcArgCount = funcArgsAttr->size();
-            // Array of u32 -> 4 LE bytes each.
             std::string bytes;
             bytes.reserve(funcArgCount * 4);
             for (size_t i = 0; i < funcArgCount; i++) {
@@ -243,14 +264,12 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 emitByteBlobGlobal("__eco_func_args_array", bytes, /*align=*/4);
         }
 
-        // Create ctors global array
+        // Constructors: EcoCtorInfo, 16 bytes {u32 ctor_id, u32 name_index,
+        // u32 first_field, u32 field_count}.
         uint32_t ctorCount = 0;
         LLVM::GlobalOp ctorsGlobal = nullptr;
         if (ctorsAttr && !ctorsAttr->empty()) {
             ctorCount = ctorsAttr->size();
-            // EcoCtorInfo = 16 bytes {u32 ctor_id, u32 name_index,
-            // u32 first_field, u32 field_count}. Entries with a malformed
-            // descriptor become 16 zero bytes (the old code left them undef).
             std::string bytes;
             bytes.reserve(ctorCount * 16);
             for (size_t i = 0; i < ctorCount; i++) {
@@ -266,12 +285,11 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 emitByteBlobGlobal("__eco_ctors_array", bytes, /*align=*/4);
         }
 
-        // Create fields global array
+        // Fields: EcoFieldInfo, 8 bytes {u32 name_index, u32 type_id}.
         uint32_t fieldCount = 0;
         LLVM::GlobalOp fieldsGlobal = nullptr;
         if (fieldsAttr && !fieldsAttr->empty()) {
             fieldCount = fieldsAttr->size();
-            // EcoFieldInfo = 8 bytes {u32 name_index, u32 type_id}.
             std::string bytes;
             bytes.reserve(fieldCount * 8);
             for (size_t i = 0; i < fieldCount; i++) {
@@ -287,21 +305,17 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 emitByteBlobGlobal("__eco_fields_array", bytes, /*align=*/4);
         }
 
-        // Create types global array
+        // Types: EcoTypeInfo, 20 bytes {u32 type_id @0, u8 kind @4,
+        // u8 pad[3] @5, u8 data[12] @8}, where `data` is laid out per kind.
         uint32_t typeCount = 0;
         LLVM::GlobalOp typesGlobal = nullptr;
         if (typesAttr && !typesAttr->empty()) {
             typeCount = typesAttr->size();
-            // EcoTypeInfo = 20 bytes {u32 type_id @0, u8 kind @4, u8 pad[3] @5,
-            // u8 data[12] @8}. The per-kind data union layout below mirrors the
-            // original insertvalue lowering byte-for-byte (all little-endian).
             std::string bytes;
             bytes.reserve(typeCount * 20);
             for (size_t i = 0; i < typeCount; i++) {
                 auto typeArr = llvm::dyn_cast<ArrayAttr>((*typesAttr)[i]);
                 if (!typeArr || typeArr.size() < 3) {
-                    // Old code left such entries undef; deterministic zeros are
-                    // ABI-safe (invalid entries are never dereferenced).
                     bytes.append(20, '\0');
                     continue;
                 }
@@ -309,7 +323,8 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 uint32_t typeId = static_cast<uint32_t>(intAt(typeArr, 0));
                 uint8_t kind = static_cast<uint8_t>(intAt(typeArr, 1));
 
-                // 12-byte data union, zero-initialised then filled per kind.
+                // An unknown kind, or a known one with too few elements, leaves
+                // `data` zero.
                 char data[12] = {0};
                 auto putU16 = [&](size_t off, uint64_t v) {
                     data[off + 0] = char(v & 0xFF);
@@ -355,10 +370,8 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                         putU32(8, intAt(typeArr, 4));
                     }
                     break;
-                case 6: // Polymorphic: constraint (u8) @0 (EcoConstraintKind:
-                        // 0 = Number, 1 = EcoValue; TypeTable.elm
-                        // addPolymorphicType). SD-25: without this arm every
-                        // entry read back as Number.
+                case 6: // Polymorphic: constraint (u8) @0, an
+                        // EcoConstraintKind.
                     data[0] = char(intAt(typeArr, 2) & 0xFF);
                     break;
                 }
@@ -372,7 +385,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
                 emitByteBlobGlobal("__eco_types_array", bytes, /*align=*/8);
         }
 
-        // Create the main __eco_type_graph global with initializer region
         auto typeGraphGlobal = rewriter.create<LLVM::GlobalOp>(
             loc, typeGraphTy, /*isConstant=*/true,
             LLVM::Linkage::External, "__eco_type_graph",
@@ -386,7 +398,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
 
         Value structVal = rewriter.create<LLVM::UndefOp>(loc, typeGraphTy);
 
-        // types pointer
         if (typesGlobal) {
             auto typesAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, typesGlobal.getSymName());
             structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, typesAddr, ArrayRef<int64_t>{0});
@@ -397,7 +408,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, typeCountCst, ArrayRef<int64_t>{1});
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{2}); // padding
 
-        // fields pointer
         if (fieldsGlobal) {
             auto fieldsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, fieldsGlobal.getSymName());
             structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, fieldsAddr, ArrayRef<int64_t>{3});
@@ -408,7 +418,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, fieldCountCst, ArrayRef<int64_t>{4});
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{5}); // padding
 
-        // ctors pointer
         if (ctorsGlobal) {
             auto ctorsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, ctorsGlobal.getSymName());
             structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, ctorsAddr, ArrayRef<int64_t>{6});
@@ -419,7 +428,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, ctorCountCst, ArrayRef<int64_t>{7});
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{8}); // padding
 
-        // func_args pointer
         if (funcArgsGlobal) {
             auto funcArgsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcArgsGlobal.getSymName());
             structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, funcArgsAddr, ArrayRef<int64_t>{9});
@@ -430,7 +438,6 @@ struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, funcArgCountCst, ArrayRef<int64_t>{10});
         structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, zero32, ArrayRef<int64_t>{11}); // padding
 
-        // strings pointer
         if (stringsGlobal) {
             auto stringsAddr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, stringsGlobal.getSymName());
             structVal = rewriter.create<LLVM::InsertValueOp>(loc, structVal, stringsAddr, ArrayRef<int64_t>{12});
@@ -473,36 +480,26 @@ void eco::detail::createGlobalRootInitFunction(
     ModuleOp module,
     EcoRuntime &runtime) {
 
-    // Collect all internal LLVM globals (these came from eco.global) EXCEPT
-    // CAF memo slots: those are never pre-registered — eco_caf_promote roots
-    // a slot at first evaluation exactly when its value stays heap-resident
-    // (declined promotion or ECO_CAF_PERMANENT=0). Pre-registering all of
-    // them left every never-evaluated slot (61 % on the self-compile
-    // workload) in the JIT root set forever, holding 0, swept every minor.
+    // CAF slots are left out because `eco_caf_promote` roots a slot itself, at
+    // its first evaluation, when the value stays in the collected heap; rooting
+    // every slot up front would keep slots that are never evaluated in the
+    // root set. String-literal slots hold only PermanentSpace words and need no
+    // root. Globals are top-level, so only the module body is scanned.
     SmallVector<LLVM::GlobalOp> ecoGlobals;
-    // Globals are top-level only: iterate the module body, not a recursive
-    // walk over every op (plans/backend-lowering-optimization.md B8).
     llvm::for_each(module.getOps<LLVM::GlobalOp>(), [&](LLVM::GlobalOp globalOp) {
-        // eco.global creates internal linkage globals with i64 type
         if (globalOp.getLinkage() == LLVM::Linkage::Internal &&
             globalOp.getGlobalType().isInteger(64) &&
             !globalOp.getSymName().starts_with("__eco_caf$") &&
-            // LSS step 18b string-literal cache slots: only ever hold a
-            // PermanentSpace word (eco_string_literal*_fill publishes nothing
-            // else), which is immortal and never moves, so the slot needs no
-            // root and no fixup. Same reasoning as __eco_caf$ above.
             !globalOp.getSymName().starts_with("__eco_strlit$")) {
             ecoGlobals.push_back(globalOp);
         }
     });
 
-    // Check if type graph exists
     LLVM::GlobalOp typeGraphGlobal = nullptr;
     if (auto sym = module.lookupSymbol<LLVM::GlobalOp>("__eco_type_graph")) {
         typeGraphGlobal = sym;
     }
 
-    // Skip if there's nothing to initialize
     if (ecoGlobals.empty() && !typeGraphGlobal)
         return;
 
@@ -514,18 +511,14 @@ void eco::detail::createGlobalRootInitFunction(
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto voidTy = LLVM::LLVMVoidType::get(ctx);
 
-    // Create the __eco_init_globals function
-    // Use External linkage so the JIT can look it up by name
     auto initFuncType = LLVM::LLVMFunctionType::get(voidTy, {});
     auto initFunc = builder.create<LLVM::LLVMFuncOp>(
         loc, "__eco_init_globals", initFuncType);
     initFunc.setLinkage(LLVM::Linkage::External);
 
-    // Create the function body
     Block *entryBlock = initFunc.addEntryBlock(builder);
     builder.setInsertionPointToStart(entryBlock);
 
-    // Register the type graph if it exists
     if (typeGraphGlobal) {
         auto regFunc = runtime.getOrCreateRegisterTypeGraph(builder);
         auto typeGraphAddr = builder.create<LLVM::AddressOfOp>(
@@ -533,7 +526,6 @@ void eco::detail::createGlobalRootInitFunction(
         builder.create<LLVM::CallOp>(loc, regFunc, ValueRange{typeGraphAddr});
     }
 
-    // Call eco_gc_add_root for each global
     if (!ecoGlobals.empty()) {
         auto addRootFunc = runtime.getOrCreateGcAddRoot(builder);
         for (auto globalOp : ecoGlobals) {
@@ -547,27 +539,21 @@ void eco::detail::createGlobalRootInitFunction(
 }
 
 //===----------------------------------------------------------------------===//
-// CAF memoization guard (plans/caf-memoization-implementation.md, CGEN_068)
+// CAF memoization guard (CGEN_068)
 //
-// A func.func tagged `eco.caf_memo` is a nullary value thunk (arity 0,
-// !eco.value result). Wrap it so its body runs at most once per process:
+// The guarded thunk has this shape:
 //
 //   entry:  %bits = load i64 from @__eco_caf$<name>
 //           cond_br (%bits != 0), ^hit, ^body
-//   ^hit:   return __eco_slot_to_hptr(%bits)      ; barrier, REP_LLVM_002
-//   ^body:  <original body>
-//           ; every llvm.return %r becomes:
-//           store __eco_hptr_to_slot(%r), @slot ; return %r
+//   ^hit:   return globalLoadI64ToValue(%bits)
+//   ^body:  <original body>, where every `llvm.return %r` becomes
+//           %p = eco_caf_promote(globalStoreValueToI64(%r), @slot)
+//           store %p, @slot
+//           return globalLoadI64ToValue(%p)
 //
-// Slot value 0 = uninitialized: no valid !eco.value word is 0 (heap pointers
-// are nonzero addresses; embedded constants are 0x4/0x5/0x6). The hit path
-// contains no statepoint, and each publish store sits immediately before its
-// return (CGEN_067 discipline), so no pointer-provenance i64 is live across
-// a statepoint. The slot itself is an eco.global-lowered internal i64 global
-// that is NOT pre-registered as a GC root (createGlobalRootInitFunction
-// skips __eco_caf$): eco_caf_promote on the miss path either moves the value
-// into the permanent space (slot never needs GC attention) or registers the
-// slot as a JIT root when the value stays heap-resident (HEAP_036).
+// The hit path makes no call that can collect, and each store sits just
+// before its return, so no i64 that came from a pointer is live across a
+// statepoint.
 //===----------------------------------------------------------------------===//
 
 void eco::detail::declareCafPromote(ModuleOp module, Location loc) {
@@ -597,9 +583,6 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-    // Shape check: nullary thunk returning ptr addrspace(1) (the converted
-    // !eco.value). The Elm side only stamps such thunks; anything else here
-    // is a compiler bug.
     auto fnTy = func.getFunctionType();
     if (fnTy.getNumParams() != 0 || fnTy.getReturnType() != hptrTy)
         return func.emitError(
@@ -609,20 +592,15 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
 
     OpBuilder builder(ctx);
 
-    // Declare the promotion hook once per module: gc-leaf (never triggers
-    // GC, never re-enters Elm), so RS4GC adds no statepoint and the
-    // barrier-i64 crossing it is the authorized store-helper→gc-leaf-arg
-    // pattern (EcoPtrIntVerify pattern 2; the return value is pattern 4).
+    // `eco_caf_promote` is gc-leaf, so RS4GC adds no statepoint at the call
+    // and the converted i64 may be passed to it.
     if (!promoteDeclared)
         declareCafPromote(func->getParentOfType<ModuleOp>(), loc);
     promoteDeclared = true;
 
-    // 1. Instrument every existing return FIRST, so the hit-path return
-    //    created below is not instrumented. The miss path routes the value
-    //    through eco_caf_promote (ECO_CAF_PERMANENT=1 deep-copies it into
-    //    the permanent space and deregisters the slot; default-off returns
-    //    it unchanged) and returns the PROMOTED value, so the first caller
-    //    shares the permanent copy instead of keeping a heap duplicate.
+    // The existing returns are rewritten before the hit block is made, so its
+    // return is not. Each returns what `eco_caf_promote` returned, which may
+    // be a copy in PermanentSpace, so the first caller shares the cached value.
     SmallVector<LLVM::ReturnOp> rets;
     body.walk([&](LLVM::ReturnOp r) { rets.push_back(r); });
     for (LLVM::ReturnOp r : rets) {
@@ -637,8 +615,7 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
         r.setOperand(0, promoted);
     }
 
-    // 2. New entry block (guard) + hit block. The thunk has no parameters,
-    //    so the new entry block carries no arguments.
+    // The thunk has no parameters, so the new entry block has no arguments.
     Block *entry = new Block();
     body.push_front(entry);
     Block *hit = new Block();
@@ -660,28 +637,20 @@ LogicalResult eco::detail::installCafMemoGuard(LLVM::LLVMFuncOp func,
 }
 
 //===----------------------------------------------------------------------===//
-// CAF caller-side fast path (benchmarks/runtime-calls.md Run W)
+// CAF caller-side fast path
 //
-// Rewrite each zero-arg call to a caf_memo thunk:
-//
-//   %v = llvm.call @thunk()           ; always a call, even on cache hits
-//
-// into a diamond whose hit edge never calls:
+// A call `%v = llvm.call @thunk()` becomes
 //
 //   %bits  = llvm.load @__eco_caf$thunk
 //   %isset = llvm.icmp ne %bits, 0
-//   llvm.cond_br %isset, ^hit, ^miss
-//   ^hit:  %cached = __eco_slot_to_hptr(%bits)   ; barrier → bare cast post-RS4GC
-//          llvm.br ^merge(%cached)
-//   ^miss: %computed = llvm.call @thunk()        ; publishes via the callee guard
-//          llvm.br ^merge(%computed)
-//   ^merge(%v: ptr<1>): ...original continuation...
+//   %v = scf.if %isset -> ptr<1> {
+//     scf.yield globalLoadI64ToValue(%bits)
+//   } else {
+//     scf.yield llvm.call @thunk()   // the guarded thunk fills the slot
+//   }
 //
-// Motivation (Run V): a statepointed call on the hit path loses to
-// HEAP_034 inline construction for small values; load+icmp+branch wins.
-// GC-safety: the load/branch carry no gc pointers; the barrier form is the
-// REP_LLVM_002 slot-crossing; the merge block-arg is ordinary tracked
-// ptr<1> SSA. Pre-RS4GC, serial phase.
+// so a call that hits the cache makes no call, and has no statepoint. The
+// load and test carry no GC pointer, and `%v` is an ordinary `ptr<1>` value.
 //===----------------------------------------------------------------------===//
 
 void eco::detail::rewriteCafCallSitesFast(
@@ -695,8 +664,7 @@ void eco::detail::rewriteCafCallSitesFast(
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-    // Collect first: block splitting below relocates later ops (their
-    // Operation*s stay valid; getBlock() is re-read at rewrite time).
+    // Collected first, because the rewrite moves each call into a new region.
     SmallVector<LLVM::CallOp> sites;
     func.walk([&](LLVM::CallOp call) {
         auto callee = call.getCallee();
@@ -713,11 +681,6 @@ void eco::detail::rewriteCafCallSitesFast(
         auto loc = call.getLoc();
         std::string slotName = ("__eco_caf$" + *call.getCallee()).str();
 
-        // The diamond is built as an scf.if EXPRESSION, not block surgery:
-        // post-Stage-2 bodies still contain scf.if/scf.while regions whose
-        // single-block constraint block-splitting would violate (the P2.5
-        // expandGetTagMarkers lesson). scf lowers to CFG later in the
-        // backend pipeline, in every region kind uniformly.
         OpBuilder bb(call);
         auto addr = bb.create<LLVM::AddressOfOp>(loc, ptrTy, slotName);
         auto bits = bb.create<LLVM::LoadOp>(loc, i64Ty, addr);
@@ -728,14 +691,13 @@ void eco::detail::rewriteCafCallSitesFast(
         auto ifOp = bb.create<scf::IfOp>(loc, TypeRange{hptrTy}, isSet,
                                          /*withElseRegion=*/true);
 
-        // Hit arm: barrier-cast the cached word.
         {
             OpBuilder hb = OpBuilder::atBlockBegin(ifOp.thenBlock());
             Value cached = globalLoadI64ToValue(hb, loc, bits);
             hb.create<scf::YieldOp>(loc, ValueRange{cached});
         }
 
-        // Miss arm: the ORIGINAL call (its callee guard publishes).
+        // The miss arm is the original call, moved.
         call->getResult(0).replaceAllUsesWith(ifOp.getResult(0));
         call->moveBefore(ifOp.elseBlock(), ifOp.elseBlock()->end());
         {
@@ -746,23 +708,15 @@ void eco::detail::rewriteCafCallSitesFast(
 }
 
 //===----------------------------------------------------------------------===//
-// String-literal interning cache (LSS compile-time loop, step 18b)
+// String-literal interning cache
 //
-// Every evaluation of a string literal — `"Int"` in a `case name of` arm as
-// much as a literal in ordinary code — lowers to
+// Each evaluation of a string literal is a call such as
 //
 //   %s = llvm.call @eco_alloc_string_literal_utf8(@__eco_str_N, len)
 //
-// and that call is NOT gc-leaf (its miss path allocates), so RS4GC statepoints
-// it: every live ptr addrspace(1) in the function is spilled and reloaded
-// around what is, after the first evaluation, a hash-table lookup returning a
-// pointer that can never change. `eco_alloc_string_literal_utf8` alone was
-// 0.60 % of a self-compile's samples (1.22 % of the monomorphization window)
-// before this, and the statepoint traffic it forces on its callers is not in
-// that figure.
-//
-// The fix is the CAF caller-side fast path (Run W) applied per literal: give
-// each literal global a zero-initialised i64 sibling slot and branch on it.
+// which is not gc-leaf, because it may allocate, so RS4GC makes it a
+// statepoint. The cache gives each literal global an i64 slot and tests it, as
+// the CAF fast path does:
 //
 //   %bits  = llvm.load @__eco_strlit$__eco_str_N
 //   %isset = llvm.icmp ne %bits, 0
@@ -773,23 +727,13 @@ void eco::detail::rewriteCafCallSitesFast(
 //                   @__eco_str_N, len, @__eco_strlit$__eco_str_N)
 //   }
 //
-// Built as an scf.if EXPRESSION rather than block surgery for the same reason
-// rewriteCafCallSitesFast is: post-Stage-2 bodies still contain scf regions
-// whose single-block constraint splitting would violate.
-//
-// GC-safety, point by point:
-//   - the slot is written ONLY by the runtime, ONLY with a PermanentSpace word
-//     (HEAP_036: immortal, GC-invisible, never moves), so it is not a root and
-//     needs no fixup — createGlobalRootInitFunction skips the prefix;
-//   - the hit arm's i64 -> ptr<1> crossing is globalLoadI64ToValue, the
-//     REP_LLVM_002 barrier form, identical to the CAF hit arm;
-//   - the load/icmp/branch carry no gc pointers, and the merge value is
-//     ordinary tracked ptr<1> SSA;
-//   - slot value 0 is reserved as "unpublished": no valid word is 0 (HEAP_044).
-//
-// ECO_STRLIT_CACHE=0 restores the bare call at every site.
+// The `*_fill` functions store into the slot only a value in PermanentSpace
+// (HEAP_036); a literal that is not there leaves its slot 0, and every
+// evaluation of it then takes the call.
 //===----------------------------------------------------------------------===//
 
+/// Returns whether the string-literal cache is on: true unless
+/// `ECO_STRLIT_CACHE` is exactly `0`. The variable is read once per process.
 static bool strLitCacheEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_STRLIT_CACHE");
@@ -798,6 +742,8 @@ static bool strLitCacheEnabled() {
     return on;
 }
 
+/// Returns whether `callee` names one of the two runtime functions that
+/// allocate a string literal.
 static bool isStringLiteralAllocCallee(llvm::StringRef callee) {
     return callee == "eco_alloc_string_literal_utf8" ||
            callee == "eco_alloc_string_literal";
@@ -814,10 +760,9 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module,
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-    // Collect first (module order, so slot emission is deterministic), then
-    // insert: we are appending to the very block being iterated.
-    // `slots` doubles as the existence check below: one module pass instead of
-    // a linear module.lookupSymbol per literal (quadratic at self-host scale).
+    // Collected first, in module order, because the slots are appended to the
+    // block being iterated. `slots` also serves as the check for an existing
+    // slot, instead of a `lookupSymbol` per literal.
     SmallVector<StringRef> literals;
     for (auto globalOp : module.getOps<LLVM::GlobalOp>()) {
         StringRef name = globalOp.getSymName();
@@ -847,9 +792,8 @@ void eco::detail::materializeStringLiteralSlots(ModuleOp module,
                                        builder.getI64IntegerAttr(0));
     }
 
-    // The cold-edge twins. Declared here (serial, module mutation re-enabled)
-    // rather than in materializeAllRuntimeDecls so the escape hatch leaves no
-    // trace; the unused-decl strip removes them from modules with no literals.
+    // Declared here rather than with the other runtime declarations, so that
+    // a module compiled with the cache off has no declaration of them.
     for (const char *name :
          {"eco_string_literal_fill", "eco_string_literal_utf8_fill"}) {
         if (module.lookupSymbol<LLVM::LLVMFuncOp>(name))
@@ -869,7 +813,7 @@ void eco::detail::rewriteStringLiteralCallSitesFast(
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-    // Collect first: creating the scf.if relocates later ops.
+    // Collected first, because the rewrite erases each call.
     SmallVector<LLVM::CallOp> sites;
     func.walk([&](LLVM::CallOp call) {
         auto callee = call.getCallee();
@@ -882,8 +826,6 @@ void eco::detail::rewriteStringLiteralCallSitesFast(
         auto addrOf = call->getOperand(0).getDefiningOp<LLVM::AddressOfOp>();
         if (!addrOf || !addrOf.getGlobalName().starts_with("__eco_str_"))
             return;
-        // Only rewrite when the slot was pre-materialized; a literal whose
-        // global this pass never saw keeps the plain call.
         std::string slotName = ("__eco_strlit$" + addrOf.getGlobalName()).str();
         if (!slots.contains(slotName))
             return;

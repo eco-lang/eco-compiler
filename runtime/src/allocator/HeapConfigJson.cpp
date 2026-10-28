@@ -7,10 +7,9 @@
 #include <stdexcept>
 #include <string>
 
-// The std::invalid_argument thrown here is caught by code built with exceptions; under
-// _HAS_EXCEPTIONS=0 the MSVC STL gives std::exception another layout, and the catcher's
-// destructor then frees the string-literal message (eco_drop_no_exceptions_define in
-// runtime/src/codegen/CMakeLists.txt).
+// This file throws `std::invalid_argument`, so it must be built with exceptions on. Under MSVC with
+// `_HAS_EXCEPTIONS=0` the STL gives `std::exception` a different layout from the one expected by the code built
+// with exceptions that catches it, and that catcher's destructor then frees the string-literal message.
 #if defined(_MSC_VER) && defined(_HAS_EXCEPTIONS) && !_HAS_EXCEPTIONS
 #  error "HeapConfigJson.cpp throws std exceptions: build it without _HAS_EXCEPTIONS=0"
 #endif
@@ -33,11 +32,13 @@ namespace Elm {
 
 namespace {
 
+// The parsed JSON value type, from the vendored nlohmann library.
 using json = nlohmann::json;
 
-// Parses a byte size from either a JSON number (raw bytes) or a string with
-// an optional unit suffix (K/M/G, optional "iB" or "B"). All units are
-// power-of-two (1K = 1024, 1M = 1024*1024, 1G = 1024*1024*1024).
+// Returns the byte size `value` gives for `key`, in the forms the header describes: a non-negative JSON integer,
+// or a string of digits with an optional binary unit. Throws `std::invalid_argument` naming `key` for anything
+// else. `std::stoull` throws `std::out_of_range` for a digit run too long for 64 bits, and the product with the
+// unit is not checked for overflow.
 size_t parseByteSize(const json &value, const char *key) {
     if (value.is_number_integer() || value.is_number_unsigned()) {
         const auto raw = value.get<int64_t>();
@@ -100,6 +101,8 @@ size_t parseByteSize(const json &value, const char *key) {
     return static_cast<size_t>(magnitude * multiplier);
 }
 
+// Returns `value` as a `float` if it is a JSON number in [0, 1], and throws `std::invalid_argument` naming `key`
+// otherwise.
 float parseFraction(const json &value, const char *key) {
     if (!value.is_number()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -113,8 +116,8 @@ float parseFraction(const json &value, const char *key) {
     return static_cast<float>(d);
 }
 
-// Parses any JSON number into a double. Range checks are deferred to
-// HeapConfig::validate(); this helper just enforces "is a number".
+// Returns `value` as a `double` if it is any JSON number, and throws `std::invalid_argument` naming `key`
+// otherwise. The range is left to `HeapConfig::validate`.
 double parseDouble(const json &value, const char *key) {
     if (!value.is_number()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -123,6 +126,7 @@ double parseDouble(const json &value, const char *key) {
     return value.get<double>();
 }
 
+// Returns `value` if it is a JSON boolean, and throws `std::invalid_argument` naming `key` otherwise.
 bool parseBool(const json &value, const char *key) {
     if (!value.is_boolean()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -131,6 +135,8 @@ bool parseBool(const json &value, const char *key) {
     return value.get<bool>();
 }
 
+// Returns `value` if it is a JSON integer in `uint32_t` range, and throws `std::invalid_argument` naming `key`
+// otherwise.
 uint32_t parseU32(const json &value, const char *key) {
     if (!value.is_number_integer() && !value.is_number_unsigned()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -144,6 +150,8 @@ uint32_t parseU32(const json &value, const char *key) {
     return static_cast<uint32_t>(raw);
 }
 
+// Returns `value` if it is a JSON integer in `int32_t` range, and throws `std::invalid_argument` naming `key`
+// otherwise.
 int32_t parseI32(const json &value, const char *key) {
     if (!value.is_number_integer() && !value.is_number_unsigned()) {
         throw std::invalid_argument(std::string("HeapConfig key '") + key +
@@ -179,6 +187,7 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
                                     "' must contain a JSON object at top level");
     }
 
+    // The keys a file may contain: one per field the code below sets, each spelt as the field is.
     static constexpr const char *kKnownKeys[] = {
         "max_heap_size",
         "nursery_region_bytes",
@@ -355,7 +364,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.gc_mark_threads = parseU32(*it, "gc_mark_threads");
     if (auto it = doc.find("gc_mark_threads_cap"); it != doc.end())
         cfg.gc_mark_threads_cap = parseU32(*it, "gc_mark_threads_cap");
-    // threaded-gc-06
     if (auto it = doc.find("gc_minor_threads"); it != doc.end())
         cfg.gc_minor_threads = parseU32(*it, "gc_minor_threads");
     if (auto it = doc.find("gc_minor_threads_cap"); it != doc.end())
@@ -368,7 +376,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.minor_prefetch_children = parseBool(*it, "minor_prefetch_children");
     if (auto it = doc.find("minor_fifo_order"); it != doc.end())
         cfg.minor_fifo_order = parseBool(*it, "minor_fifo_order");
-    // threaded-gc-07
     if (auto it = doc.find("nursery_regions"); it != doc.end())
         cfg.nursery_regions = parseU32(*it, "nursery_regions");
     if (auto it = doc.find("nursery_region_eden_flip"); it != doc.end())
@@ -391,7 +398,6 @@ void applyHeapConfigJsonFile(HeapConfig &cfg, const char *path) {
         cfg.tenure_collector_threads = parseU32(*it, "tenure_collector_threads");
     if (auto it = doc.find("tenure_fifo_order"); it != doc.end())
         cfg.tenure_fifo_order = parseBool(*it, "tenure_fifo_order");
-    // threaded-gc-05c
     if (auto it = doc.find("conc_mark"); it != doc.end())
         cfg.conc_mark = parseU32(*it, "conc_mark");
     if (auto it = doc.find("conc_mark_threads"); it != doc.end())
@@ -528,7 +534,6 @@ void applyGcThreadEnv(HeapConfig &cfg, uint32_t &jitter_us,
     }
 }
 
-// threaded-gc-05b: ECO_GC_MARK_THREADS (decimal 0..64) wins over JSON.
 void applyMarkThreadsEnv(HeapConfig &cfg, const char *value) {
     if (value == nullptr || value[0] == '\0') return;
     uint64_t v = 0;
@@ -542,7 +547,6 @@ void applyMarkThreadsEnv(HeapConfig &cfg, const char *value) {
     cfg.gc_mark_threads = static_cast<uint32_t>(v);
 }
 
-// threaded-gc-06: ECO_GC_MINOR_THREADS (decimal 0..64) wins over JSON.
 void applyMinorThreadsEnv(HeapConfig &cfg, const char *value) {
     if (value == nullptr || value[0] == '\0') return;
     uint64_t v = 0;
@@ -556,8 +560,6 @@ void applyMinorThreadsEnv(HeapConfig &cfg, const char *value) {
     cfg.gc_minor_threads = static_cast<uint32_t>(v);
 }
 
-// threaded-gc-05c: ECO_GC_CONC_MARK (exactly one of "0", "1", "2") and
-// ECO_GC_CONC_MARK_THREADS (decimal 0..63) win over JSON.
 void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threads_value) {
     if (mode_value != nullptr && mode_value[0] != '\0') {
         if (mode_value[1] != '\0' || mode_value[0] < '0' || mode_value[0] > '2') {
@@ -579,8 +581,6 @@ void applyConcMarkEnv(HeapConfig &cfg, const char *mode_value, const char *threa
     }
 }
 
-// threaded-gc-07: ECO_NURSERY_REGIONS ("0"/"1"/"2" = auto), ECO_TENURE_MODE ("1"/"2")
-// and ECO_NURSERY_EDEN_FLIP ("-1"/"0"/"1") win over JSON (nullptr = unset).
 void applyRegionEnv(HeapConfig &cfg, const char *regions_value, const char *mode_value,
                     const char *flip_value) {
     if (regions_value != nullptr && regions_value[0] != '\0') {

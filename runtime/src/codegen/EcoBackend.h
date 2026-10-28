@@ -1,11 +1,41 @@
 //===- EcoBackend.h - Shared Eco LLVM backend helpers ---------------------===//
 //
-// Shared RS4GC + frame-pointer utilities and backend driver types.
+// Generated Elm code runs on a moving garbage collector, so before LLVM may
+// compile it, every call that can start a collection must become a
+// statepoint, a call whose live heap pointers are recorded so the collector
+// can find and relocate them. This component is the one place that turns an
+// LLVM module produced from Eco's MLIR into that form and then into an
+// optimized object file or JIT-ready IR. Its entry point is `runEcoBackend`.
 //
-// Used by:
-//   - ecoc (CLI compiler / IR dumper / JIT)
-//   - eco-boot (AOT bootstrap compiler)
-//   - EcoRunner / EcoJIT (in-process JIT for tests)
+// The lowering leaves some operations as markers: calls to declaration-only
+// `__eco_*` functions such as `__eco_alloc_inline`, `__eco_resolve_fwd` and
+// `__eco_value_eq`. A marker stands for code that needs new basic blocks in
+// places where the MLIR lowering cannot create them. The backend expands every
+// marker into open code before RS4GC (LLVM's RewriteStatepointsForGC), so that
+// RS4GC sees the final control flow and tracks the pointers in it.
+//
+// The order of the work follows from two rules. A statepointed call is not
+// inlined after RS4GC, so small `$cap` fast-evaluator bodies that may collect
+// are inlined just before RS4GC. And a call
+// that cannot collect needs no statepoint, so before RS4GC the backend marks
+// functions that provably never collect with LLVM's `gc-leaf-function`
+// attribute, or checks those marks when the MLIR pipeline already made them
+// (CGEN_072). Capacity-check hoisting (CGEN_074) also happens before marker
+// expansion completes: where the nursery space for a run of fixed-size
+// allocations can be checked once, the allocations expand without their own
+// checks, which can leave a function with nothing that collects.
+//
+// After RS4GC, an object-file job is optimized and emitted. A large executable
+// may be emitted as several partitions on several threads. When the module was
+// split in MLIR before translation (`EcoSplit`), each partition comes here on
+// its own as a partition worker (`PartitionWorkerInfo`); otherwise the module
+// may be split here with `llvm::SplitModule`.
+//
+// The terms used below: a *GC-free* function is one stamped
+// `gc-leaf-function` because nothing it calls can collect. A *partition
+// worker* is a call that lowers one partition of a split module. An *import
+// copy* is an `available_externally` copy of a `$cap` function that another
+// partition owns, present only so it can be inlined.
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,287 +62,332 @@ class LoweringStats;
 
 //===----------------------------------------------------------------------===//
 // Target machine configuration
-//
-// Single source of truth for the CPU / feature level eco's AOT native backend
-// targets. Consumed by eco-boot.cpp and EcoNativeDriver.cpp (and any future
-// AOT path) so the setting lives in exactly one place.
 //===----------------------------------------------------------------------===//
 
-/// Microarchitecture level for every native binary eco emits — its own
-/// bootstrapped self (compiler/CMakeLists.txt stages 6–9) and user `eco make`
-/// output alike.
+/// The CPU that `createEcoTargetMachine` targets, chosen by the architecture
+/// this code is compiled for: `x86-64-v3` (AVX2, BMI2 and FMA, no AVX-512)
+/// on x86-64, and `apple-m1` on AArch64.
 ///
-/// Pinned per platform for portable, reproducible output:
-///   - x86-64 (Linux / Darwin): x86-64-v3 — SSE4.2 + AVX2 + BMI2 + FMA, no
-///     AVX-512. Deliberately NOT host detection: deriving the target from
-///     llvm::sys::getHostCPUName()/getHostCPUFeatures() baked the build host's
-///     ISA — including AVX-512 — into every emitted binary, so binaries
-///     bootstrapped on an AVX-512 machine SIGILL'd on plain x86-64-v3 CPUs.
-///     Keep in lockstep with the clang `-march=x86-64-v3` flag in
-///     CMakePresets.json and docker/llvm-alpine.Dockerfile.
-///   - aarch64 (Darwin arm64 / Apple Silicon): apple-m1 — the minimum CPU
-///     for the OS-supported Apple Silicon family. Passing x86-64-v3 through
-///     to LLVM on this target emits the "'x86-64-v3' is not a recognized
-///     processor for this target (ignoring processor)" warning and falls
-///     back to generic; pinning to apple-m1 avoids that and gets us the
-///     NEON+CRC+AES baseline of the M-series chips.
+/// It is pinned rather than detected from the host, so that an object built
+/// on a machine with wider vector units still runs on any CPU of the pinned
+/// level.
 #if defined(__aarch64__) || defined(__arm64__)
 inline constexpr const char *kEcoTargetCPU = "apple-m1";
 #else
 inline constexpr const char *kEcoTargetCPU = "x86-64-v3";
 #endif
 
-/// Extra subtarget features appended to kEcoTargetCPU. Empty by design: the v3
-/// level already implies the desired feature set and we add nothing
-/// host-specific.
+/// The subtarget features added to `kEcoTargetCPU`. Empty, because the CPU
+/// level already implies the features wanted, and nothing host-specific is
+/// added.
 inline constexpr const char *kEcoTargetFeatures = "";
 
-/// Create the LLVM TargetMachine used for AOT object emission, pinned to
-/// kEcoTargetCPU / kEcoTargetFeatures. Sets `module`'s target triple and data
-/// layout. `optLevel` is clamped to [0,3] and maps to the CodeGen opt level
-/// (load-bearing for -O0..-O3 AOT codegen). Returns nullptr after printing a
-/// diagnostic to llvm::errs() on failure.
+/// Creates the target machine for AOT object emission, for the host's default
+/// triple with `kEcoTargetCPU` and `kEcoTargetFeatures`, position-independent
+/// code, the small code model, and each function and data object in its own
+/// section. `optLevel` is clamped to 3 and becomes the codegen optimization
+/// level.
+///
+/// Sets `module`'s target triple, and its data layout on success. On Apple
+/// platforms built with `ECO_MACOS_MIN`, the triple names that minimum macOS
+/// version. Returns null after printing a message to `llvm::errs()` if the
+/// target or the machine cannot be created.
 std::unique_ptr<llvm::TargetMachine>
 createEcoTargetMachine(llvm::Module &module, unsigned optLevel);
 
-/// Options for running RS4GC and (optionally) forcing frame pointers.
+/// The settings for one `runRS4GCAndMaybeFramePointers` run.
 struct RS4GCOptions {
-    /// Dump LLVM IR before RS4GC if non-empty (eco-boot --dump-pre-rs4gc-ir).
+    /// Where to write the module as text IR before RS4GC; empty for no dump.
     std::string preDumpPath;
 
-    /// Dump LLVM IR after RS4GC if non-empty (ecoc/eco-boot --dump-rs4gc-ir).
+    /// Where to write the module as text IR after RS4GC; empty for no dump.
     std::string postDumpPath;
 
-    /// If true, add `frame-pointer=all` to every non-declaration function so
-    /// libunwind can walk JIT/AOT frames during GC root discovery.
+    /// Whether to add `frame-pointer=all` to functions after RS4GC. By
+    /// default it goes only on functions that contain a statepoint or call
+    /// `eco_gc_push_stack_range`; with `ECO_FP_LEAF=0` it goes on every
+    /// defined function.
     bool addFramePointerAttr = false;
 };
 
-/// Run Eco's RS4GC pipeline (`addEcoGCPipeline`) over the module, with
-/// optional pre/post IR dumps and frame-pointer attribute injection.
+/// Runs RS4GC on `m` through `addEcoGCPipeline`, with the dumps and frame
+/// pointers `opts` asks for. A dump file that cannot be opened is reported on
+/// stderr and skipped. A dump path is suffixed with the partition index on a
+/// partition worker's thread (see `setPartitionIndex`).
 ///
-/// Centralises the RS4GC + FP logic previously duplicated in ecoc.cpp,
-/// eco-boot.cpp, and EcoRunner.cpp.
+/// When GC-free stamping is on (its default; `gcFreeLeafMode` in
+/// `Passes/EcoCapHoistCore.h`), the stamps are checked on both sides of RS4GC:
+/// before, a stamped definition must not have interposable or
+/// `available_externally` linkage and may make only calls RS4GC will not
+/// statepoint; after, it must contain no statepoint. A failed check stops the
+/// process with `llvm::report_fatal_error`; a failure of the check after
+/// RS4GC comes after the post-RS4GC dump has been written.
 void runRS4GCAndMaybeFramePointers(llvm::Module &m,
                                    const RS4GCOptions &opts);
 
-/// What flavour of backend work `runEcoBackend` should perform.
+/// What `runEcoBackend` produces after the common work of marker expansion
+/// and RS4GC.
 enum class BackendKind {
-    /// Run RS4GC + optional FP; caller handles text-IR printing.
+    /// Nothing more: the module is left after RS4GC, unoptimized, for the
+    /// caller to optimize or print.
     DumpLLVMText,
 
-    /// RS4GC + optional FP + opt + (optionally partitioned) object emission,
-    /// all inside `runEcoBackend`. Linking stays with the caller.
+    /// One or more optimized object files. Linking stays with the caller.
+    /// Inline TLS access to the bump state and the root stack is used only
+    /// for this kind.
     EmitObjectFile,
 
-    /// JIT consumer: RS4GC + FP + `makeOptimizingTransformer` against the
-    /// module's TargetMachine, run by `runEcoBackend` (skipped on Windows).
+    /// A module optimized by `mlir::makeOptimizingTransformer`, for a JIT.
+    /// On Windows the optimization is skipped.
     JITInvokePacked,
 };
 
-/// Parallel-optimization tier for `EmitObjectFile` (executable output).
-/// See design_docs/backend-parallel-optimization.md and
-/// plans/parallel-llvm-opt-partitioning.md.
+/// Where optimization runs for an `EmitObjectFile` job, and how much of it.
+///
+/// Under `Dev` and `Cgu` each partition is optimized on its own thread, so no
+/// function is inlined into a function of another partition.
 enum class ParallelOpt {
-    /// Today's behaviour: whole-module `-O2` (serial), then codegen-only split.
+    /// The whole module is optimized on one thread, and only object emission
+    /// is split.
     None,
-    /// Dev/fast: cheap whole-module IPO prologue, then split, then a NO-INLINE
-    /// per-partition function-simplification pipeline in parallel. Fast compile,
-    /// lower-quality output (for iteration builds — never the shipped compiler).
+    /// Each partition gets the per-function simplification pipeline with no
+    /// cost-model inliner: a fast compile and slower code.
     Dev,
-    /// Release: cheap whole-module IPO prologue, then split, then FULL `-O2`
-    /// per partition in parallel (keeps intra-partition inlining). Parallel
-    /// compile, near-full quality. (Cross-partition inlining recovery — replica
-    /// sets — is a later refinement; see Phase 4.)
+    /// Each partition gets the full module pipeline, inlining included.
     Cgu,
 };
 
-/// (X) join (plan 02 Q7): what one partition's module stamps and declares.
+/// The names one partition defines, stamps GC-free, and declares as
+/// gc-leaf, for the check that `joinPartitionGcLeafReports` makes across
+/// partitions. Filled only when GC-free stamping is on.
+///
+/// `stampedDefs` are the defined functions stamped `gc-leaf-function`,
+/// `allDefs` every defined function, and `leafDecls` the declarations that
+/// carry the attribute.
 struct GcLeafPartitionReport {
     std::vector<std::string> stampedDefs, allDefs, leafDecls;
 };
 
-/// Plan 05 (EcoSplit): a `runEcoBackend` call that lowers ONE MLIR-built
-/// partition. The worker pipeline is the single-object path in the parallel
-/// tier (`splitEligible = true`, `splitCodegen = 1`); this carries what only
-/// the split knows.
+/// What a partition worker needs to know about the split, and what it
+/// reports back. A `runEcoBackend` call with `EcoBackendJob::partition`
+/// pointing at one of these lowers one partition of a module split in MLIR.
+///
+/// The outputs are written during the call.
 struct PartitionWorkerInfo {
+    /// The partition's position in the split.
     unsigned index = 0;
-    /// Owned functions referenced from another partition: made External +
-    /// hidden before the `$cap` prepass, so AlwaysInliner cannot delete them.
+    /// Functions another partition references. Each local one is given
+    /// external linkage and hidden visibility before the prepass, so the
+    /// inliner cannot delete it.
     std::vector<std::string> exports;
-    /// Plan 06 B4: owned `$cap`s nothing takes the address of. Exported only
-    /// AFTER the prepass, and only if they survived it (when the owner's
-    /// AlwaysInliner deleted one, every importer inlined its copies too).
+    /// Functions exported only if they survive the prepass. A survivor that
+    /// is local gets external linkage and hidden visibility; a name with no
+    /// definition left is added to `deletedLate`.
     std::vector<std::string> exportsLate;
-    /// Out: `exportsLate` names the prepass deleted.
+    /// Output: the names in `exportsLate` that have no definition after the
+    /// prepass.
     std::vector<std::string> deletedLate;
-    /// Out: import copies the prepass marked `alwaysinline` but could not
-    /// fully inline (expected empty; the driver checks them against
-    /// every owner's `deletedLate`).
+    /// Output: import copies the prepass marked `alwaysinline` that still
+    /// have a body after it. Their bodies are then deleted.
     std::vector<std::string> markedSurvivors;
-    /// Filled after RS4GC; joined by the driver (`joinPartitionGcLeafReports`).
+    /// Output: this partition's report, filled after RS4GC on the
+    /// single-object path.
     GcLeafPartitionReport gcReport;
 };
 
-/// Backend job descriptor consumed by `runEcoBackend`: RS4GC/FP options plus
-/// the opt, object-emission, partitioning and JIT settings for each
-/// `BackendKind`.
+/// The settings for one `runEcoBackend` call: what to produce, and how.
 struct EcoBackendJob {
     BackendKind kind = BackendKind::DumpLLVMText;
 
-    /// Target machine. Required for `EmitObjectFile`; typically null for
-    /// `JITInvokePacked` (EcoJIT supplies its own) and may be null for
-    /// `DumpLLVMText`.
+    /// The target machine to optimize for and emit with. Needed for single
+    /// object emission, which fails without it, and for whole-module
+    /// optimization, which is skipped without it. May be null otherwise. Must
+    /// outlive the call.
     llvm::TargetMachine *tm = nullptr;
 
-    /// Requested LLVM codegen optimisation level.
+    /// The optimization level. At `None` the `$cap` inline prepass and all
+    /// optimization are skipped, and no parallel tier applies.
     llvm::CodeGenOptLevel optLevel = llvm::CodeGenOptLevel::None;
 
-    /// If true, add `frame-pointer=all` to every non-declaration function.
+    /// Whether to add frame-pointer attributes, as
+    /// `RS4GCOptions::addFramePointerAttr` describes.
     bool needsFramePointerAttr = false;
 
-    /// Optional pre/post RS4GC IR dumps.
+    /// Where to write the module as text IR before and after RS4GC; empty for
+    /// no dump. Asking for either keeps RS4GC on the whole module, so the
+    /// dump shows all of it.
     std::string preRS4GCDumpPath;
     std::string postRS4GCDumpPath;
 
-    /// Output path for object file emission. Required for `EmitObjectFile`
-    /// when actual emission is desired; if empty, `runEcoBackend` runs
-    /// RS4GC + opt but does not emit (used by intermediate-state callers).
+    /// For `EmitObjectFile`, the object file to write, or the first of the
+    /// files when the module is split. When it is empty nothing is emitted,
+    /// and a split is an error.
     std::string objectFilePath;
 
-    /// Parallel object emission policy request (executable output only):
-    ///   0 = auto (cores, gated at >= 4000 defined fns, ~1 part/2000),
-    ///   1 = off (single-threaded emit to `objectFilePath`),
-    ///   N = explicit partition count.
-    /// The actual count is decided inside `runEcoBackend` via
-    /// `choosePartitionCount`, which also mints any extra temp object files it
-    /// needs and reports the produced set back through `EcoBackendResult`. This
-    /// keeps the partition policy in the shared backend rather than each driver
-    /// (see design_docs/backend-parallel-optimization.md §8.1).
+    /// The requested number of emission partitions: 0 for automatic, 1 for
+    /// none, or an explicit count. A module with fewer defined functions than
+    /// 4000 (or `ECO_SPLIT_MIN_FUNCS`) is never split. Otherwise the count is
+    /// the request, or the number of hardware threads for 0, capped at one
+    /// partition per 2000 functions, with at least 2. See
+    /// `choosePartitionCountForCount`.
     unsigned splitCodegen = 1;
 
-    /// True only for plain executable output (not `-c`/.o, not .so/.node). The
-    /// caller already computes this for `internalizeAndDCEForExecutable`.
-    /// Splitting is gated on this: shared libs / object-only output never split.
+    /// Whether the output may be split and optimized in parallel at all.
     bool splitEligible = false;
-    /// Capacity hoisting (CGEN_074): the output is closed-world (an executable,
-    /// or an object whose consumer references only the --internalize-keep
-    /// roots), so internalized functions have no callers outside the module.
-    /// Must equal the closed-world option the MLIR plan was computed with; a
-    /// mismatch with the stamped plan is a hard error.
+
+    /// Whether the output is closed-world for capacity hoisting (CGEN_074):
+    /// no function with internal linkage has a caller outside the module. It
+    /// must equal the setting the MLIR plan was computed with; a mismatch
+    /// with a stamped plan is an error.
     bool capClosedWorld = false;
 
-    /// Parallel-optimization tier. `None` (default) keeps whole-module `-O2`
-    /// then codegen-only split. `Dev`/`Cgu` move optimization into the
-    /// per-partition workers (see ParallelOpt). Only honoured for
-    /// `EmitObjectFile` with `optLevel != None` and `splitEligible`.
+    /// The parallel-optimization tier. Honoured only for `EmitObjectFile`
+    /// with `optLevel` above `None` and `splitEligible`; otherwise `None`
+    /// applies. Under `Dev` or `Cgu`, RS4GC also runs per partition, unless
+    /// an RS4GC dump was asked for.
     ParallelOpt parallelOpt = ParallelOpt::None;
 
-    /// Dev-tier only: override the CodeGen opt level used to CREATE each split
-    /// worker's TargetMachine (object emission). `~0u` = follow `optLevel`.
-    /// 0=None(FastISel/RegAllocFast), 1=Less, 2=Default. Only honoured on the
-    /// per-partition split workers under ParallelOpt::Dev; the single-object
-    /// inline path uses the driver-supplied `tm` and is unaffected.
+    /// Under `ParallelOpt::Dev`, the codegen level for the target machine of
+    /// each thread `llvm::SplitModule` emission starts: 0 None, 1 Less,
+    /// 2 Default. `~0u` follows `optLevel`. Emission without that split uses
+    /// `tm` and ignores this.
     unsigned devEmitCodeGenLevel = ~0u;
 
-    /// Dev-tier only: run the no-inline per-partition simplification pipeline
-    /// at OptimizationLevel::O1 instead of the `optLevel`-derived level.
+    /// Under `ParallelOpt::Dev`, run the per-partition simplification
+    /// pipeline at O1 instead of the level `optLevel` gives.
     bool devOptO1 = false;
 
-    /// Optional timing collector for backend sub-phases (RS4GC, opt prologue,
-    /// module split + bitcode serialization, parallel opt+emit region). Null =
-    /// no recording. Thread-safe (LoweringStats::record is mutex-guarded), so
-    /// per-partition workers may record too.
+    /// Where to record the time of each backend sub-phase, or null for no
+    /// recording. Partition threads record into it concurrently, which
+    /// `LoweringStats::record` allows. Must outlive the call.
     LoweringStats *stats = nullptr;
 
-    /// Plan 05: non-null when this call lowers one EcoSplit partition.
+    /// The partition this call lowers, or null when the call lowers a whole
+    /// module. Read and written during the call; see `PartitionWorkerInfo`.
     PartitionWorkerInfo *partition = nullptr;
 
-    /// EXPERIMENTAL, off by default. Run RewriteStatepointsForGC AFTER the O2
-    /// optimization pipeline instead of before it (upstream LLVM's intended
-    /// ordering: the optimizer operates on abstract `ptr addrspace(1)` before
-    /// statepoints exist). This lets O2 run faster (no statepoint plumbing to
-    /// grind through) and can improve code quality, but risks REP_LLVM_001(a):
-    /// opt may hoist a `ptrtoint ptr<1>->i64` (ADT tag extraction) across a
-    /// to-be-statepoint call, leaving a stale tag after a collection. The
-    /// release safety net (EcoPtrIntVerify) does not catch this, so this stays
-    /// opt-in until validated under ECO_LOWERING_VALIDATION + GC stress. Only
-    /// honoured for BackendKind::EmitObjectFile. The bundled SROA/FoldExtract
-    /// light-cleanup and frame-pointer injection move with RS4GC automatically.
+    /// Experimental and off by default: run RS4GC after optimization instead
+    /// of before it. Honoured only for `EmitObjectFile` with `parallelOpt`
+    /// `None`. The optimizer then works on IR without statepoints, but it may
+    /// move a `ptrtoint` of a heap pointer, such as a tag extraction, across
+    /// a call that becomes a statepoint, leaving a value that is stale after
+    /// a collection (REP_LLVM_001(a)). Nothing checks for that.
     bool rs4gcAfterOpt = false;
 };
 
-/// Result of an `EmitObjectFile` backend run: the object files that were
-/// produced (to be handed to `linkExecutable`) and, separately, the subset the
-/// backend itself created as temporaries (to be removed by the caller after
-/// linking). For single-object output `objectFiles == { job.objectFilePath }`
-/// and `ownedTempFiles` is empty (the caller owns that path's lifecycle).
+/// The object files an `EmitObjectFile` run of `runEcoBackend` wrote.
+///
+/// `objectFiles` lists every object to link. `ownedTempFiles` is the subset
+/// the backend created as temporary files, which the caller must delete; it
+/// never includes `EcoBackendJob::objectFilePath`. Without a split,
+/// `objectFiles` is `{ job.objectFilePath }`, even when that path is empty and
+/// nothing was written, and `ownedTempFiles` is empty.
 struct EcoBackendResult {
     std::vector<std::string> objectFiles;
     std::vector<std::string> ownedTempFiles;
 };
 
-/// Run the Eco backend on an LLVM module according to `job`.
+/// Lowers `m` in place for a garbage-collected runtime, and then produces
+/// what `job.kind` asks for.
 ///
-/// For `EmitObjectFile` this drives RS4GC + opt + (optionally partitioned)
-/// object emission. When `job.splitEligible` and the partition policy
-/// (`job.splitCodegen`) select N > 1 partitions, the module is split N ways
-/// (llvm::SplitModule) and each part emitted on its own thread; the backend
-/// uses `job.objectFilePath` as the first part and mints N-1 extra temp object
-/// files, reporting the full set through `result`. `result` may be null for
-/// callers that do not emit objects (`DumpLLVMText`, `JITInvokePacked`).
+/// `m` must already carry its target triple, which the GC-free checks read.
+/// Every kind first:
+///   - checks the MLIR pipeline's GC-free and capacity-hoisting plan flags
+///     for consistency;
+///   - expands every marker, with capacity-check hoisting decided between
+///     the other expansions and the allocation markers;
+///   - inlines small `$cap` bodies, unless `job.optLevel` is `None`;
+///   - deletes the body of any import copy that survives, and on a partition
+///     worker exports what `job.partition` names;
+///   - stamps or checks GC-free functions (CGEN_072), unless GC-free
+///     stamping is switched off;
+///   - runs RS4GC with `runRS4GCAndMaybeFramePointers`, unless it is
+///     deferred or moved into partition threads, as `EcoBackendJob` says.
+/// The plan flags and capacity-hoisting attributes are removed from `m`.
+///
+/// For `EmitObjectFile` it then writes objects, optimizing when `tm` is set
+/// and `job.optLevel` is not `None` (under a parallel tier, each partition is
+/// optimized in its own worker after the split). When
+/// `job.splitEligible` and the partition count from `job.splitCodegen` is
+/// above 1, `m` is split with `llvm::SplitModule` and each part is emitted on
+/// its own thread, part 0 to `job.objectFilePath` and the others to new
+/// temporary files; the files are reported through `result`. `result` may be
+/// null, and is not written for the other kinds.
+///
+/// Returns an error for inconsistent plan flags or plan facts, a failed
+/// check of GC-free stamps against the MLIR plan, an import copy left before
+/// RS4GC, an unnamed global in a partition, a file that cannot be created, a
+/// failed optimization, or a failed emission. Temporary files it created are removed on a split
+/// failure. Several internal checks stop the process with
+/// `llvm::report_fatal_error` instead.
+///
+/// The call may run on several threads at once for distinct modules.
 llvm::Error runEcoBackend(llvm::Module &m, const EcoBackendJob &job,
                           EcoBackendResult *result = nullptr);
 
-/// Internalize + GlobalDCE for EXECUTABLE output only. Marks every generated
-/// global internal EXCEPT the two symbols the C entry lib resolves by name
-/// (`eco_main`, `__eco_init_globals`), then runs GlobalDCE so unreachable
-/// generated functions/globals are dropped before RS4GC + opt + codegen see
-/// them. Internal linkage also lets the optimizer/codegen treat all Elm code
-/// as non-preemptible (better inlining, no PLT/GOT for internal calls).
+/// Runs `internalizeAndDCE` keeping only `eco_main` and `__eco_init_globals`,
+/// the two symbols a program's entry code resolves by name.
 ///
-/// MUST NOT be used for shared-library / .node output or for object-only
-/// (`-c`) output: those need `__eco_root_module` / `napi_register_module_v1`
-/// / `eco_app_*` to stay externally visible. Caller gates on
-/// `!sharedLib && !emitObjOnly`. Must run BEFORE RS4GC so statepoints and the
-/// stackmap only cover live functions.
+/// Only for executable output: shared-library and object-only output need
+/// other symbols to stay visible. Run it before `runEcoBackend`, so that
+/// RS4GC and the stack map cover only live functions. Modules stamped by MLIR
+/// reachability need `finishReachability` instead.
 void internalizeAndDCEForExecutable(llvm::Module &m);
 
-/// Internalize every definition except `keep`, then GlobalDCE the rest.
-/// internalizeAndDCEForExecutable is this with {eco_main, __eco_init_globals};
-/// eco-boot's --internalize-keep applies it to object output whose consumer
-/// (e.g. bootstrap Stage 9's unified `eco` link) references only `keep`.
+/// Gives internal linkage to every global of `m` not named in `keep`, then
+/// deletes the globals nothing reachable uses (LLVM's GlobalDCE). Internal
+/// linkage also lets the optimizer treat the code as non-preemptible.
 void internalizeAndDCE(llvm::Module &m, llvm::ArrayRef<std::string> keep);
 
-/// CGEN_081: true when EcoReachability already erased + internalized in MLIR
-/// (module flag eco-reach).
+/// Returns whether `m` carries the `eco-reach` module flag, which says that
+/// unreachable code was already erased and the rest internalized in MLIR
+/// (CGEN_081).
 bool hasReachabilityStamp(const llvm::Module &m);
-/// The LLVM side of MLIR reachability: strip the stamp and sweep dead
-/// constant users; ECO_REACH_VALIDATE=1 also runs internalizeAndDCE(keep) as
-/// an oracle that must change nothing.
+/// Finishes MLIR reachability on the LLVM side: removes the `eco-reach` flag
+/// and the unused constant expressions left on functions and globals, which
+/// would otherwise make a function look address-taken.
+///
+/// Returns an error if `m` has no `eco-reach` flag. When `ECO_REACH_VALIDATE`
+/// is set to a value other than "0" and `partition` is false, it also runs
+/// `internalizeAndDCE(m, keep)` and returns an error if that removed or
+/// relinked anything. In a partition the check is skipped, because it would
+/// remove definitions only other partitions use.
 llvm::Error finishReachability(llvm::Module &m,
                                llvm::ArrayRef<std::string> keep,
                                bool partition = false);
 
-/// Plan 05 (EcoSplit) support.
-/// The split policy on a defined-function count (0 = auto, 1 = off, N).
+/// Returns the number of partitions for a module with `numDefinedFns` defined
+/// functions, given the request `request` (0 automatic, 1 none, or a count).
+/// Returns 1 when `eligible` is false, the request is 1, or there are fewer
+/// functions than 4000 (or than `ECO_SPLIT_MIN_FUNCS`, read once). Otherwise
+/// returns the request, or the number of hardware threads for 0, capped at
+/// `numDefinedFns / 2000` but never below 2.
 unsigned choosePartitionCountForCount(unsigned numDefinedFns, unsigned request,
                                       bool eligible);
-/// Tag this thread as the worker of partition `i` (-1 = none): diagnostic
-/// files get a `.p<i>` suffix.
+/// Records, for the calling thread only, that it lowers partition `i`, or no
+/// partition when `i` is -1. Only `partitionDumpPath` reads it.
 void setPartitionIndex(int i);
+/// Returns `path` with `.p<i>` appended when the calling thread lowers
+/// partition i, and `path` unchanged otherwise, so that partition threads
+/// never write the same diagnostic file.
 std::string partitionDumpPath(llvm::StringRef path);
-/// The (X) join over all partitions' reports.
+/// Returns an error naming the first gc-leaf declaration in `reports` whose
+/// function some partition defines but no partition stamps. A declaration no
+/// partition defines is a runtime or kernel function and is trusted. Returns
+/// success at once unless GC-free stamping is on.
 llvm::Error joinPartitionGcLeafReports(
     const std::vector<GcLeafPartitionReport> &reports);
-/// Validate (plan 03 R5): LLVM's hasAddressTaken per defined function must
-/// equal the MLIR symbol graph's answer (EcoSymbolGraph addressTakenByName).
+/// Compares, for each function `m` defines, `Function::hasAddressTaken` with
+/// the MLIR symbol graph's answer in `mlirTaken`, and returns an error if any
+/// differ. `eco_main` is looked up as `main` when it is absent; functions
+/// missing from `mlirTaken` were created in LLVM and are skipped. Prints the
+/// counts and up to 20 mismatches to stderr.
 llvm::Error checkAddressTaken(const llvm::Module &m,
                               const llvm::StringMap<bool> &mlirTaken);
 
-/// ECO_OPT_PASS_TIMES=1 diagnostic: print per-pass exclusive LLVM opt times
-/// summed over all partition workers (no-op when the variable is unset).
+/// Prints to `os` the exclusive time of each LLVM optimization pass and
+/// analysis that took at least 0.05 s, summed over every thread, longest
+/// first, with the total. Does nothing unless `ECO_OPT_PASS_TIMES` is set.
 void printOptPassTimes(llvm::raw_ostream &os);
 
 } // namespace eco

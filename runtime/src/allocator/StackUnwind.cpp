@@ -15,14 +15,11 @@ namespace StackUnwind {
 
 #if defined(_WIN32)
 
-// Win64 backend: GC stack walking via RtlCaptureContext + RtlLookupFunctionEntry
-// + RtlVirtualUnwind. Verified end-to-end by E-W1 / E-W2
-// (experiments/win-statepoint-smoke + experiments/win-jit-smoke) — those
-// experiments exercised exactly this pipeline on JITed and AOT code.
-//
-// The DWARF→CONTEXT register map is the AMD64 numbering:
-//   0=rax 1=rdx 2=rcx 3=rbx 4=rsi 5=rdi 6=rbp 7=rsp 8..15=r8..r15 16=rip.
+// Win64 implementation. A cursor holds its own copy of the `CONTEXT`, which `RtlVirtualUnwind` rewrites
+// in place to the caller's registers at each step.
 
+/// Returns the field of `c` that holds the register with AMD64 DWARF number `r`, or null for a number
+/// outside 0..16. The pointer is into `c`.
 static const DWORD64* dwarfRegInContext(const CONTEXT* c, uint16_t r) {
     switch (r) {
     case 0:  return &c->Rax;
@@ -46,6 +43,7 @@ static const DWORD64* dwarfRegInContext(const CONTEXT* c, uint16_t r) {
     }
 }
 
+/// The registers captured by `RtlCaptureContext`.
 struct Context::Impl { CONTEXT ctx; };
 
 Context::Context() : impl_(std::make_unique<Impl>()) {
@@ -53,6 +51,7 @@ Context::Context() : impl_(std::make_unique<Impl>()) {
 }
 Context::~Context() = default;
 
+/// The registers of the current frame, a copy taken from the `Context` and then unwound.
 struct Cursor::Impl { CONTEXT ctx; };
 
 Cursor::Cursor(Context& ctx) : impl_(std::make_unique<Impl>()) {
@@ -95,14 +94,13 @@ bool Cursor::getRegister(uint16_t dwarfRegNum, uintptr_t& outValue) const {
 
 #else  // POSIX libunwind backend
 
-// On x86-64, DWARF register numbers 0..15 map directly to libunwind's
-// UNW_X86_64_RAX..UNW_X86_64_R15. This function exists as an extension
-// point for other architectures (e.g. ARM64) where the mapping may differ.
+/// Returns the libunwind register number for DWARF register `dwarfRegNum`. The mapping is the identity
+/// on every architecture. On x86-64, DWARF 0..15 coincide with `UNW_X86_64_RAX`..`UNW_X86_64_R15`.
 static int mapDwarfToUnwindReg(uint16_t dwarfRegNum) {
-    // x86-64: identity mapping for GPRs 0..15
     return static_cast<int>(dwarfRegNum);
 }
 
+/// The registers captured by `unw_getcontext`.
 struct Context::Impl {
     unw_context_t uctx;
 };
@@ -113,6 +111,7 @@ Context::Context() : impl_(std::make_unique<Impl>()) {
 
 Context::~Context() = default;
 
+/// The libunwind cursor, initialised from the `Context`'s `unw_context_t`.
 struct Cursor::Impl {
     unw_cursor_t cursor;
 };

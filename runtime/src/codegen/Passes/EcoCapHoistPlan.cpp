@@ -1,20 +1,41 @@
 //===- EcoCapHoistPlan.cpp - Capacity-hoisting plan on the MLIR side ------===//
 //
-// plans/mlir-split-backend-01-cap-hoist-plan.md Part II P4, CGEN_074.
+// Capacity-check hoisting (CGEN_074) needs whole-program facts: which functions
+// have all their callers visible, and how many bytes each call can allocate.
+// This pass computes them on the final llvm-dialect module, before translation
+// to LLVM IR, and records them in the module, so that the backend can read a
+// function's plan from the function itself. What a budget, top and covered mean,
+// and how they are solved, is stated by `caphoist::Node` and `caphoist::solve`
+// in EcoCapHoistCore.h.
 //
-// Computes capacity hoisting's whole-program part (Phase A per function,
-// Phase B budget fixpoint, Phase C coverage) on the final llvm-dialect
-// module, BEFORE translation, and stamps the result:
-//   - every defined llvm.func: passthrough ["eco-cap-budget","N"] (not ⊤) or
-//     "eco-cap-top", plus "eco-cap-covered" when covered;
-//   - the module: llvm.module_flags "eco-cap-plan" = "v1;K=..;m2=..;cw=..;veq=..".
-// The LLVM backend (applyCapacityHoisting, plan-given mode) verifies every
-// definition locally against these facts and never recomputes eligibility,
-// so a later partition split needs no whole-program view.
+// The pass has three phases:
 //
-// Phase A replicates EcoBackend.cpp's LLVM Phase A as seen AFTER the
-// pre-hoisting marker expansions (the marker table, EcoMarkerFacts.h);
-// plan 00 SP2 measured an exact match on the self-compile.
+// - Phase A scans each defined function, in parallel, for the facts the solver
+//   needs: the constant sizes of its `__eco_alloc_inline` markers outside
+//   loops (a non-constant size adds 0), its direct calls to defined
+//   functions that are not interposable, itself included, whether it is
+//   eligible, and whether anything in it forces it top. A block is inside a
+//   loop when it lies on a cycle of the function's control-flow graph; an
+//   allocation marker there makes the function top. The first reason set is
+//   kept, so the reason is `Loop` only if none was set before.
+// - Phases B and C are `caphoist::solve`.
+//
+// A function is eligible when it is not interposable, its address is not taken,
+// and it is local. With `closedWorld` set, local means not one of `roots`, and
+// only references from top-level operations that are not symbols, or from
+// symbols reachable from the roots or from those operations' targets, count as
+// taking an address. Otherwise local means Internal or Private linkage, and
+// every reference counts.
+//
+// The results are written as passthrough attributes on every defined
+// `llvm.func`: `["eco-cap-budget", "<N>"]` or `"eco-cap-top"`, plus
+// `"eco-cap-covered"` when covered. The settings the plan was made under go in
+// the `eco-cap-plan` module flag, encoded by `caphoist::encodePlanStamp`.
+//
+// Phase A classifies calls the way LLVM will see them after the backend has
+// expanded the markers that precede hoisting, using `markers::hoistView` and
+// the other predicates of EcoMarkerFacts.h, and resolves callees as
+// `llvm::CallBase::getCalledFunction` would.
 //
 //===----------------------------------------------------------------------===//
 #include "../Passes.h"
@@ -42,6 +63,8 @@ using namespace mlir;
 
 namespace {
 
+/// Returns whether `op`'s `passthrough` attribute holds `key`, either as a
+/// bare string or as the first element of a key-value pair.
 bool hasPassthrough(Operation *op, llvm::StringRef key) {
     auto pt = op->getAttrOfType<ArrayAttr>("passthrough");
     if (!pt)
@@ -59,32 +82,50 @@ bool hasPassthrough(Operation *op, llvm::StringRef key) {
     }
     return false;
 }
+/// Returns whether `op` carries the passthrough `gc-leaf-function`.
 bool isGcLeaf(Operation *op) { return hasPassthrough(op, "gc-leaf-function"); }
+/// Returns whether `op` carries any of the `eco-cap-*` function attributes.
 bool hasCapAttr(Operation *op) {
     return hasPassthrough(op, eco::caphoist::kAttrBudget) ||
            hasPassthrough(op, eco::caphoist::kAttrTop) ||
            hasPassthrough(op, eco::caphoist::kAttrCovered);
 }
+/// Returns whether environment variable `n` is set to anything other than an
+/// empty string or `"0"`. It is read on every call.
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
+/// One top-level symbol of the module, with its outgoing references, as this
+/// pass uses them.
+///
+/// Elements are indexed as the nodes of the `symgraph::Graph` they are copied
+/// from. `defined` is set only for a function with a body.
 struct SymNode {
+    /// The symbol operation, owned by the module.
     Operation *op = nullptr;
     bool isFunc = false, defined = false, interposable = false;
     std::vector<int> refs;     // every symbol referenced (reachability)
     std::vector<int> addrRefs; // references that take the address
-    int defIdx = -1;           // index into the solver's node vector
+    /// Index into the solver's node vector; -1 for a symbol that is not a defined function.
+    int defIdx = -1;
 };
 
+/// The pass returned by `eco::createEcoCapHoistPlanPass`, registered as
+/// `eco-cap-hoist-plan`.
 struct EcoCapHoistPlanPass
     : public PassWrapper<EcoCapHoistPlanPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoCapHoistPlanPass)
 
+    /// Creates a pass with an open world and no roots.
     EcoCapHoistPlanPass() = default;
+    /// Creates a pass that plans with `closedWorld`, treating `roots` as the
+    /// externally visible entry points, named as in MLIR.
     EcoCapHoistPlanPass(bool closedWorld, std::vector<std::string> roots)
         : closedWorld(closedWorld), roots(std::move(roots)) {}
+    /// Creates a copy of `o` with the same options, as MLIR does when it
+    /// clones a pass.
     EcoCapHoistPlanPass(const EcoCapHoistPlanPass &o)
         : PassWrapper(o), closedWorld(o.closedWorld), roots(o.roots) {}
 
@@ -105,13 +146,13 @@ void EcoCapHoistPlanPass::runOnOperation() {
     MLIRContext *ctx = &getContext();
     auto T0 = std::chrono::steady_clock::now();
 
-    // 1. Gate: same switches as the LLVM transform. Otherwise LLVM runs
-    //    compute mode exactly as before this pass existed.
+    // Unless hoisting is on and GC-free stamping is selected, the module is
+    // left unplanned.
     if (capHoistMode() != CapHoistMode::On ||
         gcFreeLeafMode() != GcFreeMode::Stamp)
         return;
 
-    // 2. Pre-planned input (hand-written fixtures, re-lowered dumps).
+    // A module that already has a plan flag is kept as it is.
     bool hasStamp = false;
     for (auto mf : module.getOps<LLVM::ModuleFlagsOp>())
         for (Attribute a : mf.getFlags())
@@ -126,8 +167,8 @@ void EcoCapHoistPlanPass::runOnOperation() {
             return signalPassFailure();
         }
 
-    // 3. R2: no generated definition may be gc-leaf before planning (plan 02
-    //    stamps after this pass; LLVM Phase A would treat it as transparent).
+    // A definition that is already gc-leaf would be treated by Phase A as a
+    // call that cannot allocate, so only the trusted names may be one here.
     for (auto f : module.getOps<LLVM::LLVMFuncOp>())
         if (!f.isExternal() && isGcLeaf(f) &&
             !markers::isTrustedLeafDecl(f.getSymName())) {
@@ -136,10 +177,6 @@ void EcoCapHoistPlanPass::runOnOperation() {
             return signalPassFailure();
         }
 
-    // 4-5. Index + references: the shared symbol graph (EcoSymbolGraph.h,
-    //      plan 03 R4). An edge "takes the address" exactly when LLVM's
-    //      Function::hasAddressTaken will say so: an addressof used other
-    //      than as the callee operand of a same-typed indirect llvm.call.
     symgraph::Graph sg = symgraph::build(module);
     std::vector<SymNode> nodes(sg.nodes.size());
     for (size_t i = 0; i < nodes.size(); ++i) {
@@ -161,7 +198,8 @@ void EcoCapHoistPlanPass::runOnOperation() {
                       : LLVM::LLVMFuncOp();
     };
 
-    // The marker table's value-eq row depends on module content.
+    // `__eco_value_eq` counts as leaf when the environment says so, or when
+    // the module itself marks `Elm_Kernel_Utils_equal` gc-leaf.
     bool valueEqLeaf = valueEqGcLeafEnv();
     {
         int ue = lookup(StringAttr::get(ctx, "Elm_Kernel_Utils_equal"));
@@ -174,7 +212,6 @@ void EcoCapHoistPlanPass::runOnOperation() {
     for (uint32_t t : sg.extraTakes)
         nonSymTakes[0].push_back((int)t);
 
-    // 6. Eligibility inputs: local + address-taken, closed or open world.
     std::vector<char> isRoot(nodes.size(), 0), reached(nodes.size(), 0),
         addrTaken(nodes.size(), 0);
     for (const std::string &r : roots) {
@@ -208,7 +245,7 @@ void EcoCapHoistPlanPass::runOnOperation() {
         for (int g : v)
             addrTaken[g] = 1;
 
-    // 7. Phase A, in parallel per defined function.
+    // Phase A. Each call writes only its own `cn` entry.
     std::vector<int> defs;
     for (size_t i = 0; i < nodes.size(); ++i)
         if (nodes[i].isFunc && nodes[i].defined) {
@@ -236,8 +273,9 @@ void EcoCapHoistPlanPass::runOnOperation() {
         if (sn.interposable)
             setTop(caphoist::Reason::Other);
 
-        // Entry-rooted SCC walk: blocks inside a CFG cycle (unreachable
-        // blocks are never in a cycle, matching llvm::scc_begin).
+        // An iterative Tarjan walk from the entry block finds the blocks that
+        // lie on a CFG cycle. Blocks unreachable from the entry are never
+        // visited, so they never count as in a loop.
         Region &body = fn.getBody();
         llvm::DenseSet<Block *> inCycle;
         {
@@ -297,13 +335,16 @@ void EcoCapHoistPlanPass::runOnOperation() {
         }
 
         fn.walk([&](LLVM::CallOp call) {
+            // A call in a nested region is placed at its ancestor in the body.
             Block *blk = call->getBlock();
             while (blk && blk->getParent() != &body)
                 blk = blk->getParentOp() ? blk->getParentOp()->getBlock()
                                          : nullptr;
             const bool inLoop = blk && inCycle.count(blk);
 
-            // Resolve the callee exactly as llvm::CallBase::getCalledFunction.
+            // Resolve the callee as llvm::CallBase::getCalledFunction does: an
+            // indirect call through an addressof of a function of the same type
+            // counts as direct.
             StringRef cname;
             int ci = -1;
             bool direct = false, viaOperand = false;
@@ -347,10 +388,10 @@ void EcoCapHoistPlanPass::runOnOperation() {
                     return;
                 }
                 if (ci >= 0 && isGcLeaf(nodes[ci].op))
-                    return; // callee decl attribute (callsGCLeafFunction)
+                    return; // the callee's own gc-leaf attribute
                 if (ci >= 0 && !nodes[ci].defined &&
                     markers::isLibmLeaf(cname))
-                    return; // TLI arm
+                    return; // a libm function LLVM knows cannot collect
                 if (ci >= 0 && nodes[ci].isFunc && nodes[ci].defined &&
                     !nodes[ci].interposable) {
                     nd.callees.push_back({(uint32_t)nodes[ci].defIdx, inLoop});
@@ -361,8 +402,8 @@ void EcoCapHoistPlanPass::runOnOperation() {
                 setTop(caphoist::Reason::Other);
                 return;
             }
-            // Indirect: callsGCLeafFunction still reads the called operand's
-            // function attributes (no type check).
+            // An indirect call through a gc-leaf function of a different type
+            // is still leaf; its type is not checked.
             if (viaOperand && ci >= 0 && isGcLeaf(nodes[ci].op))
                 return;
             setTop(caphoist::Reason::Other);
@@ -373,11 +414,11 @@ void EcoCapHoistPlanPass::runOnOperation() {
             phaseA(defs[k]);
     });
 
-    // 8. Phase B + C.
+    // Phases B and C.
     const unsigned K = capHoistMaxBytes();
     caphoist::solve(cn, K);
 
-    // 9. Stamp the facts.
+    // The stamps are appended to any existing passthrough entries.
     unsigned nCovered = 0, nTop = 0, nZero = 0;
     for (size_t k = 0; k < defs.size(); ++k) {
         auto fn = cast<LLVM::LLVMFuncOp>(nodes[defs[k]].op);
@@ -402,7 +443,7 @@ void EcoCapHoistPlanPass::runOnOperation() {
         fn->setAttr("passthrough", ArrayAttr::get(ctx, pt));
     }
 
-    // 10. The plan stamp, as an LLVM module flag.
+    // The flag is appended to the last module-flags op, or to a new one.
     caphoist::PlanStamp stamp;
     stamp.K = K;
     stamp.m2 = capHoistFoldOwnMarkers();

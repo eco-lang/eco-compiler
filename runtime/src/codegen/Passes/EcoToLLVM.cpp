@@ -1,15 +1,33 @@
 //===- EcoToLLVM.cpp - Eco dialect to LLVM dialect lowering ---------------===//
 //
-// This file implements the combined pass for lowering Eco dialect operations
-// to LLVM dialect. It orchestrates pattern modules from:
-//   - EcoToLLVMTypes.cpp: Constants and string literals
-//   - EcoToLLVMHeap.cpp: Box, unbox, allocate, construct, project
-//   - EcoToLLVMClosures.cpp: Closure operations
-//   - EcoToLLVMControlFlow.cpp: Case, joinpoint, jump, return
-//   - EcoToLLVMArith.cpp: Arithmetic, comparisons, bitwise, type conversions
-//   - EcoToLLVMGlobals.cpp: Global variable operations
-//   - EcoToLLVMErrorDebug.cpp: Safepoint, debug, crash, expect
-//   - EcoToLLVMFunc.cpp: Kernel function declarations
+// The `eco-to-llvm` pass: it turns a module of `func.func` functions with Eco, scf, arith and cf bodies into the
+// LLVM dialect. The rewrite patterns live in the other EcoToLLVM* files and are declared in EcoToLLVMInternal.h;
+// this file decides the order they run in and which parts run in parallel.
+//
+// The order follows from one fact. Most of the work is converting function bodies, which are independent of each
+// other, but a body pattern may need a module-level symbol (a runtime declaration, a string-literal global, a
+// closure wrapper or descriptor, an eval layout). Creating symbols from several threads at once is not safe, so
+// every such symbol is decided and inserted first, before any body is converted, and the shared `EcoRuntime` is
+// then frozen: made read-only, so body patterns only look symbols up (`EcoRuntime::freeze` in
+// EcoToLLVMInternal.h). The stages are:
+//
+//   1. A pre-scan records each function's original type and attributes, while the `func.func` ops still exist,
+//      and `lowerAllocGroups` lowers allocation groups.
+//   2. Stage 0 converts the function signatures and the module-level `eco.global` and `eco.type_table` ops. A
+//      function becomes an `llvm.func` shell: its signature is converted and its body is moved unchanged, still in
+//      the Eco dialects.
+//   3. Pre-materialization creates every module-level symbol a body will need, then freezes `runtime`.
+//   4. Stage 2 converts the bodies, in parallel chunks with a converter, target and pattern set per chunk.
+//   5. An epilogue sorts the eval-layout globals, sets the `eco-gc` garbage collector on each definition that
+//      exists by then and has none (so not on `__eco_init_globals`, which is created later), adds the CAF and
+//      string-literal fast paths, installs shadow-root frames, creates `__eco_init_globals`, and erases
+//      external declarations no op refers to.
+//
+// The names Stage 0 and Stage 2 are the ones the code and the stats labels use; there is no Stage 1.
+//
+// `ECO_ECO2LLVM_PARALLEL=0` makes Stage 0 and Stage 2 serial, and `ECO_PREMAT_PARALLEL=0` makes
+// pre-materialization build everything in place; each is also serial when the context has multithreading off.
+// `ECO_ECO2LLVM_STATS` set to any value prints the time spent in each stage to stderr.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,21 +72,18 @@ using namespace eco::detail;
 
 namespace {
 
-/// Pattern to type-convert arith.select operations.
-/// This is needed when scf.if is lowered to arith.select but the types
-/// still contain eco.value.
+/// A pattern that rebuilds an `arith.select` with its result type converted, for selects whose types still
+/// contain `!eco.value`.
 struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(arith::SelectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Get the converted result type
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
         if (!resultType)
             return failure();
 
-        // Create a new select with converted types
         rewriter.replaceOpWithNewOp<arith::SelectOp>(
             op, resultType, adaptor.getCondition(),
             adaptor.getTrueValue(), adaptor.getFalseValue());
@@ -76,57 +91,50 @@ struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
     }
 };
 
-/// Pattern to type-convert scf.index_switch operations.
-/// This handles the case where scf.index_switch has eco.value result types.
+/// A pattern that rebuilds an `scf.index_switch` with converted result types, moving its case and default
+/// regions into the new op. It does not match a switch whose result types are already converted.
 struct IndexSwitchOpTypeConversion : public OpConversionPattern<scf::IndexSwitchOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(scf::IndexSwitchOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Convert result types
         SmallVector<Type> convertedTypes;
         if (failed(getTypeConverter()->convertTypes(op.getResultTypes(), convertedTypes)))
             return failure();
 
-        // If types are already converted, no work to do
         if (convertedTypes == SmallVector<Type>(op.getResultTypes().begin(), op.getResultTypes().end()))
             return failure();
 
         auto loc = op.getLoc();
 
-        // Create new index_switch with converted result types
-        // Note: Use original arg (not adaptor) because scf.index_switch requires index type
+        // The original selector, not the adaptor's: scf.index_switch needs an `index` operand.
         auto newOp = rewriter.create<scf::IndexSwitchOp>(
             loc, convertedTypes, op.getArg(), op.getCases(), op.getCases().size());
 
-        // Move the case regions from old op to new op
         for (auto [oldRegion, newRegion] : llvm::zip(op.getCaseRegions(), newOp.getCaseRegions())) {
             rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.end());
         }
 
-        // Move the default region
         rewriter.inlineRegionBefore(op.getDefaultRegion(), newOp.getDefaultRegion(),
                                     newOp.getDefaultRegion().end());
 
-        // Replace uses with converted results
         rewriter.replaceOp(op, newOp.getResults());
         return success();
     }
 };
 
-/// Pattern to type-convert scf.yield operations inside index_switch.
+/// A pattern that rebuilds an `scf.yield` nested in an `scf.index_switch` with its converted operands. It does not
+/// match a yield with no enclosing index_switch.
 struct YieldOpTypeConversion : public OpConversionPattern<scf::YieldOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(scf::YieldOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Only convert yields inside index_switch
         if (!op->getParentOfType<scf::IndexSwitchOp>())
             return failure();
 
-        // If operands are already converted (through adaptor), just create new yield
         rewriter.replaceOpWithNewOp<scf::YieldOp>(op, adaptor.getOperands());
         return success();
     }
@@ -146,7 +154,7 @@ void eco::detail::collectPreMatDemand(MLIRContext *ctx,
         for (size_t i = lo; i < hi; ++i) {
             PreMatDemand &d = out[i];
             LLVM::LLVMFuncOp func = funcs[i];
-            // ONE post-order walk: the order every former per-kind walk used.
+            // One post-order walk fills all three lists, so each list is in post-order.
             func.walk([&](Operation *op) {
                 if (isa<StringLiteralOp>(op))
                     d.literals.push_back(op);
@@ -163,28 +171,32 @@ void eco::detail::collectPreMatDemand(MLIRContext *ctx,
 
 namespace {
 
+/// The `eco-to-llvm` module pass, whose stages the file comment describes. It is created by
+/// `eco::createEcoToLLVMPass` and registered by `eco::registerEcoPasses`.
 struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoToLLVMPass)
 
+    /// Returns the pass's command-line name, `eco-to-llvm`.
     StringRef getArgument() const override { return "eco-to-llvm"; }
 
+    /// Returns the one-line description shown in pass listings.
     StringRef getDescription() const override {
         return "Lower Eco dialect to LLVM dialect";
     }
 
+    /// Adds the LLVM and func dialects, which the pass creates ops in, to `registry`.
     void getDependentDialects(DialectRegistry &registry) const override {
         registry.insert<LLVM::LLVMDialect, func::FuncDialect>();
     }
 
+    /// Lowers the module in the stages the file comment lists. On the first stage that fails it signals pass
+    /// failure and returns, leaving the module partly converted.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = &getContext();
 
-        // Env-gated sub-phase timers (ECO_ECO2LLVM_STATS). Passes have no
-        // LoweringStats handle, so time the five serial stages of this pass
-        // with steady_clock and print to llvm::errs(). Each ecoStageReport()
-        // call measures wall time since the previous report (or since here)
-        // and then resets the clock. Zero overhead when the env var is unset.
+        // Stage timers for ECO_ECO2LLVM_STATS. Each ecoStageReport() prints the steady_clock time since the
+        // previous report (or since here) and restarts the clock; with the variable unset it does nothing.
         const bool ecoStatsEnabled = ::getenv("ECO_ECO2LLVM_STATS") != nullptr;
         auto ecoStageClock = std::chrono::steady_clock::now();
         auto ecoStageReport = [&](const char *stageName) {
@@ -198,61 +210,40 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         };
 
 
-        // One EcoTypeConverter, reused SERIALLY across Stage 0 (module-level
-        // signature + global lowering) and Stage 2 (per-function body
-        // lowering). Sequential reuse is safe: the parked concurrency bug
-        // (see EcoTailConversions.cpp) was about sharing an LLVMTypeConverter
-        // across THREADS / pass-clones — its internal caches mutate during
-        // conversion — not about reusing one converter across serial
-        // applyFullConversion calls. Declared at function scope so it OUTLIVES
-        // the Stage 2 FrozenRewritePatternSet, which captures it by reference.
+        // The converter for the serial conversions: serial Stage 0 and the serial pre-materialization. A type
+        // converter's caches change as it converts, so it is never shared between threads; each parallel shard
+        // and chunk makes its own.
         EcoTypeConverter typeConverter(ctx);
 
-        // Runtime helper (module symbol cache, origFuncTypes, deterministic
-        // string-literal counter) and control-flow lowering context. Both are
-        // shared across Stage 0 and Stage 2 exactly as the single-conversion
-        // path shared one instance across the whole module: the symbol cache
-        // dedups getOrCreate* wrappers/decls created lazily during Stage 2, and
-        // cfCtx threads control-flow state across all functions (cleared once,
-        // not per function).
+        // The shared runtime state for every stage. `cfCtx` is never used: each Stage 2 chunk makes its own
+        // EcoCFContext.
         EcoRuntime runtime(module);
         EcoCFContext cfCtx;
         cfCtx.clear();
 
-        // Chunked-list mode (plans/chunked-list-representation.md §6): the
-        // front-end stamps `eco.list_chunks` on @main (func attr; also
-        // honoured as a module attr for hand-written tests) when
-        // config.list.chunks is enabled; list head/tail projections must
-        // then handle chunk views (out-of-line hybrid helpers). Absent the
-        // marker, lowering is byte-identical to the pre-chunk world.
+        // Chunked-list mode is on when `eco.list_chunks` is on the module or on any function (below). In it,
+        // list head and tail projections must also handle chunk views.
         runtime.listChunks = module->hasAttr("eco.list_chunks");
 
-        // Pre-scan all func::FuncOps to save original types before conversion.
-        // getOrCreateWrapper must distinguish primitive params (Int i64) from
-        // !eco.value params (HPointer i64), but after conversion both become
-        // LLVM i64 and the func::FuncOp is gone. Also collect functions marked
-        // eco.shadow_roots for post-conversion shadow-root frame installation.
-        // MUST run before Stage 0 (which erases every func::FuncOp).
+        // Pre-scan, which must run before Stage 0 erases the func::FuncOps. The original types are kept because
+        // wrapper creation needs to tell an Int parameter from an `!eco.value` one, and both become i64 once
+        // converted; the shadow-root and CAF-memo sets drive the epilogue.
         llvm::DenseSet<llvm::StringRef> shadowRootFuncs;
         llvm::DenseSet<llvm::StringRef> cafMemoFuncs;
-        // func.func is top-level only: iterate the module body, not every op.
+        // Only top-level func.func ops are scanned.
         for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
             runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
             if (funcOp->hasAttr("eco.shadow_roots"))
                 shadowRootFuncs.insert(funcOp.getSymName());
             if (funcOp->hasAttr("eco.caf_memo"))
                 cafMemoFuncs.insert(funcOp.getSymName());
-            // Chunked-list marker: the front-end stamps @main when
-            // config.list.chunks is on (a func attr flows through text AND
-            // bytecode, unlike a module attr).
             if (funcOp->hasAttr("eco.list_chunks"))
                 runtime.listChunks = true;
         }
 
-        // Char case-mapping build guard (KERN_008, CharValue::kBuildGuardSymbol):
-        // call the empty `eco_char_case_expansion_on/_off` of this backend's
-        // setting at the top of @main, so a runtime built with the other
-        // setting fails to link or resolve it.
+        // The Char case-mapping build guard (KERN_008): a gc-leaf call to the empty
+        // `CharValue::kBuildGuardSymbol` goes at the start of @main's body, so a runtime built with the other
+        // ECO_CHAR_CASE_EXPANSION setting fails to link or resolve it.
         if (auto mainFn = module.lookupSymbol<func::FuncOp>("main")) {
             if (!mainFn.getBody().empty()) {
                 OpBuilder gb(ctx);
@@ -265,12 +256,9 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
         }
 
-        // Chunked-list mode: inject `call @eco_enable_list_chunks()` at the
-        // top of @main so kernel bulk builders switch to chunk production in
-        // exactly the binaries whose compiled projections are chunk-aware
-        // (plans/chunked-list-representation.md §6). Injected while @main is
-        // still a func.func; the LLVM call is already target-legal and rides
-        // through Stage 0/2 untouched.
+        // In chunked-list mode, a call to the gc-leaf `eco_enable_list_chunks` goes at the start of @main's
+        // body, if @main exists and has one, so the runtime switches to producing chunks. It is an llvm.call,
+        // which every later stage leaves alone.
         if (runtime.listChunks) {
             if (auto mainFn = module.lookupSymbol<func::FuncOp>("main")) {
                 if (!mainFn.getBody().empty()) {
@@ -287,69 +275,44 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
         }
 
-        // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
-        // CFG before ANY conversion. lowerAllocGroups walks
-        // module.getOps<func::FuncOp>(), so it MUST run before Stage 0 erases
-        // the func::FuncOps; group member ops are erased, remaining singleton
-        // alloc ops are lowered by the Stage 2 body patterns.
+        // lowerAllocGroups walks the func::FuncOps, so it must run before Stage 0 erases them. Allocations not
+        // in a group are left for the Stage 2 patterns.
         lowerAllocGroups(module, runtime);
         ecoStageReport("1. pre-scan + lowerAllocGroups");
 
         //===--------------------------------------------------------------===//
-        // Stage 0 (serial): func SIGNATURE conversion + module-level lowering.
+        // Stage 0: function signatures and module-level globals.
         //===--------------------------------------------------------------===//
-        // At MODULE scope, convert: every func::FuncOp -> llvm.func (kernel
-        // decls -> extern llvm.func via KernelFuncOpLowering; every other
-        // func.func -> an llvm.func SHELL whose signature is type-converted but
-        // whose body region is moved verbatim and left in the Eco/scf/arith/cf
-        // dialects), plus the two module-level Eco globals (eco.global ->
-        // llvm.mlir.global, eco.type_table -> llvm globals). Everything else
-        // (bodies, func.call, func.return, eco.load_global/eco.store_global) is
-        // DEFERRED (kept legal) to Stage 2. The resulting llvm.func-with-eco-
-        // body IR is intentionally type-inconsistent, but nothing verifies it
-        // between stages (applyFullConversion only checks target legality and
-        // unreachable blocks; the pass verifier runs after the whole pass), and
-        // Stage 2 finishes lowering every deferred op.
+        // Kernel declarations become external llvm.funcs; every other func.func becomes an llvm.func shell
+        // whose body is moved unchanged; eco.global and eco.type_table become LLVM globals. Everything else,
+        // including func.call, func.return and the global loads and stores, is kept legal here and converted in
+        // Stage 2. The IR in between is not type-consistent; nothing verifies it before the pass ends.
         {
             auto buildSigTarget = [&](ConversionTarget &sigTarget) {
                 sigTarget.addLegalDialect<LLVM::LLVMDialect>();
                 sigTarget.addLegalOp<ModuleOp>();
                 sigTarget.addLegalOp<UnrealizedConversionCastOp>();
-                // Bodies are deferred to Stage 2: keep their dialects legal so
-                // the signature conversion converts only the func shell.
+                // Body dialects stay legal, so only the shells convert.
                 sigTarget.addLegalDialect<EcoDialect>();
                 sigTarget.addLegalDialect<scf::SCFDialect>();
                 sigTarget.addLegalDialect<arith::ArithDialect>();
                 sigTarget.addLegalDialect<cf::ControlFlowDialect>();
-                // func.call / func.return are body ops (their operands are
-                // produced and consumed by deferred eco ops); defer them so
-                // the producer eco op and the call/return convert together in
-                // Stage 2, exactly as in the single conversion. Only the
-                // func.func SHELL converts now.
+                // func.call and func.return use values made by Eco ops, so they convert with those ops in
+                // Stage 2.
                 sigTarget.addLegalDialect<func::FuncDialect>();
                 sigTarget.addIllegalOp<func::FuncOp>();
-                // Module-level Eco globals must lower serially at module scope
-                // (top-level replaceOp/eraseOp). Body-level load/store globals
-                // stay Eco-legal here and defer to Stage 2.
+                // These patterns replace and erase top-level ops, so they are converted serially.
                 sigTarget.addIllegalOp<eco::GlobalOp>();
                 sigTarget.addIllegalOp<eco::TypeTableOp>();
             };
             auto buildSigPatterns = [&](EcoTypeConverter &tc,
                                         RewritePatternSet &sigPatterns) {
-                // Kernel func.func -> extern llvm.func (benefit 10; MODULE
-                // mutation). Higher benefit than the signature pattern so
-                // kernel decls are handled here rather than shell-converted.
+                // Kernel declarations; their pattern outranks the shell pattern below.
                 populateEcoFuncPatterns(tc, sigPatterns, runtime);
-                // Non-kernel func.func -> llvm.func SHELL (signature only).
-                // This is the isolated FuncOpConversionPattern that the full
-                // func-to-llvm set also carries; taken alone it moves the body
-                // region verbatim and type-converts the entry block args,
-                // bridging the still-Eco body with unrealized_conversion_cast
-                // arg materializations.
+                // Other functions: converts the signature and entry block arguments, moves the body as it is,
+                // and bridges the two with unrealized_conversion_casts.
                 populateFuncToLLVMFuncOpConversionPattern(tc, sigPatterns);
-                // GlobalOpLowering + TypeTableOpLowering fire (module level);
-                // LoadGlobalOpLowering / StoreGlobalOpLowering are also added
-                // but stay inert (their Eco ops are legal/deferred here).
+                // The load and store global patterns in this set do nothing here, as their ops are legal.
                 populateEcoGlobalPatterns(tc, sigPatterns);
             };
 
@@ -370,18 +333,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                     return;
                 }
             } else {
-                // Plan 07 P8. The driver visits every op of every body
-                // (~4.2M) to convert ~75k shells, serially. Shard it:
-                //  1. Serially, in place and in module order: the kernel
-                //     decls (the only pattern that reads/writes symCache)
-                //     and eco.global / eco.type_table (module-level patterns
-                //     that insert at module start / lookupSymbol).
-                //  2. Move contiguous ranges of the top-level ops into
-                //     detached scratch modules and convert each in parallel
-                //     with its own converter/target/patterns. Only non-kernel
-                //     func.func shells are illegal by then; their patterns
-                //     replace the op in place and never look at the module.
-                //  3. Splice the shards back in order.
+                // The conversion driver visits every op of every body, so the shells are converted in shards.
+                //  1. Serially, in place: the kernel declarations, whose pattern uses the symbol cache, and
+                //     eco.global / eco.type_table, whose patterns insert into and look up in the module.
+                //  2. Contiguous runs of top-level ops are moved into detached modules and converted in
+                //     parallel, each with its own converter, target and patterns. Only shells are left to
+                //     convert, and their pattern replaces the op without looking at the module.
+                //  3. The shards are spliced back in their original order.
                 SmallVector<Operation *> serialOps;
                 for (Operation &op : *module.getBody()) {
                     if (auto f = dyn_cast<func::FuncOp>(op)) {
@@ -434,52 +392,35 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
         }
 
-        // CRITICAL: Stage 0 op-REPLACED every func::FuncOp with an llvm.func
-        // (the old op is erased). runtime.symCache was populated DURING Stage 0
-        // (EcoToLLVMFunc's kernel-decl lowering calls runtime.lookupSymbol,
-        // which triggers ensureSymCache over the then-mixed module), so every
-        // cached func::FuncOp pointer now DANGLES. Clear it so Stage 2 rebuilds
-        // the cache from the live all-llvm.func module on its first lookup —
-        // otherwise getOrCreateWrapper's dyn_cast<LLVM::LLVMFuncOp> on a stale
-        // pointer is UB and silently miscompiles closures (runtime SIGSEGV).
+        // The kernel-declaration pattern looks symbols up during Stage 0, which fills the symbol cache with
+        // the func::FuncOps Stage 0 then erased. Those pointers dangle, so the cache is cleared and refilled
+        // from the converted module on the next lookup.
         runtime.symCache.clear();
 
         ecoStageReport("2. stage0 signature + module conversion");
 
-        // ---- Phase 2 pre-materialization (Option B) ----
-        // Eagerly create every module-level artifact a Stage 2 body pattern
-        // would otherwise create on demand (runtime decls, string-literal +
-        // string-case globals, closure wrappers, eval-layouts), so the symbol
-        // table + artifact caches become READ-ONLY during body conversion (this
-        // is what makes the body stage safe to run in parallel later). Snapshot
-        // bodyFuncs BEFORE pre-mat so the wrappers/decls it creates are excluded
-        // from body conversion (they are pure LLVM and need none). The walk
-        // order == module program order + pre-order within each function.
+        // Pre-materialization: every module-level symbol a Stage 2 pattern will look up is created here, so
+        // Stage 2 can run with `runtime` frozen. bodyFuncs is taken first, so the functions created here, which
+        // are already LLVM, are not converted again.
         SmallVector<LLVM::LLVMFuncOp> bodyFuncs;
         for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>())
             bodyFuncs.push_back(func);
         {
             OpBuilder preBuilder(ctx);
-            // Pre-declare ALL runtime helper externs so getOrCreateFunc hits a
-            // read-only cache during parallel Stage 2 (unused ones are stripped
-            // below so codegen CHECK-NOT fixtures still pass).
+            // Every runtime declaration; the unused ones are erased at the end of the pass.
             runtime.materializeAllRuntimeDecls(preBuilder);
             ecoStageReport("2b.0 runtime decls");
-            // Plan 07 P7: find every demand site in ONE parallel pass, then
-            // create serially in the same order the four walks did.
+            // The ops that need symbols are found in parallel; the symbols are created serially, in the order
+            // of `demand`.
             std::vector<PreMatDemand> demand;
             collectPreMatDemand(ctx, bodyFuncs, demand);
             ecoStageReport("2b.1 demand collection");
-            // Plan 07 P11: build in parallel, insert in order. Every decision,
-            // counter, name and dedup stays serial and in program order.
-            //  - String literals: the global is placed now (a shell); its
-            //    initializer is deferred (runtime.deferredBodies).
-            //  - Closure artifacts (wrappers, `$sat` entries, descriptors,
-            //    eval layouts): logged in creation order (runtime.topLog),
-            //    built DETACHED in parallel, then push_front()ed in log order
-            //    — the positions the eager creators gave them — and cached.
-            // The jobs only READ the symbol cache, so it is frozen meanwhile
-            // (a miss that would create a symbol trips cacheSymbol's assert).
+            // With deferBodies, what to create, its name and its order are decided serially, and the building
+            // is done afterwards in parallel. String-literal globals are placed now and their initializers are
+            // queued in `bodies`; other top-level ops are queued in `topLog`. Those not yet built are built
+            // detached, in parallel. All of them are then pushed to the module front in log order, which puts
+            // them where building in place would have, and the ones logged with `cache` set are cached.
+            // `runtime` is frozen while the jobs run, so a job that would create a symbol fails an assertion.
             std::vector<std::function<void()>> bodies;
             std::vector<EcoRuntime::TopLevelEntry> topLog;
             const char *defEnv = ::getenv("ECO_PREMAT_PARALLEL");
@@ -525,25 +466,18 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
             ecoStageReport("2b.5 artifacts built (parallel) + inserted");
         }
-        // Flip read-only: from here every getOrCreate*/wrapper/eval-layout/string
-        // artifact MUST hit the cache; any create trips freeze()'s cacheSymbol
-        // assert, pinpointing an artifact pre-materialization missed.
+        // From here a symbol pre-materialization missed fails cacheSymbol's assertion when a pattern tries to
+        // create it.
         runtime.freeze();
         ecoStageReport("2b. pre-materialization");
 
         //===--------------------------------------------------------------===//
-        // Stage 2: per-function BODY conversion (lock-free parallel).
+        // Stage 2: per-function body conversion.
         //===--------------------------------------------------------------===//
-        // Each chunk builds its OWN EcoTypeConverter + FrozenRewritePatternSet +
-        // ConversionTarget + EcoCFContext (thread-local): the type converter
-        // mutates internal caches during conversion and ConversionTarget lazily
-        // caches legality, so neither may be shared across threads. `runtime` is
-        // shared but READ-ONLY (symCache fully populated by freeze(); every
-        // getOrCreate*/wrapper/eval-layout/string artifact hits the cache), so
-        // concurrent DenseMap reads need no lock. cfCtx is keyed by
-        // {parentFunc, jpId}; a per-chunk instance matches the legacy single
-        // cfCtx exactly (entries never collide across functions). MLIRContext
-        // attribute/type uniquing is thread-safe when multithreading is on.
+        // convertChunk converts the bodies of `chunk`, stopping at the first failure. Each call makes its own
+        // type converter, target, patterns and EcoCFContext, because the converter and the target cache state
+        // as they work. The EcoCFContext holds only per-function entries, so one per chunk is enough. `runtime`
+        // is shared and frozen, so the chunks only read it.
         auto convertChunk =
             [&](llvm::ArrayRef<LLVM::LLVMFuncOp> chunk) -> LogicalResult {
             EcoTypeConverter tc(ctx);
@@ -638,13 +572,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             return success();
         };
 
-        // Per-function body conversion runs in PARALLEL by default. Validated
-        // 2026-07-07: byte-reproducible IR (after the eval-layout ordering fix
-        // above), full JIT E2E + GC-stress green, and the byte-exact native
-        // bootstrap fixed-point (Stage 8c) holds under parallel. Force the
-        // serial path with ECO_ECO2LLVM_PARALLEL=0 (determinism bisection /
-        // debugging); it is also serial whenever the MLIRContext has
-        // multithreading disabled (e.g. Win32 in eco-boot.cpp).
+        // Body conversion is parallel unless ECO_ECO2LLVM_PARALLEL is exactly "0" or the context has
+        // multithreading off.
         const char *parEnv = ::getenv("ECO_ECO2LLVM_PARALLEL");
         const bool forceSerial = parEnv && parEnv[0] == '0' && parEnv[1] == '\0';
         const bool runParallel = ctx->isMultithreadingEnabled() && !forceSerial;
@@ -654,9 +583,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 return;
             }
         } else {
-            // 8 chunks per thread (B4): function sizes vary widely, and with
-            // one equal-COUNT chunk per thread the slowest chunk set the stage's
-            // wall; failableParallelForEach hands chunks out dynamically.
+            // Up to 8 chunks per thread of equal function count: function sizes vary widely, and
+            // failableParallelForEach hands the chunks out as threads come free.
             unsigned numChunks =
                 std::max(1u, 8 * ctx->getThreadPool().getMaxConcurrency());
             numChunks = std::min<unsigned>(numChunks, (unsigned)bodyFuncs.size());
@@ -682,22 +610,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         }
         ecoStageReport("3. stage2 per-function body conversion");
 
-        // Re-enable module mutation for the SERIAL post-Stage-2 work
-        // (shadow-root prologues + createGlobalRootInitFunction, which create
-        // __eco_init_globals and may cacheSymbol).
+        // Unfrozen again: the epilogue creates symbols.
         runtime.frozen = false;
 
-        // Determinism: eval-layout globals are the ONE module artifact created
-        // on demand (ensureEvalLayoutGlobal) instead of in a fixed serial order.
-        // Their emission order tracks demand-DISCOVERY order — a StringAttr-keyed
-        // dedup set + module-start insertion — which is pointer/hash dependent
-        // (and, under ECO_ECO2LLVM_PARALLEL, thread-arrival dependent), so it
-        // varies run-to-run in BOTH serial and parallel lowering. They are
-        // semantically inert (referenced only by symbol name via AddressOfOp),
-        // but the reordering makes eco-boot-native output non-byte-reproducible
-        // and breaks the byte-exact native bootstrap fixed-point (Stage 8c).
-        // Sort them into a canonical by-name block anchored before the first
-        // non-layout op (whose relative order is already deterministic).
+        // The `__eco_eval_layout_*` globals are moved, sorted by name, to just before the first top-level op
+        // that is not one, so their order in the output does not depend on the order they were created in.
+        // They are referred to only by name, so the move changes nothing else.
         {
             SmallVector<LLVM::GlobalOp> layouts;
             Operation *anchor = nullptr;
@@ -717,31 +635,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             }
         }
 
-        // Single post-conversion walk over all LLVM functions: (1) set the GC
-        // strategy so statepoint intrinsics are recognized, and (2) install
-        // shadow-root frames for functions marked eco.shadow_roots. Fused from
-        // two separate module.walk sweeps over the ~85k functions. The leading
-        // external early-return covers both concerns exactly as before (walk 1
-        // also gated on !isExternal; newly-created runtime decls are external
-        // and were skipped by walk 2's guard too).
-        // String-literal interning cache (step 18b): the slots and the two
-        // cold-edge decls must exist before the per-function rewrite below
-        // references them, and the module may not be mutated from inside the
-        // walk. Deterministic: module order in, module order out.
+        // The epilogue over the function definitions. The string-literal slots, and eco_caf_promote when a
+        // guard needs it, are created first and serially, because the per-function work below runs in
+        // parallel and must not add to the module.
         llvm::StringSet<> strLitSlots;
         materializeStringLiteralSlots(module, strLitSlots);
 
-        // Plan 07 P6: the per-function work below is function-local except
-        // the one lazily created eco_caf_promote decl. Create it up front —
-        // at module END, right after the string-literal slots, exactly where
-        // the first guard used to put it (nothing else appends in between),
-        // with that first function's location — then run the functions in
-        // parallel chunks. Shadow-root frames (only @main) may create runtime
-        // decls on a cache miss, so they run serially afterwards.
         SmallVector<LLVM::LLVMFuncOp> epiFuncs;
-        // Functions are top-level only: iterate the module body (same module
-        // order as the post-order walk) instead of recursing through every op
-        // (plans/backend-lowering-optimization.md B3a/B8).
         for (LLVM::LLVMFuncOp func : module.getOps<LLVM::LLVMFuncOp>())
             if (!func.isExternal())
                 epiFuncs.push_back(func);
@@ -759,10 +659,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         auto epilogue = [&](LLVM::LLVMFuncOp func) {
             if (!func.getGarbageCollector())
                 func.setGarbageCollector("eco-gc");
-            // CAF memoization guard (plans/caf-memoization-implementation.md).
-            // Shadow-root funcs (main) are skipped: the guard's hit-path early
-            // return would bypass the frame push the epilogues balance. The
-            // Elm side also strips the attr from main — belt and braces.
+            // CAF memoization guard. wantsCafGuard excludes shadow-root functions: the guard's early return on
+            // a hit would skip the frame push that the frame's epilogues pop.
             if (wantsCafGuard(func)) {
                 bool promoteDeclared = true; // declared above
                 if (failed(installCafMemoGuard(func, promoteDeclared))) {
@@ -770,19 +668,19 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                     return;
                 }
             }
-            // CAF caller-side fast path (Run W): elide the thunk call at
-            // reference sites when the slot is already published.
+            // CAF caller-side fast path: skip the thunk call when its slot is already filled.
             if (!cafMemoFuncs.empty() && cafCallerFastEnabled()) {
                 rewriteCafCallSitesFast(func, cafMemoFuncs);
             }
-            // Per-literal interning cache (step 18b): same diamond, keyed on
-            // the literal's bytes global instead of a thunk symbol.
+            // The same fast path for string literals, keyed on each literal's slot.
             rewriteStringLiteralCallSitesFast(func, strLitSlots);
         };
         eco::forEachChunk(ctx, epiFuncs.size(), [&](size_t lo, size_t hi) {
             for (size_t i = lo; i < hi; ++i)
                 epilogue(epiFuncs[i]);
         });
+        // Shadow-root frames may create runtime declarations, so they are installed serially after the
+        // parallel part.
         if (!shadowRootFuncs.empty()) {
             for (LLVM::LLVMFuncOp func : epiFuncs) {
                 if (!shadowRootFuncs.contains(func.getSymName()))
@@ -803,38 +701,15 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
 
         ecoStageReport("4. GC-strategy + shadow-root walks");
 
-        // Generate global root initialization function
         createGlobalRootInitFunction(module, runtime);
 
-        // Strip runtime-decl externs that no op ended up using. We pre-declare
-        // ALL runtime helpers (materializeAllRuntimeDecls) so getOrCreateFunc is
-        // a lock-free cache hit during parallel Stage 2; the unused ones would
-        // otherwise linger until the backend's internalize+GlobalDCE and trip
-        // codegen-fixture CHECK-NOT patterns that assert e.g. eco_alloc_tuple2
-        // is absent. Erasing declaration-only, use-less external llvm.funcs here
-        // restores the pre-parallelization symbol set exactly.
+        // Erases every external llvm.func that no op refers to. Pre-materialization declared every runtime
+        // function, and this leaves only those that are used.
         {
-            // Build the module's symbol-use map ONCE (O(module)); useEmpty is
-            // then O(1) per decl. (SymbolTable::symbolKnownUseEmpty is O(module)
-            // PER call — 135 pre-declared decls x an 85k-function module was
-            // ~213s.)
-            //
-            // B3b (plans/backend-lowering-optimization.md): the same use
-            // relation SymbolUserMap computes, collected IN PARALLEL over the
-            // module's top-level ops (each op's own attributes plus every use
-            // nested in its regions; the module is the only symbol table).
-            // getSymbolUses materialises an attribute dictionary per op, which
-            // made the serial map ~3 s at self-host scale. Falls back to the
-            // serial map if any op hides its uses (unknown symbol table).
-            //
-            // Plan 07 P3: only the external declarations are candidates, so
-            // index them first (a few hundred) and let each chunk set bits
-            // for the candidates it references, found with
-            // symgraph::forEachSymbolRef — the same references
-            // getAttrDictionary()/getSymbolUses find, without uniquing a
-            // dictionary per op (that serialized the chunks on the
-            // context's uniquer lock). The walk visits every op, so no
-            // symbol table can hide a use.
+            // The candidates are indexed, then chunks of the top-level ops are walked in parallel, each
+            // setting a bit for every candidate an op refers to through symgraph::forEachSymbolRef. The walk
+            // visits every op, so a use inside a nested symbol table is found too. forEachSymbolRef is used
+            // rather than per-op symbol-use queries because it builds no attribute dictionary per op.
             llvm::DenseMap<StringAttr, unsigned> cand;
             SmallVector<LLVM::LLVMFuncOp> candFns;
             for (LLVM::LLVMFuncOp fn : module.getOps<LLVM::LLVMFuncOp>())
@@ -878,6 +753,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             for (LLVM::LLVMFuncOp fn : deadDecls)
                 fn.erase();
         }
+        // This report also covers the declaration erasure above.
         ecoStageReport("5. createGlobalRootInitFunction");
     }
 };

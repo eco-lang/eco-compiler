@@ -18,7 +18,7 @@ GcFreeMode gcFreeLeafMode() {
     static const GcFreeMode mode = [] {
         const char *e = ::getenv("ECO_GCFREE_LEAF");
         if (!e || !*e)
-            return GcFreeMode::Stamp; // default-ON since 2026-08-09
+            return GcFreeMode::Stamp;
         if (e[0] == '0' && e[1] == '\0')
             return GcFreeMode::Off;
         if (e[0] == 'c' && e[1] == '\0')
@@ -32,7 +32,7 @@ CapHoistMode capHoistMode() {
     static const CapHoistMode mode = [] {
         const char *e = ::getenv("ECO_ALLOC_HOIST");
         if (!e || !*e)
-            return CapHoistMode::On; // default-ON since 2026-08-09
+            return CapHoistMode::On;
         if (e[0] == '0' && e[1] == '\0')
             return CapHoistMode::Off;
         if (e[0] == 'c' && e[1] == '\0')
@@ -42,10 +42,9 @@ CapHoistMode capHoistMode() {
     return mode;
 }
 
-// Default 512 (~20 Cons cells) — far below the 512 KiB nursery block and the
-// 8 KiB large-object threshold. Clamped to [8, 4096] (4096 = the HEAP_034
-// per-marker hard bound) then rounded DOWN to a multiple of 8, since every
-// budget is an 8-multiple.
+// The default of 512 bytes is about 20 Cons cells. Rounding down to a multiple
+// of 8 matches the inline allocation sizes, which HEAP_034 requires to be
+// 8-aligned.
 unsigned capHoistMaxBytes() {
     static const unsigned k = [] {
         unsigned v = 512;
@@ -60,9 +59,6 @@ unsigned capHoistMaxBytes() {
     return k;
 }
 
-// M2 can be switched off independently of M1 for A/B attribution:
-// ECO_ALLOC_HOIST_M2=0 leaves every own marker with its HEAP_034 diamond and
-// instruments only calls into covered functions.
 bool capHoistFoldOwnMarkers() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_ALLOC_HOIST_M2");
@@ -135,10 +131,10 @@ namespace caphoist {
 void solve(std::vector<Node> &nodes, uint64_t K) {
     const size_t n = nodes.size();
 
-    // Non-eligible callee: leaf-equivalent only when it allocates nothing
-    // (CGEN_072 will stamp it GC-free). NEVER propagate a nonzero budget
-    // through one — it keeps its own checked diamonds and its slow edge would
-    // void the caller's guarantee.
+    // Non-eligible callee: it contributes nothing only when its budget is
+    // zero. NEVER propagate a nonzero budget through one — it keeps its own
+    // nursery checks, and when one takes the slow path (a GC) it would void
+    // the capacity the caller reserved.
     auto contributionOf = [&](uint32_t g, bool &isTop) -> uint64_t {
         const Node &gi = nodes[g];
         if (gi.top) {
@@ -153,10 +149,10 @@ void solve(std::vector<Node> &nodes, uint64_t K) {
         return 0;
     };
 
-    // Iterative Tarjan. SCCs are emitted in reverse topological order of the
-    // condensation, i.e. callees before callers — exactly the order
-    // accumulation needs. Boolean optimism does NOT transfer to budgets: an
-    // allocating cycle has unbounded aggregate demand.
+    // Iterative Tarjan. SCCs are completed in reverse topological order of the
+    // condensation, so every callee outside the current SCC is already
+    // resolved. A cycle cannot be solved optimistically as a boolean fact
+    // could be: an allocating cycle has unbounded aggregate demand.
     std::vector<unsigned> tIdx(n, 0), tLow(n, 0);
     std::vector<char> visited(n, 0), onStack(n, 0);
     std::vector<uint32_t> sccStack;
@@ -284,7 +280,7 @@ void solve(std::vector<Node> &nodes, uint64_t K) {
         }
     }
 
-    // Phase C: covered = finite, nonzero, and every caller is instrumentable.
+    // Coverage: finite, nonzero, and every caller is visible to instrument.
     for (Node &nd : nodes)
         nd.covered = !nd.top && nd.budget > 0 && nd.eligible;
 }

@@ -1,7 +1,15 @@
-//===- EcoToLLVMRuntime.cpp - Runtime function helpers for EcoToLLVM ------===//
+//===- EcoToLLVMRuntime.cpp - Runtime declarations and type converter -----===//
 //
-// This file implements the EcoRuntime helper class and string conversion
-// utilities used by the EcoToLLVM pass.
+// Defines the `EcoTypeConverter` constructor, `EcoRuntime::getOrCreateFunc`,
+// one `getOrCreateX` member per runtime function, `materializeAllRuntimeDecls`,
+// `emitAllocWithSafepoint` and `utf8ToUtf16`. Their contracts are on the
+// declarations in EcoToLLVMInternal.h.
+//
+// Most of the file is the `getOrCreateX` members. Each one fixes a runtime
+// symbol's LLVM signature and whether its declaration is marked gc-leaf. RS4GC
+// turns a call to a declaration that is not gc-leaf into a statepoint, so the
+// marking must be false for any function that can collect. Nothing in this
+// file adds any attribute other than gc-leaf (REP_LLVM_002).
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,26 +26,20 @@ using namespace eco::detail;
 
 static LowerToLLVMOptions ecoLLVMOptions(MLIRContext *ctx) {
     LowerToLLVMOptions opts(ctx);
-    // Eco never uses memref or bare-pointer calling convention. Setting this
-    // to true makes MLIR's CallOpLowering skip the per-call O(N) symbol table
-    // lookup that checks for the llvm.bareptr attribute on each callee.
-    // With 92K calls × 49K functions this eliminates ~4.5B comparisons.
+    // Eco lowers no memrefs, so the bare-pointer convention changes nothing it
+    // emits. Setting it makes MLIR's call lowering skip a symbol-table lookup,
+    // per call, for the `llvm.bareptr` attribute on the callee.
     opts.useBarePtrCallConv = true;
     return opts;
 }
 
 EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
     : LLVMTypeConverter(ctx, ecoLLVMOptions(ctx)) {
-    // Convert eco.value -> ptr addrspace(1) (GC-managed pointer).
-    // Every non-primitive Elm value takes this form (REP_ABI_001, REP_SSA_001).
     addConversion([ctx](eco::ValueType type) {
         return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     });
 
-    // Phase 0 plumbing: convert each value-level aggregate type to an
-    // LLVM literal struct of its converted element types. The "value
-    // layout" intentionally does NOT mirror the heap layout — boundary
-    // ops (eco.to_heap, eco.make.closure) translate explicitly. (REP_AGG_001)
+    // An aggregate whose element types do not all convert does not convert.
     auto convertElements = [this](ArrayRef<Type> elements,
                                   SmallVectorImpl<Type> &out) -> bool {
         out.reserve(elements.size());
@@ -83,21 +85,15 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
         return LLVM::LLVMStructType::getLiteral(ctx, body);
     });
 
-    // !bf.cursor lives at the scf.while boundary of fused encoder loops
-    // (e.g. `BE.sequence (length :: List.map fn xs)`). BFToLLVM lowers
-    // its own bf.* ops first, but doesn't walk into scf regions to
-    // rewrite the iter_arg types; the structural SCF type conversion
-    // populated below (line ~294) then needs this entry to legalise the
-    // remaining scf.while. Mirror BFTypeConverter's lowering: a pair of
-    // raw pointers (current, end).
+    // A `!bf.cursor` can be an `scf.while` iter_arg. BFToLLVM lowers the bf.*
+    // ops but does not rewrite those loop types, so the structural SCF
+    // conversion needs this entry. It must match BFTypeConverter's lowering.
     addConversion([ctx](bf::CursorType) -> Type {
         auto ptrType = LLVM::LLVMPointerType::get(ctx);
         return LLVM::LLVMStructType::getLiteral(ctx, { ptrType, ptrType });
     });
 
-    // Source materialization: create ptr<1> from !eco.value
-    // This is called when converted operations need values from unconverted operations.
-    // Use UnrealizedConversionCastOp which works with any types.
+    // Both materializations cast exactly one value; any other count fails.
     addSourceMaterialization([](OpBuilder &builder, Type resultType,
                                 ValueRange inputs, Location loc) -> Value {
         if (inputs.size() != 1)
@@ -105,8 +101,6 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
         return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
     });
 
-    // Target materialization: create !eco.value from ptr<1>
-    // This is called when unconverted operations need values from converted operations.
     addTargetMaterialization([](OpBuilder &builder, Type resultType,
                                 ValueRange inputs, Location loc) -> Value {
         if (inputs.size() != 1)
@@ -125,11 +119,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     LLVM::LLVMFunctionType funcType,
     bool gcLeaf) const {
 
-    // Lock-free HIT: all runtime decls are pre-declared by
-    // materializeAllRuntimeDecls before freeze(), so during parallel Stage 2
-    // every call hits the read-only symCache. A miss may only legitimately
-    // happen in the serial phases; a miss while frozen means a decl escaped the
-    // pre-declaration (parallel-conversion UB) — the assert pins it.
+    // A hit only reads the cache, which is safe while frozen.
+    // A miss while frozen would create a symbol from a parallel worker.
     if (auto func = lookupSymbol<LLVM::LLVMFuncOp>(name))
         return func;
     assert(!frozen &&
@@ -140,9 +131,6 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     builder.setInsertionPointToStart(module.getBody());
     auto newFunc = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcType);
 
-    // kernel-opt-08: one shared implementation with KernelFuncOpLowering's
-    // stamp (attachGcLeafPassthrough, EcoToLLVMInternal.h). Behaviour-identical
-    // to the block this replaces, plus idempotence.
     if (gcLeaf)
         attachGcLeafPassthrough(builder, newFunc);
     if (auto nameAttr = newFunc->getAttrOfType<mlir::StringAttr>(
@@ -151,7 +139,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     return newFunc;
 }
 
-// Helper macros for common type patterns
+// Shorthands for the LLVM types in runtime signatures. Each reads the `ctx` in
+// scope where it is expanded.
 #define I64_TY IntegerType::get(ctx, 64)
 #define I32_TY IntegerType::get(ctx, 32)
 #define CHAR_TY IntegerType::get(ctx, eco::kEcoCharBits)  // Char = i32 code point
@@ -231,13 +220,13 @@ EcoRuntime::getOrCreateAllocStringLiteralUtf8(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosure(OpBuilder &builder) const {
-    // eco_alloc_closure(func_ptr: ptr, num_captures: i32) -> hptr
+    // eco_alloc_closure(func_ptr: ptr, arity: i32) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_closure", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureK(OpBuilder &builder) const {
-    // eco_alloc_closure_k(func_ptr: ptr, num_captures: i32, result_kind: i8) -> hptr
+    // eco_alloc_closure_k(func_ptr: ptr, arity: i32, result_kind: i8) -> hptr
     auto i8Ty = IntegerType::get(builder.getContext(), 8);
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, i8Ty});
     return getOrCreateFunc(builder, "eco_alloc_closure_k", funcTy);
@@ -245,7 +234,6 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureK(OpBuilder &builder) const 
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInternClosure0(OpBuilder &builder) const {
     // eco_intern_closure0(func_ptr: ptr, arity: i32, packed: i64) -> hptr
-    // (H4.2: interned permanent singleton for a zero-capture papCreate)
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_intern_closure0", funcTy);
 }
@@ -257,7 +245,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Fast Allocation Functions (bump-pointer only, no GC, return 0 on failure)
+// Fast Allocation Functions (gc-leaf)
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntFast(OpBuilder &builder) const {
@@ -311,7 +299,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureFast(OpBuilder &builder) con
 }
 
 //===----------------------------------------------------------------------===//
-// Slow Allocation Functions (may GC — used behind statepoint)
+// Slow Allocation Functions (not gc-leaf: they may collect)
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntSlow(OpBuilder &builder) const {
@@ -500,7 +488,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateSetUnboxed(OpBuilder &builder) const {
 }
 
 //===----------------------------------------------------------------------===//
-// Uninit Allocators + Field Stores (forward ABI; not yet exercised).
+// Uninitialised Allocators and Field Stores
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Uninit(OpBuilder &builder) const {
@@ -616,16 +604,15 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveHPtr(OpBuilder &builder) const {
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveFwdMarker(OpBuilder &builder) const {
     auto *ctx = builder.getContext();
-    // __eco_resolve_fwd(ptr as1) -> ptr as1. gc-leaf so RS4GC inserts no
-    // statepoint; expanded inline (fast/slow forwarding-check) by
-    // ExpandInlineDeref before RS4GC ever runs, so it never reaches codegen.
+    // __eco_resolve_fwd(ptr as1) -> ptr as1. Declaration only: EcoBackend's
+    // expandInlineDerefs replaces every call before RS4GC.
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "__eco_resolve_fwd", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateFollowForward(OpBuilder &builder) const {
     auto *ctx = builder.getContext();
-    // eco_follow_forward(ptr as1) -> ptr as1. gc-leaf cold slow path.
+    // eco_follow_forward(ptr as1) -> ptr as1
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_follow_forward", funcTy, /*gcLeaf=*/true);
 }
@@ -637,23 +624,16 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocInlineMarker(OpBuilder &builder) const {
-    // __eco_alloc_inline(size: i64) -> ptr as1. Inline nursery allocation
-    // marker (plans/inline-nursery-allocation.md, HEAP_034): gc-leaf,
-    // declare-only; expanded to the bump-pointer fast/slow diamond by
-    // expandInlineAllocs (EcoBackend.cpp) before every RS4GC flavour and
-    // before partition splitting, so it never reaches codegen. The size
-    // operand MUST be a compile-time constant (8-aligned, <= 4096) — the
-    // expansion asserts it.
+    // __eco_alloc_inline(size: i64) -> ptr as1. Declaration only: EcoBackend's
+    // expandInlineAllocs replaces every call with a bump-pointer allocation,
+    // and fails on a size it cannot expand.
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "__eco_alloc_inline", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTagInlineMarker(OpBuilder &builder) const {
-    // __eco_get_tag_inline(hptr) -> i32 ctor tag. P2.5 R1b marker
-    // (plans/allocator-resolve-inlining.md): gc-leaf, declare-only; expanded
-    // to the open-coded embedded-constant / Tag_Cons / Tag_Custom tag
-    // diamond by expandGetTagMarkers (EcoBackend.cpp) before
-    // ExpandInlineDeref + every RS4GC flavour, so it never reaches codegen.
+    // __eco_get_tag_inline(hptr) -> i32 constructor tag. Declaration only:
+    // EcoBackend's expandGetTagMarkers replaces every call with inline code.
     auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "__eco_get_tag_inline", funcTy, /*gcLeaf=*/true);
 }
@@ -677,12 +657,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadChar(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_cons_head_char", funcTy, /*gcLeaf=*/true);
 }
 
-// Chunked-list projection MARKERS (plans/chunked-list-representation.md §6):
-// gc-leaf, declare-only; expanded to the cell-fast / chunk-slow diamond by
-// expandListProjMarkers (EcoBackend.cpp) before ExpandInlineDeref + every
-// RS4GC flavour, so they never reach codegen — the __eco_get_tag_inline
-// architecture. The tail marker's expanded slow path (eco_list_tail_hybrid)
-// is the allocating, statepointed edge.
+// The chunked-list projection markers are declarations only: EcoBackend's
+// expandListProjMarkers replaces each call with inline code.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateListHeadInlineMarker(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "__eco_list_head_inline", funcTy, /*gcLeaf=*/true);
@@ -693,22 +669,19 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateListTailInlineMarker(OpBuilder &builder)
     return getOrCreateFunc(builder, "__eco_list_tail_inline", funcTy, /*gcLeaf=*/true);
 }
 
-// Hybrid-spine (chunked-list) projections, used when the module carries the
-// eco.list_chunks attribute (plans/chunked-list-representation.md §6).
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateListHeadHybrid(OpBuilder &builder) const {
-    // eco_list_head_hybrid(list: hptr) -> hptr (raw slot bits; gc-leaf)
+    // eco_list_head_hybrid(list: hptr) -> hptr (raw slot bits)
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_list_head_hybrid", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateListTailHybrid(OpBuilder &builder) const {
-    // eco_list_tail_hybrid(list: hptr) -> hptr — may allocate a successor
-    // view, so NOT gc-leaf (RS4GC statepoints the call site).
+    // eco_list_tail_hybrid(list: hptr) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_list_tail_hybrid", funcTy, /*gcLeaf=*/false);
 }
 
-// Tuple2 unboxed-primitive field accessors. See plans/projection-helpers-everywhere.md.
+// Tuple2 unboxed-primitive field accessors.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0I64(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_tuple2_get0_i64", funcTy, /*gcLeaf=*/true);
@@ -861,19 +834,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcRestoreStackRangePoint(OpBuilder &buil
     return getOrCreateFunc(builder, "eco_gc_restore_stack_range_point", funcTy, /*gcLeaf=*/true);
 }
 
-// plans/gc-root-registration-cost.md Phase 3. Marker pair bracketing the
-// generic (slow) apply sequence at an array-building call site; EcoBackend's
-// `expandSatMarkers` rewrites the pair into the fast/slow diamond at LLVM-IR
-// level, where block structure is free. It MUST be done there and not here:
-// a papExtend can sit inside a single-block `scf` region (loopified tail
-// recursion — `List.foldl`'s own loop is one), and this conversion runs before
-// SCFToControlFlow, so the lowering cannot create blocks around it. Same
-// reason `__eco_get_tag_inline` and the chunked-list projections are markers.
-//
-// Both are variadic so ONE declaration covers every call shape:
+// The saturated-call markers are expanded by EcoBackend's expandSatMarkers, in
+// LLVM IR, into a fast path and the generic slow path. They are markers rather
+// than branches emitted here because the call can sit in a single-block `scf`
+// region, where this conversion cannot create blocks. Both are variadic so that
+// one declaration covers every call shape:
 //   __eco_sat_begin(cloResolved: ptr as1, N, KC, RC, satByteOff: i64, ...newargs)
 //   __eco_sat_end(tok: ptr, slowResult: <R>)
-// gc-leaf: they are erased before RS4GC and must never become statepoints.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateSatBeginMarker(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(
         PTR_TY, {HPTR_TY, I64_TY, I64_TY, I64_TY, I64_TY}, /*isVarArg=*/true);
@@ -893,25 +860,19 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateRegisterTypeGraph(OpBuilder &builder) co
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateDispatchStatsFast(OpBuilder &builder) const {
-    // eco_dispatch_stats_fast(evaluator_fp: ptr) -> void  (LSS plan E0.4)
+    // eco_dispatch_stats_fast(evaluator_fp: ptr) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY});
     return getOrCreateFunc(builder, "eco_dispatch_stats_fast", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGencallStats(OpBuilder &builder) const {
-    // eco_gencall_stats(reason: i32) -> void  (staging plan P0.4)
+    // eco_gencall_stats(reason: i32) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I32_TY});
     return getOrCreateFunc(builder, "eco_gencall_stats", funcTy, /*gcLeaf=*/true);
 }
 
-// Fold-proof slot-cast barriers (REP_LLVM_002,
-// plans/fold-proof-boxed-slot-crossings.md): declare-only; every call is
-// rewritten back to a bare inttoptr/ptrtoint by StripEcoCastBarriers
-// strictly post-RS4GC, so no definition ever exists and no call survives to
-// codegen. Attrs are gc-leaf ONLY — do NOT add memory(none)/speculatable/
-// willreturn: motion-enabling attributes would let a pre-RS4GC pass move the
-// call across a statepoint, recreating exactly the raw-i64 crossing the
-// barrier exists to prevent.
+// The slot-cast barriers are declarations only: StripEcoCastBarriers turns
+// every call back into a bare inttoptr or ptrtoint after RS4GC.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateSlotToHPtr(OpBuilder &builder) const {
     // __eco_slot_to_hptr(slot_word: i64) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
@@ -932,31 +893,14 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
     // Elm_Kernel_Utils_equal(a: hptr, b: hptr) -> hptr (boxed Bool).
-    //
-    // gc-leaf (kernel-opt-03 Phase 4): the equality path allocates nothing on the
-    // Eco heap and never calls back into Elm -- kernel-opt-07's KernelFacts row
-    // records it as one of the A1 stampable 14 (gcAlloc = GcNone,
-    // callsBackIntoElm = False), and 07 also deleted the tag-mismatch stderr
-    // trace that was its last observable effect. dictEq's std::vector working
-    // stacks are C++-heap, which is gc-leaf-COMPATIBLE.
-    //
-    // gc-leaf is the ONLY attribute this decl may carry: it takes !eco.value, so
-    // memory(*)/speculatable/willreturn are FORBIDDEN pre-RS4GC (REP_LLVM_002).
-    //
-    // Routed through kernel-opt-08's switch (CGEN_072(f)) like every other
-    // KernelFacts row, so ECO_KERNEL_GCLEAF=0 unstamps it too (plan 02 Q0.1).
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy,
                            /*gcLeaf=*/kernelGcLeafEnabled());
 }
 
-// eco.value.eq marker: __eco_value_eq(a: hptr, b: hptr) -> i1. DECLARE-ONLY --
-// expandValueEqFastPath (EcoBackend.cpp, which spells the same literal) expands
-// every call before ANY RS4GC flavour and then erases this declaration; no
-// definition ever exists and no call reaches codegen. gc-leaf matches the other
-// declare-only markers and is belt-and-braces only. NEVER add
-// memory(none)/speculatable/willreturn: gc-leaf is the ONLY attribute a decl
-// carrying !eco.value may hold pre-RS4GC (REP_LLVM_002).
+// __eco_value_eq(a: hptr, b: hptr) -> i1 is a declaration only: EcoBackend's
+// expandValueEqFastPath, which spells the same name, replaces every call. The
+// two names must stay equal.
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateValueEqMarker(OpBuilder &builder) const {
     auto funcTy = LLVM::LLVMFunctionType::get(I1_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "__eco_value_eq", funcTy, /*gcLeaf=*/true);
@@ -979,15 +923,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetOrderGT(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateOrderFromSign(OpBuilder &builder) const {
-    // eco_order_from_sign(sign: i64) -> hptr (one of the three Order singletons)
-    // gc-leaf: three loads from value-rooted slots, no GC inside.
+    // eco_order_from_sign(sign: i64) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "eco_order_from_sign", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCmp3(OpBuilder &builder) const {
-    // eco_string_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign)
-    // gc-leaf: StringOps::compare never allocates on the GC heap.
+    // eco_string_cmp3(a: hptr, b: hptr) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "eco_string_cmp3", funcTy, /*gcLeaf=*/true);
 }
@@ -999,39 +941,32 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCmpOrder(OpBuilder &builder) const
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringLenInlineMarker(OpBuilder &b) const {
-    // __eco_string_len_inline(ptr as1) -> i64. kernel-opt-04 marker: gc-leaf,
-    // declare-only; expanded to the embedded-constant / header-load diamond by
-    // expandStringLenMarkers (EcoBackend.cpp) before every RS4GC flavour and
-    // before partition splitting, so it never reaches codegen.
+    // __eco_string_len_inline(ptr as1) -> i64. Declaration only: EcoBackend's
+    // expandStringLenMarkers replaces every call with inline code.
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
     return getOrCreateFunc(b, "__eco_string_len_inline", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringLength(OpBuilder &b) const {
-    // Elm_Kernel_String_length(str: hptr) -> i64. NOT gc-leaf (today's
-    // behaviour); used only on the ECO_STRING_LEN_INLINE=0 A/B leg.
+    // Elm_Kernel_String_length(str: hptr) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
     return getOrCreateFunc(b, "Elm_Kernel_String_length", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringAppend(OpBuilder &builder) const {
-    // eco_string_append(a: hptr, b: hptr) -> hptr. Allocates (flat leaf or
-    // rope), so gcLeaf stays false and RS4GC statepoints the lowered call.
+    // eco_string_append(a: hptr, b: hptr) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "eco_string_append", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateListAppend(OpBuilder &builder) const {
-    // eco_list_append(a: hptr, b: hptr) -> hptr. Allocates a variable number
-    // of cells; gcLeaf stays false.
+    // eco_list_append(a: hptr, b: hptr) -> hptr
     auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "eco_list_append", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsCmp3(OpBuilder &builder) const {
-    // Elm_Kernel_Utils_cmp3(a: hptr, b: hptr) -> i64 (UNCLAMPED sign).
-    // NOT gc-leaf: generic cmp recurses over arbitrary heap shapes and every
-    // kernel extern is deliberately gc-free poison (CGEN_072).
+    // Elm_Kernel_Utils_cmp3(a: hptr, b: hptr) -> i64
     auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "Elm_Kernel_Utils_cmp3", funcTy);
 }
@@ -1196,7 +1131,6 @@ Value eco::detail::emitAllocWithSafepoint(
     const EcoRuntime &runtime,
     LLVM::LLVMFuncOp allocFunc,
     ValueRange args) {
-    // RS4GC handles safepoint insertion automatically — no marker needed.
     auto allocCall = rewriter.create<LLVM::CallOp>(op->getLoc(), allocFunc, args);
     return allocCall.getResult();
 }
@@ -1253,11 +1187,7 @@ std::vector<uint16_t> eco::detail::utf8ToUtf16(StringRef utf8) {
     return result;
 }
 
-// Phase-2 pre-materialization: pre-create every runtime function declaration so
-// Stage 2 body patterns only READ them (symbol table read-only during the
-// parallel body stage). Each getOrCreate* dedups via symCache and is idempotent;
-// unused declarations are dropped by the later internalize + globalDCE, so the
-// emitted binary is unchanged.
+// A `getOrCreateX` member added to EcoToLLVMInternal.h must also be called here.
 void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateAllocInt(b); getOrCreateAllocFloat(b); getOrCreateAllocChar(b);
     getOrCreateAllocCons(b); getOrCreateAllocTuple2(b); getOrCreateAllocTuple3(b);

@@ -1,7 +1,43 @@
 //===- EcoToLLVMControlFlow.cpp - Control flow lowering patterns ----------===//
 //
-// This file implements lowering patterns for ECO control flow operations:
-// case, joinpoint, jump, return, and get_tag.
+// The eco dialect expresses branching as structured operations with regions,
+// and LLVM has only basic blocks and branches. This file holds the conversion
+// patterns that flatten eco's control flow into `cf` blocks and LLVM
+// operations, plus the step that creates the globals a string case reads.
+//
+// The operations lowered are these. `eco.case` picks one of its alternative
+// regions by the scrutinee; `eco.yield` ends an alternative with the case's
+// results; `eco.joinpoint` defines a labelled block (its body) that
+// `eco.jump` branches to, followed by a continuation region; `eco.return`
+// ends a function; `eco.get_tag` reads a value's constructor tag.
+//
+// Most of the file is `eco.case`, which comes in four kinds, told by the
+// `case_kind` attribute and the scrutinee type:
+//
+// - An Int or Char case switches on the unboxed number. A boxed scrutinee is
+//   loaded from its heap box first.
+// - A String case is a chain of equality tests against the patterns, in
+//   order.
+// - An ADT case on an `i1` scrutinee switches on the Bool as 0 or 1.
+// - Any other ADT case switches on the constructor tag. An `!eco.value` word
+//   is either a heap object or an embedded constant, told apart by bit 2
+//   (`ptr_ind`; `allocator/Heap` owns the encoding). A heap object's tag is
+//   the 16-bit `ctor` field at `layout::CustomCtorOffset`. An embedded
+//   constant's tag is computed from the word: a null-constructor word gives
+//   its constructor index, True and False give 1 and 0, and any other
+//   constant gives `value_enc::ConstantTag`.
+//
+// Every kind treats the last alternative as the default, so a value matching
+// no earlier alternative takes the last one. Each
+// alternative becomes a block; operations after the case move to a merge
+// block, which takes the case's results as block arguments, and each
+// `eco.yield` becomes a branch to it.
+//
+// `eco.case` is lowered here only outside `scf` regions; inside one, the
+// conversion target treats it as legal and it is handled elsewhere.
+// `eco.get_tag` does not open-code its test, because it may sit inside an
+// `scf` region, where only one block is allowed. It becomes a call to the
+// `__eco_get_tag_inline` marker, which the LLVM-IR backend expands.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,19 +57,21 @@ using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
-// Defined below (before preMaterializeStringCases); forward-declared here so
-// the string-case lowering inside the anonymous namespace can use it.
+/// Returns whether every byte of the string-case pattern `s` is below 0x80.
+/// Such a pattern's global holds bytes; any other's holds UTF-16 code units.
 static bool isAsciiCasePattern(llvm::StringRef s);
 
 namespace {
 
-/// kernel-opt-03 P3.5. Identical copy of the predicate in
-/// EcoControlFlowToSCF.cpp -- see the rationale there; both halves of the
-/// synthesized string-case path MUST be switched together.
+/// Returns whether a string case compares with the `__eco_value_eq` marker
+/// rather than a call to the `Elm_Kernel_Utils_equal` kernel function. It is true unless
+/// `ECO_VALUE_EQ_STRCASE` is exactly `0`, and is read once per process.
+///
+/// EcoControlFlowToSCF.cpp holds an identical copy for the string cases it
+/// lowers. The two must change together, or the two kinds of string case
+/// will compare differently.
 static bool valueEqStrCaseEnabled() {
     static const bool on = [] {
-        // DEFAULT-ON since 2026-08-12 (wall -0.22%, FLAT; out.mlir identical).
-        // ECO_VALUE_EQ_STRCASE=0 is the kill switch.
         const char *e = ::getenv("ECO_VALUE_EQ_STRCASE");
         return !(e && e[0] == '0' && e[1] == '\0');
     }();
@@ -44,22 +82,22 @@ static bool valueEqStrCaseEnabled() {
 // eco.return -> func.return
 //===----------------------------------------------------------------------===//
 
+/// The pattern that turns `eco.return` into `func.return`.
+///
+/// An `eco.return` with more than one operand is taken to be in a function
+/// that returns through a caller-provided slot (CGEN_067): the slot is the
+/// enclosing `llvm.func`'s first argument, laid out as a struct of the
+/// operands' types. Each operand is stored into its field and the function
+/// returns nothing. It is an error if there is no enclosing `llvm.func`.
 struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
     using OpConversionPattern::OpConversionPattern;
 
     LogicalResult
     matchAndRewrite(ReturnOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // U-T1.3.3 sret worker return (CGEN_067): a MULTI-operand eco.return
-        // belongs to an sret worker — store each field into the caller's slot
-        // (the function's leading !llvm.ptr argument, prepended by
-        // SretFuncOpLowering) and return void. Emitting the stores AT the
-        // return point makes the store-before-return discipline STRUCTURAL:
-        // no statepoint or side effect can intervene between the first store
-        // and the terminator, so the stored ptr addrspace(1) fields are the
-        // callee's post-relocation forms and the slot (host stack memory,
-        // invisible to the GC) never holds a stale pointer across a
-        // collection (REP_AGG_001 / plans/opt-tier1-aggregate-promotion.md).
+        // The stores sit directly before the return, so no call (and so no
+        // collection) can come between them: the slot is not a GC root and
+        // must not hold a pointer across a collection.
         if (adaptor.getResults().size() > 1) {
             auto parent = op->getParentOfType<LLVM::LLVMFuncOp>();
             if (!parent)
@@ -89,9 +127,17 @@ struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
 // eco.get_tag -> Extract constructor tag from ADT value
 //===----------------------------------------------------------------------===//
 
+/// The pattern that turns `eco.get_tag` into a call that returns the value's
+/// constructor tag.
+///
+/// When `inlineDerefExtEnabled()` holds, the call is to the gc-leaf
+/// `__eco_get_tag_inline` marker, which the LLVM-IR backend later replaces
+/// with an inline test. Otherwise it is to the runtime's `eco_get_tag`.
 struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
+    /// The runtime declarations; must outlive the pattern.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern; it keeps a reference to `runtime`.
     GetTagOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -103,26 +149,15 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 
         Value value = adaptor.getValue();
 
-        // (Chunked-list modules keep the inline marker: expandGetTagMarkers
-        // extends the diamond's Cons test with Tag_ConsChunk when the module
-        // enables chunk production — see EcoBackend.cpp.)
         if (!inlineDerefExtEnabled()) {
-            // Out-of-line fallback (A/B leg): the runtime helper handles both
-            // heap objects and embedded constants.
             auto getTagFunc = runtime.getOrCreateGetTag(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, getTagFunc, ValueRange{value});
             rewriter.replaceOp(op, call.getResult());
             return success();
         }
 
-        // P2.5 R1b (plans/allocator-resolve-inlining.md): emit the
-        // `__eco_get_tag_inline` MARKER call. eco.get_tag lives INSIDE
-        // structured scf regions (loopified tail recursion — the hot Dict/Set
-        // loops), where multi-block lowering is illegal, so the open-coded
-        // emb/heap/Custom/Cons diamond is built at the LLVM-IR level instead
-        // (expandGetTagMarkers, EcoBackend.cpp — the ExpandInlineDeref
-        // architecture), where block structure is unconstrained. The marker
-        // is gc-leaf and declare-only; it never survives to codegen.
+        // A marker, not inline blocks: this op may be inside an scf region,
+        // which must stay a single block.
         auto markerFunc = runtime.getOrCreateGetTagInlineMarker(rewriter);
         auto call = rewriter.create<LLVM::CallOp>(loc, markerFunc, ValueRange{value});
         rewriter.replaceOp(op, call.getResult());
@@ -134,16 +169,26 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 // eco.case -> cf.switch on constructor tag
 //===----------------------------------------------------------------------===//
 
+/// The pattern that turns an `eco.case` outside any `scf` region into
+/// `cf` blocks, in the four ways the file comment describes.
 struct CaseOpLowering : public OpConversionPattern<CaseOp> {
+    /// The runtime declarations and the string-case ids; must outlive the
+    /// pattern.
     const EcoRuntime &runtime;
 
+    /// Creates the pattern; it keeps a reference to `runtime`.
     CaseOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                    const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Lower integer or character case expressions.
-    /// For these, we unbox the scrutinee and compare against the tag values directly.
-    /// The last alternative is treated as the default (wildcard).
+    /// Replaces the Int case (`isIntCase`) or Char case `op` with a
+    /// `cf.switch` on the scrutinee's number, compared as 64 bits for Int and
+    /// 32 bits for Char against the case's tags.
+    ///
+    /// The scrutinee may be an unboxed `i64` or `i32`, or a boxed value, whose
+    /// number is read as the word after the header. A boxed scrutinee must
+    /// be a heap object, not an embedded constant. The last alternative is
+    /// the default.
     LogicalResult
     lowerIntegerOrCharCase(CaseOp op, OpAdaptor adaptor,
                            ConversionPatternRewriter &rewriter,
@@ -179,12 +224,9 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 unboxedValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, unboxedValue);
             }
         } else {
-            // Boxed eco.value - need to unbox from heap. A boxed Int/Char
-            // scrutinee is ALWAYS a real heap box (only False/True/Empty are
-            // embedded constants), so the inline forwarding-check marker
-            // applies directly (P2.5 R2, plans/allocator-resolve-inlining.md).
-            // The loaded payload is an unboxed WORD (the Int/Char value),
-            // never a pointer — no REP_LLVM_002 barrier applies.
+            // A boxed Int or Char is a heap box, never an embedded constant,
+            // so no constant test is needed. The loaded word is a number, not
+            // a pointer, so no slot-cast barrier (REP_LLVM_002) applies.
             if (inlineDerefExtEnabled()) {
                 auto hptrTy = getHPtrLLVMType(*ctx);
                 Value base = inlineResolvedBase(rewriter, loc, scrutinee, runtime);
@@ -192,7 +234,6 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, hptrTy, i8Ty, base, ValueRange{offset});
                 unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr, layout::Alignment);
             } else {
-                // Out-of-line fallback (A/B leg).
                 auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
                 auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{scrutinee});
                 Value ptr = resolveCall.getResult();
@@ -274,11 +315,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         Value originalScrutinee = op->getOperand(0);
 
-        // Check if eco.case is in terminal position. This is true when:
-        // 1. mergeBlock is empty (eco.case was the block terminator with nothing after it), OR
-        // 2. mergeBlock has only an eco.return (old format, for compatibility)
-        // In terminal position, alternatives' eco.return ops should remain as
-        // function terminators, not be replaced with branches.
+        // A case is terminal when nothing follows it, or only an eco.return.
+        // A terminal case's alternatives keep their own eco.return.
         bool isTerminalCase = mergeBlock->empty();
         if (!isTerminalCase && mergeBlock->getOperations().size() == 1 &&
             isa<ReturnOp>(&mergeBlock->front())) {
@@ -363,9 +401,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         return success();
     }
 
-    /// Lower string case expressions using equality comparison chain.
-    /// For each string pattern, we call Elm_Kernel_Utils_equal to compare
-    /// the scrutinee against the literal. The last alternative is the default.
+    /// Replaces the String case `op` with a chain of equality tests: pattern
+    /// i is compared with the scrutinee, and a match branches to alternative
+    /// i. A scrutinee matching no pattern takes the last alternative.
+    ///
+    /// The comparison is the `__eco_value_eq` marker or `Elm_Kernel_Utils_equal`, as
+    /// `valueEqStrCaseEnabled` decides. Each non-empty pattern is built as a
+    /// string from its global `__eco_str_case_<id>_<i>`; the empty pattern
+    /// is the embedded Empty constant. It is an error if `op` has no
+    /// `string_patterns`, and `preMaterializeStringCases` must have given
+    /// `op` an id (asserted).
     LogicalResult
     lowerStringCase(CaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const {
@@ -420,27 +465,15 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             }
         }
 
-        // kernel-opt-03 P3.5: under ECO_VALUE_EQ_STRCASE the boxed call + True-word
-        // decode collapses to one __eco_value_eq marker whose i1 result IS
-        // isEqual. Same expansion then covers these sites as every other
-        // eco.value.eq. The predicate is duplicated in EcoControlFlowToSCF.cpp,
-        // which handles the SCF half of this path; both MUST be switched together.
         auto equalFunc = valueEqStrCaseEnabled()
                              ? runtime.getOrCreateValueEqMarker(rewriter)
                              : runtime.getOrCreateUtilsEqual(rewriter);
 
-        // Generate comparison chain
-        // For each pattern (except the last which is default), create:
-        //   1. Create string literal
-        //   2. Compare with scrutinee
-        //   3. Branch to case block if equal, else continue to next check
         rewriter.setInsertionPointToEnd(currentBlock);
 
         size_t numPatterns = stringPatternsAttr.size();
 
-        // caseId assigned deterministically in preMaterializeStringCases; its
-        // per-pattern "__eco_str_case_<caseId>_<i>" globals already exist. Read
-        // from the side map (no counter, no create — read-only during Stage 2).
+        // Only read here: the globals already exist, and nothing is created.
         auto caseIdIt = runtime.caseIdForOp.find(op.getOperation());
         assert(caseIdIt != runtime.caseIdForOp.end() &&
                "string-case globals not pre-materialized");
@@ -450,21 +483,18 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto patternAttr = cast<StringAttr>(stringPatternsAttr[i]);
             StringRef pattern = patternAttr.getValue();
 
-            // Create string literal for this pattern
             Value patternValue;
             if (pattern.empty()) {
-                // Empty string is an embedded HPointer constant. Wrap the
-                // encoded i64 in an inttoptr so it has the `ptr<1>` type
-                // Elm_Kernel_Utils_equal expects for both operands.
+                // The empty string is the embedded Empty constant, made a
+                // ptr(1) so both operands have the same type.
                 int64_t emptyStringVal = value_enc::encodeConstant(value_enc::Empty);
                 auto hptrTy = getHPtrLLVMType(*ctx);
                 Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
                 patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
             } else {
-                // Global pre-created in preMaterializeStringCases; take its
-                // address. ASCII patterns are [N x i8] built as UTF-8 leaves;
-                // others are [N x u16] UTF-16 units. The ASCII decision is recomputed
-                // (pure in the bytes) so it matches pre-materialization.
+                // The ASCII test must agree with preMaterializeStringCases,
+                // which chose the global's element type with it: [N x i8]
+                // UTF-8 for ASCII, [N x u16] UTF-16 units otherwise.
                 llvm::SmallString<48> globalName;
                 {
                     llvm::raw_svector_ostream os(globalName);
@@ -491,9 +521,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 }
             }
 
-            // Compare scrutinee against the pattern. Under ECO_VALUE_EQ_STRCASE
-            // the marker returns i1 directly; otherwise the kernel returns a
-            // boxed Bool that must be decoded against the True word.
+            // The marker returns i1; Elm_Kernel_Utils_equal returns a boxed Bool,
+            // compared with the True word.
             auto cmpCall = rewriter.create<LLVM::CallOp>(loc, equalFunc,
                 ValueRange{scrutinee, patternValue});
             Value isEqual;
@@ -510,27 +539,21 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                     loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
             }
 
-            // Save the current block (where comparison was built) before creating new blocks
+            // createBlock moves the insertion point, so remember this block.
             Block *compareBlock = rewriter.getInsertionBlock();
 
-            // Determine the else block
             Block *elseBlock;
             if (i + 1 < numPatterns) {
-                // More patterns to check - create a new check block
-                // Note: createBlock changes insertion point, so we saved compareBlock above
                 elseBlock = rewriter.createBlock(parentRegion);
                 elseBlock->moveBefore(mergeBlock);
             } else {
-                // Last pattern's else goes to default (last alternative)
                 elseBlock = caseBlocks.back();
             }
 
-            // Branch must be in compareBlock (not elseBlock)
             rewriter.setInsertionPointToEnd(compareBlock);
             rewriter.create<cf::CondBranchOp>(loc, isEqual,
                 caseBlocks[i], ValueRange{}, elseBlock, ValueRange{});
 
-            // Continue building from else block for next pattern
             if (i + 1 < numPatterns) {
                 rewriter.setInsertionPointToEnd(elseBlock);
             }
@@ -543,9 +566,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         Value originalScrutinee = op->getOperand(0);
 
-        // Check if eco.case is in terminal position. This is true when:
-        // 1. mergeBlock is empty (eco.case was the block terminator), OR
-        // 2. mergeBlock has only an eco.return (old format, for compatibility)
+        // Terminal as in lowerIntegerOrCharCase.
         bool isTerminalCase = mergeBlock->empty();
         if (!isTerminalCase && mergeBlock->getOperations().size() == 1 &&
             isa<ReturnOp>(&mergeBlock->front())) {
@@ -627,12 +648,11 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         return success();
     }
 
+    // Sends Int, Char and String cases to their helpers and lowers ADT
+    // cases itself.
     LogicalResult
     matchAndRewrite(CaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Note: Dynamic legality in EcoToLLVM.cpp ensures this pattern is only
-        // invoked when eco.case is NOT nested under SCF regions. The conversion
-        // framework defers CaseOp conversion until SCF-to-CF has run.
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
@@ -673,21 +693,18 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         if (isI1Scrutinee) {
             ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
         } else {
-            // Convert ptr<1> scrutinee to i64 for ADT tag bit-tests.
-            // Result stays in this basic block: lshr → and → icmp chain only.
+            // The integer form of the scrutinee is used only in this block;
+            // every shift and mask on it is done here (REP_LLVM_001(d)), and
+            // the constant block uses only the masked results.
             Value scrutineeI64 = caseScrutineeToI64(rewriter, loc, scrutinee);
 
-            // Check for embedded constant: ptr_ind (bit 2) distinguishes a
-            // constant from a heap pointer; the constant field is bits 0-1.
             auto ptrIndShift = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::PtrIndBit);
             auto ptrIndShifted = rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, ptrIndShift);
             auto one64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
             auto ptrIndBit = rewriter.create<LLVM::AndOp>(loc, ptrIndShifted, one64);
             auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldMask);
             auto constField = rewriter.create<LLVM::AndOp>(loc, scrutineeI64, maskF);
-            // Null-cons declaration index (HEAP_044): lshr/and stay in THIS
-            // block with the ptrtoint (REP_LLVM_001(d)); the embedded-constant
-            // block below consumes only the derived And result.
+            // The null-constructor index (HEAP_044).
             auto nullConsShiftC = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::NullConsShift);
             auto nullConsShifted =
@@ -705,11 +722,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             Block *tagMergeBlock = rewriter.createBlock(parentRegion);
             tagMergeBlock->addArgument(i32Ty, loc);
 
-            // Constant case: derive the ctor tag without the scrutinee's type
-            // (see plan D9 / HEAP_044). A null-cons constant (constField == 3)
-            // maps to its embedded declaration index; any other non-Bool
-            // constant maps to the reserved CONSTANT_TAG; a Bool constant maps
-            // to its i1 value (0 = False, 1 = True).
+            // Embedded constant: the tag comes from the word alone, without
+            // the scrutinee's type.
             rewriter.setInsertionPointToStart(embConstBlock);
             auto trueConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::True);
             auto falseConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::False);
@@ -730,11 +744,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto constTag = rewriter.create<LLVM::TruncOp>(loc, i32Ty, constTag64);
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{constTag});
 
-            // Heap case: load ctor from offset 8. The emb/heap split above
-            // guarantees this arm only sees real heap pointers, so the
-            // inline forwarding-check marker applies (P2.5 R1a,
-            // plans/allocator-resolve-inlining.md) — this is the hot
-            // per-compare tag fetch in Dict/Set case loops.
+            // Heap object: only real heap pointers reach this block, so the
+            // forwarding-check marker can be used directly.
             rewriter.setInsertionPointToStart(embHeapBlock);
 
             Value ptr;
@@ -743,7 +754,6 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 ptr = inlineResolvedBase(rewriter, loc, scrutinee, runtime);
                 ctorGepTy = getHPtrLLVMType(*ctx);
             } else {
-                // Out-of-line fallback (A/B leg).
                 auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
                 auto resolveCall = rewriter.create<LLVM::CallOp>(
                     loc, resolveFunc, ValueRange{scrutinee});
@@ -754,11 +764,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::CustomCtorOffset);
             auto ctorPtr = rewriter.create<LLVM::GEPOp>(loc, ctorGepTy, i8Ty, ptr,
                                                         ValueRange{offset8});
-            // Custom layout packs `u16 ctor : 16` with `u64 unboxed : 48` into one
-            // 8-byte word at offset 8 (Heap.hpp). Loading i32 here would mix the
-            // lower 16 bits of the unboxed bitmap into the discriminator, sending
-            // ctors whose object happens to have any unboxed slot to the default
-            // arm. Load just the 16-bit ctor and zero-extend.
+            // The ctor shares its word with the unboxed-slot bits, so a load
+            // wider than 16 bits would mix them into the tag.
             auto ctorFieldTy = getU16StorageType(ctx);  // u16 ctor, not Char
             auto ctorU16 = rewriter.create<LLVM::LoadOp>(loc, ctorFieldTy, ctorPtr);
             auto ctorFromHeap = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, ctorU16);
@@ -816,10 +823,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         rewriter.setInsertionPointToEnd(currentBlock);
 
-        // Use last case block as the default destination (same pattern as
-        // lowerIntegerOrCharCase). Elm cases are exhaustive, so the default
-        // is just the last alternative. Using mergeBlock as default would
-        // require passing block arguments that match mergeBlock's signature.
+        // The default is the last alternative, not the merge block, which
+        // may take arguments.
         Block *defaultBlock = caseBlocks.back();
         SmallVector<int32_t> switchCaseValues;
         SmallVector<Block *> switchCaseDests;
@@ -837,9 +842,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         Value originalScrutinee = op->getOperand(0);
 
-        // Check if eco.case is in terminal position. This is true when:
-        // 1. mergeBlock is empty (eco.case was the block terminator), OR
-        // 2. mergeBlock has only an eco.return (old format, for compatibility)
+        // Terminal as in lowerIntegerOrCharCase.
         bool isTerminalCase = mergeBlock->empty();
         if (!isTerminalCase && mergeBlock->getOperations().size() == 1 &&
             isa<ReturnOp>(&mergeBlock->front())) {
@@ -925,9 +928,8 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         // For terminal cases without results, keep eco.return ops which will be
         // converted to func.return by the ReturnOpLowering pattern.
 
-        // For terminal cases with empty mergeBlock and no results, add llvm.unreachable.
-        // We can't erase mergeBlock because cf.switch references it as default.
-        // Since Elm case expressions are exhaustive, this default is unreachable.
+        // An empty merge block gets llvm.unreachable as its terminator. No
+        // branch here targets it: the switch default is the last alternative.
         if (isTerminalCase && !isValueProducing && mergeBlock->empty()) {
             rewriter.setInsertionPointToEnd(mergeBlock);
             rewriter.create<LLVM::UnreachableOp>(loc);
@@ -947,12 +949,27 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 // Joinpoint/Jump lowering with EcoCFContext
 //===----------------------------------------------------------------------===//
 
-// Forward declaration
+/// Copies the operations of `sourceBlock` to the rewriter's insertion point,
+/// mapping values through `mapping`, which gains the copies' results.
+///
+/// An `eco.return` becomes a branch with no operands to `exitBlock`; an
+/// `eco.jump` is copied for `JumpOpLowering` to lower; a nested
+/// `eco.joinpoint` is lowered at once by `lowerNestedJoinpoint`. The
+/// joinpoints it meets are recorded in `cfCtx`. `targetBlock` and
+/// `isBodyRegion` are not used.
 static void lowerJoinpointRegion(
     Block &sourceBlock, Block *targetBlock, Block *exitBlock,
     IRMapping &mapping, ConversionPatternRewriter &rewriter,
     const TypeConverter *typeConverter, EcoCFContext &cfCtx, bool isBodyRegion);
 
+/// Lowers `nestedJP`, met while copying an enclosing joinpoint's region, at
+/// the rewriter's insertion block: that block branches to a new continuation
+/// block, the body becomes a block taking the body's arguments, and an
+/// `eco.return` in either branches to a new exit block, where the insertion
+/// point is left. The body block is
+/// recorded in `cfCtx`. Values from the enclosing region are taken through
+/// `mapping`, which is not changed. `outerExitBlock` is not used, so an
+/// `eco.return` in the nested joinpoint branches to its own exit block.
 static void lowerNestedJoinpoint(
     JoinpointOp nestedJP, Block *outerExitBlock,
     IRMapping &mapping, ConversionPatternRewriter &rewriter,
@@ -1030,9 +1047,20 @@ static void lowerJoinpointRegion(
     }
 }
 
+/// The pattern that turns `eco.joinpoint` into blocks: the operations after
+/// it move to an exit block, the continuation region is copied into a block
+/// the joinpoint's block branches to, and the body is copied into a block
+/// whose arguments are the body's arguments. An `eco.return` in either
+/// region becomes a branch with no operands to the exit block.
+///
+/// The body block is recorded in `cfCtx` under the enclosing function and the
+/// joinpoint id, before the regions are copied, so that `JumpOpLowering` can
+/// find it.
 struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
+    /// The joinpoint table; must outlive the pattern.
     EcoCFContext &cfCtx;
 
+    /// Creates the pattern; it keeps a reference to `cfCtx`.
     JoinpointOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         EcoCFContext &cfCtx)
         : OpConversionPattern(typeConverter, ctx), cfCtx(cfCtx) {}
@@ -1103,12 +1131,13 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// YieldOp Safety Net (should have been lowered by SCF pass)
+// eco.yield
 //===----------------------------------------------------------------------===//
 
-/// Safety net pattern: emits a clear error if eco.yield survives to LLVM lowering.
-/// eco.yield should always be lowered to scf.yield by EcoControlFlowToSCF, or
-/// converted to cf.branch by CaseOpLowering. If it reaches here, something is wrong.
+/// The pattern that fails the conversion with an error on any `eco.yield` it
+/// is asked to convert. `CaseOpLowering` replaces the yields of the cases it
+/// lowers itself, so one reaching this pattern belongs to a case nothing
+/// lowered.
 struct YieldOpLowering : public OpConversionPattern<YieldOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1121,9 +1150,15 @@ struct YieldOpLowering : public OpConversionPattern<YieldOp> {
     }
 };
 
+/// The pattern that turns `eco.jump` into a branch, with the jump's
+/// arguments, to the block recorded in `cfCtx` for its target joinpoint in
+/// the enclosing function. A jump to an id with no recorded block is an
+/// error.
 struct JumpOpLowering : public OpConversionPattern<JumpOp> {
+    /// The joinpoint table; must outlive the pattern.
     EcoCFContext &cfCtx;
 
+    /// Creates the pattern; it keeps a reference to `cfCtx`.
     JumpOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                    EcoCFContext &cfCtx)
         : OpConversionPattern(typeConverter, ctx), cfCtx(cfCtx) {}
@@ -1161,20 +1196,13 @@ void eco::detail::populateEcoControlFlowPatterns(
     patterns.add<ReturnOpLowering>(typeConverter, ctx);
     patterns.add<GetTagOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CaseOpLowering>(typeConverter, ctx, runtime);
-    patterns.add<YieldOpLowering>(typeConverter, ctx);  // Safety net for unlowered yields
+    patterns.add<YieldOpLowering>(typeConverter, ctx);
     patterns.add<JoinpointOpLowering>(typeConverter, ctx, cfCtx);
     patterns.add<JumpOpLowering>(typeConverter, ctx, cfCtx);
 }
 
-// Phase-2 pre-materialization: walk string-kind eco.case ops in module program
-// order, assign each a deterministic caseId (a per-module counter, replacing the
-// old file-static atomic — same input + same order => same ids => deterministic
-// output), create its per-pattern __eco_str_case_<caseId>_<i> globals, and
-// record the caseId in the side map read by lowerStringCase during Stage 2.
-// A string-case pattern is all-ASCII iff every byte is < 0x80. ASCII patterns
-// are emitted as [N x i8] globals and constructed as inline UTF-8 leaves,
-// matching EcoToLLVMTypes.cpp's literal handling. Pure in the bytes, so
-// pre-materialization and lowering agree without a side map.
+// Depends only on the bytes, so lowerStringCase and preMaterializeStringCases
+// make the same choice for the same pattern.
 static bool isAsciiCasePattern(llvm::StringRef s) {
     for (char c : s)
         if (static_cast<unsigned char>(c) & 0x80) return false;
@@ -1187,6 +1215,7 @@ void eco::detail::preMaterializeStringCases(
     auto *ctx = builder.getContext();
     auto utf16UnitTy = getU16StorageType(ctx);  // String unit, not Char
     auto i8Ty = IntegerType::get(ctx, 8);
+    // Ids count from 0 in demand order, so the same module gets the same ids.
     uint64_t caseCounter = 0;
     auto visit = [&](CaseOp op) {
         auto ck = op.getCaseKindAttr();
@@ -1197,7 +1226,7 @@ void eco::detail::preMaterializeStringCases(
         runtime.caseIdForOp[op.getOperation()] = caseId;
         for (size_t i = 0; i < pats.size(); ++i) {
             StringRef pattern = cast<StringAttr>(pats[i]).getValue();
-            if (pattern.empty()) continue;  // embedded empty-string const
+            if (pattern.empty()) continue;  // the Empty constant needs no global
             llvm::SmallString<48> globalName;
             {
                 llvm::raw_svector_ostream os(globalName);

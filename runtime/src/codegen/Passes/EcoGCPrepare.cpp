@@ -1,13 +1,45 @@
 //===- EcoGCPrepare.cpp - GC preparation pass -----------------------------===//
 //
-// This pass runs before EcoToLLVM lowering and performs:
-// 1. Groups adjacent allocation ops (stops at calls, terminators, PAP ops):
-//    the leader gets eco.gc_group_size, later members eco.gc_group_member.
-// 2. Strips the kernel-opt-12 purity attr (eco.cse_safe) from every eco.call,
-//    fencing purity-based merges/erasures out of the rest of the pipeline.
+// The lowering of eco allocations to the LLVM dialect can allocate several adjacent objects with
+// one request, but it does not choose which objects to combine. This module pass chooses, and
+// marks its choice in attributes the lowering reads. It also removes the purity attribute from
+// calls, so that no later pass treats a call as pure.
 //
-// It computes no GC roots: the runtime GC roots, statepoints and stackmap
-// entries are computed by LLVM's RS4GC (CGEN_077(b)).
+// An allocation group is a run of allocations in one block that the lowering allocates together:
+// one region for their combined size, then each member initialised in place. Every op
+// `isMayAllocOp` names (the eco ops that allocate a heap object directly) is put in exactly one
+// group, often a group of one. The first member, the leader, gets
+// `eco.gc_group_size`, the number of members as an i64, and every later member gets
+// `eco.gc_group_member`. A group of more than one is a run of fixed-size allocations with nothing
+// else between them, and it ends before:
+//
+// - any other op, including calls and partial-application ops, which may allocate but are not
+//   grouped;
+// - an allocation whose size is not fixed, which becomes a group of its own;
+// - a member that would bring the group's total to `GroupLargeObjectThreshold` or more;
+// - a member that takes the result of an earlier member as an operand. The lowering initialises the
+//   members in blocks that come before the one where their results are defined, so such a use would
+//   not be dominated by its definition.
+//
+// A group whose members all have an inline lowering, which allocates with a bump of the nursery
+// pointer and calls the runtime only when the nursery is full, is then split back into groups of
+// one, because the group lowering makes one call for the region and another for each member.
+// `splitInlineGroupsEnabled` says when.
+//
+// Each member's size here must agree byte for byte with the size the lowering computes
+// (`computeAllocSize` in EcoToLLVMHeap.cpp); the two are separate copies.
+//
+// The second job is `eco.cse_safe`, the attribute that marks an `eco.call` as safe to merge with
+// an identical call or to erase when unused. The pass removes it from every `eco.call` in the functions it
+// processes (see `EcoGCPreparePass`), after which `eco::CallOp`'s reported effects are the
+// conservative ones for every later pass.
+//
+// The pass computes no GC roots. Roots, statepoints and stack maps come later, from LLVM's
+// RewriteStatepointsForGC.
+//
+// With `ECO_GCPREPARE_CENSUS` set, the pass also counts, without changing anything, how many
+// allocations could join an earlier group if they were moved up past the ops between, and prints
+// the counts to stderr.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +65,8 @@ using namespace mlir;
 
 namespace {
 
-/// Returns true if the operation may allocate heap memory.
+/// Returns whether `op` is one of the eco ops that allocate a heap object, and so belongs in an
+/// allocation group.
 static bool isMayAllocOp(Operation *op) {
     return isa<eco::AllocateStringOp>(op) ||
            isa<eco::AllocateClosureOp>(op) ||
@@ -46,9 +79,10 @@ static bool isMayAllocOp(Operation *op) {
            isa<eco::AllocateOp>(op);
 }
 
-/// Returns true if the operation has a statically known fixed allocation size.
-/// Only ops that return true here can be grouped for coalesced allocation.
-/// AllocateClosureOp, AllocateOp, and non-scalar BoxOp are excluded (V1 scope).
+/// Returns whether `op` allocates an object whose size `getFixedAllocSizeForGrouping` knows, which
+/// is what a group of more than one requires: a string allocation, a list cell, a tuple, a record,
+/// a custom value, or a box of an i64, f64 or i16. Closure allocations, `eco.allocate` and a box
+/// of any other type are not.
 static bool hasFixedAllocSize(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
@@ -62,8 +96,11 @@ static bool hasFixedAllocSize(Operation *op) {
            isa<eco::CustomConstructOp>(op);
 }
 
-/// Compute the aligned allocation size for a given Eco allocation op.
-/// Must agree with computeAllocSize in EcoToLLVMHeap.cpp.
+/// Returns the size in bytes, a multiple of 8, of the object `op` allocates, or 0 when `op` is not
+/// one `hasFixedAllocSize` accepts.
+///
+/// The values must agree with `computeAllocSize` in EcoToLLVMHeap.cpp, which the group lowering
+/// uses to size the region.
 static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     constexpr int64_t HeaderSize = 8;
 
@@ -74,7 +111,7 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     if (isa<eco::ListConstructOp>(op)) return 24;
     if (isa<eco::Tuple2ConstructOp>(op)) return 24;
     if (isa<eco::Tuple3ConstructOp>(op)) return 32;
-    // Layout C (HEAP_019): 16 + 8 * (n + K), byte-for-byte as computeAllocSize.
+    // Includes the extension kind words that follow the fields of a wide record or custom.
     if (auto recOp = dyn_cast<eco::RecordConstructOp>(op))
         return static_cast<int64_t>(eco::detail::layout::recordByteSize(recOp.getFieldCount()));
     if (auto customOp = dyn_cast<eco::CustomConstructOp>(op))
@@ -87,18 +124,24 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     return 0;
 }
 
-/// Large-object threshold for group formation (must match runtime default).
-/// Groups whose combined size would reach or exceed this are split.
+/// The combined size in bytes that an allocation group must stay below. A member that would bring
+/// the total to this or more starts a new group instead.
+///
+/// This is not the runtime's default large-object threshold, `LARGE_OBJECT_THRESHOLD`, which is
+/// 8 KiB. EcoToLLVMHeap.cpp and Heap.hpp assert that the widest record and custom are smaller than
+/// 32 KiB, each with its own copy of the number.
 static constexpr int64_t GroupLargeObjectThreshold = 32 * 1024; // 32 KiB
 
-/// Returns true if the operation is a barrier for allocation grouping.
-/// Barriers include calls, terminators, and PAP ops.
+/// Returns whether `op` is a terminator, a partial-application op (`eco.papCreate`,
+/// `eco.papExtend`) or a call.
+///
+/// Grouping does not depend on the answer: `processBlock` ends a group at every op that
+/// `isMayAllocOp` rejects, and these ops are among them.
 static bool isGroupBarrier(Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
         return true;
     if (isa<eco::PapCreateOp>(op) || isa<eco::PapExtendOp>(op))
         return true;
-    // Any call-like op is a barrier (D3: conservative)
     if (isa<eco::CallOp>(op))
         return true;
     if (isa<func::CallOp>(op))
@@ -107,30 +150,26 @@ static bool isGroupBarrier(Operation *op) {
 }
 
 //===----------------------------------------------------------------------===//
-// kernel-opt-09 Phase 1: allocation-group merge census
+// The merge census
 //
-// Measures, on the real self-compile module, how much opportunity the
-// group-merging transform would actually have — BEFORE any of it is built.
-// Census-only: `apply` is never true yet, so nothing here mutates IR.
+// Counts how many allocations could join an earlier run of allocations if they were moved up past
+// the ops that separate them. It only counts and changes no IR.
 //===----------------------------------------------------------------------===//
 
+/// Returns whether the merge census is on, which it is when `ECO_GCPREPARE_CENSUS` is set to any
+/// value. The environment is read once.
 static bool censusEnabled() {
     static const bool on = ::getenv("ECO_GCPREPARE_CENSUS") != nullptr;
     return on;
 }
 
-/// kernel-opt-09 Phase 2-pre (variant A). `ECO_GCPREPARE_SPLIT_INLINE_GROUPS=0`
-/// restores grouping for allocation runs whose every member already has a
-/// call-free HEAP_034 inline lowering. Default ON.
+/// Returns whether a group whose members all have an inline lowering is split into groups of one.
+/// True unless `ECO_GCPREPARE_SPLIT_INLINE_GROUPS` is exactly `0`. The environment is read once.
 ///
-/// Why splitting such a run is a WIN and not a lost optimization: a GROUP
-/// lowers to an out-of-line `eco_gc_alloc_region_fast` call plus one
-/// `eco_init_*_at` runtime call per member (EcoToLLVMHeap.cpp
-/// lowerOneAllocGroup / emitInitAtPtr), while the same ops lowered
-/// individually get inline bump-pointer allocation with straight-line header
-/// and field stores and NO calls at all. Grouping is therefore a pessimization
-/// for every run this predicate matches. The Phase-1 census measured 16,005
-/// such runs covering 35,533 objects — 44.0% of all groupable allocations.
+/// The split is made because a group lowers to a call of `eco_gc_alloc_region_fast` and one
+/// `eco_init_*_at` call per member, while each of the same ops lowered alone is allocated inline,
+/// with a runtime call only on the nursery-full path, and stored directly. `processBlock` splits
+/// only when `eco::detail::inlineAllocEnabled()` is also true, since otherwise there is no inline lowering.
 static bool splitInlineGroupsEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_GCPREPARE_SPLIT_INLINE_GROUPS");
@@ -139,14 +178,13 @@ static bool splitInlineGroupsEnabled() {
     return on;
 }
 
-/// Mirrors the inline-lowering admissibility of the singleton patterns in
-/// EcoToLLVMHeap.cpp: BoxOp of a scalar (:221), ListConstructOp (:445),
-/// Tuple2/Tuple3ConstructOp (:670, :759), and Record/CustomConstructOp
-/// (:951, :1090) which additionally cap at 4096 bytes.
+/// Returns whether `op`, lowered on its own, is allocated inline: a box of an i64, f64 or i16, a
+/// list cell, a tuple, or a record or custom of at most 4096 bytes. This must agree with the
+/// patterns in EcoToLLVMHeap.cpp that lower each of these ops outside a group.
 ///
-/// AllocateStringOp is deliberately absent: it is groupable but has NO
-/// inline singleton path, so splitting a run containing one would trade a shared region call for a per-object alloc call and lose.
-/// Whitelist discipline — anything not listed keeps today's grouping.
+/// A string allocation can be in a group but is never allocated inline, so it returns false, and
+/// a group containing one is kept: splitting it would replace one region call with an allocation
+/// call per object. Any op not listed also returns false.
 static bool hasInlineSingletonLowering(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type t = boxOp.getValue().getType();
@@ -161,6 +199,19 @@ static bool hasInlineSingletonLowering(Operation *op) {
 }
 
 namespace {
+/// The merge census's counts, accumulated over every run of the pass in the process.
+///
+/// A run is a sequence of adjacent groupable allocations, cut at the size limit but not at
+/// member-result uses, so it may span several groups; `runs2plus` and `runObjects` count the runs
+/// of two or more and their members. A window is the non-empty
+/// sequence of ops between the last allocation of a run and the next groupable allocation, and
+/// `windows` counts them, split into `winNoCall`, `winLeafOnly` (calls, all gc-leaf) and
+/// `winHardBarrier`. `winHardBarrier` stays 0, because a hard barrier ends the run before a window
+/// containing it is classified. A window with no hard barrier is counted once more: `blockedDeps` when the
+/// next allocation uses a result from the window or the run, `blockedSize` when it would bring the
+/// run to `GroupLargeObjectThreshold` or more, otherwise `mergeableLeaf` or `mergeableFree`.
+/// `splitGroups`/`splitObjects` and `keptGroups`/`keptObjects` count the groups of two or more
+/// that were split into groups of one or kept, and their members, while the split is on.
 struct MergeCensus {
     uint64_t blocks = 0, groupableAllocs = 0, runs2plus = 0, runObjects = 0;
     uint64_t windows = 0, winNoCall = 0, winLeafOnly = 0, winHardBarrier = 0;
@@ -170,34 +221,31 @@ struct MergeCensus {
 };
 } // namespace
 
-/// Only written with the census on, when the pass runs serially (B6).
+/// The census counts since the process started; the pass never resets them, so each run prints
+/// cumulative totals. It has no lock, and is written only when the census
+/// is on, in which case `runOnOperation` processes the functions on one thread.
 static MergeCensus gCensus;
 
-/// Classification predicate for the merge window: can a later allocation be
-/// hoisted ABOVE `op` to join an earlier run?
-///
-/// The gc-leaf exception is ALWAYS ON here, deliberately and independently of
-/// any transform gate. If it were gated, the census — which runs with the
-/// transform off — would classify every stamped call as a hard barrier and
-/// report structurally zero opportunity, i.e. it would measure its own gate
-/// rather than the IR.
+/// Returns whether `op` is one that a later allocation could not be moved above to join an earlier
+/// run: a terminator, an op with regions, a partial-application op (`eco.papCreate`,
+/// `eco.papExtend`, `eco.papCreateGroup`), a `func.call`, or an `eco.call` without
+/// `eco.callee_gc_leaf`. An `eco.call` with that attribute calls a function that cannot collect,
+/// so it is not a barrier.
 static bool isHardMotionBarrier(Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
         return true;
-    // Nested regions can hide anything; do not reason across them.
+    // An op's regions may hold anything, so nothing is moved across it.
     if (op->getNumRegions() > 0)
         return true;
     if (isa<eco::PapCreateOp>(op) || isa<eco::PapExtendOp>(op) ||
         isa<eco::PapCreateGroupOp>(op))
         return true;
     if (auto callOp = dyn_cast<eco::CallOp>(op)) {
-        // A stamped gc-leaf callee cannot GC and cannot re-enter Elm, so an
-        // allocation may legally cross it.
         if (op->hasAttr("eco.callee_gc_leaf"))
             return false;
         auto musttail = callOp.getMusttail();
         if (musttail && *musttail)
-            return true; // a tail call ends the block for our purposes
+            return true;
         return true;
     }
     if (isa<func::CallOp>(op))
@@ -205,9 +253,8 @@ static bool isHardMotionBarrier(Operation *op) {
     return false;
 }
 
-/// Returns true if the operation is a call of any kind (used to separate
-/// "window contained no call at all" from "window contained only gc-leaf
-/// calls" — the first needs no kernel facts, the second does).
+/// Returns whether `op` is an `eco.call` or a `func.call`. The census uses it to tell a window with
+/// no call from one whose calls are all gc-leaf.
 static bool isAnyCall(Operation *op) {
     return isa<eco::CallOp>(op) || isa<func::CallOp>(op);
 }
@@ -216,6 +263,8 @@ static bool isAnyCall(Operation *op) {
 // EcoGCPreparePass
 //===----------------------------------------------------------------------===//
 
+/// The pass that forms and marks allocation groups and removes `eco.cse_safe`, as the file comment
+/// describes, in every function defined at the top level of a module.
 struct EcoGCPreparePass
     : public PassWrapper<EcoGCPreparePass, OperationPass<ModuleOp>> {
 
@@ -229,11 +278,9 @@ struct EcoGCPreparePass
     void runOnOperation() override {
         ModuleOp module = getOperation();
 
-        // B6 (plans/backend-lowering-optimization.md): the work is strictly
-        // per function (grouping and purity attrs on the function's own ops;
-        // no module-level writes), so run it in parallel over the
-        // top-level functions. The census accumulates into the unsynchronised
-        // gCensus global, so census runs stay serial.
+        // Each function's work writes only attributes of that function's own ops, so functions
+        // run in parallel. The census writes the unlocked gCensus, so with it on they run on one
+        // thread.
         SmallVector<func::FuncOp> funcs;
         for (func::FuncOp f : module.getOps<func::FuncOp>())
             if (!f.isExternal())
@@ -270,28 +317,25 @@ struct EcoGCPreparePass
     }
 
 private:
+    /// Processes every block of `func`, including the blocks nested in the regions of its ops.
+    /// Does nothing for a declaration.
     void processFunction(func::FuncOp func) {
         if (func.isExternal()) return;
 
         LLVM_DEBUG(llvm::dbgs() << "EcoGCPrepare: processing function "
                                 << func.getName() << "\n");
 
-        // Walk ALL blocks in the function, including those nested inside
-        // regions of ops like scf.while/scf.if.
         func.walk([&](Block *block) {
             processBlock(*block);
         });
     }
 
-    /// kernel-opt-09 Phase 1. Single walk that classifies every merge window in
-    /// the block. `apply` is reserved for Phase 2's motion and is always false
-    /// today — census and transform share this one code path precisely so they
-    /// cannot diverge later.
+    /// Adds the merge census counts for `block` to `gCensus`, as `MergeCensus` defines them. Changes
+    /// no IR; `apply` is ignored.
     ///
-    /// A "window" is the run of ops between one groupable allocation and the
-    /// next. An empty window means the two are already adjacent and already
-    /// group today, so it is not counted. A non-empty window is an opportunity:
-    /// merging requires hoisting the later allocation above every op in it.
+    /// Runs are cut at the size threshold, at a hard motion barrier, and at any other op between
+    /// allocations (the allocation after it is counted as starting a new run), but not, unlike
+    /// groups, where one member uses another's result.
     void scanBlockForMerges(Block &block, bool apply) {
         (void)apply;
         ++gCensus.blocks;
@@ -318,7 +362,6 @@ private:
                 int64_t opSize = getFixedAllocSizeForGrouping(&op);
 
                 if (prevAlloc && window.empty()) {
-                    // Already adjacent: today's group formation covers it.
                     if (runSize + opSize >= GroupLargeObjectThreshold) {
                         closeRun();
                         runMembers = 1;
@@ -334,7 +377,6 @@ private:
                 }
 
                 if (prevAlloc) {
-                    // Non-empty window: an opportunity. Classify it.
                     ++gCensus.windows;
                     bool anyCall = false, hardBarrier = false;
                     for (Operation *w : window) {
@@ -352,7 +394,7 @@ private:
                         // Would hoisting be legal and useful? The candidate may
                         // not consume anything defined inside the window or by
                         // a member of the run it would join, and the merged run
-                        // must stay under the large-object cap.
+                        // must stay under `GroupLargeObjectThreshold`.
                         bool dep = false;
                         llvm::SmallPtrSet<Operation *, 8> windowSet(window.begin(),
                                                                     window.end());
@@ -375,7 +417,8 @@ private:
                     }
                 }
 
-                // The candidate starts (or extends) a run from here on.
+                // The census counts the candidate as starting a new run, whether or not it could
+                // have joined the last one.
                 closeRun();
                 runMembers = 1;
                 runSize = opSize;
@@ -397,24 +440,21 @@ private:
         closeRun();
     }
 
+    /// Forms the allocation groups of `block` and marks them, then removes `eco.cse_safe` from each
+    /// `eco.call` directly in `block`. The blocks nested in its ops' regions are left to their own
+    /// call.
     void processBlock(Block &block) {
         if (censusEnabled())
             scanBlockForMerges(block, /*apply=*/false);
 
-        // Step 1: Identify groups of adjacent allocation ops.
-        // Only ops with statically known sizes can be grouped.
-        // Groups are capped at the large-object threshold to avoid
-        // pushing a pile of small allocs into old-gen.
         SmallVector<SmallVector<Operation*, 4>> groups;
         SmallVector<Operation*, 4> currentGroup;
         llvm::SmallPtrSet<Operation *, 8> currentGroupSet;
         int64_t runningSize = 0;
 
-        // Lambda: would `&op` consume the result of any op already in
-        // currentGroup? The alloc-group lowering initializes members in
-        // fast/slow blocks BEFORE the merge block where member results
-        // become available, so intra-group result dependencies violate
-        // dominance after CFG surgery. Close the group at such a boundary.
+        // Returns whether `op` uses a result of a member of currentGroup. The group lowering
+        // initialises members in blocks that precede the one where their results are defined, so
+        // such a use would not be dominated by its definition.
         auto consumesGroupMemberResult = [&](Operation *op) {
             if (currentGroup.empty()) return false;
             for (Value v : op->getOperands()) {
@@ -425,9 +465,8 @@ private:
             return false;
         };
 
-        // Close the current group: move it into `groups` and reset the parallel
-        // bookkeeping (the mirror set + running size). Centralized so
-        // currentGroupSet can never drift out of sync with currentGroup.
+        // Ends the current group, if it has members, and resets currentGroupSet and runningSize
+        // with it, so that they always describe currentGroup.
         auto flushGroup = [&]() {
             if (currentGroup.empty()) return;
             groups.push_back(std::move(currentGroup));
@@ -439,7 +478,6 @@ private:
         for (auto &op : block) {
             if (isMayAllocOp(&op)) {
                 if (!hasFixedAllocSize(&op)) {
-                    // Non-fixed-size op: close current group, add as singleton
                     flushGroup();
                     groups.push_back(SmallVector<Operation*, 4>{&op});
                     continue;
@@ -448,8 +486,6 @@ private:
                 bool wouldDependOnGroupMember = consumesGroupMemberResult(&op);
                 if (runningSize + opSize >= GroupLargeObjectThreshold ||
                     wouldDependOnGroupMember) {
-                    // Either the size cap or an intra-group SSA dependency:
-                    // close the current group first.
                     flushGroup();
                 }
                 currentGroup.push_back(&op);
@@ -458,18 +494,15 @@ private:
             } else {
                 flushGroup();
                 if (isGroupBarrier(&op)) {
-                    // Barrier - any pending group already flushed above
+                    // Nothing to do: flushGroup above has already ended the group at every op isMayAllocOp
+                    // rejects.
                 }
             }
         }
         flushGroup();
 
-        // Step 1b (kernel-opt-09 Phase 2-pre): a run whose every member has a
-        // call-free inline lowering is CHEAPER ungrouped — see
-        // splitInlineGroupsEnabled. Break those runs into singletons, so the
-        // members flow through Step 2 exactly as a lone allocation does.
-        // Mixed runs are left alone: splitting one would swap a shared region
-        // call for a per-object alloc call.
+        // Split each group whose members all have an inline lowering into groups of one. A group
+        // with any other member is kept whole.
         if (splitInlineGroupsEnabled() && eco::detail::inlineAllocEnabled()) {
             SmallVector<SmallVector<Operation *, 4>> rebuilt;
             rebuilt.reserve(groups.size());
@@ -498,8 +531,6 @@ private:
             groups = std::move(rebuilt);
         }
 
-        // Step 2: Stamp each group: the leader carries the member count,
-        // every later member is marked as such.
         auto *ctx = block.getParentOp()->getContext();
         for (auto &group : groups) {
             if (group.empty()) continue;
@@ -519,10 +550,8 @@ private:
             }
         }
 
-        // Step 3: kernel-opt-12: the Elm-level purity channel dies HERE.
-        // Stripping reverts CallOp::getEffects to its conservative branch for
-        // all downstream passes, so no later pass can merge or erase a call
-        // on the strength of eco.cse_safe.
+        // Without eco.cse_safe, CallOp::getEffects reports the conservative effects to every later
+        // pass.
         for (auto &op : block) {
             if (isa<eco::CallOp>(&op))
                 op.removeAttr(eco::kCseSafeAttrName);
@@ -536,6 +565,7 @@ private:
 // Pass Creation
 //===----------------------------------------------------------------------===//
 
+// The contract is on the declaration in Passes.h.
 std::unique_ptr<Pass> eco::createEcoGCPreparePass() {
     return std::make_unique<EcoGCPreparePass>();
 }

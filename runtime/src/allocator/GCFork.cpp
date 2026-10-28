@@ -1,6 +1,3 @@
-// plans/threaded-gc-register-fixes.md §7.1 (HEAP_075): the single pthread_atfork
-// registration. See GCFork.hpp.
-
 #include "GCFork.hpp"
 
 #include <atomic>
@@ -14,13 +11,15 @@ namespace Elm::gc {
 
 namespace {
 
+// The hooks installed for each layer, or null for a layer not yet registered.
 std::atomic<const ForkHooks*> g_layers[kForkLayers];
 
-// The layers whose prepare ran in THIS fork (glibc serialises the handlers of one
-// fork on the forking thread). A layer registered between the prepare and the
-// parent/child handlers is skipped there: its locks were never taken.
+// The hooks whose prepare ran in the current fork, so that parent and child undo exactly
+// those. A layer registered after the prepare is skipped there: its locks were never taken.
+// Plain, not atomic: the handlers of one fork run in turn on the forking thread.
 const ForkHooks* g_ran[kForkLayers];
 
+// Runs every installed layer's prepare in increasing layer order and records which ran.
 void prep() {
     for (unsigned i = 0; i < kForkLayers; ++i) {
         const ForkHooks* h = g_layers[i].load(std::memory_order_acquire);
@@ -29,6 +28,7 @@ void prep() {
     }
 }
 
+// Runs the parent handler of each layer whose prepare ran, in decreasing order, and clears the record.
 void parent() {
     for (unsigned i = kForkLayers; i-- > 0;) {
         const ForkHooks* h = g_ran[i];
@@ -37,6 +37,7 @@ void parent() {
     }
 }
 
+// Runs the child handler of each layer whose prepare ran, in decreasing order, and clears the record.
 void child() {
     for (unsigned i = kForkLayers; i-- > 0;) {
         const ForkHooks* h = g_ran[i];

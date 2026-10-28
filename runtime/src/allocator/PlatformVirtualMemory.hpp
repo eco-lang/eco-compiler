@@ -1,24 +1,22 @@
-/**
- * Platform abstraction for the small slice of virtual-memory primitives the
- * eco allocator uses: reserve a large contiguous address range with no
- * backing, then commit subranges at fixed addresses as the heap grows, and
- * release the whole reservation at teardown.
- *
- * On POSIX (Linux + Darwin) this is mmap(PROT_NONE) for reserve and
- * mmap(MAP_FIXED, PROT_READ|PROT_WRITE) for commit.
- *
- * On Win64 this is VirtualAlloc(MEM_RESERVE, PAGE_NOACCESS) for reserve and
- * VirtualAlloc(addr, MEM_COMMIT, PAGE_READWRITE) for commit — Windows
- * supports committing arbitrary subranges of a reservation, so the heap
- * model maps 1:1 (verified by experiments/win-jit-smoke/, the E-W2 spike).
- *
- * The functions return a tri-state: nullptr on failure (so call sites can
- * keep their existing MAP_FAILED-style branches almost unchanged), the
- * platform's failure sentinel is converted to nullptr inside the
- * implementation. The contract is that the returned address equals the
- * requested address on success for fixed commits, just like POSIX
- * MAP_FIXED.
- */
+// The allocator needs a heap whose addresses never move, and that grows and shrinks
+// in physical memory without moving. This component is the operating-system
+// virtual-memory calls that make that possible, with one implementation for POSIX
+// (Linux and Darwin) and one for Win64 behind the same functions.
+//
+// Two ideas run through it. To *reserve* a range is to claim addresses only: no
+// memory backs them and any access faults. To *commit* a subrange of a reservation
+// is to make it readable and writable at the address it already has. A heap is
+// therefore reserved once at its full size, committed piece by piece as it grows,
+// and released as a whole at the end.
+//
+// On POSIX a reservation is an anonymous `mmap` with `PROT_NONE`, and a commit is
+// a fresh `MAP_FIXED` read/write mapping over part of it. On Win64 they are
+// `VirtualAlloc` with `MEM_RESERVE` / `PAGE_NOACCESS` and with `MEM_COMMIT` /
+// `PAGE_READWRITE` at an address inside the reservation.
+//
+// Failure is reported the same way on both platforms: a function returning a
+// pointer returns `nullptr`, and one returning `bool` returns false. No error code
+// is kept.
 #pragma once
 
 #include <cstddef>
@@ -26,60 +24,63 @@
 
 namespace Elm::platform {
 
-// Reserve `size` bytes of address space starting at any address. The returned
-// region is unbacked (PROT_NONE / PAGE_NOACCESS) and must be committed in
-// subranges before use. Returns nullptr on failure.
+/// Reserves `size` bytes of address space at an address the OS chooses, and
+/// returns its base, or `nullptr` on failure. The range is not accessible until
+/// subranges of it are committed with `commitAt`.
 void* reserveAddressSpace(std::size_t size);
 
-// Reserve `size` bytes of address space placed entirely below `limit` — that
-// is, the returned base `b` satisfies `b + size <= limit`. Probes a series of
-// low candidate bases and verifies placement, falling back to a kernel-chosen
-// address only if it happens to fit. Returns nullptr if no fitting region
-// could be reserved. Used by the HPointer representation, which stores raw
-// absolute heap addresses in the low bits of a 64-bit word and therefore
-// requires the whole heap to live below 2^43 (8 TB). The region is unbacked
-// (PROT_NONE / PAGE_NOACCESS), same as reserveAddressSpace.
+/// Reserves `size` bytes of address space and returns its base `b`, or `nullptr`
+/// if `size` is zero, exceeds `limit`, or no fitting range could be reserved.
+/// Except in ThreadSanitizer builds with `limit` below 512 GB, `b + size <= limit`.
+///
+/// It tries bases at multiples of 1 TB from 1 TB upwards (after, under
+/// ThreadSanitizer, 64 GB steps below 512 GB), then accepts an OS-chosen address
+/// only if it happens to fit. Like `reserveAddressSpace`, the range is not
+/// accessible until committed.
 void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit);
 
-// Commit a subrange of an existing reservation. `addr` must be inside a
-// previous reservation and the [addr, addr+size) range must lie wholly
-// within it. Returns `addr` on success, nullptr on failure. The committed
-// pages are PROT_READ|PROT_WRITE / PAGE_READWRITE.
+/// Makes `[addr, addr + size)` readable and writable, and returns `addr`, or
+/// `nullptr` on failure. The range must lie wholly within one reservation, and
+/// `addr` and `size` must be multiples of the OS page size.
+///
+/// On POSIX this maps fresh zero pages over the range, so committing a range that
+/// is already committed discards its contents. On Win64 committing it again keeps
+/// them.
 void* commitAt(void* addr, std::size_t size);
 
-// Decommit a subrange — the address space stays reserved, the pages become
-// unbacked again. Returns true on success.
+/// Returns `[addr, addr + size)` to the reserved state: it stays claimed, its
+/// memory is given back, and any access faults until it is committed again.
+/// Returns true on success.
 bool decommit(void* addr, std::size_t size);
 
-// Zero a committed, page-aligned subrange and return its physical memory to
-// the OS, keeping the pages committed and read/write (they fault back in as
-// zero pages on the next touch). Unlike `decommit`, the range stays
-// accessible. POSIX: a fresh MAP_FIXED anonymous RW mapping over the range
-// (portable: Darwin's MADV_DONTNEED does not guarantee zeros). Win64:
-// MEM_DECOMMIT then MEM_COMMIT. `addr` and `size` must be OS-page aligned.
-// Returns true on success. (threaded-gc-01: ReservedArray::discard.)
+/// Gives the memory of a committed range back to the OS and leaves the range
+/// committed, readable and writable, reading as zero. Unlike `decommit`, the
+/// range stays accessible. `addr` and `size` must be multiples of the OS page
+/// size. Returns true on success.
 bool resetPagesToZero(void* addr, std::size_t size);
 
-// threaded-gc-03 (PageWork's ops). discardPages: drop the physical pages of a
-// committed RW range, keeping it mapped (POSIX madvise(MADV_DONTNEED): the
-// range reads as zero afterwards on Linux; Win64: a no-op returning true, the
-// parity of Allocator.cpp's madvise stub). populatePagesWrite: fault the
-// range in writable without touching its contents (Linux >= 5.14
-// MADV_POPULATE_WRITE); returns false where unsupported, and callers must not
-// fall back to touching pages.
+/// Asks the OS to drop the memory behind a committed range, keeping the range
+/// mapped, and returns true on success. On POSIX this is
+/// `madvise(MADV_DONTNEED)`; on Linux the range then reads as zero, but on other
+/// systems its contents are not specified. On Win64 it does nothing and returns
+/// true, so the contents are kept.
 bool discardPages(void* addr, std::size_t size);
+
+/// Faults a committed range into memory as writable without changing its
+/// contents, and returns true on success. Only Linux supports it, through
+/// `madvise(MADV_POPULATE_WRITE)`, which kernels older than 5.14 refuse; anywhere
+/// else, and on such kernels, it returns false.
 bool populatePagesWrite(void* addr, std::size_t size);
 
-// The process's resident set size in bytes, for observations only (GCReport
-// rss_*, plans/frontend-heap-release.md §3.2; no GC decision may read it,
-// HEAP_076). Linux: field 2 of /proc/self/statm times the page size. Other
-// platforms: 0 (unavailable).
+/// Returns the process's resident set size in bytes: on Linux, the second field
+/// of `/proc/self/statm` times the page size. Returns 0 on other platforms, or if
+/// the file cannot be read.
 std::size_t processResidentBytes();
 
-// Release a whole reservation (must be the same `addr` that was returned by
-// reserveAddressSpace; `size` is the originally-requested size on POSIX,
-// ignored on Windows where MEM_RELEASE keys on the reservation base).
-// Returns true on success.
+/// Releases a whole reservation, committed parts included, and returns true on
+/// success. `addr` must be the base a reserve function returned and `size` the
+/// size that was requested. Win64 ignores `size` and releases the whole
+/// reservation at `addr`; POSIX unmaps exactly `[addr, addr + size)`.
 bool releaseReservation(void* addr, std::size_t size);
 
 } // namespace Elm::platform

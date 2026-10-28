@@ -11,33 +11,48 @@
 #include "AllocatorCommon.hpp"
 #include "Heap.hpp"
 
+// The collector must find every HPointer that something outside the heap still needs, and this component
+// holds the roots that no stack map describes.
+//
+// A collection may move any nursery object, so every place that holds an HPointer across an allocation must
+// be known to the collector, which rewrites it. Compiled Elm frames are described by stack maps, and those
+// roots are not here (`StackMapRoots` holds them, and runtime or kernel code must not push into it). Every
+// other root is one of four kinds, and a heap's `RootSet` holds all four:
+//
+// - A long-lived root is the address of an HPointer slot, such as a global, registered until it is
+//   removed.
+// - A JIT root is the address of a 64-bit word holding a raw heap address. A heap object's HPointer is its
+//   address, so the word has the same bits; the collectors read these through their own raw-word paths.
+// - An external root scanner is a callback that reports the HPointer words held in some C++ structure each
+//   time the roots are scanned.
+// - A shadow-stack root is pushed and popped by a running scope.
+//
+// There are two shadow stacks, and both live in thread-local storage. The range stack holds 24-byte
+// records, each naming a run of 64-bit slots and a mask saying which of them hold HPointers. The
+// single-slot stack holds the addresses of single HPointer slots, 8 bytes each. Each stack is three TLS
+// words: `base`, the start of its array; `limit`, the end of the usable part; and `sp`, the cursor, one
+// past the newest entry. A push writes at the cursor and advances it. A restore point is the cursor value
+// itself, so restoring is one store. Pushes and restores must nest: a scope restores to the point it took
+// before its pushes, after every scope it contains has done the same.
+//
+// A `RootSet` owns the arrays behind both stacks. `Allocator::setThreadHeap` points the TLS words at a
+// `RootSet`'s arrays. Until it has, the inline push and restore functions below have nowhere to write.
+//
+// The bounds check on a push exists only in builds with assertions or `ECO_HEAP_VALIDATE`. Each array has
+// slack past its limit and an inaccessible guard page after its page-rounded end, so an overflow in any
+// other build that advances one entry at a time lands in the slack or padding, or faults.
+
 namespace Elm {
 
-//===----------------------------------------------------------------------===//
-// TLS shadow stack for stack root ranges (plans/gc-root-registration-cost.md O1)
-//
-// A contiguous range of stack-allocated i64 values that may contain HPointers.
-// hpointer_mask is MANDATORY for correctness on mixed arrays:
-//   - Bit i set   -> base[i] is treated as an HPointer root.
-//   - Bit i clear -> base[i] is ignored by the GC.
-// For all-boxed arrays, hpointer_mask is simply ((1ULL << count) - 1), or
-// ~0 for any length (see stackRangeSlotIsRoot).
-//
-// The stack used to be a `std::vector<StackRootRange>` inside RootSet, reached
-// through `tl_heap_ -> nursery_ -> root_set` and pushed by an out-of-line
-// `eco_gc_push_stack_range` call (libEcoRuntimeStatic is not LTO'd against
-// generated code, so nothing inlined). `eco_gc_push_stack_range` was the single
-// hottest symbol of the self-compile at 14.53% self, on ~1.99 B events — one per
-// closure-dispatch entry. It is now a raw three-cursor stack in initial-exec TLS,
-// so a push is `load fs:sp; 3 stores; store fs:sp` with no call and no capacity
-// check, and the restore point IS the cursor (nothing to unwind: the record is
-// trivially destructible).
-//
-// LAYOUT IS FROZEN: compiled code writes base at +0, count at +8, mask at +16
-// and advances the cursor by 24 (EcoBackend.cpp expandRootRangeOps). Changing
-// this struct means changing that emission in lockstep.
-//===----------------------------------------------------------------------===//
-
+/// One entry of the range shadow stack: a run of `count` 64-bit slots starting at `base`, with
+/// `hpointer_mask` saying which of them the collector treats as HPointer roots.
+///
+/// For a slot index below 64, bit `i` of the mask decides; beyond that, only an all-ones mask makes a slot
+/// a root (see `stackRangeSlotIsRoot`). A range whose slots all hold HPointers can therefore use `~0` for
+/// any `count`. The layout is fixed: AOT-compiled code writes `base` at offset 0, `count` at 8 and the mask at
+/// 16, and advances the cursor by 24 bytes. The code generator's root-range expansion
+/// (`expandRootRangeOps` in `EcoBackend.cpp`) must change with this struct; the `static_assert`s below
+/// check only the C++ side.
 struct StackRootRangeRec {
     HPointer* base;
     size_t    count;
@@ -49,96 +64,82 @@ static_assert(offsetof(StackRootRangeRec, base) == 0, "base at +0");
 static_assert(offsetof(StackRootRangeRec, count) == 8, "count at +8");
 static_assert(offsetof(StackRootRangeRec, hpointer_mask) == 16, "mask at +16");
 
-// Whether slot i of a stack root range is a root. Bit i of the mask for
-// i < 64; beyond that, only an all-ones mask (an all-boxed range of any
-// length, e.g. arrayFromPointers' batch) makes it one. Spelled out because
-// `1ULL << i` for i >= 64 is undefined (x86 happens to wrap the count).
+/// Returns whether slot `i` of a range with mask `mask` is a root: bit `i` of the mask for `i` below 64,
+/// and otherwise whether the mask is all ones.
 inline bool stackRangeSlotIsRoot(uint64_t mask, size_t i) {
+    // Written out because `1ULL << i` is undefined for i >= 64.
     return i < 64 ? ((mask >> i) & 1) != 0 : mask == ~uint64_t{0};
 }
 
-// Cursor, array start and usable end for the calling thread's shadow stack.
-// Written ONLY by `Allocator::setThreadHeap` (base/limit, and the cursor reset)
-// and by the push/restore operations below (the cursor). A value that disagrees
-// with `tl_heap_` is heap corruption, not a wrong statistic — exactly as for
-// `eco_tl_bump_state`, which is set in the same one place for the same reason.
-//
-// initial-exec + constinit: no dynamic-init guard and no `__tls_get_addr` call
-// under -fPIC, so both the runtime C++ and generated code reach them with one
-// %fs-relative load (plans/inline-bump-state-tls.md:145 records LLVM 21.1.8
-// lowering `llvm.threadlocal.address` on such a global exactly that way).
+// The six TLS words of the two shadow stacks, as the file comment describes. They have C linkage and the
+// initial-exec TLS model, and are constant-initialised to null, so compiled code reads them directly by
+// name with no initialisation guard. `Allocator::setThreadHeap` sets the base and limit words; the
+// cursors are also moved by the push and restore functions below.
 extern "C" {
+/// The range stack's cursor: one past the newest record.
 extern thread_local StackRootRangeRec* eco_tl_root_sp
     __attribute__((tls_model("initial-exec")));
+/// The first record of the range stack's array.
 extern thread_local StackRootRangeRec* eco_tl_root_base
     __attribute__((tls_model("initial-exec")));
+/// One past the last usable record of the range stack; the slack lies beyond it.
 extern thread_local StackRootRangeRec* eco_tl_root_limit
     __attribute__((tls_model("initial-exec")));
 
-// Single-slot shadow stack (plan §3.3): 8 bytes per entry instead of 24.
-// `StackRootGuard(a,b,c,d)` used to push four separate one-element RANGES —
-// 96 bytes and four pushes to root four pointers — and the runtime's own apply
-// paths push `&closure_bits` as a one-element range on every dispatch. Those
-// carry no count and no mask worth storing: the count is 1 and the mask is 1 by
-// construction, so the entry is just the slot address and a push is `*sp++ = p`.
-//
-// NOT used at `Scheduler.cpp`'s `EncodedStackRootGuard`, which plan §3.3 names:
-// that file is pinned by the LSS_022 kernel-parametricity manifest (six
-// `Scheduler.*` licences hash it), so ANY edit — a comment included — requires
-// re-auditing `KernelSetFacts.elm`, which is COMPILER SOURCE and therefore the
-// benchmark's own workload. Moving the workload to save two stores at a cold
-// effect-manager site is a bad trade; after Phase 1 its range push is already
-// inline and call-free.
-//
-// Kept as a SEPARATE stack rather than a tagged entry in the range stack so the
-// compiled-code fast path (which only ever pushes ranges) is untouched: its
-// push, and `stackRangePoint`/`restoreStackRangePoint`, still move exactly one
-// cursor. Scopes that can push to both take an `EcoRootMark` below.
+// The single-slot stack is kept separate from the range stack so that compiled code, which pushes only
+// ranges, moves one cursor and never needs to save the other.
+/// The single-slot stack's cursor: one past the newest slot address.
 extern thread_local HPointer** eco_tl_root1_sp
     __attribute__((tls_model("initial-exec")));
+/// The first entry of the single-slot stack's array.
 extern thread_local HPointer** eco_tl_root1_base
     __attribute__((tls_model("initial-exec")));
+/// One past the last usable entry of the single-slot stack; the slack lies beyond it.
 extern thread_local HPointer** eco_tl_root1_limit
     __attribute__((tls_model("initial-exec")));
 }
 
-// Fatal shadow-stack overflow. Never returns.
+/// Reports a shadow-stack overflow at `depth` entries on standard error and aborts the process.
+///
+/// The message names `kRootRangeStackSlots` as the capacity, whichever stack overflowed.
 [[noreturn]] void ecoRootStackOverflow(std::size_t depth);
 
-// Usable slots per thread. The old vector reserved 4096 and the comment on it
-// recorded "steady-state depth in the Stage 7 self-compile stays under a few
-// hundred entries", so 65536 is ~16x headroom on the deepest figure ever seen.
+/// The number of usable records in a `RootSet`'s range stack.
 inline constexpr std::size_t kRootRangeStackSlots = 65536;
-// Slack allocated PAST the limit. An overflow is a bug, but with the slack it
-// lands in memory this RootSet owns instead of in someone else's, which turns a
-// silent heap corruption into a diagnosable one even in a build with the
-// overflow check compiled out.
+/// The number of records allocated past the range stack's limit, so that an overflow in a build without the
+/// bounds check lands in memory the `RootSet` owns.
 inline constexpr std::size_t kRootRangeStackSlack = 1024;
 
-// Single-slot stack. Its depth is bounded by C++ recursion depth across guarded
-// scopes (each `StackRootGuard` pushes at most 8), so it needs no more headroom
-// than the range stack; at 8 bytes an entry the whole array is 512 KiB.
+/// The number of usable entries in a `RootSet`'s single-slot stack.
 inline constexpr std::size_t kRoot1StackSlots = 65536;
+/// The number of entries allocated past the single-slot stack's limit, for the same reason as
+/// `kRootRangeStackSlack`.
 inline constexpr std::size_t kRoot1StackSlack = 1024;
 
-// Depth of the calling thread's shadow stack, as an opaque token. The cursor IS
-// the depth, so this is one TLS load; the token is a pointer value rather than
-// an index, but the `size_t` ABI is unchanged so no signature moved.
+/// Returns a restore point for the calling thread's range stack.
+///
+/// The value is the cursor's address, not a depth or an index, so it means nothing except as an argument
+/// to `ecoRootRangeRestore`.
 inline std::size_t ecoRootRangePoint() noexcept {
     return reinterpret_cast<std::size_t>(eco_tl_root_sp);
 }
 
-// Pops back to `point`. CLAMPED, preserving the old `resize`-based semantics
-// exactly: a restore to a point ABOVE the cursor (a double restore, or a stale
-// token used after an outer scope already popped) must not republish entries the
-// GC would then read as live roots. Compiled code emits the unconditional store
-// instead — its point/push/call/restore quads are emitted as one balanced unit.
+/// Pops the calling thread's range stack back to `point`, a value from `ecoRootRangePoint`.
+///
+/// A point above the current cursor is ignored, so restoring twice, or restoring to a point taken inside a
+/// scope that an outer scope has already popped, cannot make popped records live again.
 inline void ecoRootRangeRestore(std::size_t point) noexcept {
     auto* p = reinterpret_cast<StackRootRangeRec*>(point);
     if (p <= eco_tl_root_sp)
         eco_tl_root_sp = p;
 }
 
+/// Pushes the range of `count` slots at `base`, with mask `hpointer_mask`, onto the calling thread's range
+/// stack.
+///
+/// The slots must stay valid until the range is popped, and the collector rewrites the slots the mask
+/// marks. The record is pushed even when `count` is 0. With assertions or `ECO_HEAP_VALIDATE` on, a push at
+/// the limit calls `ecoRootStackOverflow`; otherwise it is not checked.
 inline void ecoRootRangePush(HPointer* base, std::size_t count,
                              std::uint64_t hpointer_mask) noexcept {
     StackRootRangeRec* sp = eco_tl_root_sp;
@@ -152,15 +153,19 @@ inline void ecoRootRangePush(HPointer* base, std::size_t count,
     eco_tl_root_sp = sp + 1;
 }
 
-// ---- single-slot stack (plan §3.3) ----
-
+/// Returns a restore point for the calling thread's single-slot stack, for `ecoRoot1Restore`.
 inline HPointer** ecoRoot1Point() noexcept { return eco_tl_root1_sp; }
 
+/// Pops the calling thread's single-slot stack back to `p`, ignoring a point above the cursor as
+/// `ecoRootRangeRestore` does.
 inline void ecoRoot1Restore(HPointer** p) noexcept {
     if (p <= eco_tl_root1_sp)
         eco_tl_root1_sp = p;
 }
 
+/// Pushes the HPointer slot `slot` onto the calling thread's single-slot stack.
+///
+/// The slot must stay valid until it is popped. The overflow check is as for `ecoRootRangePush`.
 inline void ecoRoot1Push(HPointer* slot) noexcept {
     HPointer** sp = eco_tl_root1_sp;
 #if ECO_HEAP_VALIDATE || !defined(NDEBUG)
@@ -171,18 +176,20 @@ inline void ecoRoot1Push(HPointer* slot) noexcept {
     eco_tl_root1_sp = sp + 1;
 }
 
-// A scope that may push to EITHER stack saves both cursors. Two loads and two
-// stores, still far below the vector push_back this replaces. Compiled code
-// never needs this: its quads only ever touch the range stack.
+/// A restore point for both shadow stacks at once, for a scope that may push to either: `range` is the
+/// range stack's cursor and `one` the single-slot stack's cursor, not a count.
 struct EcoRootMark {
     StackRootRangeRec* range;
     HPointer** one;
 };
 
+/// Returns a restore point for both of the calling thread's shadow stacks, for `ecoRootRelease`.
 inline EcoRootMark ecoRootMark() noexcept {
     return EcoRootMark{eco_tl_root_sp, eco_tl_root1_sp};
 }
 
+/// Pops both of the calling thread's shadow stacks back to `m`, ignoring either point if it is above that
+/// stack's cursor.
 inline void ecoRootRelease(EcoRootMark m) noexcept {
     if (m.range <= eco_tl_root_sp)
         eco_tl_root_sp = m.range;
@@ -190,148 +197,171 @@ inline void ecoRootRelease(EcoRootMark m) noexcept {
         eco_tl_root1_sp = m.one;
 }
 
-// Iterable `[base, sp)` view over the single-slot stack, for the two collectors.
+/// The live entries of a single-slot stack, from its base to its cursor, as a range of slot addresses.
+///
+/// It does not own the entries. It describes the stack as it was when the view was made, and is stale once
+/// that stack is pushed or popped.
 struct SingleRootView {
     HPointer* const* b;
     HPointer* const* e;
+    /// Returns the oldest entry.
     HPointer* const* begin() const { return b; }
+    /// Returns one past the newest entry.
     HPointer* const* end() const { return e; }
+    /// Returns the number of entries.
     std::size_t size() const { return static_cast<std::size_t>(e - b); }
+    /// Returns whether there are no entries.
     bool empty() const { return b == e; }
 };
 
-// Iterable `[base, sp)` view, replacing the `const std::vector&` the collector
-// used to walk. Same `begin/end/size/operator[]` surface, so the four scan and
-// debug sites are unchanged.
+/// The live records of a range stack, from its base to its cursor.
+///
+/// It does not own the records, and is stale once that stack is pushed or popped, as for `SingleRootView`.
 struct StackRootRangeView {
     const StackRootRangeRec* b;
     const StackRootRangeRec* e;
+    /// Returns the oldest record.
     const StackRootRangeRec* begin() const { return b; }
+    /// Returns one past the newest record.
     const StackRootRangeRec* end() const { return e; }
+    /// Returns the number of records.
     std::size_t size() const { return static_cast<std::size_t>(e - b); }
+    /// Returns whether there are no records.
     bool empty() const { return b == e; }
+    /// Returns record `i`, counting from the oldest. `i` must be less than `size()`.
     const StackRootRangeRec& operator[](std::size_t i) const { return b[i]; }
 };
 
-/**
- * Tracks GC roots: pointers into the heap that must be scanned during collection.
- *
- * Maintains two types of roots:
- * - Long-lived roots: Registered with addRoot/removeRoot, persist across GC cycles.
- * - Stack roots: Temporary roots pushed/popped as functions execute.
- *
- * Each thread has its own RootSet in its NurserySpace, so no mutex is needed.
- *
- * HEAP_020's container split is preserved: the TLS shadow stack replaces the
- * `stack_root_ranges` vector ONLY. `StackMapRoots` is a separate structure and
- * is untouched, so `restoreStackRangePoint` can never reach it.
- */
+/// The roots of one heap that are not in stack maps: long-lived roots, JIT roots, external root scanners,
+/// and the storage of the two shadow stacks, as the file comment describes.
+///
+/// A `RootSet` owns its two shadow-stack arrays from construction until destruction. The constructor throws
+/// `std::bad_alloc` if either cannot be mapped. A `RootSet` cannot be copied or moved, because the TLS
+/// cursors point into its arrays. The shadow-stack accessors read and write the calling thread's TLS words,
+/// not this object's arrays directly, so they describe this `RootSet` only on a thread whose TLS
+/// `Allocator::setThreadHeap` has pointed at it. The destructor clears the calling thread's TLS words if
+/// they still point at this `RootSet`'s arrays, then unmaps both.
+///
+/// Nothing here takes a lock.
 class RootSet {
 public:
-    // Kept as a nested alias: existing code names `RootSet::StackRootRange`.
+    /// Another name for `StackRootRangeRec`.
     using StackRootRange = StackRootRangeRec;
 
-    // Owns the calling thread's shadow-stack storage. The array is allocated
-    // once per thread heap and published into TLS by Allocator::setThreadHeap.
+    /// Maps the two shadow-stack arrays, each with its slack and a trailing guard page.
     RootSet();
     ~RootSet();
 
-    // Owns raw storage that TLS points at: never copy or move a RootSet.
     RootSet(const RootSet&) = delete;
     RootSet& operator=(const RootSet&) = delete;
 
-    // ===== Long-lived roots =====
+    // Long-lived roots
 
-    // Registers a pointer location as a GC root. O(1) average.
+    /// Registers `root`, the address of an HPointer slot, as a root until `removeRoot`.
+    ///
+    /// The slot must stay valid while registered. Registering the same address twice registers it once.
     void addRoot(HPointer *root);
 
-    // Unregisters a pointer location from the root set. O(1) average.
+    /// Unregisters `root`. An address that is not registered is ignored.
     void removeRoot(HPointer *root);
 
-    // Returns the set of registered root pointers.
+    /// Returns the registered long-lived roots. The reference is to this object's set, which `addRoot`,
+    /// `removeRoot` and `reset` change.
     const std::unordered_set<HPointer *> &getRoots() const { return roots; }
 
-    // ===== JIT roots (raw 64-bit pointers) =====
-    // In JIT mode, globals store full 64-bit heap pointers rather than
-    // HPointer-encoded values. These need separate handling.
+    // JIT roots
 
-    // Registers a JIT root (location storing a raw 64-bit heap pointer).
+    /// Registers `root`, the address of a 64-bit word holding a raw heap address, as a root until
+    /// `removeJitRoot`.
+    ///
+    /// The word must stay valid while registered. Registering the same address twice registers it once.
     void addJitRoot(uint64_t *root);
 
-    // Unregisters a JIT root.
+    /// Unregisters `root`. An address that is not registered is ignored.
     void removeJitRoot(uint64_t *root);
 
-    // Returns the set of JIT root pointers.
+    /// Returns the registered JIT roots. The reference is to this object's set, which `addJitRoot`,
+    /// `removeJitRoot` and `reset` change.
     const std::unordered_set<uint64_t *> &getJitRoots() const { return jit_roots; }
 
-    // ===== Stack root ranges (temporary, frame-based) =====
-    // Thin wrappers over the TLS cursor above, so every caller — runtime,
-    // kernels, and the `eco_gc_*` exports generated code calls — gets the
-    // inline form with no change at the call site.
+    // Shadow stacks
 
+    /// Returns a restore point for the calling thread's range stack, as `ecoRootRangePoint` does.
     size_t stackRangePoint() const { return ecoRootRangePoint(); }
 
+    /// Pushes a range onto the calling thread's range stack as `ecoRootRangePush` does, except that a null
+    /// `base` or a `count` of 0 pushes nothing.
+    ///
+    /// The calling thread's range stack must be this `RootSet`'s; that is asserted.
     void pushStackRootRange(HPointer* base, size_t count, uint64_t hpointer_mask) {
-        // The calling thread's TLS must be published from THIS RootSet: a push
-        // through a reference to another thread's RootSet would silently land
-        // on the caller's stack instead.
         assert(eco_tl_root_base == range_storage_ &&
                "pushStackRootRange on a RootSet that is not the calling thread's");
         if (base && count > 0)
             ecoRootRangePush(base, count, hpointer_mask);
     }
 
+    /// Pops the calling thread's range stack back to `point`, as `ecoRootRangeRestore` does.
     void restoreStackRangePoint(size_t point) { ecoRootRangeRestore(point); }
 
+    /// Returns a view of the calling thread's range stack.
     StackRootRangeView getStackRootRanges() const {
         return StackRootRangeView{eco_tl_root_base, eco_tl_root_sp};
     }
 
-    // Single-slot roots pushed in this thread's guarded scopes (plan §3.3).
-    // The collector walks this ALONGSIDE getStackRootRanges(); both are live
-    // roots and neither subsumes the other.
+    /// Returns a view of the calling thread's single-slot stack. Its entries are roots as well as those of
+    /// `getStackRootRanges`; neither stack includes the other.
     SingleRootView getSingleRoots() const {
         return SingleRootView{eco_tl_root1_base, eco_tl_root1_sp};
     }
 
-    // Storage published into TLS by Allocator::setThreadHeap — the sole writer.
+    /// Returns the first record of this object's range-stack array, for `Allocator::setThreadHeap` to
+    /// publish. It stays valid until this object is destroyed.
     StackRootRangeRec* rangeStorage() const { return range_storage_; }
+    /// Returns the first entry of this object's single-slot-stack array, for `Allocator::setThreadHeap` to
+    /// publish. It stays valid until this object is destroyed.
     HPointer** root1Storage() const { return root1_storage_; }
 
-    // ===== External root scanners =====
-    // Callbacks invoked during GC to discover additional roots held in
-    // C++ data structures (e.g., Scheduler run queue, PlatformRuntime state).
-    // The callback receives a function it must call for each uint64_t* that
-    // holds an encoded HPointer needing evacuation.
+    // External root scanners
+
+    /// A function a scanner calls once for each 64-bit word it holds that contains an HPointer. The
+    /// function may rewrite the word, to the object's new address.
     using EvacuateFn = std::function<void(uint64_t&)>;
+    /// A callback that reports the HPointer words held by some C++ structure, by calling the `EvacuateFn`
+    /// it is given on each of them. It is called each time this heap's roots are scanned.
     using ExternalRootScanner = std::function<void(EvacuateFn)>;
 
-    // `name` must have static lifetime (a string literal); it labels the
-    // scanner in the threaded-gc-00 per-scanner cost report.
+    /// Registers `scanner` under `name`, which labels it in per-scanner statistics.
+    ///
+    /// `name` is kept, so it must have static lifetime. A null `name`, or one equal to `"unnamed"`, is
+    /// replaced by a label built from the caller's return address: `unnamed@` followed by the enclosing
+    /// symbol name if `dladdr` finds one, otherwise the offset within the loaded object, otherwise the
+    /// address. A scanner cannot be removed except by `reset`.
     void addExternalRootScanner(ExternalRootScanner scanner,
                                 const char* name = "unnamed");
 
+    /// Returns the registered scanners, in registration order. The reference is to this object's vector,
+    /// which `addExternalRootScanner` and `reset` change.
     const std::vector<ExternalRootScanner>& getExternalRootScanners() const {
         return external_scanners;
     }
 
-    // Parallel to getExternalRootScanners(): one name per scanner.
+    /// Returns the scanners' names, element `i` naming scanner `i` of `getExternalRootScanners`.
     const std::vector<const char*>& getExternalRootScannerNames() const {
         return external_scanner_names;
     }
 
-    // ===== Utility =====
-
-    // Resets to initial empty state. Used for testing.
+    /// Removes every long-lived root, JIT root and external scanner, and, if the calling thread's TLS points
+    /// at this object's arrays, empties both shadow stacks.
     void reset();
 
 private:
-    std::unordered_set<HPointer *> roots;     // Long-lived roots (O(1) add/remove).
-    std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
-    std::vector<ExternalRootScanner> external_scanners; // External root callbacks.
-    std::vector<const char*> external_scanner_names;    // Parallel names.
-    StackRootRangeRec* range_storage_ = nullptr;        // Range shadow-stack array.
-    HPointer** root1_storage_ = nullptr;                // Single-slot shadow-stack array.
+    std::unordered_set<HPointer *> roots;
+    std::unordered_set<uint64_t *> jit_roots;
+    std::vector<ExternalRootScanner> external_scanners;
+    std::vector<const char*> external_scanner_names;    // Same length and order as `external_scanners`.
+    // The two shadow-stack arrays, owned, mapped by the constructor and unmapped by the destructor.
+    StackRootRangeRec* range_storage_ = nullptr;
+    HPointer** root1_storage_ = nullptr;
 };
 
 } // namespace Elm

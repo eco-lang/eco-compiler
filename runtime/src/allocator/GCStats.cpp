@@ -1,11 +1,3 @@
-/**
- * GCStats Implementation.
- *
- * Tracks GC performance metrics including allocation counts, GC cycle timing,
- * and survival/promotion rates. Provides histogram visualization for latency
- * analysis. Zero overhead when ENABLE_GC_STATS is disabled.
- */
-
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -25,9 +17,9 @@
 
 namespace Elm {
 
-// Maps an allocation size in bytes to its power-of-two histogram bucket.
-// Bucket k covers [8 << k, 8 << (k+1)); the last bucket absorbs anything
-// at or above the histogram's upper bound.
+// Returns the bucket of `bytes` in a size histogram of `num_buckets` buckets, laid out as the
+// allocation size histogram comment in GCStats.hpp describes: sizes under 16 go to bucket 0, and
+// sizes past the last bucket's lower bound to the last bucket.
 static inline size_t allocSizeBucketIndex(size_t bytes, size_t num_buckets) {
     if (bytes < GCStats::ALLOC_HISTOGRAM_BASE) return 0;
     // floor(log2(bytes)); bit_width(x) returns 1 + floor(log2(x)) for x > 0.
@@ -38,7 +30,7 @@ static inline size_t allocSizeBucketIndex(size_t bytes, size_t num_buckets) {
     return idx;
 }
 
-// Formats a byte size with appropriate units (B, KiB, MiB).
+// Returns `bytes` as text: in bytes below 1 KiB, else in whole KiB below 1 MiB, else in whole MiB.
 static std::string formatBytes(size_t bytes) {
     std::ostringstream oss;
     oss << std::fixed;
@@ -52,9 +44,8 @@ static std::string formatBytes(size_t bytes) {
     return oss.str();
 }
 
-// Maps a Tag enum value to a short human-readable name for the per-kind
-// allocation histogram. Unknown values fall back to "Tag_<n>" so a new tag
-// added without updating this table still prints something sensible.
+// Returns the short name of tag `t`, or "<unknown>" for a value this table does not list; this is
+// `gcTagName`. A tag added to `Tag` needs a case here, or it prints as "<unknown>".
 static const char* tagName(int t) {
     switch (t) {
         case Tag_Int:               return "Int";
@@ -88,23 +79,19 @@ static const char* tagName(int t) {
     }
 }
 
-// Helper to format nanoseconds with appropriate units.
-// Returns a string like "123.45 ns", "1.23 µs", "45.67 ms", or "1.23 s"
+// Returns `ns` as text in the largest unit that keeps the number at least 1, such as "123 ns",
+// "1.23 µs", "45.67 ms" or "1.23 s": whole nanoseconds, otherwise two decimal places.
 static std::string formatTime(uint64_t ns) {
     std::ostringstream oss;
     oss << std::fixed;
 
     if (ns < 1000) {
-        // Nanoseconds
         oss << std::setprecision(0) << ns << " ns";
     } else if (ns < 1000000) {
-        // Microseconds
         oss << std::setprecision(2) << (ns / 1000.0) << " µs";
     } else if (ns < 1000000000) {
-        // Milliseconds
         oss << std::setprecision(2) << (ns / 1000000.0) << " ms";
     } else {
-        // Seconds
         oss << std::setprecision(2) << (ns / 1000000000.0) << " s";
     }
     return oss.str();
@@ -114,11 +101,11 @@ static std::string formatTime(uint64_t ns) {
 // Histogram printing helpers
 // ---------------------------------------------------------------------------
 //
-// Both helpers are parameterised by the histogram arrays so the same
-// formatting code emits the cumulative ("over N major-GC end snapshots")
-// and the most-recent ("at last major-GC end") variants. `header_label`
-// distinguishes the two sections in the printed output.
+// Each takes the arrays to print, so the same code prints the cumulative and the latest snapshot.
 
+// Prints one residency histogram titled with `header_label`: a row per non-empty bucket, a total
+// row, a row for the pinned blocks if any, and, when `include_per_major_avg`, the averages per
+// snapshot. Prints nothing when `residency_snapshots` is 0.
 static void printResidencyHistogramBlock(
     const char* header_label,
     const uint64_t residency_pages[GCStats::RESIDENCY_BUCKETS],
@@ -280,6 +267,9 @@ static void printResidencyHistogramBlock(
     }
 }
 
+// Prints one free-list histogram titled with `header_label`: a row per non-empty size class with
+// its cell size, a row for free whole blocks if any, a total row, and, when
+// `include_per_major_avg`, the averages per snapshot. Prints nothing when `freelist_snapshots` is 0.
 static void printFreelistHistogramBlock(
     const char* header_label,
     const uint64_t freelist_cells_by_class[GCStats::FREELIST_CLASS_BUCKETS],
@@ -307,6 +297,7 @@ static void printFreelistHistogramBlock(
 
     const int BAR_WIDTH = 30;
     const double MB = 1024.0 * 1024.0;
+    // The class layout `GCStats::FREELIST_CLASS_BUCKETS` describes.
     constexpr int NUM_SMALL = 32;
     constexpr int MEDIUM_BASE = 512;
     for (int i = 0; i < GCStats::FREELIST_CLASS_BUCKETS; i++) {
@@ -372,7 +363,6 @@ static void printFreelistHistogramBlock(
     }
 }
 
-// Records a single allocation of the given size.
 void GCStats::recordAllocation(size_t bytes) {
     objects_allocated++;
     bytes_allocated += bytes;
@@ -382,8 +372,6 @@ void GCStats::recordAllocation(size_t bytes) {
     if (bytes >= 16 && bytes < 24) nursery_alloc_size_16_24_count++;
 }
 
-// Records a single old-generation allocation of the given size in the
-// size-distribution histogram only.
 size_t GCStats::oldGenAllocBucket(size_t bytes) {
     return allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
 }
@@ -399,10 +387,6 @@ void GCStats::recordOldGenAllocation(size_t bytes) {
     if (bytes >= 16 && bytes < 24) oldgen_alloc_size_16_24_count++;
 }
 
-// Records a single String allocation by heap-object byte size. Called from
-// HeapHelpers::allocString before its large/inline-leaf dispatch, so the
-// bucket reflects the object size that would actually be reserved on the
-// heap (header + chars[], 8B-aligned).
 void GCStats::recordStringAllocation(size_t bytes) {
     size_t bucket = allocSizeBucketIndex(bytes, STRING_ALLOC_BUCKETS);
     string_alloc_size_histogram[bucket]++;
@@ -419,8 +403,6 @@ void GCStats::recordUtf8WidenSite(int site, size_t units) {
     utf8_widen_site_units[site] += units;
 }
 
-// Records a typed mutator allocation through the ThreadLocalHeap path.
-// Called from initHeaderForTag, exactly once per successful mutator alloc.
 void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
     int idx = static_cast<int>(tag);
     if (idx < 0 || idx >= NUM_ALLOC_TAGS) return;
@@ -428,53 +410,26 @@ void GCStats::recordTLHAllocation(size_t bytes, Tag tag) {
     tlh_alloc_bytes_by_tag[idx] += bytes;
 }
 
-// LH1 (plans/live-heap-composition-census.md). Called from the minor-GC
-// evacuation paths in NurserySpace once per surviving/promoted object.
-// The scalar is bumped here rather than at the call site so the totals and
-// the per-kind histograms are incremented by the same statement and cannot
-// diverge; an out-of-range tag (defensive — a live object should never
-// carry Tag_Forward) still counts toward the scalar so promotion rates stay
-// comparable with pre-LH1 runs.
-// W1: bucket a Custom by field count (Header::size), clamping into the
-// overflow slot. Non-Custom tags never reach here.
-// W5 item 55: customArityBucket moved to GCStats.hpp as a static member.
-
-// W5 item 55: recordPromotion is now inline in GCStats.hpp.
-
-// W5 item 55: recordSurvival is now inline in GCStats.hpp.
-
-// Helper: routes a per-tag mutator allocation event from a free function
-// (initHeaderForTag) to the calling thread's GCStats. Exposed via the
-// GC_STATS_TLH_RECORD_ALLOC macro; in stats-disabled builds the macro
-// expands to nothing and this body is dead code.
 void recordTLHAllocOnCurrentThread(size_t bytes, Tag tag) noexcept {
 #if ENABLE_GC_STATS
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordTLHAllocation(bytes, tag);
 #else
-    // Stats disabled: ThreadLocalHeap has no getStats()/stats_, so the body
-    // compiles away. The symbol is still emitted to satisfy the unconditional
-    // declaration in GCStats.hpp, but nothing references it (the macro is a
-    // no-op in this configuration).
+    // Without statistics a ThreadLocalHeap has no `getStats`, so there is nothing to record into.
     (void)bytes;
     (void)tag;
 #endif
 }
 
-// String-histogram trampoline: same shape as the per-tag helper above, but
-// no Tag is in scope at the call site (allocString is the tag's chokepoint).
 void recordStringAllocOnCurrentThread(size_t bytes) noexcept {
 #if ENABLE_GC_STATS
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
     if (tlh) tlh->getStats().recordStringAllocation(bytes);
 #else
-    // See recordTLHAllocOnCurrentThread above: body is dead in stats-disabled
-    // builds where getStats() does not exist.
     (void)bytes;
 #endif
 }
 
-// UTF-8 widen trampoline: same shape as the String-histogram helper.
 void recordUtf8WidenOnCurrentThread(size_t units) noexcept {
 #if ENABLE_GC_STATS
     ThreadLocalHeap* tlh = Allocator::instance().getCurrentThreadHeap();
@@ -494,32 +449,25 @@ void recordUtf8WidenSiteOnCurrentThread(int site, size_t units) noexcept {
 #endif
 }
 
-// Mutator-direct old-gen allocation: counted toward the cross-generation
-// totals so the printed "Bytes allocated" line reflects all mutator
-// allocations, not just nursery. Histogram is not touched here — that's
-// already done by recordOldGenAllocation inside OldGenSpace::allocate.
 void GCStats::recordOldGenDirectAllocation(size_t bytes) {
     objects_allocated++;
     bytes_allocated += bytes;
 }
 
-// Records completion of a minor GC cycle with timing and reclaimed bytes.
 void GCStats::recordMinorGCEnd(uint64_t elapsed_ns, size_t freed) {
     minor_gc_count++;
     total_minor_gc_time_ns += elapsed_ns;
     bytes_freed += freed;
 
-    // Update min/max.
     min_minor_gc_time_ns = std::min(min_minor_gc_time_ns, elapsed_ns);
     max_minor_gc_time_ns = std::max(max_minor_gc_time_ns, elapsed_ns);
 
-    // Record in histogram.
     size_t bucket = getMinorHistogramBucket(elapsed_ns);
     minor_time_histogram[bucket]++;
 }
 
-// Maps a per-block live fraction to its residency-histogram bucket.
-// Buckets match the documentation in GCStats.hpp.
+// Returns the residency bucket of a block whose live fraction is `live_frac`, in the layout
+// `GCStats::RESIDENCY_BUCKETS` describes.
 static inline int residencyBucket(double live_frac) {
     if (live_frac <= 0.0)  return 0;   // Fully empty.
     if (live_frac <= 0.01) return 1;
@@ -531,12 +479,6 @@ static inline int residencyBucket(double live_frac) {
     return 7;                          // (0.75, 1.00].
 }
 
-// Buckets a single block's residency by live fraction. Accumulates
-// pages, committed bytes, and the live/free/garbage three-way byte
-// breakdown per bucket so the printed histogram can surface shape,
-// mass, and waste together. Garbage is derived as the residual
-// (total - live - free), clamped to >= 0 in case rounding or partial
-// sweep state pushes the sum slightly past total.
 void GCStats::recordBlockResidency(size_t total_bytes,
                                    size_t live_bytes,
                                    size_t free_bytes,
@@ -557,10 +499,6 @@ void GCStats::recordBlockResidency(size_t total_bytes,
     residency_garbage_bytes[bucket] += garbage_bytes;
     residency_free_bytes[bucket]    += free_bytes;
 
-    // Accumulate into the staging buffer for the in-progress snapshot.
-    // The visible `latest_*` mirror is only updated when
-    // recordResidencySnapshot() commits this batch — so a SIGTERM
-    // landing mid-snapshot leaves the prior completed snapshot intact.
     pending_residency_pages[bucket]++;
     pending_residency_page_bytes[bucket]    += total_bytes;
     pending_residency_live_bytes[bucket]    += live_bytes;
@@ -583,9 +521,6 @@ void GCStats::recordBlockResidency(size_t total_bytes,
 }
 
 void GCStats::beginResidencySnapshot() {
-    // Clear ONLY the staging buffer. `latest_*` keeps the prior
-    // completed snapshot until recordResidencySnapshot() commits this
-    // new one — see crash-forensics rationale in GCStats.hpp.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         pending_residency_pages[i]         = 0;
         pending_residency_page_bytes[i]    = 0;
@@ -602,7 +537,6 @@ void GCStats::beginResidencySnapshot() {
 
 void GCStats::recordResidencySnapshot() {
     residency_snapshots++;
-    // Commit the staging buffer: pending_* -> latest_*.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         latest_residency_pages[i]         = pending_residency_pages[i];
         latest_residency_page_bytes[i]    = pending_residency_page_bytes[i];
@@ -637,7 +571,6 @@ void GCStats::recordFreeListLargeBlocks(uint64_t block_count,
 }
 
 void GCStats::beginFreeListSnapshot() {
-    // Staging buffer only — latest_* retains the prior completed snapshot.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         pending_freelist_cells_by_class[i] = 0;
         pending_freelist_bytes_by_class[i] = 0;
@@ -657,10 +590,10 @@ void GCStats::recordFreeListSnapshot() {
     latest_freelist_snapshots = 1;
 }
 
-// Records completion of a major GC cycle with timing.
-// Time origin for the major-GC event log. Initialised at static-init of this
-// translation unit, i.e. effectively process start: every `start_ns` in the log
-// is relative to this, so the timeline is readable without external clocks.
+// The origin of process-relative time: a steady-clock reading taken during the static
+// initialisation of this file. Static initialisation runs before `main`, but its order across files
+// is unspecified, so code that runs during another file's static initialisation may still see it
+// as zero.
 static const std::chrono::steady_clock::time_point g_process_start =
     std::chrono::steady_clock::now();
 
@@ -707,7 +640,7 @@ void GCStats::recordMajorGCEvent(uint64_t total_ns,
         return;
     }
     MajorGCEvent& e = major_gc_events[major_gc_events_used++];
-    e.seq                    = major_gc_count;  // already bumped by recordMajorGCEnd
+    e.seq                    = major_gc_count;
     e.start_ns               = pending_major_start_ns;
     e.total_ns               = total_ns;
     e.root_scan_ns           = root_scan_ns;
@@ -734,6 +667,7 @@ void GCStats::recordMajorGCEvent(uint64_t total_ns,
 }
 
 namespace {
+// Returns the name `gcMajorReasonName` documents for `r`.
 const char* majorReasonName(GCStats::MajorReason r) {
     switch (r) {
         case GCStats::MajorReason::Occupancy:       return "occupancy";
@@ -766,10 +700,6 @@ void GCStats::printMajorGCEventLog() const {
     const double MB = 1024.0 * 1024.0;
     for (size_t i = 0; i < major_gc_events_used; ++i) {
         const MajorGCEvent& e = major_gc_events[i];
-        // Recovered is the mark-derived garbage the collection identified,
-        // which is the honest "how much did this one find" figure — the
-        // allocator-visible before/after understates it because the sweep is
-        // lazy (see the MajorGCEvent comment).
         std::cout << "  " << std::fixed << std::setprecision(2)
                   << std::setw(8) << (e.start_ns / 1.0e9)
                   << std::setprecision(1)
@@ -806,54 +736,46 @@ void GCStats::recordMajorGCEnd(uint64_t elapsed_ns) {
     major_gc_count++;
     total_major_gc_time_ns += elapsed_ns;
 
-    // Update min/max.
     min_major_gc_time_ns = std::min(min_major_gc_time_ns, elapsed_ns);
     max_major_gc_time_ns = std::max(max_major_gc_time_ns, elapsed_ns);
 
-    // Record in histogram.
     size_t bucket = getMajorHistogramBucket(elapsed_ns);
     major_time_histogram[bucket]++;
 }
 
-// Maps a minor GC duration to its histogram bucket index.
 size_t GCStats::getMinorHistogramBucket(uint64_t ns) const {
     if (ns >= MINOR_HISTOGRAM_SECOND_RANGE) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket >1ms.
+        return HISTOGRAM_BUCKETS - 1;
     }
     if (ns >= MINOR_HISTOGRAM_FIRST_RANGE) {
-        // Second range: 100µs-1ms with 50µs buckets
         size_t offset = ns - MINOR_HISTOGRAM_FIRST_RANGE;
         return MINOR_BUCKETS_SMALL + (offset / MINOR_BUCKET_SIZE_LARGE);
     }
-    // First range: 0-100µs with 5µs buckets
     return ns / MINOR_BUCKET_SIZE_SMALL;
 }
 
-// Maps a major GC duration to its histogram bucket index.
-// Major GC uses millisecond scale buckets (5ms small, 50ms large).
 size_t GCStats::getMajorHistogramBucket(uint64_t ns) const {
-    // Bucket configuration:
-    // - 20 buckets of 5ms each (0-100ms)
-    // - 18 buckets of 50ms each (100ms-1000ms)
-    // - 1 overflow bucket (>1000ms)
-    static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
-    static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
-    static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
-    static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+    // The minor layout's bucket counts, with major widths. `print` repeats these four values and
+    // must change with them.
+    // The end of the narrow buckets: 100 ms in nanoseconds.
+    static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;
+    // The end of the wide buckets: 1 s in nanoseconds.
+    static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000;
+    // The width of a narrow bucket: 5 ms in nanoseconds.
+    static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;
+    // The width of a wide bucket: 50 ms in nanoseconds.
+    static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;
 
     if (ns >= MAJOR_SECOND_RANGE) {
-        return HISTOGRAM_BUCKETS - 1;  // Overflow bucket >1s.
+        return HISTOGRAM_BUCKETS - 1;
     }
     if (ns >= MAJOR_FIRST_RANGE) {
-        // Second range: 100ms-1s with 50ms buckets
         size_t offset = ns - MAJOR_FIRST_RANGE;
         return MINOR_BUCKETS_SMALL + (offset / MAJOR_BUCKET_LARGE);
     }
-    // First range: 0-100ms with 5ms buckets
     return ns / MAJOR_BUCKET_SMALL;
 }
 
-// Merges statistics from another GCStats instance.
 void GCStats::combine(const GCStats& other) {
     // Combine allocation stats.
     objects_allocated += other.objects_allocated;
@@ -880,28 +802,21 @@ void GCStats::combine(const GCStats& other) {
     objects_promoted += other.objects_promoted;
     bytes_freed += other.bytes_freed;
 
-    // Combine nursery sizing stats. nursery_size_bytes is reduced by max so
-    // the merged value reports the largest individual per-thread nursery
-    // observed (rather than summing independent per-thread nurseries, which
-    // would conflate fan-out with growth).
     nursery_grow_events += other.nursery_grow_events;
+    // A size, not a count: the largest nursery, not the sum of all of them.
     if (other.nursery_size_bytes > nursery_size_bytes) {
         nursery_size_bytes = other.nursery_size_bytes;
     }
 
-    // Capacity-check hoisting counter (HEAP_041): a plain sum.
     ensure_slow_calls += other.ensure_slow_calls;
 
-    // Old-gen walls are allocator-global: every contributor carries the same
-    // process-wide value, so merge by max (getCombinedStats then overwrites
-    // both from the live allocator).
+    // Allocator-wide figures: merged by maximum, not added.
     if (other.oldgen_inuse_peak_bytes > oldgen_inuse_peak_bytes) {
         oldgen_inuse_peak_bytes = other.oldgen_inuse_peak_bytes;
     }
     if (other.oldgen_hiwater_bytes > oldgen_hiwater_bytes) {
         oldgen_hiwater_bytes = other.oldgen_hiwater_bytes;
     }
-    // threaded-gc-03: allocator-global like the walls above.
     page_supply.mergeMax(other.page_supply);
     helper.mergeMax(other.helper);
     lp.combine(other.lp);
@@ -911,7 +826,6 @@ void GCStats::combine(const GCStats& other) {
     pm.combine(other.pm);
     cm.combine(other.cm);
 
-    // Combine allocator-helper attribution.
     total_oldgen_alloc_in_mutator_ns  += other.total_oldgen_alloc_in_mutator_ns;
     total_post_sweep_shrink_ns        += other.total_post_sweep_shrink_ns;
     total_maybe_shrink_heavy_ns       += other.total_maybe_shrink_heavy_ns;
@@ -921,7 +835,6 @@ void GCStats::combine(const GCStats& other) {
     total_lazy_sweep_bytes_in_mutator += other.total_lazy_sweep_bytes_in_mutator;
     total_panic_sweep_bytes           += other.total_panic_sweep_bytes;
 
-    // Combine Minor GC timing stats.
     total_minor_gc_time_ns += other.total_minor_gc_time_ns;
     if (other.min_minor_gc_time_ns < min_minor_gc_time_ns) {
         min_minor_gc_time_ns = other.min_minor_gc_time_ns;
@@ -930,22 +843,19 @@ void GCStats::combine(const GCStats& other) {
         max_minor_gc_time_ns = other.max_minor_gc_time_ns;
     }
 
-    // Combine Minor GC histogram.
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         minor_time_histogram[i] += other.minor_time_histogram[i];
     }
 
-    // Combine AllocBuffer stats.
     buffers_allocated += other.buffers_allocated;
     buffers_filled += other.buffers_filled;
 
-    // Combine Major GC event stats.
     concurrent_marks_started += other.concurrent_marks_started;
     mark_sweeps_completed += other.mark_sweeps_completed;
     incremental_mark_calls += other.incremental_mark_calls;
     total_incremental_mark_work_units += other.total_incremental_mark_work_units;
-    // Event log: append, then the printer's rows stay in per-thread order.
-    // (Single-mutator compiles never hit this; kept correct for completeness.)
+    // Appended after this record's own events, so a combined log is grouped by record, not
+    // sorted by time.
     for (size_t i = 0; i < other.major_gc_events_used; ++i) {
         if (major_gc_events_used >= MAJOR_GC_EVENT_CAP) {
             major_gc_events_dropped++;
@@ -960,13 +870,11 @@ void GCStats::combine(const GCStats& other) {
     major_gc_garbage_triggers += other.major_gc_garbage_triggers;
     major_gc_global_pressure_triggers += other.major_gc_global_pressure_triggers;
 
-    // Combine split-header large-body minor-reclaim stats.
     large_body_minor_sweep_runs        += other.large_body_minor_sweep_runs;
     large_body_minor_sweep_skips       += other.large_body_minor_sweep_skips;
     large_body_minor_freed_bytes       += other.large_body_minor_freed_bytes;
     large_body_deferred_to_major_bytes += other.large_body_deferred_to_major_bytes;
 
-    // Combine Major GC timing stats.
     major_gc_count += other.major_gc_count;
     total_major_gc_time_ns += other.total_major_gc_time_ns;
     if (other.min_major_gc_time_ns < min_major_gc_time_ns) {
@@ -976,12 +884,10 @@ void GCStats::combine(const GCStats& other) {
         max_major_gc_time_ns = other.max_major_gc_time_ns;
     }
 
-    // Combine Major GC histogram.
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         major_time_histogram[i] += other.major_time_histogram[i];
     }
 
-    // Combine allocation-size histograms.
     for (int i = 0; i < NURSERY_ALLOC_BUCKETS; i++) {
         nursery_alloc_size_histogram[i] += other.nursery_alloc_size_histogram[i];
     }
@@ -1002,8 +908,6 @@ void GCStats::combine(const GCStats& other) {
         utf8_widen_site_units[i] += other.utf8_widen_site_units[i];
     }
 
-    // Combine per-kind ThreadLocalHeap allocation counters, and the LH1
-    // retention histograms alongside them.
     for (int i = 0; i < NUM_ALLOC_TAGS; i++) {
         tlh_alloc_count_by_tag[i] += other.tlh_alloc_count_by_tag[i];
         tlh_alloc_bytes_by_tag[i] += other.tlh_alloc_bytes_by_tag[i];
@@ -1018,7 +922,6 @@ void GCStats::combine(const GCStats& other) {
         custom_survived_by_nfields[i]       += other.custom_survived_by_nfields[i];
     }
 
-    // Combine page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         residency_pages[i]         += other.residency_pages[i];
         residency_page_bytes[i]    += other.residency_page_bytes[i];
@@ -1033,10 +936,8 @@ void GCStats::combine(const GCStats& other) {
     residency_pinned_free_bytes    += other.residency_pinned_free_bytes;
     residency_snapshots            += other.residency_snapshots;
 
-    // Combine latest residency snapshot. Each per-thread `latest_*` block
-    // holds that thread's most recent major-GC end snapshot; summing
-    // produces the union of those latest snapshots across threads, which
-    // is what the printer reports as "Latest Major GC End".
+    // Added like the cumulative arrays, so a combined record's latest snapshot is the sum of each
+    // merged record's last snapshot, which need not have been taken at the same moment.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         latest_residency_pages[i]         += other.latest_residency_pages[i];
         latest_residency_page_bytes[i]    += other.latest_residency_page_bytes[i];
@@ -1050,11 +951,8 @@ void GCStats::combine(const GCStats& other) {
     latest_residency_pinned_garbage_bytes += other.latest_residency_pinned_garbage_bytes;
     latest_residency_pinned_free_bytes    += other.latest_residency_pinned_free_bytes;
     latest_residency_snapshots            += other.latest_residency_snapshots;
-    // Pending residency staging: not exposed by the printer, so combining
-    // would leak partial in-progress snapshots into the merged view. Leave
-    // pending_* on `this` untouched.
+    // The pending arrays are not merged: a snapshot still being recorded is not a result.
 
-    // Combine free-list size-class histogram.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         freelist_cells_by_class[i] += other.freelist_cells_by_class[i];
         freelist_bytes_by_class[i] += other.freelist_bytes_by_class[i];
@@ -1063,7 +961,6 @@ void GCStats::combine(const GCStats& other) {
     freelist_large_block_bytes += other.freelist_large_block_bytes;
     freelist_snapshots         += other.freelist_snapshots;
 
-    // Combine latest free-list snapshot (same union-of-latest semantics).
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         latest_freelist_cells_by_class[i] += other.latest_freelist_cells_by_class[i];
         latest_freelist_bytes_by_class[i] += other.latest_freelist_bytes_by_class[i];
@@ -1071,13 +968,10 @@ void GCStats::combine(const GCStats& other) {
     latest_freelist_large_block_count += other.latest_freelist_large_block_count;
     latest_freelist_large_block_bytes += other.latest_freelist_large_block_bytes;
     latest_freelist_snapshots         += other.latest_freelist_snapshots;
-    // Pending free-list staging: not exposed by the printer; left untouched.
-    // threaded-gc-00 phase totals and pause log.
     tg.merge(other.tg);
     bm.merge(other.bm);
 }
 
-// Prints a formatted summary to stdout with histograms.
 void GCStats::print() const {
     std::cout << "\n=== GC Statistics ===" << std::endl;
     std::cout << std::endl;
@@ -1136,13 +1030,7 @@ void GCStats::print() const {
     if (minor_gc_count > 0) {
         std::cout << "\nMinor GC Timing:" << std::endl;
 
-        // total_minor_gc_time_ns is the WHOLE minor pause per cycle,
-        // promotion allocation included. Promotions are not timed
-        // individually any more (OldGenSpace::allocate skips the clock while
-        // g_in_minor_gc), so nothing is subtracted from the pause. The
-        // histogram/min/max/avg below all reflect the same whole-pause
-        // accounting. It excludes the stack walk and the large-body sweep;
-        // see "GC Pause Distribution (threaded-gc-00)" for whole pauses.
+        // A minor's promotions allocate in the old generation, and that time is part of the minor's.
         std::cout << "  Total time:            " << std::setw(15) << formatTime(total_minor_gc_time_ns)
                   << "  (incl. promotion alloc)" << std::endl;
 
@@ -1160,7 +1048,6 @@ void GCStats::print() const {
         // ========== Minor GC Histogram ==========
         std::cout << "Minor GC Time Histogram:" << std::endl;
 
-        // Find max count for scaling.
         uint64_t max_count = 0;
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             max_count = std::max(max_count, minor_time_histogram[i]);
@@ -1169,18 +1056,15 @@ void GCStats::print() const {
         const int BAR_WIDTH = 40;
 
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
-            if (minor_time_histogram[i] == 0) continue;  // Skip empty buckets.
+            if (minor_time_histogram[i] == 0) continue;
 
-            // Bucket range.
             if (i < HISTOGRAM_BUCKETS - 1) {
                 uint64_t range_start, range_end;
 
                 if (i < MINOR_BUCKETS_SMALL) {
-                    // First range: 0-100µs with 5µs buckets
                     range_start = i * MINOR_BUCKET_SIZE_SMALL;
                     range_end = (i + 1) * MINOR_BUCKET_SIZE_SMALL;
                 } else {
-                    // Second range: 100µs-1ms with 50µs buckets
                     size_t offset = i - MINOR_BUCKETS_SMALL;
                     range_start = MINOR_HISTOGRAM_FIRST_RANGE + (offset * MINOR_BUCKET_SIZE_LARGE);
                     range_end = MINOR_HISTOGRAM_FIRST_RANGE + ((offset + 1) * MINOR_BUCKET_SIZE_LARGE);
@@ -1192,13 +1076,11 @@ void GCStats::print() const {
                 std::cout << "  > " << std::setw(10) << formatTime(MINOR_HISTOGRAM_SECOND_RANGE) << "     : ";
             }
 
-            // Draw bar.
             int bar_len = max_count > 0 ? (minor_time_histogram[i] * BAR_WIDTH) / max_count : 0;
             for (int j = 0; j < bar_len; j++) {
                 std::cout << "█";
             }
 
-            // Show count and percentage.
             double percentage = (minor_time_histogram[i] * 100.0) / minor_gc_count;
             std::cout << " " << minor_time_histogram[i] << " (" << std::fixed << std::setprecision(1)
                       << percentage << "%)" << std::endl;
@@ -1213,7 +1095,7 @@ void GCStats::print() const {
     }
 
     // ========== Major GC Event Stats ==========
-    // Always printed so a run with zero major GC activity is visible rather than omitted.
+    // Printed even when there were no majors, so that their absence shows.
     std::cout << "\nMajor GC:" << std::endl;
     std::cout << "  Major GC cycles:       " << std::setw(12) << major_gc_count << std::endl;
     std::cout << "  Concurrent marks:      " << std::setw(12) << concurrent_marks_started << std::endl;
@@ -1227,12 +1109,7 @@ void GCStats::print() const {
 
     printMajorGCEventLog();
 
-    // Old-gen address-space walls (HEAP_043). Two different quantities: the
-    // in-use peak is what the GlobalPressure trigger compares against the
-    // cap; the high-water commit bump is what the hard alloc-failure wall
-    // trips on. Both are printed in MB against the live cap so an operator
-    // can tell "this workload needs a bigger old-gen share" from "this
-    // workload is nowhere near the cap".
+    // The old-gen walls (HEAP_043), each shown against the old generation's current cap.
     {
         const size_t cap = Allocator::instance().getOldGenMaxBytes();
         const double mb = 1024.0 * 1024.0;
@@ -1253,15 +1130,8 @@ void GCStats::print() const {
         std::cout << std::endl;
     }
 
-    // Split-header large-body minor-reclaim stats. Each minor GC tries to
-    // free Tag_LargeStringHeader / Tag_LargeByteHeader bodies whose
-    // nursery header died this cycle by routing them straight back to
-    // the per-class free lists / free_large_blocks_, bypassing the major
-    // GC's per-cell sweep walk. The fast path is skipped if a major GC or
-    // compaction is in flight; those bodies wait for a future minor that
-    // fires while major is idle (or for major-GC's slow sweep to reach
-    // them). Skip-rate and deferred bytes quantify how much of this
-    // fast-path reclamation is being lost to in-flight major GCs.
+    // The large-body sweep at the end of each minor. The printed labels speak of a major being in
+    // flight, but a sweep is skipped only while a compaction runs.
     {
         const uint64_t total_attempts =
             large_body_minor_sweep_runs + large_body_minor_sweep_skips;
@@ -1316,7 +1186,6 @@ void GCStats::print() const {
         // ========== Major GC Histogram ==========
         std::cout << "Major GC Time Histogram:" << std::endl;
 
-        // Find max count for scaling.
         uint64_t max_count = 0;
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
             max_count = std::max(max_count, major_time_histogram[i]);
@@ -1324,25 +1193,26 @@ void GCStats::print() const {
 
         const int BAR_WIDTH = 40;
 
-        // Use the same constants as in getMajorHistogramBucket
-        static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;  // 100ms
-        static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000; // 1000ms
-        static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;   // 5ms
-        static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;  // 50ms
+        // The major bucket bounds, copies of those in `getMajorHistogramBucket`, which must match.
+        // The end of the narrow buckets: 100 ms in nanoseconds.
+        static constexpr uint64_t MAJOR_FIRST_RANGE = 100000000;
+        // The end of the wide buckets: 1 s in nanoseconds.
+        static constexpr uint64_t MAJOR_SECOND_RANGE = 1000000000;
+        // The width of a narrow bucket: 5 ms in nanoseconds.
+        static constexpr uint64_t MAJOR_BUCKET_SMALL = 5000000;
+        // The width of a wide bucket: 50 ms in nanoseconds.
+        static constexpr uint64_t MAJOR_BUCKET_LARGE = 50000000;
 
         for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
-            if (major_time_histogram[i] == 0) continue;  // Skip empty buckets.
+            if (major_time_histogram[i] == 0) continue;
 
-            // Bucket range.
             if (i < HISTOGRAM_BUCKETS - 1) {
                 uint64_t range_start, range_end;
 
                 if (i < MINOR_BUCKETS_SMALL) {
-                    // First range: 0-100ms with 5ms buckets
                     range_start = i * MAJOR_BUCKET_SMALL;
                     range_end = (i + 1) * MAJOR_BUCKET_SMALL;
                 } else {
-                    // Second range: 100ms-1s with 50ms buckets
                     size_t offset = i - MINOR_BUCKETS_SMALL;
                     range_start = MAJOR_FIRST_RANGE + (offset * MAJOR_BUCKET_LARGE);
                     range_end = MAJOR_FIRST_RANGE + ((offset + 1) * MAJOR_BUCKET_LARGE);
@@ -1354,13 +1224,11 @@ void GCStats::print() const {
                 std::cout << "  > " << std::setw(10) << formatTime(MAJOR_SECOND_RANGE) << "     : ";
             }
 
-            // Draw bar.
             int bar_len = max_count > 0 ? (major_time_histogram[i] * BAR_WIDTH) / max_count : 0;
             for (int j = 0; j < bar_len; j++) {
                 std::cout << "█";
             }
 
-            // Show count and percentage.
             double percentage = (major_time_histogram[i] * 100.0) / major_gc_count;
             std::cout << " " << major_time_histogram[i] << " (" << std::fixed << std::setprecision(1)
                       << percentage << "%)" << std::endl;
@@ -1369,11 +1237,9 @@ void GCStats::print() const {
 
     // ========== Allocator Timings ==========
     //
-    // Top-level mutually-exclusive buckets. With the wall-time stamp from
-    // Allocator::getCombinedStats, these partition wall together with
-    // "true mutator". Identity:
-    //   wall = minor + major + oldgen_alloc_in_mutator
-    //        + nursery_alloc_in_mutator + true_mutator
+    // "True mutator" is what is left of `wall_time_ns` after the four totals, on the assumption,
+    // stated with those members, that they do not overlap. It is printed only when `wall_time_ns`
+    // is set and not smaller than their sum.
     if (total_minor_gc_time_ns > 0 ||
         total_major_gc_time_ns > 0 ||
         total_oldgen_alloc_in_mutator_ns > 0 ||
@@ -1410,8 +1276,7 @@ void GCStats::print() const {
 
     // ========== Allocator Nested Timings ==========
     //
-    // Sub-counters of the buckets above. Reported only to show where time
-    // inside a parent bucket was spent — DO NOT add to the totals.
+    // Parts of the totals above, shown apart and not added to them.
     if (total_post_sweep_shrink_ns > 0 ||
         total_maybe_shrink_heavy_ns > 0 ||
         total_maybe_shrink_light_ns > 0 ||
@@ -1434,13 +1299,7 @@ void GCStats::print() const {
         }
     }
 
-    // ========== Adaptive Lazy-Sweep Pacing ==========
-    //
-    // Bytes asked of the sweeper from the dynamic per-allocation budget
-    // (`OldGenSpace::sweepOnDemandAllocate`) and from the panic path
-    // (`OldGenSpace::panicSweepAndRetryAllocation`). Non-zero panic bytes
-    // indicate the old gen reached its cap and the panic path drove sweep
-    // to completion to avoid OOM.
+    // ========== Lazy-sweep pacing ==========
     if (total_lazy_sweep_bytes_in_mutator > 0 ||
         total_panic_sweep_bytes > 0) {
         std::cout << "\nAdaptive Lazy-Sweep Bytes:" << std::endl;
@@ -1452,37 +1311,31 @@ void GCStats::print() const {
                   << "  bytes requested" << std::endl;
     }
 
-    // ========== threaded-gc-00 blocks (additive; appended) ==========
+    // ========== Sub-record blocks; each prints only when it has data ==========
 #if ENABLE_GC_PHASE_TIMERS
     printThreadedGcBlocks();
 #endif
-    // threaded-gc-02 block (additive; printed only in bitmap mode).
     printBitmapAllocBlock();
-    // threaded-gc-03 blocks (additive): page supply always, helpers in mode != 0.
     printPageSupplyBlock();
     printHelperBlock();
-    printLargePtrBlock();   // threaded-gc-04b (only when non-zero)
-    printParMinorBlock();   // threaded-gc-06 (only when non-zero)
-    printRegionBlock();     // threaded-gc-07 (only when region mode ran)
-    printIncrMarkBlock();   // threaded-gc-05a (only when non-zero)
-    printParMarkBlock();    // threaded-gc-05b (only when non-zero)
-    printConcMarkBlock();   // threaded-gc-05c (only when non-zero)
+    printLargePtrBlock();
+    printParMinorBlock();
+    printRegionBlock();
+    printIncrMarkBlock();
+    printParMarkBlock();
+    printConcMarkBlock();
 
     // ========== Allocation Size Histograms ==========
     //
-    // Bucket 1 ([16,32)) is split for display into [16,24) and [24,32) using
-    // the parallel `*_16_24_count` sub-counter, which separates boxed
-    // primitives (Int/Float/Char @ 24 B incl. header) from small constructors
-    // (Tuple2, Cons, small custom types @ 24-32 B). All other buckets are
-    // emitted unchanged on power-of-two boundaries.
+    // Prints the size histogram `hist` of `num_buckets` buckets under `title`, a row per non-empty
+    // bucket, nothing at all when every bucket is empty. With `split_bucket_1`, bucket 1 is printed
+    // as [16, 24), from `fine_16_24_count`, and [24, 32), the rest of it.
     auto printAllocHistogram = [](const char* title,
                                   const uint64_t* hist,
                                   int num_buckets,
                                   uint64_t fine_16_24_count,
                                   bool split_bucket_1 = true) {
-        // Clamp the sub-counter against the parent bucket so the upper half
-        // can never go negative if instances were merged out of lock-step.
-        // When split_bucket_1 is false the sub-counter is ignored entirely.
+        // Clamped so that the upper half cannot wrap below zero if the counts disagree.
         uint64_t lower_16_24 = std::min<uint64_t>(fine_16_24_count, hist[1]);
         uint64_t upper_24_32 = hist[1] - lower_16_24;
 
@@ -1521,8 +1374,7 @@ void GCStats::print() const {
         };
 
         for (int i = 0; i < num_buckets; i++) {
-            // Bucket k covers [BASE << k, BASE << (k+1)); the last bucket
-            // is the overflow bucket for sizes at or above BASE << (n-1).
+            // The last bucket has no upper bound.
             if (i == 1 && split_bucket_1) {
                 printRow(16, 24, lower_16_24, /*overflow=*/false);
                 printRow(24, 32, upper_24_32, /*overflow=*/false);
@@ -1545,11 +1397,7 @@ void GCStats::print() const {
 
     // ========== Per-Kind Mutator Allocation Histogram ==========
     //
-    // Sourced from initHeaderForTag (every successful mutator allocation
-    // through the typed ThreadLocalHeap path). Sorted by count descending
-    // so the dominant kinds float to the top. We also report total bytes
-    // and average size per kind, which is more useful than count alone for
-    // variable-width tags (Custom, Record, Closure, String, Array).
+    // One row per tag with allocations, most allocations first, with total bytes and average size.
     {
         struct Row { int tag; uint64_t count; uint64_t bytes; };
         Row rows[NUM_ALLOC_TAGS];
@@ -1591,18 +1439,11 @@ void GCStats::print() const {
         }
     }
 
-    // ========== Per-Kind Retention Histogram (LH1) ==========
+    // ========== Per-Kind Retention Histogram ==========
     //
-    // plans/live-heap-composition-census.md LH1. The retention analogue of
-    // the allocation histogram above, and the number that should rank
-    // optimization work: a copying nursery charges for SURVIVORS, not for
-    // allocation volume.
-    //
-    // Counted inside the collector, so unlike the allocation figures these
-    // are exact in the standard binary (the HEAP_034 inline-allocation
-    // fast path bypasses initHeaderForTag, never the evacuator). The only
-    // inline-alloc-sensitive column is surv%, whose DENOMINATOR is the
-    // mutator counter — it is flagged rather than silently wrong.
+    // One row per tag with promoted or surviving objects, most promoted first. The "surv" ratio
+    // divides by the per-tag allocation count, which misses inline allocations (HEAP_034), so it is
+    // marked with "!" when it comes out above 100%.
     {
         struct Row {
             int tag;
@@ -1661,7 +1502,7 @@ void GCStats::print() const {
                     double sr = (row.prom_c * 100.0) / row.alloc_c;
                     std::cout << ", surv " << std::setprecision(2) << sr << "%";
                     if (row.prom_c > row.alloc_c)
-                        std::cout << "!";  // inline-alloc-blind denominator
+                        std::cout << "!";
                 } else {
                     std::cout << ", surv n/a";
                 }
@@ -1670,12 +1511,7 @@ void GCStats::print() const {
         }
     }
 
-    // ========== Custom Arity Breakdown (W1) ==========
-    //
-    // plans/sum-type-wrapper-unboxing.md W1. Splits the promoted Tag_Custom
-    // pool by field count. nfields==1 is an exact upper bound on the
-    // population that plan can address (single-ctor single-field unions are
-    // already Can.Unbox and never allocate a Custom at all).
+    // ========== Custom Arity Breakdown ==========
     {
         uint64_t tot = 0, tot_b = 0;
         for (int i = 0; i < CUSTOM_ARITY_BUCKETS; i++) {
@@ -1716,25 +1552,18 @@ void GCStats::print() const {
                         OLDGEN_ALLOC_BUCKETS,
                         oldgen_alloc_size_16_24_count);
 
-    // String-specific histogram: counts every fresh-leaf allocation that
-    // flowed through HeapHelpers::allocString. Bucket 1 is NOT split — the
-    // boxed-primitive vs small-constructor distinction it captures for the
-    // nursery/oldgen views doesn't apply to Strings.
+    // Bucket 1 is not split for Strings: the [16, 24) row exists for boxed Int, Float and Char.
     printAllocHistogram("String Allocation Size Histogram",
                         string_alloc_size_histogram,
                         STRING_ALLOC_BUCKETS,
                         /*fine_16_24_count=*/0,
                         /*split_bucket_1=*/false);
 
-    // UTF-8 -> UTF-16 widen events (see plans/utf8-string-pipeline-wiring.md).
-    // Near zero on a UTF-8-clean workload; a large residual means a String op
-    // is still decaying UTF-8 to UTF-16 on the hot path.
     std::cout << "\nUTF-8 -> UTF-16 widen events:" << std::endl;
     std::cout << "  Widen calls:           " << std::setw(15) << utf8_widen_calls << std::endl;
     std::cout << "  Widened code units:    " << std::setw(15) << utf8_widen_units << std::endl;
     {
-        // Per-site attribution. TRIM..B64HEX partition utf8_widen_calls; the
-        // two [blind] rows are additional widens outside that counter.
+        // Row labels, indexed by `Utf8WidenSite`.
         static const char* kWidenSiteNames[UTF8_WIDEN_SITE_COUNT] = {
             "trim/trimLeft/trimRight",
             "toList",
@@ -1765,11 +1594,7 @@ void GCStats::print() const {
 
     // ========== Old-Gen Page Residency Histogram ==========
     //
-    // Two flavours:
-    //   - Cumulative: every major-GC end snapshot recorded over the run,
-    //     with per-major averages.
-    //   - Latest only: the final state at the most recent major-GC end
-    //     (i.e. the heap at the moment the program is about to print).
+    // The cumulative histogram with averages per snapshot, then the latest snapshot.
     if (residency_snapshots > 0) {
         std::ostringstream cum_label;
         cum_label << "cumulative over " << residency_snapshots
@@ -1798,9 +1623,7 @@ void GCStats::print() const {
 
     // ========== Free-List Size-Class Histogram ==========
     //
-    // Cumulative across every major-GC end (with per-major averages),
-    // followed by the latest snapshot (state of free lists at the most
-    // recent major-GC end).
+    // The cumulative histogram with averages per snapshot, then the latest snapshot.
     if (freelist_snapshots > 0) {
         std::ostringstream cum_label;
         cum_label << "cumulative over " << freelist_snapshots
@@ -1841,10 +1664,8 @@ void GCStats::print() const {
                       << " internKB=" << (ps.interned_bytes.load() / 1024)
                       << std::endl;
         }
-        // Root-set population at print time (validates the no-pre-rooting
-        // work: jit == declined slots only, longLived == transients +
-        // old-gen intern fallbacks). Guarded: atexit may run after
-        // cleanupThread or on a foreign thread, where the TL heap is gone.
+        // The root set's sizes now. Only on a thread with a heap: the banner may be printed from a
+        // thread that has none, or after its heap was cleaned up.
         if (Allocator::instance().getCurrentThreadHeap() != nullptr) {
             RootSet &rs = Allocator::instance().getRootSet();
             std::cout << "[gc-roots] longLived=" << rs.getRoots().size()
@@ -1858,13 +1679,10 @@ void GCStats::print() const {
 
 }
 
-// Resets all statistics to zero.
 void GCStats::reset() {
-    // Reset allocation stats.
     objects_allocated = 0;
     bytes_allocated = 0;
 
-    // Reset Minor GC stats.
     minor_gc_count = 0;
     direct_debt_bytes_total = 0;
     minor_gc_debt_requests = 0;
@@ -1903,11 +1721,9 @@ void GCStats::reset() {
         minor_time_histogram[i] = 0;
     }
 
-    // Reset AllocBuffer stats.
     buffers_allocated = 0;
     buffers_filled = 0;
 
-    // Reset Major GC stats.
     concurrent_marks_started = 0;
     mark_sweeps_completed = 0;
     incremental_mark_calls = 0;
@@ -1971,7 +1787,6 @@ void GCStats::reset() {
         custom_survived_by_nfields[i]       = 0;
     }
 
-    // Reset page residency histogram.
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         residency_pages[i]         = 0;
         residency_page_bytes[i]    = 0;
@@ -1986,7 +1801,6 @@ void GCStats::reset() {
     residency_pinned_free_bytes    = 0;
     residency_snapshots            = 0;
 
-    // Reset latest residency snapshot (most recent major-GC end).
     for (int i = 0; i < RESIDENCY_BUCKETS; i++) {
         latest_residency_pages[i]         = 0;
         latest_residency_page_bytes[i]    = 0;
@@ -2011,7 +1825,6 @@ void GCStats::reset() {
     pending_residency_pinned_garbage_bytes = 0;
     pending_residency_pinned_free_bytes    = 0;
 
-    // Reset free-list size-class histogram.
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         freelist_cells_by_class[i] = 0;
         freelist_bytes_by_class[i] = 0;
@@ -2020,7 +1833,6 @@ void GCStats::reset() {
     freelist_large_block_bytes = 0;
     freelist_snapshots         = 0;
 
-    // Reset latest free-list snapshot (most recent major-GC end).
     for (int i = 0; i < FREELIST_CLASS_BUCKETS; i++) {
         latest_freelist_cells_by_class[i] = 0;
         latest_freelist_bytes_by_class[i] = 0;
@@ -2033,19 +1845,18 @@ void GCStats::reset() {
     pending_freelist_large_block_count = 0;
     pending_freelist_large_block_bytes = 0;
 
-    // threaded-gc-00 phase totals and pause log.
     tg = GCPhaseTotals{};
     bm = BitmapAllocStats{};
 }
 
 
 // ============================================================================
-// threaded-gc-00: phase totals, pause statistics, banner blocks, event log
+// Phase totals, pause statistics and their banner blocks
 // ============================================================================
 
 uint64_t gcClockOverheadNs() noexcept {
-    // Minimum back-to-back difference of two process-clock reads: the part of
-    // a sampled bracket that is clock, not work. Calibrated once.
+    // A function-local static: computed by the first caller, and the language makes concurrent
+    // first calls wait for it.
     static const uint64_t ovh = [] {
         uint64_t best = UINT64_MAX;
         for (int i = 0; i < 2000; ++i) {
@@ -2113,7 +1924,7 @@ void GCPhaseTotals::addMinor(const MinorGCRecord& r, const char* const* names,
 int GCPhaseTotals::pauseBucket(uint64_t dur_ns) {
     const uint64_t us = dur_ns / 1000;
     if (us < 2) return 0;
-    int b = static_cast<int>(std::bit_width(us)) - 1;   // floor(log2(us))
+    int b = static_cast<int>(std::bit_width(us)) - 1;   // floor(log2(us)), us >= 2 here
     return std::min(b, PAUSE_LOG2_BUCKETS - 1);
 }
 
@@ -2206,7 +2017,8 @@ uint64_t GCPhaseTotals::percentile(const std::vector<uint64_t>& sorted, double q
 double GCPhaseTotals::mmu(const std::vector<PauseEvent>& sorted_in, uint64_t wall_ns,
                           uint64_t w_ns) {
     if (w_ns == 0 || w_ns > wall_ns) return 1.0;
-    // Union overlapping intervals (pauses from several threads may overlap).
+    // Merge overlapping pauses, which can occur when the pauses come from several merged records.
+    // Each window's paused time is then a difference of prefix sums, trimmed at the window's ends.
     std::vector<std::pair<uint64_t, uint64_t>> iv;   // [start, end)
     iv.reserve(sorted_in.size());
     for (const PauseEvent& e : sorted_in) {
@@ -2250,6 +2062,8 @@ double GCPhaseTotals::mmu(const std::vector<PauseEvent>& sorted_in, uint64_t wal
         double u = static_cast<double>(w_ns - g) / static_cast<double>(w_ns);
         worst = std::min(worst, u);
     };
+    // The paused time in a window peaks when the window starts at a pause's start or ends at a
+    // pause's end, so only those windows are tried (clamped to the run).
     for (const auto& x : iv) {
         consider(static_cast<int64_t>(x.first));
         consider(static_cast<int64_t>(x.second) - static_cast<int64_t>(w_ns));
@@ -2259,18 +2073,22 @@ double GCPhaseTotals::mmu(const std::vector<PauseEvent>& sorted_in, uint64_t wal
 
 namespace {
 
+// Returns `ns` as milliseconds with three decimals, such as "1.250 ms".
 std::string fmtMs(uint64_t ns) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.3f ms", ns / 1.0e6);
     return buf;
 }
 
+// Returns `ns` as seconds with three decimals, such as "0.042 s".
 std::string fmtS(uint64_t ns) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.3f s", ns / 1.0e9);
     return buf;
 }
 
+// Prints one line for the pause durations `d` under `label`: count, total, the 50th, 90th, 99th and
+// 99.9th percentiles and the maximum, or "none" when `d` is empty. Sorts its own copy of `d`.
 void printPauseLine(const char* label, std::vector<uint64_t> d) {
     std::sort(d.begin(), d.end());
     if (d.empty()) {
@@ -2329,7 +2147,6 @@ void GCStats::printThreadedGcBlocks() const {
         printPauseLine("all pauses", all);
         printPauseLine("minor-only pauses", minor_only);
         printPauseLine("pauses containing a major", with_major);
-        // threaded-gc-05a: the incremental cycle's pause kinds.
         if (!k_t0.empty()) printPauseLine("minor + cycle t0 snapshot", k_t0);
         if (!k_slice.empty()) printPauseLine("minor + mark slice", k_slice);
         if (!k_handoff.empty()) printPauseLine("minor + cycle handoff", k_handoff);
@@ -2369,8 +2186,7 @@ void GCStats::printThreadedGcBlocks() const {
                               (unsigned long long)w_ms, 100.0 * u);
                 std::cout << buf << std::endl;
             }
-            // threaded-gc-03: the same windows over pauses + outside-pause
-            // helper stalls (printed only when a stall happened).
+            // The same windows with outside-pause helper stalls counted as paused time.
             if (!t.stall_events.empty()) {
                 std::vector<PauseEvent> both = ev;
                 both.insert(both.end(), t.stall_events.begin(), t.stall_events.end());
@@ -2487,14 +2303,27 @@ void GCStats::printThreadedGcBlocks() const {
 
 namespace {
 
+// The process's one event-log writer, behind the `gcEventLog*` functions.
+//
+// It is created on first use and lives until static destruction at exit. It holds the path from
+// the environment and, once the first row is written, the open file and the external-scanner
+// column names. Every write takes `mu_`. A row is the minor row's layout: kind, tid, seq,
+// `kMinorNumericCols` numbers, a pair per scanner column and the `ext:late` pair, the four major
+// times and the reason, `kParCols` parallel-minor columns and `kRegionCols` region columns. Each
+// write fills the columns it has and writes "-" in the rest, so the counts below must match the
+// header that `open` writes.
 class GCEventLogImpl {
 public:
+    // Returns the writer, creating it on the first call.
     static GCEventLogImpl& instance() {
         static GCEventLogImpl inst;
         return inst;
     }
+    // Returns whether a path was given.
     bool enabled() const { return path_ != nullptr; }
 
+    // The writers below implement the `gcEventLog*` functions of the same names; their column use
+    // is documented there.
     void writeMinor(const MinorGCRecord& r, uint64_t seq, const char* const* names,
                     size_t n_names) {
         std::lock_guard<std::mutex> lock(mu_);
@@ -2515,7 +2344,8 @@ public:
         addNum(line, r.survived); addNum(line, r.promoted);
         addNum(line, r.survived_bytes); addNum(line, r.promoted_bytes);
         addNum(line, r.minflt); addNum(line, r.majflt);
-        // External scanner columns in header order; unknown names -> ext:late.
+        // Scanner times go to the column with the same name, compared as strings, and to
+        // ext:late (the last slot) when there is none.
         std::vector<uint64_t> ns(ext_cols_.size() + 1, 0), sl(ext_cols_.size() + 1, 0);
         for (int i = 0; i < r.ext_count; ++i) {
             const char* nm = (names && static_cast<size_t>(i) < n_names) ? names[i] : "unnamed";
@@ -2526,12 +2356,10 @@ public:
             sl[col] += r.ext_slots[i];
         }
         for (size_t c = 0; c <= ext_cols_.size(); ++c) { addNum(line, ns[c]); addNum(line, sl[c]); }
-        for (int k = 0; k < 5; ++k) addField(line, "-");
-        // threaded-gc-06 (P§3.12): parallel-minor columns.
+        for (int k = 0; k < 5; ++k) addField(line, "-");   // the major columns
         addNum(line, r.workers); addNum(line, r.par_sweep_ns); addNum(line, r.par_roots_ns);
         addNum(line, r.par_drain_ns); addNum(line, r.par_close_ns); addNum(line, r.filler_bytes);
         addNum(line, r.mutex_wait_ns); addNum(line, r.imbalance_units);
-        // threaded-gc-07 (P§3.20): region-nursery columns (zero in legacy mode).
         const uint64_t rgc[kRegionCols] = {
             r.rg_region, r.rg_merge_ns, r.rg_heal_slots, r.rg_heal_ns, r.rg_wait_ns, r.rg_help_ns,
             r.rg_help_workers, r.rg_late, r.rg_tenured, r.rg_tenured_bytes, r.rg_busy_ns,
@@ -2553,8 +2381,8 @@ public:
         dashes(line, 2 * (ext_cols_.size() + 1));
         addNum(line, total_ns); addNum(line, mark_ns); addNum(line, sweep_ns);
         addNum(line, roots_ns); addField(line, reason);
-        dashes(line, kParCols);   // threaded-gc-06
-        dashes(line, kRegionCols);   // threaded-gc-07
+        dashes(line, kParCols);
+        dashes(line, kRegionCols);
         finish(line);
     }
 
@@ -2566,17 +2394,16 @@ public:
         addNum(line, start_ns); addNum(line, dur_ns);
         dashes(line, kMinorNumericCols - 2);
         dashes(line, 2 * (ext_cols_.size() + 1));
-        dashes(line, 4);
+        dashes(line, 4);   // the four major times; the reason column follows
+        // Names for `PauseEvent::kind` 0 to 5.
         static const char* const kKind[] = {"minor", "minor+major", "major",
                                             "minor+t0", "minor+slice", "minor+handoff"};
         addField(line, kind < 6 ? kKind[kind] : "?");
-        dashes(line, kParCols);   // threaded-gc-06
-        dashes(line, kRegionCols);   // threaded-gc-07
+        dashes(line, kParCols);
+        dashes(line, kRegionCols);
         finish(line);
     }
 
-    // threaded-gc-03: start_ns/pause_ns carry the stall; the reason column
-    // carries "stall:<client>[:pause]".
     void writeStall(uint64_t start_ns, uint64_t dur_ns, const char* client, bool in_pause) {
         std::lock_guard<std::mutex> lock(mu_);
         if (!open(nullptr, 0)) return;
@@ -2588,14 +2415,11 @@ public:
         dashes(line, 4);
         std::string r = std::string("stall:") + client + (in_pause ? ":pause" : "");
         addField(line, r.c_str());
-        dashes(line, kParCols);   // threaded-gc-06
-        dashes(line, kRegionCols);   // threaded-gc-07
+        dashes(line, kParCols);
+        dashes(line, kRegionCols);
         finish(line);
     }
 
-    // threaded-gc-03: a finished helper job. start_ns = post time,
-    // pause_ns = queueing delay (start - post), nursery_pause_ns = run time
-    // (end - start), stack_walk_ns = bytes; reason column = "job:<client>".
     void writeJob(uint64_t post_ns, uint64_t start_ns, uint64_t end_ns, uint64_t bytes,
                   const char* client) {
         std::lock_guard<std::mutex> lock(mu_);
@@ -2611,14 +2435,11 @@ public:
         dashes(line, 4);
         std::string r = std::string("job:") + client;
         addField(line, r.c_str());
-        dashes(line, kParCols);   // threaded-gc-06
-        dashes(line, kRegionCols);   // threaded-gc-07
+        dashes(line, kParCols);
+        dashes(line, kRegionCols);
         finish(line);
     }
 
-    // threaded-gc-05a: one incremental mark cycle. start_ns = t0,
-    // pause_ns = span (t0 -> handoff wall), nursery_pause_ns = span in minors,
-    // stack_walk_ns = mark units; reason column = "cycle:<finish>".
     void writeCycle(uint64_t seq, uint64_t t0_ns, uint64_t span_ns, uint32_t span_minors,
                     uint64_t units, const char* finish_reason) {
         std::lock_guard<std::mutex> lock(mu_);
@@ -2632,28 +2453,34 @@ public:
         dashes(line, 4);
         std::string r = std::string("cycle:") + finish_reason;
         addField(line, r.c_str());
-        dashes(line, kParCols);   // threaded-gc-06
-        dashes(line, kRegionCols);   // threaded-gc-07
+        dashes(line, kParCols);
+        dashes(line, kRegionCols);
         finish(line);
     }
 
+    // Flushes the file if it is open.
     void flush() {
         std::lock_guard<std::mutex> lock(mu_);
         if (file_) std::fflush(file_);
     }
 
 private:
-    // Numeric columns of a minor row after (kind, tid, seq): start_ns .. majflt.
+    // The number of numeric columns of a minor row after kind, tid and seq: start_ns to majflt.
     static constexpr int kMinorNumericCols = 27;
-    // threaded-gc-06: parallel-minor columns after major_reason.
+    // The number of parallel-minor columns, which follow major_reason.
     static constexpr int kParCols = 8;
+    // The number of region-nursery columns, which come last.
     static constexpr int kRegionCols = 23;
 
+    // Reads `ECO_GC_EVENT_LOG`; an unset or empty value leaves the log disabled.
     GCEventLogImpl() {
         const char* p = std::getenv("ECO_GC_EVENT_LOG");
         if (p && *p) path_ = p;
     }
 
+    // Returns whether the file is open, opening it and writing the header on the first call that
+    // finds it closed. The scanner columns are taken from `names` at that call and never change. A
+    // failed open is not retried. The caller must hold `mu_`.
     bool open(const char* const* names, size_t n_names) {
         if (!path_) return false;
         if (file_) return true;
@@ -2684,32 +2511,37 @@ private:
         return true;
     }
 
+    // Returns the calling thread's row id, given out in order of each thread's first row.
     static uint64_t tid() {
         static std::atomic<uint64_t> next{0};
         thread_local uint64_t id = next++;
         return id;
     }
+    // Appends `v` to the row `l` as a new column.
     static void addField(std::string& l, const char* v) {
         if (!l.empty()) l += '\t';
         l += v;
     }
+    // Appends `v` in decimal to the row `l` as a new column.
     static void addNum(std::string& l, uint64_t v) {
         if (!l.empty()) l += '\t';
         l += std::to_string(v);
     }
+    // Appends `n` empty ("-") columns to the row `l`.
     static void dashes(std::string& l, size_t n) {
         for (size_t i = 0; i < n; ++i) addField(l, "-");
     }
+    // Ends the row `l` and writes it to the open file. The caller must hold `mu_`.
     void finish(std::string& l) {
         l += '\n';
         std::fputs(l.c_str(), file_);
     }
 
-    const char* path_ = nullptr;
-    FILE* file_ = nullptr;
-    bool failed_ = false;
+    const char* path_ = nullptr;   // As `getenv` returned it; null when the log is off. Not copied.
+    FILE* file_ = nullptr;         // Guarded by `mu_`. Never closed; flushed at exit.
+    bool failed_ = false;          // Guarded by `mu_`.
     std::mutex mu_;
-    std::vector<std::string> ext_cols_;
+    std::vector<std::string> ext_cols_;   // Guarded by `mu_`. Fixed when the file is opened.
 };
 
 }  // namespace
@@ -2777,7 +2609,7 @@ void GCStats::printBitmapAllocBlock() const {
 }
 
 // ---------------------------------------------------------------------------
-// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md P§3.9)
+// Page supply and helper threads
 // ---------------------------------------------------------------------------
 
 void PageSupplyStats::mergeMax(const PageSupplyStats& o) {
@@ -2796,16 +2628,18 @@ void PageSupplyStats::mergeMax(const PageSupplyStats& o) {
 }
 
 void HelperStatsSnapshot::mergeMax(const HelperStatsSnapshot& o) {
-    // Only the combined (allocator-filled) object is non-zero; take it whole.
+    // A snapshot is taken whole or not at all: its fields describe one moment of one pool.
     if (o.mode != 0 && mode == 0) *this = o;
 }
 
 namespace {
+// Returns `b` bytes as mebibytes with two decimals, such as "1.50 MB".
 std::string fmtMB3(uint64_t b) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.2f MB", b / (1024.0 * 1024.0));
     return buf;
 }
+// Returns `ns` as milliseconds with three decimals; the same as `fmtMs`.
 std::string fmtMs3(uint64_t ns) {
     char buf[64];
     std::snprintf(buf, sizeof buf, "%.3f ms", ns / 1.0e6);

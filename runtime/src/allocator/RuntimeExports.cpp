@@ -1,7 +1,11 @@
 //===- RuntimeExports.cpp - C-linkage runtime function implementations ----===//
 //
-// This file implements the C-linkage functions that are called from
-// LLVM-generated code.
+// Besides the functions RuntimeExports.h declares, this file holds three things that header does not
+// describe. A few more C-linkage entry points, used only by generated code or by measurement scripts, are
+// defined here with no declaration in the header. Several measurement censuses (cons sites, closure
+// allocations, closure dispatches, generic-call reasons, call kinds) count into tables that environment
+// variables switch on and that are printed to stderr at exit. And about a third of the file is the value
+// printer behind the `eco_dbg_print*`, `eco_print_*` and `eco_value_to_string*` functions.
 //
 //===----------------------------------------------------------------------===//
 
@@ -44,23 +48,19 @@ using namespace Elm;
 
 namespace {
 
-/// Convert a raw void* pointer to a uint64_t HPointer representation.
-/// The HPointer will have constant=0, indicating a regular heap pointer.
-/// Note: Elm never produces null pointers, so obj must be a valid heap pointer.
-/// Validation is performed in Allocator::wrap().
+/// Returns the HPointer word for the heap or `PermanentSpace` object at `obj`, as `Allocator::wrap` makes it.
+/// `obj` must not be null; `wrap` asserts it.
 inline HPtr ptrToHPointer(void* obj) {
     HPointer hp = Allocator::instance().wrap(obj);
     return HPtr::fromHPointer(hp);
 }
 
-/// Convert a uint64_t HPointer representation to a raw void* pointer.
-/// Uses Allocator::resolve() to handle forwarding pointers during GC.
-/// Returns nullptr for embedded constants (Nil, True, False, Unit, etc.)
-/// since they don't have actual heap objects.
+/// Returns the address of the object the HPointer word `val` refers to, following forward headers as
+/// `Allocator::resolve` does, or null if `val` is an embedded constant. `val` must not be 0, which is not a
+/// constant and is passed to `resolve`.
 inline void* hpointerToPtr(uint64_t val) {
     HPointer hp;
     memcpy(&hp, &val, sizeof(hp));
-    // Embedded constants don't have heap objects - return nullptr.
     if (hp.ptr_ind != 0) {
         return nullptr;
     }
@@ -75,10 +75,10 @@ inline void* hpointerToPtr(uint64_t val) {
 
 namespace {
 
-/// Thread-local output stream. When non-null, print output goes here instead of stderr.
+/// The calling thread's print destination, or null for stderr.
 thread_local std::ostringstream* tl_output_stream = nullptr;
 
-/// Helper to output text - either to capture stream or stderr.
+/// Writes the C string `text` to the calling thread's print destination.
 void output_text(const char* text) {
     if (tl_output_stream) {
         *tl_output_stream << text;
@@ -87,7 +87,7 @@ void output_text(const char* text) {
     }
 }
 
-/// Helper to output formatted text.
+/// Writes `fmt` formatted with `args` by `snprintf` to the print destination, cut to 255 characters.
 template<typename... Args>
 void output_format(const char* fmt, Args... args) {
     char buffer[256];
@@ -95,7 +95,7 @@ void output_format(const char* fmt, Args... args) {
     output_text(buffer);
 }
 
-/// Helper to output a single character.
+/// Writes the character `c` to the print destination.
 void output_char(char c) {
     if (tl_output_stream) {
         *tl_output_stream << c;
@@ -104,9 +104,8 @@ void output_char(char c) {
     }
 }
 
-/// Helper to print float values with proper Infinity and NaN formatting.
-/// Elm uses "Infinity", "-Infinity", and "NaN" (not "inf", "-inf", "nan").
-/// -0.0 is printed as "0", like Elm does.
+/// Writes `d` as Elm prints a Float: `Infinity`, `-Infinity` and `NaN` for those values, `0` for both zeros,
+/// and otherwise the shortest decimal that reads back as `d` (`std::to_chars`).
 void print_float(double d) {
     if (std::isinf(d)) {
         if (d > 0) {
@@ -117,11 +116,8 @@ void print_float(double d) {
     } else if (std::isnan(d)) {
         output_text("NaN");
     } else if (d == 0.0) {
-        // Print both +0.0 and -0.0 as "0", like Elm does.
         output_text("0");
     } else {
-        // Use std::to_chars for the shortest round-trip representation,
-        // matching JavaScript/Elm's Number.prototype.toString() behavior.
         char buf[32];
         auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), d);
         *ptr = '\0';
@@ -150,9 +146,12 @@ extern "C" void* eco_get_output_stream() {
 //===----------------------------------------------------------------------===//
 
 namespace {
+/// The process's exit code, as `eco_set_exit_code` last recorded it.
 std::atomic<int> g_eco_exit_code{0};
 #if !defined(_WIN32)
+/// Whether `g_eco_main_thread` has been recorded. Its release store publishes `g_eco_main_thread`.
 std::atomic<bool> g_eco_main_thread_recorded{false};
+/// The thread `eco_set_process_main_thread` recorded; read only after `g_eco_main_thread_recorded` is true.
 pthread_t g_eco_main_thread;
 #endif
 } // anonymous namespace
@@ -186,10 +185,7 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
                                        uint64_t* roots, uint32_t n_roots,
                                        uint64_t hptr_mask) {
     Allocator& alloc = Allocator::instance();
-    // threaded-gc-04b: a large object takes the placement policy (P§3.1:
-    // nursery up to the cap, else the YLOS, or old-gen pinned when
-    // pointer-free), never the size-blind bump below. It may GC, so the
-    // caller's roots are open across it, as on the slow path.
+    // A large object must be placed by the large-object policy, not by the size-blind bump below.
     if (__builtin_expect(size >= alloc.getLargeObjectThreshold(), 0)) {
         size_t saved = eco_gc_stack_range_point();
         if (n_roots > 0 && hptr_mask != 0) {
@@ -200,20 +196,14 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
         return obj;
     }
 
-    // Fast path: bump-pointer with no rooting. allocateFast cannot trigger
-    // GC, so values in roots[] cannot move during this call.
+    // allocateFast cannot collect, so nothing needs rooting, but it writes no header.
     void* obj = alloc.allocateFast(static_cast<size_t>(size));
     if (obj) {
-        // allocateFast does not init the header; do it consistently with
-        // the slow path (which calls initHeaderForTag inside allocateSlow).
         initHeaderForTag(getHeader(obj), static_cast<Tag>(tag),
                          static_cast<size_t>(size));
         return obj;
     }
 
-    // Slow path: open a stack root range over roots[], run allocateSlow,
-    // close the range. After return, caller reads HPointer slots from
-    // roots[] to pick up GC-relocated addresses.
     size_t saved = eco_gc_stack_range_point();
     if (n_roots > 0 && hptr_mask != 0) {
         eco_gc_push_stack_range(roots, n_roots, hptr_mask);
@@ -224,56 +214,23 @@ extern "C" void* eco_alloc_with_roots(uint32_t tag, uint64_t size,
 }
 
 //===----------------------------------------------------------------------===//
-// Inline nursery allocation (plans/inline-nursery-allocation.md, HEAP_034)
+// Inline nursery allocation (HEAP_034)
 //===----------------------------------------------------------------------===//
 
-// Address of the calling thread's nursery bump state {ptr at +0, end at +8}.
-// Declared memory(none) + gc-leaf on the codegen side (expandInlineAllocs)
-// so LLVM can CSE/hoist it per function: the ADDRESS is thread-stable, only
-// the contents change (minor GC), and the expansion re-loads
-// them per allocation.
 extern "C" void* eco_bump_state(void) {
-    // Call-free fast path (benchmarks/tier2-opt.md Run L): inline TLS read
-    // instead of the out-of-line Allocator::bumpState() call — 6
-    // instructions, no call, no TLS-init guard (see tl_heap_'s constinit +
-    // tls_model in Allocator.hpp). Only compiled Elm code calls this, and
-    // the runtime is initialized before any compiled code runs (the
-    // backend already declares it speculatable on exactly that basis), so
-    // Allocator::bumpState()'s tl_heap_ assert is deliberately not
-    // replicated here.
+    // Reads the heap pointer directly rather than calling Allocator::bumpState, to keep this call-free;
+    // so, unlike bumpState, it does not assert that the thread has a heap.
     return Allocator::instance().getCurrentThreadHeap()->getNursery().bumpState();
 }
 
-// Slow path for the codegen inline nursery bump: the inline compare missed,
-// which under the contiguous from-space (HEAP_042) means one thing — the
-// proactive-GC threshold tripped, or the space is exhausted. Returns
-// UNINITIALIZED nursery storage — the caller stores the full header word and
-// every payload field before its next safepoint (HEAP_034). Never returns
-// null (aborts on OOM, HEAP_017 discipline). Statepointed: the ONLY
-// statepoint in an inline-allocated construct sequence; field values live
-// across it are relocated by RS4GC as ordinary SSA values (no hand-rooting).
 extern "C" HPtr eco_alloc_inline_slow(uint64_t size) {
     assert(size <= 4096 && (size & 7) == 0 &&
            "eco_alloc_inline_slow: size out of inline-alloc bounds");
-    // No pre-GC retry: with one contiguous extent the C++ compare tests the
-    // SAME clamped end the inline compare just failed, so `allocateFast`
-    // would be a guaranteed miss. (The block design retried it to pick up a
-    // block advance without collecting.)
+    // No allocateFast first: the nursery is one contiguous range (HEAP_042), so it would test the same end
+    // the inline bump has just failed against.
     return ptrToHPointer(Allocator::instance().allocateSlowRaw(size));
 }
 
-// Capacity guarantee for hoisted allocation checks (plans/
-// capacity-check-hoisting.md, CGEN_074 / HEAP_041): establishes
-// `bump_.end - bump_.ptr >= n` for the calling thread, allocating NOTHING.
-// `n` is a compile-time-constant run budget, 8-aligned, in (0, 4096]
-// (asserted). May run a minor GC; the post-GC bump resumes immediately after
-// the survivors, so the headroom test is a single comparison against the
-// contiguous from-space's clamped end (HEAP_042) rather than the block
-// design's advance loop.
-//
-// Deliberately NOT gc-leaf: this is the ONE statepoint of a covered region.
-// Values live across it are relocated by RS4GC as ordinary SSA. Called only
-// from the cold edge of an ensure diamond, so the counter is free.
 extern "C" void eco_ensure_nursery_slow(uint64_t n) {
     assert(n <= 4096 && (n & 7) == 0 &&
            "eco_ensure_nursery_slow: budget out of inline-alloc bounds");
@@ -281,18 +238,12 @@ extern "C" void eco_ensure_nursery_slow(uint64_t n) {
 }
 
 extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count) {
-    // Single-representation backstop (HEAP_044): nullary customs are embedded
-    // null-cons constants; post-CGEN_079 nothing may allocate the 0-field
-    // shape. Mirrors the fast/slow variants below.
     assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom", field_count);
-    // Layout C: Header + ctor/unboxed (8 bytes) + fields + K ext kind words.
     size_t size = wideByteSize(Tag_Custom, field_count);
 
-    // No HPointer args to root: ctor_id/field_count are scalars, and the field
-    // values are written by the caller after this returns. initHeaderForTag
-    // sets size = field_count, unboxed = K and zeroes the ext words.
+    // initHeaderForTag sets size = field_count, unboxed = K and zeroes the ext words.
     void* obj = eco_alloc_with_roots(Tag_Custom, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
     assert(getHeader(obj)->size == field_count);
@@ -310,7 +261,6 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
     Header* header = static_cast<Header*>(obj);
     switch (header->tag) {
         case Tag_Custom: {
-            // Custom's 48-bit bitmap stores 24 × 2-bit kinds.
             assert((bitmap >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
             Custom* custom = static_cast<Custom*>(obj);
             custom->unboxed = bitmap & 0x0000FFFFFFFFFFFFULL;
@@ -333,53 +283,54 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
         }
         case Tag_Record:
         case Tag_Closure:
-            // B11: their kinds live in Record::unboxed / Closure::unboxed, not header.unboxed;
-            // the old default arm wrote a 2-bit kind where no reader looks.
+            // Their kinds are in Record::unboxed / Closure::unboxed, where the default arm's
+            // header.unboxed write would not reach.
             std::fprintf(stderr, "[eco] FATAL: eco_set_unboxed on tag %u (its kinds are not in header.unboxed)\n",
                          unsigned(header->tag));
             std::abort();
         default:
-            // Array's uniform kind (and other header.unboxed users).
             header->unboxed = static_cast<u8>(bitmap & 0x3);
             break;
     }
 }
 
-// Chunked-list production switch (plans/chunked-list-representation.md §6).
-// The backend injects a call to eco_enable_list_chunks() into @main's entry
-// for modules compiled with config.list.chunks, so kernel bulk builders
-// produce chunk spines exactly when compiled projections are chunk-aware.
+/// Whether lists may be built as chunk chains rather than cons cells only. False until
+/// `eco_enable_list_chunks`; read by the list builders, including `eco_scratch_finish`. Never cleared.
 extern "C" bool eco_g_list_chunks = false;
 
+/// Sets `eco_g_list_chunks`, so that lists built from then on may be chunk chains. Not declared in a header:
+/// generated code calls it by name.
 extern "C" void eco_enable_list_chunks(void) {
     eco_g_list_chunks = true;
 }
 
-// Build-mismatch guard for ECO_CHAR_CASE_EXPANSION (CharValue::kBuildGuardSymbol): only the
-// function of this runtime's setting exists, so a program lowered with the other setting does
-// not link (AOT) or does not resolve (JIT).
 #if ECO_CHAR_CASE_EXPANSION
 extern "C" void eco_char_case_expansion_on(void) {}
 #else
 extern "C" void eco_char_case_expansion_off(void) {}
 #endif
 
-// Cons-site tally (ECO_CONS_SITES=1, measurement builds): counts cons
-// allocations by caller return address; dumped at exit with the main-module
-// base so sites can be symbolized offline via addr2line. Thread-local maps
-// merge into the global on thread destruction to keep the hot path lock-free.
+// Cons-site census. When the environment variable ECO_CONS_SITES is set (to anything), each
+// `eco_alloc_cons` call is counted against its return address in a per-thread map, and the counts are
+// printed to stderr at exit as offsets from the executable's load address. A thread's map is merged into
+// the global one when the thread ends, so counting takes no lock.
+
+/// Whether cons sites are being counted: set at static initialisation when ECO_CONS_SITES is set.
 extern "C" bool eco_g_cons_sites = false;
 
 namespace {
 
+/// Guards `g_consSitesAll`.
 std::mutex g_consSiteMu;
+/// The merged cons-site counts of the threads that have ended, keyed by return address.
 std::unordered_map<void *, uint64_t> g_consSitesAll;
 
+/// Prints the merged cons-site total and the 80 most frequent sites to stderr, each as an offset from the
+/// executable's load address. Without /proc (on Windows) the base is 0, so sites print as addresses.
 void dumpConsSites() {
     std::lock_guard<std::mutex> l(g_consSiteMu);
-    // Base of the main module: lowest mapping backed by the executable
-    // itself (the heap arenas map lower, so the first line won't do).
-    // No /proc on Windows: base stays 0 and sites print as absolute addresses.
+    // The first mapping whose line names the executable; the heap maps lower, so the first line of the
+    // file is not it.
     uintptr_t base = 0;
 #if !defined(_WIN32)
     char exe[512] = {0};
@@ -411,6 +362,7 @@ void dumpConsSites() {
     }
 }
 
+/// One thread's cons-site counts, merged into `g_consSitesAll` when the thread ends.
 struct ConsSiteTls {
     std::unordered_map<void *, uint64_t> sites;
     ~ConsSiteTls() {
@@ -419,9 +371,12 @@ struct ConsSiteTls {
     }
 };
 
+/// The calling thread's cons-site counts.
 thread_local ConsSiteTls g_consSiteTls;
 
+/// A static initialiser that turns the cons-site census on when ECO_CONS_SITES is set.
 struct ConsSiteInit {
+    /// Sets `eco_g_cons_sites` and registers the exit dump, if ECO_CONS_SITES is set.
     ConsSiteInit() {
         if (std::getenv("ECO_CONS_SITES")) {
             eco_g_cons_sites = true;
@@ -440,23 +395,20 @@ struct ConsSiteInit {
     }
 };
 
+/// The object whose construction runs `ConsSiteInit()`.
 ConsSiteInit g_consSiteInit;
 
 } // namespace
 
+/// Counts one cons allocation against the return address `ra` in the calling thread's cons-site map. Not
+/// declared in a header: generated code may call it by name.
 extern "C" void eco_cons_site_tally(void *ra) {
     g_consSiteTls.sites[ra]++;
 }
 
-// `head_kind`: 2-bit primitive kind for the head slot (0=boxed, 1=Int, 2=Float,
-// 3=Char). Stored into `cons->header.unboxed` at slot 0 (bits 1:0).
 extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
     if (__builtin_expect(eco_g_cons_sites, 0))
         eco_cons_site_tally(__builtin_return_address(0));
-    // Pack the field values as roots so the generic helper can keep them
-    // valid across a slow-path GC. Mask bit i is set iff slot i is an
-    // HPointer. tail (slot 1) is always a list HPointer; head (slot 0) is
-    // a boxed HPointer iff head_kind == 0.
     uint64_t roots[2] = { head, tail.toBits() };
     uint64_t mask = (head_kind != 0) ? 0x2 : 0x3;
 
@@ -473,7 +425,6 @@ extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
     return ptrToHPointer(obj);
 }
 
-// `unboxed_mask`: 2-bit-per-slot kind bitmap (4 bits used for 2 slots).
 extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     uint64_t roots[2] = { a, b };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 2);
@@ -488,7 +439,6 @@ extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) 
     return ptrToHPointer(obj);
 }
 
-// `unboxed_mask`: 2-bit-per-slot kind bitmap (6 bits used for 3 slots).
 extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     uint64_t roots[3] = { a, b, c };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 3);
@@ -506,11 +456,8 @@ extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t un
 
 extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
     if (field_count > RECORD_MAX_FIELDS) ecoFatalWideObject("eco_alloc_record", field_count);
-    // Size: Header (8) + unboxed bitmap (8) + fields (N * 8) + K ext kind words.
-    // The ext words stay zero (boxed) until codegen stores them (HEAP_077).
     size_t size = wideByteSize(Tag_Record, field_count);
 
-    // No HPointer args to root: field values are written by caller after.
     void* obj = eco_alloc_with_roots(Tag_Record, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
 
@@ -522,12 +469,10 @@ extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) 
 }
 
 extern "C" void eco_store_record_field(HPtr record_hptr, uint32_t index, HPtr value) {
-    // Per-write stale-pointer tripwire on the boxed value being stored.
     alloc::validateNurseryHPtrBits(value.toBits());
     void* record = hpointerToPtr(record_hptr.toBits());
     if (!record) return;
     Record* rec = static_cast<Record*>(record);
-    // Store as raw 64-bit value (HPointer).
     rec->values[index].i = static_cast<i64>(value.toBits());
 }
 
@@ -546,8 +491,7 @@ extern "C" void eco_store_record_field_f64(HPtr record_hptr, uint32_t index, dou
 }
 
 //===----------------------------------------------------------------------===//
-// Uninit allocators + field stores for Tuple2 / Tuple3 / Cons (forward ABI;
-// not yet exercised by lowering — see plans/wrapper-fca-fix.md).
+// Allocators that leave the fields to the caller, and their field stores
 //===----------------------------------------------------------------------===//
 
 extern "C" HPtr eco_alloc_tuple2_uninit(uint32_t unboxed_mask) {
@@ -583,6 +527,7 @@ extern "C" HPtr eco_alloc_cons_uninit(uint32_t head_kind) {
     return ptrToHPointer(obj);
 }
 
+/// Returns the address of the first slot of the 2- or 3-tuple at `tuple`.
 static inline Unboxable* tupleSlots(void* tuple) {
     return reinterpret_cast<Unboxable*>(
         reinterpret_cast<uint8_t*>(tuple) + sizeof(Header));
@@ -637,20 +582,17 @@ extern "C" void eco_store_cons_tail(HPtr cons_hptr, HPtr value) {
 }
 
 extern "C" HPtr eco_alloc_string(uint32_t length) {
-    // HEAP_071: a length-0 string is the embedded Empty constant, never a
-    // header-only heap object (which would also compare unequal to "").
+    // A header-only heap String would also compare unequal to "".
     if (length == 0) return HPtr::fromHPointer(alloc::emptyString());
 
-    // Size: Header + length * sizeof(u16), aligned to 8 bytes
     size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;  // Align to 8 bytes
+    size = (size + 7) & ~7;
 
     void* obj = eco_alloc_with_roots(Tag_String, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
 
-    // initHeaderForTag derives Tag_String header.size from byte size; for the
-    // common case that matches `length`, but writing it explicitly is robust
-    // to subsequent rounding.
+    // initHeaderForTag derives header.size from the rounded byte size, which counts more units than
+    // `length` whenever `length` is not a multiple of 4.
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
     return ptrToHPointer(obj);

@@ -1,20 +1,3 @@
-/**
- * Allocator Implementation.
- *
- * This file implements the central allocator that manages:
- *   - Unified heap address space (reserved via mmap, committed on demand).
- *   - Thread-local heaps for each thread (nursery + old gen + stats).
- *   - Delegation to thread-local heaps for allocation and GC.
- *
- * Memory layout (HEAP_043 — the split is configuration, not a constant):
- *   [0 .. nursery_offset)       - Old generation region (carved up per-thread),
- *                                 where nursery_offset = max_heap_size
- *                                 - nursery_region_bytes (20 GiB by default).
- *   [nursery_offset .. end)     - Nursery region, halved into low and high
- *                                 halves and carved into fixed-size slices,
- *                                 one pair per thread heap (HEAP_042).
- */
-
 #include "Allocator.hpp"
 #include "GCFork.hpp"
 #include "GCHelperPool.hpp"
@@ -34,11 +17,8 @@
 #include <ctime>
 #include <new>
 #include <stdexcept>
-// musl (Stage B static build) ships no <execinfo.h>/backtrace; stub them as
-// no-ops so the debug paths compile. glibc keeps its real backtrace. See
-// plans/static-link-eco-binary.md. Windows ships no <execinfo.h> either —
-// the same stub path serves there. Crash backtraces on Win64 will route
-// through `RtlVirtualUnwind` once W2 item 11b lands.
+// Where the C library has no <execinfo.h> (musl, Windows), the backtrace functions are no-ops returning
+// nothing, so that code calling them compiles everywhere.
 #if defined(__has_include) && __has_include(<execinfo.h>)
 #  include <execinfo.h>
 #else
@@ -47,10 +27,8 @@
 [[maybe_unused]] static inline void backtrace_symbols_fd(void* const*, int, int) {}
 #endif
 
-// madvise(MADV_WILLNEED / MADV_DONTNEED) lives in <sys/mman.h> on POSIX. On
-// Windows there is no equivalent advisory call — the working set is
-// managed by the OS — so we stub madvise to a no-op and define the macros
-// to harmless integers. Callers don't inspect the return value.
+// On Windows there is no `madvise`, so it is a no-op here and its advice constants are placeholders. No
+// caller reads its result. Releasing an extent in `gc_thread_mode` 0 therefore discards nothing on Windows.
 #if !defined(_WIN32)
 #include <sys/mman.h>
 #if defined(__GLIBC__)
@@ -67,16 +45,16 @@ namespace {
 namespace Elm {
 ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp: M6 probes fire while set
 
-// Global heap base for pointer conversion (used by fromPointerRaw/toPointerRaw).
+/// The start of the heap reservation: null until the first `Allocator::initialize` sets it, and never changed
+/// after. `OldGenSpace` passes it to the forward-word codec in `Heap.hpp`, which does not use it.
 char* g_heap_base = nullptr;
 
 namespace {
 
-// Coarse milestone interval for heap-growth traces. Emitting one line per
-// block acquire is prohibitively spammy (a 4 GB old-gen fill is ~32k blocks
-// at 128 KB each); logging only when the committed counter crosses a
-// multiple of this granularity gives a readable growth history.
+/// The step in the old-generation bump, in bytes, at which a heap trace reports growth: a fresh block is
+/// traced only when the bump crosses a multiple of it, since one line per block would be too many.
 constexpr size_t HEAP_TRACE_OLDGEN_INTERVAL   = 32 * 1024 * 1024;  // 32 MB.
+/// The matching step for nursery growth, in bytes. Nothing uses it.
 constexpr size_t HEAP_TRACE_NURSERY_INTERVAL  = 16 * 1024 * 1024;  // 16 MB.
 
 }  // namespace
@@ -154,44 +132,26 @@ void Allocator::dumpHeapState([[maybe_unused]] const char* label,
 #endif  // ECO_HEAP_TRACE
 }
 
-// Thread-local heap pointer for fast access.
 constinit thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
-// Codegen-visible cache of `tl_heap_->getNursery().bumpState()`
-// (plans/inline-bump-state-tls.md). Holds exactly what eco_bump_state()
-// returns, so expandInlineAllocs can read the nursery bump state with a TLS
-// load instead of a call — 10.46 B calls on one self-compile per the survivor
-// census. `extern "C"`: the backend references this symbol by name, so it must
-// not be mangled. constinit + initial-exec for the same reasons as `tl_heap_`
-// (no dynamic-init guard, no __tls_get_addr call under -fPIC).
-//
-// The address is thread-stable: `nursery_` is a direct member of
-// ThreadLocalHeap and `bump_` a direct member of NurserySpace, so `&bump_`
-// never moves for the heap's lifetime — only its contents change, and the
-// inline expansion re-loads those per allocation.
-//
-// NEVER assign this outside Allocator::setThreadHeap: a value that disagrees
-// with `tl_heap_` is heap corruption, not a wrong statistic.
+/// The address of the calling thread's nursery bump state, the same address `Allocator::bumpState` returns,
+/// or null when the thread has no heap.
+///
+/// Compiled code reads it with one thread-local load where it would otherwise call for the address, and
+/// refers to it by this unmangled name. The address stays the same while the heap lives, because the bump
+/// state is held by value inside the heap; only its contents change. `Allocator::setThreadHeap` is the only
+/// writer, and a value that disagrees with the thread's heap makes compiled code allocate from the wrong
+/// nursery.
 extern "C" constinit thread_local void* eco_tl_bump_state
     __attribute__((tls_model("initial-exec"))) = nullptr;
 
-// The ONLY writer of `tl_heap_`. Keeping both in one function is what makes
-// the compiled-code bump-state cache correct by construction rather than by
-// remembering to update two things at four call sites.
 void Allocator::setThreadHeap(ThreadLocalHeap* h) {
     tl_heap_ = h;
     eco_tl_bump_state = h ? static_cast<void*>(h->getNursery().bumpState())
                           : nullptr;
 
-    // GC shadow root stack (plans/gc-root-registration-cost.md O1). Same rule,
-    // same place, same reason as the bump-state cache above: the three cursors
-    // must never disagree with `tl_heap_`, and keeping every write in this one
-    // function is what makes that true by construction.
-    //
-    // The cursor is reset to the array start on attach. Both transitions that
-    // reach here — initThread on a fresh thread, cleanupThread/reset on
-    // teardown — happen with no C++ or compiled frame holding a pushed range,
-    // so there is never a live entry to preserve across them.
+    // The root-stack words follow the heap, as the bump state does. Resetting the cursors to the start loses
+    // nothing, because no frame holds a pushed range when a thread gains or loses its heap.
     if (h) {
         RootSet& rs = h->getRootSet();
         StackRootRangeRec* storage = rs.rangeStorage();
@@ -218,7 +178,6 @@ Allocator::Allocator() :
     nursery_offset(0),
     nursery_low_committed_(0), nursery_high_committed_(0),
     nursery_slice_bytes_(0), initialized(false) {
-    // Initialization happens in initialize() method.
 }
 
 // TLA-REGION(AL.destructor) begin
@@ -227,7 +186,7 @@ Allocator::~Allocator() {
     std::unordered_map<std::thread::id, std::unique_ptr<ThreadLocalHeap>> doomed;
     {
         std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-        // threaded-gc-03: no helper job may outlive the PageWork it points at.
+        // No helper job may outlive the PageWork it points at.
         if (page_work_) page_work_->drainAll(/*discard_pending=*/false);
         dropForkDeadHeapsLocked();   // CR-031 / HEAP_007: never tear down a dead heap
         doomed.swap(thread_heaps_);
@@ -242,54 +201,36 @@ Allocator::~Allocator() {
 }
 // TLA-REGION(AL.destructor) end
 
-// The configuration a process runs: `base`, then the JSON overrides from
-// $ECO_HEAP_CONFIG (HeapConfigJson.hpp), then the ECO_GC_* / ECO_NURSERY_*
-// variables (threaded-gc-03: they win over JSON), resolved and validated.
-// initialize() adopts it; EcoRunner::reset() re-installs it in every E2E
-// child (plans/region-nursery-everywhere.md Phase 2).
 HeapConfig Allocator::environmentConfig(const HeapConfig& base, uint32_t& helper_jitter_us) {
     HeapConfig c = base;
     applyHeapConfigFromEnv(c);
     applyGcThreadEnv(c, helper_jitter_us);
-    c.resolveNurseryRegions();   // TG7d: auto -> 1; incompatible throws
+    c.resolveNurseryRegions();   // auto becomes 1; an incompatible setting throws
     c.validate();
     return c;
 }
 
-// Initializes the allocator with the given configuration.
-// Validates config and reserves address space. Physical memory committed lazily.
 void Allocator::initialize(const HeapConfig& config) {
-    // HEAP_075: GCFork's allocator layer (thread_mutex_). Registered with no runtime
-    // lock held (GCFork.hpp); idempotent.
+    // HEAP_075: GCFork's allocator layer. Registered on every call, with no runtime lock held; registering
+    // the same layer again changes nothing.
     static const gc::ForkHooks kAllocatorHooks{&Allocator::forkPrepare, &Allocator::forkParent,
                                                &Allocator::forkChild};
     gc::registerForkLayer(gc::kForkAllocator, kAllocatorHooks);
     if (initialized) {
         return;
     }
-    ++heap_generation_;  // new heap epoch (invalidates cross-lifetime caches)
+    ++heap_generation_;
 
-    // Apply JSON overrides from $ECO_HEAP_CONFIG, if set, on top of the
-    // caller-supplied defaults. Lets us tweak heap parameters without a
-    // rebuild — see HeapConfigJson.hpp for the recognised keys.
     config_ = environmentConfig(config, helper_jitter_us_);
 
     heap_reserved = config_.max_heap_size;
 
-    // The HPointer representation stores raw absolute heap addresses in the low
-    // 43 bits of a 64-bit word, so the entire heap must live below 2^43 (8 TB).
-    // Reject configurations that cannot fit, then reserve a low base. This is
-    // harmless under the legacy heap_base-relative encoding (pointers are
-    // offsets from heap_base wherever it lands) and de-risks the representation
-    // flip. See plan D7.
+    // An HPointer holds a heap address in its low 43 bits, so the whole reservation must lie below 2^43.
     if (heap_reserved > HPOINTER_ADDRESS_LIMIT) {
         throw std::invalid_argument(
             "max_heap_size exceeds the 8 TB HPointer address limit");
     }
 
-    // Reserve address space without committing physical memory — see
-    // PlatformVirtualMemory.hpp for the POSIX (mmap PROT_NONE) and Win64
-    // (VirtualAlloc MEM_RESERVE PAGE_NOACCESS) implementations.
     heap_base = static_cast<char *>(
         Elm::platform::reserveAddressSpaceBelow(heap_reserved,
                                                 HPOINTER_ADDRESS_LIMIT));
@@ -304,13 +245,10 @@ void Allocator::initialize(const HeapConfig& config) {
                <= HPOINTER_ADDRESS_LIMIT &&
            "heap reservation must fit below 2^43 for HPointer encoding");
 
-    // Set global heap_base for pointer conversion.
     g_heap_base = heap_base;
 
-    // The nursery region occupies the TOP `nursery_region_bytes` of the
-    // reservation; the old generation gets everything below it (HEAP_043).
-    // Computed once — first init wins for the process lifetime, exactly as
-    // before (reset() re-derives slice geometry but never the region).
+    // The nursery region is the top of the reservation and the old generation the rest (HEAP_043). Only
+    // this first initialize sets it; reset() rebuilds the slots within it.
     nursery_offset = heap_reserved - config_.nurseryRegionBytes();
 
     // Slice geometry follows the config against that region (HEAP_042).
@@ -320,17 +258,13 @@ void Allocator::initialize(const HeapConfig& config) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
 
-    // threaded-gc-03: helper pool + page work (modes 1/2 only).
     rebuildPageWork();
 
     initialized = true;
 }
 
-// CR-031 / HEAP_007 (plans/threaded-gc-register-fixes.md §7.1, §7.2 step 7): in a
-// forked child only the forking thread's heap is live; the others' mutators do not
-// exist here, and their tables (RootSet, the tenure job, gang state) may have been
-// mid-update at the fork. They are leaked: never collected, never torn down, never
-// read. Caller holds thread_mutex_.
+// CR-031: a dead heap's tables (RootSet, the tenure job, gang state) may have been part way through an update
+// at the fork, so even its destructor must not run.
 void Allocator::dropForkDeadHeapsLocked() {
     if (!fork_child_) return;
     for (auto it = thread_heaps_.begin(); it != thread_heaps_.end();) {
@@ -343,11 +277,9 @@ void Allocator::dropForkDeadHeapsLocked() {
     }
 }
 
-// HEAP_075 / CR-015 (plans/threaded-gc-register-fixes.md §7.2 step 3): the allocator
-// layer of the one fork registration. It runs after the gangs layer (a gang member
-// may block on thread_mutex_ under promo_mu_ while its run holds run_m_) and before
-// the census and the pool (every post and wait holds thread_mutex_, so with it held
-// no post can land between the pool's drain and its lock).
+// HEAP_075 / CR-015: this layer runs after the gangs layer (a gang member may block on thread_mutex_
+// under promo_mu_ while its run holds run_m_) and before the census and the pool (every post and wait
+// holds thread_mutex_, so with it held no post can land between the pool's drain and its lock).
 void Allocator::forkPrepare() { instance().thread_mutex_.lock(); }
 void Allocator::forkParent() { instance().thread_mutex_.unlock(); }
 void Allocator::forkChild() {
@@ -359,7 +291,6 @@ void Allocator::forkChild() {
     a.fork_owner_ = std::this_thread::get_id();
 }
 
-// Commits physical memory for a nursery region.
 void Allocator::commitNursery(char *nursery_base, size_t size) {
     void *result = Elm::platform::commitAt(nursery_base, size);
 
@@ -368,40 +299,31 @@ void Allocator::commitNursery(char *nursery_base, size_t size) {
     }
 }
 
-// Singleton storage for `Allocator::instance()`. Namespace-scope so the
-// accessor can be inlined to a single fixed-address load. The default
-// constructor is trivial (just zeros pointers/counters), so static-init-order
-// concerns do not apply — real initialization runs in `initialize()`.
+// The constructor only stores constants, so the order of static initialization across files does not matter.
 Allocator g_allocator_storage;
 
-// Initializes the calling thread's heap space.
 void Allocator::initThread() {
-    // Ensure allocator is initialized.
     if (!initialized) {
         initialize();
     }
 
-    // Check if this thread already has a heap.
     if (tl_heap_ != nullptr) {
-        return;  // Already initialized.
+        return;
     }
 
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-    // HEAP_007: a forked child may call initThread for a fresh heap; dead heaps of
-    // threads that do not exist in it are not live mutators (CR-012's check below).
+    // HEAP_007: in a forked child the dead heaps are dropped first, so they do not count as live mutators
+    // in the check below.
     dropForkDeadHeapsLocked();
 
-    // Double-check after acquiring lock.
+    // Reached with tl_heap_ null but a heap registered for this thread, as after adoptThreadHeap(nullptr).
     auto thread_id = std::this_thread::get_id();
     if (thread_heaps_.find(thread_id) != thread_heaps_.end()) {
         setThreadHeap(thread_heaps_[thread_id].get());
         return;
     }
 
-    // HEAP_007 / CR-012 (option F): one live mutator per process. A second
-    // live ThreadLocalHeap shares the process-wide committed bytes, decommit
-    // clocks and released-extent list with the first (per-heap GC_DET_001
-    // breaks), so it is forbidden outside the benchmark/test opt-in.
+    // HEAP_007 / CR-012: one live mutator per process.
     if (!thread_heaps_.empty() && !multi_mutator_opt_in_) {
         std::fprintf(stderr, "[eco] FATAL: a second mutator thread called initThread while "
             "another ThreadLocalHeap is live (HEAP_007: one mutator per process; CR-012). "
@@ -410,10 +332,7 @@ void Allocator::initThread() {
         std::abort();
     }
 
-    // Create ThreadLocalHeap.
-    // Memory is allocated on demand by NurserySpace (via
-    // acquireNurserySlicePair, HEAP_042) and OldGenSpace (via
-    // acquireAllocBuffer).
+    // The heap's spaces take their memory from this allocator when they need it, not here.
     auto heap = std::make_unique<ThreadLocalHeap>(
         this,
         nullptr, 0,    // Nursery base/size - allocated on demand
@@ -428,14 +347,13 @@ void Allocator::initThread() {
     thread_heaps_[thread_id] = std::move(heap);
 }
 
-// Cleans up the calling thread's heap space.
 // TLA-REGION(AL.cleanupThread) begin
 void Allocator::cleanupThread() {
     if (tl_heap_ == nullptr) {
-        return;  // Nothing to clean up.
+        return;
     }
 
-    // HEAP_075 (plans/threaded-gc-register-fixes.md §7.2 step 2): no teardown holds
+    // HEAP_075: no teardown holds
     // thread_mutex_ while it takes a gang lock (tenureTeardown -> stopAndJoin,
     // ~GCBackgroundGang's registry): a fork's prepare holds the gangs and then asks
     // for thread_mutex_ (M7 LockOrder, mutant teardown_under_tm).
@@ -449,12 +367,10 @@ void Allocator::cleanupThread() {
         }
     }
     if (doomed) {
-        // threaded-gc-07 (P§3.15): the last tenure job is finished and given
-        // a stats-only merge before the heap's stats are folded.
+        // The last tenure job is finished and given a stats-only merge before the heap's stats are folded.
         doomed->getNursery().tenureTeardown(doomed->getOldGen());
 #if ENABLE_GC_STATS
         {
-            // Accumulate stats from this thread heap before destroying it.
             std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
             accumulated_stats_.combine(doomed->getNursery().getStats());
             accumulated_stats_.combine(doomed->getOldGen().getStats());
@@ -468,9 +384,6 @@ void Allocator::cleanupThread() {
 }
 // TLA-REGION(AL.cleanupThread) end
 
-// threaded-gc-07 (P§3.15): at process exit, before the stats banner, the
-// calling thread's last tenure job is stopped or joined, finished on this
-// thread if needed and given a stats-only merge, so run totals include it.
 // TLA-REGION(AL.finishTenureForExit) begin
 void Allocator::finishTenureForExit() {
     if (tl_heap_ == nullptr) return;
@@ -479,9 +392,6 @@ void Allocator::finishTenureForExit() {
 }
 // TLA-REGION(AL.finishTenureForExit) end
 
-// Slow path for `getRootSet()` — used by external callers that may run
-// before `initThread()` has been called on the current thread (e.g.
-// Scheduler, PlatformRuntime registering external root scanners).
 RootSet &Allocator::getRootSetSlow() {
     if (!tl_heap_) {
         initThread();
@@ -489,49 +399,41 @@ RootSet &Allocator::getRootSetSlow() {
     return tl_heap_->getRootSet();
 }
 
-// Allocates a heap object of the given size with the specified tag.
 void *Allocator::allocate(size_t size, Tag tag) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocate(size, tag);
 }
 
-// Fast-path: bump-pointer only, no GC.
 void *Allocator::allocateFast(size_t size) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocateFast(size);
 }
 
-// Slow-path: may GC, always succeeds or aborts.
 void *Allocator::allocateSlow(size_t size, Tag tag) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocateSlow(size, tag);
 }
 
-// Inline-alloc slow path: minor GC + retry, no header init (HEAP_034).
 void *Allocator::allocateSlowRaw(size_t size) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocateSlowRaw(size);
 }
 
-// Address of the calling thread's nursery bump state (HEAP_034).
 void *Allocator::bumpState() {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->getNursery().bumpState();
 }
 
-// Hoisted-capacity-check guarantee: headroom without allocation (HEAP_041).
 void Allocator::ensureNursery(size_t n) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     tl_heap_->ensureNursery(n);
 }
 
-// Slow-path region: contiguous allocation, may GC.
 void *Allocator::allocateRegionSlow(size_t total) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocateRegionSlow(total);
 }
 
-// Allocates directly in old generation (bypasses nursery).
 void *Allocator::allocatePermanent(size_t size, Tag tag) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     return tl_heap_->allocatePermanent(size, tag);
@@ -547,13 +449,11 @@ HPointer Allocator::allocLargeByteBuffer(const u8* data, size_t length) {
     return tl_heap_->allocLargeByteBuffer(data, length);
 }
 
-// Triggers a minor GC on the thread-local nursery.
 void Allocator::minorGC() {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     tl_heap_->minorGC();
 }
 
-// Triggers a major GC on the thread-local old gen.
 void Allocator::majorGC() {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");
     tl_heap_->majorGC();
@@ -568,7 +468,6 @@ void Allocator::collectAtSafepoint() {
     tl_heap_->collectAtSafepoint();
 }
 
-// Returns true if the thread-local nursery usage exceeds the threshold.
 bool Allocator::isNurseryNearFull(float threshold) {
     if (tl_heap_) {
         return tl_heap_->isNurseryNearFull(threshold);
@@ -576,13 +475,6 @@ bool Allocator::isNurseryNearFull(float threshold) {
     return false;
 }
 
-// `Allocator::isInNursery` is defined inline at the bottom of Allocator.hpp.
-
-// Validates an HPointer without dereferencing (so it's SEGV-safe even when
-// fed unboxed Int bits that happen to decode to a wild address). Decodes
-// the address via base + (ptr<<3); if it lands inside the nursery, hands
-// off to debugAssertValidNurseryPointer (the free-region check).
-// Compiles to a no-op when ECO_HEAP_VALIDATE is off — see HeapHelpers.hpp.
 void Allocator::validateInNurserySafe(HPointer hp) {
 #if ECO_HEAP_VALIDATE
     if (hp.ptr_ind != 0 || hp.ptr == 0) return;
@@ -595,12 +487,10 @@ void Allocator::validateInNurserySafe(HPointer hp) {
 #endif
 }
 
-// Returns true if the pointer is in the calling thread's old gen.
 bool Allocator::isInOldGen(void *ptr) {
     return tl_heap_ && tl_heap_->isInOldGen(ptr);
 }
 
-// Returns the current allocated bytes in thread-local old gen.
 size_t Allocator::getOldGenAllocatedBytes() const {
     if (tl_heap_) {
         return tl_heap_->getOldGenAllocatedBytes();
@@ -612,14 +502,9 @@ size_t Allocator::getOldGenAllocatedBytes() const {
 // Nursery slice allocation (HEAP_042)
 // ============================================================================
 //
-// The nursery region's two halves are carved into `nursery_slots_.size()`
-// fixed-size slots each. A heap owns the low and high slice at ONE slot,
-// so both of its semi-spaces are single contiguous extents and the bump
-// limit can span the whole from-space instead of one 512 KiB block.
+// A heap's two semi-spaces are each one contiguous extent, so its bump range can span a whole semi-space.
 
 void Allocator::rebuildNurserySliceTable() {
-    // Region geometry is first-init-wins (nursery_offset never moves after
-    // initialize()); slice geometry follows the CURRENT config.
     const size_t nursery_space = heap_reserved - nursery_offset;
     const size_t per_side      = nursery_space / 2;
 
@@ -635,9 +520,8 @@ void Allocator::rebuildNurserySliceTable() {
     // slot bases move whenever alloc_buffer_size or the block caps change.
     nursery_slots_.assign(slots, NurserySliceSlot{});
 
-    // threaded-gc-07 (HEAP_069): the region layout when the config selects
-    // it. The two tables describe the same addresses; only one is used per
-    // configuration, and both drop their retained records here.
+    // HEAP_069: the two tables describe the same addresses; only one is used per configuration, and both
+    // drop their retained records here.
     region_slots_.clear();
     region_stride_log2_ = 0;
     region_extents_ = 0;
@@ -653,8 +537,7 @@ void Allocator::rebuildNurserySliceTable() {
         region_growth_bytes_ = g;
         const size_t per_slot = static_cast<size_t>(region_extents_) << lg;
         region_slots_.assign(per_slot == 0 ? 0 : nursery_space / per_slot, NurseryRegionSlot{});
-        // The nursery slice geometry the legacy table would report is the
-        // per-extent ceiling in region mode (NurserySpace's growth ceiling).
+        // In region mode the slice size reported is the per-extent ceiling, NurserySpace's growth ceiling.
         nursery_slice_bytes_ = region_growth_bytes_;
     }
 }
@@ -840,19 +723,15 @@ void Allocator::releaseNurserySlicePair(const NurserySlicePair& pair) {
     }
 }
 
-// Acquires a block from the old gen region.
-// Thread-safe: acquires thread_mutex_ to update shared committed counters.
-// First-fit reuse: scan the free list for a released block with size >= request.
 // TLA-REGION(AL.acquireOldGenBlock) begin
 char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    // Align size to 8 bytes.
     size = (size + 7) & ~7;
 
     // BBoP page-sized requests must always land on a page-aligned, page-sized
     // extent and must never base at heap_base (the heap-base block is pinned
-    // by OldGenSpace's release path; this is a regression guard). Large-block
+    // by OldGenSpace's release path). Large-block
     // requests already arrive page-aligned (allocateLargeBlock rounds up to
     // OS_PAGE_SIZE before calling here) — that contract is what keeps the
     // bump pointer aligned across calls, which Darwin arm64 requires for
@@ -880,7 +759,7 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
             *it = old_gen_free_blocks_.back();
             old_gen_free_blocks_.pop_back();
 
-            // threaded-gc-03 (HEAP_059): in modes 1/2 a pending discard is
+            // HEAP_059: in modes 1/2 a pending discard is
             // cancelled, a posted one is waited for — BEFORE the pages are
             // touched. Which extent was chosen does not depend on it.
             if (page_work_) {
@@ -926,8 +805,7 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
                 dumpHeapState("oldgen reused released block", block_size);
             }
 
-            // plans/large-object-space.md D1 (O7): the caller records only
-            // `size` as its extent and releases only that, so a larger
+            // The caller records only `size` as its extent and releases only that, so a larger
             // extent's tail would be lost from old_gen_free_blocks_ and stay
             // counted as in use. Hand the tail straight back as its own free
             // extent: an ordinary release (thread_mutex_ is recursive), so
@@ -956,7 +834,7 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
     // with n > 1 workers never waits on a helper job unless the cap forces it.
     // (1) the first fitting Pending extent (its discard is cancelled: no
     // wait); (2) else a fresh bump; (3) else -- the old-gen cap leaves no bump
-    // room -- today's first fit, which may wait. The skip test is membership in
+    // room -- the ordinary first fit, which may wait. The skip test is membership in
     // pending_, which is job-blind (GC_DET_001): never a job's state.
     bool skip_reuse = false;
     if (w == AcquireWait::AvoidUnderPromo && page_work_ && page_work_->decommitOn()) {
@@ -1000,7 +878,6 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
         }
     }
 
-    // Check if we have space in old gen region.
     if (old_gen_committed + size > nursery_offset) {
         // Always log the exhaustion: this is the failure path that triggers
         // the OldGenSpace::bumpAllocate assertion further up the stack.
@@ -1010,8 +887,7 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
 
     char* block_base = heap_base + old_gen_committed;
 
-    // Commit physical memory for this block. threaded-gc-03 (HEAP_060): in
-    // modes 1/2 the part inside the commit-ahead window is already mapped
+    // HEAP_060: in modes 1/2 the part inside the commit-ahead window is already mapped
     // (and populated) and must NOT be re-mapped.
     char* commit_from = block_base;
     size_t commit_bytes = size;
@@ -1052,9 +928,6 @@ char* Allocator::acquireOldGenBlock(size_t size, AcquireWait w) {
 }
 // TLA-REGION(AL.acquireOldGenBlock) end
 
-// Returns a previously-acquired old-gen block for reuse. The virtual mapping
-// is retained; physical RSS may be released via madvise. Caller must not
-// hold thread_mutex_ (the lock is acquired here).
 // TLA-REGION(AL.releaseOldGenBlock) begin
 void Allocator::releaseOldGenBlock(char* block, size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
@@ -1064,12 +937,10 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
     page_supply_.released_bytes += size;
     page_supply_.released_extents += 1;
     if (page_work_) {
-        // threaded-gc-03 (HEAP_059): the discard is deferred (Pending) and
+        // HEAP_059: the discard is deferred (Pending) and
         // later posted to the helper pool; see PageWork.
         page_work_->onRelease(block, size, callerInPause());
     } else if (config_.decommit_on_oldgen_release) {
-        // Drop physical RSS while keeping the virtual mapping reserved so a
-        // later acquireOldGenBlock can reuse the same address range.
 #if ENABLE_GC_STATS
         const auto t0 = std::chrono::steady_clock::now();
 #endif
@@ -1096,7 +967,6 @@ void Allocator::releaseOldGenBlock(char* block, size_t size) {
     // scan over `old_gen_free_blocks_`, not by reusing the bump.
     old_gen_free_blocks_.emplace_back(block, size);
 
-    // Decrement the in-use byte counter so post-shrink reporting is correct.
     assert(old_gen_in_use_bytes_.load(std::memory_order_relaxed) >= size &&
            "releaseOldGenBlock: in-use underflow");
     subOldGenInUse(size);
@@ -1122,15 +992,12 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
 
     if (new_capacity_bytes <= currentCapacity()) return;
 
-    // Grow by acquiring fresh old-gen blocks. `acquireOldGenBlock` enforces
-    // the global `nursery_offset` cap, so we just loop until we hit the
-    // requested capacity or the allocator refuses.
+    // acquireOldGenBlock enforces the nursery_offset limit, so the loop stops when it refuses.
     const size_t block_size = config_.alloc_buffer_size;
 
     while (currentCapacity() < new_capacity_bytes) {
         char* block_base = acquireOldGenBlock(block_size);
         if (block_base == nullptr) {
-            // Hit the global old-gen cap — stop, caller tolerates partial grow.
             break;
         }
 
@@ -1152,16 +1019,10 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
     space.resizePageIndexForRegion();
 }
 
-// Commits a contiguous region of `initial_size` bytes in the old-gen address
-// space and returns the base. Used by `OldGenSpace::initialize` to obtain
-// the BBoP region in a single mmap. The `max_size` parameter is retained for
-// signature compatibility but only `initial_size` is committed and reserved.
-// Pre-condition: caller must hold thread_mutex_.
 // TLA-REGION(AL.acquireOldGenRegion) begin
 char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    // Align size to 8 bytes.
     initial_size = (initial_size + 7) & ~7;
 
     if (initial_size == 0) return nullptr;
@@ -1203,15 +1064,13 @@ char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
 }
 // TLA-REGION(AL.acquireOldGenRegion) end
 
-// Resets the allocator to initial state, optionally with a new configuration.
-// Accumulates stats from all thread heaps before destroying them.
 void Allocator::reset(const HeapConfig* new_config) {
     std::unique_lock<std::recursive_mutex> lock(thread_mutex_);
 
-    ++heap_generation_;  // destroys all thread heaps/RootSets below; bump epoch
+    ++heap_generation_;
 
-    // threaded-gc-03: finish every helper job and discard the pending extents
-    // BEFORE the heaps and the free list go away (P§7 trap 5).
+    // Every helper job finishes and every pending extent is discarded BEFORE the heaps and the free list
+    // go away.
     if (page_work_) {
         page_work_->drainAll(/*discard_pending=*/true);
 #if ECO_HEAP_VALIDATE
@@ -1223,16 +1082,14 @@ void Allocator::reset(const HeapConfig* new_config) {
         page_work_.reset();
     }
 
-    // Update config if provided.
     if (new_config) {
         HeapConfig c = *new_config;
-        c.resolveNurseryRegions();   // TG7d: auto -> 1; incompatible throws
+        c.resolveNurseryRegions();   // auto becomes 1; an incompatible setting throws
         c.validate();
         config_ = c;
     }
 
 #if ENABLE_GC_STATS
-    // Accumulate stats from all thread heaps before destroying them.
     for (const auto& [thread_id, heap] : thread_heaps_) {
         accumulated_stats_.combine(heap->getNursery().getStats());
         accumulated_stats_.combine(heap->getOldGen().getStats());
@@ -1240,7 +1097,7 @@ void Allocator::reset(const HeapConfig* new_config) {
     }
 #endif
 
-    // Clear all thread heaps. HEAP_075 (§7.2 step 2): swapped out under the lock and
+    // HEAP_075: the heaps are swapped out under the lock and
     // destroyed after unlocking -- a heap's teardown joins its gangs (tenureTeardown ->
     // stopAndJoin, ~GCBackgroundGang's registry), which must not run under
     // thread_mutex_. Each heap's destruction re-takes thread_mutex_ per call
@@ -1254,11 +1111,10 @@ void Allocator::reset(const HeapConfig* new_config) {
         lock.lock();
     }
 
-    // Reset committed memory tracking.
     old_gen_committed = 0;
     old_gen_in_use_bytes_.store(0, std::memory_order_relaxed);
     multi_mutator_opt_in_ = false;   // CR-012: the opt-in is per reset
-    old_gen_in_use_peak_ = 0;   // C0 census (TEMPORARY)
+    old_gen_in_use_peak_ = 0;
     nursery_low_committed_ = 0;
     nursery_high_committed_ = 0;
 
@@ -1268,14 +1124,9 @@ void Allocator::reset(const HeapConfig* new_config) {
     major_epoch_ = 0;
     rebuildPageWork();
 
-    // Rebuild the nursery slice table against the (possibly new) config,
-    // dropping every retained-commit record: slot bases move when
-    // alloc_buffer_size or the block caps change, and a stale record would
-    // make the next acquire skip committing pages that were never mapped at
-    // the new base. Re-committing after a reset is the safe, cheap path —
-    // this mirrors the block free-list clear it replaces. Runs AFTER
-    // thread_heaps_.clear() above, whose ~NurserySpace calls
-    // releaseNurserySlicePair against the still-valid old table.
+    // A retained-commit record from the old geometry would make the next acquire skip committing pages that
+    // were never mapped at the new slot base, so all are dropped. This runs after the heaps are destroyed
+    // above, because ~NurserySpace releases its slot against the old table.
     rebuildNurserySliceTable();
 }
 
@@ -1283,25 +1134,16 @@ void Allocator::reset(const HeapConfig* new_config) {
 // Safe Public Pointer API
 // ============================================================================
 
-// Resolves an HPointer to its physical address, following forwarding pointers.
-//
-// Hot path (plan D9): under HEAP_028 the word IS the address, so the common
-// no-forwarding case is a pure reinterpret (fromPointerRaw). The four
-// correctness asserts (ptr_ind, non-null, heap-bounds x2) and the nursery
-// stale-pointer tripwire are demoted to ECO_HEAP_VALIDATE builds only — they
-// fired on every dereference of every Elm program under the asserts-on `build`
-// preset, which is pure overhead in production. Only the forward-follow loop is
-// real semantic work, and it iterates only while old-gen compaction has a
-// forwarding window open (rare; see the __builtin_expect hint).
+// The checks on `ptr` are only in ECO_HEAP_VALIDATE builds because this runs on every dereference, and
+// the standard build keeps assertions on. The tag assertion after the loop stays in every build that has
+// assertions.
 void* Allocator::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
 
 #if ECO_HEAP_VALIDATE
     assert(ptr.ptr_ind == 0 && "Cannot resolve an embedded constant HPointer");
     assert(obj && "Null pointer from valid HPointer");
-    // Stale-pointer tripwire: if obj is in nursery, verify it points at an
-    // allocated region (not post-swap to-space-free). Hot path — only run
-    // in validator builds.
+    // Stale-pointer tripwire: a nursery address must point into an allocated part of the nursery.
     {
         ThreadLocalHeap* heap = getThreadHeap();
         if (heap != nullptr && heap->isInNursery(obj)) {
@@ -1318,7 +1160,6 @@ void* Allocator::resolve(HPointer ptr) {
            "Pointer outside heap and permanent space");
 #endif
 
-    // Follow forwarding chain to final location.
     Header* hdr = getHeader(obj);
     while (__builtin_expect(hdr->tag == Tag_Forward, 0)) {
         Forward* fwd = static_cast<Forward*>(obj);
@@ -1330,7 +1171,6 @@ void* Allocator::resolve(HPointer ptr) {
     return obj;
 }
 
-// Wraps a physical address as an HPointer.
 HPointer Allocator::wrap(void* obj) {
     assert(obj && "Cannot wrap null pointer - Elm never produces null pointers");
     assert((reinterpret_cast<uintptr_t>(obj) & 7) == 0 && "Pointer must be 8-byte aligned");
@@ -1343,26 +1183,32 @@ HPointer Allocator::wrap(void* obj) {
 
 
 // ============================================================================
-// GC helper threads (threaded-gc-03, plans/threaded-gc-03-helper-threads.md)
+// GC helper threads
 // ============================================================================
 
 void (*Allocator::commit_observer_for_testing)(char* p, size_t n) = nullptr;
 
 namespace {
 
+/// Discards the `n` bytes of pages at `p` for the page work, returning whether that succeeded.
 bool pageOpDiscard(void*, char* p, size_t n) {
     return Elm::platform::discardPages(p, n);
 }
+/// Populates the `n` bytes of committed pages at `p` for writing, for the page work, returning whether that
+/// succeeded.
 bool pageOpPopulate(void*, char* p, size_t n) {
     return Elm::platform::populatePagesWrite(p, n);
 }
+/// Commits the `n` bytes at `p` for the page work, after showing them to `commit_observer_for_testing`,
+/// returning whether the commit succeeded.
 bool pageOpCommit(void*, char* p, size_t n) {
     if (Allocator::commit_observer_for_testing) Allocator::commit_observer_for_testing(p, n);
     return Elm::platform::commitAt(p, n) != nullptr;
 }
 
-// Stall observer: a stall OUTSIDE a pause goes to the MMU stall list of the
-// calling thread's heap (phase-timer builds) and to the event log.
+/// Records a wait on a helper job of `dur_ns` nanoseconds starting at `start_ns` on the steady clock: in
+/// the GC event log, when it is on, and, in phase-timer builds, in the calling thread's stall list when the
+/// wait was outside a pause. Does nothing without GC statistics.
 void pageHookStall(void*, uint64_t start_ns, uint64_t dur_ns, gc::HelperClient client,
                    bool in_pause) {
 #if ENABLE_GC_STATS
@@ -1381,6 +1227,7 @@ void pageHookStall(void*, uint64_t start_ns, uint64_t dur_ns, gc::HelperClient c
 #endif
 }
 
+/// Records a finished helper job in the GC event log, when GC statistics are built and the log is on.
 void pageHookJobReaped(void*, const gc::HelperJob& job) {
 #if ENABLE_GC_STATS
     if (!gcEventLogEnabled()) return;
@@ -1412,7 +1259,7 @@ bool Allocator::callerInPause() const {
 // TLA-REGION(AL.rebuildPageWork) begin
 void Allocator::rebuildPageWork() {
     page_work_.reset();
-    if (config_.gc_thread_mode == 0) return;   // mode 0: today's inline path
+    if (config_.gc_thread_mode == 0) return;   // mode 0: no page work
     auto& pool = gc::GCHelperPool::instance();
     const auto mode = static_cast<gc::HelperMode>(config_.gc_thread_mode);
     if (pool.configured() &&
@@ -1456,8 +1303,8 @@ void Allocator::onGCPauseEnd(ThreadLocalHeap& heap, bool had_major) {
 #endif
     if (!page_work_) return;   // mode 0: one predictable branch per pause
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
-    // M6 fork harness (det-cr015): a pause point holding thread_mutex_ only (CR-015; since
-    // GCFork's allocator layer a fork's prepare waits for it: the pause must be bounded).
+    // A pause point holding thread_mutex_ only (CR-015). A fork's prepare waits for
+    // thread_mutex_, so this hold must be bounded.
     ECO_TLA_TRACE_ONLY(if (::Elm::gc::tla_m6) ::Elm::tlatrace::probe("m6.tm.held");)
     if (!page_work_) return;
     ++sync_epoch_;
@@ -1477,14 +1324,16 @@ void Allocator::drainHelperWork() {
 }
 // TLA-REGION(AL.drainHelperWork) end
 
-// ========== Explicit collections (plans/frontend-heap-release.md §3.5, HEAP_076) ==========
+// ========== Explicit collections (HEAP_076) ==========
 
 namespace {
+/// Returns the steady clock's reading in nanoseconds.
 uint64_t explicitNowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+/// Prints `what` as a fatal explicit-collection error and aborts.
 [[noreturn]] void explicitFatal(const char* what) {
     std::fprintf(stderr, "[gc] FATAL: %s (HEAP_076)\n", what);
     std::fflush(stderr);
@@ -1593,8 +1442,6 @@ GCReport Allocator::collectMinor() {
 }
 
 #if ECO_HEAP_VALIDATE
-// V2 + V3 (plans/threaded-gc-03-helper-threads.md Step 6). Caller holds
-// thread_mutex_.
 void Allocator::validatePageWork(const char* where) const {
     if (!page_work_) return;
     auto fail = [&](const char* what, char* p) {
@@ -1642,23 +1489,18 @@ void Allocator::validatePageWork(const char* where) const {
 #endif
 
 #if ENABLE_GC_STATS
-// Returns combined statistics from all thread heaps.
 GCStats Allocator::getCombinedStats() const {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    // Start with accumulated stats from destroyed thread heaps.
     GCStats combined = accumulated_stats_;
 
-    // Add stats from current thread heaps.
     for (const auto& [thread_id, heap] : thread_heaps_) {
         if (fork_child_ && thread_id != fork_owner_) continue;   // HEAP_007: never read a dead heap
-        // Combine nursery, old-gen (allocation-size histogram), and
-        // thread-local heap (major-GC) stats.
         combined.combine(heap->getNursery().getStats());
-        // threaded-gc-02: fold the bitmap cursors' pending counts first.
+        // The bitmap cursors' pending counts are folded in first.
         heap->getOldGen().syncCursorLiveBytes();
         combined.combine(heap->getOldGen().getStats());
-        {   // plans/large-object-space.md: the heap's LOS counters.
+        {   // the heap's large-object-space counters
             const LargeObjectSpace& los = heap->getOldGen().largeObjectSpace();
             const LargeObjectSpace::Stats& ls = los.stats();
             combined.los.allocs += ls.allocs;
@@ -1681,13 +1523,11 @@ GCStats Allocator::getCombinedStats() const {
                 std::chrono::steady_clock::now().time_since_epoch()).count());
         combined.wall_time_ns = now_ns - runtime_start_ns_;
     }
-    // C0 census (TEMPORARY, plans/contiguous-nursery-space.md §3.3): both
-    // old-gen walls are allocator-global, so they are read from the live
-    // allocator rather than merged out of the per-thread stats.
+    // Both old-gen figures belong to the allocator, not to a heap, so they are read here, not merged.
     combined.oldgen_inuse_peak_bytes = old_gen_in_use_peak_;
     combined.oldgen_hiwater_bytes    = old_gen_committed;
 
-    // threaded-gc-03 (P§3.9): page supply + helper snapshot, allocator-global.
+    // Page supply and the helper pool also belong to the allocator.
     combined.page_supply = page_supply_;
     if (page_work_) {
         const gc::PageWorkCounters& c = page_work_->counters();
@@ -1747,13 +1587,11 @@ GCStats Allocator::getCombinedStats() const {
 // Test Access Helper
 // ============================================================================
 
-// Returns the thread-local nursery for testing.
 NurserySpace* AllocatorTestAccess::getNursery(Allocator& alloc) {
     ThreadLocalHeap* heap = alloc.getThreadHeap();
     return heap ? &heap->getNursery() : nullptr;
 }
 
-// Returns the thread-local old gen for testing.
 OldGenSpace* AllocatorTestAccess::getOldGen(Allocator& alloc) {
     ThreadLocalHeap* heap = alloc.getThreadHeap();
     return heap ? &heap->getOldGen() : nullptr;

@@ -1,6 +1,7 @@
 //===- EcoDialect.cpp - Eco dialect implementation ------------------------===//
 //
-// This file implements the Eco dialect.
+// Compiles the TableGen-generated dialect and type definitions, and registers
+// the generated types and operations when the dialect is loaded.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,14 +27,14 @@ using namespace eco;
 // Dialect Initialization
 //===----------------------------------------------------------------------===//
 
+// Registers every type and operation that TableGen generated for the dialect.
+// MLIR calls this once, when the dialect is loaded into a context.
 void EcoDialect::initialize() {
-  // Register types.
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "eco/EcoTypes.cpp.inc"
       >();
 
-  // Register operations.
   addOperations<
 #define GET_OP_LIST
 #include "eco/EcoOps.cpp.inc"

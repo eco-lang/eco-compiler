@@ -1,14 +1,39 @@
-/**
- * Common Definitions for Allocator Components.
- *
- * This file contains shared constants, types, and utilities used across
- * the allocator subsystem (NurserySpace, OldGenSpace, Allocator).
- *
- * Key contents:
- *   - Sizing constants: Heap size, nursery size, AllocBuffer size.
- *   - Color enum: Tri-color marking states (White, Grey, Black).
- *   - Utility functions: getHeader(), getObjectSize().
- */
+// The settings every part of the collector reads, and the one function that says how many bytes a heap
+// object occupies.
+//
+// The nursery, the old generation, the per-thread heaps and the process `Allocator` are separate
+// components, but they share two things that must agree exactly. This header holds both.
+//
+// The first is the footprint of an object. A collector walks memory object by object: a sweep steps from
+// one header to the next, and a copy needs to know how many bytes to move. As `allocator/Heap` states, an
+// object's footprint is a function of its header word alone. `getObjectSizeFromHeader` is that function,
+// and every walker strides by it. Because it reads nothing past the header, it can also size an object
+// from a copy of its header taken earlier, which is what a parallel minor collection does once the header
+// in place has been overwritten by a claim (`allocator/MinorWork` owns that protocol).
+//
+// The second is the configuration. `HeapConfig` is a plain record with one field per tunable, and the
+// constants above it are the defaults those fields start from. The `Allocator` copies a config, resolves
+// its automatic choices with `resolveNurseryRegions`, and checks it with `validate`, which throws
+// `std::invalid_argument` for a config the collector cannot run.
+//
+// Some vocabulary the settings use:
+//   - The heap is one reserved range of address space, `max_heap_size` bytes. The old generation takes
+//     the bottom of it and the nursery region the top; how many bytes the nursery region gets is
+//     `nurseryRegionBytes`, and the old generation's cap is the rest.
+//   - An allocation buffer, `alloc_buffer_size` bytes, is the unit the nursery grows by (a block) and
+//     the size of the pages the old generation takes from the `Allocator`.
+//   - The large-object threshold (LOT, `large_object_threshold`) is the size from which an allocation
+//     takes the large-object path. A large object that cannot hold pointers is placed in the old
+//     generation and pinned. One that can is placed in the nursery if it is small enough, and otherwise
+//     in the young large-object space (YLOS), where it stays young but is never copied.
+//   - The nursery runs in one of two modes. The semi-space nursery gives each heap a slot: a pair of
+//     equal slices, one in the low half of the nursery region and one in the high half, which take
+//     turns as from-space and to-space. The region nursery gives each heap a slot of several extents
+//     (an eden and survivor extents) in which survivors age in place until a tenure job promotes them.
+//
+// Most of the file is the constants and the fields of `HeapConfig`, in the same order and grouped the same
+// way: heap-wide, strings, nursery, old generation, sweep pacing. Rules cited by id (HEAP_*, GC_DET_*)
+// are in design_docs/invariants.csv in the eco repository.
 
 #ifndef ECO_ALLOCATOR_COMMON_H
 #define ECO_ALLOCATOR_COMMON_H
@@ -24,19 +49,15 @@
 #include <string>
 #include "Heap.hpp"
 
-// Enable extra GC assertions and nursery invariants in debug builds.
-// Normally set via CMake (-DECO_GC_DEBUG=1); this provides a safe fallback.
+/// Whether extra collector assertions and nursery invariant checks are compiled in: 1 on, 0 off. The
+/// CMake option of the same name defines it as 1; it defaults to 0 here.
 #ifndef ECO_GC_DEBUG
 #define ECO_GC_DEBUG 0
 #endif
 
-// Heap-validator switch. Independent of ECO_GC_DEBUG. Gates the always-on
-// stale-HPointer detection (write/read/arg-side hooks, free-region
-// poisoning), the per-container bitmap-mismatch tripwires, the post-GC
-// heap-integrity walker, the from-space pre-evacuation walk, the
-// forward-chain depth assert, and the old-gen / BBoP invariant audits.
-// Off by default — these are hot-path checks. Turn on via CMake
-// (-DECO_HEAP_VALIDATE=ON) for diagnostic runs (heap-profile, stress).
+/// Whether the heap validator is compiled in: 1 on, 0 off, independent of `ECO_GC_DEBUG`. The CMake option
+/// of the same name defines it as 1; it defaults to 0 here, because the checks it enables sit on hot paths.
+/// Among what it gates in this file are `validateExtKinds` and the default of the eden flip.
 #ifndef ECO_HEAP_VALIDATE
 #define ECO_HEAP_VALIDATE 0
 #endif
@@ -45,424 +66,388 @@ namespace Elm {
 
 class Allocator;
 
-// Tri-color marking states for mark-and-sweep GC.
+/// The mark colour of a heap object, as stored in its header's `color` field.
+///
+/// The values are written into headers, so they must not be renumbered.
 enum class Color : u32 {
-    White = 0,   // Not yet marked (potential garbage).
-    Grey = 1,    // Marked but children not yet scanned.
-    Black = 2    // Marked and all children scanned.
+    White = 0,   ///< Not marked in the current cycle.
+    Grey = 1,    ///< Marked, with children not yet scanned.
+    Black = 2    ///< Marked, with children scanned.
 };
 
 // ============================================================================
 // Default Configuration Constants
 // ============================================================================
-// Every HeapConfig field's default initializer pulls its value from one of
-// these constants — keep them in sync. Grouped by scope: heap-wide, string /
-// rope heuristics, nursery, then old generation. HeapConfig declares its
-// fields in the same order.
+// Each constant here is the default of the `HeapConfig` field of the matching name, unless its comment says
+// otherwise, and they are grouped as `HeapConfig` groups its fields.
 
 // ---- Heap-wide ----
 
-// OS page size for mmap(MAP_FIXED) alignment of old-gen large-block extents.
-// mmap rejects MAP_FIXED requests whose address or length is not a page
-// multiple, so the allocator's bump pointer must advance in multiples of the
-// OS's page size — not a smaller "logical page". Darwin on Apple Silicon uses
-// 16 KiB pages (`sysctl hw.pagesize`); Linux on x86-64/aarch64 and Darwin on
-// x86-64 use 4 KiB. We can't make this dynamic without unwinding a lot of
-// constexpr math, so pin it at compile time per platform and assert at
-// allocator init that getpagesize() matches.
+/// The operating system page size, in bytes, fixed at compile time: 16 KiB on Apple arm64, 4 KiB on every
+/// other target.
+///
+/// Old-gen extents are rounded up to a multiple of it, and `HeapConfig::validate` requires an allocation
+/// buffer to be at least this size. Nothing in this file checks it against the page size of the running
+/// system.
 #if defined(__APPLE__) && defined(__aarch64__)
 constexpr size_t OS_PAGE_SIZE = 16384;
 #else
 constexpr size_t OS_PAGE_SIZE = 4096;
 #endif
 
-// Reserved virtual address space for the heap (24 GiB; 20 GiB old gen +
-// 4 GiB nursery under the default split below).
+/// The default size of the heap's address-space reservation, in bytes (24 GiB: a 4 GiB nursery region and
+/// a 20 GiB old generation under the default split).
 constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;
 
-// Address space given to the NURSERY region, both halves together, when
-// HeapConfig::nursery_region_bytes is left at 0 (HEAP_043). The policy is
-// min(this, max_heap_size / 2), so the default degrades to the legacy half
-// split on heaps smaller than 8 GiB (every unit-test config) and takes
-// effect on the real 24 GiB reservation: 4 GiB nursery / 20 GiB old gen.
-//
-// 4 GiB = 2 GiB per side = 8 slice slots at the default 256 MiB slice, i.e.
-// 8 concurrently-alive ThreadLocalHeaps at full growth — while a
-// self-compile was measured to use exactly one 512 MiB nursery and 3.98 GiB
-// of old-gen high-water, so the old gen goes from 3x to 5x its observed
-// peak and the nursery keeps 4x the slots a single-threaded program needs.
+/// The most address space the default split gives the nursery region, both halves together, in bytes.
+///
+/// When `HeapConfig::nursery_region_bytes` is 0 the region is the smaller of this and half the heap
+/// (HEAP_043), so a heap under 8 GiB is split evenly and a larger one gives the rest to the old generation.
+/// At the default 96 MiB slice this is 21 semi-space slots per half.
 constexpr size_t DEFAULT_NURSERY_REGION_BYTES = 4ULL * 1024 * 1024 * 1024;
 
-// Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
+/// The default size of an allocation buffer, in bytes: one nursery block and one old-gen page.
 constexpr size_t ALLOC_BUFFER_SIZE = 512 * 1024;
 
-// Allocations of this size or larger bypass the nursery and are pinned in old gen (also triggers split-header path for strings/byte buffers).
+/// The default large-object threshold, in bytes. An allocation of this size or more takes the
+/// large-object path described in the file comment, and a String or Bytes this large is split into a
+/// header object and a separate body.
 constexpr size_t LARGE_OBJECT_THRESHOLD = 8 * 1024;
 
-// threaded-gc-04b placement of large pointer-bearing objects: one no larger
-// than min(nursery capacity / divisor, max size) goes in the nursery, a larger
-// one in the young large-object space (YLOS). Divisor 0 = never the nursery;
-// max size 0 = no fixed bound.
+/// The default divisor of the nursery's capacity that bounds which large pointer-bearing objects go to the
+/// nursery rather than the YLOS. 0 sends all of them to the YLOS.
 constexpr u32 LARGE_PTR_NURSERY_DIVISOR = 8;
-// 128 KiB chosen by experiment E1 (plans/threaded-gc-04b-young-large-objects.md
-// P§5a/P§9): best or tied on wall and GC time at 80 KB, 800 KB and 8 MB arrays.
+/// The default fixed bound, in bytes, on a large pointer-bearing object placed in the nursery, applied as
+/// well as the divisor. 0 means no fixed bound.
 constexpr size_t LARGE_PTR_NURSERY_MAX_SIZE = 128 * 1024;
 
 // ---- String / rope heuristics ----
 
-// Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a Tag_StringRope.
-  // Tuned 2026-09-29 (plans/gc-param-sweep/sensitivity-2026-09-28.md §12): 32K -> 128K, part of the
-  // combined config at NURSERY_MAX_BLOCKS (8K lost 6.3 s; 128K alone was -1.3 s, CPU -1.8 s).
+/// The default length, in UTF-16 code units, up to which the result of a String concatenation is built as
+/// one flat string; a longer result is built as a rope (`Tag_StringRope`).
 constexpr size_t STRING_FLATTEN_LIMIT = 128 * 1024;
 
-// slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a Tag_StringSlice.
+/// The default length, in UTF-16 code units, up to which a String slice is copied into a flat string
+/// instead of being made a `Tag_StringSlice` view.
 constexpr size_t STRING_TINY_SLICE_LIMIT = 128;
 
-// Bytes.Decode.string builds a zero-copy Tag_StringUtf8View for valid all-ASCII
-// payloads at least this many bytes; shorter valid-ASCII input copies a small
-// Tag_StringUtf8Leaf (mirrors MAKE_BYTEBUFFER_SLICE_MIN_LEN).
+/// The default length, in bytes, from which decoding a valid all-ASCII String from Bytes makes a
+/// zero-copy `Tag_StringUtf8View`; shorter input is copied into a `Tag_StringUtf8Leaf`.
 constexpr size_t UTF8_VIEW_MIN_LEN = 32;
 
-// Master switch for creating any UTF-8 String form (view or leaf). When false,
-// every creation path falls back to the UTF-16 forms — a config-only rollback.
+/// Whether String operations may create the UTF-8 String forms (views and leaves) by default. When false,
+/// they create only the UTF-16 forms.
 constexpr bool UTF8_STRINGS_ENABLED = true;
 
-// NO EFFECT: read by nothing since the empty rebalance branch of StringOps' flatten
-// decision was deleted (rope rebalancing is unimplemented); still an accepted key.
-// Was: rope tree depth above which a rebalance heuristic would flag the rope.
+/// The default of a setting that has no effect: no code reads `HeapConfig::rope_max_height`. It is kept
+/// so that a configuration naming it is still accepted.
 constexpr u32 ROPE_MAX_HEIGHT = 32;
 
-// NO EFFECT (as ROPE_MAX_HEIGHT). Was: leaf count above which a rebalance heuristic would check for too-many-small-leaves.
+/// The default of a setting that has no effect, as `ROPE_MAX_HEIGHT`.
 constexpr u32 ROPE_LEAF_COUNT_LIMIT = 64;
 
-// NO EFFECT (as ROPE_MAX_HEIGHT). Was: average leaf size below which a rope at/over ROPE_LEAF_COUNT_LIMIT would be a rebalance candidate.
+/// The default of a setting that has no effect, as `ROPE_MAX_HEIGHT`.
 constexpr u32 ROPE_MIN_LEAF_SIZE = 128;
 
 // ---- Nursery ----
 
-// Initial nursery size in blocks (must be even; split into from/to semi-spaces).
+/// The default initial size of a semi-space nursery, in blocks across both semi-spaces.
 constexpr size_t NURSERY_BLOCK_COUNT = 256;
 
-// Hard upper bound on adaptive nursery growth, in blocks (must be even).
-  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
-  // 1024 -> 512 (nursery ceiling 512 -> 256 MiB), worth -17.6 s alone. Measured together as one config on the Stage-7 self-compile:
-  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
-  // Tuned 2026-09-29 (plans/gc-param-sweep/sensitivity-2026-09-28.md §12): 512 -> 384 (ceiling 256 -> 192 MiB).
-  // Minor pause length follows the ceiling (p99 8 ms at 64 MiB ... 65 ms at 512 MiB).
-  // Measured with STRING_FLATTEN_LIMIT 128K (and a 16-byte shadow granule, not shipped): at N = 5
-  // on the self-compile, wall 110.7 -> 106.8 s, CPU -8.0 s, pause p99 28.5 -> 18.0 ms, promoted
-  // +2.3 %, output byte-identical (§12 row n384_s16_sfl). Without the granule expect about 1 s and
-  // 3-5 s CPU less gain (its solo effect).
+/// The default limit on a nursery's growth, in blocks across both semi-spaces. It also sets the size of a
+/// semi-space slice and of a region-nursery extent.
 constexpr size_t NURSERY_MAX_BLOCKS = 384;
 
-// Nursery occupancy fraction that triggers a minor GC.
+/// The default fraction of the nursery that may fill before a minor collection runs.
 constexpr float NURSERY_GC_THRESHOLD = 0.95f;
 
-// Post-minor-GC to-space occupancy above which the nursery requests more blocks.
+/// The default fraction of to-space that survivors may fill after a minor collection before the nursery
+/// asks to grow.
 constexpr float NURSERY_GROWTH_THRESHOLD = 0.20f;
 
-// Minor-GC survivals required before an object is promoted to old gen (header age field is 2 bits).
-  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
-  // 2 -> 1, halving nursery survivor copies (1.371 B -> 0.747 B), -17.7 s alone. Measured together as one config on the Stage-7 self-compile:
-  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
+/// The default number of minor collections an object survives before it is promoted to the old
+/// generation. The header's age field is 2 bits, so `validate` accepts 1 to 3.
 constexpr u32 PROMOTION_AGE = 1;
 
-// Enable two-pass DFS spine copying for Cons lists during minor GC (else BFS for all types).
+/// Whether a minor collection copies a list spine depth first by default, so that the cells of a list
+/// land next to each other; when false every object is copied breadth first.
 constexpr bool USE_HYBRID_DFS = true;
 
 // ---- Old generation ----
 
-// Initial committed bytes of the old generation at startup.
+/// The default number of bytes the old generation commits at startup.
 constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;
 
-// Old-gen committed/cap fraction above which a major GC is scheduled (must exceed MAJOR_GC_TARGET_UTILIZATION).
-  // Tuned 2026-09-22 (plans/gc-param-sweep/combinations-2026-09-22-results.md):
-  // 0.85 -> 0.95 (majors 10 -> 5), -11.8 s alone; SATURATES here (0.97/0.99 identical). Measured together as one config on the Stage-7 self-compile:
-  // 233.8 s -> 195.8 s (-16.3 %), GC 115.5 -> 85.4 s, output byte-identical.
+/// The default occupancy trigger: the fraction of the old generation's committed bytes that allocation may
+/// fill before a major collection is scheduled. It is also the occupancy above which the old generation
+/// grows after a major collection, so it must exceed `MAJOR_GC_TARGET_UTILIZATION`.
 constexpr float MAJOR_GC_INITIATING_OCCUPANCY = 0.95f;
 
-// Fraction of the old-gen cap (= half the max_heap_size reservation) at which
-// the GlobalPressure trigger schedules a major GC. Historically this was
-// hard-coded as initiating_occupancy/3 (~0.28), which on a 24 GB default
-// reservation fired at ~3.4 GB committed — 92% of all majors on compile
-// workloads whose live set never neared the cap, and 56% of their wall clock.
-// Decoupled and raised to the anti-ballooning-backstop role: 0.85 of cap.
-// (Run K, benchmarks/runtime-calls.md: majors 103 -> 12, flag-on self-compile
-// wall 13:44 -> 6:27, RSS +1.7%.) The Occupancy and GarbageFraction triggers
-// keep bounding per-thread crowding and garbage accumulation below this bar.
+/// The default global-pressure trigger: the fraction of the old-gen cap that the old generation's bytes in
+/// use may reach before a major collection is scheduled. It is a backstop against the heap growing towards
+/// the cap; the occupancy and garbage triggers schedule the ordinary collections.
 constexpr float MAJOR_GC_GLOBAL_PRESSURE_FRACTION = 0.85f;
 
-// Post-major-GC live/committed target; the old-gen cap is grown to keep utilization below this.
+/// The default fraction of the old generation's capacity that live data should fill after a major
+/// collection. The old generation is resized towards live bytes divided by this.
 constexpr float MAJOR_GC_TARGET_UTILIZATION = 0.50f;
 
-// Fraction of old-gen committed that, once allocated since the last major, schedules another (0.0 disables).
+/// The default garbage trigger: a major collection is scheduled once the old generation's allocated bytes,
+/// less those found live after the last sweep, reach this fraction of its committed bytes. 0 disables it.
 constexpr float MAJOR_GC_GARBAGE_FRACTION = 0.70f;
 
-// Multiple of the nursery's minor-GC threshold (object bytes) that allocation made directly
-// in the old generation (split large bodies, young large objects, pinned large objects)
-// may reach before the next allocation runs a minor GC (0 disables). The effective budget is
-// also capped at 1/32 of the old-gen cap (plans/large-body-gc-trigger.md D2). 1.0 chosen by the
-// Phase 4 self-compile A/B (2026-10-08): 0 / 0.5 / 1 / 2 all identical (the compiler never
-// reaches the budget: 0 debt requests), wall within noise.
+/// The default budget for allocation made directly in the old generation (split large bodies, young large
+/// objects, pinned large objects) between minor collections, as a multiple of the nursery's minor-collection
+/// threshold. Once it is reached, the next allocation runs a minor collection. The budget is also capped at
+/// 1/32 of the old-gen cap. 0 disables it.
 constexpr double DIRECT_ALLOC_MINOR_BUDGET = 1.0;
 
-// Empty LOS blocks kept for reuse after a major GC; beyond this many, empty LOS
-// blocks are released to the Allocator at the post-mark tail
-// (plans/large-object-space.md D2).
+/// The default number of empty large-object-space blocks kept for reuse after a major collection. Empty
+/// blocks beyond this many may be released, down to the old generation's minimum size.
 constexpr size_t LOS_EMPTY_KEEP = 2;
 
-// On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS (virtual mapping is retained either way).
+/// Whether releasing an old-gen block also discards its physical pages by default. The address range stays
+/// reserved either way.
 constexpr bool DECOMMIT_ON_OLDGEN_RELEASE = true;
 
-// threaded-gc-03 (plans/threaded-gc-03-helper-threads.md, HEAP_058-060,
-// GC_DET_001): GC helper threads. Mode 0 = off (today's inline path, no pool),
-// 1 = sync (helper jobs run inline at their post point: the reference),
-// 2 = concurrent (jobs run on the GCHelperPool). ECO_GC_THREAD=0|1|2 overrides.
-constexpr uint32_t GC_THREAD_MODE = 2;               // default-on (plan Step 12)
+/// The default GC helper-thread mode (HEAP_058 to HEAP_060, GC_DET_001). 0 runs page work inline with no
+/// helper pool; 1 posts it as helper jobs but runs each inline where it is posted, which is the reference
+/// behaviour; 2 runs the jobs on the `GCHelperPool`. `ECO_GC_THREAD` overrides it.
+constexpr uint32_t GC_THREAD_MODE = 2;
+/// The default number of GC helper threads.
 constexpr uint32_t GC_HELPER_THREADS = 1;
-constexpr int32_t  GC_HELPER_CPU = -1;                 // -1 = no pinning
-// U1 deferred decommit: a released extent is discarded once it has stayed
-// unused past this many pause ends (UINT32_MAX = never, except under the cap).
-// E1: no finite value in {0, 4, 16, 64, 256} came within 10 % of "never" on
-// refaults (reuse spreads over a whole major cycle), so the pause-end clock is
-// off by default and the major clock below bounds retention instead.
+/// The default CPU the helper threads are pinned to; -1 means no pinning.
+constexpr int32_t  GC_HELPER_CPU = -1;
+/// The default number of page-work sync points a released old-gen extent stays unused before its pages are
+/// discarded.
+/// `UINT32_MAX` turns this clock off; `DECOMMIT_DELAY_MAJORS` then bounds how long pages are kept.
 constexpr uint32_t DECOMMIT_DELAY_SYNCS = UINT32_MAX;
-constexpr size_t   DECOMMIT_PENDING_MAX_BYTES = 0;     // 0 = no cap
-// ...or once it has stayed unused past this many MAJOR GCs (0 = off). E1
-// (plan §9): reuse of released blocks spreads over a whole major cycle, so a
-// delay counted in majors is the unit that keeps the refault savings.
+/// The default limit, in bytes, on released extents waiting to be discarded; 0 means no limit.
+constexpr size_t   DECOMMIT_PENDING_MAX_BYTES = 0;
+/// The default number of major collections a released old-gen extent stays unused before its pages are
+/// discarded; 0 turns this clock off.
 constexpr uint32_t DECOMMIT_DELAY_MAJORS = 1;
-// U2 commit-ahead: bytes kept committed + populated above the old-gen bump.
-// E2: 128 MiB is the smallest window that covered every fresh commit of the
-// self-compile (32 MiB missed 26 %); 512 MiB gained nothing and cost RSS.
-constexpr size_t   COMMIT_AHEAD_BYTES = size_t{128} << 20;   // 0 = off
+/// The default number of bytes above the old generation's bump that are committed and populated ahead of
+/// use at each page-work sync point; 0 turns it off.
+constexpr size_t   COMMIT_AHEAD_BYTES = size_t{128} << 20;
 
-// threaded-gc-02 (plans/threaded-gc-02-bitmap-allocation.md, HEAP_054): allocate
-// uniform size-class cells straight from the mark bitmap through a per-class
-// cursor, and gap-sweep mixed blocks, instead of the header-walking lazy sweep.
+/// Whether the old generation allocates by default from the mark bitmap (HEAP_054): blocks of one size
+/// class hand out cells through a per-class cursor over the bitmap, and mixed blocks are swept for gaps.
+/// When false the old generation uses the header-walking lazy sweep.
 constexpr bool OLD_GEN_BITMAP_ALLOC = true;
 
-// threaded-gc-05b (plans/threaded-gc-05b-parallel-marking.md, HEAP_064): the
-// old-gen mark work of an incremental cycle runs on gc_mark_threads markers
-// (0 = auto: min(cap, available CPUs); 1 = serial reference). Boxed arrays and
-// list backings longer than MARK_CHUNK_ELEMS slots are scanned in chunks.
-// DEFAULT auto, capped at 16, from experiments E2/E3 (plan P§10): self-compile
-// in-pause slice mark 9.76 s -> 1.30 s, worst pause = the minor floor (189 ms).
+/// The default number of threads marking the old generation inside a pause (HEAP_064). 0 means automatic:
+/// the smaller of `GC_MARK_THREADS_CAP` and the available CPUs. 1 is the serial reference.
 constexpr uint32_t GC_MARK_THREADS = 0;
+/// The default limit on the automatic number of in-pause markers.
 constexpr uint32_t GC_MARK_THREADS_CAP = 16;
+/// The number of slots from which a boxed array or list backing is marked in chunks of this many slots,
+/// except in a serial snapshot at the start of a mark cycle. It is not a `HeapConfig` field.
 constexpr uint32_t MARK_CHUNK_ELEMS = 1024;
 
-// threaded-gc-06 (plans/threaded-gc-06-parallel-minor.md, HEAP_067/HEAP_068):
-// the copy phase of a minor GC runs on gc_minor_threads workers (0 = auto:
-// min(cap, available CPUs); 1 = the serial Cheney reference). Young survivors
-// go to per-worker to-space LABs of MINOR_LAB_BYTES; a minor whose from-space
-// holds fewer than MINOR_PARALLEL_MIN_BYTES object bytes runs serially.
-// ECO_GC_MINOR_THREADS overrides.
-// DEFAULT-ON (plan P§10.13): auto workers capped at 8. The retention gate
-// (E7) failed -- depth-first promotion order raises the self-compile's
-// gf-sweep median old-gen peak by ~9 % -- and was overridden after review:
-// 8 workers give most of the wall and p99 gain (E2: 124 s vs 161 s, minor
-// p99 25 vs 112 ms) for 25 % less collector CPU than 16. E3: 8 KiB LABs,
-// child prefetch; E4: a 0.85 MB minor is 1.8x slower in parallel, so 4 MiB.
+/// The default number of threads copying survivors in a minor collection (HEAP_067, HEAP_068). 0 means
+/// automatic: the smaller of `GC_MINOR_THREADS_CAP` and the available CPUs. 1 is the serial Cheney copy.
+/// `ECO_GC_MINOR_THREADS` overrides it.
 constexpr uint32_t GC_MINOR_THREADS = 0;
+/// The default limit on the automatic number of minor-collection workers.
 constexpr uint32_t GC_MINOR_THREADS_CAP = 8;
+/// The default size, in bytes, of a minor-collection worker's local allocation buffer (LAB): the private
+/// run of to-space a worker copies survivors into.
 constexpr size_t   MINOR_LAB_BYTES = 8 * 1024;
+/// The default number of from-space object bytes below which a minor collection runs on one worker.
 constexpr size_t   MINOR_PARALLEL_MIN_BYTES = 4ULL * 1024 * 1024;
+/// Whether minor-collection workers prefetch the children of the object they copy, by default.
 constexpr bool     MINOR_PREFETCH_CHILDREN = true;
-// Grey order of a parallel minor: true = FIFO (breadth-first, closer to the
-// serial Cheney's promotion order: E7 one-worker peak +6 % instead of +20 %,
-// but no better at 16 workers and 25 % slower), false = LIFO (depth-first).
+/// The default order in which a parallel minor collection processes copied objects: true is first in,
+/// first out (breadth first), false is last in, first out (depth first). The order decides which objects
+/// end up next to each other.
 constexpr bool     MINOR_FIFO_ORDER = false;
+/// The number of slots in one chunk when a parallel minor collection splits a large array. It is not a
+/// `HeapConfig` field.
 constexpr uint32_t MINOR_CHUNK_ELEMS = 1024;
+/// The number of list cells a parallel minor collection copies in one run along a spine. It is not a
+/// `HeapConfig` field.
 constexpr uint32_t MINOR_SPINE_RUN = 512;
 
-// threaded-gc-07 (plans/threaded-gc-07-concurrent-tenuring.md, HEAP_069/HEAP_070):
-// the region nursery (an eden plus three survivor extents per heap) and its
-// tenure job. NURSERY_REGIONS 0 = the legacy semi-space nursery, unchanged.
-// TENURE_MODE 1 = sync (the job runs inside the hand-over pause: the exact
-// reference), 2 = concurrent (the job runs on the heap's tenure collector
-// during the next epoch). ECO_NURSERY_REGIONS / ECO_TENURE_MODE /
-// ECO_NURSERY_EDEN_FLIP override. NURSERY_REGIONS 2 = auto: the region
-// nursery whenever the config meets its requirements (promotion_age 1, bitmap
-// allocation, a class for every nursery object, room for one heap slot); an
-// incompatible config throws (auto never falls back to the legacy nursery:
-// select it explicitly with 0); 1 = regions, and an incompatible config throws.
-// Default (2026-09-28, TG7d): auto, concurrent tenuring with one collector —
-// chosen over the E4 keep-up rule (16-18 % of minors help a late job), plan
-// P§10.17.
+/// The default nursery mode (HEAP_069, HEAP_070). 0 is the semi-space nursery. 1 is the region nursery,
+/// and a config that cannot run it fails `validate`. 2 is automatic: `resolveNurseryRegions` turns it into
+/// 1, and throws for a config that cannot run the region nursery; it never chooses 0.
+/// `ECO_NURSERY_REGIONS` overrides it.
 constexpr uint32_t NURSERY_REGIONS = 2;
-constexpr int32_t  NURSERY_REGION_EDEN_FLIP = -1;     // -1 = on in validate builds
+/// The default eden flip setting: 1 gives each region-nursery heap two edens instead of one, 0 one, and
+/// -1 two only when `ECO_HEAP_VALIDATE` is on. `ECO_NURSERY_EDEN_FLIP` overrides it.
+constexpr int32_t  NURSERY_REGION_EDEN_FLIP = -1;
+/// The default tenure mode. 1 runs the tenure job inside the pause that hands it over; 2 runs it on the
+/// heap's tenure collector thread while the mutator runs. `ECO_TENURE_MODE` overrides it.
 constexpr uint32_t TENURE_MODE = 2;
-constexpr uint32_t TENURE_SYNC_THREADS = 1;           // 1 = exact engine; 0 = the minor's workers
-constexpr uint32_t TENURE_HELP = 1;                   // late job: 0 wait, 1 stop and finish in the pause
-constexpr uint32_t TENURE_HELP_THREADS = 0;           // 0 = the minor's worker count; 1 = exact
-constexpr int32_t  TENURE_PRIORITY = 0;               // 0 inherit (5c's trap: never lower by default)
-constexpr size_t   HEAL_PARALLEL_MIN = 65536;         // heal slots above which the heal runs on the gang
-// 4 = one shadow word per 16 B granule (3 = per 8 B). 4 halves the shadow tables and was worth
-// CPU -5.5 s on the self-compile (plans/gc-param-sweep/sensitivity-2026-09-28.md §12), but it
-// REQUIRES every region-nursery survivor to be >= 16 B and aborts otherwise. First made the default
-// on 2026-09-29 and reverted the same day: an empty Tag_ByteBuffer (8 B, header only) survived in
-// stress-elm/BytesRoundtripNestedBytes. Empty Bytes is now the Empty constant, so no heap object is
-// under 16 B (HEAP_071, plans/empty-bytes-embedded-constant.md), and 4 is the default again
-// (2026-09-29, gc-opt-loop row SG4). See /work/2-gc-bugs.md.
+/// The default number of threads for a tenure job run inside a pause: 1 is the exact engine, 0 uses the
+/// minor collection's worker count.
+constexpr uint32_t TENURE_SYNC_THREADS = 1;
+/// What the default does about a tenure job still running when its results are needed: 0 waits for it,
+/// 1 stops it and finishes it in the pause.
+constexpr uint32_t TENURE_HELP = 1;
+/// The default number of threads that finish a late tenure job: 0 uses the minor collection's worker count.
+constexpr uint32_t TENURE_HELP_THREADS = 0;
+/// The default scheduling priority of a tenure collector thread: 0 inherits the creator's.
+constexpr int32_t  TENURE_PRIORITY = 0;
+/// The default number of slots to heal above which a tenure job may heal them on several threads.
+constexpr size_t   HEAL_PARALLEL_MIN = 65536;
+/// The default log2 of the bytes one shadow-table word covers in the region nursery: 4 is 16 bytes, 3 is
+/// 8 bytes. A 16-byte granule requires every surviving object to be at least 16 bytes. Every layout is at
+/// least 16 bytes except a String, Bytes or UTF-8 leaf of length 0, and none of those is allocated: the
+/// empty ones are the Empty constant.
 constexpr uint32_t SHADOW_GRANULE_LOG2 = 4;
-// Lever L3 (P§9, moved into the phase by Step 0's utilization rule): collector
-// threads per heap in mode 2. 1 = the exact engine (mode 1's bit-exact twin);
-// > 1 = the concurrent parallel engine over a shared grant (layout class).
+/// The default number of tenure collector threads per heap in tenure mode 2. 1 is the exact engine; more
+/// than 1 runs the concurrent parallel engine.
 constexpr uint32_t TENURE_COLLECTOR_THREADS = 1;
-// The exact engine's promotion order: true = breadth-first (FIFO), false =
-// depth-first (LIFO). Promotion order is a retention input (phase 6 E7).
+/// The default order in which the exact tenure engine promotes: true is breadth first, false depth first.
 constexpr bool     TENURE_FIFO_ORDER = false;
 
-// threaded-gc-05c (plans/threaded-gc-05c-concurrent-marking.md, HEAP_065):
-// concurrent marking. CONC_MARK 0 = off (05b in-pause slices), 1 = sync (the
-// whole mark in the t0 pause: the determinism reference), 2 = concurrent
-// (background markers between pauses; the mutator assists when late).
-// ECO_GC_CONC_MARK=0|1|2 and ECO_GC_CONC_MARK_THREADS override.
-// DEFAULT-ON (plan P§10): mode 2, auto background markers capped at 4 (E2: the
-// smallest B with zero assists and closings on the self-compile; B = 2 needed
-// assists), priority 0 = inherit (E4: nice 10 / 19 / SCHED_IDLE let a starved
-// marker stall the closing join -- up to 9.5 s under 24 spinning co-runners),
-// assist lag 8 (E2: the largest lag with zero assists).
+/// The default concurrent-marking mode (HEAP_065). 0 marks in slices inside pauses; 1 runs the whole mark in
+/// the pause that starts the cycle, which is the reference behaviour; 2 runs background markers between
+/// pauses, and the mutator helps when they fall behind. `ECO_GC_CONC_MARK` overrides it.
 constexpr uint32_t CONC_MARK = 2;
-constexpr uint32_t CONC_MARK_THREADS = 0;          // 0 = auto: min(cap, CPUs - 1)
+/// The default number of background markers. 0 means automatic: the smaller of `CONC_MARK_THREADS_CAP` and
+/// one less than the available CPUs. `ECO_GC_CONC_MARK_THREADS` overrides it.
+constexpr uint32_t CONC_MARK_THREADS = 0;
+/// The default limit on the automatic number of background markers.
 constexpr uint32_t CONC_MARK_THREADS_CAP = 4;
-constexpr int32_t  CONC_MARK_PRIORITY = 0;         // 0 inherit, 1..19 nice, 20 SCHED_IDLE
-constexpr uint32_t CONC_MARK_ASSIST_LAG = 8;       // grace, in cycle steps
+/// The default scheduling priority of a background marker: 0 inherits, and on Linux 1 to 19 is a nice
+/// value and 20 is `SCHED_IDLE`.
+constexpr int32_t  CONC_MARK_PRIORITY = 0;
+/// The default number of mark-cycle steps background markers may fall behind before the mutator helps.
+constexpr uint32_t CONC_MARK_ASSIST_LAG = 8;
 
-// threaded-gc-05c Part B (P§3.11): heap-relative trigger pacing.
-// HEADROOM_MARGIN > 0 enables the Headroom trigger -- DEFAULT 1.5 (E9/E10: it
-// never fires at the self-compile's 20 GB cap, and at an 11 GB cap it started
-// the late cycle earlier: peak 94.4 % -> 81.5 % of the cap, same majors).
-// LIVE_BUDGET_PACED reaches the LiveBudget at the handoff instead of t0 --
-// DEFAULT ON (E9: peak spread over the gf sweep 44.5 % -> 6.4 %, max RSS 9.6-10.2
-// GB vs 9.8-14.3 GB, +1-2 majors that cost no pause time under concurrent
-// marking; wall and pauses within noise).
-// GARBAGE_BACKSTOP > 0 raises the garbage-fraction threshold to it while
-// LiveBudget is on (E9: 36 % spread, non-monotone in k -- rejected).
+/// The default margin of the headroom trigger. A mark cycle starts once committed bytes, plus this multiple
+/// of the allocation predicted for the cycle, would reach the finish fraction of the cap. 0 disables it.
 constexpr double MAJOR_GC_HEADROOM_MARGIN = 1.5;
+/// Whether the live-budget trigger is paced by default, so that the budget is reached when the cycle ends
+/// rather than when it starts.
 constexpr bool   MAJOR_GC_LIVE_BUDGET_PACED = true;
+/// The default garbage backstop. When it is above 0 and the live-budget trigger is on, the garbage trigger
+/// uses the larger of this and `MAJOR_GC_GARBAGE_FRACTION`.
 constexpr float  MAJOR_GC_GARBAGE_BACKSTOP = 0.0f;
 
-// threaded-gc-05a (plans/threaded-gc-05a-incremental-marking.md, HEAP_063):
-// spread the major-GC mark over the minor GCs after the trigger. Requires
-// OLD_GEN_BITMAP_ALLOC. SLICES = T (0 = the whole cycle inside the t0 pause).
-// DEFAULT-ON with T = 32 from experiment E1 (plan P§10): self-compile max
-// pause 4.83 s -> 336 ms (triple medians), old-gen peak +1.6 %, wall flat.
+/// Whether a major collection's mark is spread over the minor collections that follow its start, by
+/// default (HEAP_063). It requires bitmap allocation.
 constexpr bool     INCREMENTAL_MARK = true;
+/// The default number of minor collections an incremental mark is spread over; 0 marks the whole cycle in
+/// the pause that starts it.
 constexpr uint32_t INCREMENTAL_MARK_SLICES = 32;
-constexpr size_t   INCREMENTAL_MARK_MIN_SLICE_UNITS = 16384;   // ~0.7 ms at 41 ns/object
+/// The default least amount of mark work, in the mark loop's work units, that one incremental slice does.
+constexpr size_t   INCREMENTAL_MARK_MIN_SLICE_UNITS = 16384;
+/// The default least factor by which the previous mark cycle's work is scaled to predict the work of the
+/// next one; the occupancy growth since the previous cycle is used instead when it is larger.
 constexpr double   INCREMENTAL_MARK_PREDICT_GROWTH = 1.25;
+/// The default fraction of the old-gen cap that the old generation's bytes in use may reach before a
+/// running mark cycle is due to finish early. The headroom trigger aims to start a cycle so that it ends
+/// below this line. It must exceed the global-pressure fraction.
 constexpr double   INCREMENTAL_MARK_FINISH_FRACTION = 0.95;
 
-// threaded-gc-02 D1b: a uniform block is demoted to mixed at the end of mark
-// iff live_bytes <= DEMOTE_LIVE_FRACTION * totalBytes. 0.5 is the former
-// hard-coded `live * 2 <= total`; 0.0 = never demote. 0.3 chosen from E1
-// (plan §9 item 9): steady 7 majors, peak ~1 GB below 0.5.
+/// The default fraction of a single-size-class block that may be live at the end of a mark for the block to
+/// be turned into a mixed block. 0 turns this off.
 constexpr double DEMOTE_LIVE_FRACTION = 0.3;
 
-// threaded-gc-02: in bitmap mode the garbage-fraction trigger's denominator is
-// min(committed, GARBAGE_DENOM_CAP * committed at the last major). 0 = uncapped
-// (the legacy denominator, current committed) — the default: with LiveBudget
-// bounding the peak, a cap of 2 only added a major (plan §9 item 7).
+/// The default cap on the garbage trigger's denominator under bitmap allocation, as a multiple of the bytes
+/// committed at the last major collection; 0 means no cap, so the denominator is the bytes committed now.
 constexpr double GARBAGE_DENOM_CAP = 0.0;
 
-// threaded-gc-02 (both modes; defaults from the plan's §9 item 7 sweep, k = 4.5 and
-// r = 1.5 chosen 2026-09-25): a LiveBudget major fires when
-// bytes allocated since the last major reach MAJOR_GC_LIVE_BUDGET * live_ref,
-// live_ref = min(L_i, LIVE_GROWTH_BOUND * L_{i-1}) (L = mark-derived live at
-// the end of mark). 0 disables each.
-// k = 3.0 was the one deterministic RSS lever of plans/gc-param-sweep/sensitivity-2026-09-28.md
-// (§11-12: 9.3-9.5 GB at every gf, -19 % RSS) and was made the default on 2026-09-29, then REVERTED
-// the same day: with k = 3.0 the validate build fails "threaded-gc-07: E2 ... modes 1 and 2 agree"
-// (HEAP_044 assertion in OldGenSpace::scanObject: a Tag_Custom of size 0 is marked, though the
-// workload allocates no such object) and "threaded-gc-05b: negative control — skipping marker 1's
-// accumulator is caught". Both are root-caused and fixed: the first was a region-nursery YLOS
-// address-reuse bug (register CR-034 in plans/threaded-gc-concurrency-register.md; fixed as
-// HEAP_072), the second a negative control that only a later cycle could catch (CR-030; now caught
-// at the merge, HEAP_051). With both fixed the validate gate passes at k = 3.0, and 3.0 is the
-// default again (2026-09-29, gc-opt-loop row LB3).
+/// The default live-budget factor. A major collection is scheduled once the old generation's allocated
+/// bytes, less those found live after the last sweep, reach this multiple of the live bytes found by the
+/// last mark. 0 disables the trigger.
 constexpr double MAJOR_GC_LIVE_BUDGET = 3.0;
+/// The default limit on how much the live figure used by the live-budget trigger may grow from one mark to
+/// the next, as a multiple of the previous one; 0 means no limit.
 constexpr double LIVE_GROWTH_BOUND = 1.5;
 
-// Default cap on bytes committed to uniform small-class pages before splitting larger free cells.
+/// The default limit, in bytes, on memory committed to pages of small size classes before the old
+/// generation prefers splitting larger free cells.
 constexpr size_t DEFAULT_SMALL_CLASS_HEAP_BUDGET = 1024ULL * 1024 * 1024;
 
 // ---- Old-gen sweep pacing ----
 
-// Bytes of lazy-sweep work the allocator does per slow-path invocation (per slice).
+/// The default number of bytes of lazy sweep the old generation does in one slice of its allocation slow
+/// path.
 constexpr size_t SWEEP_WORK_BUDGET = 4096;
 
-// Bytes of sweep work `finishMarkAndSweep` runs synchronously before returning (seeds free lists for the first allocations).
+/// The default number of bytes swept before a mark-and-sweep returns, which seeds the free lists for the
+/// allocations that follow.
 constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
 
-// Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested), pre pressure scaling.
+/// The default number of bytes swept per byte requested, before the pressure scale is applied.
 constexpr double SWEEP_BYTES_PER_ALLOC_BYTE = 2.0;
 
-// Soft cap on the per-allocation sweep budget BEFORE pressure scaling (1 MiB).
+/// The default upper bound, in bytes, on one allocation's sweep budget before the pressure scale.
 constexpr size_t MAX_SWEEP_BYTES_PER_ALLOC = 1u << 20;
 
-// Hard cap applied AFTER pressure scaling and unswept-ratio boost (4 MiB).
+/// The default upper bound, in bytes, on one allocation's sweep budget after every scale is applied.
 constexpr size_t MAX_SWEEP_BYTES_HARD = 4u << 20;
 
-// Pressure thresholds on committedToCapRatio: each step picks the matching SWEEP_SCALE_*.
+/// The defaults of the old generation's committed-to-cap ratios at which the sweep budget moves to the
+/// next pressure step: below low, the low scale applies; below medium, the medium; below high, the high;
+/// otherwise the critical scale.
 constexpr double SWEEP_CAP_RATIO_LOW    = 0.50;
 constexpr double SWEEP_CAP_RATIO_MEDIUM = 0.75;
 constexpr double SWEEP_CAP_RATIO_HIGH   = 0.90;
 
-// Per-allocation sweep budget multipliers, indexed by pressure step (must be non-decreasing and >= 1.0).
+/// The defaults of the factors the sweep budget is multiplied by at each pressure step.
 constexpr double SWEEP_SCALE_LOW    = 1.0;
 constexpr double SWEEP_SCALE_MEDIUM = 2.0;
 constexpr double SWEEP_SCALE_HIGH   = 4.0;
 constexpr double SWEEP_SCALE_CRIT   = 8.0;
 
-// Unswept-block fraction above which the per-allocation sweep budget gets a SWEEP_UNSWEPT_SCALE boost.
+/// The default fraction of blocks still unswept above which the sweep budget is multiplied by
+/// `SWEEP_UNSWEPT_SCALE` as well.
 constexpr double SWEEP_UNSWEPT_RATIO_BOOST = 0.50;
 
-// Multiplier applied on top of pressure scaling when the unswept-block fraction is above the boost threshold.
+/// The default factor applied to the sweep budget when the unswept fraction is above its threshold.
 constexpr double SWEEP_UNSWEPT_SCALE = 2.0;
 
-// Per-slice budget for the panic-path sweeper (drives lazy sweep to completion before declaring OOM).
+/// The default number of bytes swept per slice when the old generation sweeps to completion before
+/// declaring itself out of memory.
 constexpr size_t PANIC_SWEEP_SLICE_BYTES = 1u << 20;
 
 // ---- Old-gen free-list layout (compile-time, not runtime-configurable) ----
-// These size class-counts compile into static array dimensions
-// (e.g. OldGenSpace::free_lists_[NUM_SIZE_CLASSES]) and the corresponding
-// telemetry buckets in GCStats, so they cannot be moved into HeapConfig
-// without converting those arrays to dynamic containers.
+// These sizes are array dimensions, such as the old generation's free lists per size class and the
+// matching statistics buckets, so they are not `HeapConfig` fields.
 
-// Number of small-cell size classes: 8 B steps from 8 up through MAX_SMALL_SIZE.
+/// The number of small size classes, which go in 8-byte steps from 8 bytes up to `MAX_SMALL_SIZE`.
 constexpr size_t NUM_SMALL_CLASSES = 32;
 
-// Largest cell size served by a small class (last small class is exactly this many bytes).
+/// The cell size of the largest small size class, in bytes.
 constexpr size_t MAX_SMALL_SIZE = 256;
 
-// First medium class size in bytes; subsequent medium classes are powers-of-two from here.
+/// The cell size of the first medium size class, in bytes; each medium class after it doubles.
 constexpr size_t MEDIUM_CLASS_BASE = 512;
 
-// Medium-class slots reserved at compile time; the runtime cap depends on large_object_threshold.
+/// The most medium size classes there can be. How many are in use depends on `large_object_threshold`.
 constexpr size_t NUM_MEDIUM_CLASSES_MAX = 8;
 
-// Total fixed-size class count; sizes the per-class free-list array.
+/// The most size classes there can be, small and medium together.
 constexpr size_t NUM_SIZE_CLASSES = NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX;
 
-// Returns the header of a heap object.
+/// Returns the header of the heap object at `obj`. `obj` must be the start of a heap object.
 inline Header *getHeader(void *obj) { return static_cast<Header *>(obj); }
 
-// threaded-gc-04b (HEAP_062): may an object with this tag hold heap pointers?
-// Only these tags are pointer-free by construction; everything else (including
-// a Tag_Array that happens to hold unboxed values — the tag cannot tell) is
-// treated as pointer-bearing, so a large one is young (nursery or YLOS).
+/// Returns whether an object with tag `tag` may hold heap pointers, which decides where a large one is
+/// placed (HEAP_062).
+///
+/// Only Int, Float, Char, String and ByteBuffer are pointer-free by their tag. Every other tag counts as
+/// pointer-bearing, including an array whose values happen to be unboxed, because the tag cannot tell.
 inline bool tagMayHoldPointers(uint32_t tag) {
     return tag != Tag_Int && tag != Tag_Float && tag != Tag_Char &&
            tag != Tag_String && tag != Tag_ByteBuffer;
 }
 
-// Returns the size in bytes (8-byte aligned) of an object with header `*hdr`.
-// Reads only tag, size (and, for Custom/Record, unboxed = K: the same word).
-// threaded-gc-06 (P§3.3.2): a parallel minor worker
-// sizes a claimed object from its SAVED header word, because the header in
-// place already reads BUSY.
+/// Returns the number of bytes, rounded up to a multiple of 8, occupied by an object whose header word is
+/// `*hdr`.
+///
+/// It reads only the tag, the size and, for a Custom or Record, the count of extension kind words in
+/// `unboxed`, all of which are in the header word. So `hdr` may point to a copy of the header rather than
+/// to the object. The unit of `size` depends on the tag, as `allocator/Heap` defines: elements for the
+/// variable-length objects, the cell's byte size for `Tag_Free`, and a logical length, which does not
+/// affect the footprint, for slices, views, ropes and the header objects of split Strings and Bytes. A
+/// `Tag_Forward` word is 8 bytes. An unknown tag also gives 8.
 inline size_t getObjectSizeFromHeader(const Header *hdr) {
 
     size_t size;
@@ -480,13 +465,9 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(ElmString) + hdr->size * sizeof(u16);
             break;
         case Tag_StringSlice:
-            // Fixed-size view: header.size is the logical UTF-16 length, not
-            // a byte count. The slice itself is a fixed struct.
             size = sizeof(ElmStringSlice);
             break;
         case Tag_StringRope:
-            // Fixed-size concat-tree node: header.size is the total logical
-            // UTF-16 length; the rope struct itself has fixed footprint.
             size = sizeof(ElmStringRope);
             break;
         case Tag_Tuple2:
@@ -502,13 +483,11 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(ConsChunk);
             break;
         case Tag_ListBacking:
-            // header.size is the capacity in ELEMENTS (like Tag_Array); the
-            // footprint covers the whole element array, live or slack.
+            // header.size is the capacity, so the slack after the live elements is counted.
             size = sizeof(ListBacking) + hdr->size * sizeof(Unboxable);
             break;
         case Tag_Custom:
-            // HEAP_019/HEAP_077: K = hdr->unboxed extension kind words follow
-            // values[size]; still a function of the header word alone.
+            // HEAP_019/HEAP_077: the K = hdr->unboxed extension kind words follow values[size].
             size = sizeof(Custom) + (size_t(hdr->size) + hdr->unboxed) * sizeof(Unboxable);
             break;
         case Tag_Record:
@@ -521,6 +500,7 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(FieldGroup) + hdr->size * sizeof(u32);
             break;
         case Tag_Closure:
+            // Unlike Custom and Record, a Closure's header.size already counts its extension kind words.
             size = sizeof(Closure) + hdr->size * sizeof(Unboxable);
             break;
         case Tag_Process:
@@ -533,50 +513,31 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             size = sizeof(Forward);
             break;
         case Tag_Free:
-            // Free cells store their full byte size directly in header.size.
-            // Already 8-byte aligned at the time the cell was created.
+            // A free cell's header.size is its byte size, already a multiple of 8.
             size = hdr->size;
             break;
         case Tag_ByteBuffer:
-            // Header size field stores byte count.
             size = sizeof(ByteBuffer) + hdr->size * sizeof(u8);
             break;
         case Tag_Array: {
-            // Size based on CAPACITY (header.size), not length: the heap
-            // object occupies bytes for the full capacity reserved at
-            // allocation time, so sweep must walk by capacity to land on
-            // the next object's header. Iterating only `length` elements
-            // is for marking/copying/fixup — but the heap footprint and
-            // the per-object stride during sweep both need capacity.
-            // W0 item 27: hdr->size IS arr->header.size, already loaded above.
+            // header.size is the capacity, not the length: a sweep must step over the whole
+            // allocation to reach the next header.
             size = sizeof(ElmArray) + hdr->size * sizeof(Unboxable);
             break;
         }
         case Tag_LargeStringHeader:
-            // Fixed-size split header. header.size carries the body's logical
-            // UTF-16 length (not a byte count for this object).
             size = sizeof(LargeStringHeader);
             break;
         case Tag_LargeByteHeader:
-            // Fixed-size split header. header.size carries the body's logical
-            // byte count (not a byte count for this object).
             size = sizeof(LargeByteHeader);
             break;
         case Tag_ByteBufferSlice:
-            // Fixed-size view: header.size is the logical byte count, not the
-            // struct footprint. Mirrors the Tag_StringSlice case above; without
-            // it a 24-byte slice was mis-sized as sizeof(Header)=8, corrupting
-            // GC evacuation/scan stride (HEAP_004).
             size = sizeof(ElmByteBufferSlice);
             break;
         case Tag_StringUtf8View:
-            // Fixed-size byte view; header.size is the logical unit count, not
-            // the footprint. Mirrors Tag_StringSlice / Tag_ByteBufferSlice.
             size = sizeof(ElmStringUtf8View);
             break;
         case Tag_StringUtf8Leaf:
-            // Inline ASCII bytes: 1 byte per unit. Footprint derives from
-            // header.size exactly like Tag_String (but u8, not u16).
             size = sizeof(ElmStringUtf8Leaf) + hdr->size * sizeof(u8);
             break;
         default:
@@ -584,18 +545,22 @@ inline size_t getObjectSizeFromHeader(const Header *hdr) {
             break;
     }
 
-    // All heap objects are 8-byte aligned.
     return (size + 7) & ~7;
 }
 
-// Returns the size of a heap object in bytes (8-byte aligned).
+/// Returns the number of bytes occupied by the heap object at `obj`, as `getObjectSizeFromHeader` computes
+/// it from the object's header in place. This is a plain read, not the atomic one `loadHeaderRelaxed` makes.
 inline size_t getObjectSize(void *obj) {
     return getObjectSizeFromHeader(getHeader(obj));
 }
 
 #if ECO_HEAP_VALIDATE
-// HEAP_019 / HEAP_077: K and padding of a Custom/Record (header.unboxed must be
-// extWords(size, CAP); bits past the last slot of the last ext word must be 0).
+/// Checks the extension kind words of the Custom or Record at `obj` (HEAP_019, HEAP_077), and does nothing
+/// for an object with any other tag.
+///
+/// `header.unboxed` must equal the number of extension words the object's size calls for, and the bits
+/// past the last field's kind in the last word must be 0. On a failure it prints a line naming `where` and
+/// the object to stderr and aborts. It exists only when `ECO_HEAP_VALIDATE` is on.
 inline void validateExtKinds(const void* obj, const char* where) {
     const Header* h = static_cast<const Header*>(obj);
     if (h->tag != Tag_Custom && h->tag != Tag_Record) return;
@@ -618,27 +583,29 @@ inline void validateExtKinds(const void* obj, const char* where) {
 }
 #endif
 
-// CR-007 (HEAP_058/HEAP_059): how Allocator::acquireOldGenBlock may treat a
-// free-list extent whose discard job is posted. AvoidUnderPromo is passed by a
-// promo_mu_ holder of a parallel promotion with more than one worker
-// (OldGenSpace::acquireWaitPolicy): it takes only Pending extents (cancelled,
-// never waits), else a fresh bump, and reuses (and may wait on) a
-// discard-issued extent only when the old-gen cap leaves no bump room.
+/// How `Allocator::acquireOldGenBlock` may treat a released extent whose discard has been posted to a helper
+/// thread (HEAP_058, HEAP_059).
+///
+/// `Allowed` reuses the first released extent that fits, and may wait for its discard to finish.
+/// `AvoidUnderPromo` is for a caller that holds the promotion lock of a parallel promotion with more than
+/// one worker, and so must not wait. When page work is posting discards, it takes a fitting extent whose
+/// discard can still be cancelled, else fresh address space, and only when the old-gen cap leaves no fresh
+/// space does it reuse an extent whose discard may have to be waited for.
 enum class AcquireWait : uint8_t { Allowed, AvoidUnderPromo };
 
-// CR-019 (HEAP_062/HEAP_067): a header word read or written while another
-// thread may touch the same word -- a young YLOS header aged or promoted under
-// ylos_mu_ (reachYoungLargeP, promoteYoungLarge, region reachYoungLargeR) vs a
-// sweep slice that steps over it under promo_mu_ (lazySweep, V11). The header's
-// bit-fields form ONE memory location, so both sides use a relaxed atomic
-// whole-word access. No ordering is needed: the writer never changes tag,
-// size or pin, and ylos_mu_ plus the colour test make it the word's only
-// writer within the minor (M3 YlosOnce). Not for the copy paths
-// (getObjectSize / getObjectSizeFromHeader stay plain).
+/// Returns the header word of the object at `obj`, read as one relaxed atomic access.
+///
+/// A header can be read and written by two threads at once: a young large object's header is aged or
+/// promoted by one thread while a sweep on another steps over it. The bit-fields of a header are one memory
+/// location, so both sides use whole-word relaxed atomics, `loadHeaderRelaxed` and `storeHeaderRelaxed`. No
+/// ordering is needed because the ageing or promoting writer never changes the tag, the size or the pin bit,
+/// which are all a sweep reads. The copy paths read headers plainly, through `getObjectSize`.
 inline Header loadHeaderRelaxed(const void* obj) {
     auto* w = static_cast<uint64_t*>(const_cast<void*>(obj));   // atomic_ref<const T> is not C++20
     return std::bit_cast<Header>(std::atomic_ref<uint64_t>(*w).load(std::memory_order_relaxed));
 }
+/// Writes `h` as the header word of the object at `obj`, as one relaxed atomic store. `loadHeaderRelaxed`
+/// says when the ageing or promoting writer needs this and what it does not order.
 inline void storeHeaderRelaxed(void* obj, Header h) {
     std::atomic_ref<uint64_t>(*static_cast<uint64_t*>(obj))
         .store(std::bit_cast<uint64_t>(h), std::memory_order_relaxed);
@@ -648,40 +615,32 @@ inline void storeHeaderRelaxed(void* obj, Header h) {
 // Nursery slice estate (HEAP_042)
 // ============================================================================
 
-/**
- * One ThreadLocalHeap's nursery address estate: two mirrored fixed-size
- * slices of the low and high nursery regions, at the same slot index.
- *
- * `capacity` is the LOGICAL extent length of EACH side — the semi-space a
- * NurserySpace actually bump-allocates and evacuates into, and the only
- * quantity GC semantics (membership bounds, threshold, growth) may consult.
- * It is one value because both sides always grow together.
- *
- * Distinct from it, and deliberately NOT exposed here: the slot's physical
- * *retained commit*, kept privately by the Allocator so a released slot's
- * pages can be reused by the next heap that claims the slot (the Issue-#40
- * respawn path). Retained commit may exceed `capacity` — those pages are
- * dormant, not part of any extent.
- */
+/// The address space one heap's semi-space nursery occupies: a slice of the low half of the nursery region
+/// and the slice at the same slot in the high half.
+///
+/// The `Allocator` hands it out and grows it. `capacity` is the usable length of each slice, the same for
+/// both because they grow together, and 0 after a failed acquire. The `Allocator` may have committed more
+/// of a slot than `capacity`, keeping pages from an earlier heap in that slot for reuse; those pages are
+/// not part of the nursery. The pointers are addresses inside the heap reservation, which outlives any heap.
 struct NurserySlicePair {
-    char*  low_base  = nullptr;   // slice base in the low nursery region
-    char*  high_base = nullptr;   // mirrored slice base in the high region
-    size_t capacity  = 0;         // logical extent bytes, per side
-    size_t slot      = 0;         // slot index (bookkeeping / release)
+    char*  low_base  = nullptr;
+    char*  high_base = nullptr;
+    size_t capacity  = 0;         ///< Usable bytes of each slice.
+    size_t slot      = 0;
 };
 
-/**
- * threaded-gc-07 (HEAP_069): one heap's REGION nursery estate: `n` extents of
- * one `capacity`, contiguous in the heap's slot block at a power-of-two
- * stride, extent k at slot_base + (k << stride_log2). Growth extends all n
- * extents in place, or none.
- */
+/// The address space one heap's region nursery occupies: `n` extents of the same `capacity`, in one slot of
+/// the nursery region, each starting `1 << stride_log2` bytes after the one before.
+///
+/// The `Allocator` hands it out and grows it, all `n` extents together or none. `capacity` is 0 after a
+/// failed acquire. The pointer is an address inside the heap reservation, which outlives any heap.
 struct NurserySliceSet {
     char*    slot_base   = nullptr;
     size_t   stride_log2 = 0;
     unsigned n           = 0;
-    size_t   capacity    = 0;    // logical bytes of EACH extent (0 = failure / none)
+    size_t   capacity    = 0;    ///< Usable bytes of each extent.
     size_t   slot        = 0;
+    /// Returns the start of extent `k`, which must be less than `n`.
     char* extent(unsigned k) const { return slot_base + (static_cast<size_t>(k) << stride_log2); }
 };
 
@@ -689,118 +648,86 @@ struct NurserySliceSet {
 // Heap Configuration
 // ============================================================================
 
-/**
- * Configuration for heap and allocator parameters.
- *
- * All fields have sensible defaults from the constants above. Users can
- * override any field before passing to Allocator::initialize().
- */
+/// The settings of the heap and the collector.
+///
+/// A default-constructed config holds the defaults defined above. Any field may be changed before the
+/// config is given to the `Allocator`, which copies it. Fields are public and are checked only when
+/// `validate` is called; the `Allocator` calls `resolveNurseryRegions` and then `validate` on every config
+/// it adopts. Where a field's meaning is given by the constant it defaults to, that constant's comment is
+/// the description.
 struct HeapConfig {
     // ---- Heap-wide ----
 
-    // Reserved virtual address space for the heap.
+    /// The size of the heap's address-space reservation, in bytes.
     size_t max_heap_size = DEFAULT_MAX_HEAP_SIZE;
 
-    // Bytes of that reservation given to the NURSERY region (both low and
-    // high halves together); the old generation gets the rest (HEAP_043).
-    // 0 (the default) selects the default policy in nurseryRegionBytes():
-    // min(DEFAULT_NURSERY_REGION_BYTES, max_heap_size / 2).
-    //
-    // The default is deliberately lopsided in the old gen's favour: a
-    // nursery is capped at nursery_max_block_count * alloc_buffer_size per
-    // heap (512 MiB at defaults, measured to be exactly what a self-compile
-    // uses) while the old generation's cap is a hard wall on a monotonic
-    // commit bump. Splitting the reservation evenly gave the nursery ~24x
-    // more address space than one heap can use and cost the old gen half
-    // the heap. See plans/contiguous-nursery-space.md M2.
+    /// The bytes of the reservation given to the nursery region, both halves together (HEAP_043). The old
+    /// generation gets the rest. 0 chooses the default split, as `nurseryRegionBytes` says.
     size_t nursery_region_bytes = 0;
 
-    // Size of one AllocBuffer / nursery block / old-gen BBoP page in bytes.
     size_t alloc_buffer_size = ALLOC_BUFFER_SIZE;
 
-    // Allocations of this size or larger bypass the nursery and are pinned in old gen.
     size_t large_object_threshold = LARGE_OBJECT_THRESHOLD;
 
-    // Large pointer-bearing objects (threaded-gc-04b): nursery when the size
-    // is <= min(nursery capacity / divisor, max size), else the YLOS.
-    // Divisor 0 = always the YLOS; max size 0 = no fixed bound.
+    /// A large pointer-bearing object goes to the nursery when its size is at most the nursery's capacity
+    /// divided by `large_ptr_nursery_divisor` and at most `large_ptr_nursery_max_size`, and to the YLOS
+    /// otherwise. A divisor of 0 sends every one to the YLOS; a max size of 0 means no fixed bound.
     u32 large_ptr_nursery_divisor = LARGE_PTR_NURSERY_DIVISOR;
     size_t large_ptr_nursery_max_size = LARGE_PTR_NURSERY_MAX_SIZE;
 
     // ---- String / rope heuristics ----
 
-    // Concat results <= this many UTF-16 code units flatten to a single leaf; larger totals build a rope.
     size_t string_flatten_limit = STRING_FLATTEN_LIMIT;
 
-    // slice() ranges <= this many UTF-16 code units flatten directly instead of allocating a slice.
     size_t string_tiny_slice_limit = STRING_TINY_SLICE_LIMIT;
 
-    // Min byte length for Bytes.Decode.string to build a zero-copy UTF-8 view
-    // (shorter valid-ASCII decodes copy a small UTF-8 leaf).
     size_t utf8_view_min_len = UTF8_VIEW_MIN_LEN;
 
-    // Master switch: when false, no UTF-8 String form is ever created.
     bool utf8_strings_enabled = UTF8_STRINGS_ENABLED;
 
-    // NO EFFECT: read by nothing (rope rebalancing is unimplemented; see ROPE_MAX_HEIGHT).
+    /// Has no effect: nothing reads it.
     u32 rope_max_height = ROPE_MAX_HEIGHT;
 
-    // NO EFFECT: read by nothing (see ROPE_MAX_HEIGHT).
+    /// Has no effect: nothing reads it.
     u32 rope_leaf_count_limit = ROPE_LEAF_COUNT_LIMIT;
 
-    // NO EFFECT: read by nothing (see ROPE_MAX_HEIGHT).
+    /// Has no effect: nothing reads it.
     u32 rope_min_leaf_size = ROPE_MIN_LEAF_SIZE;
 
     // ---- Nursery ----
 
-    // Initial nursery size in blocks (even; split into from/to semi-spaces).
     size_t nursery_block_count = NURSERY_BLOCK_COUNT;
 
-    // Hard upper bound on adaptive nursery growth, in blocks (even; >= nursery_block_count).
     size_t nursery_max_block_count = NURSERY_MAX_BLOCKS;
 
-    // Nursery occupancy fraction that triggers a minor GC.
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
-    // Post-minor-GC to-space occupancy above which the nursery requests more blocks.
     float nursery_growth_threshold = NURSERY_GROWTH_THRESHOLD;
 
-    // Minor-GC survivals required before an object is promoted to old gen.
+    /// The promotion age, and in the region nursery the tenure age as well.
     u32 promotion_age = PROMOTION_AGE;
 
-    // Enable two-pass DFS spine copying for Cons lists during minor GC (else BFS for all types).
     bool use_hybrid_dfs = USE_HYBRID_DFS;
 
     // ---- Old generation ----
 
-    // Initial committed bytes of the old generation at startup.
     size_t initial_old_gen_size = INITIAL_OLD_GEN_SIZE;
 
-    // Old-gen committed/cap fraction above which a major GC is scheduled (must be > target_utilization).
     float major_gc_initiating_occupancy = MAJOR_GC_INITIATING_OCCUPANCY;
 
-    // Global-committed/cap fraction at which the GlobalPressure trigger fires (anti-ballooning backstop).
     float major_gc_global_pressure_fraction = MAJOR_GC_GLOBAL_PRESSURE_FRACTION;
 
-    // Post-major-GC live/committed target; the old-gen cap is grown to stay below this.
     float major_gc_target_utilization = MAJOR_GC_TARGET_UTILIZATION;
 
-    // Fraction of old-gen committed allocated-since-last-major that schedules another major (0.0 disables).
     float major_gc_garbage_fraction = MAJOR_GC_GARBAGE_FRACTION;
 
-    // Direct old-gen allocation since the last minor that requests the next one, as a multiple
-    // of the nursery's minor threshold (0 disables; plans/large-body-gc-trigger.md D2).
     double direct_alloc_minor_budget = DIRECT_ALLOC_MINOR_BUDGET;
 
-    // Empty LOS blocks kept after a major GC (plans/large-object-space.md D2).
     size_t los_empty_keep = LOS_EMPTY_KEEP;
 
-    // On releaseOldGenBlock, also madvise(MADV_DONTNEED) to drop physical RSS.
     bool decommit_on_oldgen_release = DECOMMIT_ON_OLDGEN_RELEASE;
 
-    // threaded-gc-03: helper-thread mode and the page-work users (see the
-    // constants above). Modes 1/2 route decommit through PageWork (HEAP_059)
-    // and may keep a commit-ahead window (HEAP_060).
+    // GC helper threads and the page work they do (HEAP_059, HEAP_060).
     uint32_t gc_thread_mode = GC_THREAD_MODE;
     uint32_t gc_helper_threads = GC_HELPER_THREADS;
     int32_t  gc_helper_cpu = GC_HELPER_CPU;
@@ -809,15 +736,13 @@ struct HeapConfig {
     uint32_t decommit_delay_majors = DECOMMIT_DELAY_MAJORS;
     size_t   commit_ahead_bytes = COMMIT_AHEAD_BYTES;
 
-    // threaded-gc-02 (HEAP_054): bitmap allocation for uniform blocks + gap
-    // sweep for mixed blocks. Off = the legacy header-walking lazy sweep.
     bool old_gen_bitmap_alloc = OLD_GEN_BITMAP_ALLOC;
 
-    // threaded-gc-05b (HEAP_064): parallel marking.
+    // Parallel marking inside a pause.
     uint32_t gc_mark_threads = GC_MARK_THREADS;
     uint32_t gc_mark_threads_cap = GC_MARK_THREADS_CAP;
 
-    // threaded-gc-06 (HEAP_067): parallel minor GC.
+    // Parallel minor collection.
     uint32_t gc_minor_threads = GC_MINOR_THREADS;
     uint32_t gc_minor_threads_cap = GC_MINOR_THREADS_CAP;
     size_t   minor_lab_bytes = MINOR_LAB_BYTES;
@@ -825,7 +750,7 @@ struct HeapConfig {
     bool     minor_prefetch_children = MINOR_PREFETCH_CHILDREN;
     bool     minor_fifo_order = MINOR_FIFO_ORDER;
 
-    // threaded-gc-07 (HEAP_069/HEAP_070): region nursery and tenure jobs.
+    // The region nursery and its tenure jobs.
     uint32_t nursery_regions = NURSERY_REGIONS;
     int32_t  nursery_region_eden_flip = NURSERY_REGION_EDEN_FLIP;
     uint32_t tenure_mode = TENURE_MODE;
@@ -838,127 +763,100 @@ struct HeapConfig {
     uint32_t tenure_collector_threads = TENURE_COLLECTOR_THREADS;
     bool     tenure_fifo_order = TENURE_FIFO_ORDER;
 
-    // threaded-gc-05c (HEAP_065): concurrent marking.
+    // Concurrent marking.
     uint32_t conc_mark = CONC_MARK;
     uint32_t conc_mark_threads = CONC_MARK_THREADS;
     uint32_t conc_mark_threads_cap = CONC_MARK_THREADS_CAP;
     int32_t  conc_mark_priority = CONC_MARK_PRIORITY;
     uint32_t conc_mark_assist_lag = CONC_MARK_ASSIST_LAG;
-    // threaded-gc-05c Part B: trigger pacing (P§3.11).
+    // Pacing of the mark-cycle triggers.
     double major_gc_headroom_margin = MAJOR_GC_HEADROOM_MARGIN;
     bool   major_gc_live_budget_paced = MAJOR_GC_LIVE_BUDGET_PACED;
     float  major_gc_garbage_backstop = MAJOR_GC_GARBAGE_BACKSTOP;
 
-    // threaded-gc-05a (HEAP_063): incremental mark cycle.
+    // Incremental marking.
     bool     incremental_mark = INCREMENTAL_MARK;
     uint32_t incremental_mark_slices = INCREMENTAL_MARK_SLICES;
     size_t   incremental_mark_min_slice_units = INCREMENTAL_MARK_MIN_SLICE_UNITS;
     double   incremental_mark_predict_growth = INCREMENTAL_MARK_PREDICT_GROWTH;
     double   incremental_mark_finish_fraction = INCREMENTAL_MARK_FINISH_FRACTION;
 
-    // threaded-gc-02 D1b: demote a uniform block to mixed at the end of mark
-    // iff live_bytes <= demote_live_fraction * totalBytes. In [0, 1];
-    // 0.0 = never demote (explicit early return); 1.0 = demote every block.
+    /// In [0, 1]. 0 demotes no block; 1 demotes every single-size-class block.
     double demote_live_fraction = DEMOTE_LIVE_FRACTION;
 
-    // threaded-gc-02: bitmap-mode cap on the garbage-fraction denominator, as
-    // a multiple of committed at the last major; 0 = uncapped.
     double garbage_denom_cap = GARBAGE_DENOM_CAP;
 
-    // threaded-gc-02: LiveBudget trigger (see MAJOR_GC_LIVE_BUDGET); 0 = off.
+    // The live-budget trigger.
     double major_gc_live_budget = MAJOR_GC_LIVE_BUDGET;
     double live_growth_bound = LIVE_GROWTH_BOUND;
 
-    // Cap on bytes committed to uniform small-class pages before splitting larger free cells (0 disables).
+    /// 0 removes the limit.
     size_t small_class_heap_budget_bytes = DEFAULT_SMALL_CLASS_HEAP_BUDGET;
 
-    // Cell-size cap that defines "small" for budgeting; allocations larger than this are not budgeted.
+    /// The largest cell size, in bytes, counted against `small_class_heap_budget_bytes`. It defaults to the
+    /// default large-object threshold, not to the field `large_object_threshold`.
     size_t small_class_cell_max_bytes = LARGE_OBJECT_THRESHOLD;
 
     // ---- Old-gen sweep pacing ----
 
-    // Bytes of lazy-sweep work the allocator does per slow-path invocation.
     size_t sweep_work_budget = SWEEP_WORK_BUDGET;
 
-    // W7 item 14: divisor applied to sweep_work_budget when the allocation is a
-    // PROMOTION, i.e. when the caller is inside a minor GC. OldGenSpace::allocate
-    // drives lazy sweep whenever gc_phase_ == Sweeping, and the code's own
-    // comment names that "the dominant source of minor GC outliers" — but the
-    // work still has to happen, and sweep-before-grow exists to stop the heap
-    // growing while unswept garbage remains. So this THROTTLES rather than gates.
-    //   1 = today (no throttle)     8 = conservative     0 = full gate, no sweep
-    // Default 1: unchanged behaviour until a measurement says otherwise.
+    /// The divisor applied to the sweep work an allocation does when the allocation is a promotion inside a
+    /// minor collection, so that sweeping adds less to the pause. 1 leaves the work unchanged and 0 skips
+    /// it. It has no default constant.
     size_t minor_sweep_divisor = 1;
 
-    // Bytes of sweep work finishMarkAndSweep runs synchronously before returning.
     size_t initial_sweep_budget = INITIAL_SWEEP_BUDGET;
 
-    // Base proportionality factor for the per-allocation sweep budget (bytes swept per byte requested).
     double sweep_bytes_per_alloc_byte = SWEEP_BYTES_PER_ALLOC_BYTE;
 
-    // Soft cap on the per-allocation sweep budget BEFORE pressure scaling.
     size_t max_sweep_bytes_per_alloc = MAX_SWEEP_BYTES_PER_ALLOC;
 
-    // Hard cap applied AFTER pressure scaling and unswept-ratio boost.
     size_t max_sweep_bytes_hard = MAX_SWEEP_BYTES_HARD;
 
-    // Pressure thresholds on committed/cap ratio (must satisfy 0 < low < medium < high < 1).
+    // The pressure steps of the sweep budget.
     double sweep_cap_ratio_low    = SWEEP_CAP_RATIO_LOW;
     double sweep_cap_ratio_medium = SWEEP_CAP_RATIO_MEDIUM;
     double sweep_cap_ratio_high   = SWEEP_CAP_RATIO_HIGH;
 
-    // Per-allocation sweep-budget multipliers per pressure step (must be non-decreasing and >= 1.0).
     double sweep_scale_low    = SWEEP_SCALE_LOW;
     double sweep_scale_medium = SWEEP_SCALE_MEDIUM;
     double sweep_scale_high   = SWEEP_SCALE_HIGH;
     double sweep_scale_crit   = SWEEP_SCALE_CRIT;
 
-    // Unswept-block fraction above which the per-allocation sweep budget gets a sweep_unswept_scale boost.
     double sweep_unswept_ratio_boost = SWEEP_UNSWEPT_RATIO_BOOST;
 
-    // Multiplier applied on top of pressure scaling when the unswept-block fraction exceeds the boost threshold.
     double sweep_unswept_scale = SWEEP_UNSWEPT_SCALE;
 
-    // Per-slice budget for the panic-path sweeper.
     size_t panic_sweep_slice_bytes = PANIC_SWEEP_SLICE_BYTES;
 
-    // Derived value: total nursery size in bytes.
+    /// Returns the initial size of a semi-space nursery in bytes, both semi-spaces together.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
     // ---- Nursery slice geometry (HEAP_042) ----
     //
-    // The nursery region is carved into fixed-size per-heap SLICES, one pair
-    // (low + high) per ThreadLocalHeap, so every semi-space is a single
-    // contiguous extent. These helpers are the single source of truth for
-    // that geometry and are shared by Allocator::rebuildNurserySliceTable and
-    // validate() — keep them in agreement.
+    // In the semi-space nursery, each half of the nursery region is cut into fixed-size slices, and each
+    // heap gets the slice at the same slot in both halves, so each semi-space is one contiguous extent. The
+    // `Allocator` builds its slot table from these functions and `validate` checks against them.
 
-    // Bytes of address space given to the nursery, both regions together.
-    // The old-gen cap is the complement: max_heap_size - this.
+    /// Returns the bytes of the reservation given to the nursery region, both halves together:
+    /// `nursery_region_bytes` if it is not 0, and otherwise the smaller of `DEFAULT_NURSERY_REGION_BYTES`
+    /// and half of `max_heap_size`.
     size_t nurseryRegionBytes() const {
         if (nursery_region_bytes != 0) return nursery_region_bytes;
-        // Default policy: the constant, but never more than half the heap —
-        // so small heaps (every unit-test config) keep the legacy 50/50
-        // split and only a reservation big enough to matter gets the
-        // lopsided one.
         const size_t half = max_heap_size / 2;
         return DEFAULT_NURSERY_REGION_BYTES < half ? DEFAULT_NURSERY_REGION_BYTES
                                                    : half;
     }
 
-    // Config-derived old-gen address-space cap (the complement of the
-    // nursery region). Allocator::getOldGenMaxBytes() reports
-    // min(this, the live nursery_offset) so a reconfigure that shrinks the
-    // heap scales the cap down without ever exceeding the reservation.
+    /// Returns the old-gen cap this config gives: the reservation less the nursery region.
     size_t oldGenCapBytes() const { return max_heap_size - nurseryRegionBytes(); }
 
-    // Per-side (low or high) nursery region size.
+    /// Returns the size of one half of the nursery region.
     size_t nurseryRegionPerSideBytes() const { return nurseryRegionBytes() / 2; }
 
-    // Per-side slice size: the config's max-growth size, CLAMPED to the
-    // region (so a small heap with a large block cap still gets one usable
-    // slot instead of zero) and rounded down to an alloc_buffer_size
-    // multiple (so growth quantization and page alignment both hold).
+    /// Returns the size of one semi-space slice: half of the nursery's growth limit, but no more than one half
+    /// of the nursery region, rounded down to a multiple of `alloc_buffer_size`. It may be 0.
     size_t nurserySliceBytes() const {
         const size_t want = (nursery_max_block_count / 2) * alloc_buffer_size;
         size_t s = want < nurseryRegionPerSideBytes()
@@ -967,54 +865,56 @@ struct HeapConfig {
         return s;
     }
 
-    // Per-side bytes a nursery starts with (half of nurserySize()).
+    /// Returns the initial size of one semi-space, half of `nurserySize`.
     size_t nurseryInitialPerSideBytes() const {
         return (nursery_block_count / 2) * alloc_buffer_size;
     }
 
-    // ---- Region nursery geometry (threaded-gc-07, HEAP_069) ----
+    // ---- Region nursery geometry (HEAP_069) ----
     //
-    // Eden flip in effect (the -1 default is on in validate builds only).
+    // In the region nursery each heap gets one slot of `regionExtents` extents, each starting
+    // `regionStrideBytes` after the one before.
+
+    /// Returns whether each region-nursery heap has two edens: `nursery_region_eden_flip` if it is 0 or 1,
+    /// and otherwise whether `ECO_HEAP_VALIDATE` is on.
     bool regionEdenFlip() const {
         if (nursery_region_eden_flip >= 0) return nursery_region_eden_flip != 0;
         return ECO_HEAP_VALIDATE != 0;
     }
-    // threaded-gc-07b: the region tenure age k is promotion_age (1..3). An
-    // object is tenured if live at the k-th minor after its first copy,
-    // ageing in place in its survivor extent until then.
+    /// Returns the tenure age k: `promotion_age`, or 1 if it is 0. An object still live at the k-th minor
+    /// collection after its first copy is tenured; until then it ages in place in a survivor extent.
     unsigned regionTenureAge() const { return promotion_age < 1 ? 1u : promotion_age; }
-    // Survivor extents: the fill, k - 1 ageing extents, the hand-over and the
-    // retiring extent.
+    /// Returns the number of survivor extents per heap, k + 2: the one being filled, k - 1 that hold ageing
+    /// objects, the one being handed to the tenure job, and the one being retired.
     unsigned regionSurvivorExtents() const { return regionTenureAge() + 2; }
-    // Extents per heap slot: eden (two with eden flip) + the survivor extents.
+    /// Returns the number of extents per heap: the survivor extents plus one eden, or two with the eden flip.
     unsigned regionExtents() const { return regionSurvivorExtents() + (regionEdenFlip() ? 2u : 1u); }
-    // The extent stride X: the next power of two >= the per-heap growth
-    // ceiling ((nursery_max_block_count / 2) * alloc_buffer_size), so a
-    // pointer's extent index is one shift. Every extent's capacity is <= X.
+    /// Returns the distance between extents: the smallest power of two, at least `OS_PAGE_SIZE`, that is no
+    /// less than half the nursery's growth limit in bytes. Being a power of two lets the extent of an address
+    /// be found with one shift.
     size_t regionStrideBytes() const {
         const size_t want = (nursery_max_block_count / 2) * alloc_buffer_size;
         size_t x = OS_PAGE_SIZE;
         while (x < want) x <<= 1;
         return x;
     }
-    // Heap slots of the region layout: region / (n * X).
+    /// Returns how many region-nursery heaps fit in the nursery region; 0 means none does.
     size_t regionSlots() const {
         const size_t per = regionExtents() * regionStrideBytes();
         return per == 0 ? 0 : nurseryRegionBytes() / per;
     }
-    // The smallest max_heap_size whose default nursery region holds `slots`
-    // region heap slots of this geometry: on a small heap the region is half
-    // the heap (nurseryRegionBytes), so 2 x slots x extents x stride. For GC
-    // pressure tests that want a heap "just big enough" for the region
-    // nursery (plans/region-nursery-everywhere.md). The nursery's MAXIMUM size
-    // sets the stride, so pin nursery_max_block_count to keep it small.
-    // Meaningful when nursery_region_bytes is 0 and the result stays below
-    // 2 x DEFAULT_NURSERY_REGION_BYTES.
+    /// Returns the smallest `max_heap_size` whose default nursery region holds `slots` region-nursery heaps of
+    /// this config's geometry, assuming the region is half the heap.
+    ///
+    /// The result is right only when `nursery_region_bytes` is 0 and the result is below twice
+    /// `DEFAULT_NURSERY_REGION_BYTES`, because above that the default region stops being half the heap. The
+    /// stride grows with `nursery_max_block_count`, so a small result needs a small one.
     size_t minRegionHeapBytes(size_t slots = 1) const {
         return 2 * slots * regionExtents() * regionStrideBytes();
     }
-    // regionIncompatibility() as a message, with the minimum heap size when
-    // the reason is a missing heap slot.
+    /// Returns `regionIncompatibility` as a message, or an empty string when the region nursery can run.
+    /// When the reason is that no heap fits the region and `nursery_region_bytes` is 0, the message adds the
+    /// smallest `max_heap_size` that fits one.
     std::string regionIncompatibilityMessage() const {
         const char* why = regionIncompatibility();
         if (!why) return std::string();
@@ -1026,14 +926,14 @@ struct HeapConfig {
         return m;
     }
 
-    // Default constructor uses in-class member initializers.
+    /// Creates a config holding the default of every field.
     HeapConfig() = default;
 
-    // Validates all configuration parameters.
-    // Throws std::invalid_argument with descriptive message on validation failure.
-    // threaded-gc-07 (TG7d): why this config cannot run the region nursery,
-    // or nullptr when it can. validate() throws it for nursery_regions = 1;
-    // resolveNurseryRegions() throws it for auto (2).
+    /// Returns why this config cannot run the region nursery, or a null pointer if it can. The string is a
+    /// literal.
+    ///
+    /// The region nursery needs a promotion age from 1 to 3, bitmap allocation, an old-gen size class for
+    /// every object below the large-object threshold, and room in the nursery region for at least one heap.
     const char* regionIncompatibility() const {
         if (promotion_age < 1 || promotion_age > 3) {
             return "nursery_regions = 1 requires promotion_age (the tenure age k) in 1..3";
@@ -1044,9 +944,8 @@ struct HeapConfig {
                 "allocates uniform bitmap cells)";
         }
         {
-            // P§3.13: every nursery object needs an old-gen size class, and
-            // objects below large_object_threshold never pass the placement
-            // cap, so the largest class must cover LOT - 8.
+            // The largest medium class not above large_object_threshold, from the same series as
+            // MEDIUM_CLASS_BASE; an object up to LOT - 8 bytes must fit a class.
             size_t largest = 256, cell = 512;
             for (int i = 0; i < 8 && cell <= large_object_threshold; ++i, cell <<= 1) largest = cell;
             if (large_object_threshold > largest + 8) {
@@ -1066,12 +965,11 @@ struct HeapConfig {
         return nullptr;
     }
 
-    // Resolves nursery_regions = 2 (auto) to 1. The Allocator calls it on
-    // every config it adopts, before validate(). plans/region-nursery-everywhere.md
-    // Phase 1: auto never falls back to the legacy nursery. An incompatible
-    // config throws in every build (uncaught at Allocator::initialize, the
-    // process stops with the reason); the legacy nursery must be asked for
-    // explicitly with nursery_regions = 0.
+    /// Turns `nursery_regions` = 2 (automatic) into 1, and leaves any other value alone.
+    ///
+    /// Throws `std::invalid_argument` with the reason if the config cannot run the region nursery; it never
+    /// chooses the semi-space nursery, which must be asked for with `nursery_regions` = 0. Call it before
+    /// `validate`.
     void resolveNurseryRegions() {
         if (nursery_regions != 2) return;
         if (regionIncompatibility()) {
@@ -1082,6 +980,15 @@ struct HeapConfig {
         nursery_regions = 1;
     }
 
+    /// Checks that the collector can run with this config, and throws `std::invalid_argument` naming the
+    /// first rule broken if it cannot.
+    ///
+    /// The rules are ranges on single fields and relations between fields, among them: the initial old
+    /// generation and the initial nursery fit their regions; an explicit `nursery_region_bytes` is at most
+    /// half the heap; the large-object threshold is at most an allocation buffer, so that any object that
+    /// takes the nursery path fits one nursery block; and with `nursery_regions` = 1, the region nursery can
+    /// run. A config with `nursery_regions` = 2 is not checked against the region nursery, so call
+    /// `resolveNurseryRegions` first.
     void validate() const {
         // ========== 1. Basic Size Constraints ==========
 
@@ -1097,14 +1004,14 @@ struct HeapConfig {
             throw std::invalid_argument("alloc_buffer_size must be > 0");
         }
 
-        // threaded-gc-05b
+        // Parallel marking.
         if (gc_mark_threads > 64) {
             throw std::invalid_argument("gc_mark_threads must be <= 64");
         }
         if (gc_mark_threads_cap < 1 || gc_mark_threads_cap > 64) {
             throw std::invalid_argument("gc_mark_threads_cap must be in [1, 64]");
         }
-        // threaded-gc-06
+        // Parallel minor collection.
         if (gc_minor_threads > 64) {
             throw std::invalid_argument("gc_minor_threads must be <= 64");
         }
@@ -1114,7 +1021,7 @@ struct HeapConfig {
         if (minor_lab_bytes < 4096 || minor_lab_bytes > 1024 * 1024 || minor_lab_bytes % 8 != 0) {
             throw std::invalid_argument("minor_lab_bytes must be a multiple of 8 in [4096, 1 MiB]");
         }
-        // threaded-gc-05c
+        // Concurrent marking and trigger pacing.
         if (conc_mark > 2) {
             throw std::invalid_argument("conc_mark must be 0, 1 or 2");
         }
@@ -1139,7 +1046,7 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "major_gc_garbage_backstop must be 0 or in (major_gc_garbage_fraction, 1)");
         }
-        // threaded-gc-05a
+        // Incremental marking.
         if (incremental_mark && !old_gen_bitmap_alloc) {
             throw std::invalid_argument(
                 "incremental_mark requires old_gen_bitmap_alloc");
@@ -1164,7 +1071,7 @@ struct HeapConfig {
         if (!(demote_live_fraction >= 0.0 && demote_live_fraction <= 1.0)) {
             throw std::invalid_argument("demote_live_fraction must be in [0, 1]");
         }
-        // threaded-gc-03
+        // Helper threads and page work.
         if (gc_thread_mode > 2) {
             throw std::invalid_argument("gc_thread_mode must be 0, 1 or 2");
         }
@@ -1193,7 +1100,7 @@ struct HeapConfig {
         }
 
         // ========== 2. Heap Partitioning Constraints ==========
-        // Heap is split: [0, max/2) = old gen, [max/2, max) = nursery.
+        // The old generation is the bottom of the reservation and the nursery region the top.
 
         size_t old_gen_space = oldGenCapBytes();
 
@@ -1203,15 +1110,14 @@ struct HeapConfig {
                 "(max_heap_size - nursery_region_bytes)");
         }
 
-        // The INITIAL nursery must fit its own region (the per-side slice
-        // check below is the sharp form; this keeps the coarse guard too).
+        // A coarse form of the per-side slice check below.
         if (nurserySize() >= nurseryRegionBytes()) {
             throw std::invalid_argument(
                 "nursery total size must be < nursery_region_bytes "
                 "(the nursery must fit its own region)");
         }
 
-        // Split sanity (HEAP_043). 0 means the legacy half split.
+        // An explicit split (HEAP_043); 0 chooses the default and needs no check.
         if (nursery_region_bytes != 0) {
             if (nursery_region_bytes % (2 * alloc_buffer_size) != 0) {
                 throw std::invalid_argument(
@@ -1233,7 +1139,6 @@ struct HeapConfig {
         }
 
         // ========== 3. Nursery Block Constraints ==========
-        // Nursery is split into two semi-spaces (from and to).
 
         if (nursery_block_count % 2 != 0) {
             throw std::invalid_argument(
@@ -1260,13 +1165,8 @@ struct HeapConfig {
                 "(initial size cannot exceed the adaptive-growth cap)");
         }
 
-        // Slice geometry (HEAP_042): each heap's semi-space is the committed
-        // prefix of ONE fixed-size slice, so the region must admit at least
-        // one slice per side and a slice must hold the initial nursery.
-        // nursery_max_block_count is deliberately NOT rejected when it
-        // overshoots the region — nurserySliceBytes() clamps it, preserving
-        // today's behaviour where an oversized growth cap merely stops
-        // growing early rather than failing to boot.
+        // Slice geometry (HEAP_042). A nursery_max_block_count too large for the region is not
+        // rejected: nurserySliceBytes() clamps the slice, and the nursery stops growing early.
         if (nurserySliceBytes() == 0) {
             throw std::invalid_argument(
                 "nursery region is too small for one slice per side "
@@ -1284,11 +1184,7 @@ struct HeapConfig {
 
         // ========== 4. AllocBuffer Constraints ==========
 
-        // Lower bound is the OS page size: mmap(MAP_FIXED) operates in
-        // page-sized units, so a sub-page BBoP would either fail to map
-        // exactly the requested extent or leave the bump pointer mis-aligned
-        // for the next acquire. 4 KiB on Linux / Darwin x86-64; 16 KiB on
-        // Darwin arm64 (Apple Silicon).
+        // Allocation buffers are mapped with mmap(MAP_FIXED), which works in whole pages.
         constexpr size_t MIN_BUFFER_SIZE = OS_PAGE_SIZE;
         if (alloc_buffer_size < MIN_BUFFER_SIZE) {
             throw std::invalid_argument(
@@ -1302,7 +1198,7 @@ struct HeapConfig {
                 "(can't exceed old gen space)");
         }
 
-        // Old gen is sliced into BBoP pages of `alloc_buffer_size` at init.
+        // The old generation's initial commit is cut into pages of alloc_buffer_size.
         if (initial_old_gen_size % alloc_buffer_size != 0) {
             throw std::invalid_argument(
                 "initial_old_gen_size must be a multiple of alloc_buffer_size "
@@ -1320,15 +1216,8 @@ struct HeapConfig {
                 "large_object_threshold must be <= the old-gen region "
                 "(can't exceed old gen space)");
         }
-        // Any object below large_object_threshold is allocated in the
-        // nursery, where the unit of allocation is a single block of
-        // alloc_buffer_size bytes. The semi-space evacuator can only
-        // copy an object that fits in a single block. So every object
-        // routed through the nursery — i.e. every object whose aligned
-        // size is < large_object_threshold — must also be < alloc_buffer_size.
-        // The simplest sufficient invariant: large_object_threshold <=
-        // alloc_buffer_size. Otherwise an allocation in the gap would
-        // either fail to allocate or fail to evacuate after one minor GC.
+        // An object below the threshold is allocated in the nursery, and a nursery can copy only an
+        // object that fits one block.
         if (large_object_threshold > alloc_buffer_size) {
             throw std::invalid_argument(
                 "large_object_threshold must be <= alloc_buffer_size "
@@ -1342,7 +1231,7 @@ struct HeapConfig {
                 "large_ptr_nursery_max_size must be a multiple of 8");
         }
 
-        // threaded-gc-07 (HEAP_069/HEAP_070): region nursery.
+        // Region nursery (HEAP_069, HEAP_070).
         if (nursery_regions > 2) {
             throw std::invalid_argument("nursery_regions must be 0, 1 or 2 (auto)");
         }
@@ -1435,27 +1324,17 @@ struct HeapConfig {
 
         // ========== 7. Small-Class Block Budget ==========
         //
-        // small_class_heap_budget_bytes can be set to any value. When it
-        // exceeds the old-gen cap (max_heap_size / 2), the heuristic is
-        // effectively unbounded: small-class allocations always prefer
-        // bag-first until the cap itself is hit. The default of 1 GiB is
-        // well within the default 12 GiB old-gen cap; smaller test heaps
-        // simply get the unbounded behaviour, which still respects
-        // committedToCapRatio < 1.0.
+        // small_class_heap_budget_bytes may be any value; one above the old-gen cap never binds.
 
-        // FreeCell footprint: Header + a pointer link. The small-class
-        // cell-size cap must be at least this so any class included in the
-        // budget can legitimately host a FreeCell on its free list.
+        // A free cell is a Header and a link pointer, so a class counted against the budget must be able
+        // to hold one.
         constexpr size_t MIN_FREE_CELL_FOOTPRINT = sizeof(Header) + sizeof(void*);
         if (small_class_cell_max_bytes != 0 &&
             small_class_cell_max_bytes < MIN_FREE_CELL_FOOTPRINT) {
             throw std::invalid_argument(
                 "small_class_cell_max_bytes must be >= sizeof(FreeCell)");
         }
-        // Note: small_class_cell_max_bytes may exceed large_object_threshold.
-        // Allocations below LOT but at/below small_class_cell_max_bytes still
-        // route through fixed-size cell classes; cells larger than the
-        // requested size simply waste the slack space.
+        // small_class_cell_max_bytes may exceed large_object_threshold; that is not an error.
 
         // ========== 8. Old-gen Sweep & Mark Pacing ==========
 
@@ -1486,7 +1365,6 @@ struct HeapConfig {
                 "panic_sweep_slice_bytes must be >= sweep_work_budget");
         }
 
-        // Pressure thresholds: 0 < low < medium < high < 1.
         if (sweep_cap_ratio_low <= 0.0 || sweep_cap_ratio_high >= 1.0) {
             throw std::invalid_argument(
                 "sweep_cap_ratio_{low,high} must lie in (0.0, 1.0)");
@@ -1498,7 +1376,6 @@ struct HeapConfig {
                 "sweep_cap_ratio_high required");
         }
 
-        // Pressure scales: non-decreasing and >= 1.0.
         if (sweep_scale_low < 1.0) {
             throw std::invalid_argument("sweep_scale_low must be >= 1.0");
         }
@@ -1509,7 +1386,6 @@ struct HeapConfig {
                 "sweep_scale_{low,medium,high,crit} must be non-decreasing");
         }
 
-        // Unswept boost: ratio in (0, 1), scale >= 1.0.
         if (sweep_unswept_ratio_boost <= 0.0 ||
             sweep_unswept_ratio_boost >= 1.0) {
             throw std::invalid_argument(

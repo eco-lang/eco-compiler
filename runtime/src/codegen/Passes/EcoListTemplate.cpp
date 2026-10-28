@@ -1,36 +1,63 @@
 //===- EcoListTemplate.cpp - Cons-accumulation loops to scratch chunks ----===//
 //
-// Chunked-list Tier-B templates (plans/chunked-list-representation.md §6
-// L1.3). Rewrites scf.while loops whose iteration argument is a pure
-// cons-ACCUMULATOR — every path through the body either prepends via
-// eco.construct.list or passes the accumulator through unchanged (filter
-// shapes, conditional prepends through scf.if / scf.index_switch / leftover
-// eco.case region yields) — to push each element onto the runtime's
-// GC-root-registered list scratch stack instead of allocating a cell per
-// iteration. One eco_scratch_finish call after the loop builds the entire
-// result as a dense chunk (or cells when small / over-cap / chunks-off; the
-// runtime reproduces exactly the cell spine the loop would have built).
+// Building an Elm list one prepend at a time allocates one cons cell per
+// element. This pass rewrites list builders of that kind, in programs compiled
+// for chunked lists, so that they push each element onto the runtime's list
+// scratch stack and build the whole list with one call at the end, which can
+// produce a dense chunk instead of a chain of cells.
 //
-// The loop BODY is untouched — only the cons op is swapped for a push — so
-// LSS-specialized element computations stay inlined (the §9.2 trap this
-// design exists to avoid). The accumulator becomes loop-invariant: the init
-// value threads through unchanged and exits as the while result, which is
-// precisely the `next` tail eco_scratch_finish wants.
+// The list scratch stack is a runtime stack of pending list elements. Its
+// calls (`eco_scratch_mark`, `eco_scratch_push_boxed`,
+// `eco_scratch_push_scalar`, `eco_scratch_finish`, `eco_scratch_finish_fwd`)
+// are declared in `allocator/RuntimeExports`, which states what each builds.
+// A builder takes a mark, pushes elements, and finishes with the mark. What
+// matters here is the order: `eco_scratch_finish` puts the entries in front
+// of its tail argument in reverse push order, and `eco_scratch_finish_fwd`
+// puts them in front of its rest argument in push order. Boxed entries are GC
+// roots, so code between pushes may allocate. A builder nested inside another
+// is balanced if its own mark and finish both run between two of the outer
+// builder's pushes.
 //
-// Push order equals execution order equals cons order, and finish reverses,
-// so multi-cons iterations (unrolled bodies) and conditional prepends are
-// handled uniformly: each push sits exactly where its cons sat.
+// An element kind is the 2-bit code for a list head used throughout: 0 boxed
+// (`!eco.value`), 1 Int (`i64`), 2 Float (`f64`), 3 Char (`i32`). A scalar is
+// pushed as a 64-bit pattern together with its kind. A prepend is either
+// `eco.construct.list` or a direct `eco.call` of `Elm_Kernel_List_cons` or
+// its `_Int`, `_Float` and `_Char` variants; both carry the head as operand 0
+// and the tail as operand 1.
 //
-// Safety: the scratch entries are GC roots via an external root scanner
-// (minor GC phase 1d evacuates them in place), so loop bodies may allocate
-// freely between pushes. Nested accumulating loops are balanced by
-// mark/finish stack discipline (post-order walk transforms inner loops
-// first; an inner loop's finish pops its entries before the outer loop's
-// next push).
+// The pass does nothing unless some `func.func` in the module has the
+// `eco.list_chunks` attribute. When one does, it considers every function in
+// the module. It has three rewrites, called Phase 1 to 3 in the code, and runs
+// them in the order 3, 1, 2:
 //
-// The pass is a no-op unless some function carries the `eco.list_chunks`
-// attribute (stamped on @main for chunk-compiled programs), keeping
-// chunks-off output byte-identical.
+// - Phase 3 replaces each `eco.list.map` with a loop that walks the input,
+//   calls the callback on each element, pushes the result, and ends with
+//   `eco_scratch_finish_fwd`. When `ECO_LIST_MAP_EXPAND` is exactly `0` it
+//   emits a loop that reverses the input and conses the results instead.
+// - Phase 1 rewrites `scf.while` loops that have a cons-accumulator: an
+//   iteration argument that every path through the loop body either passes
+//   on unchanged or extends with prepends, possibly through the results of
+//   `scf.if`, `scf.index_switch` or `eco.case`. Each prepend becomes a push
+//   at the same place, the accumulator is passed on unchanged, and
+//   `eco_scratch_finish` after the loop builds the list in front of the
+//   loop's initial value. Pushes run in the order the prepends ran and finish
+//   reverses them, so the result is the list the loop would have built.
+// - Phase 2 rewrites unwind-cons recursion: a function whose returned value
+//   is a chain of prepends around a call to itself. Each prepend becomes a
+//   push placed before the recursion, the function returns what lies under
+//   the prepends unchanged, and every call from another function is wrapped
+//   in a mark and an `eco_scratch_finish_fwd`.
+//
+// Phase 3 runs first because its forward loop contains no prepends, so Phase
+// 1 finds nothing to rewrite in it. The loop emitted under
+// `ECO_LIST_MAP_EXPAND=0` does accumulate with `eco.construct.list` in an
+// `scf.while`, and Phase 1 may rewrite it.
+//
+// The pass declares the runtime functions its rewrites call as private kernel
+// functions. Two read-only scans run in parallel through `eco::forEachChunk`;
+// every rewrite runs on the calling thread. When `ECO_LIST_TEMPLATE_DEBUG` is
+// set to any value, the pass prints to stderr how many candidates each phase
+// rewrote and why the others were rejected.
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,21 +87,29 @@ using namespace ::eco;
 
 namespace {
 
+/// The runtime function that returns the current scratch-stack mark.
 constexpr const char *kMarkFn = "eco_scratch_mark";
+/// The runtime function that pushes one boxed element.
 constexpr const char *kPushBoxedFn = "eco_scratch_push_boxed";
+/// The runtime function that pushes one scalar element as its 64-bit pattern and element kind.
 constexpr const char *kPushScalarFn = "eco_scratch_push_scalar";
+/// The runtime function that builds the entries above a mark, in reverse push order, in front of a tail.
 constexpr const char *kFinishFn = "eco_scratch_finish";
+/// The runtime function that builds the entries above a mark, in push order, in front of a rest.
 constexpr const char *kFinishFwdFn = "eco_scratch_finish_fwd";
+/// The kernel function that reverses a list, used by the `ECO_LIST_MAP_EXPAND=0` form of Phase 3.
 constexpr const char *kReverseFn = "Elm_Kernel_List_reverse";
 
-/// Debug counters (ECO_LIST_TEMPLATE_DEBUG=1): why candidates bailed.
+/// Counts of Phase 1 candidates and the reasons they were rejected, printed
+/// when `ECO_LIST_TEMPLATE_DEBUG` is set.
 struct BailStats {
     unsigned whiles = 0, valueArgs = 0, beforeFwd = 0, beforeUses = 0,
              chainFail = 0, chainEmpty = 0, baseUses = 0, kinds = 0,
              rewritten = 0;
-    // walkChain failure detail
+    // Reasons `walkChain` rejected a chain.
     unsigned wcBlockArg = 0, wcConsUses = 0, wcHeadTy = 0,
              wcRegionShape = 0, wcMultiUse = 0, wcOtherOp = 0;
+    /// Prints the counts to stderr.
     void dump() {
         fprintf(stderr,
                 "[eco-list-template] whiles=%u valueArgs=%u bail{beforeFwd=%u "
@@ -90,16 +125,16 @@ struct BailStats {
     }
 };
 
-/// Why `tryRewriteUnwind` declined, per function (ECO_LIST_TEMPLATE_DEBUG=1).
+/// Counts of functions Phase 2 considered and the reasons it rejected them,
+/// printed when `ECO_LIST_TEMPLATE_DEBUG` is set.
 ///
-/// Added by plans/list-map-mlir-template.md Phase 0 to answer, with data,
-/// "why not just extend the existing unwind-cons rewriter to foldrHelper?".
-/// Counted twice: over ALL functions, and restricted to `List_foldrHelper_$_`
-/// symbols. Output-only — no artifact effect in any flag state.
+/// The pass keeps two: one over every function, and one over functions whose
+/// name contains `List_foldrHelper_$_`. Counting has no effect on the output.
 struct UnwindBailStats {
     unsigned seen = 0, multiBlock = 0, retShape = 0, walkFail = 0,
              noLinks = 0, noSelfCalls = 0, kindMix = 0, selfEscape = 0,
              domFail = 0, useShape = 0, noOuter = 0, ok = 0;
+    /// Prints the counts to stderr, labelled with `what`.
     void tally(const char *what) {
         fprintf(stderr,
                 "[eco-list-template] unwind-bail(%s) seen=%u ok=%u "
@@ -111,14 +146,18 @@ struct UnwindBailStats {
     }
 };
 
-/// One prepend link: either eco.construct.list or a direct call to the
-/// Elm_Kernel_List_cons family. Both carry (head, tail) as operands 0/1.
+/// One prepend found in a cons chain, with its element kind.
+///
+/// `op` points into the IR being rewritten and is valid until the rewrite
+/// erases it.
 struct ConsLink {
     Operation *op;
     int64_t kind;  // 2-bit element kind (0 boxed, 1 Int, 2 Float, 3 Char)
 };
 
-/// Kernel-cons callee -> element kind, or -1 when not a cons call.
+/// Returns the element kind of `op` if it is a direct call of
+/// `Elm_Kernel_List_cons` or one of its typed variants with two operands and
+/// one result, and -1 otherwise.
 int64_t kernelConsKind(Operation *op) {
     auto call = dyn_cast<eco::CallOp>(op);
     if (!call)
@@ -135,21 +174,32 @@ int64_t kernelConsKind(Operation *op) {
         .Default(-1);
 }
 
-/// The accumulation chain discovered for one while iter-arg position.
+/// The prepends found for one `scf.while` iteration argument by `walkChain`
+/// and `walkChainQ`, and whether the walk accepted it.
 struct Chain {
     SmallVector<ConsLink, 8> conses;
     // The exact operand slots through which the base (after-region block
     // argument) is allowed to be used. After the walk, every use of the
     // base must be one of these.
     SmallPtrSet<OpOperand *, 8> baseUses;
+    /// False once a walk has rejected the chain; later walks then do nothing.
     bool ok = true;
+    /// Where to count rejection reasons, or null when not counting.
     BailStats *bs = nullptr;
     llvm::SmallVector<Operation *, 4> otherOps;  // debug: chain-breaking ops
 };
 
-/// Validates that `v` is `base` extended by zero or more (possibly
-/// conditional) eco.construct.list prepends, recording the conses and the
-/// expected base-use slots. `slot` is the operand that consumes `v`.
+/// Follows `v` back towards `base` and records it in `ch` if `v` is `base`
+/// with zero or more prepends in front, of which some may be conditional.
+///
+/// `slot` is the operand that consumes `v`. Each operand through which `base`
+/// is reached is added to `ch.baseUses`, and each prepend to `ch.conses`. The
+/// walk passes through a single-use result of `scf.if`, `scf.index_switch` or
+/// `eco.case` by following the same result of every region's single-block
+/// yield. Any other defining operation, a block argument other than `base`,
+/// a prepend whose result has more than one use, or a head whose type does not
+/// match its element kind sets `ch.ok` to false. A value equal to `altBase`,
+/// when given, is accepted and not recorded.
 void walkChain(Value v, Value base, OpOperand &slot, Chain &ch,
                Value altBase = nullptr) {
     if (!ch.ok)
@@ -230,13 +280,18 @@ void walkChain(Value v, Value base, OpOperand &slot, Chain &ch,
     ch.ok = false;
 }
 
-/// Secondary-slot walk, correlated with the loop's done-flag: joinpoint
-/// normalization yields a fresh placeholder constant at the result slot on
-/// continue arms (done = false), where the value is never observed — accept
-/// anything there. On exit arms (done = true) and when the done shape is
-/// unknown, the slot must be identity or a chain rooted at the primary base
-/// (a constant on a true-exit arm is a legitimate `-> []` return and must
-/// block the rewrite).
+/// Walks a secondary result slot of a loop, as `walkChain` does, but taking
+/// account of the loop's done flag.
+///
+/// `vq` is the value yielded in the slot and `vd` the done flag yielded
+/// alongside it. Where `vd` is the constant false, the iteration continues and
+/// the slot is not read, so any value is accepted; a direct yield of `base`
+/// there is still recorded in `ch.baseUses`. Where `vd` is the constant true,
+/// or is not known, the slot must be `baseQ` (the slot's own iteration
+/// argument) or a chain rooted at `base`. A constant there, such as an empty
+/// list returned on exit, rejects the chain. Where `vq` and `vd` are results of
+/// the same `scf.if`, `scf.index_switch` or `eco.case`, each region's yields
+/// are walked in turn.
 void walkChainQ(Value vq, Value vd, Value base, Value baseQ,
                 OpOperand &slotQ, Chain &ch) {
     if (!ch.ok)
@@ -295,7 +350,9 @@ void walkChainQ(Value vq, Value vd, Value base, Value baseQ,
     walkChain(vq, base, slotQ, ch, baseQ);
 }
 
-/// Ensures a private kernel-style declaration exists for `name`.
+/// Adds a private declaration of `name` with type `ft` to the end of `m`,
+/// marked as a kernel function with the given logical parameter and result
+/// types, unless `m` already has a function of that name.
 void ensureDecl(ModuleOp m, StringRef name, FunctionType ft,
                 ArrayRef<StringRef> paramKinds,
                 ArrayRef<StringRef> resultKinds) {
@@ -310,6 +367,11 @@ void ensureDecl(ModuleOp m, StringRef name, FunctionType ft,
     f->setAttr("eco.logical_result_types", b.getStrArrayAttr(resultKinds));
 }
 
+/// The `eco-list-template` pass: the three rewrites this file describes.
+///
+/// The data members are the Phase 2 symbol-use index and flags, which
+/// `runOnOperation` resets at the start of Phase 2, and the debug lists, which
+/// are never cleared.
 struct EcoListTemplatePass
     : public PassWrapper<EcoListTemplatePass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoListTemplatePass)
@@ -342,17 +404,14 @@ struct EcoListTemplatePass
         BailStats bs;
         bool debug = std::getenv("ECO_LIST_TEMPLATE_DEBUG") != nullptr;
 
-        // Phase 3 FIRST: eco.list.map expands into its own final-form loop.
-        // Running it before the cons-accumulator rewriter keeps the two
-        // transforms independent -- the expansion's loop pushes directly and
-        // carries no cons chain, so the while-rewriter below finds nothing to
-        // do on it and cannot double-transform.
-        // Plan 07 P9: one parallel pre-scan flags the functions holding an
-        // eco.list.map or an scf.while, so the serial phases below walk only
-        // those, in module order, with the same per-function walks (the
-        // module-wide walks visited every op of every function serially).
-        // A function with a list map also gets a while (its expansion), so
-        // it is in both sets, as the module walk would have seen it.
+        // Phase 3 runs first: eco.list.map expands into its own loop. The
+        // default expansion pushes directly and carries no cons chain, so the
+        // while-rewriter below leaves it alone; the ECO_LIST_MAP_EXPAND=0
+        // collapse loop may still be rewritten by Phase 1.
+        // One parallel pre-scan finds the functions holding an eco.list.map or an
+        // scf.while, so the serial phases below walk only those, in module order.
+        // A function with a list map is in both lists, since its expansion is a
+        // while loop.
         SmallVector<func::FuncOp> withMap, withWhile;
         {
             SmallVector<func::FuncOp> all;
@@ -433,13 +492,32 @@ struct EcoListTemplatePass
         }
     }
 
-    // Phase-2 symbol-use index (see tryRewriteUnwind); reset per run.
+    // The Phase 2 index of symbol uses, built once per run by the first
+    // `tryRewriteUnwind` call. `useIndexFailed` is never set to true.
+    // `finishFwdMade` records that `eco_scratch_finish_fwd` has been declared.
     bool useIndexBuilt = false, useIndexFailed = false, finishFwdMade = false;
     llvm::DenseMap<StringAttr, SmallVector<Operation *, 2>> useIndex;
 
+    // Operations that ended a chain, and owners of unaccounted base uses, kept
+    // for the debug histograms. These are not cleared between runs.
     llvm::SmallVector<Operation *, 16> debugOtherOps;
     llvm::SmallVector<Operation *, 16> debugBaseUseOwners;
 
+    /// Rewrites the first cons-accumulator iteration argument of `w` that
+    /// qualifies, and returns whether it rewrote one.
+    ///
+    /// An `!eco.value` argument qualifies when its before-region argument is used
+    /// only to forward it through `scf.condition` in the same position, the value
+    /// yielded for it is a chain of prepends rooted at its after-region argument
+    /// (see `walkChain`), every prepend has the same element kind, and there is at
+    /// least one prepend. A use of the after-region argument that is not part of
+    /// the chain is allowed only where it is yielded, possibly through region
+    /// results, into another position: a secondary result slot. Such a slot must
+    /// itself be forwarded unchanged through `scf.condition`, and is checked with
+    /// `walkChainQ` against the loop's single `i1` argument if there is one. Only
+    /// one argument per loop is rewritten. `declsMade` records whether the
+    /// runtime declarations have been added. Counts go to `bs` when it is not
+    /// null.
     bool tryRewrite(ModuleOp m, scf::WhileOp w, bool &declsMade,
                     BailStats *bs) {
         auto condOp = w.getConditionOp();
@@ -615,6 +693,12 @@ struct EcoListTemplatePass
         return false;
     }
 
+    /// Rewrites argument `p` of `w`, whose prepends `ch` holds, to use the
+    /// scratch stack: a mark before the loop, a push in place of each prepend,
+    /// and an `eco_scratch_finish` of the loop's result `p` after it with element
+    /// kind `kind`. Uses of result `p` and of each secondary slot in `qSlots` are
+    /// replaced by the finished list. Declares the runtime functions first unless
+    /// `declsMade` is already true.
     void rewrite(ModuleOp m, scf::WhileOp w, unsigned p,
                  ArrayRef<unsigned> qSlots, Chain &ch, int64_t kind,
                  bool &declsMade) {
@@ -684,13 +768,11 @@ struct EcoListTemplatePass
     }
 
     //===------------------------------------------------------------------===//
-    // Phase 3: eco.list.map expansion (plans/list-map-mlir-template.md).
+    // Phase 3: eco.list.map expansion.
     //
-    // The front-end emitted this op only for a LICENSED site — a `List.map`
-    // specialization whose callback is provably transitively Debug-free, so
-    // applying it left-to-right instead of foldr's right-to-left is within
-    // policy D-4a. Nothing here re-derives that licence; the op's presence IS
-    // the licence.
+    // `eco.list.map` applies a callback to every element of a list. The op's
+    // presence is the front end's permission to apply the callback first element
+    // first; nothing here checks that this is allowed.
     //
     // Shape produced (one op -> one loop):
     //
@@ -709,30 +791,19 @@ struct EcoListTemplatePass
     //   %nil  = eco.constant Empty
     //   %r    = call @eco_scratch_finish_fwd(%m, %nil, out_kind)
     //
-    // Two properties this shape is chosen for, both load-bearing:
-    //
-    //  * It is EXACTLY the shape `EcoListCursor` recognizes (arg forwarded
-    //    through scf.condition; yield = tail projection; every other use a
-    //    get_tag or head projection). That pass then rewrites it to the
-    //    non-allocating (node, idx) cursor. This is not merely a speed win —
-    //    `eco_list_tail_hybrid` is CGEN_072(a) POISON, so without cursor
-    //    pickup the loop cannot go statepoint-free even for a gc-leaf
-    //    callback. Pickup is a hard precondition, checked by the pass's own
-    //    `rewritten` counter.
-    //
-    //  * The scratch stack is GC-visible by design (HEAP_040: boxed entries
-    //    are external-scanner roots, evacuated in place), so the callback may
-    //    allocate and GC freely between pushes, and a nested licensed map
-    //    inside the callback balances by mark discipline.
-    //
-    // Runs BEFORE EcoGCPrepare, so the cursor is an ordinary relocatable SSA
-    // value and RS4GC handles relocation across the callback — the stale
-    // -cursor bug class that bit kernelListMapN is structurally impossible.
+    // The loop carries the list as its only argument, forwards it unchanged
+    // through scf.condition, and steps it with a tail projection. That is the
+    // loop form `EcoListCursor`, later in the pipeline, rewrites to walk a
+    // chunked list without allocating a view per element. Because the scratch
+    // entries are GC roots, the callback may allocate, and a map nested in the
+    // callback balances its own mark and finish. This pass runs before
+    // `EcoGCPrepare`, so the list being walked is an ordinary SSA value across
+    // the callback call.
     //===------------------------------------------------------------------===//
 
-    /// `ECO_LIST_MAP_EXPAND=0`: emit the order-preserving collapse instead of
-    /// the forward template, for bisecting an already-emitted artifact
-    /// without recompiling the .mlir.
+    /// Returns false when `ECO_LIST_MAP_EXPAND` is exactly `0`, which selects the
+    /// order-preserving collapse; any other value, or none, selects the forward
+    /// loop.
     static bool mapExpandEnabled() {
         const char *e = ::getenv("ECO_LIST_MAP_EXPAND");
         if (!e || !*e)
@@ -740,11 +811,9 @@ struct EcoListTemplatePass
         return !(e[0] == '0' && e[1] == '\0');
     }
 
-    /// The region's entry block, created with `argTys` if the region is still
-    /// empty. `scf::WhileOp`'s builder overloads differ on whether they
-    /// pre-create region blocks, and getting it wrong is a hard crash either
-    /// way (empty first block -> getTerminator assert; missing block ->
-    /// sentinel deref). Asking the region is the only stable answer.
+    /// Returns the entry block of `r`, creating it with arguments of types
+    /// `argTys` if `r` has no block. `scf::WhileOp`'s builders differ on whether
+    /// they create the region blocks, so this asks the region.
     static Block *ensureRegionBlock(OpBuilder &b, Region &r,
                                     ArrayRef<Type> argTys, Location loc) {
         if (!r.empty())
@@ -753,7 +822,8 @@ struct EcoListTemplatePass
         return b.createBlock(&r, r.end(), argTys, locs);
     }
 
-    /// The SSA type a head projection yields for a 2-bit element kind
+    /// Returns the SSA type of a list head with element kind `kind`: `i64`,
+    /// `f64` or `i16` for 1, 2 or 3, and `!eco.value` for any other value
     /// (REP_BOUNDARY_001).
     static Type headTypeForKind(MLIRContext *ctx, int64_t kind) {
         switch (kind) {
@@ -764,9 +834,9 @@ struct EcoListTemplatePass
         }
     }
 
-    /// Emit the push of one callback result. Boxed results push directly;
-    /// scalars are widened to the i64 bit pattern the scratch stack stores,
-    /// exactly as the cons-chain rewriter above does.
+    /// Emits at `b` the push of `y`, a callback result: a boxed push for an
+    /// `!eco.value`, and otherwise a scalar push of `y` widened to a 64-bit
+    /// pattern (an `f64` bitcast, an `i16` zero-extended) with kind `outKind`.
     void emitPush(OpBuilder &b, Location loc, MLIRContext *ctx, Value y,
                   int64_t outKind) {
         Type i64 = IntegerType::get(ctx, 64);
@@ -787,12 +857,13 @@ struct EcoListTemplatePass
                               nullptr, nullptr);
     }
 
-    /// Apply the callback to one element, honouring the devirtualization
-    /// attr. With a callee the call is DIRECT — captures-then-params, no env
-    /// pointer (the `$cap` convention `SaturatedPapToCallPattern` uses) —
-    /// which is what lets CGEN_072's propagation stamp it gc-leaf when the
-    /// callback allocates nothing. Without one, a generic saturated apply of
-    /// the closure value.
+    /// Emits at `b` the call of `op`'s callback on element `x`, returning a
+    /// result of type `resultTy`.
+    ///
+    /// When `op` names a callee the call is direct, with the captures followed by
+    /// `x` and no closure argument; such a call can later be marked gc-leaf when
+    /// the callee allocates nothing (CGEN_072). Otherwise it is a saturated call
+    /// of the closure value `op.getCallback()` on `x`.
     Value emitCallback(OpBuilder &b, Location loc, MLIRContext *ctx,
                        eco::ListMapOp op, Value x, Type resultTy) {
         if (auto callee = op.getCalleeAttr()) {
@@ -811,8 +882,9 @@ struct EcoListTemplatePass
         return call.getResults()[0];
     }
 
-    /// Build the cursor loop and return the mark whose entries it pushed.
-    /// `input` is walked; each element's callback result is pushed.
+    /// Emits at `b` the forward map loop over `input` shown above: each element
+    /// is passed to `op`'s callback and the result pushed. The mark and the
+    /// finish are emitted by the caller.
     void emitForwardLoop(OpBuilder &b, Location loc, MLIRContext *ctx,
                          eco::ListMapOp op, Value input, Type resultTy) {
         Type value = eco::ValueType::get(ctx);
@@ -822,9 +894,6 @@ struct EcoListTemplatePass
                                               ValueRange{input});
 
         // Before region: non-empty test, forwarding the cursor unchanged.
-        // WhileOp::build already created both region blocks with the right
-        // argument types -- creating our own here would leave an empty first
-        // block and blow getYieldOp()'s terminator assertion.
         {
             OpBuilder::InsertionGuard guard(b);
             Block *before =
@@ -832,9 +901,9 @@ struct EcoListTemplatePass
             b.setInsertionPointToEnd(before);
             Value cur = before->getArgument(0);
             Value tag = b.create<eco::GetTagOp>(loc, i32, cur);
-            // eco_get_tag normalizes BOTH Tag_Cons and Tag_ConsChunk to the
-            // list Cons ctor tag (1); Nil is the Empty constant and never
-            // answers 1. So this one test covers every hybrid spine form.
+            // eco_get_tag gives the list Cons tag 1 for both a cell and a chunk
+            // (RuntimeExports.cpp), and the empty list is the Empty constant, whose
+            // tag is not 1.
             Value one = b.create<arith::ConstantOp>(loc, b.getI32IntegerAttr(1));
             Value nonEmpty = b.create<arith::CmpIOp>(
                 loc, arith::CmpIPredicate::eq, tag, one);
@@ -857,13 +926,13 @@ struct EcoListTemplatePass
         }
     }
 
-    /// `ECO_LIST_MAP_EXPAND=0` collapse: reverse the input, then walk the
-    /// reversed spine consing forward. That applies the callback in exactly
-    /// foldr's certified right-to-left order, so the kill switch is usable on
-    /// a LICENSED artifact without re-litigating D-4a — which a naive
-    /// forward-cons collapse would not be. A forward singly-linked spine
-    /// cannot be walked last-element-first in one loop, so the deliberate
-    /// double materialization is the price; it is a bisection-only arm.
+    /// Emits at `b` the `ECO_LIST_MAP_EXPAND=0` form of `op` and returns the
+    /// resulting list: `Elm_Kernel_List_reverse` of the input, then a loop that
+    /// conses the callback's result for each element of the reversed list onto
+    /// an accumulator that starts empty.
+    ///
+    /// The callback is therefore applied last element first, and the result is
+    /// in the input's order. The input is copied once by the reversal.
     Value emitOrderPreservingCollapse(OpBuilder &b, Location loc,
                                       MLIRContext *ctx, eco::ListMapOp op,
                                       Type resultTy) {
@@ -917,7 +986,10 @@ struct EcoListTemplatePass
         return whileOp.getResult(1);
     }
 
-    /// Expand every eco.list.map in the module. Returns how many fired.
+    /// Expands every `eco.list.map` in the functions `fns` of `m`, declaring the
+    /// runtime functions the chosen form needs, and returns how many it
+    /// expanded. `declsMade` records whether the shared runtime declarations
+    /// have been added.
     unsigned expandListMaps(ModuleOp m, ArrayRef<func::FuncOp> fns,
                             bool &declsMade) {
         SmallVector<eco::ListMapOp, 16> ops;
@@ -964,10 +1036,8 @@ struct EcoListTemplatePass
         for (eco::ListMapOp op : ops) {
             OpBuilder b(op);
             Location loc = op.getLoc();
-            // The callback's SSA result type comes from out_kind, the same
-            // 2-bit kind the push and the finish agree on. Deriving all three
-            // from ONE attribute is what keeps the ListOps::take kind-collapse
-            // defect class out of this expansion.
+            // The callback's result type, the push kind and the finish kind all
+            // come from out_kind, so they cannot disagree.
             Type resultTy = headTypeForKind(ctx, op.getOutKind());
 
             Value replacement;
@@ -1001,30 +1071,35 @@ struct EcoListTemplatePass
     //===------------------------------------------------------------------===//
     // Phase 2: unwind-cons recursion.
     //
-    // Shape: a function whose return value is a cons chain around either a
-    // SELF-call result (the recursive continuation) or any other value (the
-    // base "rest"). Rewrite: each cons becomes a push emitted BEFORE the op
-    // that leads toward the recursion on that path -- before the self-call
-    // for same-level links, before the region op for links sitting outside
-    // a case/if that recurses inside -- so pushes run top-down in descent
-    // order. The recursion then returns its rest value unchanged, and every
-    // NON-self call site wraps the call as mark / call / finish_fwd
-    // (entry[mark]::...::entry[top-1]::rest).
+    // Shape: a single-block function whose return value is a chain of prepends
+    // ending at either a call to the function itself (the recursion) or any
+    // other value (the rest). The chain may pass through the results of scf.if,
+    // scf.index_switch and eco.case. Rewrite: each prepend becomes a push placed
+    // before the operation that leads towards the recursion on its path -- the
+    // self-call for prepends at the same level, the region operation for
+    // prepends outside a region that recurses inside -- so pushes run in the
+    // order of descent. The function then returns the rest unchanged, and every
+    // call from another function becomes mark / call / finish_fwd, which builds
+    // entry[mark] :: ... :: entry[top-1] :: rest.
     //===------------------------------------------------------------------===//
 
+    /// One prepend in a Phase 2 chain and where its push goes.
     struct UnwindLink {
         Operation *cons;    // eco.construct.list or kernel-cons eco.call
-        Operation *pushAt;  // insertion op the push must precede
+        Operation *pushAt;  // the push precedes this; null until assigned
         int64_t kind;
     };
 
+    /// The prepends and self-calls found in a function's return chain by
+    /// `walkUnwind`, and whether it accepted the chain.
     struct UnwindPlan {
         SmallVector<UnwindLink, 16> links;
-        SmallVector<Operation *, 4> selfCalls;  // chain-leaf self-calls
+        SmallVector<Operation *, 4> selfCalls;  // self-calls ending the chain
         bool ok = true;
     };
 
-    // Assigns the pending run of links (outer->inner) their push barrier.
+    /// Sets the push position of each prepend in `run` that has none to before
+    /// `barrier`, then empties `run`.
     void setRunBarrier(SmallVectorImpl<Operation *> &run, Operation *barrier,
                        UnwindPlan &plan) {
         for (Operation *c : run) {
@@ -1036,7 +1111,16 @@ struct EcoListTemplatePass
         run.clear();
     }
 
-    // Walks the return chain at one region level; recurses into region ops.
+    /// Collects into `plan` the prepends and self-calls of the chain ending in
+    /// `v`, inside a function named `selfName`, recursing into region results.
+    ///
+    /// A self-call ends the chain and must be single-use and not musttail. A
+    /// region result ends this level and the walk continues into each region's
+    /// yield. A block argument, a call of another function or any other
+    /// operation is the rest. Prepends at one level get their push before the
+    /// self-call or region operation that ends the level, or, when the level ends
+    /// at the rest, before the outermost prepend. Sets `plan.ok` to false on any
+    /// shape it cannot handle.
     void walkUnwind(Value v, StringRef selfName, UnwindPlan &plan) {
         SmallVector<Operation *, 8> run;  // outer -> inner cons run
         while (plan.ok) {
@@ -1113,10 +1197,23 @@ struct EcoListTemplatePass
             setRunBarrier(run, run.front(), plan);
     }
 
+    /// Applies the Phase 2 rewrite to `f` if it qualifies, and returns whether
+    /// it did.
+    ///
+    /// `f` qualifies when its body is one block returning one `!eco.value`, the
+    /// return chain (see `walkUnwind`) has at least one prepend and one self-call,
+    /// every prepend has the same element kind and a push position, every
+    /// self-call in the body ends the chain, every prepend's head dominates its
+    /// push position, and every use of `f`'s symbol in the module is a direct
+    /// `eco.call` of it returning one `!eco.value`, with at least one call from
+    /// another function and none of those musttail. A function referenced in
+    /// any other way, such as by a closure, is left alone. `declsMade` records
+    /// whether the shared runtime declarations have been added. Counts go to
+    /// `all` and `fh` when they are not null.
     bool tryRewriteUnwind(ModuleOp m, func::FuncOp f, bool &declsMade,
                           UnwindBailStats *all = nullptr,
                           UnwindBailStats *fh = nullptr) {
-        // Phase-0 instrumentation: bump the same member on both scopes.
+        // Bump the same counter in both scopes.
         auto bump = [&](unsigned UnwindBailStats::*slot) {
             if (all)
                 all->*slot += 1;
@@ -1189,16 +1286,15 @@ struct EcoListTemplatePass
         }
 
         // Every module-wide use must be a direct, non-musttail eco.call.
-        // One module walk indexes every symbol's uses: a per-candidate
-        // SymbolTable::getSymbolUses(f, m) walked the whole module each time
-        // (quadratic at self-host scale). Phase-2 rewrites only add calls to
-        // the helper decls and erase cons ops (no symbol refs), so a
-        // candidate's uses never change after the index is built.
+        // One module walk indexes every symbol's uses, reused for every
+        // candidate. Phase 2 rewrites only add calls to the scratch
+        // declarations and erase prepends, so a candidate's uses do not change
+        // after the index is built.
         if (!useIndexBuilt) {
             useIndexBuilt = true;
-            // Plan 07 P9: collected in parallel chunks with
-            // symgraph::forEachSymbolRef (no dictionary uniquing), merged in
-            // module order. Only each symbol's user SET matters below.
+            // Collected in parallel chunks with symgraph::forEachSymbolRef,
+            // merged in module order. Only each symbol's set of users matters
+            // below.
             SmallVector<Operation *> tops;
             for (Operation &op : *m.getBody())
                 tops.push_back(&op);
@@ -1269,8 +1365,8 @@ struct EcoListTemplatePass
                        FunctionType::get(ctx, {i64, value, i64}, {value}),
                        {"i64", "value", "i64"}, {"value"});
         }
-        // Once per run, not per rewrite (B7): ensureDecl's lookup is a linear
-        // module scan and the decl sits at the module end.
+        // Once per run: ensureDecl's lookup scans the module and the
+        // declaration sits at its end.
         if (!finishFwdMade && (finishFwdMade = true))
             ensureDecl(m, kFinishFwdFn,
                        FunctionType::get(ctx, {i64, value, i64}, {value}),

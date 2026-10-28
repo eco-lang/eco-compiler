@@ -1,17 +1,18 @@
-// StackMapSection.hpp — locate the LLVM stackmaps section of a loaded
-// module: ".llvm_stackmaps" on ELF, "__LLVM_STACKMAPS,__llvm_stackmaps" on
-// Mach-O. This is the platform seam unifying what were two near-identical
-// ELF walks in eco_entry.cpp (main executable only) and eco_embed.cpp
-// (module containing an address).
+// The garbage collector finds the stack roots of compiled code through the stack maps that LLVM emits into a
+// section of the object file, and this component finds that section in a module the process has loaded.
 //
-// On both platforms the loader applies the section's relocations before we
-// read it (verified for Mach-O by experiments/mac-statepoint-smoke — dyld
-// rebases the recorded function addresses), so callers parse the returned
-// bytes with loadBase=0.
+// A module is the main executable or a shared object. The section has a different name on each object format:
+// ".llvm_stackmaps" on ELF and PE (cut to 8 bytes in a PE image), and section "__llvm_stackmaps" of segment
+// "__LLVM_STACKMAPS" on Mach-O.
+// `findStackMapSection` returns the address and size of that section's bytes in the module's loaded image, and
+// does not parse them.
 //
-// Header-only: the ELF implementation reads the module's file from disk
-// (dl_iterate_phdr exposes program headers, not sections), the Mach-O one
-// reads the in-memory image via getsectiondata.
+// The stack maps record function addresses. This component assumes the loader has relocated the section's
+// contents, so that those addresses are run-time addresses; a caller parses the bytes with a load base of 0.
+//
+// The lookup differs by format. ELF exposes only program headers at run time (`dl_iterate_phdr`), so the section
+// headers are read from the module's file on disk and the section's link-time address is shifted by the module's
+// load base. Mach-O and PE keep their section tables in the loaded image, which is searched in memory.
 
 #pragma once
 
@@ -37,6 +38,11 @@
 
 namespace eco::platform {
 
+/// The bytes of one module's stack map section, as they lie in its loaded image.
+///
+/// `data` points into the module's image and stays valid while the module stays loaded. A null `data` means no
+/// section was found, and then `size` is 0. `size` is the number of bytes at `data`; nothing enforces this, since
+/// both members are public.
 struct StackMapSection {
     const uint8_t* data = nullptr;
     size_t size = 0;
@@ -44,13 +50,12 @@ struct StackMapSection {
 
 #if defined(_WIN32)
 
-// addr == nullptr → main executable (current module); otherwise the module
-// containing addr, found via GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS).
-// Section name on PE COFF is ".llvm_stackmaps" — verified by E-W1
-// (experiments/win-statepoint-smoke). The loader applies base relocations
-// to the section's content, so the recorded function addresses match what
-// stack walking will surface; callers parse with loadBase=0 like the
-// other platforms. See plans/build-on-windows.md item 13.
+/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module whose
+/// image contains `addr`. Returns an empty section if there is no such module or it has no such section.
+///
+/// The PE section is the first whose 8-byte short name is ".llvm_st", the first 8 characters of
+/// ".llvm_stackmaps". Its size is the section's virtual size, or its raw data size when the virtual size is 0.
+/// The module's reference count is not changed. Only 64-bit PE images are handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     HMODULE hmod = nullptr;
     if (addr == nullptr) {
@@ -70,11 +75,8 @@ inline StackMapSection findStackMapSection(const void* addr) {
 
     const auto* sec = IMAGE_FIRST_SECTION(nt);
     for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
-        // COFF short-form section names are 8 bytes, NUL-padded. The
-        // stackmap section's name is 15 chars, but PE truncates the field
-        // and the linker can store the full name in the string table via
-        // a "/NN" indirection. Match on the 8-byte prefix ".llvm_st"
-        // which is unique inside our binaries — verified by E-W1.
+        // A section name field holds 8 bytes, so the 15-character name is stored truncated. A name written
+        // as a "/NN" string-table reference instead would not match.
         if (std::memcmp(sec->Name, ".llvm_st", 8) == 0) {
             DWORD size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize
                                                : sec->SizeOfRawData;
@@ -86,8 +88,9 @@ inline StackMapSection findStackMapSection(const void* addr) {
 
 #elif defined(__APPLE__)
 
-// addr == nullptr → main executable; otherwise the image containing addr
-// (an executable OR a dlopen'd / linked shared object), found via dladdr.
+/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the loaded image
+/// (executable or shared object) containing `addr`, as `dladdr` reports it. Returns an empty section if there is
+/// no such image, or it has no such section or an empty one. Only 64-bit Mach-O images are handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     const struct mach_header_64* header = nullptr;
     if (addr == nullptr) {
@@ -108,6 +111,12 @@ inline StackMapSection findStackMapSection(const void* addr) {
 
 #else // ELF
 
+/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module with a
+/// `PT_LOAD` segment containing `addr`. Returns an empty section if there is no such module, its file cannot be
+/// read, or it has no section named ".llvm_stackmaps".
+///
+/// Reads the module's section headers from its file on disk, so each call that finds a module opens and reads a
+/// file. Only 64-bit ELF is handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     struct CallbackData {
         uintptr_t target; // 0 = the main executable
@@ -121,20 +130,15 @@ inline StackMapSection findStackMapSection(const void* addr) {
             auto* out = static_cast<CallbackData*>(ctx);
 
             if (out->target == 0) {
-                // The main executable's name: glibc reports "" (empty);
-                // musl-static reports "/proc/self/exe". Accept either.
-                // NB: a `dlpi_name[0] != '\0'` test alone is a glibc-ism —
-                // on musl it skips the main executable, so .llvm_stackmaps
-                // is never found and the GC scans zero stack roots (live
-                // stack-referenced objects get reclaimed, corrupting the
-                // heap).
+                // glibc names the main executable "" (or null) and static musl names it "/proc/self/exe", so both
+                // are accepted. Testing for "" alone would miss it under musl: no section would be found, the
+                // collector would scan no stack roots, and live objects referenced from the stack would be freed.
                 const char* nm = info->dlpi_name;
                 bool is_main = (nm == nullptr) || (nm[0] == '\0') ||
                                (std::strcmp(nm, "/proc/self/exe") == 0);
                 if (!is_main)
                     return 0;
             } else {
-                // Does any PT_LOAD segment of this module contain target?
                 bool contains = false;
                 for (int i = 0; i < info->dlpi_phnum; ++i) {
                     const auto& ph = info->dlpi_phdr[i];
@@ -151,9 +155,7 @@ inline StackMapSection findStackMapSection(const void* addr) {
                     return 0;
             }
 
-            // Read the module's section headers from its file on disk. The
-            // main executable reports an empty name — fall back to
-            // /proc/self/exe for it.
+            // The main executable may be reported with an empty name; its file is /proc/self/exe.
             const char* path = info->dlpi_name;
             if (path == nullptr || path[0] == '\0')
                 path = "/proc/self/exe";
@@ -192,8 +194,7 @@ inline StackMapSection findStackMapSection(const void* addr) {
                     continue;
                 const char* name = shstrtab.data() + shdr.sh_name;
                 if (std::strcmp(name, ".llvm_stackmaps") == 0) {
-                    // sh_addr is the link-time virtual address; add the
-                    // module's load base for PIE/shared objects.
+                    // sh_addr is the link-time address; dlpi_addr is the module's load base.
                     out->data = reinterpret_cast<const uint8_t*>(
                         info->dlpi_addr + shdr.sh_addr);
                     out->size = shdr.sh_size;

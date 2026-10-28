@@ -1,6 +1,3 @@
-// POSIX (Linux + Darwin) implementation of the small VM primitives the
-// allocator uses. See PlatformVirtualMemory.hpp for the contract.
-
 #include "PlatformVirtualMemory.hpp"
 
 #include <cstdint>
@@ -10,8 +7,7 @@
 #include <unistd.h>
 #endif
 
-// Darwin has no MAP_NORESERVE — its VM never reserves swap for PROT_NONE
-// mappings, so the flag's effect is the default behavior there.
+// Where the platform headers do not define `MAP_NORESERVE`, it is defined as no flag.
 #ifndef MAP_NORESERVE
 #define MAP_NORESERVE 0
 #endif
@@ -41,9 +37,8 @@ void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit) {
     const int kBaseFlags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
 
 #if defined(__SANITIZE_THREAD__)
-    // ThreadSanitizer builds (threaded-gc-05c's gc-heap-tsan harness): TSan's
-    // shadow occupies 1 TB and up, so probe its low application range
-    // [64 GB, 512 GB) first, in 64 GB steps.
+    // Under ThreadSanitizer the 1 TB candidates below can collide with its
+    // shadow memory, so try [64 GB, 512 GB) first, in 64 GB steps.
     for (std::uintptr_t base = 0x10'0000'0000ULL; base + size <= 0x80'0000'0000ULL;
          base += 0x10'0000'0000ULL) {
         void* p = mmap(reinterpret_cast<void*>(base), size, PROT_NONE, kBaseFlags | kFixed, -1, 0);
@@ -60,7 +55,7 @@ void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit) {
         if (got == base && got + size <= limit) {
             return p;  // placed exactly where asked, and fits
         }
-        munmap(p, size);  // kernel ignored the hint or placed it too high
+        munmap(p, size);  // kernel ignored the hint
     }
 
     // Last resort: let the kernel choose, accept only if it happens to fit.
@@ -79,6 +74,8 @@ void* commitAt(void* addr, std::size_t size) {
 }
 
 bool resetPagesToZero(void* addr, std::size_t size) {
+    // Fresh zero pages rather than `madvise(MADV_DONTNEED)`, which reads back as
+    // zero on Linux but not on every POSIX system.
     void* p = mmap(addr, size, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
                    -1, 0);
@@ -86,9 +83,7 @@ bool resetPagesToZero(void* addr, std::size_t size) {
 }
 
 bool decommit(void* addr, std::size_t size) {
-    // Re-map as PROT_NONE so the pages are unbacked but the address space is
-    // still reserved (a fresh PROT_READ|PROT_WRITE commit at the same addr
-    // will succeed).
+    // A fresh PROT_NONE mapping drops the pages and keeps the addresses claimed.
     void* p = mmap(addr, size, PROT_NONE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
                    -1, 0);
@@ -101,6 +96,7 @@ bool discardPages(void* addr, std::size_t size) {
 
 bool populatePagesWrite(void* addr, std::size_t size) {
 #if defined(__linux__)
+// The Linux value of `MADV_POPULATE_WRITE`, for C library headers too old to define it.
 #  ifndef MADV_POPULATE_WRITE
 #    define MADV_POPULATE_WRITE 23
 #  endif

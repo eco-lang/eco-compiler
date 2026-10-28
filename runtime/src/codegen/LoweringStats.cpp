@@ -1,4 +1,4 @@
-//===- LoweringStats.cpp - Phase/pass timing for eco-boot-native ----------===//
+//===- LoweringStats.cpp - Wall-clock phase and MLIR pass timing ----------===//
 #include "LoweringStats.h"
 
 #include <atomic>
@@ -26,7 +26,10 @@ using namespace mlir;
 namespace eco {
 
 namespace {
+/// The instant timeline seconds are measured from: when this file's static
+/// variables are initialised.
 const LoweringStats::Clock::time_point kProcessEpoch = LoweringStats::Clock::now();
+/// Returns whether `ECO_LOWERING_TIMELINE` was set when first asked.
 bool timelineEnabled() {
     static const bool on = ::getenv("ECO_LOWERING_TIMELINE") != nullptr;
     return on;
@@ -41,7 +44,7 @@ void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
                                      (unsigned long)llvm::get_threadid(), begin ? "+" : "-",
                                      name.trim())
                            .str();
-    // One write(2) per line, so lines from concurrent threads don't interleave.
+    // One write(2) per line, so lines from concurrent threads normally don't interleave.
 #if defined(_WIN32)
     ::_write(2, line.data(), static_cast<unsigned>(line.size()));
 #else
@@ -50,6 +53,8 @@ void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
 }
 
 namespace {
+/// The identifier the next `LoweringStats` takes. It starts at 1 because 0 is
+/// what a thread's cache holds before it has cached anything.
 std::atomic<uint64_t> gNextStatsGen{1};
 } // namespace
 
@@ -83,20 +88,15 @@ void LoweringStats::recordPass(llvm::StringRef name, Duration duration) {
 
 namespace {
 
-/// Pick a unit that keeps the displayed magnitude in [1, 1000) where possible:
-///   < 1 ms    -> microseconds ("us")
-///   < 1 s     -> milliseconds ("ms")
-///   >= 1 s    -> seconds ("s")
-/// The zero case falls through to "us" so dashes don't appear for never-run
-/// passes.
+/// Returns `d` with two decimals in microseconds (written "µs") below 1 ms, in
+/// milliseconds below 1 s, and otherwise in seconds, padded on the left to
+/// `width` display columns.
 std::string formatDuration(LoweringStats::Duration d, int width) {
     using namespace std::chrono;
     double us = duration<double, std::micro>(d).count();
     const char *unit;
     double value;
-    // `extraBytes` accounts for unit strings whose UTF-8 byte length exceeds
-    // their displayed column width (µ is 2 bytes, 1 column). Without this the
-    // padding step would over-count and shift the µs rows left by one column.
+    // "µ" is two bytes in UTF-8 but one column wide; padding counts columns.
     int extraBytes = 0;
     if (us < 1000.0) {
         value = us;
@@ -109,7 +109,6 @@ std::string formatDuration(LoweringStats::Duration d, int width) {
         value = us / 1'000'000.0;
         unit = "s";
     }
-    // Right-aligned in `width` columns, e.g. " 12.34 ms" or " 1.23 s".
     std::string body = llvm::formatv("{0:f2} {1}", value, unit).str();
     int visibleWidth = static_cast<int>(body.size()) - extraBytes;
     if (visibleWidth < width)
@@ -117,12 +116,19 @@ std::string formatDuration(LoweringStats::Duration d, int width) {
     return body;
 }
 
+/// One line of a printed table.
 struct Row {
+    /// Points into the `StringMap` passed to `printSection`; valid only during
+    /// that call.
     llvm::StringRef name;
     LoweringStats::Duration total;
     uint64_t count;
 };
 
+/// Writes `table` to `os` under `title`, sorted by descending time, with a
+/// percentage of `denom` per row (of the table's own sum when `denom` is zero)
+/// and a closing total. Names longer than 44 bytes are cut short. Writes
+/// nothing for an empty table.
 void printSection(llvm::raw_ostream &os, llvm::StringRef title,
                   const llvm::StringMap<LoweringStats::Entry> &table,
                   LoweringStats::Duration denom) {
@@ -140,12 +146,9 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
         return a.total > b.total;
     });
 
-    // Use the section sum as the "100%" baseline when no external denom is
-    // supplied — keeps per-section percentages readable on their own.
     LoweringStats::Duration baseline = denom.count() > 0 ? denom : sum;
 
-    // llvm::format only accepts scalar/pointer args, so column headers go
-    // through padString(); numeric/percent cells use printf-style formatters.
+    // llvm::format takes only scalars and pointers, so strings are padded here.
     auto padString = [](llvm::StringRef s, size_t width) {
         std::string out = s.str();
         if (out.size() < width)
@@ -186,9 +189,8 @@ void printSection(llvm::raw_ostream &os, llvm::StringRef title,
 void LoweringStats::print(llvm::raw_ostream &os) const {
     std::lock_guard<std::mutex> lock(mu_);
 
-    // Merge the per-thread shards. Totals and counts are sums, so the merge
-    // order cannot change a printed number. Requires every recording thread
-    // to have finished (the banner prints at exit, after the EcoSplit join).
+    // The lock keeps new shards from being registered, but does not stop a
+    // thread writing into an existing one; hence the rule in the header.
     llvm::StringMap<Entry> phases_, passes_;
     for (const auto &sh : shards_) {
         for (const auto &kv : sh->phases) {
@@ -203,8 +205,6 @@ void LoweringStats::print(llvm::raw_ostream &os) const {
         }
     }
 
-    // Sum top-level phases — used as the denominator for both tables so the
-    // per-MLIR-pass percentages are comparable to the phase totals.
     Duration phaseSum{};
     for (const auto &kv : phases_)
         phaseSum += kv.getValue().total;
@@ -218,14 +218,16 @@ void LoweringStats::print(llvm::raw_ostream &os) const {
 
 namespace {
 
+/// The instrumentation `LoweringStats::makePassInstrumentation` returns.
 class StatsPassInstrumentation : public PassInstrumentation {
 public:
+    /// Creates an instrumentation recording into `stats`, which it keeps a
+    /// reference to.
     explicit StatsPassInstrumentation(LoweringStats &stats) : stats_(stats) {}
 
     void runBeforePass(Pass *pass, Operation *op) override {
-        // Each pass-instance is invoked sequentially per op within a single
-        // PassManager run, so a per-thread map keyed by Pass* is sufficient
-        // even when MLIR parallelises nested pipelines across ops.
+        // Each concurrent run uses its own pass instance, so a per-thread map
+        // keyed by Pass* never sees two overlapping runs of one instance.
         startTimes()[pass] = LoweringStats::Clock::now();
         if (isa<ModuleOp>(op))
             LoweringStats::timelineMark(pass->getName(), /*begin=*/true);
@@ -238,19 +240,21 @@ public:
     }
 
     void runAfterPassFailed(Pass *pass, Operation *op) override {
-        // Still credit the time so the stats reflect work actually done before
-        // the failure, even though the overall compilation will abort.
         finalize(pass);
     }
 
 private:
+    /// Start times of the passes currently running on one thread.
     using StartMap = std::unordered_map<Pass *, LoweringStats::Clock::time_point>;
 
+    /// Returns the calling thread's start-time map, shared by every instance
+    /// of this class on that thread.
     static StartMap &startTimes() {
         thread_local StartMap m;
         return m;
     }
 
+    /// Records the time since `pass` started on this thread, if it did.
     void finalize(Pass *pass) {
         auto &m = startTimes();
         auto it = m.find(pass);
@@ -261,7 +265,7 @@ private:
         stats_.recordPass(pass->getName(), duration);
     }
 
-    LoweringStats &stats_;
+    LoweringStats &stats_; ///< Must outlive this instrumentation.
 };
 
 } // namespace

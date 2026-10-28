@@ -1,27 +1,14 @@
-/**
- * Binary Data Operations Implementation.
- *
- * Implements byte buffer manipulation for the Elm runtime, including
- * creation, UTF-8 encoding/decoding, Base64, and hex conversion.
- */
-
 #include "BytesOps.hpp"
 #include "StringOps.hpp"
 
 namespace Elm {
 namespace BytesOps {
 
-// Creates a ByteBuffer from a list of integers (0-255).
-//
-// Two-pass: walk the list once to count cells (both reads, no allocation),
-// then allocate the buffer of exact size and walk again to fill. The list
-// head is rooted across the allocate via Pattern B so the second walk picks
-// up GC-relocated cells.
+// The list is walked twice: once to count, with no allocation, and again after the buffer is allocated to fill
+// it, from the list head as rooted across the allocation.
 HPointer fromList(HPointer list) {
     auto& allocator = Allocator::instance();
 
-    // Pass 1: count. Pure reads; list cannot move during this pass because
-    // no allocation occurs.
     size_t count = 0;
     for (alloc::ListCursor lc(list); !lc.done(); lc.next()) {
         ++count;
@@ -33,9 +20,8 @@ HPointer fromList(HPointer list) {
     total_size = (total_size + 7) & ~static_cast<size_t>(7);
 
     if (total_size >= allocator.getLargeObjectThreshold()) {
-        // Large path: header + body each may GC, so we route via
-        // allocLargeByteBuffer(nullptr,...) and fill the (pinned) body
-        // through the re-resolved list head.
+        // The header and the body are separate allocations, either of which may collect. The body is pinned, so
+        // `dst` stays valid while the list is walked.
         HPointer hp;
         {
             StackRootRangeGuard guard(&list, 1, 0x1);
@@ -63,18 +49,13 @@ HPointer fromList(HPointer list) {
     return allocator.wrap(dst);
 }
 
-// Creates a ByteBuffer from a UTF-8 encoded string.
 HPointer fromString(void* str) {
     return encodeUtf8(str);
 }
 
-// Decodes a ByteBuffer as UTF-8 into an ElmString.
-//
-// Two-pass: pass 1 validates the byte sequence and counts UTF-16 code
-// units. Pass 2 allocates an ElmString of exact size, then re-walks the
-// source (re-resolved across the allocate via Pattern B) writing code
-// units directly into str->chars[]. byteBufferView handles all
-// ByteBuffer forms (flat, large header, slice).
+// Pass 1 checks the bytes and counts the UTF-16 units they decode to, so that the String can be allocated at its
+// exact size. Pass 2 decodes again, from the source re-resolved through its rooted handle, straight into the
+// String's units.
 HPointer decodeUtf8(void* buf) {
     auto& allocator = Allocator::instance();
     auto src_view = alloc::byteBufferView(buf);
@@ -84,7 +65,6 @@ HPointer decodeUtf8(void* buf) {
         return alloc::just(alloc::boxed(alloc::emptyString()), true);
     }
 
-    // Pass 1: validate + count UTF-16 code units.
     size_t units = 0;
     for (size_t i = 0; i < len; ) {
         u8 c = src_view.data[i];
@@ -104,16 +84,13 @@ HPointer decodeUtf8(void* buf) {
             if ((src_view.data[i + 1] & 0xC0) != 0x80 ||
                 (src_view.data[i + 2] & 0xC0) != 0x80 ||
                 (src_view.data[i + 3] & 0xC0) != 0x80) return alloc::nothing();
-            // 4-byte sequence yields a surrogate pair in UTF-16.
+            // A four-byte sequence becomes a surrogate pair.
             units += 2; i += 4;
         } else {
             return alloc::nothing();
         }
     }
 
-    // Pass 2: root the source ByteBuffer across the allocate, then write
-    // UTF-16 code units directly into the heap chars[]. Single copy
-    // bytes[] → chars[]; no intermediate vector or u16 string.
     HPointer srcHP = allocator.wrap(buf);
     alloc::BlankString bs;
     {
@@ -121,9 +98,8 @@ HPointer decodeUtf8(void* buf) {
         bs = alloc::allocStringBlank(units);
     }
 
-    // Re-resolve source through the rooted handle; second pass writes
-    // straight into bs.chars[]. No allocation in this loop, so both the
-    // re-resolved data pointer and bs.chars remain stable.
+    // Nothing allocates in this loop, so both src2.data and bs.chars stay valid. Pass 1 has checked every
+    // sequence, so the continuation bytes read here exist.
     auto src2 = alloc::byteBufferView(allocator.resolve(srcHP));
     size_t dst = 0;
     for (size_t i = 0; i < len; ) {
@@ -157,17 +133,13 @@ HPointer decodeUtf8(void* buf) {
     return alloc::just(alloc::boxed(bs.hp), true);
 }
 
-// Encodes a String (any form: leaf or slice) as UTF-8 into a ByteBuffer.
-//
-// Two-pass: materialise the source UTF-16 once (toStdU16String handles
-// rope/slice flattening), count the UTF-8 byte width, then allocate a
-// ByteBuffer of exact size and emit bytes directly into its payload.
-// One copy out of the C++ std::u16string into the heap; no vector growth.
+// A UTF-16 String is copied into C++ memory, which no collection moves. Pass 1 counts the UTF-8 bytes, so the
+// buffer can be allocated at its exact size, and pass 2 encodes straight into it.
 HPointer encodeUtf8(void* str) {
     if (!str) return empty();
 
-    // UTF-8 (ASCII) forms: the bytes ARE the UTF-8 encoding. Snapshot to the C
-    // stack (read before any Elm allocation) then copy into a fresh ByteBuffer.
+    // A UTF-8 form holds only ASCII, so its bytes are already the encoding. They are copied to C++ memory first
+    // because `allocByteBuffer` copies after it may have collected.
     if (Elm::StringOps::isUtf8(str)) {
         auto pr = Elm::StringOps::utf8Bytes(str);
         if (pr.second == 0) return empty();
@@ -179,7 +151,6 @@ HPointer encodeUtf8(void* str) {
     size_t len = src.size();
     if (len == 0) return empty();
 
-    // Pass 1: count UTF-8 byte width.
     size_t out_bytes = 0;
     for (size_t i = 0; i < len; ++i) {
         u32 codepoint;
@@ -197,10 +168,7 @@ HPointer encodeUtf8(void* str) {
         else out_bytes += 4;
     }
 
-    // Pass 2: allocate exact-size buffer and emit. No allocation between
-    // allocByteBufferBlank and finishing the write — bytes pointer is
-    // stable. `src` lives on the C++ stack/heap (not Elm GC heap), so
-    // it survives the allocate unconditionally.
+    // Nothing allocates after allocByteBufferBlank, so bb.bytes stays valid for the whole loop.
     alloc::BlankByteBuffer bb = alloc::allocByteBufferBlank(out_bytes);
     size_t off = 0;
     for (size_t i = 0; i < len; ++i) {
@@ -232,12 +200,9 @@ HPointer encodeUtf8(void* str) {
     return bb.hp;
 }
 
-// Converts a ByteBuffer to a list of integers (0-255).
 HPointer toList(void* buf) {
-    // Snapshot bytes onto the C++ stack first: `alloc::cons` may GC and
-    // move/free the source ByteBuffer between cons iterations. Once the
-    // bytes are stashed on the C++ stack/heap (outside Elm's GC heap),
-    // building the list reverse-order is safe.
+    // Each `alloc::cons` may collect and move `buf`, so its bytes are copied to C++ memory first, and the list is
+    // built from the last byte back.
     auto v = alloc::byteBufferView(buf);
     std::vector<u8> snap(v.data, v.data + v.length);
 
@@ -248,10 +213,10 @@ HPointer toList(void* buf) {
     return result;
 }
 
-// Concatenates a list of ByteBuffers into a single ByteBuffer.
+// The list is walked twice: once to total the lengths, with no allocation, and again after the result is
+// allocated to copy, from the list head as rooted across the allocation.
 HPointer concat(HPointer bufferList) {
 
-    // First pass: calculate total length (no allocation, pointers stable)
     size_t total_len = 0;
     for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
         void* bufObj = alloc::resolveBytesOrNull(lc.current().p);
@@ -262,17 +227,12 @@ HPointer concat(HPointer bufferList) {
 
     if (total_len == 0) return empty();
 
-    // Allocate via the LOT-aware blank helper so large concat results
-    // land in pinned old-gen via the split-header path instead of being
-    // evacuated as oversize nursery objects (Pattern B around the
-    // allocate keeps bufferList alive across any internal GC).
     alloc::BlankByteBuffer dst;
     {
         StackRootRangeGuard guard(&bufferList, 1, 0x1);
         dst = alloc::allocByteBufferBlank(total_len);
     }
 
-    // Second pass: copy buffers (bufferList updated by GC if needed)
     size_t offset = 0;
     for (alloc::ListCursor lc(bufferList); !lc.done(); lc.next()) {
         void* bufObj = alloc::resolveBytesOrNull(lc.current().p);
@@ -286,20 +246,18 @@ HPointer concat(HPointer bufferList) {
     return dst.hp;
 }
 
-// Base64 encoding table.
+/// The 64 Base64 digits, indexed by the 6-bit value each stands for.
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
     "0123456789+/";
 
-// Encodes a ByteBuffer as Base64, returning an ElmString.
 HPointer toBase64(void* buf) {
     auto v = alloc::byteBufferView(buf);
     size_t len = v.length;
 
     if (len == 0) return alloc::emptyString();
 
-    // Calculate output length
     size_t output_len = ((len + 2) / 3) * 4;
 
     std::u16string result;
@@ -307,7 +265,7 @@ HPointer toBase64(void* buf) {
 
     size_t i = 0;
     while (i < len) {
-        // Track how many bytes we have in this group
+        // The last group may be short; its missing bytes count as zero and its missing digits are `=`.
         size_t bytes_in_group = std::min(size_t(3), len - i);
 
         u32 octet_a = v.data[i++];
@@ -325,8 +283,7 @@ HPointer toBase64(void* buf) {
     return alloc::allocString(result);
 }
 
-// Decodes a single Base64 character to its 6-bit value.
-// Returns -1 for padding ('='), -2 for invalid characters.
+/// Returns the 6-bit value of the Base64 digit `c`, -1 for the padding `=`, or -2 for any other unit.
 static int base64_decode_char(char16_t c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -337,7 +294,6 @@ static int base64_decode_char(char16_t c) {
     return -2;
 }
 
-// Decodes a Base64 String (any form) into a ByteBuffer.
 HPointer fromBase64(void* str) {
     if (!str) return alloc::just(alloc::boxed(empty()), true);
     if (Elm::StringOps::isUtf8(str))
@@ -348,6 +304,7 @@ HPointer fromBase64(void* str) {
     if (len == 0) return alloc::just(alloc::boxed(empty()), true);
     if (len % 4 != 0) return alloc::nothing();
 
+    // Only a capacity hint; the bytes pushed below decide the result's length.
     size_t output_len = (len / 4) * 3;
     if (len >= 1 && buf[len - 1] == '=') output_len--;
     if (len >= 2 && buf[len - 2] == '=') output_len--;
@@ -361,6 +318,7 @@ HPointer fromBase64(void* str) {
         int c = base64_decode_char(buf[i + 2]);
         int d = base64_decode_char(buf[i + 3]);
 
+        // `c` and `d` may be padding (-1); only an invalid unit (-2) fails here.
         if (a == -2 || b == -2 || (c == -2 && c != -1) || (d == -2 && d != -1)) {
             return alloc::nothing();
         }
@@ -379,10 +337,9 @@ HPointer fromBase64(void* str) {
     return alloc::just(alloc::boxed(hpResult), true);
 }
 
-// Hex encoding table (lowercase).
+/// The 16 hexadecimal digits in lowercase, indexed by the 4-bit value each stands for.
 static const char hex_chars[] = "0123456789abcdef";
 
-// Encodes a ByteBuffer as lowercase hexadecimal.
 HPointer toHex(void* buf) {
     auto v = alloc::byteBufferView(buf);
     size_t len = v.length;
@@ -401,8 +358,7 @@ HPointer toHex(void* buf) {
     return alloc::allocString(result);
 }
 
-// Decodes a single hex character to its 4-bit value.
-// Returns -1 for invalid characters.
+/// Returns the 4-bit value of the hexadecimal digit `c`, in either case, or -1 for any other unit.
 static int hex_decode_char(char16_t c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -410,7 +366,6 @@ static int hex_decode_char(char16_t c) {
     return -1;
 }
 
-// Decodes a hexadecimal String (any form) into a ByteBuffer.
 HPointer fromHex(void* str) {
     if (!str) return alloc::just(alloc::boxed(empty()), true);
     if (Elm::StringOps::isUtf8(str))

@@ -33,11 +33,8 @@
 using namespace llvm;
 using namespace llvm::orc;
 
-// Declared at file scope — not inside namespace eco or the anonymous
-// namespace below — so these resolve against the C entry points exported
-// by LLVM libunwind (libgcc-compatible). Nested extern "C" inside a class
-// would create class members; inside a namespace it would still be C linkage
-// but clutters the lookup path.
+// The unwinder's entry points for adding and removing one FDE, declared at
+// file scope so that they name the C functions and not members of a namespace.
 #if !defined(_WIN32)
 extern "C" void __register_frame(void *);
 extern "C" void __deregister_frame(void *);
@@ -46,12 +43,9 @@ extern "C" void __deregister_frame(void *);
 namespace {
 
 #if defined(_WIN32)
-// On Win64 the JIT'd code is COFF, not ELF, so there is no .eh_frame to
-// register — JIT'd functions are unwound via .pdata / .xdata sections and
-// LLVM's RTDyld COFF support registers those with RtlAddFunctionTable
-// internally (the same primitive verified by E-W2 / experiments/win-jit-smoke).
-// We retain the SectionMemoryManager subclass for symmetry with the POSIX
-// build, and override the EH-frame hooks to no-ops.
+// The memory manager for JIT objects on Windows, which registers no
+// `.eh_frame`. JIT code there is COFF, unwound through its `.pdata` and
+// `.xdata` sections, and this relies on RuntimeDyld registering those itself.
 class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
 public:
     void registerEHFrames(uint8_t* /*Addr*/, uint64_t /*LoadAddr*/,
@@ -68,9 +62,17 @@ public:
 // first JIT frame, and no JIT stack root is ever updated. recordEhFrameDelta (NotifyLoaded, after
 // placement and before registerEHFrames) recomputes the delta per __eh_frame load address, and
 // registerEHFrames adds it back.
+
+// Guards `g_ehFrameDelta`, which load notifications and EH-frame registration
+// both touch.
 std::mutex g_ehFrameDeltaMu;
+// The delta to add back to each FDE's pc_begin, keyed by the load address of
+// the `__eh_frame` section it applies to. An entry is removed when used.
 std::unordered_map<uint64_t, int64_t> g_ehFrameDelta;
 
+// Records, for the `__eh_frame` section of `Obj`, how far the distance from
+// `__text` to `__eh_frame` changed between the object file and memory. Does
+// nothing unless both sections exist and `__eh_frame` has a load address.
 void recordEhFrameDelta(const llvm::object::ObjectFile &Obj,
                         const llvm::RuntimeDyld::LoadedObjectInfo &Info) {
     bool haveText = false, haveEH = false;
@@ -97,6 +99,8 @@ void recordEhFrameDelta(const llvm::object::ObjectFile &Obj,
     g_ehFrameDelta[static_cast<uint64_t>(ehLoad)] = (textObj - ehObj) - (textLoad - ehLoad);
 }
 
+// Returns and forgets the delta recorded for the `__eh_frame` loaded at
+// `ehLoad`, or 0 if none was recorded.
 int64_t takeEhFrameDelta(uint64_t ehLoad) {
     std::lock_guard<std::mutex> Lock(g_ehFrameDeltaMu);
     auto It = g_ehFrameDelta.find(ehLoad);
@@ -107,7 +111,9 @@ int64_t takeEhFrameDelta(uint64_t ehLoad) {
     return Delta;
 }
 
-// processFDE's move, undone: the same 8-byte pc_begin field of each FDE, back by the same delta.
+// Adds `Delta` to the 8-byte pc_begin field of every FDE in the `Size` bytes
+// of `.eh_frame` at `Addr`. Stops at a zero length or an extended (64-bit)
+// length.
 void undoProcessFdeShift(uint8_t *Addr, size_t Size, int64_t Delta) {
     for (uint8_t *P = Addr; P + 8 <= Addr + Size;) {
         uint32_t Length;
@@ -127,14 +133,16 @@ void undoProcessFdeShift(uint8_t *Addr, size_t Size, int64_t Delta) {
 }
 #endif
 
-// EcoSectionMemoryManager overrides EH-frame registration for JIT objects.
-// LLVM libunwind's __register_frame takes a single FDE pointer (see
-// /opt/llvm-mlir/include/unwind.h: "The FDE must use pc-rel addressing to
-// point to its function"); a .eh_frame section begins with a CIE, so passing
-// the section base produces "bad fde: FDE is really a CIE" and registers
-// zero FDEs. We walk the section and call __register_frame per FDE, skipping
-// CIEs. ORC's RTDyldObjectLinkingLayer guarantees the same (Addr, Size) comes
-// back via deregisterEHFrames on teardown, so we replay the walk in reverse.
+// The memory manager for JIT objects on POSIX hosts, which registers each
+// FDE of an object's `.eh_frame` with the unwinder.
+//
+// LLVM libunwind's `__register_frame` takes a pointer to one FDE. A
+// `.eh_frame` section begins with a CIE, so passing the section base
+// registers nothing. `registerEHFrames` therefore walks the section, calling
+// `__register_frame` for each record whose CIE pointer is non-zero, and
+// keeps the section's address and size. `deregisterEHFrames` walks every
+// kept section again, in the same forward order, calling
+// `__deregister_frame` for the same records.
 class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
 public:
     void registerEHFrames(uint8_t *Addr, uint64_t LoadAddr,
@@ -147,10 +155,6 @@ public:
 #else
         (void)LoadAddr;
 #endif
-        // LLVM libunwind's __register_frame expects a single FDE pointer, not
-        // a section base (per /opt/llvm-mlir/include/unwind.h: "The FDE must
-        // use pc-rel addressing to point to its function"). Walk the section
-        // and pass each FDE individually; skip CIE records (cie_pointer == 0).
         uint8_t *P = Addr;
         uint8_t *End = Addr + Size;
         while (P < End) {
@@ -207,12 +211,13 @@ namespace eco {
 // StackMapListener - extracts __LLVM_StackMaps from loaded objects
 //===----------------------------------------------------------------------===//
 
-// Reads the post-relocation bytes of a section out of its loaded memory,
-// preferring them over the file-contents view returned by
-// SectionRef::getContents(). RuntimeDyld applies relocations to loaded
-// memory, not to the file bytes — critically for .llvm_stackmaps, which
-// contains 64-bit function_address fields that are unrelocated (zero) in
-// the file but correct at the load address after linking.
+// Returns a copy of the bytes of `Section` as they stand in loaded memory,
+// after relocation. If the section has no load address, returns its bytes
+// from the object file instead, which are unrelocated, or nothing if those
+// cannot be read either.
+//
+// The loaded bytes matter for a stack map section: its 64-bit function
+// addresses are relocations, unresolved in the file.
 static std::vector<uint8_t>
 readLoadedSectionBytes(const object::SectionRef &Section,
                        const RuntimeDyld::LoadedObjectInfo &L) {
@@ -234,8 +239,12 @@ readLoadedSectionBytes(const object::SectionRef &Section,
     return out;
 }
 
+// A listener on object loading that copies each loaded object's stack map
+// section into a `StackMapData`, replacing what it held. It refers to that
+// `StackMapData`, which must outlive it.
 class EcoJIT::StackMapListener : public JITEventListener {
 public:
+    // Creates a listener that writes into `smData`, which it keeps.
     explicit StackMapListener(StackMapData &smData)
         : smData_(smData) {}
 
@@ -249,20 +258,14 @@ public:
             StringRef name = *nameOrErr;
 
             // ELF uses ".llvm_stackmaps", MachO uses "__llvm_stackmaps".
-            // We read from the loaded section memory so that the 64-bit
-            // function_address fields (emitted as relocations against each
-            // JIT'd function) are their post-relocation absolute addresses.
             if (name == ".llvm_stackmaps" || name == "__llvm_stackmaps") {
                 smData_.bytes = readLoadedSectionBytes(Section, L);
             }
-
-            // .eh_frame registration lives in
-            // EcoSectionMemoryManager::registerEHFrames (file-scope above),
-            // not here — see the commentary on that class for rationale.
         }
     }
 
 private:
+    // The engine's `StackMapData`, owned by the engine.
     StackMapData &smData_;
 };
 
@@ -270,13 +273,15 @@ private:
 // Packed function wrappers (from MLIR ExecutionEngine)
 //===----------------------------------------------------------------------===//
 
+// Returns the name of the packed wrapper for the function `name`.
 static std::string makePackedFunctionName(StringRef name) {
     return "_mlir_" + name.str();
 }
 
-/// For each non-declaration, non-local function, create a wrapper:
-///   void _mlir_funcName(void** args)
-/// that unpacks arguments from the void** array and calls the real function.
+// Adds to `module`, for each function it defines without local linkage, a
+// wrapper `void _mlir_<name>(void **args)`. The wrapper loads argument `i`
+// through `args[i]`, calls the function, and, if it returns a value, stores
+// the result through `args[n]`, where `n` is the number of arguments.
 static void packFunctionArguments(Module *module) {
     auto &ctx = module->getContext();
     IRBuilder<> builder(ctx);
@@ -331,6 +336,7 @@ static void packFunctionArguments(Module *module) {
 // EcoJIT implementation
 //===----------------------------------------------------------------------===//
 
+// Returns an error carrying `message`, with no error code.
 static Error makeStringError(const Twine &message) {
     return make_error<StringError>(message.str(), inconvertibleErrorCode());
 }
@@ -350,17 +356,14 @@ Expected<std::unique_ptr<EcoJIT>>
 EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     auto engine = std::unique_ptr<EcoJIT>(new EcoJIT());
 
-    // Create stack map listener (.eh_frame is handled by RTDyldMemoryManager)
     engine->stackMapListener_ =
         std::make_unique<StackMapListener>(engine->stackMapData_);
 
-    // Translate MLIR to LLVM IR
     std::unique_ptr<LLVMContext> ctx(new LLVMContext);
     auto llvmModule = mlir::translateModuleToLLVMIR(m, *ctx);
     if (!llvmModule)
         return makeStringError("could not convert to LLVM IR");
 
-    // Create target machine
     auto tmBuilderOrError = JITTargetMachineBuilder::detectHost();
     if (!tmBuilderOrError)
         return tmBuilderOrError.takeError();
@@ -384,9 +387,9 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
 
     auto dataLayout = llvmModule->getDataLayout();
 
-    // Object linking layer creator — installs our custom memory manager so
-    // JIT .eh_frame is registered section-style, and registers our stack map
-    // listener.
+    // Each object gets an `EcoSectionMemoryManager`, which on POSIX hosts
+    // registers its `.eh_frame`, and the stack map listener sees every object
+    // loaded.
     auto objectLinkingLayerCreator =
         [&engine](ExecutionSession &session) {
             auto objectLayer = std::make_unique<RTDyldObjectLinkingLayer>(
@@ -394,7 +397,6 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
                     return std::make_unique<EcoSectionMemoryManager>();
                 });
 
-            // Register our stack map extraction listener
             objectLayer->registerJITEventListener(
                 *engine->stackMapListener_);
 #if defined(__APPLE__)
@@ -408,7 +410,8 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             return objectLayer;
         };
 
-    // Compile function creator
+    // The compiler uses `tm`, made above, so the optimisation level set on
+    // `jtmb` does not reach it.
     auto compileFunctionCreator =
         [&options, &tm](JITTargetMachineBuilder jtmb)
             -> Expected<std::unique_ptr<IRCompileLayer::IRCompiler>> {
@@ -417,14 +420,12 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             return std::make_unique<TMOwningSimpleCompiler>(std::move(tm));
         };
 
-    // Build the LLJIT
     auto jit = cantFail(LLJITBuilder()
                             .setCompileFunctionCreator(compileFunctionCreator)
                             .setObjectLinkingLayerCreator(objectLinkingLayerCreator)
                             .setDataLayout(dataLayout)
                             .create());
 
-    // Apply transformer (statepoint conversion + optimization)
     ThreadSafeModule tsm(std::move(llvmModule), std::move(ctx));
     if (options.transformer)
         cantFail(tsm.withModuleDo(
@@ -432,7 +433,6 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     cantFail(jit->addIRModule(std::move(tsm)));
     engine->jit_ = std::move(jit);
 
-    // Resolve symbols from the current process
     JITDylib &mainJD = engine->jit_->getMainJITDylib();
     mainJD.addGenerator(
         cantFail(DynamicLibrarySearchGenerator::GetForCurrentProcess(
