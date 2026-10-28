@@ -155,7 +155,7 @@ boundary.
 isBoundaryOp : MlirOp -> Bool
 isBoundaryOp op =
     String.startsWith "eco.construct." op.name
-        || List.member op.name [ "eco.papCreate", "eco.papCreateGroup", "eco.papExtend", "eco.call", "eco.return" ]
+        || List.member op.name [ "eco.papCreate", "eco.papCreateGroup", "eco.papExtend", "eco.call", "eco.return", "eco.to_heap" ]
 
 
 {-| Returns a violation for each operand of `op` whose defined type in `env` is
