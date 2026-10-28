@@ -155,7 +155,7 @@ static Value emitInlineBoxedLoad(Value hptr, int64_t offsetBytes, Location loc,
 }
 
 /// Inline primitive field load: resolve + GEP(constant offset) + typed load
-/// (align 8). `primTy` is i64/f64/i16.
+/// (align 8). `primTy` is i64/f64/i32 (Char).
 static Value emitInlinePrimLoad(Value hptr, int64_t offsetBytes, Type primTy,
                                 Location loc,
                                 ConversionPatternRewriter &rewriter,
@@ -192,7 +192,7 @@ static int64_t computeAllocSize(Operation *op) {
         return static_cast<int64_t>(layout::customByteSize(customOp.getSize()));
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
-        if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
+        if (inputType.isInteger(64) || inputType.isF64() || eco::isEcoCharType(inputType))
             return 16;
         return 0;
     }
@@ -223,12 +223,12 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
 
         // Inline nursery allocation (HEAP_034): boxed Int/Float/Char are
         // header + one payload slot; emitFreshFieldStore's type dispatch
-        // (i64 direct, f64 bitcast, i16 zext — the zext fully defines the
-        // Char slot, a refinement over the runtime's u16-only write).
+        // (i64 direct, f64 bitcast, i32 Char zext — the zext fully defines the
+        // Char word: code point + zero padding, HEAP/REP_HEAP_002).
         // Bool (i1) keeps the embedded-constant path below (CGEN_019).
         if (inlineAllocEnabled() &&
             (inputType.isInteger(64) || inputType.isF64() ||
-             inputType.isInteger(16))) {
+             eco::isEcoCharType(inputType))) {
             uint64_t tag = inputType.isInteger(64) ? value_enc::TagInt
                          : inputType.isF64()       ? value_enc::TagFloat
                                                    : value_enc::TagChar;
@@ -254,8 +254,8 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocFloat(rewriter),
                 ValueRange{input});
-        } else if (inputType.isInteger(16)) {
-            // Box i16 (char) -> eco_alloc_char with safepoint marker
+        } else if (eco::isEcoCharType(inputType)) {
+            // Box i32 (char) -> eco_alloc_char with safepoint marker
             result = emitAllocWithSafepoint(
                 op, rewriter, runtime,
                 runtime.getOrCreateAllocChar(rewriter),
@@ -402,7 +402,7 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 
         Value headLLVM = adaptor.getHead();
         Value tailVal  = adaptor.getTail();
-        // 2-bit kind: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i16).
+        // 2-bit kind: 0=boxed, 1=Int(i64), 2=Float(f64), 3=Char(i32).
         uint32_t headKind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
 
         // Inline nursery allocation (HEAP_034): marker + header (head kind
@@ -447,7 +447,7 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
                 runtime.getOrCreateStoreConsHeadF64(rewriter),
                 ValueRange{consHPtr, headLLVM});
         } else {
-            // kind == 1 (Int/i64) or 3 (Char/i16): widen narrow → i64.
+            // kind == 1 (Int/i64) or 3 (Char/i32): widen narrow → i64.
             Value widened = widenFieldToI64(headLLVM, loc, rewriter);
             rewriter.create<LLVM::CallOp>(loc,
                 runtime.getOrCreateStoreConsHeadI64(rewriter),
@@ -494,7 +494,7 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // For primitive types (i64, f64, i16), use runtime helpers that handle
+        // For primitive types (i64, f64, i32 Char), use runtime helpers that handle
         // both boxed and unboxed heads correctly.
         if (origResultType.isInteger(64)) {
             auto helperFunc = runtime.getOrCreateConsHeadI64(rewriter);
@@ -508,8 +508,8 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             rewriter.replaceOp(op, call.getResult());
             return success();
         }
-        if (origResultType.isInteger(16)) {
-            auto helperFunc = runtime.getOrCreateConsHeadI16(rewriter);
+        if (eco::isEcoCharType(origResultType)) {
+            auto helperFunc = runtime.getOrCreateConsHeadChar(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
             rewriter.replaceOp(op, call.getResult());
             return success();
@@ -583,7 +583,7 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
 
 //===----------------------------------------------------------------------===//
 // Helper: widen an SSA field value to i64 for runtime Unboxable slots.
-// Only Int (i64), Float (f64), and Char (i16) are unboxed in heap fields.
+// Only Int (i64), Float (f64), and Char (i32) are unboxed in heap fields.
 // i64 and ptr (eco.value → i64) pass through unchanged.
 //===----------------------------------------------------------------------===//
 
@@ -681,7 +681,7 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
             } else if (origTy.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                     ValueRange{tuple, idxVal, v});
-            } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+            } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                 Value widened = widenFieldToI64(v, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                     ValueRange{tuple, idxVal, widened});
@@ -771,7 +771,7 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
             } else if (origTy.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                     ValueRange{tuple, idxVal, v});
-            } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+            } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                 Value widened = widenFieldToI64(v, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                     ValueRange{tuple, idxVal, widened});
@@ -821,7 +821,7 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 
         // Tuple slots are simple (resolve + load raw slot), boxed or primitive.
         if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
-            !resultType.isF64() && !resultType.isInteger(16))
+            !resultType.isF64() && !eco::isEcoCharType(resultType))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.tuple2 — "
                 "Bool must go through !eco.value + eco.unbox");
@@ -865,7 +865,7 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
         int64_t offsetBytes = layout::Tuple3FirstOffset + field * layout::PtrSize;
 
         if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
-            !resultType.isF64() && !resultType.isInteger(16))
+            !resultType.isF64() && !eco::isEcoCharType(resultType))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.tuple3 — "
                 "Bool must go through !eco.value + eco.unbox");
@@ -966,8 +966,8 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
-                // Bool (i1) or Char (i16): after type conversion, Bool may be
+            } else if (origType.isInteger(1) || eco::isEcoCharType(origType)) {
+                // Bool (i1) or Char (i32): after type conversion, Bool may be
                 // ptr<1> (embedded constant). widenFieldToI64 handles all cases.
                 Value widened = widenFieldToI64(fieldVal, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
@@ -1017,7 +1017,7 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
         int64_t offsetBytes = layout::RecordFieldsOffset + index * layout::PtrSize;
 
         if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
-            !resultType.isF64() && !resultType.isInteger(16))
+            !resultType.isF64() && !eco::isEcoCharType(resultType))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.record — "
                 "Bool must go through !eco.value + eco.unbox");
@@ -1120,7 +1120,7 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+            } else if (origType.isInteger(1) || eco::isEcoCharType(origType)) {
                 Value widened = widenFieldToI64(fieldVal, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, widened});
@@ -1178,7 +1178,7 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
         int64_t offsetBytes = layout::CustomFieldsOffset + index * layout::PtrSize;
 
         if (!isHPtrLLVMType(resultType) && !resultType.isInteger(64) &&
-            !resultType.isF64() && !resultType.isInteger(16))
+            !resultType.isF64() && !eco::isEcoCharType(resultType))
             return op.emitOpError(
                 "unsupported primitive type for eco.project.custom — "
                 "Bool must go through !eco.value + eco.unbox");
@@ -1291,28 +1291,6 @@ struct StringLengthOpLowering : public OpConversionPattern<StringLengthOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// eco.string.code_unit_at -> gc-leaf call to eco_string_code_unit_at
-//===----------------------------------------------------------------------===//
-
-struct StringCodeUnitAtOpLowering
-    : public OpConversionPattern<StringCodeUnitAtOp> {
-    const EcoRuntime &runtime;
-
-    StringCodeUnitAtOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                               const EcoRuntime &runtime)
-        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
-
-    LogicalResult
-    matchAndRewrite(StringCodeUnitAtOp op, OpAdaptor adaptor,
-                    ConversionPatternRewriter &rewriter) const override {
-        auto fn = runtime.getOrCreateStringCodeUnitAt(rewriter);
-        rewriter.replaceOpWithNewOp<LLVM::CallOp>(
-            op, fn, ValueRange{adaptor.getStr(), adaptor.getIndex()});
-        return success();
-    }
-};
-
-//===----------------------------------------------------------------------===//
 // eco.array.get -> resolve + GEP to elements[index] + load + type conversion
 //===----------------------------------------------------------------------===//
 
@@ -1337,7 +1315,7 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
 
         if (!isa<eco::ValueType>(origResultType) &&
             !origResultType.isInteger(64) && !origResultType.isF64() &&
-            !origResultType.isInteger(16))
+            !eco::isEcoCharType(origResultType))
             return op.emitOpError("unsupported element type for eco.array.get");
 
         // Element pointer = resolve(array) + ArrayElementsOffset + index*8.
@@ -1402,7 +1380,7 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         if (isa<eco::ValueType>(setValueType))      intendedKind = 0;
         else if (setValueType.isInteger(64))         intendedKind = 1;
         else if (setValueType.isF64())               intendedKind = 2;
-        else if (setValueType.isInteger(16))         intendedKind = 3;
+        else if (eco::isEcoCharType(setValueType))         intendedKind = 3;
         auto kindConst = rewriter.create<LLVM::ConstantOp>(
             loc, IntegerType::get(ctx, 32),
             static_cast<int64_t>(intendedKind));
@@ -1435,8 +1413,8 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         } else if (origValueType.isF64()) {
             // Float: bitcast f64 to i64
             raw = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, valueVal);
-        } else if (origValueType.isInteger(16)) {
-            // Char: zero-extend i16 to i64
+        } else if (eco::isEcoCharType(origValueType)) {
+            // Char: zero-extend the i32 code point to i64
             raw = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, valueVal);
         } else {
             return op.emitError("unsupported value type for eco.array.set");
@@ -1501,7 +1479,7 @@ struct ArraySingletonOpLowering : public OpConversionPattern<ArraySingletonOp> {
             fn = runtime.getOrCreateArraySingletonInt(rewriter);
         } else if (origValueType.isF64()) {
             fn = runtime.getOrCreateArraySingletonFloat(rewriter);
-        } else if (origValueType.isInteger(16)) {
+        } else if (eco::isEcoCharType(origValueType)) {
             fn = runtime.getOrCreateArraySingletonChar(rewriter);
         } else if (isa<eco::ValueType>(origValueType)) {
             fn = runtime.getOrCreateArraySingletonBox(rewriter);
@@ -1531,7 +1509,7 @@ struct ArrayPushOpLowering : public OpConversionPattern<ArrayPushOp> {
             fn = runtime.getOrCreateArrayPushInt(rewriter);
         } else if (origValueType.isF64()) {
             fn = runtime.getOrCreateArrayPushFloat(rewriter);
-        } else if (origValueType.isInteger(16)) {
+        } else if (eco::isEcoCharType(origValueType)) {
             fn = runtime.getOrCreateArrayPushChar(rewriter);
         } else if (isa<eco::ValueType>(origValueType)) {
             fn = runtime.getOrCreateArrayPushBox(rewriter);
@@ -1672,7 +1650,7 @@ static Value castToHPtr(OpBuilder &builder, Location loc, Value v) {
 }
 
 /// Widen a primitive SSA value to i64 for Unboxable slot storage.
-/// i64 passes through. ptr<1> → ptrtoint. f64 → bitcast. i16/i1 → zext.
+/// i64 passes through. ptr<1> → ptrtoint. f64 → bitcast. i32 (Char)/i1 → zext.
 /// For eco.value: cast to ptr<1> first (via castToHPtr which looks through
 /// materialization casts or creates an unrealized cast), then ptrtoint.
 static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
@@ -1724,11 +1702,11 @@ static Value emitInitAtPtr(
                 loc, runtime.getOrCreateInitFloatAt(builder),
                 ValueRange{objPtr, input}).getResult();
         }
-        if (inputType.isInteger(16)) {
-            auto widened = builder.create<LLVM::ZExtOp>(loc, i32Ty, input);
+        if (eco::isEcoCharType(inputType)) {
+            // Char is already the i32 code point eco_init_char_at takes.
             return builder.create<LLVM::CallOp>(
                 loc, runtime.getOrCreateInitCharAt(builder),
-                ValueRange{objPtr, widened}).getResult();
+                ValueRange{objPtr, input}).getResult();
         }
         llvm_unreachable("unsupported BoxOp input type in group");
     }
@@ -1854,7 +1832,7 @@ static void emitFieldStoresForOp(
             if (origType.isF64()) {
                 builder.create<LLVM::CallOp>(loc, storeF64Func,
                     ValueRange{hptr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+            } else if (origType.isInteger(1) || eco::isEcoCharType(origType)) {
                 auto extended = builder.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
                 builder.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{hptr, idx, extended});
@@ -1901,7 +1879,7 @@ static void emitFieldStoresForOp(
             if (origType.isF64()) {
                 builder.create<LLVM::CallOp>(loc, storeF64Func,
                     ValueRange{hptr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+            } else if (origType.isInteger(1) || eco::isEcoCharType(origType)) {
                 auto extended = builder.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
                 builder.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{hptr, idx, extended});
@@ -2168,5 +2146,4 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<StringAppendOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ListAppendOpLowering>(typeConverter, ctx, runtime);
     patterns.add<StringLengthOpLowering>(typeConverter, ctx, runtime);
-    patterns.add<StringCodeUnitAtOpLowering>(typeConverter, ctx, runtime);
 }

@@ -254,7 +254,7 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 ///     HPointer-encoded i64. Primitive params are extracted by resolving
 ///     the HPointer and loading the boxed value at offset 8.
 ///   - typedNewargs=true (Phase E): primitive slots carry the raw value
-///     directly (i64 / f64 bits / i16 zero-extended); HPointer slots are
+///     directly (i64 / f64 bits / i32 Char zero-extended); HPointer slots are
 ///     unchanged. Per-slot kind comes from `closure->unboxed[i]`; the
 ///     evaluator extracts each slot accordingly.
 ///
@@ -264,7 +264,7 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
 ///     boxed via `eco_alloc_*` on the way out.
 ///   - PK_Int   → returns i64 directly (no boxing).
 ///   - PK_Float → returns f64 directly (no boxing).
-///   - PK_Char  → returns i16 directly (no boxing).
+///   - PK_Char  → returns the i32 code point directly (no boxing).
 ///
 /// Phase D: K!=0 wrappers are now safe. Every closure-invocation entry
 /// point reads the closure's actual `result_kind` from its header (set
@@ -288,7 +288,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
     auto i64Ty = IntegerType::get(ctx, 64);
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto charTy = eco::getEcoCharType(ctx);
 
     // Check if wrapper already exists (check first — fast path).
     // Cache key includes resultKind so K=0 and K=primitive wrappers for the
@@ -426,7 +426,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
     switch (resultKind) {
         case 1: wrapperReturnType = i64Ty; break;
         case 2: wrapperReturnType = f64Ty; break;
-        case 3: wrapperReturnType = i16Ty; break;
+        case 3: wrapperReturnType = charTy; break;
         default: wrapperReturnType = ptrTy; break;
     }
     auto wrapperType = LLVM::LLVMFunctionType::get(wrapperReturnType, {ptrTy}, false);
@@ -454,7 +454,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         //   - !eco.value → pass through (i64 HPointer, inner function expects i64)
         //   - Int (i64)  → unbox: resolve HPointer → read i64 value at offset 8
         //   - Float (f64) → unbox: resolve HPointer → read i64 at offset 8 → bitcast to f64
-        //   - Char (i16)  → unbox: resolve HPointer → read i64 at offset 8 → trunc to i16
+        //   - Char (i32)  → unbox: resolve HPointer → read i64 at offset 8 → trunc to i32
         //   - ptr         → inttoptr (for raw pointer args)
         // When original types are unavailable, fall back to converted-type heuristics.
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
@@ -535,7 +535,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
                 Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
                 convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
             } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
-                // Legacy Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
+                // Legacy Char (i32): arg is HPointer to ElmChar → resolve and read value at offset 8
                 Value hptr = wrapperLoadArgSlotToValue(rewriter, loc, argI64, getHPtrLLVMType(*ctx));
                 auto [rbase, rGepTy] = resolveScalarBase(hptr);
                 auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
@@ -591,14 +591,15 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
                        "PK_Float wrapper requires f64 target return type");
                 resultPtr = resultValue;
             } else if (resultKind == 3) {
-                // PK_Char → i16. Inner returns i16 (or smaller); narrow if needed.
+                // PK_Char → i32 code point. Inner returns i32 (or another
+                // width); zero-extend / narrow if needed.
                 if (auto intTy = dyn_cast<IntegerType>(targetResultType)) {
-                    if (intTy.getWidth() == 16) {
+                    if (intTy.getWidth() == eco::kEcoCharBits) {
                         resultPtr = resultValue;
-                    } else if (intTy.getWidth() < 16) {
-                        resultPtr = rewriter.create<LLVM::ZExtOp>(loc, i16Ty, resultValue);
+                    } else if (intTy.getWidth() < eco::kEcoCharBits) {
+                        resultPtr = rewriter.create<LLVM::ZExtOp>(loc, charTy, resultValue);
                     } else {
-                        resultPtr = rewriter.create<LLVM::TruncOp>(loc, i16Ty, resultValue);
+                        resultPtr = rewriter.create<LLVM::TruncOp>(loc, charTy, resultValue);
                     }
                 } else {
                     assert(false && "PK_Char wrapper requires integer target return type");
@@ -858,7 +859,7 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
             Value capturedValue = captured[i];
             if (auto intTy = dyn_cast<IntegerType>(capturedValue.getType());
                 intTy && intTy.getWidth() < 64) {
-                // Widen narrow int (Char i16) to i64 for storage
+                // Widen narrow int (Char i32) to i64 for storage
                 capturedValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, capturedValue);
             } else if (capturedValue.getType() == f64Ty) {
                 // Bitcast f64 to i64 for storage
@@ -1347,11 +1348,11 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
 //===----------------------------------------------------------------------===//
 
 /// Map an MLIR type to a ParamKind value for the EvalParamLayout.
-/// i64 -> PK_Int(1), f64 -> PK_Float(2), i16 -> PK_Char(3), else -> PK_Boxed(0)
+/// i64 -> PK_Int(1), f64 -> PK_Float(2), i32 -> PK_Char(3), else -> PK_Boxed(0)
 static uint8_t mlirTypeToParamKind(Type ty) {
     if (ty.isInteger(64)) return 1;  // PK_Int
     if (ty.isF64()) return 2;        // PK_Float
-    if (ty.isInteger(16)) return 3;  // PK_Char
+    if (eco::isEcoCharType(ty)) return 3;  // PK_Char
     return 0;                        // PK_Boxed
 }
 
@@ -1384,7 +1385,7 @@ static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
         auto fnType = llvmFunc.getFunctionType();
         // Post-conversion LLVM types still answer mlirTypeToParamKind
         // correctly: ptr addrspace(1) → PK_Boxed, i64 → PK_Int, f64 →
-        // PK_Float, i16 → PK_Char.
+        // PK_Float, i32 → PK_Char.
         for (unsigned i = 0; i < fnType.getNumParams(); ++i)
             paramTypes.push_back(fnType.getParamType(i));
     } else {
@@ -1575,7 +1576,7 @@ static Type paramKindToLLVMType(MLIRContext *ctx, uint8_t kind) {
     switch (kind) {
         case 1: return IntegerType::get(ctx, 64);
         case 2: return Float64Type::get(ctx);
-        case 3: return IntegerType::get(ctx, 16);
+        case 3: return eco::getEcoCharType(ctx);
         default: return LLVM::LLVMPointerType::get(ctx, 1);
     }
 }
@@ -1651,7 +1652,7 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
     for (int64_t i = 0; i < captureCount; ++i) {
         Type want = targetTy.getParamType(i);
         if (!isa<LLVM::LLVMPointerType>(want) && !want.isF64() &&
-            !want.isInteger(16) && !want.isInteger(64))
+            !eco::isEcoCharType(want) && !want.isInteger(64))
             return false;
     }
 
@@ -1679,9 +1680,9 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
             } else if (want.isF64()) {
                 Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
                 v = builder.create<LLVM::BitcastOp>(loc, f64Ty, raw);
-            } else if (want.isInteger(16)) {
+            } else if (eco::isEcoCharType(want)) {
                 Value raw = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
-                v = builder.create<LLVM::TruncOp>(loc, IntegerType::get(ctx, 16), raw);
+                v = builder.create<LLVM::TruncOp>(loc, eco::getEcoCharType(ctx), raw);
             } else if (want.isInteger(64)) {
                 v = builder.create<LLVM::LoadOp>(loc, i64Ty, slot);
             }
@@ -1738,7 +1739,7 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto i8Ty = IntegerType::get(ctx, 8);
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto u16Ty = getU16StorageType(ctx);  // u16 header field, not Char
     auto i32Ty = IntegerType::get(ctx, 32);
     auto i64Ty = IntegerType::get(ctx, 64);
 
@@ -1805,7 +1806,7 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
 
     auto satArrTy = LLVM::LLVMArrayType::get(ptrTy, satCount);
     auto descTy = LLVM::LLVMStructType::getLiteral(
-        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
+        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, u16Ty, i32Ty, satArrTy});
 
     std::string nameStr = name.str();
 
@@ -1831,7 +1832,7 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
         put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
         put(2, i8Ty, 0);                                       // _pad_sa
         put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-        put(4, i16Ty, static_cast<int64_t>(stageArity));       // stage_arity:u16 @+18
+        put(4, u16Ty, static_cast<int64_t>(stageArity));       // stage_arity:u16 @+18
         put(5, i32Ty, 0);
         Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
         for (unsigned i = 0; i < satCount; ++i) {
@@ -1974,7 +1975,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
 
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     auto i8Ty = IntegerType::get(ctx, 8);
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto u16Ty = getU16StorageType(ctx);  // u16 header field, not Char
     auto i32Ty = IntegerType::get(ctx, 32);
     auto i64Ty = IntegerType::get(ctx, 64);
     // Same sizing rule as getOrCreateEvalDesc: empty above SAT_MAX_ARITY.
@@ -1983,7 +1984,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
             ? static_cast<unsigned>(arity) + 1 : 0;
     auto satArrTy = LLVM::LLVMArrayType::get(ptrTy, satCount);
     auto descTy = LLVM::LLVMStructType::getLiteral(
-        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, i16Ty, i32Ty, satArrTy});
+        ctx, {ptrTy, i64Ty, i8Ty, i8Ty, u16Ty, i32Ty, satArrTy});
 
     std::string nameStr = name.str();
     std::string funcSymbolStr = funcSymbol.str();
@@ -2003,7 +2004,7 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
         put(1, i64Ty, static_cast<int64_t>(kindsBitmap));
         put(2, i8Ty, 0);                                       // _pad_sa
         put(3, i8Ty, static_cast<int64_t>(resultKind & 0x3));
-        put(4, i16Ty, static_cast<int64_t>(arity));            // stage_arity:u16 @+18
+        put(4, u16Ty, static_cast<int64_t>(arity));            // stage_arity:u16 @+18
         put(5, i32Ty, 0);
         Value nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
         for (unsigned i = 0; i < satCount; ++i)
@@ -2098,7 +2099,7 @@ static void evalLayoutName(ArrayRef<uint8_t> kinds, uint8_t resultKind,
 
 /// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the
 /// given kind sequence. Layout is
-/// `{ i16 num_params, i8 result_kind, i8 pad, [N x i8] kinds }`, matching
+/// `{ u16 num_params, i8 result_kind, i8 pad, [N x i8] kinds }`, matching
 /// `EvalParamLayout` in `Heap.hpp`. Deduplicates by encoding the kinds and
 /// result kind into the global's name (evalLayoutName).
 ///
@@ -2114,7 +2115,7 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
     auto *ctx = builder.getContext();
     ModuleOp module = runtime.module;
     auto i8Ty = IntegerType::get(ctx, 8);
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto u16Ty = getU16StorageType(ctx);  // u16 header field, not Char
     uint32_t n = kinds.size();
     llvm::SmallString<48> nameBuf;
     evalLayoutName(kinds, resultKind, nameBuf);
@@ -2137,14 +2138,14 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
     if (!runtime.evalLayoutNames.insert(name).second)
         return;  // already created
     auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
-    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i16Ty, i8Ty, i8Ty, arrayTy});
+    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {u16Ty, i8Ty, i8Ty, arrayTy});
     std::string nameStr = name.str();
     SmallVector<uint8_t> kindsCopy(kinds.begin(), kinds.end());
     auto buildBody = [=](OpBuilder &builder, LLVM::GlobalOp globalOp) mutable {
         Block *initBlock = builder.createBlock(&globalOp.getInitializerRegion());
         builder.setInsertionPointToStart(initBlock);
         Value structVal = builder.create<LLVM::UndefOp>(loc, structTy);
-        auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, i16Ty, static_cast<int64_t>(n));
+        auto numParamsConst = builder.create<LLVM::ConstantOp>(loc, u16Ty, static_cast<int64_t>(n));
         structVal = builder.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
                                                         ArrayRef<int64_t>{0});
         auto resultKindConst = builder.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(resultKind));
@@ -2416,20 +2417,20 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     }
 
     // === Pick the typed-result entry point when the call's result type is
-    // primitive (i64/f64/i16). The boxed-result eco_closure_call_saturated
+    // primitive (i64/f64/i32). The boxed-result eco_closure_call_saturated
     // hardcodes desired_kind=0 in its K!=0 path → it boxes every Int/Float/
     // Char return with eco_alloc_int/float/char and the JIT immediately
     // unboxes via resolve+load. Routing through eco_closure_call_saturated_
     // eval lets the wrapper write the primitive straight into the result
     // slot (no allocation, no resolve, no load-at-offset-8). ===
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto charTy = eco::getEcoCharType(ctx);  // Char result slot: uint32_t
     uint8_t desiredKind = 0;
     Type slotTy = ptrTy;
     if (origResultType) {
         if (origResultType.isInteger(64))      { desiredKind = 1; slotTy = i64Ty; }
         else if (origResultType.isF64())        { desiredKind = 2; slotTy = f64Ty; }
         else if (auto it = dyn_cast<IntegerType>(origResultType);
-                 it && it.getWidth() < 64)       { desiredKind = 3; slotTy = i16Ty; }
+                 it && it.getWidth() < 64)       { desiredKind = 3; slotTy = charTy; }
         // !eco.value or other → desiredKind stays 0.
     } else {
         // No origResultType: fall back to the converted resultType. Treat
@@ -2438,7 +2439,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         if (resultType.isInteger(64))           { desiredKind = 1; slotTy = i64Ty; }
         else if (resultType.isF64())             { desiredKind = 2; slotTy = f64Ty; }
         else if (auto it = dyn_cast<IntegerType>(resultType);
-                 it && it.getWidth() < 64)        { desiredKind = 3; slotTy = i16Ty; }
+                 it && it.getWidth() < 64)        { desiredKind = 3; slotTy = charTy; }
     }
 
     if (desiredKind != 0) {
@@ -2460,7 +2461,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
             auto zeroI = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
             zero = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, zeroI);
         } else {
-            zero = rewriter.create<LLVM::ConstantOp>(loc, i16Ty, 0);
+            zero = rewriter.create<LLVM::ConstantOp>(loc, charTy, 0);
         }
         rewriter.create<LLVM::StoreOp>(loc, zero, resultSlot);
 
@@ -2479,7 +2480,7 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         // resultType case is the common one.
         if (slotTy != resultType) {
             if (auto ity = dyn_cast<IntegerType>(resultType);
-                ity && ity.getWidth() < 16 && desiredKind == 3) {
+                ity && ity.getWidth() < eco::kEcoCharBits && desiredKind == 3) {
                 result = rewriter.create<LLVM::TruncOp>(loc, resultType, result);
             }
         }
@@ -2912,7 +2913,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                     arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
                 } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
                     if (intTy.getWidth() < 64) {
-                        // Char (i16): zero-extend to i64 and keep unboxed, same as Int/Float.
+                        // Char (i32): zero-extend to i64 and keep unboxed, same as Int/Float.
                         arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
                     }
                 }

@@ -1993,7 +1993,7 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
 
 {-| Builds a placeholder value of `mlirType` named `resultVar`: zero for
-`i64`, `f64` and `i16`, `False` for `i1`, and `unit` for any other type.
+`i64`, `f64` and `i32`, `False` for `i1`, and `unit` for any other type.
 -}
 generateStubValue : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 generateStubValue ctx resultVar mlirType =
@@ -2007,7 +2007,7 @@ generateStubValue ctx resultVar mlirType =
         I1 ->
             Ops.arithConstantBool ctx resultVar False
 
-        I16 ->
+        I32 ->
             Ops.arithConstantChar ctx resultVar 0
 
         _ ->
@@ -2096,7 +2096,7 @@ generateKernelDecl ctx info =
 
 
 {-| Builds a placeholder value of `mlirType` named `resultVar` for a kernel
-declaration's body: zero for `i64`, `f64` and `i16`, `False` for `i1`, and
+declaration's body: zero for `i64`, `f64` and `i32`, `False` for `i1`, and
 `unit` for any other type.
 -}
 generateStubValueFromMlirType : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
@@ -2111,7 +2111,7 @@ generateStubValueFromMlirType ctx resultVar mlirType =
         I1 ->
             Ops.arithConstantBool ctx resultVar False
 
-        I16 ->
+        I32 ->
             Ops.arithConstantChar ctx resultVar 0
 
         _ ->

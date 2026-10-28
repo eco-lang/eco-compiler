@@ -66,7 +66,7 @@ static uint8_t readClosureResultKind(HPointer closureHP) {
 union ResultSlot {
     int64_t  i;
     double   f;
-    uint16_t c;
+    uint32_t c;   // Char: a code point (the eval buffer's Char slot is 32-bit)
     Elm::HPtr p;
     uint64_t bits;
 };
@@ -108,7 +108,7 @@ static void pushUnboxedResult(void* arrObj, uint64_t result) {
             return;
         }
         if (hdr->tag == Tag_Char) {
-            Unboxable u; u.c = static_cast<ElmChar*>(elemPtr)->value;
+            Unboxable u = alloc::unboxedChar(static_cast<ElmChar*>(elemPtr)->value);
             alloc::arrayPushKind(arrObj, u, 3);
             return;
         }
@@ -137,7 +137,7 @@ static void pushTypedResult(void* arrObj, const ResultSlot& slot,
             alloc::arrayPushKind(arrObj, u, 2);
             return;
         default:
-            u.c = slot.c;
+            u = alloc::unboxedChar(slot.c);
             alloc::arrayPushKind(arrObj, u, 3);
             return;
     }
@@ -636,7 +636,7 @@ static HPtr foldImpl(HPtr closure, HPtr acc, HPtr array, bool forward) {
     switch (accKind) {
         case 1: u.i = static_cast<int64_t>(accBits); break;
         case 2: std::memcpy(&u.f, &accBits, sizeof(double)); break;
-        default: u.c = static_cast<u16>(accBits); break;
+        default: u = alloc::unboxedChar(static_cast<u32>(accBits)); break;
     }
     HPointer boxed = alloc::boxElement(u, accKind);
     return HPtr::fromBits(Export::encode(boxed));
@@ -677,10 +677,12 @@ HPtr elm_array_singleton_float(double v) {
     return HPtr::fromBits(Export::encode(arr));
 }
 
-HPtr elm_array_singleton_char(uint16_t v) {
+// Char trampolines take the code point as uint64_t and mask it (see
+// CharExports.cpp: statepointed calls do not zero-extend narrow args).
+HPtr elm_array_singleton_char(uint64_t v_raw) {
     HPointer arr = alloc::allocArray(1);
     void* arrObj = Allocator::instance().resolve(arr);
-    Unboxable u; u.c = v;
+    Unboxable u = alloc::unboxedChar(static_cast<u32>(v_raw & 0xFFFFFFFFu));
     alloc::arrayPushKind(arrObj, u, 3);
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -756,12 +758,12 @@ HPtr elm_array_push_float(double v, HPtr array) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-HPtr elm_array_push_char(uint16_t v, HPtr array) {
+HPtr elm_array_push_char(uint64_t v_raw, HPtr array) {
     uint32_t len, kind;
     HPointer result = copyAndExtendForPush(array, len, kind);
     void* dstPtr = Allocator::instance().resolve(result);
     ElmArray* dst = static_cast<ElmArray*>(dstPtr);
-    dst->elements[len].c = v;
+    dst->elements[len] = alloc::unboxedChar(static_cast<u32>(v_raw & 0xFFFFFFFFu));
     if (len == 0) dst->header.unboxed = 3;
     return HPtr::fromBits(Export::encode(result));
 }
@@ -841,12 +843,12 @@ HPtr elm_array_slice(int64_t start, int64_t end, HPtr array) {
 // singleton: delegate to the existing typed trampolines.
 HPtr Elm_Kernel_JsArray_singleton_Int  (int64_t  v) { return elm_array_singleton_int(v); }
 HPtr Elm_Kernel_JsArray_singleton_Float(double   v) { return elm_array_singleton_float(v); }
-HPtr Elm_Kernel_JsArray_singleton_Char (uint16_t v) { return elm_array_singleton_char(v); }
+HPtr Elm_Kernel_JsArray_singleton_Char (uint64_t v_raw) { return elm_array_singleton_char(v_raw); }
 
 // push: delegate to the existing typed trampolines.
 HPtr Elm_Kernel_JsArray_push_Int  (int64_t  v, HPtr array) { return elm_array_push_int(v, array); }
 HPtr Elm_Kernel_JsArray_push_Float(double   v, HPtr array) { return elm_array_push_float(v, array); }
-HPtr Elm_Kernel_JsArray_push_Char (uint16_t v, HPtr array) { return elm_array_push_char(v, array); }
+HPtr Elm_Kernel_JsArray_push_Char (uint64_t v_raw, HPtr array) { return elm_array_push_char(v_raw, array); }
 
 // slice: delegate to the existing typed trampoline.
 HPtr Elm_Kernel_JsArray_slice_Int(int64_t start, int64_t end, HPtr array) {
@@ -928,12 +930,13 @@ HPtr Elm_Kernel_JsArray_unsafeSet_Float(int64_t idx, double value, HPtr array) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-HPtr Elm_Kernel_JsArray_unsafeSet_Char(int64_t idx, uint16_t value, HPtr array) {
+HPtr Elm_Kernel_JsArray_unsafeSet_Char(int64_t idx, uint64_t value_raw, HPtr array) {
     uint32_t len, kind;
     HPointer result = copyForUnsafeSet(array, len, kind);
     void* dstPtr = Allocator::instance().resolve(result);
     ElmArray* dst = static_cast<ElmArray*>(dstPtr);
-    if (static_cast<uint32_t>(idx) < len) dst->elements[idx].c = value;
+    if (static_cast<uint32_t>(idx) < len)
+        dst->elements[idx] = alloc::unboxedChar(static_cast<u32>(value_raw & 0xFFFFFFFFu));
     dst->header.unboxed = 3;
     return HPtr::fromBits(Export::encode(result));
 }

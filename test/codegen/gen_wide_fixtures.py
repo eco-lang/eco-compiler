@@ -3,8 +3,12 @@
 (3B.F.1-3B.F.3): wide_record_40_jit.mlir, wide_custom_60_jit.mlir, wide_record_600_jit.mlir.
 Run from test/codegen: python3 gen_wide_fixtures.py"""
 import sys
-KIND_TY={0:'!eco.value',1:'i64',2:'f64',3:'i16'}
+KIND_TY={0:'!eco.value',1:'i64',2:'f64',3:'i32'}
 def kind_of(i): return [1,2,3,0][i%4]
+def char_cp(i):
+    # Char slots alternate ASCII and astral code points (Char = i32 code point;
+    # an astral value checks the full 32-bit payload survives GC/projection).
+    return 0x1F600+i%26 if i%8==6 else 65+i%26
 def ext_words(n,hdr): return (n-hdr+31)//32 if n>hdr else 0
 def pack(kinds,hdr):
     h=0
@@ -19,7 +23,7 @@ def expected(i):
     k=kind_of(i)
     if k==1: return str(1000+i)
     if k==2: return f"{i}.5"
-    if k==3: return "'"+chr(65+i%26)+"'"
+    if k==3: return "'"+chr(char_cp(i))+"'"
     return str(2000+i)
 def gen(kind,n,probe,name,tag=None,group_tail=False):
     hdr=24 if kind=='custom' else 32
@@ -28,7 +32,7 @@ def gen(kind,n,probe,name,tag=None,group_tail=False):
     L.append(f"// RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s")
     L.append("//")
     L.append(f"// Phase 3B (plans/wide-object-tail-kind-words-phase-3.md): a {n}-field {kind} with")
-    L.append(f"// mixed kinds (i64, f64, i16, boxed) built by eco.construct.{kind}, kept live across")
+    L.append(f"// mixed kinds (i64, f64, i32 Char, boxed) built by eco.construct.{kind}, kept live across")
     L.append("// forced minor + major GCs, then projected. Slots >= %d have their kinds in an" % hdr)
     L.append("// extension kind word (HEAP_019); a wrong ext word makes the GC trace a raw value")
     L.append("// (crash under ECO_HEAP_VALIDATE) or lose a boxed one (stale value).")
@@ -42,7 +46,7 @@ def gen(kind,n,probe,name,tag=None,group_tail=False):
     for i,k in enumerate(kinds):
         if k==1: L.append(f"    %v{i} = arith.constant {1000+i} : i64")
         elif k==2: L.append(f"    %v{i} = arith.constant {i}.5 : f64")
-        elif k==3: L.append(f"    %v{i} = arith.constant {65+i%26} : i16")
+        elif k==3: L.append(f"    %v{i} = arith.constant {char_cp(i)} : i32")
         else:
             L.append(f"    %r{i} = arith.constant {2000+i} : i64")
             L.append(f"    %v{i} = eco.box %r{i} : i64 -> !eco.value")

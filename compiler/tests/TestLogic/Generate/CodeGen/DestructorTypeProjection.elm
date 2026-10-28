@@ -8,7 +8,7 @@ module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing
 a custom-type value at the wrong type.
 
 A field of type `Int`, `Float` or `Char` can be stored unboxed in a
-constructor, as `i64`, `f64` or `i16`; `TestLogic.Generate.CodeGen.Invariants`
+constructor, as `i64`, `f64` or `i32`; `TestLogic.Generate.CodeGen.Invariants`
 calls these types _unboxable_. When generated code destructures such a value,
 the `eco.project.custom` op that reads the field should give the field at its
 own type. A projection whose result an `eco.unbox` immediately turns into
@@ -330,7 +330,7 @@ typeToString t =
 
 {-| Returns the number of spurious unboxes in the module's top-level `func.func`
 ops: `eco.unbox` ops with one operand and one result, whose result is `i64`,
-`f64` or `i16` and whose operand an `eco.project.custom` in the same function
+`f64` or `i32` and whose operand an `eco.project.custom` in the same function
 defines.
 
 It finds exactly the pairs `expectDestructorTypeProjection` reports, so on the

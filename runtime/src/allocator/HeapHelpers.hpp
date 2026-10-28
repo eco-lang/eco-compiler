@@ -357,7 +357,7 @@ inline HPointer allocFloat(f64 value) {
  * In most cases, prefer storing chars unboxed in container fields.
  * Only use this when a heap-allocated Char object is required.
  */
-inline HPointer allocChar(u16 value) {
+inline HPointer allocChar(u32 value) {
     ElmChar* obj = static_cast<ElmChar*>(
         eco_alloc_with_roots(Tag_Char, sizeof(ElmChar), nullptr, 0, 0));
     obj->value = value;
@@ -387,11 +387,14 @@ inline Unboxable unboxedFloat(f64 value) {
 }
 
 /**
- * Creates an Unboxable containing an unboxed char.
+ * Creates an Unboxable containing an unboxed char (a Unicode code point).
+ * Sets the whole 64-bit word: a kind-3 slot holds the code point
+ * zero-extended to 64 bits, and raw-word readers (eval buffers, hashing)
+ * rely on bits 32..63 being zero. Every writer of a Char slot uses this.
  */
-inline Unboxable unboxedChar(u16 value) {
+inline Unboxable unboxedChar(u32 cp) {
     Unboxable u;
-    u.c = value;
+    u.i = static_cast<i64>(cp);
     return u;
 }
 

@@ -5,7 +5,9 @@
 //   Elm_Kernel_<Module>_<function>
 //
 // Elm heap values are passed as HPtr (opaque 64-bit HPointer wrapper).
-// Primitive types (int64_t, double, uint16_t, bool) are passed directly.
+// Primitive types (int64_t, double, bool) are passed directly. A Char (a
+// Unicode code point, ABI i32) is RECEIVED as uint64_t and masked with
+// 0xFFFFFFFF (see CharExports.cpp) and RETURNED as uint32_t.
 //
 //===----------------------------------------------------------------------===//
 
@@ -101,16 +103,16 @@ uint64_t Elm_Kernel_Bitwise_shiftRightZfBy(int64_t offset, int64_t a);
 // Char Module (elm/core)
 //===----------------------------------------------------------------------===//
 
-uint16_t Elm_Kernel_Char_fromCode(int64_t code);
-// Char ABI: parameters declared as uint64_t (instead of uint16_t) so the
+uint32_t Elm_Kernel_Char_fromCode(int64_t code);
+// Char ABI: parameters declared as uint64_t (instead of uint32_t) so the
 // C++ side reads the entire register and masks. See CharExports.cpp for the
-// rationale (SysV i16-zero-extension contract is not honoured through LLVM
+// rationale (SysV narrow-argument zero-extension contract is not honoured through LLVM
 // gc.statepoint — the upper bits of %rdi can leak from the caller).
 int64_t Elm_Kernel_Char_toCode(uint64_t c_raw);
-uint16_t Elm_Kernel_Char_toLower(uint64_t c_raw);
-uint16_t Elm_Kernel_Char_toUpper(uint64_t c_raw);
-uint16_t Elm_Kernel_Char_toLocaleLower(uint64_t c_raw);
-uint16_t Elm_Kernel_Char_toLocaleUpper(uint64_t c_raw);
+uint32_t Elm_Kernel_Char_toLower(uint64_t c_raw);
+uint32_t Elm_Kernel_Char_toUpper(uint64_t c_raw);
+uint32_t Elm_Kernel_Char_toLocaleLower(uint64_t c_raw);
+uint32_t Elm_Kernel_Char_toLocaleUpper(uint64_t c_raw);
 
 //===----------------------------------------------------------------------===//
 // String Module (elm/core)
@@ -163,7 +165,7 @@ HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail);
 // Phase C per-instance variants: typed primitive head; tail stays HPtr.
 HPtr Elm_Kernel_List_cons_Int  (int64_t  head, HPtr tail);
 HPtr Elm_Kernel_List_cons_Float(double   head, HPtr tail);
-HPtr Elm_Kernel_List_cons_Char (uint16_t head, HPtr tail);
+HPtr Elm_Kernel_List_cons_Char (uint64_t head_raw, HPtr tail);
 HPtr Elm_Kernel_List_fromArray(HPtr array);
 HPtr Elm_Kernel_List_toArray(HPtr list);
 // Tier-B closure-free combinator shunts (chunked lists, plan §6 L1.3):
@@ -191,7 +193,7 @@ HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b);
 // Elm custom type. See plans/per-instance-kernel-abi.md Appendix A.
 HPtr Elm_Kernel_Utils_compare_Int  (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_compare_Float(double   a, double   b);
-HPtr Elm_Kernel_Utils_compare_Char (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_compare_Char (uint64_t a_raw, uint64_t b_raw);
 // Order-free three-way compare siblings, emitted by EcoCompareCaseRewrite.
 // Both return an UNCLAMPED sign (test <0/==0/>0, never ==+/-1) and MUST be
 // defined returning int64_t — see the return-width trap in UtilsExports.cpp.
@@ -200,11 +202,6 @@ HPtr Elm_Kernel_Utils_compare_Char (uint16_t a, uint16_t b);
 int64_t Elm_Kernel_Utils_cmp3(HPtr a, HPtr b);
 int64_t eco_string_cmp3(HPtr a, HPtr b);
 HPtr    eco_string_cmp_order(HPtr a, HPtr b);
-// kernel-opt-04: UTF-16 code unit at a 0-based index (eco.string.code_unit_at).
-// Out-of-range / empty / embedded constant all yield 0 -- consumers must
-// bounds-check against eco.string.length first. gc-leaf-safe (charAt never
-// allocates), so the lowered call needs no rooting.
-uint16_t eco_string_code_unit_at(HPtr str, int64_t index);
 // kernel-opt-05: typed append exports for eco.string.append / eco.list.append.
 // NOT gc-leaf -- both allocate (flat leaf or rope; cells or a chunk chain).
 HPtr eco_string_append(HPtr a, HPtr b);
@@ -223,22 +220,22 @@ HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b);
 // stays HPtr because Bool is boxed at ABI (REP_ABI_001).
 HPtr Elm_Kernel_Utils_equal_Int     (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_equal_Float   (double   a, double   b);
-HPtr Elm_Kernel_Utils_equal_Char    (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_equal_Char    (uint64_t a_raw, uint64_t b_raw);
 HPtr Elm_Kernel_Utils_notEqual_Int  (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_notEqual_Float(double   a, double   b);
-HPtr Elm_Kernel_Utils_notEqual_Char (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_notEqual_Char (uint64_t a_raw, uint64_t b_raw);
 HPtr Elm_Kernel_Utils_lt_Int        (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_lt_Float      (double   a, double   b);
-HPtr Elm_Kernel_Utils_lt_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_lt_Char       (uint64_t a_raw, uint64_t b_raw);
 HPtr Elm_Kernel_Utils_le_Int        (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_le_Float      (double   a, double   b);
-HPtr Elm_Kernel_Utils_le_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_le_Char       (uint64_t a_raw, uint64_t b_raw);
 HPtr Elm_Kernel_Utils_gt_Int        (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_gt_Float      (double   a, double   b);
-HPtr Elm_Kernel_Utils_gt_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_gt_Char       (uint64_t a_raw, uint64_t b_raw);
 HPtr Elm_Kernel_Utils_ge_Int        (int64_t  a, int64_t  b);
 HPtr Elm_Kernel_Utils_ge_Float      (double   a, double   b);
-HPtr Elm_Kernel_Utils_ge_Char       (uint16_t a, uint16_t b);
+HPtr Elm_Kernel_Utils_ge_Char       (uint64_t a_raw, uint64_t b_raw);
 
 // Pre-allocated Order singletons backing the eco.{int,float,char}.cmp_order
 // intrinsics. Each returns an encoded HPointer; the slots are registered as
@@ -278,14 +275,14 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n, HPtr dest, HPtr source);
 // (unsafeGet, slice, appendN) take typed int64_t for their Int parameters.
 HPtr Elm_Kernel_JsArray_singleton_Int  (int64_t  v);
 HPtr Elm_Kernel_JsArray_singleton_Float(double   v);
-HPtr Elm_Kernel_JsArray_singleton_Char (uint16_t v);
+HPtr Elm_Kernel_JsArray_singleton_Char (uint64_t v_raw);
 HPtr Elm_Kernel_JsArray_unsafeGet_Int  (int64_t  index, HPtr array);
 HPtr Elm_Kernel_JsArray_unsafeSet_Int  (int64_t  index, int64_t  value, HPtr array);
 HPtr Elm_Kernel_JsArray_unsafeSet_Float(int64_t  index, double   value, HPtr array);
-HPtr Elm_Kernel_JsArray_unsafeSet_Char (int64_t  index, uint16_t value, HPtr array);
+HPtr Elm_Kernel_JsArray_unsafeSet_Char (int64_t  index, uint64_t value_raw, HPtr array);
 HPtr Elm_Kernel_JsArray_push_Int       (int64_t  v, HPtr array);
 HPtr Elm_Kernel_JsArray_push_Float     (double   v, HPtr array);
-HPtr Elm_Kernel_JsArray_push_Char      (uint16_t v, HPtr array);
+HPtr Elm_Kernel_JsArray_push_Char      (uint64_t v_raw, HPtr array);
 HPtr Elm_Kernel_JsArray_slice_Int      (int64_t  start, int64_t end, HPtr array);
 HPtr Elm_Kernel_JsArray_appendN_Int    (int64_t  n, HPtr dest, HPtr source);
 // Unboxed-arg trampolines for eco.array.* intrinsics. Element kind for
@@ -294,11 +291,11 @@ HPtr Elm_Kernel_JsArray_appendN_Int    (int64_t  n, HPtr dest, HPtr source);
 HPtr elm_array_empty();
 HPtr elm_array_singleton_int(int64_t v);
 HPtr elm_array_singleton_float(double v);
-HPtr elm_array_singleton_char(uint16_t v);
+HPtr elm_array_singleton_char(uint64_t v_raw);
 HPtr elm_array_singleton_box(HPtr value);
 HPtr elm_array_push_int(int64_t v, HPtr array);
 HPtr elm_array_push_float(double v, HPtr array);
-HPtr elm_array_push_char(uint16_t v, HPtr array);
+HPtr elm_array_push_char(uint64_t v_raw, HPtr array);
 HPtr elm_array_push_box(HPtr value, HPtr array);
 HPtr elm_array_slice(int64_t start, int64_t end, HPtr array);
 HPtr elm_array_append_n(int64_t n, HPtr dest, HPtr source);
@@ -460,7 +457,7 @@ HPtr Elm_Kernel_Json_wrap(HPtr value);
 // Phase C: typed primitive variants for Json.wrap.
 HPtr Elm_Kernel_Json_wrap_Int  (int64_t  value);
 HPtr Elm_Kernel_Json_wrap_Float(double   value);
-HPtr Elm_Kernel_Json_wrap_Char (uint16_t value);
+HPtr Elm_Kernel_Json_wrap_Char (uint64_t value_raw);
 HPtr Elm_Kernel_Json_encodeNull();
 HPtr Elm_Kernel_Json_emptyArray();
 HPtr Elm_Kernel_Json_emptyObject();

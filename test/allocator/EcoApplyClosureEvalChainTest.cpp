@@ -105,7 +105,7 @@ struct TwoStageRecord {
     int64_t b_int = 0;
     int64_t b_cap_boxed_val = 0;
     double b_float = 0;
-    uint16_t b_char = 0;
+    uint32_t b_char = 0;
     int64_t b_trail_boxed_val = 0;
     bool major = false;
 };
@@ -117,7 +117,7 @@ int64_t evalB_int(void* args[]) {
     g2.b_int = reinterpret_cast<int64_t>(args[0]);
     g2.b_cap_boxed_val = boxedIntOr(g2.b_args[1], -1, g2.b_ok);
     g2.b_float = asDouble(args[2]);
-    g2.b_char = static_cast<uint16_t>(g2.b_args[3] & 0xFFFFu);
+    g2.b_char = static_cast<uint32_t>(g2.b_args[3] & 0xFFFFFFFFu);
     g2.b_trail_boxed_val = boxedIntOr(g2.b_args[4], -1, g2.b_ok);
     return g2.b_int + g2.b_cap_boxed_val + static_cast<int64_t>(g2.b_float * 2.0) +
            static_cast<int64_t>(g2.b_char) + g2.b_trail_boxed_val;
@@ -221,7 +221,7 @@ struct ThreeStageRecord {
     double b_float = 0;
     int64_t c_int = 0;
     double c_float = 0;
-    uint16_t c_char = 0;
+    uint32_t c_char = 0;
     int64_t c_boxed_val = 0;
     bool c_ok = true;
     bool major = false;
@@ -232,7 +232,7 @@ double evalC_float(void* args[]) {
     g3.c_calls++;
     g3.c_int = reinterpret_cast<int64_t>(args[0]);
     g3.c_float = asDouble(args[1]);
-    g3.c_char = static_cast<uint16_t>(reinterpret_cast<uint64_t>(args[2]) & 0xFFFFu);
+    g3.c_char = static_cast<uint32_t>(reinterpret_cast<uint64_t>(args[2]) & 0xFFFFFFFFu);
     g3.c_boxed_val = boxedIntOr(reinterpret_cast<uint64_t>(args[3]), -1, g3.c_ok);
     return static_cast<double>(g3.c_int) + g3.c_float + static_cast<double>(g3.c_char) +
            static_cast<double>(g3.c_boxed_val);

@@ -50,11 +50,11 @@ ecoFloat =
     F64
 
 
-{-| The type of an unboxed Char, a 16-bit integer.
+{-| The type of an unboxed Char, a Unicode code point in a 32-bit integer.
 -}
 ecoChar : MlirType
 ecoChar =
-    I16
+    I32
 
 
 
@@ -65,7 +65,7 @@ ecoChar =
 function parameter or result, a closure capture, or an operand of a partial
 application.
 
-Int is `i64`, Float `f64`, Char `i16`, and a number type variable `i64`.
+Int is `i64`, Float `f64`, Char `i32`, and a number type variable `i64`.
 Every other type, Bool included, is `!eco.value`.
 
 -}

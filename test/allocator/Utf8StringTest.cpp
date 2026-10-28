@@ -380,7 +380,7 @@ static void test_conservative_widening() {
     TEST_ASSERT(isU8(StringOps::repeat(rz(a), 3)));
     TEST_ASSERT(isU8(StringOps::padLeft(rz(a), 50, static_cast<u16>(' '))));
     TEST_ASSERT(isU8(StringOps::padRight(rz(a), 50, static_cast<u16>(' '))));
-    TEST_ASSERT(isU8(StringOps::filter([](u16 c) { return c != static_cast<u16>(' '); },
+    TEST_ASSERT(isU8(StringOps::filter([](u32 c) { return c != static_cast<u32>(' '); },
                                        rz(a))));
     TEST_ASSERT(isU8(StringOps::append(rz(a), rz(b))));
 
@@ -461,6 +461,49 @@ static void test_seed_constructors() {
         TEST_ASSERT(alloc::getTag(rz(s)) == Tag_String);
         TEST_ASSERT(StringOps::length(rz(s)) == 2);
         TEST_ASSERT(StringOps::charAt(rz(s), 1) == 0x00E9);
+    }
+
+    // Astral Chars (a Char is a 32-bit code point): encoded as a surrogate
+    // pair on the way into a String, decoded back to one Char on the way out.
+    {
+        HPointer g = StringOps::fromChar(0x1F600u);  // U+1F600 = D83D DE00
+        alloc.getRootSet().addRoot(&g);
+        TEST_ASSERT(alloc::getTag(rz(g)) == Tag_String);
+        TEST_ASSERT(StringOps::length(rz(g)) == 2);
+        TEST_ASSERT(StringOps::charAt(rz(g), 0) == 0xD83D);
+        TEST_ASSERT(StringOps::charAt(rz(g), 1) == 0xDE00);
+
+        HPointer c4 = StringOps::cons(0x1F600u, rz(base8));
+        TEST_ASSERT(StringOps::length(rz(c4)) == 4);
+        TEST_ASSERT(StringOps::charAt(rz(c4), 0) == 0xD83D);
+        TEST_ASSERT(StringOps::charAt(rz(c4), 2) == u'b');
+
+        HPointer l = alloc::listNil();
+        alloc.getRootSet().addRoot(&l);
+        l = alloc::cons(alloc::unboxedChar(u'b'), l, static_cast<u8>(3));
+        l = alloc::cons(alloc::unboxedChar(0x1F600u), l, static_cast<u8>(3));
+        l = alloc::cons(alloc::unboxedChar(u'a'), l, static_cast<u8>(3));
+        HPointer s = Elm::Kernel::String::fromList(l);
+        alloc.getRootSet().addRoot(&s);
+        TEST_ASSERT(StringOps::length(rz(s)) == 4);
+        TEST_ASSERT(StringOps::charAt(rz(s), 1) == 0xD83D);
+        TEST_ASSERT(StringOps::charAt(rz(s), 2) == 0xDE00);
+
+        // foldl / foldr see three Chars, the emoji as one code point.
+        Unboxable n0 = alloc::unboxedInt(0);
+        auto count = [](u32, Unboxable acc) { return alloc::unboxedInt(acc.i + 1); };
+        TEST_ASSERT(StringOps::foldl(count, n0, rz(s)).i == 3);
+        TEST_ASSERT(StringOps::foldr(count, n0, rz(s)).i == 3);
+        auto sumCp = [](u32 c, Unboxable acc) { return alloc::unboxedInt(acc.i + c); };
+        TEST_ASSERT(StringOps::foldl(sumCp, n0, rz(s)).i == 0x61 + 0x1F600 + 0x62);
+
+        // filter keeps the pair together; dropping the emoji leaves "ab".
+        HPointer f = StringOps::filter([](u32 c) { return c != 0x1F600u; }, rz(s));
+        TEST_ASSERT(content(f) == "ab");
+
+        alloc.getRootSet().removeRoot(&s);
+        alloc.getRootSet().removeRoot(&l);
+        alloc.getRootSet().removeRoot(&g);
     }
 
     // Seed-poisoning regression: literal ++ fromChar-built ++ literal chain

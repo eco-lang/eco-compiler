@@ -365,7 +365,7 @@ specIdToFuncName registry specId =
 
 {-| Creates a placeholder value of `mlirType`, for a place that needs a value
 whose contents do not matter, such as a path that is never reached. It is a
-zero constant for `i64`, `f64`, `i1` and `i16`, and the Unit constant for every
+zero constant for `i64`, `f64`, `i1` and `i32`, and the Unit constant for every
 other type, so its type is `!eco.value` whenever `mlirType` is not one of those
 four.
 -}
@@ -397,7 +397,7 @@ createDummyValue ctx mlirType =
             in
             ( [ op ], resultVar, ctx2 )
 
-        I16 ->
+        I32 ->
             let
                 ( ctx2, op ) =
                     Ops.arithConstantChar ctx1 resultVar 0
@@ -640,7 +640,7 @@ generateExpr ctx0 expr =
 
 
 {-| Generates a literal as one constant op. Bool, Int, Float and Char literals
-are unboxed constants (`i1`, `i64`, `f64`, `i16`); a Char literal's source text
+are unboxed constants (`i1`, `i64`, `f64`, `i32`); a Char literal's source text
 is decoded to its code point first. A String literal is an `!eco.value`: the
 embedded empty-string constant for `""`, otherwise an `eco.string_literal`.
 -}
@@ -1846,7 +1846,7 @@ that the runtime decides from the closure whether the call is saturated.
 Only Bool arguments are boxed; Int, Float and Char arguments are passed
 unboxed, with their kinds in `slot_kinds`. The op's result type follows the ABI
 of `resultType`: a primitive, with the matching `_result_kind`, when that is
-`i64`, `f64` or `i16`, and `!eco.value` otherwise. The result is not coerced
+`i64`, `f64` or `i32`, and `!eco.value` otherwise. The result is not coerced
 further.
 
 -}
@@ -4683,10 +4683,10 @@ generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType cond
 
 
 {-| Returns a Mono type whose ABI type is `mlirType`, for a capture of which
-only the MLIR type is known: Int for `i64`, Float for `f64`, Char for `i16`,
+only the MLIR type is known: Int for `i64`, Float for `f64`, Char for `i32`,
 Bool for `i1` (whose ABI type is `!eco.value`, as a captured Bool is boxed),
 and Unit for anything else. `Types.monoTypeToAbi` of the result gives back
-`mlirType` for `i64`, `f64`, `i16` and `!eco.value`.
+`mlirType` for `i64`, `f64`, `i32` and `!eco.value`.
 -}
 mlirTypeToApproxMonoType : MlirType -> Mono.MonoType
 mlirTypeToApproxMonoType mlirType =
@@ -4697,7 +4697,7 @@ mlirTypeToApproxMonoType mlirType =
         F64 ->
             Mono.MFloat
 
-        I16 ->
+        I32 ->
             Mono.MChar
 
         I1 ->

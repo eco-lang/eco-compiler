@@ -462,7 +462,7 @@ HPtr eco_apply_closure_typed(HPtr closure, int64_t* typed_args,
 ///   - PK_Boxed → `HPtr*`
 ///   - PK_Int   → `int64_t*`
 ///   - PK_Float → `double*`
-///   - PK_Char  → `uint16_t*`
+///   - PK_Char  → `uint32_t*` (code point)
 ///
 /// Saturation is dispatched the same way `eco_apply_closure_typed` does
 /// (reads the closure header). Under-saturated calls produce a closure
@@ -504,7 +504,7 @@ HPtr eco_closure_call_saturated(HPtr closure, uint64_t* new_args, uint32_t num_n
 
 /// Typed-result sibling of `eco_closure_call_saturated`. Writes the result
 /// into `result_slot` cast to the type implied by `desired_kind`
-/// (0=HPtr, 1=int64_t, 2=double, 3=uint16_t). When the closure evaluator's
+/// (0=HPtr, 1=int64_t, 2=double, 3=uint32_t code point). When the closure evaluator's
 /// real return kind matches `desired_kind`, no boxing happens — the
 /// primitive flows directly from the wrapper into the slot. Used by the JIT
 /// at saturated call sites whose SSA result type is primitive.
@@ -681,13 +681,13 @@ int64_t eco_cons_head_i64(HPtr cons);
 /// @return The head value as f64
 double eco_cons_head_f64(HPtr cons);
 
-/// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
+/// Gets the head of a Cons cell as an unboxed i32 code point (Elm Char).
 /// Handles both boxed and unboxed heads:
 /// - If head is unboxed: returns the value directly from Cons.head
 /// - If head is boxed: resolves the HPointer and loads from ElmChar.value
 /// @param cons HPointer (as uint64_t) to the Cons cell
-/// @return The head value as i16
-int16_t eco_cons_head_i16(HPtr cons);
+/// @return The head value as an i32 code point
+uint32_t eco_cons_head_char(HPtr cons);
 
 //===----------------------------------------------------------------------===//
 // Tuple field access (gc-leaf, non-allocating).
@@ -707,8 +707,8 @@ int64_t eco_tuple2_get0_i64(HPtr tup);
 int64_t eco_tuple2_get1_i64(HPtr tup);
 double  eco_tuple2_get0_f64(HPtr tup);
 double  eco_tuple2_get1_f64(HPtr tup);
-int16_t eco_tuple2_get0_i16(HPtr tup);
-int16_t eco_tuple2_get1_i16(HPtr tup);
+uint32_t eco_tuple2_get0_char(HPtr tup);
+uint32_t eco_tuple2_get1_char(HPtr tup);
 
 int64_t eco_tuple3_get0_i64(HPtr tup);
 int64_t eco_tuple3_get1_i64(HPtr tup);
@@ -716,9 +716,9 @@ int64_t eco_tuple3_get2_i64(HPtr tup);
 double  eco_tuple3_get0_f64(HPtr tup);
 double  eco_tuple3_get1_f64(HPtr tup);
 double  eco_tuple3_get2_f64(HPtr tup);
-int16_t eco_tuple3_get0_i16(HPtr tup);
-int16_t eco_tuple3_get1_i16(HPtr tup);
-int16_t eco_tuple3_get2_i16(HPtr tup);
+uint32_t eco_tuple3_get0_char(HPtr tup);
+uint32_t eco_tuple3_get1_char(HPtr tup);
+uint32_t eco_tuple3_get2_char(HPtr tup);
 
 //===----------------------------------------------------------------------===//
 // Record / Custom field access (gc-leaf, non-allocating).
@@ -727,11 +727,11 @@ int16_t eco_tuple3_get2_i16(HPtr tup);
 
 int64_t eco_record_get_i64(HPtr rec, uint32_t field_index);
 double  eco_record_get_f64(HPtr rec, uint32_t field_index);
-int16_t eco_record_get_i16(HPtr rec, uint32_t field_index);
+uint32_t eco_record_get_char(HPtr rec, uint32_t field_index);
 
 int64_t eco_custom_get_i64(HPtr val, uint32_t field_index);
 double  eco_custom_get_f64(HPtr val, uint32_t field_index);
-int16_t eco_custom_get_i16(HPtr val, uint32_t field_index);
+uint32_t eco_custom_get_char(HPtr val, uint32_t field_index);
 
 //===----------------------------------------------------------------------===//
 // Array element access (gc-leaf, non-allocating).
@@ -740,7 +740,7 @@ int16_t eco_custom_get_i16(HPtr val, uint32_t field_index);
 
 int64_t eco_array_get_i64(HPtr arr, int64_t index);
 double  eco_array_get_f64(HPtr arr, int64_t index);
-int16_t eco_array_get_i16(HPtr arr, int64_t index);
+uint32_t eco_array_get_char(HPtr arr, int64_t index);
 
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers

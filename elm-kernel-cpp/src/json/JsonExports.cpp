@@ -704,8 +704,7 @@ static u8 decodedSlot(Allocator& allocator, HPointer v, Unboxable& slot) {
             slot.f = static_cast<ElmFloat*>(obj)->value;
             return 2;
         case Tag_Char:
-            slot.i = 0;
-            slot.c = static_cast<ElmChar*>(obj)->value;
+            slot = alloc::unboxedChar(static_cast<ElmChar*>(obj)->value);
             return 3;
         default:
             return 0;
@@ -1618,7 +1617,7 @@ static uint64_t rewrapEscapingResult(uint64_t result) {
             kind = 2;
             break;
         case Tag_Char:
-            v.c = static_cast<ElmChar*>(p)->value;
+            v = alloc::unboxedChar(static_cast<ElmChar*>(p)->value);
             kind = 3;
             break;
         default:
@@ -1834,7 +1833,10 @@ HPtr Elm_Kernel_Json_wrap_Float(double value) {
     return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-HPtr Elm_Kernel_Json_wrap_Char(uint16_t value) {
+// The Char arrives as uint64_t and is masked to its 32-bit code point (see
+// CharExports.cpp).
+HPtr Elm_Kernel_Json_wrap_Char(uint64_t value_raw) {
+    const uint32_t value = static_cast<uint32_t>(value_raw & 0xFFFFFFFFu);
     // Char is a Unicode code point. JSON has no native char type; encode as
     // an integer code point (matches what `Json.Encode.int (Char.toCode c)`
     // would produce). This branch is rare in practice — Json.Encode has no

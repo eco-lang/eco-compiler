@@ -17,8 +17,8 @@ The programs are the Elm source programs that
 `suite` establishes, for each of those programs, that it compiles to MLIR and
 that every `eco.papExtend` op in the result has exactly one result; that a
 generic-mode op (no `remaining_arity`) has a result of type `!eco.value`,
-`i16`, `i64` or `f64`, as the C++ verifier requires, and so never `i1`; that a
-typed-mode op has a result of type `!eco.value`, `i1`, `i16`, `i64` or `f64`;
+`i32`, `i64` or `f64`, as the C++ verifier requires, and so never `i1`; that a
+typed-mode op has a result of type `!eco.value`, `i1`, `i32`, `i64` or `f64`;
 and that every op carries an integer `remaining_arity` attribute unless its
 `_call_kind` is `generic_apply` or `segmentation_unknown`.
 
@@ -38,6 +38,6 @@ catalogue, as one group of tests.
 -}
 suite : Test
 suite =
-    Test.describe "CGEN_034/CGEN_056/CGEN_058: PapExtend result type (generic mode boxed or i64/f64/i16, never i1)"
+    Test.describe "CGEN_034/CGEN_056/CGEN_058: PapExtend result type (generic mode boxed or i64/f64/i32, never i1)"
         [ StandardTestSuites.expectSuite expectPapExtendResult "passes papExtend result rule"
         ]

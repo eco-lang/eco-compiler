@@ -25,7 +25,7 @@ What the tests establish:
     entry of every compared operand holds the kind of that operand's recorded
     type, that each list
     cons's `head_unboxed` is true exactly when its head is `i64`, `f64` or
-    `i16`, that no compared operand is an `i1`, and that no record or custom
+    `i32`, that no compared operand is an `i1`, and that no record or custom
     construct op carries a stale `unboxed_bitmap`.
 
   - `wideRecord`: a record of 17 `Int` fields and 2 `String` fields, so that

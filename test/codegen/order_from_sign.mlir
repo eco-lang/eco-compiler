@@ -23,8 +23,8 @@ module {
     eco.return %r : i64
   }
 
-  func.func private @tag_char(%a: i16, %b: i16) -> i64 {
-    %o = eco.char.cmp_order %a, %b : i16
+  func.func private @tag_char(%a: i32, %b: i32) -> i64 {
+    %o = eco.char.cmp_order %a, %b : i32
     %t = eco.get_tag %o : !eco.value -> i32
     %r = arith.extui %t : i32 to i64
     eco.return %r : i64
@@ -79,14 +79,15 @@ module {
     eco.dbg %bg : !eco.value
     // CHECK: 1
 
-    // Char at the u16 extremes: unsigned, so 0x0000 < 0xFFFF
-    %clo = arith.constant 0 : i16
-    %chi = arith.constant -1 : i16
-    %h = func.call @tag_char(%clo, %chi) : (i16, i16) -> i64
+    // Char (i32) at the bit-pattern extremes: unsigned, so 0 < 0xFFFFFFFF
+    // (not a code point; it only pins the unsigned predicate)
+    %clo = arith.constant 0 : i32
+    %chi = arith.constant -1 : i32
+    %h = func.call @tag_char(%clo, %chi) : (i32, i32) -> i64
     %bh = eco.box %h : i64 -> !eco.value
     eco.dbg %bh : !eco.value
     // CHECK: 0
-    %i = func.call @tag_char(%chi, %clo) : (i16, i16) -> i64
+    %i = func.call @tag_char(%chi, %clo) : (i32, i32) -> i64
     %bi = eco.box %i : i64 -> !eco.value
     eco.dbg %bi : !eco.value
     // CHECK: 2

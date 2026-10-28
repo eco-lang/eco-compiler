@@ -185,7 +185,7 @@ Code (`runtime/src/allocator/` unless noted):
 - `Utf8.hpp`: `scan`, `allAscii`, `widenAscii`.
 - `Heap.hpp`: the tags and every structure above. `AllocatorCommon.hpp`: threshold defaults (`string_flatten_limit`, `string_tiny_slice_limit`, `utf8_view_min_len`, `utf8_strings_enabled`), settable from `heap-config.json`. The rope keys (`rope_max_height`, `rope_leaf_count_limit`, `rope_min_leaf_size`) are still accepted but have no effect.
 - `RuntimeExports.cpp`: `eco_enable_list_chunks`, `eco_scratch_finish`, `eco_list_head_hybrid`, `eco_list_tail_hybrid`. The compiler option `list.chunks` (`compiler/src/Compiler/Eco/Config.elm`) is on by default.
-- `runtime/src/codegen/Ops.td`: `eco.string.length` and `eco.string.code_unit_at`.
+- `runtime/src/codegen/Ops.td`: `eco.string.length`.
 - `elm-kernel-cpp/src/core/Utils.cpp`: the generic `compare`, which sends strings to `StringOps::compare`.
 - Tests: `test/allocator/StringOpsTest.cpp`, `Utf8StringTest.cpp`, `Utf8Test.cpp`, `ListOpsTest.cpp`, `ChunkedListTest.cpp`, `BytesOpsTest.cpp`. `check-root-bounded.py` rejects root pushes in loops.
 

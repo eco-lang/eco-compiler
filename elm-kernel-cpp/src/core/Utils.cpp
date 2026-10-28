@@ -259,8 +259,8 @@ static int compareListElem(Elm::Allocator& allocator,
                 if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
                 else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
             } else {
-                u16 bv = static_cast<ElmChar*>(boxedPtr)->value;
-                u16 uv = prim.c;
+                u32 bv = static_cast<ElmChar*>(boxedPtr)->value;
+                u32 uv = prim.c;
                 if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
                 else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
             }
@@ -343,6 +343,10 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Char: {
+            // Chars order by code point, like the eco.char.lt intrinsic.
+            // elm/core's JS compares Chars as UTF-16 strings; the two orders
+            // differ only between U+E000..U+FFFF and astral code points (JS
+            // puts the astral surrogate pair first) - a documented divergence.
             ElmChar* ac = static_cast<ElmChar*>(a);
             ElmChar* bc = static_cast<ElmChar*>(b);
             if (ac->value < bc->value) return -1;

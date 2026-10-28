@@ -2,15 +2,15 @@
 //
 // Phase D static-IR enforcement: a papCreate annotated with
 // `_result_kind = 3` (PK_Char) must lower to a wrapper whose LLVM
-// return type is `i16` and whose body forwards the inner function's
-// raw `i16` result without going through `eco_alloc_char`. The boxing
+// return type is `i32` and whose body forwards the inner function's
+// raw `i32` result without going through `eco_alloc_char`. The boxing
 // site has moved to the caller.
 
 module {
-  func.func @upper_char(%x: i16) -> i16 {
-    %offset = arith.constant 32 : i16
-    %result = arith.subi %x, %offset : i16
-    return %result : i16
+  func.func @upper_char(%x: i32) -> i32 {
+    %offset = arith.constant 32 : i32
+    %result = arith.subi %x, %offset : i32
+    return %result : i32
   }
 
   llvm.func @use_closure(!llvm.ptr<1>)
@@ -32,14 +32,14 @@ module {
   }
 }
 
-// Wrapper exists, returns i16 natively (suffix `_rc` = PK_Char).
+// Wrapper exists, returns i32 natively (suffix `_rc` = PK_Char).
 // Phase 2 (plans/gc-root-registration-cost.md): the closure header carries
 // the per-evaluator DESCRIPTOR, not the wrapper address. The descriptor is a
 // static constant whose first field IS the wrapper, so the registration below
 // still pins this wrapper to this closure, through one more indirection.
 // CHECK: @__eco_evaldesc___closure_wrapper_typed_upper_char_rc = internal constant {{.*}} ptr @__closure_wrapper_typed_upper_char_rc
-// CHECK: define internal i16 @__closure_wrapper_typed_upper_char_rc
-// CHECK: ret i16
+// CHECK: define internal i32 @__closure_wrapper_typed_upper_char_rc
+// CHECK: ret i32
 
 // No boxing helper is invoked anywhere in the module.
 // CHECK-NOT: @eco_alloc_int

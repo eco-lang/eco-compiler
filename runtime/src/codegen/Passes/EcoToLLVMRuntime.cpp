@@ -154,7 +154,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
 // Helper macros for common type patterns
 #define I64_TY IntegerType::get(ctx, 64)
 #define I32_TY IntegerType::get(ctx, 32)
-#define I16_TY IntegerType::get(ctx, 16)
+#define CHAR_TY IntegerType::get(ctx, eco::kEcoCharBits)  // Char = i32 code point
 #define I8_TY IntegerType::get(ctx, 8)
 #define I1_TY IntegerType::get(ctx, 1)
 #define F64_TY Float64Type::get(ctx)
@@ -177,7 +177,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloat(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocChar(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {CHAR_TY});
     return getOrCreateFunc(builder, "eco_alloc_char", funcTy);
 }
 
@@ -271,7 +271,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatFast(OpBuilder &builder) const
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {CHAR_TY});
     return getOrCreateFunc(builder, "eco_alloc_char_fast", funcTy, /*gcLeaf=*/true);
 }
 
@@ -325,7 +325,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatSlow(OpBuilder &builder) const
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {CHAR_TY});
     return getOrCreateFunc(builder, "eco_alloc_char_slow", funcTy);
 }
 
@@ -412,8 +412,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitFloatAt(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCharAt(OpBuilder &builder) const {
-    // eco_init_char_at(ptr, value: i32) -> hptr
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
+    // eco_init_char_at(ptr, value: i32 code point) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, CHAR_TY});
     return getOrCreateFunc(builder, "eco_init_char_at", funcTy, /*gcLeaf=*/true);
 }
 
@@ -671,11 +671,10 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadF64(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_cons_head_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI16(OpBuilder &builder) const {
-    // eco_cons_head_i16(cons: hptr) -> i16
-    auto i16Ty = IntegerType::get(ctx, 16);
-    auto funcTy = LLVM::LLVMFunctionType::get(i16Ty, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_cons_head_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadChar(OpBuilder &builder) const {
+    // eco_cons_head_char(cons: hptr) -> i32
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_cons_head_char", funcTy, /*gcLeaf=*/true);
 }
 
 // Chunked-list projection MARKERS (plans/chunked-list-representation.md §6):
@@ -730,14 +729,14 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1F64(OpBuilder &builder) const 
     return getOrCreateFunc(builder, "eco_tuple2_get1_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0I16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_tuple2_get0_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get0Char(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get0_char", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1I16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_tuple2_get1_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple2Get1Char(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple2_get1_char", funcTy, /*gcLeaf=*/true);
 }
 
 // Tuple3 unboxed-primitive field accessors.
@@ -771,19 +770,19 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2F64(OpBuilder &builder) const 
     return getOrCreateFunc(builder, "eco_tuple3_get2_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get0I16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_tuple3_get0_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get0Char(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get0_char", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get1I16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_tuple3_get1_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get1Char(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get1_char", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2I16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY});
-    return getOrCreateFunc(builder, "eco_tuple3_get2_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateTuple3Get2Char(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY});
+    return getOrCreateFunc(builder, "eco_tuple3_get2_char", funcTy, /*gcLeaf=*/true);
 }
 
 // Record unboxed-primitive field accessors.
@@ -797,9 +796,9 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetF64(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_record_get_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetI16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I32_TY});
-    return getOrCreateFunc(builder, "eco_record_get_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateRecordGetChar(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_record_get_char", funcTy, /*gcLeaf=*/true);
 }
 
 // Custom unboxed-primitive field accessors.
@@ -813,9 +812,9 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetF64(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_custom_get_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetI16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I32_TY});
-    return getOrCreateFunc(builder, "eco_custom_get_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCustomGetChar(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_custom_get_char", funcTy, /*gcLeaf=*/true);
 }
 
 // Array unboxed-primitive element accessors. Index is i64 to mirror the
@@ -830,9 +829,9 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetF64(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_array_get_f64", funcTy, /*gcLeaf=*/true);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetI16(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I64_TY});
-    return getOrCreateFunc(builder, "eco_array_get_i16", funcTy, /*gcLeaf=*/true);
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayGetChar(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(CHAR_TY, {HPTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_array_get_char", funcTy, /*gcLeaf=*/true);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCrash(OpBuilder &builder) const {
@@ -1015,15 +1014,6 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringLength(OpBuilder &b) const {
     return getOrCreateFunc(b, "Elm_Kernel_String_length", funcTy);
 }
 
-LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringCodeUnitAt(OpBuilder &b) const {
-    // eco_string_code_unit_at(str: hptr, index: i64) -> i16. gc-leaf:
-    // StringOps::charAt never allocates on any of its six tag paths
-    // (StringOps.hpp:410-463 -- its only calls are Allocator::resolve),
-    // so callers need no rooting.
-    auto funcTy = LLVM::LLVMFunctionType::get(I16_TY, {HPTR_TY, I64_TY});
-    return getOrCreateFunc(b, "eco_string_code_unit_at", funcTy, /*gcLeaf=*/true);
-}
-
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStringAppend(OpBuilder &builder) const {
     // eco_string_append(a: hptr, b: hptr) -> hptr. Allocates (flat leaf or
     // rope), so gcLeaf stays false and RS4GC statepoints the lowered call.
@@ -1090,7 +1080,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonFloat(OpBuilder &builder) 
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateArraySingletonChar(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {CHAR_TY});
     return getOrCreateFunc(builder, "elm_array_singleton_char", funcTy);
 }
 
@@ -1110,7 +1100,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushFloat(OpBuilder &builder) const
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateArrayPushChar(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY, HPTR_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {CHAR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "elm_array_push_char", funcTy);
 }
 
@@ -1152,8 +1142,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateDbgPrintFloat(OpBuilder &builder) const 
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateDbgPrintChar(OpBuilder &builder) const {
-    // eco_dbg_print_char(value: i16) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I16_TY});
+    // eco_dbg_print_char(value: i32) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {CHAR_TY});
     return getOrCreateFunc(builder, "eco_dbg_print_char", funcTy, /*gcLeaf=*/true);
 }
 
@@ -1189,7 +1179,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAtan2(OpBuilder &builder) const {
 
 #undef I64_TY
 #undef I32_TY
-#undef I16_TY
+#undef CHAR_TY
 #undef I8_TY
 #undef F64_TY
 #undef PTR_TY
@@ -1302,18 +1292,18 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateResolveFwdMarker(b); getOrCreateFollowForward(b);
     getOrCreateGetTagInlineMarker(b);
     getOrCreateAllocInlineMarker(b);
-    getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadI16(b);
+    getOrCreateConsHeadI64(b); getOrCreateConsHeadF64(b); getOrCreateConsHeadChar(b);
     getOrCreateListHeadHybrid(b); getOrCreateListTailHybrid(b);
     getOrCreateListHeadInlineMarker(b); getOrCreateListTailInlineMarker(b);
     getOrCreateTuple2Get0I64(b); getOrCreateTuple2Get1I64(b);
     getOrCreateTuple2Get0F64(b); getOrCreateTuple2Get1F64(b);
-    getOrCreateTuple2Get0I16(b); getOrCreateTuple2Get1I16(b);
+    getOrCreateTuple2Get0Char(b); getOrCreateTuple2Get1Char(b);
     getOrCreateTuple3Get0I64(b); getOrCreateTuple3Get1I64(b); getOrCreateTuple3Get2I64(b);
     getOrCreateTuple3Get0F64(b); getOrCreateTuple3Get1F64(b); getOrCreateTuple3Get2F64(b);
-    getOrCreateTuple3Get0I16(b); getOrCreateTuple3Get1I16(b); getOrCreateTuple3Get2I16(b);
-    getOrCreateRecordGetI64(b); getOrCreateRecordGetF64(b); getOrCreateRecordGetI16(b);
-    getOrCreateCustomGetI64(b); getOrCreateCustomGetF64(b); getOrCreateCustomGetI16(b);
-    getOrCreateArrayGetI64(b); getOrCreateArrayGetF64(b); getOrCreateArrayGetI16(b);
+    getOrCreateTuple3Get0Char(b); getOrCreateTuple3Get1Char(b); getOrCreateTuple3Get2Char(b);
+    getOrCreateRecordGetI64(b); getOrCreateRecordGetF64(b); getOrCreateRecordGetChar(b);
+    getOrCreateCustomGetI64(b); getOrCreateCustomGetF64(b); getOrCreateCustomGetChar(b);
+    getOrCreateArrayGetI64(b); getOrCreateArrayGetF64(b); getOrCreateArrayGetChar(b);
     getOrCreateCrash(b); getOrCreateGcAddRoot(b); getOrCreateGcStackRangePoint(b);
     getOrCreateGcPushStackRange(b); getOrCreateGcRestoreStackRangePoint(b);
     getOrCreateSatBeginMarker(b); getOrCreateSatEndMarker(b);
@@ -1324,7 +1314,6 @@ void EcoRuntime::materializeAllRuntimeDecls(OpBuilder &b) const {
     getOrCreateGetOrderLT(b); getOrCreateGetOrderEQ(b); getOrCreateGetOrderGT(b);
     getOrCreateStringCmp3(b); getOrCreateStringCmpOrder(b); getOrCreateUtilsCmp3(b);
     getOrCreateStringLenInlineMarker(b); getOrCreateStringLength(b);
-    getOrCreateStringCodeUnitAt(b);
     getOrCreateOrderFromSign(b);
     getOrCreateCloneArray(b); getOrCreateArraySetFixKind(b); getOrCreateArrayEmpty(b);
     getOrCreateArraySingletonInt(b); getOrCreateArraySingletonFloat(b);

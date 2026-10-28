@@ -55,8 +55,10 @@ HPtr Eco_Kernel_MVar_put_Float(uint64_t id, double value) {
     return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
 }
 
-HPtr Eco_Kernel_MVar_put_Char(uint64_t id, uint16_t value) {
-    Elm::HPointer boxed = Elm::alloc::allocChar(value);
+// The Char (a code point) arrives as uint64_t and is masked to 32 bits (see
+// elm-kernel-cpp CharExports.cpp: statepointed calls do not zero-extend).
+HPtr Eco_Kernel_MVar_put_Char(uint64_t id, uint64_t value_raw) {
+    Elm::HPointer boxed = Elm::alloc::allocChar(static_cast<u32>(value_raw & 0xFFFFFFFFu));
     return HPtr::fromBits(MVar::put(id, Export::encode(boxed)));
 }
 

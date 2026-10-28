@@ -64,7 +64,7 @@ import Utils.Crash exposing (crash)
 
 There is one rule, `ElmDerived`: each argument and the result take the ABI type
 `Types.monoTypeToAbi` gives for its monomorphized type, so Int is `i64`, Float
-`f64`, Char `i16`, a `number` type variable `i64`, and every other type
+`f64`, Char `i32`, a `number` type variable `i64`, and every other type
 `!eco.value`. A kernel with no Int, Float or Char argument or result type
 therefore gets an all-`!eco.value` ABI under the same rule.
 

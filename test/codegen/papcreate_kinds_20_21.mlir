@@ -8,7 +8,7 @@
 // weights each param by (i+1), so a slot read at the wrong kind or position changes the sum.
 
 module {
-  func.func @k53(%p0: i64, %p1: i64, %p2: i64, %p3: i64, %p4: i64, %p5: i64, %p6: i64, %p7: i64, %p8: i64, %p9: i64, %p10: i64, %p11: i64, %p12: i64, %p13: i64, %p14: i64, %p15: i64, %p16: i64, %p17: i64, %p18: i64, %p19: f64, %p20: f64, %p21: i64, %p22: i64, %p23: i64, %p24: i64, %p25: i64, %p26: i64, %p27: i64, %p28: i64, %p29: i64, %p30: i64, %p31: i64, %p32: i64, %p33: i64, %p34: i64, %p35: i64, %p36: i64, %p37: i64, %p38: i64, %p39: i64, %p40: i64, %p41: i64, %p42: i64, %p43: i64, %p44: i64, %p45: i64, %p46: i64, %p47: i64, %p48: i64, %p49: i64, %p50: i64, %p51: i16, %p52: i16) -> i64 {
+  func.func @k53(%p0: i64, %p1: i64, %p2: i64, %p3: i64, %p4: i64, %p5: i64, %p6: i64, %p7: i64, %p8: i64, %p9: i64, %p10: i64, %p11: i64, %p12: i64, %p13: i64, %p14: i64, %p15: i64, %p16: i64, %p17: i64, %p18: i64, %p19: f64, %p20: f64, %p21: i64, %p22: i64, %p23: i64, %p24: i64, %p25: i64, %p26: i64, %p27: i64, %p28: i64, %p29: i64, %p30: i64, %p31: i64, %p32: i64, %p33: i64, %p34: i64, %p35: i64, %p36: i64, %p37: i64, %p38: i64, %p39: i64, %p40: i64, %p41: i64, %p42: i64, %p43: i64, %p44: i64, %p45: i64, %p46: i64, %p47: i64, %p48: i64, %p49: i64, %p50: i64, %p51: i32, %p52: i32) -> i64 {
     %w0 = arith.constant 1 : i64
     %t0 = eco.int.mul %p0, %w0 : i64
     %w1 = arith.constant 2 : i64
@@ -117,10 +117,10 @@ module {
     %t49 = eco.int.mul %p49, %w49 : i64
     %w50 = arith.constant 51 : i64
     %t50 = eco.int.mul %p50, %w50 : i64
-    %u51 = eco.char.toInt %p51 : i16 -> i64
+    %u51 = eco.char.toInt %p51 : i32 -> i64
     %w51 = arith.constant 52 : i64
     %t51 = eco.int.mul %u51, %w51 : i64
-    %u52 = eco.char.toInt %p52 : i16 -> i64
+    %u52 = eco.char.toInt %p52 : i32 -> i64
     %w52 = arith.constant 53 : i64
     %t52 = eco.int.mul %u52, %w52 : i64
     %s1 = eco.int.add %t0, %t1 : i64
@@ -209,13 +209,13 @@ module {
     %b48 = arith.constant 49 : i64
     %b49 = arith.constant 50 : i64
     %b50 = arith.constant 51 : i64
-    %b51 = arith.constant 116 : i16
-    %b52 = arith.constant 117 : i16
+    %b51 = arith.constant 116 : i32
+    %b52 = arith.constant 117 : i32
     %p1 = "eco.papExtend"(%f, %b21, %b22, %b23, %b24, %b25, %b26, %b27, %b28, %b29, %b30, %b31, %b32, %b33, %b34, %b35, %b36, %b37, %b38, %b39, %b40, %b41, %b42, %b43, %b44, %b45, %b46, %b47, %b48, %b49, %b50) {slot_kinds = array<i8: 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1>, remaining_arity = 32 : i64
     } : (!eco.value, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %p1 : !eco.value
     %r = "eco.papExtend"(%p1, %b51, %b52) {slot_kinds = array<i8: 3, 3>, remaining_arity = 2 : i64
-    } : (!eco.value, i16, i16) -> i64
+    } : (!eco.value, i32, i32) -> i64
     eco.return %r : i64
   }
 

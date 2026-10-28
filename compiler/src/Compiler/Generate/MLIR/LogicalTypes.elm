@@ -6,7 +6,7 @@ module Compiler.Generate.MLIR.LogicalTypes exposing
 {-| An emitted function's MLIR signature says how each value is passed, not what
 Elm type it has, and this module records the Elm-level shape alongside it.
 
-A function's ABI type for a parameter is `i64`, `f64`, `i16`, `i1` or
+A function's ABI type for a parameter is `i64`, `f64`, `i32`, `i1` or
 `!eco.value`. A tuple, a record, a list and a custom value all pass as
 `!eco.value`, so the signature cannot say whether a parameter is, say, a pair
 of an `Int` and a `Float`. The _logical type_ of a parameter or result is that
@@ -20,7 +20,7 @@ elements are primitive.
 An Elm type is first described as a `LogicalTypeDesc`, then rendered as a
 string, the _wire format_:
 
-  - `"i64"`, `"f64"`, `"i16"`, `"i1"` for a primitive.
+  - `"i64"`, `"f64"`, `"i32"`, `"i1"` for a primitive.
   - `"value"` for anything else, and for a type whose shape is not known.
   - `"tuple2:K:K"` and `"tuple3:K:K:K"` for a tuple of two or three elements.
   - `"record:N:K..."` for a record of N fields, listed in the order
@@ -53,7 +53,7 @@ is rendered as a wire-format string.
 `String`, the unit type, functions, type variables, tuples of other sizes and
 most custom types.
 
-`LI64`, `LF64` and `LI16` are `Int`, `Float` and `Char`. `LI1` comes only from
+`LI64`, `LF64` and `LI32` are `Int`, `Float` and `Char`. `LI1` comes only from
 an `i1` ABI type, never from an Elm type.
 
 `LTuple2` and `LTuple3` carry the kind of each element in order. `LRecord`
@@ -71,7 +71,7 @@ type LogicalTypeDesc
     = LValue
     | LI64
     | LF64
-    | LI16
+    | LI32
     | LI1
     | LTuple2 AggKind AggKind
     | LTuple3 AggKind AggKind AggKind
@@ -105,7 +105,7 @@ monoTypeToLogical customMaxFields ctorShapes ty =
             LF64
 
         Mono.MChar ->
-            LI16
+            LI32
 
         Mono.MTuple _ [ a, b ] ->
             LTuple2 (kindOf a) (kindOf b)
@@ -175,7 +175,7 @@ kindOf ty =
 
 
 {-| Returns the logical type that an ABI type alone shows: a primitive for
-`i64`, `f64`, `i16` and `i1`, and `LUnknown` for any other.
+`i64`, `f64`, `i32` and `i1`, and `LUnknown` for any other.
 -}
 mlirTypeToLogical : MlirType -> LogicalTypeDesc
 mlirTypeToLogical mlirType =
@@ -186,8 +186,8 @@ mlirTypeToLogical mlirType =
         F64 ->
             LF64
 
-        I16 ->
-            LI16
+        I32 ->
+            LI32
 
         I1 ->
             LI1
@@ -210,8 +210,8 @@ encodeLogicalType desc =
         LF64 ->
             "f64"
 
-        LI16 ->
-            "i16"
+        LI32 ->
+            "i32"
 
         LI1 ->
             "i1"
@@ -276,7 +276,7 @@ addLogicalTypesAttr customMaxFields ctorShapes argTypes resultType op =
 
 
 {-| Returns `op` with logical types attached for a function known only by its ABI
-types, replacing any already there. An `i64`, `f64`, `i16` or `i1` is described
+types, replacing any already there. An `i64`, `f64`, `i32` or `i1` is described
 as that primitive and any other type as `"value"`, because an `!eco.value` does
 not show which aggregate, if any, it holds. An op that is not a `func.func` is
 returned unchanged.

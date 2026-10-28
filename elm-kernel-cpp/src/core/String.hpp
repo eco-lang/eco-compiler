@@ -45,9 +45,10 @@ HPointer join(void* sep, HPointer stringList);
 
 /**
  * Prepends a character to a string.
- * Takes a Unicode code point (char32_t stored as u16 for BMP).
+ * Takes a Unicode code point (a Char); an astral code point is prepended as
+ * its UTF-16 surrogate pair.
  */
-HPointer cons(u16 c, void* str);
+HPointer cons(u32 c, void* str);
 
 /**
  * Removes and returns the first character.
@@ -67,12 +68,12 @@ HPointer fromList(HPointer chars);
 /**
  * Function pointer for character transformation.
  */
-using CharMapper = u16 (*)(u16);
+using CharMapper = u32 (*)(u32);
 
 /**
  * Function pointer for character predicates.
  */
-using CharPredicate = bool (*)(u16);
+using CharPredicate = bool (*)(u32);
 
 /**
  * Maps a function over each character, producing a new string.
@@ -101,7 +102,7 @@ bool all(CharPredicate pred, void* str);
 /**
  * Fold function type: (char, accumulator) -> new_accumulator
  */
-using FoldFunc = HPointer (*)(u16, void*);
+using FoldFunc = HPointer (*)(u32, void*);
 
 /**
  * Folds left over characters.

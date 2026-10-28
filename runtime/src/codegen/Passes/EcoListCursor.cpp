@@ -35,6 +35,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "../Passes.h"
+#include "../EcoOps.h"  // eco::getEcoCharType (Char = i32)
 #include "EcoParallel.h"
 
 #include <cstdlib>
@@ -56,7 +57,7 @@ const char *curMarkerFor(StringRef callee) {
     if (callee == kHeadMarker) return "__eco_list_cur_inline";
     if (callee == "eco_cons_head_i64") return "__eco_list_cur_i64_inline";
     if (callee == "eco_cons_head_f64") return "__eco_list_cur_f64_inline";
-    if (callee == "eco_cons_head_i16") return "__eco_list_cur_i16_inline";
+    if (callee == "eco_cons_head_char") return "__eco_list_cur_char_inline";
     return nullptr;
 }
 
@@ -401,7 +402,7 @@ struct EcoListCursorPass
             ensureFn(m, "__eco_list_cur_i64_inline", i64, {as1, i64});
             ensureFn(m, "__eco_list_cur_f64_inline", b.getF64Type(),
                      {as1, i64});
-            ensureFn(m, "__eco_list_cur_i16_inline", b.getIntegerType(16),
+            ensureFn(m, "__eco_list_cur_char_inline", eco::getEcoCharType(b.getContext()),
                      {as1, i64});
             ensureFn(m, kPosView, as1, {as1, i64});
         }

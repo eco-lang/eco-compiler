@@ -1,6 +1,7 @@
 ---
-status: not-started
+status: partial
 updated: 2026-10-28
+remaining: "Parts 2-8 not started; Part 1 (32-bit Char) implemented 2026-10-28, bootstrap fixed point (4b/8c/9b) not yet run for it"
 ---
 
 # Fixes for the review-bug triage
@@ -21,7 +22,7 @@ reference for implementation, not a patch to apply blindly, since the parts over
 
 | Part | Items | Confidence | Validated |
 |---|---|---|---|
-| 1 Char 32-bit | one change set | compiler high; dialect/runtime/kernels medium | compiler side prototyped (astral unit tests pass; codegen checkers updated); C++ is a design only |
+| 1 Char 32-bit (DONE 2026-10-28, bootstrap pending) | one change set | compiler high; dialect/runtime/kernels medium | compiler side prototyped (astral unit tests pass; codegen checkers updated); C++ is a design only |
 | 2 Parser + 5.1 | Unicode identifiers; `andThen` | high (JS host), medium-high (native) | yes; private compiler rebuilt, self-compiles, E2E source compiles |
 | 3a Mono | 3.1 aliases, 3.2 local rename, 3.5 nested destructure | high, high, medium-high | pipeline tests pass (both engines for 3.1/3.2) |
 | 3b Optimizer | 3.3 let rec type, 3.4 lambda boundaries, 3.6 entry main, 3.7 accessors, 3.8 erased tail call | high, high, high (wiring medium-high), medium-high, high | unit tests pass; E2E sources compile to correct MLIR (not run) |
@@ -1917,3 +1918,37 @@ repeated"), and its header lines 31-32. Diff: `/tmp/lw-builder/tests.diff`.
 
 CLI tests ran with the guida.js built before the `ObjectFirstField` addition; that addition was then
 checked by hand through a rebuilt guida.js and by the full unit suite above.
+
+## Part 8: flaky test — `WebSocketDeflateBombTest` (JS E2E)
+
+Seen 2026-10-28 in `run-js-e2e` (passed in every earlier run that day; unrelated to Part 1, since
+JS E2E compiles with stock elm and runs on node):
+
+```
+streamed: stalled bounded True; after cancel bounded False; next Text "after"; end Closed (868, 33984 KiB)
+```
+
+### Root cause
+
+`test/eco-system/src/WebSocketDeflateBombTest.elm`, streamed mode: after cancelling a 200 MiB
+deflate bomb the test asserts the process grew by less than 32 MiB, measured as a difference of
+`W.rssKiB` readings. On node, RSS depends on when V8 collects and returns memory, so the reading
+after the cancel can land just over the bound (33,984 KiB here) even though inflation is bounded.
+The whole-mode check already handles the same effect by measuring on a second, warmed-up run.
+
+### Fix
+
+Make the streamed bound measure retained growth, not GC timing. In order of preference:
+1. Measure on a warmed-up second run, as whole mode does, and take the reading after the next
+   message arrives (the stream is quiescent then) rather than right after the cancel.
+2. If node still overshoots, request a collection before the reading when the host allows it
+   (node `--expose-gc` in the JS E2E runner for this test) — native is unaffected.
+3. Only if neither suffices: give the JS backend a larger streamed bound than native (e.g.
+   48 MiB), with a comment; the property under test (bounded, not proportional to the 200 MiB
+   bomb) still holds by a wide margin.
+
+### Validation
+
+Run the test 20 times in a loop under `run-js-e2e`'s node command (outside the shared suite) and
+on native; all must pass. The streamed bound must still fail if inflation is made unbounded
+(negative control: temporarily lift the stall in the server and confirm `bounded False`).

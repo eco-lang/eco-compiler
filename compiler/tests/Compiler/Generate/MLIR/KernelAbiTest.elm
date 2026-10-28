@@ -15,11 +15,11 @@ and the monomorphic types of its arguments and result. The symbol is
 the combinations of kernel and argument types that
 `Compiler.Generate.MLIR.KernelAbi` lists. The unsuffixed form is called here
 the boxed root symbol. The ABI type of each argument and of the result is its
-MLIR type at the kernel boundary: `i64` for `Int`, `f64` for `Float`, `i16`
+MLIR type at the kernel boundary: `i64` for `Int`, `f64` for `Float`, `i32`
 for `Char`, and `!eco.value` for every other type these tests use, as
 `Compiler.Generate.MLIR.Types.monoTypeToAbi` gives it. An argument or result
 passed as `!eco.value` is called boxed here, and one passed as `i64`, `f64` or
-`i16` unboxed.
+`i32` unboxed.
 
 The fixture is hand-built keys; nothing is compiled. Where a kernel takes or
 returns an array or another value whose type does not matter to the test,
@@ -110,7 +110,7 @@ suite =
                         , abiResultType = ecoValue
                         }
                         abi
-            , test "Char instantiation selects the _Char variant with i16 ABI" <|
+            , test "Char instantiation selects the _Char variant with i32 ABI" <|
                 \_ ->
                     let
                         abi =
@@ -488,7 +488,7 @@ suite =
                         , abiResultType = ecoValue
                         }
                         abi
-            , test "Char value selects the _Char variant with i16 ABI on the value axis" <|
+            , test "Char value selects the _Char variant with i32 ABI on the value axis" <|
                 \_ ->
                     let
                         abi =
@@ -605,4 +605,4 @@ ecoFloat =
 -}
 ecoChar : Mlir.MlirType
 ecoChar =
-    Mlir.I16
+    Mlir.I32

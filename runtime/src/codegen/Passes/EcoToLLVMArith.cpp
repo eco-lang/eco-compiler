@@ -900,7 +900,7 @@ struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
     matchAndRewrite(CharToIntOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
-        // Zero-extend i16 to i64 (char codes are always non-negative)
+        // Zero-extend the i32 code point to i64 (code points are never negative)
         rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, i64Ty, adaptor.getValue());
         return success();
     }
@@ -913,21 +913,21 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
     matchAndRewrite(CharFromIntOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto i16Ty = IntegerType::get(ctx, 16);
+        auto charTy = eco::getEcoCharType(rewriter.getContext());
 
         Value input = adaptor.getValue();
 
-        // Clamp to valid range [0, 0xFFFF]
-        Value zero = rewriter.create<arith::ConstantIntOp>(loc, 0, /*width=*/64);
-        Value maxChar = rewriter.create<arith::ConstantIntOp>(loc, 0xFFFF, /*width=*/64);
-
-        // clamp: max(0, min(input, 0xFFFF))
-        Value clampedLow = rewriter.create<arith::MaxSIOp>(loc, input, zero);
-        Value clamped = rewriter.create<arith::MinSIOp>(loc, clampedLow, maxChar);
-
-        // Truncate to i16
-        rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, i16Ty, clamped);
+        // Elm semantics (Char.fromCode): a code outside 0..0x10FFFF becomes
+        // U+FFFD; anything in range (surrogates included) passes through.
+        // One unsigned compare covers both ends: a negative i64 is a huge
+        // unsigned value.
+        Value limit = rewriter.create<arith::ConstantIntOp>(loc, 0x110000, /*width=*/64);
+        Value inRange = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::ult, input, limit);
+        Value truncated = rewriter.create<arith::TruncIOp>(loc, charTy, input);
+        Value replacement =
+            rewriter.create<arith::ConstantIntOp>(loc, 0xFFFD, /*width=*/eco::kEcoCharBits);
+        rewriter.replaceOpWithNewOp<arith::SelectOp>(op, inRange, truncated, replacement);
         return success();
     }
 };

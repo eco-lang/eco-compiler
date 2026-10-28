@@ -1,15 +1,15 @@
 // RUN: not %ecoc %s 2>&1 | %FileCheck %s
 //
-// Test i16 with wrong case_kind.
+// Test an i32 (Char) scrutinee with the wrong case_kind.
 
 module {
-  // CHECK: error: 'eco.case' op i16 scrutinee requires case_kind 'chr'
-  func.func @i16_wrong_kind(%c: i16) -> i16 {
-    %result = eco.case %c : i16 [65, 66] -> (i16) {case_kind = "int"} {
-      eco.yield %c : i16
+  // CHECK: error: 'eco.case' op i32 (Char) scrutinee requires case_kind 'chr'
+  func.func @char_wrong_kind(%c: i32) -> i32 {
+    %result = eco.case %c : i32 [65, 66] -> (i32) {case_kind = "int"} {
+      eco.yield %c : i32
     }, {
-      eco.yield %c : i16
+      eco.yield %c : i32
     }
-    return %result : i16
+    return %result : i32
   }
 }

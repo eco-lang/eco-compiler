@@ -16,7 +16,7 @@ On the C++ side each library declares its symbols with C linkage in one export h
 
 ## Numbers cross unboxed
 
-The types in a kernel declaration come from the concrete types at the call site, which monomorphization has already made concrete. Int, Float and Char always cross as machine values: a 64-bit integer, a double and a 16-bit integer. Everything else, Bool included, crosses as a boxed heap value, an opaque 64-bit pointer, which is the ABI form of the representation models in [value-representation.md](../value-representation.md).
+The types in a kernel declaration come from the concrete types at the call site, which monomorphization has already made concrete. Int, Float and Char always cross as machine values: a 64-bit integer, a double and a 32-bit integer holding the Unicode code point. Everything else, Bool included, crosses as a boxed heap value, an opaque 64-bit pointer, which is the ABI form of the representation models in [value-representation.md](../value-representation.md).
 
 C++ code cannot be polymorphic over unboxed values, so a kernel that Elm declares generic over `number` or `comparable` has to commit to one form. Boxing every argument would force a small heap allocation for each number passed to a kernel. Instead, where a generic kernel is hot for one primitive type, the C++ provides a typed variant whose symbol ends in `_Int`, `_Float` or `_Char`, and the compiler selects it from the call site's argument types. Addition in `Basics` and the comparisons in `Utils` work this way. A coarser policy, boxing every argument of a whole kernel module or boxing all numbers, would bring those allocations back; choosing per use keeps numbers unboxed without a rule for each module.
 

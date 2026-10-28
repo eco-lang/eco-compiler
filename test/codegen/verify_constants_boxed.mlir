@@ -7,7 +7,7 @@
 // stored using eco_store_field (boxed path), never eco_store_field_i64.
 //
 // The verifier enforces that slot_kinds is typed (1/2/3) only for fields with
-// primitive types (i64, f64, i16), never for !eco.value.
+// primitive types (i64, f64, i32), never for !eco.value.
 
 module {
   func.func @main() -> i64 {

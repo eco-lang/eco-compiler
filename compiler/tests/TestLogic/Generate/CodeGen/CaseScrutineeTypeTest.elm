@@ -19,7 +19,7 @@ expectation applied to it establishes:
   - Every `eco.case` in the generated module, at any depth, whose `case_kind`
     is a string or symbol reference naming `int`, `chr`, `bool`, `ctor` or
     `str`, and whose `_operand_types` holds at least one type, has as its first
-    operand type `i64` for `int`, `i16` for `chr`, `i1` for `bool`, and
+    operand type `i64` for `int`, `i32` for `chr`, `i1` for `bool`, and
     `!eco.value` for `ctor` and `str`.
 
 When several `eco.case` ops fail, only the first is reported.

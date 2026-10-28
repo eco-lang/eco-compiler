@@ -136,7 +136,7 @@ Testing::TestCase testAllocCharPreservesValue("allocChar preserves value", []() 
     rc::check([]() {
         auto& alloc = initAllocator();
 
-        u16 value = *rc::gen::arbitrary<u16>();
+        u32 value = *rc::gen::inRange<u32>(0, 0x110000);
         HPointer ptr = allocChar(value);
 
         void* obj = alloc.resolve(ptr);
@@ -172,9 +172,14 @@ Testing::TestCase testUnboxedFloatValue("unboxedFloat creates correct Unboxable"
 
 Testing::TestCase testUnboxedCharValue("unboxedChar creates correct Unboxable", []() {
     rc::check([]() {
-        u16 value = *rc::gen::arbitrary<u16>();
-        Unboxable u = unboxedChar(value);
+        u32 value = *rc::gen::inRange<u32>(0, 0x110000);
+        // Start from a dirty word: unboxedChar must set all 64 bits so the
+        // slot holds the code point zero-extended (raw-word readers rely on it).
+        Unboxable u;
+        u.i = -1;
+        u = unboxedChar(value);
         RC_ASSERT(u.c == value);
+        RC_ASSERT(static_cast<u64>(u.i) == static_cast<u64>(value));
     });
 });
 
@@ -990,7 +995,7 @@ Testing::TestCase testAllocatedCharSurvivesMinorGC("Allocated char survives mino
     rc::check([]() {
         auto& alloc = initAllocator();
 
-        u16 value = *rc::gen::arbitrary<u16>();
+        u32 value = *rc::gen::inRange<u32>(0, 0x110000);
         HPointer ptr = allocChar(value);
         alloc.getRootSet().addRoot(&ptr);
 

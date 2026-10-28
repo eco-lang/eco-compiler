@@ -6,7 +6,7 @@ emitting one with the wrong type on either side. This module checks the
 generated MLIR for such an op.
 
 A _boxed_ value has type `!eco.value`. A _primitive_, here, is a value of type
-`i64`, `f64`, `i16` or `i1`, the unboxed form of an Int, a Float, a Char or a
+`i64`, `f64`, `i32` or `i1`, the unboxed form of an Int, a Float, a Char or a
 Bool. `i1` is accepted because a Bool is `i1` in SSA operand context, such as
 the scrutinee of a case, and is unboxed to `i1` to get there. Where a Bool may
 be held as `i1` is not checked here.
@@ -49,7 +49,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 {-| Returns an expectation that compiles `srcModule` to MLIR with
 `TestLogic.TestPipeline.runToMlir` and passes when no `eco.box` or `eco.unbox`
-op in the result is a violation. An `eco.box` must take `i64`, `f64`, `i16` or
+op in the result is a violation. An `eco.box` must take `i64`, `f64`, `i32` or
 `i1` and produce `!eco.value`; an `eco.unbox` must take `!eco.value` and
 produce one of those four types, the operand's type being the defined type
 of the value it names.
@@ -84,10 +84,10 @@ checkBoxingValidation mlirModule =
                 |> List.filterMap
                     (\op ->
                         if op.name == "eco.box" then
-                            checkConversion env op isPrimitiveForBoxing "primitive (i64, f64, i16, i1)" isEcoValueType "!eco.value"
+                            checkConversion env op isPrimitiveForBoxing "primitive (i64, f64, i32, i1)" isEcoValueType "!eco.value"
 
                         else if op.name == "eco.unbox" then
-                            checkConversion env op isEcoValueType "!eco.value" isPrimitiveForBoxing "primitive (i64, f64, i16, i1)"
+                            checkConversion env op isEcoValueType "!eco.value" isPrimitiveForBoxing "primitive (i64, f64, i32, i1)"
 
                         else
                             Nothing
@@ -96,7 +96,7 @@ checkBoxingValidation mlirModule =
         mlirModule.body
 
 
-{-| Returns whether `t` is `i1`, `i16`, `i64` or `f64`, the types an `eco.box`
+{-| Returns whether `t` is `i1`, `i32`, `i64` or `f64`, the types an `eco.box`
 may take and an `eco.unbox` may produce.
 -}
 isPrimitiveForBoxing : MlirType -> Bool
@@ -105,7 +105,7 @@ isPrimitiveForBoxing t =
         I1 ->
             True
 
-        I16 ->
+        I32 ->
             True
 
         I64 ->

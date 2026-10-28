@@ -72,7 +72,7 @@ static Value widenFieldToI64Local(Value val, Location loc,
 
 /// Compute the 2-bit per-slot kind bitmap for a sequence of element types.
 /// Matches the encoding used by eco.construct.* heap ops: 00 = boxed
-/// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i16). One word:
+/// HPointer, 01 = Int (i64), 10 = Float (f64), 11 = Char (i32). One word:
 /// tuple2/tuple3 only (record/custom use packKinds, layout C).
 static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     assert(elements.size() <= 32 && "kindBitmapFor: more kinds than one word");
@@ -217,7 +217,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 getTypeConverter()->convertType(elts[1])
             };
             // Pre-extract in natural LLVM types (ptr addrspace(1) for boxed
-            // !eco.value, i64/f64/i16/i1 for primitives) — no widening yet.
+            // !eco.value, i64/f64/i32/i1 for primitives) — no widening yet.
             // Boxed-field extracts give us live ptr<1> scalars that RS4GC
             // will relocate across the alloc safepoint below.
             Value a = extractField(rewriter, loc, agg, 0, llvmElts[0]);
@@ -273,7 +273,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 } else if (origTy.isInteger(64)) {
                     rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                         ValueRange{tuple, idxVal, v});
-                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(v, loc, rewriter);
                     rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                         ValueRange{tuple, idxVal, widened});
@@ -348,7 +348,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 } else if (origTy.isInteger(64)) {
                     rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                         ValueRange{tuple, idxVal, v});
-                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(v, loc, rewriter);
                     rewriter.create<LLVM::CallOp>(loc, storeFieldI64,
                         ValueRange{tuple, idxVal, widened});
@@ -438,7 +438,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 } else if (origTy.isInteger(64)) {
                     rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                         ValueRange{objHPtr, idx, fieldVal});
-                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(fieldVal, loc, rewriter);
                     rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                         ValueRange{objHPtr, idx, widened});
@@ -529,7 +529,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                 } else if (origTy.isInteger(64)) {
                     rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                         ValueRange{objHPtr, idx, fieldVal});
-                } else if (origTy.isInteger(1) || origTy.isInteger(16)) {
+                } else if (origTy.isInteger(1) || eco::isEcoCharType(origTy)) {
                     Value widened = widenFieldToI64Local(fieldVal, loc, rewriter);
                     rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                         ValueRange{objHPtr, idx, widened});
@@ -555,24 +555,24 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
             Type llvmHead = getTypeConverter()->convertType(cons.getHead());
             Type llvmTail = getTypeConverter()->convertType(cons.getTail());
             // Pre-extract in natural LLVM types. Head may be ptr<1>
-            // (boxed/!eco.value) or i64/f64/i16; tail is always ptr<1>.
+            // (boxed/!eco.value) or i64/f64/i32; tail is always ptr<1>.
             Value head = extractField(rewriter, loc, agg, 0, llvmHead);
             Value tail = extractField(rewriter, loc, agg, 1, llvmTail);
 
             // Resolve the 2-bit head kind: 0=boxed, 1=Int(i64), 2=Float(f64),
-            // 3=Char(i16). Prefer op's head_kind attr over a type-derived kind.
+            // 3=Char(i32). Prefer op's head_kind attr over a type-derived kind.
             uint32_t kind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
             if (kind == 0 && op.getHeadUnboxed()) {
                 Type ht = cons.getHead();
                 if (ht.isInteger(64)) kind = 1;
                 else if (ht.isF64())  kind = 2;
-                else if (ht.isInteger(16)) kind = 3;
+                else if (eco::isEcoCharType(ht)) kind = 3;
             }
             if (kind == 0 && !isa<eco::ValueType>(cons.getHead())) {
                 Type ht = cons.getHead();
                 if (ht.isInteger(64)) kind = 1;
                 else if (ht.isF64())  kind = 2;
-                else if (ht.isInteger(16)) kind = 3;
+                else if (eco::isEcoCharType(ht)) kind = 3;
             }
             // Inline nursery allocation (HEAP_034): see the Heap
             // ListConstructOpLowering arm. Post-derivation, `kind`
@@ -612,7 +612,7 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
                     runtime.getOrCreateStoreConsHeadF64(rewriter),
                     ValueRange{consHPtr, head});
             } else {
-                // kind == 1 (Int/i64) or 3 (Char/i16). Widen narrow types.
+                // kind == 1 (Int/i64) or 3 (Char/i32). Widen narrow types.
                 Value widened = widenFieldToI64Local(head, loc, rewriter);
                 rewriter.create<LLVM::CallOp>(loc,
                     runtime.getOrCreateStoreConsHeadI64(rewriter),
@@ -651,7 +651,7 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
     /// Load one field at `offsetBytes` from the resolved heap pointer
     /// `ptr`. `slotBaseTy` selects how the slot is interpreted: if the
     /// destination element type is HPointer-shaped, load i64 then convert;
-    /// otherwise load directly at the destination width (i64 / f64 / i16
+    /// otherwise load directly at the destination width (i64 / f64 / i32
     /// reinterpreted from the i64-wide slot).
     Value loadFieldAt(ConversionPatternRewriter &rewriter, Location loc,
                       Value ptr, int64_t offsetBytes, Type elemTy) const {

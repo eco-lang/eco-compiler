@@ -243,9 +243,10 @@ inline void appendClosureResult(std::vector<Unboxable>& out,
         case 1: std::memcpy(&v.i, result_storage, sizeof(int64_t)); break;
         case 2: std::memcpy(&v.f, result_storage, sizeof(double));  break;
         default: {
-            uint16_t c;
-            std::memcpy(&c, result_storage, sizeof(uint16_t));
-            v.c = c;
+            // Char: the eval result slot holds a 32-bit code point.
+            uint32_t c;
+            std::memcpy(&c, result_storage, sizeof(uint32_t));
+            v = alloc::unboxedChar(c);
             break;
         }
     }
@@ -296,8 +297,9 @@ HPtr Elm_Kernel_List_cons_Float(double head, HPtr tail) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-HPtr Elm_Kernel_List_cons_Char(uint16_t head, HPtr tail) {
-    HPointer result = alloc::cons(alloc::unboxedChar(head), Export::decode(tail.toBits()),
+// See CharExports.cpp for why the Char arrives as uint64_t and is masked.
+HPtr Elm_Kernel_List_cons_Char(uint64_t head_raw, HPtr tail) {
+    HPointer result = alloc::cons(alloc::unboxedChar(static_cast<u32>(head_raw & 0xFFFFFFFFu)), Export::decode(tail.toBits()),
                                   /*head_kind=*/static_cast<uint8_t>(3));
     return HPtr::fromBits(Export::encode(result));
 }
@@ -455,7 +457,7 @@ HPointer kernelListMapN(int n_args, HPointer* lists, HPointer& closureHP) {
     union ResultSlot {
         int64_t  i;
         double   f;
-        uint16_t c;
+        uint32_t c;   // Char code point (32-bit eval result slot)
         HPtr     p;
         uint64_t bits;
     } resultSlot{};

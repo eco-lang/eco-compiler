@@ -28,7 +28,7 @@
  *
  * Certain heap layouts store primitive values unboxed for performance. Each
  * slot's kind is encoded as 2 bits in the container's unboxed bitmap:
- *   `00` = boxed HPointer, `01` = Int (i64), `10` = Float (f64), `11` = Char (u16).
+ *   `00` = boxed HPointer, `01` = Int (i64), `10` = Float (f64), `11` = Char (u32 code point, zero-extended to 64 bits).
  * Slot i's kind lives at bits [2i, 2i+1].
  *
  *   - Cons: Header.unboxed (6 bits, slot 0 used for head kind)

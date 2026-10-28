@@ -9,7 +9,7 @@ should come out as an `i64`.
 
 The pattern looked for is defined in
 `TestLogic.Generate.CodeGen.DestructorTypeProjection`, which calls it a
-_spurious unbox_: an `eco.unbox` to `i64`, `f64` or `i16` whose operand is
+_spurious unbox_: an `eco.unbox` to `i64`, `f64` or `i32` whose operand is
 defined by an `eco.project.custom`, the op that reads one field of a
 custom-type value, in the same function.
 

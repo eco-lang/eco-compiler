@@ -68,7 +68,7 @@ struct EvalRecord {
     int tags[8] = {};        // Tag_Int / Tag_Float / Tag_Char / 0
     int64_t int_vals[8] = {};
     double  float_vals[8] = {};
-    uint16_t char_vals[8] = {};
+    uint32_t char_vals[8] = {};
     uint64_t boxed_raw[8] = {};
 };
 
@@ -236,7 +236,7 @@ struct TypedRecord {
     bool called = false;
     int64_t  int_val   = 0;
     double   float_val = 0.0;
-    uint16_t char_val  = 0;
+    uint32_t char_val  = 0;
 };
 
 TypedRecord g_typed_record;
@@ -254,8 +254,8 @@ void* mock_typed_evaluator(void* args[]) {
 
     g_typed_record.int_val = slots[0];
     std::memcpy(&g_typed_record.float_val, &slots[1], sizeof(double));
-    g_typed_record.char_val = static_cast<uint16_t>(
-        static_cast<uint64_t>(slots[2]) & 0xFFFFu);
+    g_typed_record.char_val = static_cast<uint32_t>(
+        static_cast<uint64_t>(slots[2]) & 0xFFFFFFFFu);
 
     // Return a boxed True so callers can verify a clean round-trip.
     return reinterpret_cast<void*>(Elm::Kernel::Export::encodeBoxedBool(true));
@@ -285,12 +285,13 @@ static void test_typed_newargs_skips_reboxing() {
         closure->unboxed = 0x39;
     }
 
-    // Build typed args: Int 7, Float 1.25, Char 'X' (0x58).
+    // Build typed args: Int 7, Float 1.25, Char U+1F600 (astral: a Char is a
+    // 32-bit code point, zero-extended in its i64 arg slot).
     int64_t typed_args[3];
     typed_args[0] = 7;
     double f = 1.25;
     std::memcpy(&typed_args[1], &f, sizeof(double));
-    typed_args[2] = static_cast<int64_t>(0x58);
+    typed_args[2] = static_cast<int64_t>(0x1F600);
 
     auto layoutBuf = LayoutStorage<3>::build(
         {/*PK_Int*/1, /*PK_Float*/2, /*PK_Char*/3});
@@ -308,7 +309,7 @@ static void test_typed_newargs_skips_reboxing() {
     TEST_ASSERT(g_typed_record.called);
     TEST_ASSERT(g_typed_record.int_val == 7);
     TEST_ASSERT(g_typed_record.float_val == 1.25);
-    TEST_ASSERT(g_typed_record.char_val == 0x58);
+    TEST_ASSERT(g_typed_record.char_val == 0x1F600);
 
     // The evaluator allocates ONE object (the boxed Bool result via
     // encodeBoxedBool — but encodeBoxedBool is a constant HPointer, not a

@@ -1,17 +1,17 @@
 module Compiler.Generate.MLIR.PatternsAstralCharTest exposing (suite)
 
-{-| Regression test for a suspected bug in `Compiler.Generate.MLIR.Patterns`.
-
-EXPECTED TO FAIL until the bug is fixed.
+{-| Regression test for `Compiler.Generate.MLIR.Patterns`: a Char pattern above
+0xFFFF is matched against its full code point.
 
 A Char pattern above 0xFFFF (a `\u{1F600}` escape, stored by the parser as
-two `\uXXXX` escapes) is decoded by `decodeChrPatternCode` (Patterns.elm
-~1304), which folds every hex digit after the first `\u` into one number, so
-the comparison constant is neither the code point nor representable in the
-`i16` Char type.
+two `\uXXXX` escapes forming a surrogate pair) is decoded by
+`decodeChrPatternCode`, which combines the pair into the code point, held by
+the `i32` Char type. It used to fold every hex digit after the first `\u`
+into one number (0xD83D00DE00).
 
 The fixture is compiled with `TestPipeline.runToMlir`; the test requires that
-every `arith.constant` typed `i16` (the Char type) holds a value in 0..0xFFFF.
+the MLIR holds the constant `value = 128512 : i32` (U+1F600) and that every
+`i32` constant is in 0..0x10FFFF.
 
 -}
 
@@ -24,7 +24,7 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.test "astral Char pattern fits its i16 constant" <|
+    Test.test "astral Char pattern is its code point" <|
         \_ -> check source
 
 
@@ -58,23 +58,33 @@ check src =
                     Expect.fail ("fixture does not compile: " ++ e)
 
                 Ok { mlirOutput } ->
-                    Expect.equal [] (outOfRangeI16Constants mlirOutput)
+                    Expect.all
+                        [ \out -> Expect.equal [] (outOfRangeCharConstants out)
+                        , \out ->
+                            if String.contains "value = 128512 : i32" out then
+                                Expect.pass
+
+                            else
+                                Expect.fail ("no i32 code point constant 128512 (U+1F600) in:\n" ++ out)
+                        ]
+                        mlirOutput
 
 
-{-| Returns every `value = N : i16` in `text` whose N is outside 0..0xFFFF.
+{-| Returns every `value = N : i32` in `text` whose N is not a Unicode code
+point, outside 0..0x10FFFF.
 -}
-outOfRangeI16Constants : String -> List String
-outOfRangeI16Constants text =
+outOfRangeCharConstants : String -> List String
+outOfRangeCharConstants text =
     String.split "value = " text
         |> List.drop 1
         |> List.filterMap
             (\chunk ->
-                case String.split " : i16" chunk of
+                case String.split " : i32" chunk of
                     numText :: _ :: _ ->
                         case String.toInt numText of
                             Just n ->
-                                if n < 0 || n > 0xFFFF then
-                                    Just ("value = " ++ numText ++ " : i16")
+                                if n < 0 || n > 0x0010FFFF then
+                                    Just ("value = " ++ numText ++ " : i32")
 
                                 else
                                     Nothing
@@ -85,4 +95,3 @@ outOfRangeI16Constants text =
                     _ ->
                         Nothing
             )
-

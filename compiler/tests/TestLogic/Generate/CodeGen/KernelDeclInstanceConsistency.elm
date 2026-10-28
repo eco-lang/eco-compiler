@@ -288,7 +288,7 @@ papCreateViolation op symName detail =
 
 
 {-| The `_result_kind` code of an ABI type, as `Types.mlirTypeToKind` gives it:
-1 for `i64`, 2 for `f64`, 3 for `i16` and 0 for anything else.
+1 for `i64`, 2 for `f64`, 3 for `i32` and 0 for anything else.
 -}
 mlirTypeKind : MlirType -> Int
 mlirTypeKind t =
@@ -299,7 +299,7 @@ mlirTypeKind t =
         F64 ->
             2
 
-        I16 ->
+        I32 ->
             3
 
         _ ->

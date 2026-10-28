@@ -19,7 +19,7 @@ What the tests establish:
     `TestLogic.TestPipeline.runToMlir` succeeds, and each `eco.unbox` in a
     top-level `func.func` of the generated MLIR has one operand and one result,
     the operand is defined in the function with type `!eco.value`, and the
-    result type is `i1`, `i16`, `i64` or `f64`.
+    result type is `i1`, `i32`, `i64` or `f64`.
 
 Among what is not tested:
 

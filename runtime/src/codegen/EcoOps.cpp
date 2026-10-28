@@ -411,18 +411,18 @@ LogicalResult CaseOp::verify() {
         return emitOpError("i64 scrutinee requires case_kind 'int', got '")
                << caseKind << "'";
       }
-    } else if (width == 16) {
-      // i16 (Char): require case_kind "chr"
+    } else if (width == eco::kEcoCharBits) {
+      // i32 (Char): require case_kind "chr"
       if (caseKind != "chr") {
-        return emitOpError("i16 scrutinee requires case_kind 'chr', got '")
+        return emitOpError("i32 (Char) scrutinee requires case_kind 'chr', got '")
                << caseKind << "'";
       }
     } else {
-      return emitOpError("scrutinee must be !eco.value, i1, i16, or i64, got ")
+      return emitOpError("scrutinee must be !eco.value, i1, i32 (Char), or i64, got ")
              << scrutineeType;
     }
   } else {
-    return emitOpError("scrutinee must be !eco.value, i1, i16, or i64, got ")
+    return emitOpError("scrutinee must be !eco.value, i1, i32 (Char), or i64, got ")
            << scrutineeType;
   }
 
@@ -591,11 +591,11 @@ static LogicalResult rejectStaleBitmapAttr(Operation *op) {
 }
 
 /// Kind of a Custom/Record field's MLIR type (= codegen slotKindOf):
-/// i64 -> 1 Int, f64 -> 2 Float, i16 -> 3 Char, everything else -> 0 boxed.
+/// i64 -> 1 Int, f64 -> 2 Float, i32 -> 3 Char, everything else -> 0 boxed.
 static uint8_t fieldKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
-  if (t.isInteger(16)) return 3;
+  if (eco::isEcoCharType(t)) return 3;
   return 0;
 }
 
@@ -728,7 +728,7 @@ static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
   if (bitmap != want)
     return op->emitOpError("unboxed_bitmap = ") << bitmap
            << " does not match the operand types (expected " << want
-           << "; 2 bits per slot: 0 boxed, 1 i64, 2 f64, 3 i16) (CGEN_026)";
+           << "; 2 bits per slot: 0 boxed, 1 i64, 2 f64, 3 i32) (CGEN_026)";
   return success();
 }
 
@@ -762,15 +762,15 @@ LogicalResult ListConstructOp::verify() {
 //===----------------------------------------------------------------------===//
 
 /// Kind of a closure operand's MLIR type (same mapping as codegen slotKindOf):
-/// i64 -> 1 Int, f64 -> 2 Float, i16 -> 3 Char, everything else -> 0 boxed.
+/// i64 -> 1 Int, f64 -> 2 Float, i32 -> 3 Char, everything else -> 0 boxed.
 static uint8_t operandKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
-  if (t.isInteger(16)) return 3;
+  if (eco::isEcoCharType(t)) return 3;
   return 0;
 }
 
-/// CGEN_003: every closure operand is !eco.value, i64, f64 or i16 (Bool is
+/// CGEN_003: every closure operand is !eco.value, i64, f64 or i32 (Bool is
 /// boxed, REP_CLOSURE_001; closure ops never take aggregates). `slot_kinds`
 /// has one entry per operand, equal to the operand's type kind.
 static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
@@ -877,7 +877,7 @@ LogicalResult PapExtendOp::verify() {
   //
   // Result type may be `!eco.value` (the conservative case, used when the
   // call could be under-saturated and produce a closure HPtr) OR a primitive
-  // (i64 / f64 / i16) when Mono types the call as a primitive — i.e. the
+  // (i64 / f64 / i32) when Mono types the call as a primitive — i.e. the
   // call applies enough args to land on a primitive return at runtime. In
   // that case the JIT lowers `lowerGenericApply` with a matching
   // `desired_kind` and `eco_apply_closure_eval` writes the primitive
@@ -889,10 +889,10 @@ LogicalResult PapExtendOp::verify() {
     Type resultType = getResult().getType();
     bool isBoxed = isa<eco::ValueType>(resultType);
     bool isPrimitive = resultType.isInteger(64) || resultType.isF64()
-                       || resultType.isInteger(16);
+                       || eco::isEcoCharType(resultType);
     if (!isBoxed && !isPrimitive) {
       return emitOpError("generic-mode papExtend (no remaining_arity) must "
-                         "have !eco.value or primitive (i64/f64/i16) result "
+                         "have !eco.value or primitive (i64/f64/i32) result "
                          "type, got ") << resultType;
     }
     return success();
@@ -901,7 +901,7 @@ LogicalResult PapExtendOp::verify() {
   // Typed mode: remaining_arity present (SD-8, CGEN_056). A partial extend
   // builds a new closure, so its result is !eco.value; a saturated one
   // returns the evaluator's result, an ABI type (REP_ABI_001): !eco.value or
-  // i64/f64/i16, never i1 (Bool is boxed, CGEN_009). verifySymbolUses checks
+  // i64/f64/i32, never i1 (Bool is boxed, CGEN_009). verifySymbolUses checks
   // the saturated result against the evaluator's signature when it is known.
   // CGEN_057 kernel existence is checked by PapCreateOp::verifySymbolUses (O(1)).
   Type resultType = getResult().getType();
@@ -913,9 +913,9 @@ LogicalResult PapExtendOp::verify() {
              << " remaining args) must have !eco.value (closure) result type, got "
              << resultType;
   } else if (!isa<eco::ValueType>(resultType) && !resultType.isInteger(64) &&
-             !resultType.isF64() && !resultType.isInteger(16)) {
+             !resultType.isF64() && !eco::isEcoCharType(resultType)) {
     return emitOpError("saturated typed-mode papExtend must have !eco.value "
-                       "or primitive (i64/f64/i16) result type, got ")
+                       "or primitive (i64/f64/i32) result type, got ")
            << resultType;
   }
   return success();

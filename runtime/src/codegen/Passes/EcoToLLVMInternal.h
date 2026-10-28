@@ -9,6 +9,7 @@
 #define ECO_TO_LLVM_INTERNAL_H
 
 #include "EcoSlotCastBarriers.h"
+#include "../EcoOps.h"  // eco::isEcoCharType / kEcoCharBits (Char = i32)
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -37,7 +38,7 @@ namespace detail {
 //===----------------------------------------------------------------------===//
 
 /// Type converter for the Eco -> LLVM lowering. Primitive operands pass
-/// through unchanged: Int -> i64, Float -> f64, Char -> i16 (REP_ABI_001).
+/// through unchanged: Int -> i64, Float -> f64, Char -> i32 (REP_ABI_001).
 /// `i1` appears only for Bool in SSA control flow (REP_SSA_001); Bool is
 /// never `i1` in heap, closure or ABI positions. Every other value is
 /// `!eco.value`, which lowers to `ptr addrspace(1)` (GC-managed HPointer).
@@ -451,14 +452,23 @@ static_assert(extWords(2047, RecordHdrSlots) == 63 && extWords(2040, CustomHdrSl
 // 2-bit slot kind packing (plans/wide-object-tail-kind-words.md §S.3)
 //===----------------------------------------------------------------------===//
 
+/// NON-Char 16-bit storage: one UTF-16 String unit (string literal bodies,
+/// HEAP_025) or a u16 header field (Custom.ctor, closure stage_arity,
+/// EvalParamLayout num_params). Elm Char is NOT 16-bit - it is the i32 code
+/// point of eco::isEcoCharType / eco::getEcoCharType.
+constexpr unsigned kU16StorageBits = 16;
+inline mlir::IntegerType getU16StorageType(mlir::MLIRContext *ctx) {
+    return mlir::IntegerType::get(ctx, kU16StorageBits);
+}
+
 /// The 2-bit heap slot kind of an MLIR type: i64 -> 1 (Int), f64 -> 2 (Float),
-/// i16 -> 3 (Char), everything else -> 0 (boxed). Also correct on LLVM-level
+/// i32 -> 3 (Char, eco::isEcoCharType), everything else -> 0 (boxed). Also correct on LLVM-level
 /// types after conversion (ptr<1> -> 0). Bool (i1) is boxed in the heap
 /// (REP_CLOSURE_001), so it is 0 here too.
 inline uint8_t slotKindOf(mlir::Type t) {
     if (t.isInteger(64)) return 1;
     if (t.isF64()) return 2;
-    if (t.isInteger(16)) return 3;
+    if (eco::isEcoCharType(t)) return 3;
     return 0;
 }
 
@@ -792,7 +802,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocInlineMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateConsHeadF64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateConsHeadI16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateConsHeadChar(mlir::OpBuilder &builder) const;
     // Hybrid-spine (chunked-list) projections, used when the module carries
     // the eco.list_chunks attribute (plans/chunked-list-representation.md §6).
     // Head is non-allocating (gc-leaf); tail may MATERIALIZE a successor
@@ -815,8 +825,8 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1I64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0F64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1F64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0I16(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1I16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get0Char(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple2Get1Char(mlir::OpBuilder &builder) const;
 
     mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0I64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1I64(mlir::OpBuilder &builder) const;
@@ -824,23 +834,23 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0F64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1F64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2F64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0I16(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1I16(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2I16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get0Char(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get1Char(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateTuple3Get2Char(mlir::OpBuilder &builder) const;
 
     // Record / Custom unboxed-primitive field accessors: (HPtr, i32 field) -> prim
     mlir::LLVM::LLVMFuncOp getOrCreateRecordGetI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateRecordGetF64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateRecordGetI16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateRecordGetChar(mlir::OpBuilder &builder) const;
 
     mlir::LLVM::LLVMFuncOp getOrCreateCustomGetI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateCustomGetF64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateCustomGetI16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateCustomGetChar(mlir::OpBuilder &builder) const;
 
     // Array unboxed-primitive element accessors: (HPtr, i64 index) -> prim
     mlir::LLVM::LLVMFuncOp getOrCreateArrayGetI64(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateArrayGetF64(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateArrayGetI16(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateArrayGetChar(mlir::OpBuilder &builder) const;
 
     mlir::LLVM::LLVMFuncOp getOrCreateCrash(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateGcAddRoot(mlir::OpBuilder &builder) const;
@@ -880,7 +890,6 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateStringCmpOrder(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringLenInlineMarker(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStringLength(mlir::OpBuilder &builder) const;
-    mlir::LLVM::LLVMFuncOp getOrCreateStringCodeUnitAt(mlir::OpBuilder &builder) const;
     // String/List append (eco.string.append / eco.list.append lowering).
     // NOT gc-leaf: both callees allocate.
     mlir::LLVM::LLVMFuncOp getOrCreateStringAppend(mlir::OpBuilder &builder) const;

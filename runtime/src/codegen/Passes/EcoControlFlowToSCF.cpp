@@ -260,20 +260,21 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
                 loc, arith::CmpIPredicate::eq, intVal, tagConstant);
         } else if (isCharCase(op)) {
             // For char case: compare directly (unbox if needed)
-            auto i16Ty = rewriter.getIntegerType(16);
+            auto charTy = eco::getEcoCharType(rewriter.getContext());
             Value scrutinee = op.getScrutinee();
             Value charVal;
-            if (scrutinee.getType() == i16Ty) {
-                // Already unboxed i16
+            if (eco::isEcoCharType(scrutinee.getType())) {
+                // Already unboxed i32 Char
                 charVal = scrutinee;
             } else {
-                // Boxed eco.value - unbox to i16
-                charVal = rewriter.create<UnboxOp>(loc, i16Ty, scrutinee);
+                // Boxed eco.value - unbox to i32 Char
+                charVal = rewriter.create<UnboxOp>(loc, charTy, scrutinee);
             }
 
-            // Create comparison: value == tags[1] (second alternative)
+            // Create comparison: value == tags[1] (second alternative).
+            // Tags are code points 0..0x10FFFF, so they fit i32 unchanged.
             auto tagConstant = rewriter.create<arith::ConstantOp>(
-                loc, rewriter.getIntegerAttr(i16Ty, tags[1]));
+                loc, rewriter.getIntegerAttr(charTy, tags[1]));
             cond = rewriter.create<arith::CmpIOp>(
                 loc, arith::CmpIPredicate::eq, charVal, tagConstant);
         } else {
@@ -434,17 +435,21 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         Type scrutineeType = scrutinee.getType();
 
         if (isCharCase(op)) {
-            // Char case: need i16 value, then cast to index
-            auto i16Ty = rewriter.getIntegerType(16);
+            // Char case: need the i32 code point, then cast to index.
+            // ZERO-extend (index_castui): a Char is an unsigned code point,
+            // and the case values below are non-negative code points. (With
+            // the old 16-bit Char a sign-extending index_cast made every char
+            // >= U+8000 miss its case arm.)
+            auto charTy = eco::getEcoCharType(rewriter.getContext());
             Value charVal;
-            if (scrutineeType == i16Ty) {
-                // Already unboxed i16
+            if (eco::isEcoCharType(scrutineeType)) {
+                // Already unboxed i32 Char
                 charVal = scrutinee;
             } else {
-                // Boxed eco.value - unbox to i16
-                charVal = rewriter.create<UnboxOp>(loc, i16Ty, scrutinee);
+                // Boxed eco.value - unbox to i32 Char
+                charVal = rewriter.create<UnboxOp>(loc, charTy, scrutinee);
             }
-            indexTag = rewriter.create<arith::IndexCastOp>(
+            indexTag = rewriter.create<arith::IndexCastUIOp>(
                 loc, rewriter.getIndexType(), charVal);
         } else if (isIntegerCase(op)) {
             // Int case: need i64 value, then cast to index

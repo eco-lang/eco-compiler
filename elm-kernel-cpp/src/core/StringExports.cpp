@@ -26,18 +26,6 @@ int64_t Elm_Kernel_String_length(HPtr str) {
     return String::length(ptr);
 }
 
-// kernel-opt-04. Code unit at a 0-based index; 0 when out of range, when the
-// string is an embedded constant, or on a null resolve -- exactly
-// StringOps::charAt's contract (StringOps.hpp:401-463). gc-leaf-safe: charAt
-// allocates on none of its six tag paths (its only calls are
-// Allocator::resolve, which follows forwarding and never allocates), so
-// callers need no rooting.
-uint16_t eco_string_code_unit_at(HPtr str, int64_t index) {
-    void* p = Export::toPtr(str.toBits());
-    if (!p) return 0;                       // Const_Empty and friends
-    return Elm::StringOps::charAt(p, index);
-}
-
 HPtr Elm_Kernel_String_append(HPtr a, HPtr b) {
     HPointer result = String::append(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
     return HPtr::fromBits(Export::encode(result));
@@ -48,9 +36,10 @@ HPtr Elm_Kernel_String_join(HPtr sep, HPtr stringList) {
     return HPtr::fromBits(Export::encode(result));
 }
 
-// See CharExports.cpp for why this takes uint64_t instead of uint16_t.
+// See CharExports.cpp for why this takes uint64_t instead of uint32_t. The
+// Char is a code point; String::cons encodes it as 1 or 2 UTF-16 units.
 HPtr Elm_Kernel_String_cons(uint64_t c_raw, HPtr str) {
-    uint16_t c = static_cast<uint16_t>(c_raw & 0xFFFFu);
+    uint32_t c = static_cast<uint32_t>(c_raw & 0xFFFFFFFFu);
     HPointer result = String::cons(c, Export::toPtr(str.toBits()));
     return HPtr::fromBits(Export::encode(result));
 }
@@ -199,14 +188,15 @@ static constexpr auto kLayoutChar1     = Elm::makeEvalParamLayout<1>(0, {3});   
 static constexpr auto kLayoutCharBoxed = Elm::makeEvalParamLayout<2>(0, {3, 0});   // (Char, a)
 
 // Call a closure with a single Char argument and Char result.
-// Both argument and result travel as unboxed `uint16_t`: `eco_apply_closure_eval`
-// reads the closure's intrinsic `result_kind` and either delivers the i16 directly
+// Both argument and result travel as unboxed code points (`uint32_t`; the arg
+// slot holds it zero-extended): `eco_apply_closure_eval` reads the closure's
+// intrinsic `result_kind` and either delivers the i32 directly
 // (modern Char-returning wrapper) or unboxes a returned ElmChar exactly once on
 // our behalf — strictly less work than the previous boxed round-trip.
-static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
+static uint32_t callCharToCharClosure(HPtr closure_hptr, uint32_t c) {
     const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
-    uint16_t result = 0;
+    uint32_t result = 0;
     eco_apply_closure_eval(closure_hptr, args, 1, layout, &result, /*desired_kind=*/3);
     return result;
 }
@@ -214,7 +204,7 @@ static uint16_t callCharToCharClosure(HPtr closure_hptr, uint16_t c) {
 // Call a closure with a single Char argument and Bool result.
 // Bool is an embedded HPointer constant (Const_True / Const_False) so the result
 // stays in PK_Boxed form; only the Char argument is passed unboxed.
-static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
+static bool callCharToBoolClosure(HPtr closure_hptr, uint32_t c) {
     const auto* layout = Elm::asLayout(&kLayoutChar1);
     int64_t args[1] = { static_cast<int64_t>(c) };
     HPtr result_hptr = eco_apply_closure_typed(closure_hptr, args, 1, layout);
@@ -223,13 +213,15 @@ static bool callCharToBoolClosure(HPtr closure_hptr, uint16_t c) {
 
 // Call a fold closure: `(Char, acc) -> acc`. Char goes through unboxed; the
 // accumulator stays HPointer-encoded.
-static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
+static uint64_t callFoldClosure(HPtr closure_hptr, uint32_t c, uint64_t acc) {
     const auto* layout = Elm::asLayout(&kLayoutCharBoxed);
     int64_t args[2] = { static_cast<int64_t>(c), static_cast<int64_t>(acc) };
     return eco_apply_closure_typed(closure_hptr, args, 2, layout).toBits();
 }
 
-// Snapshot a String (any form) into a stable std::vector<u16>. The snapshot
+// Snapshot a String (any form) into a stable std::vector<u16> of UTF-16 units.
+// Callers walk it by code point (StringOps::nextCodePoint / prevCodePoint):
+// one Char per code point, a valid surrogate pair being one Char. The snapshot
 // lives on the C stack so callbacks that allocate (and may trigger GC) can't
 // invalidate it. Returns an empty vector for nullptr / empty input.
 // UTF-8 forms zero-extend their ASCII bytes directly (no toStdU16String
@@ -244,7 +236,7 @@ static std::vector<u16> snapshotChars(void* str) {
     return std::vector<u16>(u16str.begin(), u16str.end());
 }
 
-// Materialize a computed char vector into a String, choosing a UTF-8 form when
+// Materialize a computed UTF-16 unit vector into a String, choosing a UTF-8 form when
 // the content is all-ASCII (W4.e). `result` is C-heap, so allocAsciiOut/GC
 // cannot invalidate it and no rooting is needed. Empty -> the Empty constant.
 static HPtr materializeString(const std::vector<u16>& result) {
@@ -271,9 +263,11 @@ HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
 
     std::vector<u16> result;
     result.reserve(chars.size());
-    for (u16 c : chars) {
+    const size_t n = chars.size();
+    for (size_t i = 0; i < n;) {
+        uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        result.push_back(callCharToCharClosure(cl, c));
+        Elm::StringOps::appendCodePoint(result, callCharToCharClosure(cl, c));
     }
     return materializeString(result);
 }
@@ -289,9 +283,13 @@ HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
 
     std::vector<u16> result;
     result.reserve(chars.size());
-    for (u16 c : chars) {
+    const size_t n = chars.size();
+    for (size_t i = 0; i < n;) {
+        size_t start = i;
+        uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        if (callCharToBoolClosure(cl, c)) result.push_back(c);
+        if (callCharToBoolClosure(cl, c))
+            result.insert(result.end(), chars.begin() + start, chars.begin() + i);
     }
     return materializeString(result);
 }
@@ -305,7 +303,9 @@ HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
     HPointer closureHP = Export::decode(closure.toBits());
     Elm::StackRootGuard closureRoot(&closureHP);
 
-    for (u16 c : chars) {
+    const size_t n = chars.size();
+    for (size_t i = 0; i < n;) {
+        uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         if (callCharToBoolClosure(cl, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(true));
@@ -324,7 +324,9 @@ HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
     HPointer closureHP = Export::decode(closure.toBits());
     Elm::StackRootGuard closureRoot(&closureHP);
 
-    for (u16 c : chars) {
+    const size_t n = chars.size();
+    for (size_t i = 0; i < n;) {
+        uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         if (!callCharToBoolClosure(cl, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(false));
@@ -341,7 +343,9 @@ HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
     HPointer accHP     = Export::decode(acc.toBits());
     Elm::StackRootGuard loopRoots(&closureHP, &accHP);
 
-    for (u16 c : chars) {
+    const size_t n = chars.size();
+    for (size_t i = 0; i < n;) {
+        uint32_t c = Elm::StringOps::nextCodePoint(chars.data(), n, i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
         uint64_t newAcc = callFoldClosure(cl, c, Export::encode(accHP));
         accHP = Export::decode(newAcc);
@@ -357,9 +361,12 @@ HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str) {
     HPointer accHP     = Export::decode(acc.toBits());
     Elm::StackRootGuard loopRoots(&closureHP, &accHP);
 
-    for (size_t i = chars.size(); i > 0; --i) {
+    // Walk back by code point: a low surrogate combines only with a
+    // preceding high one (StringOps::prevCodePoint).
+    for (size_t i = chars.size(); i > 0;) {
+        uint32_t c = Elm::StringOps::prevCodePoint(chars.data(), i);
         HPtr cl = HPtr::fromBits(Export::encode(closureHP));
-        uint64_t newAcc = callFoldClosure(cl, chars[i - 1], Export::encode(accHP));
+        uint64_t newAcc = callFoldClosure(cl, c, Export::encode(accHP));
         accHP = Export::decode(newAcc);
     }
     return HPtr::fromBits(Export::encode(accHP));

@@ -503,13 +503,13 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_f64),
                 llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("eco_cons_head_i16")] =
+        symbolMap[interner("eco_cons_head_char")] =
             llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_i16),
+                llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_char),
                 llvm::JITSymbolFlags::Exported);
 
         // Typed Custom-field access — emitted by EcoToLLVMRuntime when
-        // lowering `eco.project.custom %v[N] : !eco.value -> {i64,f64,i16}`.
+        // lowering `eco.project.custom %v[N] : !eco.value -> {i64,f64,i32}`.
         // Static link picks these up from libEcoRuntimeStatic, but the JIT
         // linker needs explicit absolute-symbol entries. Missing these
         // causes the orc-jit lookup to fail with "Symbols not found:
@@ -523,9 +523,9 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_f64),
                 llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("eco_custom_get_i16")] =
+        symbolMap[interner("eco_custom_get_char")] =
             llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_i16),
+                llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_char),
                 llvm::JITSymbolFlags::Exported);
 
         // =================================================================
@@ -760,8 +760,6 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(eco_string_cmp_order)
         KERNEL_SYM(eco_order_from_sign)
         KERNEL_SYM(eco_string_cmp3)
-        // kernel-opt-04: eco.string.code_unit_at lowering
-        KERNEL_SYM(eco_string_code_unit_at)
         // kernel-opt-05: eco.string.append / eco.list.append lowering
         KERNEL_SYM(eco_string_append)
         KERNEL_SYM(eco_list_append)

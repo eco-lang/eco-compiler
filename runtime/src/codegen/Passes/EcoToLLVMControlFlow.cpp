@@ -151,7 +151,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        auto i16Ty = IntegerType::get(ctx, 16);
+        auto charTy = eco::getEcoCharType(ctx);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         auto i8Ty = IntegerType::get(ctx, 8);
 
@@ -162,17 +162,17 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         Value scrutinee = adaptor.getScrutinee();
         Value unboxedValue;
 
-        // Check if scrutinee is already unboxed (i64 for int, i16 for char)
+        // Check if scrutinee is already unboxed (i64 for int, i32 for char)
         Type scrutineeType = scrutinee.getType();
         if (scrutineeType.isInteger(64)) {
             // Already unboxed i64 - use directly
             unboxedValue = scrutinee;
-            // For char case, truncate to i16
+            // For char case, truncate to the i32 code point
             if (!isIntCase) {
-                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, i16Ty, unboxedValue);
+                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, charTy, unboxedValue);
             }
-        } else if (scrutineeType.isInteger(16)) {
-            // Already unboxed i16 (char) - use directly
+        } else if (eco::isEcoCharType(scrutineeType)) {
+            // Already unboxed i32 (char) - use directly
             unboxedValue = scrutinee;
             // For int case, extend to i64
             if (isIntCase) {
@@ -201,9 +201,10 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 unboxedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
             }
 
-            // For char case, truncate to i16
+            // For char case, truncate to the i32 code point (ElmChar.value
+            // is the low half of the payload word; the high half is padding)
             if (!isIntCase) {
-                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, i16Ty, unboxedValue);
+                unboxedValue = rewriter.create<LLVM::TruncOp>(loc, charTy, unboxedValue);
             }
         }
 
@@ -260,7 +261,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         SmallVector<ValueRange> caseOperands(caseDests.size(), ValueRange{});
 
         // cf::SwitchOp requires APInt case values
-        unsigned bitWidth = isIntCase ? 64 : 16;
+        unsigned bitWidth = isIntCase ? 64 : eco::kEcoCharBits;
         SmallVector<llvm::APInt> caseValuesAPInt;
         for (int64_t v : caseValues) {
             caseValuesAPInt.push_back(llvm::APInt(bitWidth, v));
@@ -372,7 +373,6 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i16Ty = IntegerType::get(ctx, 16);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         Block *currentBlock = op->getBlock();
@@ -463,7 +463,7 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             } else {
                 // Global pre-created in preMaterializeStringCases; take its
                 // address. ASCII patterns are [N x i8] built as UTF-8 leaves;
-                // others are [N x i16] UTF-16. The ASCII decision is recomputed
+                // others are [N x u16] UTF-16 units. The ASCII decision is recomputed
                 // (pure in the bytes) so it matches pre-materialization.
                 llvm::SmallString<48> globalName;
                 {
@@ -759,9 +759,9 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             // lower 16 bits of the unboxed bitmap into the discriminator, sending
             // ctors whose object happens to have any unboxed slot to the default
             // arm. Load just the 16-bit ctor and zero-extend.
-            auto i16Ty = IntegerType::get(ctx, 16);
-            auto ctorI16 = rewriter.create<LLVM::LoadOp>(loc, i16Ty, ctorPtr);
-            auto ctorFromHeap = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, ctorI16);
+            auto ctorFieldTy = getU16StorageType(ctx);  // u16 ctor, not Char
+            auto ctorU16 = rewriter.create<LLVM::LoadOp>(loc, ctorFieldTy, ctorPtr);
+            auto ctorFromHeap = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, ctorU16);
             rewriter.create<cf::BranchOp>(loc, tagMergeBlock, ValueRange{ctorFromHeap});
 
             rewriter.setInsertionPointToStart(tagMergeBlock);
@@ -1185,7 +1185,7 @@ void eco::detail::preMaterializeStringCases(
     OpBuilder &builder, const EcoRuntime &runtime,
     llvm::ArrayRef<PreMatDemand> demand) {
     auto *ctx = builder.getContext();
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto utf16UnitTy = getU16StorageType(ctx);  // String unit, not Char
     auto i8Ty = IntegerType::get(ctx, 8);
     uint64_t caseCounter = 0;
     auto visit = [&](CaseOp op) {
@@ -1229,7 +1229,7 @@ void eco::detail::preMaterializeStringCases(
 
             std::vector<uint16_t> utf16 = utf8ToUtf16(pattern);
             size_t length = utf16.size();
-            auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+            auto arrayTy = LLVM::LLVMArrayType::get(utf16UnitTy, length);
             auto globalOp = builder.create<LLVM::GlobalOp>(
                 op.getLoc(), arrayTy, /*isConstant=*/true,
                 LLVM::Linkage::Internal, globalName, /*value=*/Attribute{});
@@ -1240,7 +1240,7 @@ void eco::detail::preMaterializeStringCases(
             for (uint16_t c : utf16)
                 charValues.push_back(static_cast<int16_t>(c));
             auto denseAttr = DenseElementsAttr::get(
-                RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                RankedTensorType::get({static_cast<int64_t>(length)}, utf16UnitTy),
                 ArrayRef<int16_t>(charValues));
             auto initValue =
                 builder.create<LLVM::ConstantOp>(op.getLoc(), arrayTy, denseAttr);

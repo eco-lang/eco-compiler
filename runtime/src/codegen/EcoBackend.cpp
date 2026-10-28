@@ -1920,7 +1920,7 @@ static void expandSatMarkers(Module &m) {
 //   embedded constant (ptr_ind set) -> Bool -> its i1 value; "empty" ->
 //     CONSTANT_TAG (0xFFFD);
 //   heap object -> Tag_Custom -> ctor (low 16 bits of the word at +8;
-//     the upper bits are the unboxed bitmap — load i16, never i32);
+//     the upper bits are the unboxed bitmap — load u16, never i32);
 //     Tag_Cons -> 1; anything else -> 0.
 //
 // The marker exists because eco.get_tag sits INSIDE single-block scf regions
@@ -2034,7 +2034,7 @@ static void expandListProjMarker(Module &m, const char *markerName,
 // Expand the mixed-spine CURSOR markers (EcoListCursor pass):
 //
 //   __eco_list_cur_inline(node, idx)       element at position, !eco.value
-//   __eco_list_cur_{i64,f64,i16}_inline    unboxed element variants
+//   __eco_list_cur_{i64,f64,char}_inline   unboxed element variants (char = i32)
 //   __eco_list_step_node_inline(node, idx) next node (cell tail / same chunk
 //                                          while the run lasts / chunk next)
 //   __eco_list_step_idx_inline(node, idx)  next index (0 on node change)
@@ -2045,7 +2045,7 @@ static void expandListProjMarker(Module &m, const char *markerName,
 // before every RS4GC flavour. Positions are normalized: idx > 0 only inside
 // a chunk with idx < run, so the cell edges may assume idx == 0.
 static void expandListCursorMarker(Module &m, const char *markerName,
-                                   int variant /*0=value,1=i64,2=f64,3=i16,
+                                   int variant /*0=value,1=i64,2=f64,3=char(i32),
                                                  4=stepNode,5=stepIdx*/) {
     Function *marker = m.getFunction(markerName);
     if (!marker || marker->use_empty()) {
@@ -2055,7 +2055,9 @@ static void expandListCursorMarker(Module &m, const char *markerName,
 
     LLVMContext &ctx = m.getContext();
     Type *i8Ty = Type::getInt8Ty(ctx);
-    Type *i16Ty = Type::getInt16Ty(ctx);
+    // Elm Char = i32 code point (eco::kEcoCharBits); its slot word holds the
+    // code point zero-extended to 64 bits, so a trunc recovers it.
+    Type *charTy = Type::getInt32Ty(ctx);
     Type *i32Ty = Type::getInt32Ty(ctx);
     Type *i64Ty = Type::getInt64Ty(ctx);
     Type *f64Ty = Type::getDoubleTy(ctx);
@@ -2108,7 +2110,7 @@ static void expandListCursorMarker(Module &m, const char *markerName,
             else if (variant == 2)
                 cellVal = fb.CreateBitCast(w, f64Ty);
             else
-                cellVal = fb.CreateTrunc(w, i16Ty);
+                cellVal = fb.CreateTrunc(w, charTy);
         } else if (variant == 4) {
             Value *p = fb.CreateGEP(i8Ty, base,
                                     ConstantInt::get(i64Ty, 16), "eco.curtp");
@@ -2143,7 +2145,7 @@ static void expandListCursorMarker(Module &m, const char *markerName,
             else if (variant == 2)
                 chunkVal = sb.CreateBitCast(w, f64Ty);
             else
-                chunkVal = sb.CreateTrunc(w, i16Ty);
+                chunkVal = sb.CreateTrunc(w, charTy);
         } else {
             Value *lenP =
                 sb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 20));
@@ -2183,7 +2185,7 @@ static void expandListCursorMarker(Module &m, const char *markerName,
                           ? (Type *)as1
                           : variant == 1 || variant == 5
                                 ? i64Ty
-                                : variant == 2 ? f64Ty : (Type *)i16Ty;
+                                : variant == 2 ? f64Ty : charTy;
         PHINode *phi = pb.CreatePHI(resTy, 2, "eco.cur");
         phi->addIncoming(cellVal, cellBB);
         phi->addIncoming(chunkVal, chunkBB);
@@ -2200,7 +2202,7 @@ static void expandListCursorMarkers(Module &m) {
     expandListCursorMarker(m, "__eco_list_cur_inline", 0);
     expandListCursorMarker(m, "__eco_list_cur_i64_inline", 1);
     expandListCursorMarker(m, "__eco_list_cur_f64_inline", 2);
-    expandListCursorMarker(m, "__eco_list_cur_i16_inline", 3);
+    expandListCursorMarker(m, "__eco_list_cur_char_inline", 3);
     expandListCursorMarker(m, "__eco_list_step_node_inline", 4);
     expandListCursorMarker(m, "__eco_list_step_idx_inline", 5);
 }
@@ -2435,7 +2437,7 @@ static void expandGetTagMarkers(Module &m) {
     }
 
     LLVMContext &ctx = m.getContext();
-    Type *i16Ty = Type::getInt16Ty(ctx);
+    Type *u16Ty = Type::getInt16Ty(ctx);  // Custom.ctor is u16 (not Char)
     Type *i32Ty = Type::getInt32Ty(ctx);
     Type *i64Ty = Type::getInt64Ty(ctx);
     Type *i8Ty = Type::getInt8Ty(ctx);
@@ -2506,7 +2508,7 @@ static void expandGetTagMarkers(Module &m) {
         Value *ctorPtr =
             cb.CreateGEP(i8Ty, base, ConstantInt::get(i64Ty, 8), "eco.ctorp");
         Value *ctor = cb.CreateZExt(
-            cb.CreateAlignedLoad(i16Ty, ctorPtr, Align(8), "eco.ctor"), i32Ty);
+            cb.CreateAlignedLoad(u16Ty, ctorPtr, Align(8), "eco.ctor"), i32Ty);
         BasicBlock *custBB = custTerm->getParent();
 
         IRBuilder<> ob(otherTerm);

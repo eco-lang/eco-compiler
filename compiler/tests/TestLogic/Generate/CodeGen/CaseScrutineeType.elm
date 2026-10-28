@@ -12,7 +12,7 @@ that attribute, or with an empty one, is not checked. The type each kind calls
 for is:
 
   - `int`: `i64`.
-  - `chr`: `i16`.
+  - `chr`: `i32`.
   - `bool`: `i1`.
   - `ctor` and `str`: `!eco.value`.
 
@@ -40,7 +40,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 {-| Compiles `srcModule` to MLIR with `runToMlir` and returns an expectation that
 passes when every `eco.case` in the result whose `case_kind` is `int`, `chr`,
 `bool`, `ctor` or `str` has a scrutinee of the type that kind calls for: `i64`,
-`i16`, `i1`, or `!eco.value` for the last two. An `eco.case` without recorded
+`i32`, `i1`, or `!eco.value` for the last two. An `eco.case` without recorded
 operand types is skipped.
 
 It fails with the compilation error when `runToMlir` fails. Otherwise it fails
@@ -106,12 +106,12 @@ checkCaseScrutinee op =
                         Nothing
 
                 Just "chr" ->
-                    if scrutineeType /= I16 then
+                    if scrutineeType /= I32 then
                         Just
                             { opId = op.id
                             , opName = op.name
                             , message =
-                                "case_kind='chr' requires i16 (ECO char) scrutinee, got "
+                                "case_kind='chr' requires i32 (ECO char) scrutinee, got "
                                     ++ typeToString scrutineeType
                             }
 

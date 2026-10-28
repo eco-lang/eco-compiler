@@ -19,7 +19,7 @@ any depth of the module and reports one with:
 
   - a number of results other than one;
   - a result type other than `!eco.value` (a boxed value) or one of the
-    primitives `i64`, `i16` and `f64`, in either mode. In particular an `i1`
+    primitives `i64`, `i32` and `f64`, in either mode. In particular an `i1`
     result is rejected: a Bool crosses the closure boundary boxed
     (REP\_ABI\_001, CGEN\_009), and a typed-mode result is the callee's
     result type (CGEN\_056), so it is never `i1` either. `PapExtendOp::verify`
@@ -117,7 +117,7 @@ checkPapExtendOp op =
                 Just
                     { opId = op.id
                     , opName = op.name
-                    , message = mode ++ callKindText ++ " result should be !eco.value, i16, i64, or f64, got " ++ typeToString resultType
+                    , message = mode ++ callKindText ++ " result should be !eco.value, i32, i64, or f64, got " ++ typeToString resultType
                     }
 
             else
@@ -145,7 +145,7 @@ checkPapExtendOp op =
                 }
 
 
-{-| Returns whether `t` is `!eco.value`, `i16`, `i64` or `f64`, the result
+{-| Returns whether `t` is `!eco.value`, `i32`, `i64` or `f64`, the result
 types an `eco.papExtend` op may have in either mode. `PapExtendOp::verify`
 accepts the same set on a generic-mode op.
 -}
@@ -155,7 +155,7 @@ isValidPapExtendResultType t =
         NamedStruct name ->
             name == "eco.value"
 
-        I16 ->
+        I32 ->
             True
 
         I64 ->

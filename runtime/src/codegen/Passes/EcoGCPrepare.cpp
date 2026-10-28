@@ -52,7 +52,7 @@ static bool isMayAllocOp(Operation *op) {
 static bool hasFixedAllocSize(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
-        return inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16);
+        return inputType.isInteger(64) || inputType.isF64() || eco::isEcoCharType(inputType);
     }
     return isa<eco::AllocateStringOp>(op) ||
            isa<eco::ListConstructOp>(op) ||
@@ -81,7 +81,7 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
         return static_cast<int64_t>(eco::detail::layout::customByteSize(customOp.getSize()));
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
-        if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
+        if (inputType.isInteger(64) || inputType.isF64() || eco::isEcoCharType(inputType))
             return 16;
     }
     return 0;
@@ -150,7 +150,7 @@ static bool splitInlineGroupsEnabled() {
 static bool hasInlineSingletonLowering(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type t = boxOp.getValue().getType();
-        return t.isInteger(64) || t.isF64() || t.isInteger(16);
+        return t.isInteger(64) || t.isF64() || eco::isEcoCharType(t);
     }
     if (isa<eco::ListConstructOp>(op) || isa<eco::Tuple2ConstructOp>(op) ||
         isa<eco::Tuple3ConstructOp>(op))

@@ -129,7 +129,7 @@ typedef enum {
 // Heap header that every heap object must have.
 //
 // The `unboxed` bitfield holds 2 bits per slot: 00=boxed HPointer, 01=Int (i64),
-// 10=Float (f64), 11=Char (u16). Cons uses 1 slot (bits 1:0), Tuple2 uses 2
+// 10=Float (f64), 11=Char (u32 code point, zero-extended). Cons uses 1 slot (bits 1:0), Tuple2 uses 2
 // slots (bits 3:0), Tuple3 uses 3 slots (bits 5:0), ElmArray uses 1 uniform
 // kind (bits 1:0).
 //
@@ -245,7 +245,7 @@ typedef union {
     HPointer p;
     i64 i;
     f64 f;
-    u16 c;
+    u32 c;  // Char: Unicode code point. Write via unboxedChar() so bits 32..63 are zero.
 } Unboxable;
 static_assert(sizeof(Unboxable) == 8, "Unboxable must be 64 bits");
 
@@ -259,7 +259,7 @@ static_assert(sizeof(Unboxable) == 8, "Unboxable must be 64 bits");
 //   00 = boxed HPointer (`.p`)
 //   01 = unboxed Int i64 (`.i`)
 //   10 = unboxed Float f64 (`.f`)
-//   11 = unboxed Char u16 (`.c`)
+//   11 = unboxed Char: u32 code point (`.c`), zero-extended to 64 bits
 //
 // Slot i's kind lives at bits [2i, 2i+1]. Bool and String are always boxed.
 
@@ -436,13 +436,11 @@ typedef struct {
     i64 value;
 } ElmInt;
 
-// Boxed Unicode character (UTF-16 code unit).
+// Boxed Unicode code point (0..0x10FFFF; lone surrogates are their unit value).
 typedef struct {
     Header header;
-    u16 value;
-    u16 padding1;  // Padding to maintain 8-byte alignment.
-    u16 padding2;
-    u16 padding3;
+    u32 value;
+    u32 padding;  // Padding to maintain 8-byte alignment.
 } ElmChar;
 
 // Note: Empty strings use the Const_Empty constant instead of heap allocation.
@@ -678,7 +676,7 @@ typedef struct {
     u64 max_values : 11;     // Stage arity: total args this evaluator expects (0..2047).
     u64 result_kind: 2;      // ParamKind: real C-ABI return kind of `evaluator`
                              //   0 = PK_Boxed (HPtr return), 1 = PK_Int (int64_t),
-                             //   2 = PK_Float (double), 3 = PK_Char (uint16_t).
+                             //   2 = PK_Float (double), 3 = PK_Char (uint32_t code point).
                              // Read by every closure-invocation entry point so
                              // C++ kernel callers can dispatch the function-pointer
                              // cast without per-call-site K plumbing.

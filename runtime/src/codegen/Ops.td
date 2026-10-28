@@ -31,7 +31,7 @@ def Eco_Dialect : Dialect {
 
     Key design decisions:
     - `eco.value` is an opaque pointer to heap-allocated Elm values
-    - Int, Float and Char can be unboxed as i64, f64, i16 (in SSA and in
+    - Int, Float and Char can be unboxed as i64, f64, i32 (in SSA and in
       heap/closure fields); Bool is i1 in SSA only and is always
       `!eco.value` (embedded True/False constant) in heap/closure storage
     - No write barriers needed due to Elm's immutability
@@ -209,7 +209,11 @@ def Eco_ConstantKind : I32EnumAttr<"ConstantKind", "Eco embedded constant kind",
 // Unboxed primitive types matching Elm semantics
 def Eco_Int   : I<64>;   // Elm Int (64-bit signed)
 def Eco_Float : F<64>;   // Elm Float (IEEE 754 double)
-def Eco_Char  : I<16>;   // Elm Char (Unicode BMP code point)
+// Elm Char is a Unicode code point 0..0x10FFFF in i32 (CGEN_015); a kind-3
+// heap/closure slot holds it zero-extended to 64 bits (REP_HEAP_002). Note
+// i32 is ALSO the ctor-tag type (eco.get_tag) and the BytesFusion counter
+// type: those never reach a slot-kind classifier (eco::isEcoCharType).
+def Eco_Char  : I<32>;   // Elm Char (Unicode code point 0..0x10FFFF)
 def Eco_Bool  : I<1>;    // Elm Bool (True/False)
 
 // Any value that can appear in Eco operations (boxed or unboxed)
@@ -254,7 +258,7 @@ def Eco_CaseOp : Eco_Op<"case", [
     - `i1` + `case_kind="bool"`: Boolean fanout (True/False patterns)
     - `i1` + `case_kind="ctor"`: Boolean from Chain lowering (legacy compatibility)
     - `i64` + `case_kind="int"`: Integer literal matching (direct comparison)
-    - `i16` + `case_kind="chr"`: Character literal matching (direct comparison)
+    - `i32` + `case_kind="chr"`: Character literal matching (direct comparison)
 
     eco.case is a value-producing expression op, NOT a terminator. It produces
     SSA results that can be used by subsequent operations. Each alternative
@@ -287,7 +291,7 @@ def Eco_CaseOp : Eco_Op<"case", [
   }];
 
   let arguments = (ins
-    Eco_AnyValue:$scrutinee,                   // !eco.value, i1, i16, or i64
+    Eco_AnyValue:$scrutinee,                   // !eco.value, i1, i32 (Char), or i64
     DenseI64ArrayAttr:$tags,
     StrAttr:$case_kind,                        // Required: "ctor", "int", "chr", "str", or "bool"
     OptionalAttr<ArrayAttr>:$string_patterns   // For case_kind="str": N-1 string literals
@@ -588,7 +592,7 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   let description = [{
     Allocate a list cons cell: head :: tail.
 
-    Head can be boxed (!eco.value) or unboxed primitive (i64, f64, i16).
+    Head can be boxed (!eco.value) or unboxed primitive (i64, f64, i32 Char).
     Tail is always boxed (!eco.value). Nil is represented as an embedded
     constant via `eco.constant Nil`, not heap-allocated.
 
@@ -755,7 +759,7 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   let summary = "Construct a 2-tuple";
   let description = [{
     Construct a 2-tuple value. Elements may be boxed (!eco.value) or
-    unboxed primitives (i64, f64, i16).
+    unboxed primitives (i64, f64, i32 Char).
 
     Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
     `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
@@ -998,7 +1002,7 @@ def Eco_ArrayGetOp : Eco_Op<"array.get", [Pure]> {
     by the monomorphized element type:
     - i64 for Int elements (read unboxed from elements[])
     - f64 for Float elements (bitcast from i64 in elements[])
-    - i16 for Char elements (truncate from i64 in elements[])
+    - i32 for Char elements (truncate from i64 in elements[])
     - !eco.value for boxed elements (pointer from elements[])
 
     No bounds checking is performed (mirrors JsArray.unsafeGet semantics).
@@ -1023,7 +1027,7 @@ def Eco_ArraySetOp : Eco_Op<"array.set"> {
     determines how it is stored in elements[]:
     - i64 stored directly
     - f64 bitcast to i64
-    - i16 zero-extended to i64
+    - i32 (Char) zero-extended to i64
     - !eco.value stored as pointer bits
 
     No bounds checking (mirrors JsArray.unsafeSet semantics).
@@ -1073,7 +1077,7 @@ def Eco_ArraySingletonOp : Eco_Op<"array.singleton"> {
   let summary = "Allocate single-element Elm array";
   let description = [{
     Allocate a 1-element ElmArray. Element kind comes from the operand's
-    MLIR type (i64/f64/i16 unboxed, !eco.value boxed).
+    MLIR type (i64/f64/i32 unboxed, !eco.value boxed).
   }];
   let arguments = (ins Eco_AnyValue:$value);
   let results = (outs Eco_Value:$result);
@@ -1191,27 +1195,6 @@ def Eco_StringLengthOp : Eco_Op<"string.length", [Pure]> {
   let assemblyFormat = "$str attr-dict";
 }
 
-def Eco_StringCodeUnitAtOp : Eco_Op<"string.code_unit_at", [Pure]> {
-  let summary = "UTF-16 code unit at index (GC-LEAF-CALL to StringOps::charAt)";
-  let description = [{
-    Tag-dispatched over all six String forms; iterative over ropes (deep trees
-    cannot blow the C stack). Allocation-free, so the lowered call is gc-leaf and
-    callers need no rooting.
-
-    OUT-OF-RANGE AND EMPTY YIELD 0, not a trap - this mirrors StringOps::charAt
-    and is a caveat to document, never to "fix": consumers must bounds-check
-    against `eco.string.length` first. Result is `i16` (Eco_Char); widening to
-    Elm Int is the consumer's job via `eco.char.toInt`.
-
-    ```mlir
-    %c = eco.string.code_unit_at %s, %i
-    ```
-  }];
-  let arguments = (ins Eco_Value:$str, Eco_Int:$index);
-  let results = (outs Eco_Char:$result);
-  let assemblyFormat = "$str `,` $index attr-dict";
-}
-
 def Eco_StringAppendOp : Eco_Op<"string.append"> {
   let summary = "Concatenate two Strings (a ++ b), typed";
   let description = [{
@@ -1302,7 +1285,7 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
 
     `slot_kinds[i]` in {0 boxed, 1 Int, 2 Float, 3 Char} is the kind of
     captured operand i; it must equal the operand's MLIR type kind (i64 -> 1,
-    f64 -> 2, i16 -> 3, !eco.value -> 0); an empty array for zero captures.
+    f64 -> 2, i32 -> 3, !eco.value -> 0); an empty array for zero captures.
     The closure's kinds for uncaptured params come from the target
     signature. Stage arity <= 2047, captures
     <= 2046 (HEAP_078).
@@ -1437,7 +1420,7 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     `expandSatMarkers` puts a compiled fast edge in front of it that calls the
     closure's arity-monomorphised `$sat` entry directly when the closure's
     remaining arity, result kind and slot kinds all match the site.
-    Result type may be !eco.value, or a primitive (i64/f64/i16) when Mono
+    Result type may be !eco.value, or a primitive (i64/f64/i32) when Mono
     types the call as a primitive return — in that case the JIT lowers
     with the matching `desired_kind` and the runtime writes the primitive
     straight into the result slot. CGEN_052/CGEN_056 do not apply. Typed
@@ -1692,7 +1675,7 @@ def Eco_StoreGlobalOp : Eco_Op<"store_global", [
 def Eco_BoxOp : Eco_Op<"box", [Pure]> {
   let summary = "Box primitive value to eco.value";
   let description = [{
-    Box an unboxed primitive value (i64, f64, i16, i1) into an eco.value.
+    Box an unboxed primitive value (i64, f64, i32, i1) into an eco.value.
     This allocates an ElmInt, ElmFloat, or ElmChar object; Bool (i1) maps
     to the embedded True/False constant; no allocation occurs for Bool.
 
@@ -2725,7 +2708,7 @@ def Eco_CharToIntOp : Eco_Op<"char.toInt", [Pure]> {
     Get the Unicode code point of a character as an integer.
 
     ```mlir
-    %code = eco.char.toInt %c : i16 -> i64
+    %code = eco.char.toInt %c : i32 -> i64
     ```
   }];
   let arguments = (ins Eco_Char:$value);
@@ -2736,11 +2719,12 @@ def Eco_CharToIntOp : Eco_Op<"char.toInt", [Pure]> {
 def Eco_CharFromIntOp : Eco_Op<"char.fromInt", [Pure]> {
   let summary = "Convert Int to Char (Char.fromCode)";
   let description = [{
-    Create a character from a Unicode code point. Values outside valid
-    range (0-0xFFFF) are clamped.
+    Create a character from a Unicode code point. Values outside the valid
+    range 0..0x10FFFF become U+FFFD (Elm semantics); surrogate codes pass
+    through unchanged.
 
     ```mlir
-    %c = eco.char.fromInt %code : i64 -> i16
+    %c = eco.char.fromInt %code : i64 -> i32
     ```
   }];
   let arguments = (ins Eco_Int:$value);
@@ -2749,7 +2733,7 @@ def Eco_CharFromIntOp : Eco_Op<"char.fromInt", [Pure]> {
 }
 
 // Char comparisons - all return i1 (Bool)
-// Char is i16 representing a Unicode code point. Use unsigned predicates
+// Char is i32 representing a Unicode code point. Use unsigned predicates
 // for ordering (eq/ne are signedness-agnostic).
 
 def Eco_CharLtOp : Eco_Op<"char.lt", [Pure]> {
@@ -2839,7 +2823,7 @@ def Eco_CharCmpOrderOp : Eco_Op<"char.cmp_order", [Pure]> {
     are unsigned (mirrors `eco.char.lt`).
 
     ```mlir
-    %ord = eco.char.cmp_order %a, %b : i16
+    %ord = eco.char.cmp_order %a, %b : i32
     ```
   }];
   let arguments = (ins Eco_Char:$lhs, Eco_Char:$rhs);

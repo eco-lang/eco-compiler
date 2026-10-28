@@ -14,7 +14,7 @@ The types make a value's form in the intermediate code explicit and keep it sepa
 
 The boxed type, written `!eco.value`, is one machine word. It holds either the address of a heap object or an embedded constant, told apart by a bit in the word. True, False, the empty list and every constructor with no fields are embedded constants. How the word is encoded, and what each Elm type becomes in each representation, is described in [value-representation.md](../value-representation.md).
 
-Elm's primitives are plain MLIR types: Int is a 64-bit integer, Float a 64-bit float, Char a 16-bit integer and Bool a single bit (`i1`). The single-bit Bool exists only in the intermediate code. In heap fields, closures and at call boundaries a Bool is always boxed, as one of the two embedded constants.
+Elm's primitives are plain MLIR types: Int is a 64-bit integer, Float a 64-bit float, Char a 32-bit integer holding a Unicode code point and Bool a single bit (`i1`). The single-bit Bool exists only in the intermediate code. In heap fields, closures and at call boundaries a Bool is always boxed, as one of the two embedded constants.
 
 Six aggregate types hold a small group of values outside the heap: a pair, a triple, a record, a custom-type value, a list cell and a closure environment. They lower to LLVM struct values and never to heap pointers.
 
@@ -190,14 +190,14 @@ Several descriptions of the dialect outside the code claim more than the code do
 
 The design document on MLIR verification shows the call, closure-creation and extension verifiers checking full signatures; only the bounded extension check exists. It also says the closure-capture checking pass always runs before lowering and that verification runs between passes; that pass is compiled in, and inter-pass verification is on, only in validation builds. Comments in the call and extension verifiers say signature checking is deferred to that pass, but it checks only closure captures.
 
-The dialect description in the TableGen file gives Char as a 32-bit integer and mentions a reference count in the header. Char is 16 bits, and the collector traces. The comment above the field fold says a kind-0 slot accepts a single-bit operand, which the slot-kind check rejects.
+The dialect description in the TableGen file mentions a reference count in the header, but the collector traces. The comment above the field fold says a kind-0 slot accepts a single-bit operand, which the slot-kind check rejects.
 
 Some invariant rows are stale. Two say the aggregate operations have no producer, which the compiler's default output contradicts. One says the generic extension of a partial application always yields a boxed value; it can yield a primitive. Two rows and a few code comments cite the wrong identifier for the closure-environment and aggregate rules, and two rows mention a deleted allocation operation. The References list gives the identifiers.
 
 ## Examples of changes that fit the theory
 A change fits when it keeps the verifier local, keeps layout derived from types, and gives every fact one representation.
 
-- Another typed intrinsic is one operation with a precise description and a lowering pattern. Mark it pure only if it neither allocates nor has observable effects, or if it reads immutable data and its description says why. A variable-size allocating operation stays without traits. String and list append, structural equality, the code-unit read and list map have this shape.
+- Another typed intrinsic is one operation with a precise description and a lowering pattern. Mark it pure only if it neither allocates nor has observable effects, or if it reads immutable data and its description says why. A variable-size allocating operation stays without traits. String and list append, structural equality and list map have this shape.
 - Another allocating operation declares exactly its own operands, with a verifier that checks their count against its declared size, and leaves rooting to LLVM's statepoint rewriting.
 - Widening a size limit changes the constant in the runtime's heap header together with the header encoding. The verifier picks up the constant itself; add a rejected-input test at the edge, as for arity 2047 and fields 2040 and 2047.
 - A tighter check becomes another case in an operation's verifier, or in its symbol check if it needs one lookup, with a negative test under `test/codegen/`. The bounded extension check is the model: walk a short way, and give up when unsure.

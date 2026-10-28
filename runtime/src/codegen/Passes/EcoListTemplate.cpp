@@ -184,7 +184,7 @@ void walkChain(Value v, Value base, OpOperand &slot, Chain &ch,
         bool htOk = (consKind == 0 && isa<eco::ValueType>(ht)) ||
                     (consKind == 1 && ht.isInteger(64)) ||
                     (consKind == 2 && ht.isF64()) ||
-                    (consKind == 3 && ht.isInteger(16));
+                    (consKind == 3 && eco::isEcoCharType(ht));
         if (!htOk) {
             if (ch.bs) ch.bs->wcHeadTy++;
             ch.ok = false;
@@ -656,7 +656,7 @@ struct EcoListTemplatePass
                 Value bits = h;
                 if (h.getType().isF64())
                     bits = cb.create<arith::BitcastOp>(cl, i64, h);
-                else if (h.getType().isInteger(16))
+                else if (eco::isEcoCharType(h.getType()))
                     bits = cb.create<arith::ExtUIOp>(cl, i64, h);
                 Value kc = cb.create<arith::ConstantOp>(
                     cl, cb.getI64IntegerAttr(kind));
@@ -759,7 +759,7 @@ struct EcoListTemplatePass
         switch (kind) {
             case 1: return IntegerType::get(ctx, 64);
             case 2: return Float64Type::get(ctx);
-            case 3: return IntegerType::get(ctx, 16);
+            case 3: return eco::getEcoCharType(ctx);
             default: return eco::ValueType::get(ctx);
         }
     }
@@ -779,7 +779,7 @@ struct EcoListTemplatePass
         Value bits = y;
         if (y.getType().isF64())
             bits = b.create<arith::BitcastOp>(loc, i64, y);
-        else if (y.getType().isInteger(16))
+        else if (eco::isEcoCharType(y.getType()))
             bits = b.create<arith::ExtUIOp>(loc, i64, y);
         Value kc = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(outKind));
         b.create<eco::CallOp>(loc, TypeRange{}, ValueRange{bits, kc},
@@ -1058,7 +1058,7 @@ struct EcoListTemplatePass
                 bool htOk = (ck == 0 && isa<eco::ValueType>(ht)) ||
                             (ck == 1 && ht.isInteger(64)) ||
                             (ck == 2 && ht.isF64()) ||
-                            (ck == 3 && ht.isInteger(16));
+                            (ck == 3 && eco::isEcoCharType(ht));
                 if (!htOk) {
                     plan.ok = false;
                     return;
@@ -1291,7 +1291,7 @@ struct EcoListTemplatePass
                 Value bits = h;
                 if (h.getType().isF64())
                     bits = cb.create<arith::BitcastOp>(cl, i64, h);
-                else if (h.getType().isInteger(16))
+                else if (eco::isEcoCharType(h.getType()))
                     bits = cb.create<arith::ExtUIOp>(cl, i64, h);
                 Value kc = cb.create<arith::ConstantOp>(
                     cl, cb.getI64IntegerAttr(kind));

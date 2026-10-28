@@ -15,7 +15,7 @@ a raw machine value or as a pointer to a heap object, and this module is where
 those decisions are made.
 
 A value that travels as a machine value is _unboxed_: an Int is an `i64`, a
-Float an `f64`, a Char an `i16`. Any other value is _boxed_: it is a
+Float an `f64`, a Char an `i32`. Any other value is _boxed_: it is a
 `!eco.value`, a reference to a heap object or an embedded constant. The
 decision depends on the context the value is in, and the module rests on three
 rules, one per context.
@@ -94,7 +94,7 @@ ecoFloat =
     MonoAbi.ecoFloat
 
 
-{-| The type of an unboxed Char, a 16-bit integer.
+{-| The type of an unboxed Char, a Unicode code point in a 32-bit integer.
 -}
 ecoChar : MlirType
 ecoChar =
@@ -128,7 +128,7 @@ canUnbox monoType =
 function parameter or result, a closure capture, or an operand of a partial
 application.
 
-Int is `i64`, Float `f64` and Char `i16`. Every other type, Bool included, is
+Int is `i64`, Float `f64` and Char `i32`. Every other type, Bool included, is
 `!eco.value`. The mapping is defined in
 `Compiler.AST.MonoAbi`, so that passes below the back end can use it too.
 
@@ -266,7 +266,7 @@ isAggValueType ty =
 
 
 {-| Returns whether the MLIR type is one of the unboxed primitive types,
-`i64`, `f64` or `i16`. `i1` is not among them.
+`i64`, `f64` or `i32` (Char). `i1` is not among them.
 -}
 isUnboxable : MlirType -> Bool
 isUnboxable ty =
@@ -277,7 +277,7 @@ isUnboxable ty =
         F64 ->
             True
 
-        I16 ->
+        I32 ->
             True
 
         _ ->
@@ -285,7 +285,7 @@ isUnboxable ty =
 
 
 {-| Returns the slot kind of a value of the given MLIR type, for `slot_kinds`
-or a tuple bitmap: 1 for `i64`, 2 for `f64`, 3 for `i16`, and 0 (boxed) for
+or a tuple bitmap: 1 for `i64`, 2 for `f64`, 3 for `i32` (Char), and 0 (boxed) for
 anything else. These are the kinds the layouts give Int, Float and Char.
 -}
 mlirTypeToKind : MlirType -> Int
@@ -297,7 +297,7 @@ mlirTypeToKind ty =
         F64 ->
             2
 
-        I16 ->
+        I32 ->
             3
 
         _ ->

@@ -24,7 +24,7 @@ struct HeapSnapshot {
         union {
             i64 int_val;
             f64 float_val;
-            u16 char_val;
+            u32 char_val;
             struct {
                 Unboxable a, b;
                 u32 unboxed;

@@ -40,8 +40,8 @@ module {
     eco.return %r : i64
   }
 
-  func.func private @ord_char(%a: i16, %b: i16) -> i64 {
-    %o = eco.char.cmp_order %a, %b : i16
+  func.func private @ord_char(%a: i32, %b: i32) -> i64 {
+    %o = eco.char.cmp_order %a, %b : i32
     %r = eco.case %o : !eco.value [0, 1, 2] -> (i64) {case_kind = "ctor"} {
       %c1 = arith.constant 1 : i64
       eco.yield %c1 : i64
@@ -124,19 +124,20 @@ module {
     eco.dbg %br9 : !eco.value
     // CHECK: 2
 
-    // --- Char at the u16 extremes: 0x0000 vs 0xFFFF must compare UNSIGNED,
-    // so 0x0000 < 0xFFFF (a signed compare would invert this).
-    %clo = arith.constant 0 : i16
-    %chi = arith.constant -1 : i16
-    %r10 = func.call @ord_char(%clo, %chi) : (i16, i16) -> i64
+    // --- Char (i32) at the bit-pattern extremes: 0x00000000 vs 0xFFFFFFFF
+    // must compare UNSIGNED, so 0 < 0xFFFFFFFF (a signed compare would invert
+    // this). 0xFFFFFFFF is not a code point; it only pins the predicate.
+    %clo = arith.constant 0 : i32
+    %chi = arith.constant -1 : i32
+    %r10 = func.call @ord_char(%clo, %chi) : (i32, i32) -> i64
     %br10 = eco.box %r10 : i64 -> !eco.value
     eco.dbg %br10 : !eco.value
     // CHECK: 1
-    %r11 = func.call @ord_char(%chi, %clo) : (i16, i16) -> i64
+    %r11 = func.call @ord_char(%chi, %clo) : (i32, i32) -> i64
     %br11 = eco.box %r11 : i64 -> !eco.value
     eco.dbg %br11 : !eco.value
     // CHECK: 3
-    %r12 = func.call @ord_char(%chi, %chi) : (i16, i16) -> i64
+    %r12 = func.call @ord_char(%chi, %chi) : (i32, i32) -> i64
     %br12 = eco.box %r12 : i64 -> !eco.value
     eco.dbg %br12 : !eco.value
     // CHECK: 2

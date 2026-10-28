@@ -79,8 +79,8 @@ static void test_eco_alloc_float_stores_value() {
 static void test_eco_alloc_char_stores_value() {
     rc::check("eco_alloc_char stores correct value", []() {
         initAllocator();
-        // Generate valid Unicode code points (BMP range for u16)
-        uint32_t value = *rc::gen::inRange<uint32_t>(0, 0xFFFF);
+        // Any Unicode code point, astral included (a Char is 32 bits).
+        uint32_t value = *rc::gen::inRange<uint32_t>(0, 0x110000);
 
         auto hptr = eco_alloc_char(value);
         RC_ASSERT(hptr.toBits() != 0);
@@ -90,7 +90,7 @@ static void test_eco_alloc_char_stores_value() {
 
         ElmChar* elmChar = static_cast<ElmChar*>(obj);
         RC_ASSERT(elmChar->header.tag == Tag_Char);
-        RC_ASSERT(elmChar->value == static_cast<u16>(value));
+        RC_ASSERT(elmChar->value == value);
     });
 }
 

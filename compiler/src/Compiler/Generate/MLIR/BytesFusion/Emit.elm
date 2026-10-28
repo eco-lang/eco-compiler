@@ -783,7 +783,7 @@ expressions can refer to the item, emits the body operations with their own
 cursor, and passes on the new cursor and the tail.
 
 The head is projected at the item type's ABI type: `i64` for an `Int`, `f64`
-for a `Float`, `i16` for a `Char`, and `!eco.value` for anything else.
+for a `Float`, `i32` for a `Char`, and `!eco.value` for anything else.
 
     %list = <iterExpr>
     %cur_end, %rest = scf.while (%cur = <cursor>, %lst = %list) {
@@ -1949,7 +1949,7 @@ emitJustResult state =
 
 
 {-| Emits `Just` the value `varName`. A value whose recorded type is `i64`,
-`f64` or `i16` is stored unboxed, with that type's slot kind; anything else,
+`f64` or `i32` is stored unboxed, with that type's slot kind; anything else,
 including a value of unknown type, is stored as an `!eco.value`.
 -}
 emitJustResultWithVar : String -> DecoderEmitState -> ( List MlirOp, String, Context )

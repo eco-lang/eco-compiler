@@ -12,7 +12,7 @@ when the type is exactly the one the case kind requires:
 
   - `bool` requires `i1`.
   - `int` requires `i64`.
-  - `chr` requires `i16`, the type of an unboxed Char.
+  - `chr` requires `i32`, the type of an unboxed Char.
   - `ctor` and `str` require `!eco.value`, the type of a boxed value.
 
 A case kind outside this list is itself a violation.
@@ -54,7 +54,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 {-| Returns an expectation that compiles `srcModule` to MLIR with
 `TestLogic.TestPipeline.runToMlir` and passes when every `eco.case` in the
 result has a scrutinee of the type its case kind requires: `i1` for `bool`,
-`i64` for `int`, `i16` for `chr`, and `!eco.value` for `ctor` and `str`.
+`i64` for `int`, `i32` for `chr`, and `!eco.value` for `ctor` and `str`.
 
 An `eco.case` naming any other case kind is a violation. One whose `case_kind`
 is missing or is neither a string nor a symbol reference, or whose
@@ -131,7 +131,7 @@ validateCaseKind caseKind scrutineeType op =
                     ( Just I64, "i64" )
 
                 "chr" ->
-                    ( Just I16, "i16 (ECO char)" )
+                    ( Just I32, "i32 (ECO char)" )
 
                 "ctor" ->
                     ( Just (NamedStruct "eco.value"), "eco.value" )

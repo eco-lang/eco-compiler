@@ -3,6 +3,7 @@
 #include "Allocator.hpp"
 #include "HeapGenerators.hpp"
 #include "OldGenSpace.hpp"
+#include "HeapHelpers.hpp"
 
 namespace Elm {
 
@@ -51,7 +52,7 @@ static Unboxable makeUnboxableFromConsHead(const ConsHeadDesc& head, const std::
                 val.f = head.float_val;
                 break;
             case UnboxedChar:
-                val.c = head.char_val;
+                val = alloc::unboxedChar(head.char_val);
                 break;
             case UnboxedUnit:
                 val.p = createConstant(Const_Empty);
@@ -100,7 +101,7 @@ static Unboxable makeUnboxable(bool is_boxed, const HeapObjectDesc &desc, const 
                 val.f = desc.float_val;
                 break;
             case UnboxedChar:
-                val.c = desc.char_val;
+                val = alloc::unboxedChar(desc.char_val);
                 break;
             case UnboxedUnit:
                 val.p = createConstant(Const_Empty);

@@ -32,7 +32,7 @@ struct ConsHeadDesc {
     Unboxed unboxed;     // Type of unboxed value when !head_boxed.
     i64 int_val;
     f64 float_val;
-    u16 char_val;
+    u32 char_val;  // Unicode code point (0..0x10FFFF)
 };
 
 /** Describes a linked list (allocated as Cons cells terminated by Nil). */
@@ -50,7 +50,7 @@ struct HeapObjectDesc {
     // Primitive values.
     i64 int_val;
     f64 float_val;
-    u16 char_val;
+    u32 char_val;  // Unicode code point (0..0x10FFFF)
 
     // For Tuple2/Tuple3: indices into the allocated objects array.
     size_t child_a;
@@ -157,7 +157,7 @@ struct Arbitrary<Elm::ConsHeadDesc> {
                                   Elm::UnboxedEmptyString)),
             gen::set(&Elm::ConsHeadDesc::int_val, gen::arbitrary<Elm::i64>()),
             gen::set(&Elm::ConsHeadDesc::float_val, gen::arbitrary<Elm::f64>()),
-            gen::set(&Elm::ConsHeadDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF))
+            gen::set(&Elm::ConsHeadDesc::char_val, gen::inRange<Elm::u32>(0, 0x110000))
         );
     }
 };
@@ -203,7 +203,7 @@ struct Arbitrary<Elm::HeapObjectDesc> {
                                   Elm::UnboxedEmptyString)),
             gen::set(&Elm::HeapObjectDesc::int_val, gen::arbitrary<Elm::i64>()),
             gen::set(&Elm::HeapObjectDesc::float_val, gen::arbitrary<Elm::f64>()),
-            gen::set(&Elm::HeapObjectDesc::char_val, gen::inRange<Elm::u16>(0, 0xFFFF)),
+            gen::set(&Elm::HeapObjectDesc::char_val, gen::inRange<Elm::u32>(0, 0x110000)),
             // Child indices for Tuple2/Tuple3.
             gen::set(&Elm::HeapObjectDesc::child_a, gen::arbitrary<size_t>()),
             gen::set(&Elm::HeapObjectDesc::child_b, gen::arbitrary<size_t>()),

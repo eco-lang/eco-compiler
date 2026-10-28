@@ -5,7 +5,7 @@ call to the `List.cons` kernel can be replaced by an inline list construction
 (`ConstructList`), and what MLIR type the new cell's head slot gets.
 
 The head slot type decides how the head is stored in the list cell: unboxed as
-`i64`, `f64` or `i16`, or boxed as `!eco.value`. The heads given a primitive slot
+`i64`, `f64` or `i32`, or boxed as `!eco.value`. The heads given a primitive slot
 here (Int, Float and Char) are the heads for which
 `Compiler.Generate.MLIR.KernelAbi` calls the `_Int`, `_Float` and `_Char`
 variants of the `List.cons` kernel. A head that is an unsettled `number` type
@@ -30,7 +30,7 @@ The tests establish:
 
   - A String head, with String list tail and result, gives a `!eco.value` head
     slot.
-  - An Int head gives an `i64` slot, a Float head `f64` and a Char head `i16`,
+  - An Int head gives an `i64` slot, a Float head `f64` and a Char head `i32`,
     each with a list of its own type as tail and result.
   - A Bool head gives a `!eco.value` slot, not a primitive one.
   - A head that is a `number` type variable (`MVar _ CNumber`) is declined,
@@ -93,7 +93,7 @@ suite =
                 \_ ->
                     consOf Mono.MFloat (Mono.MList 0 Mono.MFloat) (Mono.MList 0 Mono.MFloat)
                         |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoFloat }))
-            , test "Char head -> i16 slot (the _Char axis)" <|
+            , test "Char head -> i32 slot (the _Char axis)" <|
                 \_ ->
                     consOf Mono.MChar (Mono.MList 0 Mono.MChar) (Mono.MList 0 Mono.MChar)
                         |> Expect.equal (Just (KernelIntrinsics.ConstructList { headMlirType = Types.ecoChar }))

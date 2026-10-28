@@ -1278,7 +1278,8 @@ The text is one character, or the escape sequence as the parser stores it (a
 `\u{...}` source escape is stored as `\uXXXX`):
 a backslash followed by `n`, `r`, `t` or any other character, which then
 stands for itself, or a single `\uXXXX` escape. Text of any other form gives
-0, except that text of two `\u` escapes gives a meaningless number.
+0. Two `\u` escapes forming a surrogate pair (the parser's spelling of a
+Char above U+FFFF) give the code point they encode, above `0xFFFF`.
 
 -}
 decodeChrPatternCode : String -> Int
@@ -1302,10 +1303,36 @@ decodeChrPatternCode c =
                     Char.toCode escaped
 
         '\\' :: 'u' :: hexChars ->
-            List.foldl (\ch acc -> acc * 16 + hexDigitToInt ch) 0 hexChars
+            decodeUnicodeEscapeChars hexChars
 
         _ ->
             0
+
+
+{-| Returns the code point of a `\uXXXX` escape whose characters after the
+`u` are `chars`. A high surrogate followed by a `\uXXXX` low surrogate gives
+the code point the pair encodes, by the same formula as
+`Expr.decodeSurrogatePair`.
+-}
+decodeUnicodeEscapeChars : List Char -> Int
+decodeUnicodeEscapeChars chars =
+    let
+        hexValue digits =
+            List.foldl (\ch acc -> acc * 16 + hexDigitToInt ch) 0 digits
+
+        hi =
+            hexValue (List.take 4 chars)
+    in
+    case List.drop 4 chars of
+        '\\' :: 'u' :: loChars ->
+            if hi >= 0xD800 && hi <= 0xDBFF then
+                0x00010000 + ((hi - 0xD800) * 0x0400) + (hexValue (List.take 4 loChars) - 0xDC00)
+
+            else
+                hi
+
+        _ ->
+            hi
 
 
 {-| Returns the value of a hexadecimal digit of either case, or 0 for any
@@ -1363,7 +1390,7 @@ caseKindFromTest test =
 
 
 {-| Returns the scrutinee type an `eco.case` of `caseKind` takes: `i64` for
-`"int"`, `i16` for `"chr"`, and `!eco.value` for any other kind.
+`"int"`, `i32` for `"chr"`, and `!eco.value` for any other kind.
 -}
 scrutineeTypeFromCaseKind : String -> MlirType
 scrutineeTypeFromCaseKind caseKind =

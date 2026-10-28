@@ -1481,7 +1481,7 @@ extern "C" HPtr eco_alloc_float(double value) {
 extern "C" HPtr eco_alloc_char(uint32_t value) {
     void* obj = eco_alloc_with_roots(Tag_Char, sizeof(ElmChar), nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
-    static_cast<ElmChar*>(obj)->value = static_cast<u16>(value);
+    static_cast<ElmChar*>(obj)->value = static_cast<u32>(value);
     return ptrToHPointer(obj);
 }
 
@@ -1822,7 +1822,7 @@ extern "C" HPtr eco_alloc_char_fast(uint32_t value) {
     hdr->tag = Tag_Char;
     hdr->size = static_cast<u32>(sizeof(ElmChar));
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
-    elmChar->value = static_cast<u16>(value);
+    elmChar->value = static_cast<u32>(value);
 
     return ptrToHPointer(obj);
 }
@@ -1832,7 +1832,7 @@ extern "C" HPtr eco_alloc_char_slow(uint32_t value) {
     if (!obj) return HPtr::fromBits(0);
 
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
-    elmChar->value = static_cast<u16>(value);
+    elmChar->value = static_cast<u32>(value);
 
     return ptrToHPointer(obj);
 }
@@ -1963,7 +1963,7 @@ extern "C" HPtr eco_init_char_at(void* obj, uint32_t value) {
     hdr->tag = Tag_Char;
     hdr->size = static_cast<u32>(sizeof(ElmChar));
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
-    elmChar->value = static_cast<u16>(value);
+    elmChar->value = static_cast<u32>(value);
     return ptrToHPointer(obj);
 }
 
@@ -2326,9 +2326,9 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
             break;
         }
         case 3: { // PK_Char
-            uint16_t c;
+            uint32_t c;
             memcpy(&c, base, sizeof(c));
-            *static_cast<uint16_t*>(result_slot) = c;
+            *static_cast<uint32_t*>(result_slot) = c;
             break;
         }
         default:
@@ -2345,7 +2345,7 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
 //   - layout->kinds[i] == 0 (PK_Boxed)  → typed_args[i] is an HPointer.
 //   - layout->kinds[i] == 1 (PK_Int)    → typed_args[i] is a raw i64.
 //   - layout->kinds[i] == 2 (PK_Float)  → typed_args[i] is f64 bits in i64.
-//   - layout->kinds[i] == 3 (PK_Char)   → typed_args[i] is i16 zext in i64.
+//   - layout->kinds[i] == 3 (PK_Char)   → typed_args[i] is the i32 code point zext in i64.
 // `args_layout` may be null only when num_args == 0.
 //
 // `args_layout->result_kind` (`K`) is the closure evaluator's real C-ABI
@@ -2379,7 +2379,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
             case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
             case 1: *static_cast<int64_t*>(result_slot) = 0; break;
             case 2: *static_cast<double*>(result_slot) = 0.0; break;
-            case 3: *static_cast<uint16_t*>(result_slot) = 0; break;
+            case 3: *static_cast<uint32_t*>(result_slot) = 0; break;
         }
         return;
     }
@@ -2549,7 +2549,7 @@ inline uint64_t convertArgToSlotKind(uint64_t raw, uint32_t callerKind, uint32_t
         switch (slotKind) {
             case 1: { int64_t v; memcpy(&v, base, sizeof(v)); return static_cast<uint64_t>(v); }
             case 2: { double f; memcpy(&f, base, sizeof(f)); uint64_t r; memcpy(&r, &f, sizeof(r)); return r; }
-            case 3: { u16 c; memcpy(&c, base, sizeof(c)); return static_cast<uint64_t>(c); }
+            case 3: { u32 c; memcpy(&c, base, sizeof(c)); return static_cast<uint64_t>(c); }
             default: assert(false && "unreachable slotKind"); __builtin_unreachable();
         }
     }
@@ -2558,7 +2558,7 @@ inline uint64_t convertArgToSlotKind(uint64_t raw, uint32_t callerKind, uint32_t
         switch (callerKind) {
             case 1: return eco_alloc_int(static_cast<int64_t>(raw)).toBits();
             case 2: { double f; memcpy(&f, &raw, sizeof(f)); return eco_alloc_float(f).toBits(); }
-            case 3: return eco_alloc_char(static_cast<uint32_t>(raw & 0xFFFFu)).toBits();
+            case 3: return eco_alloc_char(static_cast<uint32_t>(raw & 0xFFFFFFFFu)).toBits();
             default: assert(false && "unreachable callerKind"); __builtin_unreachable();
         }
     }
@@ -2726,8 +2726,8 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                     break;
                 }
                 case 3: { // PK_Char
-                    u16 c;
-                    memcpy(&c, base, sizeof(u16));
+                    u32 c;
+                    memcpy(&c, base, sizeof(u32));
                     raw = static_cast<uint64_t>(c);
                     break;
                 }
@@ -2750,7 +2750,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                     break;
                 }
                 case 3:
-                    raw = eco_alloc_char(static_cast<uint32_t>(raw & 0xFFFFu)).toBits();
+                    raw = eco_alloc_char(static_cast<uint32_t>(raw & 0xFFFFFFFFu)).toBits();
                     break;
                 default:
                     assert(false && "unreachable callerKind");
@@ -2801,7 +2801,7 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
 // `invokeSaturatedTyped` boxes or extracts as needed.
 //
 // This entry point exists so JIT-emitted call sites whose SSA result type
-// is primitive (i64/f64/i16) can avoid `eco_closure_call_saturated`'s
+// is primitive (i64/f64/i32 Char) can avoid `eco_closure_call_saturated`'s
 // hardcoded `desired_kind=0` boxing on the K!=0 path.
 extern "C" void eco_closure_call_saturated_eval(
     HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs,
@@ -2815,7 +2815,7 @@ extern "C" void eco_closure_call_saturated_eval(
             case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
             case 1: *static_cast<int64_t*>(result_slot) = 0; break;
             case 2: *static_cast<double*>(result_slot) = 0.0; break;
-            case 3: *static_cast<uint16_t*>(result_slot) = 0; break;
+            case 3: *static_cast<uint32_t*>(result_slot) = 0; break;
         }
         return;
     }
@@ -3028,11 +3028,11 @@ void invokeSaturatedTyped(uint64_t closure_bits,
             }
             break;
         }
-        case 3: {  // PK_Char (i16)
-            using FnT = uint16_t (*)(void**);
-            uint16_t r = reinterpret_cast<FnT>(eval)(combined_args);
+        case 3: {  // PK_Char (i32 code point)
+            using FnT = uint32_t (*)(void**);
+            uint32_t r = reinterpret_cast<FnT>(eval)(combined_args);
             if (desired_kind == 3) {
-                *static_cast<uint16_t*>(result_slot) = r;
+                *static_cast<uint32_t*>(result_slot) = r;
             } else if (desired_kind == 0) {
                 *static_cast<HPtr*>(result_slot) = eco_alloc_char(static_cast<uint32_t>(r));
             } else {
@@ -3124,8 +3124,11 @@ static void print_string(void* str) {
     output_char('"');
 }
 
-// Print a character value in Elm syntax
-static void print_char(u16 c) {
+// Print a character value (a Unicode code point) in Elm syntax. Like Elm's
+// Debug.toString, a printable non-ASCII Char is emitted as itself (UTF-8);
+// control characters and lone surrogates (not encodable in UTF-8) are
+// escaped as \uXXXX hex.
+static void print_char(u32 c) {
     output_char('\'');
     if (c == '\'') {
         output_text("\\'");
@@ -3137,10 +3140,29 @@ static void print_char(u16 c) {
         output_text("\\r");
     } else if (c == '\t') {
         output_text("\\t");
-    } else if (c < 32 || c >= 127) {
+    } else if (c < 32 || c == 127 || (c >= 0xD800 && c <= 0xDFFF) || c > 0x10FFFF) {
         output_format("\\u%04X", c);
-    } else {
+    } else if (c < 127) {
         output_char(static_cast<char>(c));
+    } else {
+        char buf[5];
+        if (c < 0x800) {
+            buf[0] = static_cast<char>(0xC0 | (c >> 6));
+            buf[1] = static_cast<char>(0x80 | (c & 0x3F));
+            buf[2] = '\0';
+        } else if (c < 0x10000) {
+            buf[0] = static_cast<char>(0xE0 | (c >> 12));
+            buf[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            buf[2] = static_cast<char>(0x80 | (c & 0x3F));
+            buf[3] = '\0';
+        } else {
+            buf[0] = static_cast<char>(0xF0 | (c >> 18));
+            buf[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            buf[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            buf[3] = static_cast<char>(0x80 | (c & 0x3F));
+            buf[4] = '\0';
+        }
+        output_text(buf);
     }
     output_char('\'');
 }
@@ -3172,7 +3194,7 @@ static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
         break;
     }
     case Elm::EcoPrimKind::Char:
-        print_char(static_cast<u16>(bits));
+        print_char(static_cast<u32>(bits));
         break;
     case Elm::EcoPrimKind::Bool:
         // Works for an unboxed i1 (0/1) and a boxed Bool word (False 0x4 / True
@@ -3284,7 +3306,7 @@ static void print_list(uint64_t val, int depth) {
             switch (fieldKind(custom->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)custom->values[0].i); break;
                 case 2: output_format("%g", (double)custom->values[0].f); break;
-                case 3: output_format("'%c'", (int)custom->values[0].c); break;
+                case 3: print_char(custom->values[0].c); break;
                 default: {
                     uint64_t head_val = static_cast<uint64_t>(custom->values[0].i);
                     print_value(head_val, depth + 1);
@@ -3306,7 +3328,7 @@ static void print_list(uint64_t val, int depth) {
             switch (tupleFieldKind(header->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)cons->head.i); break;
                 case 2: output_format("%g", (double)cons->head.f); break;
-                case 3: output_format("'%c'", (int)cons->head.c); break;
+                case 3: print_char(cons->head.c); break;
                 default: {
                     uint64_t head_val = hpBits(cons->head.p);
                     print_value(head_val, depth + 1);
@@ -3332,7 +3354,7 @@ static void print_list(uint64_t val, int depth) {
                 switch (kind) {
                     case 1: output_format("%lld", (long long)v.i); break;
                     case 2: output_format("%g", (double)v.f); break;
-                    case 3: output_format("'%c'", (int)v.c); break;
+                    case 3: print_char(v.c); break;
                     default: print_value(hpBits(v.p), depth + 1); break;
                 }
             }
@@ -3359,7 +3381,7 @@ static void print_unboxable_slot(const Unboxable& v, uint32_t kind, int depth) {
     switch (kind) {
         case 1: output_format("%lld", (long long)v.i); break;
         case 2: output_format("%g", (double)v.f); break;
-        case 3: output_format("'%c'", (int)v.c); break;
+        case 3: print_char(v.c); break;
         default: print_value(static_cast<uint64_t>(v.i), depth + 1); break;
     }
 }
@@ -3652,7 +3674,7 @@ extern "C" void eco_dbg_print_float(double value) {
 // Debug print for unboxed char (i32 Unicode code point)
 extern "C" void eco_dbg_print_char(int32_t value) {
     output_text("[eco.dbg] ");
-    print_char(static_cast<u16>(value));
+    print_char(static_cast<u32>(value));
     output_text("\n");
 }
 
@@ -4489,9 +4511,9 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
     }
 }
 
-/// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
+/// Gets the head of a Cons cell as an unboxed i32 code point (Elm Char).
 /// Handles both boxed and unboxed heads.
-extern "C" int16_t eco_cons_head_i16(HPtr cons) {
+extern "C" uint32_t eco_cons_head_char(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
@@ -4506,7 +4528,7 @@ extern "C" int16_t eco_cons_head_i16(HPtr cons) {
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
         if (!headObj) return 0;  // Should not happen
-        return static_cast<int16_t>(static_cast<ElmChar*>(headObj)->value);
+        return static_cast<uint32_t>(static_cast<ElmChar*>(headObj)->value);
     }
 }
 
@@ -4742,7 +4764,7 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
 //
 // Unlike eco_cons_head_* these are single-path: tuple/record/custom slots
 // are stored in the kind matching the SSA type at construct time
-// (i64 → Unboxable.i, f64 → Unboxable.f, i16 → Unboxable.c), so no dual
+// (i64 → Unboxable.i, f64 → Unboxable.f, i32 Char → Unboxable.c), so no dual
 // boxed/unboxed dispatch is needed. Bool is always boxed at heap
 // boundaries, so an i1 result here is a frontend bug and the lowering
 // surfaces it via emitOpError rather than calling these helpers.
@@ -4772,16 +4794,16 @@ extern "C" double eco_tuple2_get1_f64(HPtr tup) {
     return static_cast<Tuple2*>(obj)->b.f;
 }
 
-extern "C" int16_t eco_tuple2_get0_i16(HPtr tup) {
+extern "C" uint32_t eco_tuple2_get0_char(HPtr tup) {
     void* obj = Allocator::instance().resolve(tup.toHPointer());
-    assert(obj != nullptr && "eco_tuple2_get0_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Tuple2*>(obj)->a.c);
+    assert(obj != nullptr && "eco_tuple2_get0_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Tuple2*>(obj)->a.c);
 }
 
-extern "C" int16_t eco_tuple2_get1_i16(HPtr tup) {
+extern "C" uint32_t eco_tuple2_get1_char(HPtr tup) {
     void* obj = Allocator::instance().resolve(tup.toHPointer());
-    assert(obj != nullptr && "eco_tuple2_get1_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Tuple2*>(obj)->b.c);
+    assert(obj != nullptr && "eco_tuple2_get1_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Tuple2*>(obj)->b.c);
 }
 
 extern "C" int64_t eco_tuple3_get0_i64(HPtr tup) {
@@ -4820,22 +4842,22 @@ extern "C" double eco_tuple3_get2_f64(HPtr tup) {
     return static_cast<Tuple3*>(obj)->c.f;
 }
 
-extern "C" int16_t eco_tuple3_get0_i16(HPtr tup) {
+extern "C" uint32_t eco_tuple3_get0_char(HPtr tup) {
     void* obj = Allocator::instance().resolve(tup.toHPointer());
-    assert(obj != nullptr && "eco_tuple3_get0_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->a.c);
+    assert(obj != nullptr && "eco_tuple3_get0_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Tuple3*>(obj)->a.c);
 }
 
-extern "C" int16_t eco_tuple3_get1_i16(HPtr tup) {
+extern "C" uint32_t eco_tuple3_get1_char(HPtr tup) {
     void* obj = Allocator::instance().resolve(tup.toHPointer());
-    assert(obj != nullptr && "eco_tuple3_get1_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->b.c);
+    assert(obj != nullptr && "eco_tuple3_get1_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Tuple3*>(obj)->b.c);
 }
 
-extern "C" int16_t eco_tuple3_get2_i16(HPtr tup) {
+extern "C" uint32_t eco_tuple3_get2_char(HPtr tup) {
     void* obj = Allocator::instance().resolve(tup.toHPointer());
-    assert(obj != nullptr && "eco_tuple3_get2_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Tuple3*>(obj)->c.c);
+    assert(obj != nullptr && "eco_tuple3_get2_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Tuple3*>(obj)->c.c);
 }
 
 extern "C" int64_t eco_record_get_i64(HPtr rec, uint32_t field_index) {
@@ -4850,10 +4872,10 @@ extern "C" double eco_record_get_f64(HPtr rec, uint32_t field_index) {
     return static_cast<Record*>(obj)->values[field_index].f;
 }
 
-extern "C" int16_t eco_record_get_i16(HPtr rec, uint32_t field_index) {
+extern "C" uint32_t eco_record_get_char(HPtr rec, uint32_t field_index) {
     void* obj = Allocator::instance().resolve(rec.toHPointer());
-    assert(obj != nullptr && "eco_record_get_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Record*>(obj)->values[field_index].c);
+    assert(obj != nullptr && "eco_record_get_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Record*>(obj)->values[field_index].c);
 }
 
 extern "C" int64_t eco_custom_get_i64(HPtr val, uint32_t field_index) {
@@ -4868,10 +4890,10 @@ extern "C" double eco_custom_get_f64(HPtr val, uint32_t field_index) {
     return static_cast<Custom*>(obj)->values[field_index].f;
 }
 
-extern "C" int16_t eco_custom_get_i16(HPtr val, uint32_t field_index) {
+extern "C" uint32_t eco_custom_get_char(HPtr val, uint32_t field_index) {
     void* obj = Allocator::instance().resolve(val.toHPointer());
-    assert(obj != nullptr && "eco_custom_get_i16: null resolve");
-    return static_cast<int16_t>(static_cast<Custom*>(obj)->values[field_index].c);
+    assert(obj != nullptr && "eco_custom_get_char: null resolve");
+    return static_cast<uint32_t>(static_cast<Custom*>(obj)->values[field_index].c);
 }
 
 extern "C" int64_t eco_array_get_i64(HPtr arr, int64_t index) {
@@ -4886,10 +4908,10 @@ extern "C" double eco_array_get_f64(HPtr arr, int64_t index) {
     return static_cast<ElmArray*>(obj)->elements[index].f;
 }
 
-extern "C" int16_t eco_array_get_i16(HPtr arr, int64_t index) {
+extern "C" uint32_t eco_array_get_char(HPtr arr, int64_t index) {
     void* obj = Allocator::instance().resolve(arr.toHPointer());
-    assert(obj != nullptr && "eco_array_get_i16: null resolve");
-    return static_cast<int16_t>(static_cast<ElmArray*>(obj)->elements[index].c);
+    assert(obj != nullptr && "eco_array_get_char: null resolve");
+    return static_cast<uint32_t>(static_cast<ElmArray*>(obj)->elements[index].c);
 }
 
 //===----------------------------------------------------------------------===//

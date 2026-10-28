@@ -30,6 +30,7 @@
 #include <sstream>
 #include <iomanip>
 #include <utility>
+#include <vector>
 
 namespace Elm {
 namespace StringOps {
@@ -418,6 +419,85 @@ inline u16 charAt(void* str, i64 index) {
             if (!str) return 0;
         }
     }
+}
+
+// ============================================================================
+// Code points (a Char is a Unicode code point; a String is UTF-16 units)
+// ============================================================================
+//
+// A Char is a 32-bit code point (REP_ABI_001: Char -> i32). Strings stay
+// UTF-16, so every kernel that turns a String into Chars (toList, foldl,
+// foldr, map, filter, any, all, uncons) decodes code points with
+// nextCodePoint / prevCodePoint, and every kernel that turns Chars into a
+// String (cons, fromChar, fromList, map, filter) encodes them with
+// encodeCodePoint / appendCodePoint.
+//
+// Only a VALID high+low surrogate pair is combined. A lone surrogate is a
+// Char of its own unit value and re-encodes to that one unit, which keeps
+// `String.fromList (String.toList s) == s` for every s. (elm/core's JS glues a
+// high surrogate with ANY following unit in foldl and a low with ANY
+// preceding unit in foldr - a documented divergence on ill-formed input.)
+
+inline bool isHighSurrogate(u32 u) { return u >= 0xD800u && u <= 0xDBFFu; }
+inline bool isLowSurrogate(u32 u) { return u >= 0xDC00u && u <= 0xDFFFu; }
+
+inline u32 combineSurrogates(u32 hi, u32 lo) {
+    return 0x10000u + ((hi - 0xD800u) << 10) + (lo - 0xDC00u);
+}
+
+// Decodes the code point that starts at p[i] (i < len) and advances i past it
+// (by 1, or by 2 for a valid surrogate pair).
+inline u32 nextCodePoint(const u16* p, size_t len, size_t& i) {
+    u32 u = p[i++];
+    if (isHighSurrogate(u) && i < len && isLowSurrogate(p[i])) {
+        return combineSurrogates(u, p[i++]);
+    }
+    return u;
+}
+
+// Decodes the code point that ends just before p[i] (0 < i <= len) and moves
+// i back to its first unit. A low surrogate combines only with a preceding
+// high surrogate, so prevCodePoint visits exactly the code points
+// nextCodePoint visits, in reverse.
+inline u32 prevCodePoint(const u16* p, size_t& i) {
+    u32 u = p[--i];
+    if (isLowSurrogate(u) && i > 0 && isHighSurrogate(p[i - 1])) {
+        return combineSurrogates(p[--i], u);
+    }
+    return u;
+}
+
+// Number of UTF-16 units encodeCodePoint writes for cp (1 or 2).
+inline u32 codePointUnits(u32 cp) { return (cp > 0xFFFFu && cp <= 0x10FFFFu) ? 2 : 1; }
+
+// Writes cp as UTF-16 into out (room for 2 units); returns the unit count.
+// cp <= 0xFFFF (including a lone surrogate) is one unit; 0x10000..0x10FFFF is
+// a surrogate pair. Values above 0x10FFFF cannot be produced by Char.fromCode
+// or eco.char.fromInt (both map them to U+FFFD) and are written as U+FFFD.
+inline u32 encodeCodePoint(u32 cp, u16* out) {
+    if (cp <= 0xFFFFu) { out[0] = static_cast<u16>(cp); return 1; }
+    if (cp > 0x10FFFFu) { out[0] = 0xFFFDu; return 1; }
+    u32 v = cp - 0x10000u;
+    out[0] = static_cast<u16>(0xD800u + (v >> 10));
+    out[1] = static_cast<u16>(0xDC00u + (v & 0x3FFu));
+    return 2;
+}
+
+inline void appendCodePoint(std::vector<u16>& out, u32 cp) {
+    u16 buf[2];
+    u32 n = encodeCodePoint(cp, buf);
+    out.insert(out.end(), buf, buf + n);
+}
+
+// Code point at UTF-16 index i of a String of rawLen len (tag-aware via
+// charAt, non-allocating); advances i like nextCodePoint.
+inline u32 codePointAt(void* str, size_t len, size_t& i) {
+    u32 u = charAt(str, static_cast<i64>(i++));
+    if (isHighSurrogate(u) && i < len) {
+        u32 lo = charAt(str, static_cast<i64>(i));
+        if (isLowSurrogate(lo)) { ++i; return combineSurrogates(u, lo); }
+    }
+    return u;
 }
 
 // ============================================================================
@@ -817,6 +897,17 @@ inline HPointer reverse(void* str) {
         for (u32 i = 0; i < n; ++i) dst[i] = p[n - 1 - i];
         written += n;
     });
+    // Keep surrogate pairs in order (elm/core's _String_reverse reverses by
+    // code point): a valid pair H L reversed unit-wise reads L H, so swap
+    // every L H back. Pairing is unambiguous (an L pairs only with the unit
+    // before it), so the greedy left-to-right scan restores exactly the
+    // source's valid pairs and leaves lone surrogates alone.
+    for (u32 i = 0; i + 1 < out.length; ++i) {
+        if (isLowSurrogate(out.chars[i]) && isHighSurrogate(out.chars[i + 1])) {
+            std::swap(out.chars[i], out.chars[i + 1]);
+            ++i;
+        }
+    }
     return out.hp;
 }
 
@@ -1036,7 +1127,8 @@ inline HPointer padRight(void* str, i64 n, u16 padChar) {
 HPointer split(void* sep, void* str);
 
 /**
- * Splits a string into individual characters as a list of single-char strings.
+ * Splits a string into individual characters (code points; a valid surrogate
+ * pair is one character) as a list of single-char strings.
  */
 HPointer toList(void* str);
 
@@ -1239,30 +1331,36 @@ inline HPointer fromFloat(f64 n) {
 }
 
 /**
- * Converts a character to a single-character string. ASCII chars produce a
- * 1-byte UTF-8 leaf — fromChar was the dominant UTF-16 "seed" that made
- * otherwise-UTF-8 append/concat chains widen (98.4% of measured widen events;
- * see design_docs/utf8-widen-attribution.md). Non-ASCII keeps the UTF-16 leaf.
+ * Converts a character (a Unicode code point) to a single-character string.
+ * ASCII chars produce a 1-byte UTF-8 leaf — fromChar was the dominant UTF-16
+ * "seed" that made otherwise-UTF-8 append/concat chains widen (98.4% of
+ * measured widen events; see design_docs/utf8-widen-attribution.md).
+ * Non-ASCII keeps the UTF-16 leaf: one unit, or a surrogate pair for an
+ * astral code point.
  */
-inline HPointer fromChar(u16 c) {
+inline HPointer fromChar(u32 c) {
     if (c < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
         u8 b = static_cast<u8>(c);
         return makeUtf8LeafFromBytes(&b, 1);
     }
-    u16 buf[1] = {c};
-    return alloc::allocString(buf, 1);
+    u16 buf[2];
+    u32 n = encodeCodePoint(c, buf);
+    return alloc::allocString(buf, n);
 }
 
 /**
- * Prepends a character to a string: cons.
+ * Prepends a character (a code point: 1 UTF-16 unit, or 2 for an astral
+ * code point) to a string: cons.
  *
  * Snapshots the source bytes via toStdU16String first so a slice input
  * works the same as a leaf input. Always returns a flat leaf in Phase 1.
  */
-inline HPointer cons(u16 c, void* str) {
+inline HPointer cons(u32 c, void* str) {
     if (!str) return fromChar(c);
     u32 len = rawLen(str);
-    size_t total_len = static_cast<size_t>(len) + 1;
+    u16 units[2];
+    u32 n = encodeCodePoint(c, units);
+    size_t total_len = static_cast<size_t>(len) + n;
 
     auto& allocator = Allocator::instance();
 
@@ -1285,14 +1383,15 @@ inline HPointer cons(u16 c, void* str) {
         Elm::StackRootGuard guard(&srcHp);
         out = alloc::allocStringBlank(total_len);
     }
-    out.chars[0] = c;
-    if (len > 0) copyInto(allocator.resolve(srcHp), out.chars + 1);
+    for (u32 k = 0; k < n; ++k) out.chars[k] = units[k];
+    if (len > 0) copyInto(allocator.resolve(srcHp), out.chars + n);
     return out.hp;
 }
 
 /**
- * Removes and returns the first character: uncons.
- * Returns Just (char, rest) or Nothing if empty.
+ * Removes and returns the first character (code point): uncons.
+ * Returns Just (char, rest) or Nothing if empty. A valid surrogate pair is
+ * one Char and rest starts two units in.
  */
 HPointer uncons(void* str);
 
@@ -1302,57 +1401,57 @@ HPointer uncons(void* str);
 
 /**
  * Applies a function to each character and collects results.
- * The function takes a u16 and returns an Unboxable.
+ * The function takes a code point and returns an Unboxable.
  */
-using CharMapper = Unboxable (*)(u16);
+using CharMapper = Unboxable (*)(u32);
 
 /**
- * Maps a function over each character, producing a new string.
+ * Maps a function over each character (code point), producing a new string.
  * mapFunc should transform one character to another.
  */
-using CharToCharMapper = u16 (*)(u16);
+using CharToCharMapper = u32 (*)(u32);
 
 HPointer map(CharToCharMapper mapFunc, void* str);
 
 /**
- * Filters characters based on a predicate.
+ * Filters characters (code points) based on a predicate.
  */
-using CharPredicate = bool (*)(u16);
+using CharPredicate = bool (*)(u32);
 
 HPointer filter(CharPredicate pred, void* str);
 
 /**
- * Left fold over characters.
+ * Left fold over characters (code points).
  */
-using CharFolder = Unboxable (*)(u16, Unboxable);
+using CharFolder = Unboxable (*)(u32, Unboxable);
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str);
 
 /**
- * Right fold over characters.
+ * Right fold over characters (code points).
  */
 Unboxable foldr(CharFolder fold, Unboxable acc, void* str);
 
 /**
- * Checks if all characters satisfy a predicate.
+ * Checks if all characters (code points) satisfy a predicate.
  */
 inline bool all(CharPredicate pred, void* str) {
     if (!str) return true;
     size_t len = rawLen(str);
-    for (size_t i = 0; i < len; ++i) {
-        if (!pred(charAt(str, static_cast<i64>(i)))) return false;
+    for (size_t i = 0; i < len;) {
+        if (!pred(codePointAt(str, len, i))) return false;
     }
     return true;
 }
 
 /**
- * Checks if any character satisfies a predicate.
+ * Checks if any character (code point) satisfies a predicate.
  */
 inline bool any(CharPredicate pred, void* str) {
     if (!str) return false;
     size_t len = rawLen(str);
-    for (size_t i = 0; i < len; ++i) {
-        if (pred(charAt(str, static_cast<i64>(i)))) return true;
+    for (size_t i = 0; i < len;) {
+        if (pred(codePointAt(str, len, i))) return true;
     }
     return false;
 }

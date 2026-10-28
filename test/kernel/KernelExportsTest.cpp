@@ -222,9 +222,9 @@ static void test_string_length_all_forms() {
     alloc.getRootSet().removeRoot(&l);
 }
 
-// K10: foldl invokes the closure once per UTF-16 code unit in Eco (Char is i16,
-// per REP_ABI_001/CGEN_015). Over "a😀b" the astral char is two surrogate halves,
-// so the closure is invoked 4 times (Elm's code-point fold would invoke it 3).
+// K10: foldl/foldr invoke the closure once per code point (Char is an i32 code
+// point, per REP_ABI_001/CGEN_015). Over "a😀b" the astral char is one Char, so
+// the closure is invoked 3 times, as in elm/core's JS.
 static void test_string_foldl_astral_count() {
     initAllocator();
     HPtr closure = eco_alloc_closure_fn(reinterpret_cast<void*>(&countFoldEvaluator), 2, /*result_kind=*/0);
@@ -235,7 +235,81 @@ static void test_string_foldl_astral_count() {
     s.push_back(0xDE00);
     s.push_back(u'b');
     HPtr result = Elm_Kernel_String_foldl(closure, acc0, strFromU16(s));
-    TEST_ASSERT(decodeBoxedInt(result) == 4);
+    TEST_ASSERT(decodeBoxedInt(result) == 3);
+    HPtr resultR = Elm_Kernel_String_foldr(closure, eco_alloc_int(0), strFromU16(s));
+    TEST_ASSERT(decodeBoxedInt(resultR) == 3);
+    // A lone surrogate is a Char of its own: [0xD83D, 0x61] folds twice.
+    std::u16string lone;
+    lone.push_back(0xD83D);
+    lone.push_back(u'a');
+    TEST_ASSERT(decodeBoxedInt(Elm_Kernel_String_foldl(closure, eco_alloc_int(0), strFromU16(lone))) == 2);
+    TEST_ASSERT(decodeBoxedInt(Elm_Kernel_String_foldr(closure, eco_alloc_int(0), strFromU16(lone))) == 2);
+}
+
+static std::u16string unitsOf(HPtr str) {
+    void* p = Allocator::instance().resolve(str.toHPointer());
+    if (!p) return {};
+    return StringOps::toStdU16String(p);
+}
+
+// K16: Char is a 32-bit code point at the kernel boundary (plan Part 1).
+static void test_char_code_point_kernels() {
+    initAllocator();
+    // Char.fromCode: out of 0..0x10FFFF -> U+FFFD; surrogates pass through.
+    TEST_ASSERT(Elm_Kernel_Char_fromCode(-1) == 0xFFFDu);
+    TEST_ASSERT(Elm_Kernel_Char_fromCode(0x110000) == 0xFFFDu);
+    TEST_ASSERT(Elm_Kernel_Char_fromCode(0x1F600) == 0x1F600u);
+    TEST_ASSERT(Elm_Kernel_Char_fromCode(0x10FFFF) == 0x10FFFFu);
+    TEST_ASSERT(Elm_Kernel_Char_fromCode(0xD800) == 0xD800u);
+    // Char.toCode reads the full code point and masks garbage above bit 31.
+    TEST_ASSERT(Elm_Kernel_Char_toCode((0xABCDull << 32) | 0x1F600u) == 0x1F600);
+    // Chars compare by code point.
+    TEST_ASSERT(Ex::decodeBoxedBool(Elm_Kernel_Utils_lt_Char(0xFFFFu, 0x10000u).toBits()));
+    TEST_ASSERT(Ex::decodeBoxedBool(Elm_Kernel_Utils_equal_Char((1ull << 40) | 0x1F600u, 0x1F600u).toBits()));
+
+    std::u16string emojiB;
+    emojiB.push_back(0xD83D);
+    emojiB.push_back(0xDE00);
+    emojiB.push_back(u'b');
+
+    // String.cons encodes an astral Char as its surrogate pair.
+    HPtr consd = Elm_Kernel_String_cons(0x1F600u, strFromU16(u"b"));
+    TEST_ASSERT(unitsOf(consd) == emojiB);
+
+    // String.uncons yields the whole code point; rest drops both units.
+    HPtr unc = Elm_Kernel_String_uncons(strFromU16(emojiB));
+    Custom* just = static_cast<Custom*>(Allocator::instance().resolve(unc.toHPointer()));
+    TEST_ASSERT(just != nullptr);
+    Tuple2* t = static_cast<Tuple2*>(Allocator::instance().resolve(just->values[0].p));
+    TEST_ASSERT(t->a.c == 0x1F600u);
+    TEST_ASSERT(static_cast<u64>(t->a.i) == 0x1F600u);  // high bits clean (unboxedChar)
+    TEST_ASSERT(StringOps::length(Allocator::instance().resolve(t->b.p)) == 1);
+
+    // String.reverse keeps surrogate pairs in order: "a😀b" -> "b😀a".
+    std::u16string aEmojiB;
+    aEmojiB.push_back(u'a');
+    aEmojiB += emojiB;
+    std::u16string bEmojiA;
+    bEmojiA.push_back(u'b');
+    bEmojiA.push_back(0xD83D);
+    bEmojiA.push_back(0xDE00);
+    bEmojiA.push_back(u'a');
+    TEST_ASSERT(unitsOf(Elm_Kernel_String_reverse(strFromU16(aEmojiB))) == bEmojiA);
+
+    // List.cons_Char stores the code point zero-extended in the head slot.
+    HPtr cell = Elm_Kernel_List_cons_Char((0xABCDull << 32) | 0x1F600u,
+                                          HPtr::fromHPointer(alloc::listNil()));
+    Cons* c = static_cast<Cons*>(Allocator::instance().resolve(cell.toHPointer()));
+    TEST_ASSERT(static_cast<u64>(c->head.i) == 0x1F600u);
+
+    // String.fromList re-encodes: fromList [ 'a', '😀', 'b' ] == "a😀b".
+    HPointer l = alloc::listNil();
+    Allocator::instance().getRootSet().addRoot(&l);
+    l = alloc::cons(alloc::unboxedChar(u'b'), l, static_cast<u8>(3));
+    l = alloc::cons(alloc::unboxedChar(0x1F600u), l, static_cast<u8>(3));
+    l = alloc::cons(alloc::unboxedChar(u'a'), l, static_cast<u8>(3));
+    TEST_ASSERT(unitsOf(Elm_Kernel_String_fromList(HPtr::fromHPointer(l))) == aEmojiB);
+    Allocator::instance().getRootSet().removeRoot(&l);
 }
 
 // K12: elm_bytebuffer_len / _data / _with_data are correct for flat + large
@@ -626,7 +700,8 @@ void registerKernelExportsTests(Testing::TestSuite& suite) {
     suite.add(Testing::UnitTest("K8d decoder read_string agrees with fused", test_decoder_read_string_agrees_with_fused));
     suite.add(Testing::UnitTest("K8c decoder read_string representation", test_decoder_read_string_representation));
     suite.add(Testing::UnitTest("K9 string length all forms", test_string_length_all_forms));
-    suite.add(Testing::UnitTest("K10 string foldl astral code-unit count", test_string_foldl_astral_count));
+    suite.add(Testing::UnitTest("K10 string foldl/foldr astral code-point count", test_string_foldl_astral_count));
+    suite.add(Testing::UnitTest("K16 Char is a 32-bit code point at the kernel ABI", test_char_code_point_kernels));
     suite.add(Testing::UnitTest("K12 elm_bytebuffer runtime flat+large", test_elm_bytebuffer_runtime_flat_large));
 }
 

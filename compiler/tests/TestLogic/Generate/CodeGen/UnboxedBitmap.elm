@@ -7,7 +7,7 @@ produces. (The module keeps its historical name: only the tuple ops still
 carry an integer bitmap.)
 
 A _slot kind_ is 0 for a boxed value (`!eco.value`), 1 for an Int (`i64`), 2
-for a Float (`f64`) and 3 for a Char (`i16`). The record and custom construct
+for a Float (`f64`) and 3 for a Char (`i32`). The record and custom construct
 ops record one kind per field in a `slot_kinds` array (a dense `i8` array;
 wide-object Phase 3), and so do the closure ops `eco.papCreate` and
 `eco.papExtend` (one entry per captured operand or new argument; wide-object
@@ -37,7 +37,7 @@ nesting depth:
     is the kind of operand N+1. Operand 0 is the closure being extended, so it
     is not compared.
   - `eco.construct.list`: the boolean `head_unboxed` is true exactly when the
-    head operand is `i64`, `f64` or `i16`.
+    head operand is `i64`, `f64` or `i32`.
 
 A closure op without `slot_kinds` passes only when it has no compared
 operands. A missing tuple bitmap reads as 0 (every slot boxed) and a missing
@@ -276,7 +276,7 @@ slotKind bitmap index =
 
 
 {-| Returns the slot kind an operand of type `ty` requires: 1 for `i64`, 2 for
-`f64`, 3 for `i16`, and 0 for every other type, `i1` included.
+`f64`, 3 for `i32`, and 0 for every other type, `i1` included.
 -}
 typeToKind : MlirType -> Int
 typeToKind ty =
@@ -287,7 +287,7 @@ typeToKind ty =
         F64 ->
             2
 
-        I16 ->
+        I32 ->
             3
 
         _ ->
@@ -347,7 +347,7 @@ checkBitmapKind op bitmap index operandType bitmapName operandLabel =
 {-| Returns the violation, if any, in the `head_unboxed` flag of a list cons op.
 
 The head is the first recorded operand. An `i1` head is reported, and so is a
-flag that is true for a head that is not `i64`, `f64` or `i16`, or false for
+flag that is true for a head that is not `i64`, `f64` or `i32`, or false for
 one that is. A missing flag reads as false. An op with no recorded operand
 types gives none.
 
@@ -388,7 +388,7 @@ checkListHeadUnboxed op =
                     , message =
                         "head_unboxed=true but head type is "
                             ++ typeToString headType
-                            ++ ", expected unboxable (i64, f64, i16)"
+                            ++ ", expected unboxable (i64, f64, i32)"
                     }
 
             else if not headUnboxed && headIsUnboxable then

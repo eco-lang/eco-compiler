@@ -19,7 +19,7 @@ The tests establish that:
     exactly one violation;
   - a typed-mode op with an `!eco.value` result gives no violation.
 
-Among what is not tested: the `i16`, `i64` and `f64` results; an op with a
+Among what is not tested: the `i32`, `i64` and `f64` results; an op with a
 result count other than one; and the missing-`remaining_arity` rule.
 
 -}

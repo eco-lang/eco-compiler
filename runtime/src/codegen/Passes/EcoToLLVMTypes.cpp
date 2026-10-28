@@ -82,7 +82,7 @@ struct ConstantNullConsOpLowering
 
 // A literal is all-ASCII iff every byte is < 0x80. Such literals are emitted as
 // [N x i8] globals and constructed as inline UTF-8 leaves (half the memory, no
-// transcode); non-ASCII literals stay [N x i16] UTF-16. This predicate is pure
+// transcode); non-ASCII literals stay [N x u16] UTF-16 units. This predicate is pure
 // in the literal's bytes, so pre-materialization and lowering agree without a
 // side map. Kept in sync with EcoToLLVMControlFlow.cpp's copy for string cases.
 static bool isAsciiLiteral(llvm::StringRef s) {
@@ -105,11 +105,9 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i16Ty = IntegerType::get(ctx, 16);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
         StringRef value = op.getValue();
-        (void)i16Ty;
 
         auto hptrTy = getHPtrLLVMType(*ctx);
 
@@ -142,7 +140,7 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
             return success();
         }
 
-        // Non-ASCII: [N x i16] global -> UTF-16 leaf. length is the unit count.
+        // Non-ASCII: [N x u16] global -> UTF-16 leaf. length is the unit count.
         std::vector<uint16_t> utf16 = utf8ToUtf16(value);
         size_t length = utf16.size();
         auto func = runtime.getOrCreateAllocStringLiteral(rewriter);
@@ -181,7 +179,7 @@ void eco::detail::preMaterializeStringLiterals(
     OpBuilder &builder, const EcoRuntime &runtime,
     llvm::ArrayRef<PreMatDemand> demand) {
     auto *ctx = builder.getContext();
-    auto i16Ty = IntegerType::get(ctx, 16);
+    auto utf16UnitTy = getU16StorageType(ctx);  // String unit, not Char
     auto i8Ty = IntegerType::get(ctx, 8);
     auto visit = [&](StringLiteralOp op) {
         StringRef value = op.getValue();
@@ -221,7 +219,7 @@ void eco::detail::preMaterializeStringLiterals(
 
         std::vector<uint16_t> utf16 = utf8ToUtf16(value);
         size_t length = utf16.size();
-        auto arrayTy = LLVM::LLVMArrayType::get(i16Ty, length);
+        auto arrayTy = LLVM::LLVMArrayType::get(utf16UnitTy, length);
         auto globalOp = builder.create<LLVM::GlobalOp>(
             op.getLoc(), arrayTy, /*isConstant=*/true,
             LLVM::Linkage::Internal, globalName, Attribute{});
@@ -233,7 +231,7 @@ void eco::detail::preMaterializeStringLiterals(
             SmallVector<int16_t> charValues;
             for (uint16_t c : utf16) charValues.push_back(static_cast<int16_t>(c));
             auto denseAttr = DenseElementsAttr::get(
-                RankedTensorType::get({static_cast<int64_t>(length)}, i16Ty),
+                RankedTensorType::get({static_cast<int64_t>(length)}, utf16UnitTy),
                 ArrayRef<int16_t>(charValues));
             Value arrayVal =
                 builder.create<LLVM::ConstantOp>(loc, arrayTy, denseAttr);

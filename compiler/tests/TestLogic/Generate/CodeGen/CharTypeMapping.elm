@@ -1,22 +1,22 @@
 module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping, expectCharTypeMappingWithOps)
 
 {-| Checks that the `eco.char.*` ops in the MLIR generated for a program give
-the `Char` side the type `i16`, so that a conversion or comparison emitted with
+the `Char` side the type `i32`, so that a conversion or comparison emitted with
 some other width is caught (CGEN\_015).
 
-The code generator's type for a `Char` is `i16`
+The code generator's type for a `Char` is `i32`
 (`Compiler.Generate.MLIR.Types.ecoChar`), and for an `Int` it is `i64`. An
 operand's type here is its _defined_ type: the type of the op result or block
 argument that introduces the SSA name within the enclosing top-level op
 (`TestLogic.Generate.CodeGen.Invariants.typeEnvOfOp`), not the op's
 `_operand_types` record. A violation is reported for:
 
-  - an `eco.char.toInt` that does not take one `i16` operand and give one
+  - an `eco.char.toInt` that does not take one `i32` operand and give one
     `i64` result;
   - an `eco.char.fromInt` that does not take one `i64` operand and give one
-    `i16` result;
+    `i32` result;
   - any other `eco.char.*` op (the comparisons) with an operand that is not
-    `i16`;
+    `i32`;
   - an `eco.char.*` operand with no definition in its top-level op.
 
 Among what is not checked: a `Char` constant, a case on a `Char`, and the
@@ -44,7 +44,7 @@ import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Creates an expectation that `srcModule` compiles to MLIR and that its
-`eco.char.toInt` operands and `eco.char.fromInt` results are `i16`.
+`eco.char.toInt` operands and `eco.char.fromInt` results are `i32`.
 
 The expectation fails with the test pipeline's error message, prefixed
 `Compilation failed:`, if compilation fails, and otherwise with every
@@ -152,18 +152,18 @@ checkCharOp env op =
     undefinedOperands
         ++ (case op.name of
                 "eco.char.toInt" ->
-                    conversion I16 I64
+                    conversion I32 I64
 
                 "eco.char.fromInt" ->
-                    conversion I64 I16
+                    conversion I64 I32
 
                 _ ->
                     List.filterMap
                         (\( name, t ) ->
                             case t of
                                 Just actual ->
-                                    if actual /= I16 then
-                                        Just (violation (op.name ++ " operand " ++ name ++ " should be i16, got " ++ typeToString actual))
+                                    if actual /= I32 then
+                                        Just (violation (op.name ++ " operand " ++ name ++ " should be i32, got " ++ typeToString actual))
 
                                     else
                                         Nothing
@@ -175,7 +175,7 @@ checkCharOp env op =
            )
 
 
-{-| Returns the MLIR spelling of an integer or float type, as in `i16`, for use
+{-| Returns the MLIR spelling of an integer or float type, as in `i32`, for use
 in a violation message. A named struct gives its bare name, without the leading
 `!`, and a function type gives the word `function`.
 -}

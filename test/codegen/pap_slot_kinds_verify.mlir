@@ -7,7 +7,7 @@
 // carries one dense array per sibling (length num_captured; the sibling slots are boxed).
 
 module {
-  func.func @target(%a: i64, %b: f64, %c: i16, %d: !eco.value, %e: i64) -> i64 {
+  func.func @target(%a: i64, %b: f64, %c: i32, %d: !eco.value, %e: i64) -> i64 {
     eco.return %a : i64
   }
 
@@ -19,7 +19,7 @@ module {
     eco.return %y : i64
   }
 
-  func.func @make(%a: i64, %b: f64, %c: i16, %d: !eco.value) -> !eco.value {
+  func.func @make(%a: i64, %b: f64, %c: i32, %d: !eco.value) -> !eco.value {
     %p = "eco.papCreate"(%a, %b) {
       function = @target, arity = 5 : i64, num_captured = 2 : i64,
       slot_kinds = array<i8: 1, 2>
@@ -27,7 +27,7 @@ module {
     %q = "eco.papExtend"(%p, %c, %d) {
       remaining_arity = 3 : i64,
       slot_kinds = array<i8: 3, 0>
-    } : (!eco.value, i16, !eco.value) -> !eco.value
+    } : (!eco.value, i32, !eco.value) -> !eco.value
     return %q : !eco.value
   }
 

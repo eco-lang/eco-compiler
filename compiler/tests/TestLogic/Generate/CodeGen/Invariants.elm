@@ -35,7 +35,7 @@ it has no operand types to check here.
 
 The type predicates name three sets of MLIR types. `isEcoValueType` recognises
 `!eco.value`, the type of a boxed value. `isUnboxable` recognises `i64`, `f64`
-and `i16`, the types an Int, a Float and a Char have when stored unboxed.
+and `i32`, the types an Int, a Float and a Char have when stored unboxed.
 `isEcoPrimitive` adds `i1`, the type a Bool has in SSA operand context, such as
 the result of an `eco.unbox`; at function boundaries and in heap objects a Bool
 is `!eco.value`. Which values are unboxed where is decided by
@@ -368,14 +368,14 @@ isEcoValueType t =
             False
 
 
-{-| Returns whether `t` is `i64`, `f64` or `i16`, the types an Int, a Float and
+{-| Returns whether `t` is `i64`, `f64` or `i32`, the types an Int, a Float and
 a Char have when stored unboxed. `i1` is not accepted, because a Bool in a heap
 object is `!eco.value`.
 -}
 isUnboxable : MlirType -> Bool
 isUnboxable t =
     case t of
-        I16 ->
+        I32 ->
             True
 
         I64 ->
@@ -388,7 +388,7 @@ isUnboxable t =
             False
 
 
-{-| Returns whether `t` is `i1`, `i16`, `i64` or `f64`: the types `isUnboxable`
+{-| Returns whether `t` is `i1`, `i32`, `i64` or `f64`: the types `isUnboxable`
 accepts, plus `i1`, which a Bool has in SSA operand context, such as the result
 of an `eco.unbox`, but not at function boundaries or in a heap object.
 -}
@@ -398,7 +398,7 @@ isEcoPrimitive t =
         I1 ->
             True
 
-        I16 ->
+        I32 ->
             True
 
         I64 ->

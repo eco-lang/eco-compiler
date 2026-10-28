@@ -1,14 +1,17 @@
 module StringAstralFoldTest exposing (main)
 
-{-| G1/E2: foldl/foldr iterate by UTF-16 CODE UNIT in Eco — Char is i16 per the
-enforced REP_ABI_001 / CGEN_015 invariants, so an astral char is folded as its
-two surrogate halves. This documents Eco's deliberate divergence from Elm's
-code-point folding (matching Elm would require widening Char).
+{-| G1/E2: foldl/foldr visit one Char per code point, as in Elm: a surrogate
+pair is combined into one Char (Char is a Unicode code point in i32,
+REP_ABI_001 / CGEN_015), so "😀" folds once and "a😀b" three times. foldr
+walks back and combines a low surrogate with the high one before it, so it
+sees the same Chars in reverse order.
 -}
 
--- CHECK: foldl_astral: 2
--- CHECK: foldl_mixed: 4
--- CHECK: foldr_mixed: 4
+-- CHECK: foldl_astral: 1
+-- CHECK: foldl_mixed: 3
+-- CHECK: foldr_mixed: 3
+-- CHECK: foldl_codes: [98, 128512, 97]
+-- CHECK: foldr_codes: [97, 128512, 98]
 
 import Html exposing (text)
 
@@ -23,5 +26,11 @@ main =
 
         _ =
             Debug.log "foldr_mixed" (String.foldr (\_ n -> n + 1) 0 "a😀b")
+
+        _ =
+            Debug.log "foldl_codes" (String.foldl (\c acc -> Char.toCode c :: acc) [] "a😀b")
+
+        _ =
+            Debug.log "foldr_codes" (String.foldr (\c acc -> Char.toCode c :: acc) [] "a😀b")
     in
     text "done"

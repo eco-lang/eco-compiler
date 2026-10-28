@@ -1,28 +1,23 @@
 module AstralCharCasePatternTest exposing (main)
 
 {-| A Char case pattern above U+FFFF (`'\u{1F600}'`) is decoded by
-`Compiler.Generate.MLIR.Patterns.decodeChrPatternCode`, which folds every hex
-digit of the parser's surrogate-pair escape into one number, so the i16
-comparison constant is out of range (neither the code point nor a clamp).
-Also covered by the unit test
+`Compiler.Generate.MLIR.Patterns.decodeChrPatternCode`, which combines the
+parser's surrogate-pair escape into the code point, so the `eco.case` tag is
+128512, the same value `Char.fromCode 0x1F600` and the literal produce (Char is
+a Unicode code point in i32, CGEN_015). Before the fix the decoder folded every
+hex digit into one number (928736402944 = 0xD83D00DE00), so the astral branch
+could never match. Also covered by the unit test
 compiler/tests/Compiler/Generate/MLIR/PatternsAstralCharTest.elm.
 
-Eco's Char is one UTF-16 unit (design_docs/theory/value-representation.md);
-the classification of BMP chars must still work. Today the emitted
-eco.case tag is 928736402944 (0xD83D00DE00), so the astral branch can never
-match anything. Under the documented clamp, `Char.fromCode 0x1F600` is the
-Char 0xFFFF that the literal `'\u{1F600}'` must also denote (as the literal
-test AstralCharLiteralTest expects), so it must take the "grin" branch;
-today it prints "other". U+DE00 (the low surrogate the bogus tag's low 16
-bits name) must not match.
-
-EXPECTED TO FAIL until fixed.
+BMP patterns must still classify. U+DE00 (a lone low surrogate, which
+`Char.fromCode` passes through) is a different Char and must not match.
 -}
 
 -- CHECK: a: "other"
 -- CHECK: euro: "euro"
 -- CHECK: lowSurrogate: "other"
--- CHECK: clamped: "grin"
+-- CHECK: fromCode: "grin"
+-- CHECK: literal: "grin"
 
 import Html exposing (text)
 
@@ -52,6 +47,9 @@ main =
             Debug.log "lowSurrogate" (classify (Char.fromCode 0xDE00))
 
         _ =
-            Debug.log "clamped" (classify (Char.fromCode 0x0001F600))
+            Debug.log "fromCode" (classify (Char.fromCode 0x0001F600))
+
+        _ =
+            Debug.log "literal" (classify '😀')
     in
     text "done"

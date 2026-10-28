@@ -6,7 +6,7 @@ a boxed value, or producing something other than a primitive, does not go
 unnoticed.
 
 `eco.unbox` takes a boxed value, of type `!eco.value`, and produces the
-primitive it holds: `i1` for a Bool, `i16` for a Char, `i64` for an Int or `f64`
+primitive it holds: `i1` for a Bool, `i32` for a Char, `i64` for an Int or `f64`
 for a Float. Several checkers read an op's operand types from its
 `_operand_types` attribute, as `TestLogic.Generate.CodeGen.Invariants`
 describes. That attribute is what the generator wrote down, not the type of the
@@ -25,7 +25,7 @@ It then reports an `eco.unbox` nested in the function, at any depth:
   - whose operand is not in the environment: a function's body is isolated
     from the rest of the module, so every value it uses is defined in it;
   - whose operand's type in the environment is not `!eco.value`; or
-  - whose result type is not `i1`, `i16`, `i64` or `f64`, so an `i8` or `i32`
+  - whose result type is not `i1`, `i32`, `i64` or `f64`, so an `i8` or `i16`
     result is reported.
 
 Only the first of these that applies is reported for an op.

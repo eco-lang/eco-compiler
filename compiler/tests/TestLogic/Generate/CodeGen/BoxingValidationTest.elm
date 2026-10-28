@@ -15,7 +15,7 @@ What the tests establish:
   - `suite` applies the check to each catalogue program: a program passes when
     it compiles to MLIR through `TestLogic.TestPipeline.runToMlir` and, in the
     result, every `eco.box` op has one operand, defined with type `i64`,
-    `f64`, `i16` or `i1`, and one `!eco.value` result, and every `eco.unbox`
+    `f64`, `i32` or `i1`, and one `!eco.value` result, and every `eco.unbox`
     op has one operand defined as `!eco.value` and one result of one of those
     four types. The operand type is the defined type of the value it names,
     as `BoxingValidation` describes. A program that fails to compile fails.

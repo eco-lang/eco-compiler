@@ -64,7 +64,9 @@ u8 kindFor(u32 i) {
 }
 i64 intVal(u32 i) { return static_cast<i64>(i) * 7 + 1; }
 double floatVal(u32 i) { return static_cast<double>(i) + 0.5; }
-u16 charVal(u32 i) { return static_cast<u16>(65 + i % 1000); }
+// Odd slots carry an astral code point (> 0xFFFF): a Char slot is a 32-bit
+// code point, zero-extended to 64 bits.
+u32 charVal(u32 i) { return (i % 2 ? 0x1F600u : 65u) + i % 1000; }
 
 // Raw slot bits for kind k (the boxed case is allocated by the caller).
 uint64_t rawFor(u32 i, u8 k) {
@@ -102,7 +104,7 @@ bool slotOk(u32 i, uint64_t raw) {
     switch (kindFor(i)) {
         case PK_Int: return static_cast<i64>(raw) == intVal(i);
         case PK_Float: { double f; std::memcpy(&f, &raw, 8); return f == floatVal(i); }
-        case PK_Char: return (raw & 0xFFFF) == charVal(i);
+        case PK_Char: return raw == static_cast<uint64_t>(charVal(i));
         default: return boxedInt(raw) == intVal(i);
     }
 }

@@ -31,13 +31,13 @@ namespace {
 constexpr size_t kClosureMaxArity = 2047;
 
 /// `slot_kinds` (§S.5) of closure operands from their SSA types:
-/// i64 -> 1, f64 -> 2, i16 -> 3, everything else -> 0 (codegen slotKindOf).
+/// i64 -> 1, f64 -> 2, i32 (Char) -> 3, everything else -> 0 (codegen slotKindOf).
 static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
     SmallVector<int8_t> kinds;
     kinds.reserve(vals.size());
     for (Value v : vals) {
         Type ty = v.getType();
-        kinds.push_back(ty.isInteger(64) ? 1 : ty.isF64() ? 2 : ty.isInteger(16) ? 3 : 0);
+        kinds.push_back(ty.isInteger(64) ? 1 : ty.isF64() ? 2 : eco::isEcoCharType(ty) ? 3 : 0);
     }
     return kinds;
 }
@@ -316,7 +316,7 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
 
         // Per-slot kinds from SSA types (source-of-truth approach), as
         // `slot_kinds` (§S.5): 0=boxed (!eco.value), 1=Int (i64),
-        // 2=Float (f64), 3=Char (i16).
+        // 2=Float (f64), 3=Char (i32).
         SmallVector<int8_t> fusedKinds = slotKindsOf(fusedNewargs);
 
         // Get result type from current extendOp

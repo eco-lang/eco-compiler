@@ -1,6 +1,6 @@
 # Value representation
 
-Outside the body of a single function, every Elm value except an Int, a Float or a Char is one 64-bit word, and bit 2 of that word says whether it is the address of a heap object or a constant embedded in the word itself. Int, Float and Char are raw machine values (a 64-bit integer, a 64-bit float and a 16-bit code unit) at calls, in closures and in heap fields. They become heap objects only where something must hold them as a boxed value, most often a type variable that specialization left unconstrained. Bool is a one-bit integer only inside a function, and everywhere else it is one of two embedded constants. Every heap object whose fields can hold a raw number records a two-bit kind for each field, so the collector can tell a raw number from a pointer without knowing any types, and the compiler computes each object's layout from the value's type, identically at every site that builds or reads one. A value changes form only at six seams: into a call or capture, out of one, at construction, at projection, between an SSA aggregate and the heap, and at LLVM's storage boundary. At each seam, code generation converts a value only when its actual type differs from the type the target expects.
+Outside the body of a single function, every Elm value except an Int, a Float or a Char is one 64-bit word, and bit 2 of that word says whether it is the address of a heap object or a constant embedded in the word itself. Int, Float and Char are raw machine values (a 64-bit integer, a 64-bit float and a 32-bit Unicode code point) at calls, in closures and in heap fields. They become heap objects only where something must hold them as a boxed value, most often a type variable that specialization left unconstrained. Bool is a one-bit integer only inside a function, and everywhere else it is one of two embedded constants. Every heap object whose fields can hold a raw number records a two-bit kind for each field, so the collector can tell a raw number from a pointer without knowing any types, and the compiler computes each object's layout from the value's type, identically at every site that builds or reads one. A value changes form only at six seams: into a call or capture, out of one, at construction, at projection, between an SSA aggregate and the heap, and at LLVM's storage boundary. At each seam, code generation converts a value only when its actual type differs from the type the target expects.
 
 ## Each Elm value in each model
 
@@ -10,7 +10,7 @@ The four models are the ones [eco.md](../../THEORY.md) introduces: logical, SSA,
 |---|---|---|---|---|
 | Int | `i64` | `i64` | kind 01, raw i64 | `ElmInt` only when boxed into `!eco.value` |
 | Float | `f64` | `f64` | kind 10, raw f64 | `ElmFloat` only when boxed |
-| Char | `i16` | `i16` | kind 11, u16 in an 8-byte slot | `ElmChar` only when boxed |
+| Char | `i32` | `i32` | kind 11, code point zero-extended to the 8-byte slot | `ElmChar` (u32 value) only when boxed |
 | Bool | `i1` | `!eco.value` | kind 00, word `0x4`/`0x5` | never |
 | `()`, `{}` | `!eco.value` | `!eco.value` | kind 00, word `0x6` | never |
 | String | `!eco.value` | `!eco.value` | kind 00 | `""` is `0x6`, else a string object |
@@ -26,7 +26,7 @@ Apart from the aggregate forms, Bool is the only row whose SSA and ABI columns d
 
 A type variable that no use constrains is `!eco.value` in every model, so an Int passed through it is boxed into a 16-byte `ElmInt`. Every view of one runtime value must have a type with the same layout, and boxing everywhere is how an erased variable meets that condition: the code that holds the value as `a` and the code that holds it as `Int` agree on a single word. A `number` variable never gets this far: specialization closes every one to Int and fails if one survives, so the `number` cases in the type mapping are unreachable.
 
-Char is one UTF-16 code unit, the unit in which the runtime stores strings, so a character read from a string fits a Char with no conversion. A code point above 0xFFFF has no Char, and `Char.fromCode` clamps its argument to 0xFFFF.
+Char is one Unicode code point, 0 to 0x10FFFF, held in an `i32`, as in Elm, where `Char.toCode '😀'` is 128512. Strings stay UTF-16, so the conversion happens in the String kernels: `toList`, `uncons`, `foldl`, `foldr`, `map`, `filter`, `any` and `all` combine a surrogate pair into one Char, and `cons`, `fromChar` and `fromList` write a Char above 0xFFFF as a pair. `length`, `slice`, the index functions and the other position-based functions still count UTF-16 code units, as Elm's JavaScript does. `Char.fromCode` and `eco.char.fromInt` give U+FFFD for an argument below 0 or above 0x10FFFF and pass every other value through, surrogate code points included. Eco departs from JavaScript in one place: only a valid high-low pair is combined, and a lone surrogate is a Char of its own unit value, so `String.fromList (String.toList s) == s` holds for every string. A kind-11 slot, and the 64-bit argument slot of a generic apply, hold the code point zero-extended to 64 bits, so a reader of the whole word sees clean high bits. Comparison of two Chars compares code points, which differs from JavaScript's UTF-16 string comparison only between a Char in U+E000 to U+FFFF and an astral one.
 
 A tuple, or a value of a type with one constructor, can be held inside a function as an SSA aggregate, which LLVM sees as a struct and never as a pointer. It becomes a heap object only through `eco.to_heap`, at a boundary that needs a boxed value. The aggregate types belong to [eco-dialect.md](backend/eco-dialect.md), and when code generation produces them belongs to [mlir-generation.md](compiler/mlir-generation.md).
 
@@ -127,7 +127,7 @@ Each seam has one conversion, and code generation decides whether to apply it by
 |---|---|---|
 | SSA to ABI: call arguments, returns, captures, partial applications | `eco.box` on an `i1`; `eco.box` on a primitive whose target is `!eco.value`, such as an erased parameter of a known callee. A call to an unknown callee passes the primitive raw, and the runtime boxes it if the callee's slot is boxed | Bool: a select between `0x5` and `0x4`. Primitive: allocates an `ElmInt`, `ElmFloat` or `ElmChar` |
 | ABI to SSA | `eco.unbox` | Bool: compare the word with `0x5`. Boxed primitive: a load at offset 8 |
-| SSA to heap: construction | raw `i64`, `f64` and `i16` stored as they are; `i1` boxed first | the verifier rejects an `i1` operand |
+| SSA to heap: construction | raw `i64`, `f64` and `i32` stored as they are; `i1` boxed first | the verifier rejects an `i1` operand |
 | Heap to SSA: projection | result typed by the slot's kind; a Bool field projected as `!eco.value` and then unboxed | a load at the slot's type |
 | SSA aggregate to heap and back | `eco.to_heap`, `eco.from_heap` | `eco.to_heap` allocates the heap object |
 | LLVM storage | `ptrtoint` and `inttoptr` | none; they appear only inside named helpers |
@@ -203,5 +203,4 @@ Documents:
 Rows and comments that disagree with the code. A developer who trusts them writes the wrong test or looks for layouts in the wrong phase:
 
 - (HEAP_014, REP_HEAP_001, REP_AGG_001 and REP_SSA_001 were brought into line with the code on 2026-10-23: the pointer-indicator test, layouts computed in code generation, the front end's aggregate producers, and Bool as `i1` in SSA.)
-- The description of `eco.box` in `Ops.td` says it accepts `i32` and allocates a Bool object. Char is `i16`, and boxing a Bool allocates nothing.
 - Comments in `Heap.hpp` describe `ElmArray`'s and `DynRecord`'s unboxed bits as one-bit flags and mention a `Const_EmptyString` constant that does not exist.

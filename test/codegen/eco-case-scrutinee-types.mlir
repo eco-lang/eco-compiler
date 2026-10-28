@@ -26,13 +26,13 @@ module {
   }
 
   // CHECK: eco.case
-  func.func @chr_case_valid(%c: i16) -> i16 {
-    %result = eco.case %c : i16 [65, 66] -> (i16) {case_kind = "chr"} {
-      eco.yield %c : i16
+  func.func @chr_case_valid(%c: i32) -> i32 {
+    %result = eco.case %c : i32 [65, 66] -> (i32) {case_kind = "chr"} {
+      eco.yield %c : i32
     }, {
-      eco.yield %c : i16
+      eco.yield %c : i32
     }
-    return %result : i16
+    return %result : i32
   }
 
   // CHECK: eco.case

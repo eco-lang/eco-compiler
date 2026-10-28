@@ -6,7 +6,7 @@
 //
 // The ConstructOp verifier now enforces this rule:
 //   - Fields with type !eco.value (including constants) must have slot kind 0
-//   - Only primitive types (i64 / f64 / i16) have a typed slot kind (1 / 2 / 3)
+//   - Only primitive types (i64 / f64 / i32) have a typed slot kind (1 / 2 / 3)
 //
 // Invalid usage is rejected at compile time:
 //   %nil = eco.constant Empty : !eco.value

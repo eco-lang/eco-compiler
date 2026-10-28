@@ -988,15 +988,19 @@ HPointer toList(void* str) {
     if (len == 0) return alloc::listNil();
 
     // `buf` is already a contiguous u16 buffer; no need to duplicate it
-    // into a separate std::vector<u16>.
+    // into a separate std::vector<u16>. One element per code point (a valid
+    // surrogate pair is one character).
     const u16* chars = reinterpret_cast<const u16*>(buf.data());
-    std::vector<HPointer> charPtrs(len, alloc::listNil());
+    size_t count = 0;
+    for (size_t i = 0; i < len; ++count) (void)nextCodePoint(chars, len, i);
+    std::vector<HPointer> charPtrs(count, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(charPtrs.data(), charPtrs.size(), ~0ULL);
 
-    for (size_t i = 0; i < len; ++i) {
-        charPtrs[i] = fromChar(chars[i]);
+    size_t k = 0;
+    for (size_t i = 0; i < len; ++k) {
+        charPtrs[k] = fromChar(nextCodePoint(chars, len, i));
     }
 
     rs.restoreStackRangePoint(saved);
@@ -1008,9 +1012,12 @@ HPointer uncons(void* str) {
     Header* hdr = static_cast<Header*>(str);
     if (hdr->size == 0) return alloc::nothing();
 
-    // Read the first char before any allocation. charAt does not allocate.
-    u16 firstChar = charAt(str, 0);
-    u32 restLen = hdr->size - 1;
+    // Read the first char (code point) before any allocation. charAt does not
+    // allocate. A valid surrogate pair is one Char and the rest drops both
+    // units; UTF-8 forms are ASCII (HEAP_032) so `used` is 1 there.
+    size_t used = 0;
+    u32 firstChar = codePointAt(str, hdr->size, used);
+    u32 restLen = hdr->size - static_cast<u32>(used);
 
     // Bypass slice()'s tiny-path *flattening* copy: build a Tag_StringSlice
     // directly when the source is a leaf, large-header, or another slice.
@@ -1023,11 +1030,11 @@ HPointer uncons(void* str) {
         auto& allocator = Allocator::instance();
         if (hdr->tag == Tag_String || hdr->tag == Tag_LargeStringHeader) {
             HPointer baseHp = allocator.wrap(str);
-            rest = makeSlice(baseHp, 1, restLen);
+            rest = makeSlice(baseHp, static_cast<u32>(used), restLen);
         } else if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             HPointer baseHp = slc->base;
-            u32 newOffset = slc->offset + 1;
+            u32 newOffset = slc->offset + static_cast<u32>(used);
             rest = makeSlice(baseHp, newOffset, restLen);
         } else if (hdr->tag == Tag_StringUtf8Leaf) {
             // ASCII: rest is a UTF-8 view advanced by one byte over the leaf.
@@ -1038,7 +1045,7 @@ HPointer uncons(void* str) {
             rest = makeUtf8View(v->base, v->offset + 1, restLen);
         } else {
             // Rope: defer to slice() which handles rope-aware partitioning.
-            rest = slice(str, 1, static_cast<i64>(hdr->size));
+            rest = slice(str, static_cast<i64>(used), static_cast<i64>(hdr->size));
         }
     }
 
@@ -1056,20 +1063,17 @@ HPointer map(CharToCharMapper mapFunc, void* str) {
     u32 len = rawLen(str);
     if (len == 0) return alloc::emptyString();
 
-    auto& allocator = Allocator::instance();
-    HPointer srcHp = allocator.wrap(str);
-    alloc::BlankString out;
-    {
-        Elm::StackRootGuard guard(&srcHp);
-        out = alloc::allocStringBlank(len);
-    }
-    // Walk segments directly into the result, applying mapFunc per char.
-    u32 written = 0;
-    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
-        for (u32 i = 0; i < n; ++i) out.chars[written + i] = mapFunc(p[i]);
-        written += n;
-    });
-    return out.hp;
+    // Per code point: a mapped Char may need a different number of UTF-16
+    // units than its source, so build the result in a C-heap buffer
+    // (`mapFunc` is a non-allocating C function, so the snapshot cannot go
+    // stale) and allocate once.
+    auto buf = toStdU16String(str);
+    const u16* p = reinterpret_cast<const u16*>(buf.data());
+    size_t n = buf.size();
+    std::vector<u16> result;
+    result.reserve(n);
+    for (size_t i = 0; i < n;) appendCodePoint(result, mapFunc(nextCodePoint(p, n, i)));
+    return alloc::allocString(result.data(), result.size());
 }
 
 HPointer filter(CharPredicate pred, void* str) {
@@ -1090,7 +1094,7 @@ HPointer filter(CharPredicate pred, void* str) {
         auto pr = utf8Bytes(Allocator::resolveFast(srcHp));
         u32 kept = 0;
         for (u32 i = 0; i < pr.second; ++i)
-            if (pred(static_cast<u16>(pr.first[i]))) ++kept;
+            if (pred(static_cast<u32>(pr.first[i]))) ++kept;
         if (kept == 0) return alloc::emptyString();
         if (kept == len) return allocator.wrap(Allocator::resolveFast(srcHp));  // all kept
         AsciiOut out;
@@ -1099,50 +1103,49 @@ HPointer filter(CharPredicate pred, void* str) {
         u32 w = 0;
         for (u32 i = 0; i < pr2.second; ++i) {
             u8 c = pr2.first[i];
-            if (pred(static_cast<u16>(c))) out.dst[w++] = c;
+            if (pred(static_cast<u32>(c))) out.dst[w++] = c;
         }
         return finishAsciiOut(out);
     }
 
-    u32 keptCount = 0;
-    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
-        for (u32 i = 0; i < n; ++i) if (pred(p[i])) ++keptCount;
-    });
+    // UTF-16: per code point (a surrogate pair is one Char, and a segment
+    // boundary of a rope may split a pair, so snapshot first). `pred` is a
+    // non-allocating C predicate, so the snapshot cannot go stale.
+    auto buf = toStdU16String(Allocator::resolveFast(srcHp));
+    const u16* p = reinterpret_cast<const u16*>(buf.data());
+    size_t n = buf.size();
+    std::vector<u16> kept;
+    kept.reserve(n);
+    for (size_t i = 0; i < n;) {
+        size_t start = i;
+        u32 cp = nextCodePoint(p, n, i);
+        if (pred(cp)) kept.insert(kept.end(), p + start, p + i);
+    }
 
-    if (keptCount == 0) return alloc::emptyString();
-    if (keptCount == len && isLeaf(Allocator::resolveFast(srcHp))) {
+    if (kept.empty()) return alloc::emptyString();
+    if (kept.size() == len && isLeaf(Allocator::resolveFast(srcHp))) {
         return allocator.wrap(Allocator::resolveFast(srcHp));
     }
-
-    alloc::BlankString out;
-    {
-        Elm::StackRootGuard guard(&srcHp);
-        out = alloc::allocStringBlank(keptCount);
-    }
-    u32 written = 0;
-    forEachSegment(Allocator::resolveFast(srcHp), [&](const u16* p, u32 n) {
-        for (u32 i = 0; i < n; ++i) {
-            if (pred(p[i])) out.chars[written++] = p[i];
-        }
-    });
-    return out.hp;
+    return alloc::allocString(kept.data(), kept.size());
 }
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
     if (!str) return acc;
     Unboxable result = acc;
-    // UTF-8: iterate bytes (zext to u16) instead of widening. `fold` may
+    // UTF-8: iterate bytes (zext to u32) instead of widening. `fold` may
     // allocate, so snapshot the bytes to the C stack first (same discipline as
     // the toStdU16String snapshot on the UTF-16 path). W4.e.
     if (isUtf8(str)) {
         auto pr = utf8Bytes(str);
         std::string snap(reinterpret_cast<const char*>(pr.first), pr.second);
-        for (unsigned char c : snap) result = fold(static_cast<u16>(c), result);
+        for (unsigned char c : snap) result = fold(static_cast<u32>(c), result);
         return result;
     }
     auto buf = toStdU16String(str);
-    for (auto c : buf) {
-        result = fold(c, result);
+    const u16* p = reinterpret_cast<const u16*>(buf.data());
+    size_t n = buf.size();
+    for (size_t i = 0; i < n;) {
+        result = fold(nextCodePoint(p, n, i), result);
     }
     return result;
 }
@@ -1154,12 +1157,13 @@ Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
         auto pr = utf8Bytes(str);
         std::string snap(reinterpret_cast<const char*>(pr.first), pr.second);
         for (size_t i = snap.size(); i > 0; --i)
-            result = fold(static_cast<u16>(static_cast<unsigned char>(snap[i - 1])), result);
+            result = fold(static_cast<u32>(static_cast<unsigned char>(snap[i - 1])), result);
         return result;
     }
     auto buf = toStdU16String(str);
-    for (size_t i = buf.size(); i > 0; --i) {
-        result = fold(buf[i - 1], result);
+    const u16* p = reinterpret_cast<const u16*>(buf.data());
+    for (size_t i = buf.size(); i > 0;) {
+        result = fold(prevCodePoint(p, i), result);
     }
     return result;
 }

@@ -369,7 +369,7 @@ Testing::TestCase testEcoAllocChurnSurvivesManyMinorGCs(
             switch (kind) {
                 case 0: h = eco_alloc_int(static_cast<i64>(i)); break;
                 case 1: h = eco_alloc_float(static_cast<double>(i) * 0.5); break;
-                case 2: h = eco_alloc_char(static_cast<uint32_t>(i & 0xFFFF));
+                case 2: h = eco_alloc_char(static_cast<uint32_t>(i % 0x110000));
                         break;
                 case 3: {
                     HPointer nil_hp = alloc::listNil();
@@ -1199,7 +1199,7 @@ Testing::TestCase testRandomizedPressureWorkload(
                     case 5: {
                         // Garbage float/char/cons.
                         (void)eco_alloc_float(static_cast<double>(rng.next()));
-                        (void)eco_alloc_char(rng.range(0xFFFF));
+                        (void)eco_alloc_char(rng.range(0x110000));
                         break;
                     }
                     case 6: {

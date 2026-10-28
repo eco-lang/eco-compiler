@@ -97,8 +97,8 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
                     // Unboxed f64 -> eco_dbg_print_float
                     auto func = runtime.getOrCreateDbgPrintFloat(rewriter);
                     rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
-                } else if (origType.isInteger(16)) {
-                    // Unboxed i16 (char) -> eco_dbg_print_char
+                } else if (eco::isEcoCharType(origType)) {
+                    // Unboxed i32 (char) -> eco_dbg_print_char
                     auto func = runtime.getOrCreateDbgPrintChar(rewriter);
                     rewriter.create<LLVM::CallOp>(loc, func, ValueRange{arg});
                 } else {

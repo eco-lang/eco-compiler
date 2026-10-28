@@ -64,7 +64,7 @@ Testing::TestCase testGetObjectSizeChar("getObjectSize returns correct size for 
 
         size_t expected = (sizeof(ElmChar) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected);
-        RC_ASSERT(getObjectSize(obj) == 16);  // Header(8) + u16 + padding = 16
+        RC_ASSERT(getObjectSize(obj) == 16);  // Header(8) + u32 + padding = 16
     });
 });
 

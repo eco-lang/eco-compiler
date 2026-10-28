@@ -212,7 +212,7 @@ HPtr Eco_Kernel_MVar_put(uint64_t id, HPtr value);
 // value unboxed in SSA and skip the eco_alloc_* boxing at the boundary.
 HPtr Eco_Kernel_MVar_put_Int  (uint64_t id, int64_t  value);
 HPtr Eco_Kernel_MVar_put_Float(uint64_t id, double   value);
-HPtr Eco_Kernel_MVar_put_Char (uint64_t id, uint16_t value);
+HPtr Eco_Kernel_MVar_put_Char (uint64_t id, uint64_t value_raw);
 
 // Drop (destroy) an MVar. Returns Task Never ().
 HPtr Eco_Kernel_MVar_drop(uint64_t id);

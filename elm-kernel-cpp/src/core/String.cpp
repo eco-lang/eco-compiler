@@ -35,7 +35,7 @@ HPointer join(void* sep, HPointer stringList) {
 // Character Operations
 // ============================================================================
 
-HPointer cons(u16 c, void* str) {
+HPointer cons(u32 c, void* str) {
     return StringOps::cons(c, str);
 }
 
@@ -43,9 +43,9 @@ HPointer uncons(void* str) {
     return StringOps::uncons(str);
 }
 
-// Reads the Char value out of a list cell (unboxed slot or boxed ElmChar).
-// Resolve-only: performs no allocation.
-static u16 consCellChar(Allocator& allocator, Cons* c) {
+// Reads the Char value (a code point) out of a list cell (unboxed slot or
+// boxed ElmChar). Resolve-only: performs no allocation.
+static u32 consCellChar(Allocator& allocator, Cons* c) {
     if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
         return c->head.c;
     }
@@ -54,7 +54,7 @@ static u16 consCellChar(Allocator& allocator, Cons* c) {
 }
 
 // Same, from a (element, kind) pair produced by a hybrid-spine cursor.
-static u16 elemChar(Allocator& allocator, Elm::Unboxable v, u8 kind) {
+static u32 elemChar(Allocator& allocator, Elm::Unboxable v, u8 kind) {
     if (kind != 0) return v.c;
     void* charObj = allocator.resolve(v.p);
     return static_cast<ElmChar*>(charObj)->value;
@@ -66,11 +66,15 @@ HPointer fromList(HPointer chars) {
     // std::vector + allocString intermediate copy.
     auto& allocator = Allocator::instance();
 
+    // `count` is in UTF-16 units: an astral code point encodes as a
+    // surrogate pair (StringOps::encodeCodePoint). The ASCII gate stays valid
+    // because any code point >= 0x80 sets a bit >= 0x80 in `acc`.
     size_t count = 0;
-    u16 acc = 0;  // or-accumulate: acc < 0x80 <=> every char is ASCII
+    u32 acc = 0;  // or-accumulate: acc < 0x80 <=> every char is ASCII
     for (alloc::ListCursor c(chars); !c.done(); c.next()) {
-        acc |= elemChar(allocator, c.current(), c.currentKind());
-        ++count;
+        u32 cp = elemChar(allocator, c.current(), c.currentKind());
+        acc |= cp;
+        count += StringOps::codePointUnits(cp);
     }
     if (count == 0) return alloc::emptyString();
 
@@ -101,7 +105,8 @@ HPointer fromList(HPointer chars) {
     }
     size_t idx = 0;
     for (alloc::ListCursor c(chars); !c.done(); c.next()) {
-        out.chars[idx++] = elemChar(allocator, c.current(), c.currentKind());
+        idx += StringOps::encodeCodePoint(
+            elemChar(allocator, c.current(), c.currentKind()), out.chars + idx);
     }
     return out.hp;
 }
@@ -139,9 +144,12 @@ HPointer foldl(FoldFunc func, HPointer acc, void* str) {
     auto snapshot = StringOps::toStdU16String(str);
 
     HPointer result = acc;
-    for (auto c : snapshot) {
+    const u16* p = reinterpret_cast<const u16*>(snapshot.data());
+    size_t n = snapshot.size();
+    for (size_t i = 0; i < n;) {
+        u32 cp = StringOps::nextCodePoint(p, n, i);
         void* accObj = allocator.resolve(result);
-        result = func(c, accObj);
+        result = func(cp, accObj);
     }
     return result;
 }
@@ -153,9 +161,11 @@ HPointer foldr(FoldFunc func, HPointer acc, void* str) {
     auto snapshot = StringOps::toStdU16String(str);
 
     HPointer result = acc;
-    for (i64 i = static_cast<i64>(snapshot.size()) - 1; i >= 0; --i) {
+    const u16* p = reinterpret_cast<const u16*>(snapshot.data());
+    for (size_t i = snapshot.size(); i > 0;) {
+        u32 cp = StringOps::prevCodePoint(p, i);
         void* accObj = allocator.resolve(result);
-        result = func(snapshot[i], accObj);
+        result = func(cp, accObj);
     }
     return result;
 }

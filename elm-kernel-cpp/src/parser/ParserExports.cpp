@@ -153,9 +153,9 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         return -1;
     }
 
-    // Load the char(s) at offset. Only the low 16 bits of the code point
-    // survive the call (matching the JS kernel's BMP-only behaviour and the
-    // u16 ABI of PK_Char); supplementary code points still advance offset by 2.
+    // Load the char(s) at offset: a valid surrogate pair is one Char (its full
+    // code point, as elm/parser's JS passes the two-unit string) and advances
+    // offset by 2; a lone surrogate is a Char of its own unit value.
     u16 c0 = s.at(offset);
     i64 advance = 1;
     u32 codePoint = c0;
@@ -167,14 +167,14 @@ int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str) {
         }
     }
 
-    // Invoke the predicate closure with the Char passed as an unboxed u16
-    // (PK_Char). Use `eco_apply_closure_typed` (PAP-aware) so a curried
+    // Invoke the predicate closure with the Char passed as an unboxed 32-bit
+    // code point (PK_Char). Use `eco_apply_closure_typed` (PAP-aware) so a curried
     // or partially-applied predicate is handled correctly — the strict-
     // arity entries assume the closure is exactly saturated by these
     // newargs, which isn't a contract user code is bound by.
     static constexpr auto kLayoutChar1 = Elm::makeEvalParamLayout<1>(0, {3});
     const auto* layout = Elm::asLayout(&kLayoutChar1);
-    int64_t args[1] = { static_cast<int64_t>(codePoint & 0xFFFFu) };
+    int64_t args[1] = { static_cast<int64_t>(codePoint) };
     HPtr cl = HPtr::fromBits(Export::encode(closureHP));
     HPtr result = eco_apply_closure_typed(cl, args, 1, layout);
     if (!Export::decodeBoxedBool(result.toBits())) {
