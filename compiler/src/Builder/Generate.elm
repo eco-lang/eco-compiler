@@ -805,7 +805,7 @@ buildMonoGraph ecoConfig stats root maybeBuildDir localPackages details (Build.A
     Task.io (Utils.listTraverse_ dropCachedInterfaceMVar artifacts.modules)
         |> Task.andThen (\_ -> loadTypedObjects root maybeBuildDir localPackages details modules)
         |> Task.andThen finalizeAndMergeTypedObjects
-        |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats roots)
+        |> Task.andThen (buildMonoGraphFromMerged ecoConfig stats artifacts.pkg roots)
 
 
 {-| Drops a cached module's interface MVar, and does nothing for a fresh module.
@@ -833,11 +833,12 @@ stripUntypedGraph modul =
 
 
 {-| Adds the outside roots' typed graphs and type envs, assigns ids
-(`Compiler.Pipeline.Steps.prepare`), and runs the rest of the middle end on the
-result.
+(`Compiler.Pipeline.Steps.prepareRoot`, entered from the first root module's
+`main`, keyed by `pkg` as the JavaScript path's `gatherMains` keys it), and runs
+the rest of the middle end on the result.
 -}
-buildMonoGraphFromMerged : Config.EcoConfig -> FEStats.Handle -> NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
-buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph mergedEnv) =
+buildMonoGraphFromMerged : Config.EcoConfig -> FEStats.Handle -> Pkg.Name -> NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
+buildMonoGraphFromMerged ecoConfig stats pkg roots (MergedTypedData mergedGraph mergedEnv) =
     let
         typedGraph : TOpt.GlobalGraph Name
         typedGraph =
@@ -849,7 +850,9 @@ buildMonoGraphFromMerged ecoConfig stats roots (MergedTypedData mergedGraph merg
 
         assigned : EntryPrep.Assigned
         assigned =
-            Steps.prepare ecoConfig typedGraph
+            -- The entry is the first root's `main`, not the first `main` of
+            -- any module (an imported module may define one too).
+            Steps.prepareRoot ecoConfig (ModuleName.Canonical pkg (rootModuleName (firstRoot roots))) typedGraph
     in
     -- The rest runs as a following step, so that the graph before id
     -- assignment, this function's argument, can be collected.
@@ -991,7 +994,9 @@ monoPipelineFrom ecoConfig stats globalTypeEnv assigned =
 {-| Returns the graph, or fails with a `STAGE ARITY LIMIT` error listing every
 closure with more parameters plus captured variables than a closure stage can
 hold (`Compiler.Pipeline.Steps.checkStageArity`). This check does not depend on
-`mono.validate`.
+`mono.validate`. The error is a limit of the program, which
+`Builder.Reporting.Exit.toGenerateReport` reports under its own title, not as a
+compiler bug.
 -}
 validateStageArityLimit : Mono.MonoGraph -> Task Exit.Generate Mono.MonoGraph
 validateStageArityLimit g =
@@ -2152,6 +2157,25 @@ constThunkCensus ecoConfig monoGraph =
 
     else
         Task.succeed ()
+
+
+{-| The first of the build's roots.
+-}
+firstRoot : NE.Nonempty Build.Root -> Build.Root
+firstRoot (NE.Nonempty first _) =
+    first
+
+
+{-| The module name of a root.
+-}
+rootModuleName : Build.Root -> ModuleName.Raw
+rootModuleName root =
+    case root of
+        Build.Inside name ->
+            name
+
+        Build.Outside name _ _ _ _ ->
+            name
 
 
 {-| Merges an outside root's typed graph into `graph`. An inside root, or an outside root with no typed graph, leaves it unchanged.

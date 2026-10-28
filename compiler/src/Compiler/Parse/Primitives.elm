@@ -5,7 +5,7 @@ module Compiler.Parse.Primitives exposing
     , withIndent, withBacksetIndent
     , inContext, specialize
     , fromByteString, fromSnippet, Snippet
-    , word1, word2, unsafeIndex, isWord, getCharWidth
+    , word1, word2, unsafeIndex, isWord, getCharWidth, charWidthAt, codePointAt
     , Step(..)
     )
 
@@ -19,8 +19,11 @@ tried.
 A _parser_ is a function from a `State` to a `PStep`. The state is the text
 being parsed, where the parser has got to in it, and the current indent. The
 position is kept in two forms. `pos` and `end` are indices into the text in the
-units `String.slice` uses, which are not bytes: a character above U+FFFF takes
-two of them, as `getCharWidth` says. `row` and `col` are a line and a column
+units `String.slice` uses (UTF-16 code units on both hosts), which are not
+bytes: a character above U+FFFF takes two of them. `codePointAt` and
+`charWidthAt` give a character's code point and width the same way on both
+hosts: whether `String.uncons` joins a surrogate pair into one `Char` or not,
+they join it and never step past `end`. `row` and `col` are a line and a column
 number, and both start from 1. A region recorded by `addLocation` ends at the
 position just after its last character.
 
@@ -32,10 +35,10 @@ position. `oneOf` tries its next alternative only after an `Eerr`. Once an
 alternative reports that it consumed input, its result stands, success or
 failure, so a choice commits to that branch. `loop` and `inContext` keep this
 record across the parsers they run in sequence: once anything has been
-consumed, a later empty outcome is reported as consumed.
-`andThen` does so for success only. When its first parser consumed and its
-second gives `Eerr`, the result is still `Eerr`, so an enclosing `oneOf` moves
-on to its next alternative from where it started.
+consumed, a later empty outcome is reported as consumed. `andThen` does the
+same: when its first parser consumed and its second gives `Eerr`, the result
+is `Cerr`, so an enclosing `oneOf` commits to that alternative, as upstream
+Elm's `Parse.Primitives` does.
 
 A failure carries its error as a function of a row and a column, together with
 the row and column to give it. `specialize` and `inContext` wrap a failure in
@@ -50,7 +53,7 @@ nested parser; the checks made against it are in `Compiler.Parse.Space`.
 `fromByteString` and `fromSnippet` run a parser over a text, and treat a parse
 that succeeds without reaching the end of its input as a failure, a _bad end_.
 `word1` and `word2` are parsers for one or two fixed characters. `unsafeIndex`,
-`isWord` and `getCharWidth` are for parsers written directly as functions on
+`isWord`, `getCharWidth`, `charWidthAt` and `codePointAt` are for parsers written directly as functions on
 the state instead of being built from the combinators.
 
 
@@ -86,7 +89,7 @@ the state instead of being built from the combinators.
 
 # Character Utilities
 
-@docs word1, word2, unsafeIndex, isWord, getCharWidth
+@docs word1, word2, unsafeIndex, isWord, getCharWidth, charWidthAt, codePointAt
 
 
 # Loop Control
@@ -306,10 +309,9 @@ pure value =
 {-| Produces a parser that runs the given parser, then runs the parser that
 `callback` builds from its value, continuing from where the first stopped.
 
-If the first parser consumed input, a success of the second is reported as
-`Cok`. A failure of the second is passed on as it is, so `Eerr` after a
-consuming first parser is still `Eerr`, and an enclosing `oneOf` will try its
-next alternative.
+If the first parser consumed input, the second's outcome is reported as
+consumed: a success as `Cok` and a failure as `Cerr`, so an enclosing `oneOf`
+does not try its next alternative after this one consumed input.
 
 -}
 andThen : (a -> Parser x b) -> Parser x a -> Parser x b
@@ -327,8 +329,11 @@ andThen callback (Parser parserA) =
                                 Eok a_ s_ ->
                                     Cok a_ s_
 
-                                result ->
-                                    result
+                                Cerr r c t ->
+                                    Cerr r c t
+
+                                Eerr r c t ->
+                                    Cerr r c t
 
                 Eok a s ->
                     case callback a of
@@ -714,6 +719,51 @@ getCharWidth word =
 
     else
         1
+
+
+{-| Returns the code point and width, in `pos` units, of the character at
+`pos`, where `pos < end` and `code` is `Char.toCode (unsafeIndex src pos)`.
+
+Both JavaScript and native eco join a valid surrogate pair in `String.uncons`,
+so there `code` is already above U+FFFF and the width is 2. A host whose `Char`
+is one UTF-16 unit gives the high surrogate alone; it is joined here with a
+low surrogate that follows before `end`. A pair that `end` cuts in two is its
+high surrogate, width 1, and a lone surrogate is itself, width 1, so the width
+never takes `pos` past `end`. Nothing at or past `end` is read.
+
+-}
+codePointAt : String -> Int -> Int -> Int -> ( Int, Int )
+codePointAt src pos end code =
+    if code > 0xFFFF then
+        if pos + 1 < end then
+            ( code, 2 )
+
+        else
+            ( 0xD800 + (code - 0x00010000) // 0x0400, 1 )
+
+    else if code >= 0xD800 && code <= 0xDBFF && pos + 1 < end then
+        let
+            low : Int
+            low =
+                Char.toCode (unsafeIndex src (pos + 1))
+        in
+        if low >= 0xDC00 && low <= 0xDFFF then
+            ( 0x00010000 + (code - 0xD800) * 0x0400 + (low - 0xDC00), 2 )
+
+        else
+            ( code, 1 )
+
+    else
+        ( code, 1 )
+
+
+{-| Returns how many units of `pos` the character `word` at `pos` takes, as
+`codePointAt` gives it: like `getCharWidth`, but it also joins a surrogate pair
+on a host whose `Char` is one UTF-16 unit and never steps past `end`.
+-}
+charWidthAt : String -> Int -> Int -> Char -> Int
+charWidthAt src pos end word =
+    Tuple.second (codePointAt src pos end (Char.toCode word))
 
 
 

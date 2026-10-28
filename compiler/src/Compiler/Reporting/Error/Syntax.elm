@@ -915,7 +915,9 @@ or a binary literal, and `NumberNoLeadingZero` a `0` followed by another digit.
 `NumberNoUnderscoresAdjacentToDecimalOrExponent`,
 `NumberNoUnderscoresAdjacentToHexadecimalPreFix` and
 `NumberNoUnderscoresAdjacentToBinaryPreFix` each name a place an underscore may
-not go.
+not go. `NumberInexactOnHost` is an integer literal whose 64-bit value the
+JavaScript-hosted compiler cannot hold exactly (more than 53 significant bits);
+it is reported at the start of the literal.
 
 Every report of a `Number` error highlights the single column at its position.
 
@@ -931,6 +933,7 @@ type Number
     | NumberNoUnderscoresAdjacentToDecimalOrExponent
     | NumberNoUnderscoresAdjacentToHexadecimalPreFix
     | NumberNoUnderscoresAdjacentToBinaryPreFix
+    | NumberInexactOnHost
 
 
 
@@ -4409,6 +4412,13 @@ toNumberReport source number row col =
             )
                 |> Code.toSnippet source region Nothing
                 |> Report.report "UNDERSCORE ADJACENT TO BINARY PREFIX 0B" region []
+
+        NumberInexactOnHost ->
+            ( D.reflow "This integer is too precise for the JavaScript-hosted compiler:"
+            , D.reflow "Its 64-bit value needs more than 53 significant bits, which a JavaScript number cannot hold exactly. Compile this module with the native eco compiler, or write the value another way (for example with Bitwise)."
+            )
+                |> Code.toSnippet source region Nothing
+                |> Report.report "INEXACT INTEGER" region []
 
 
 
@@ -11519,6 +11529,9 @@ numberEncoder number =
         NumberNoUnderscoresAdjacentToBinaryPreFix ->
             Bytes.Encode.unsignedInt8 9
 
+        NumberInexactOnHost ->
+            Bytes.Encode.unsignedInt8 10
+
 
 {-| A decoder for what `numberEncoder` writes.
 -}
@@ -11557,6 +11570,9 @@ numberDecoder =
 
                     9 ->
                         Bytes.Decode.succeed NumberNoUnderscoresAdjacentToBinaryPreFix
+
+                    10 ->
+                        Bytes.Decode.succeed NumberInexactOnHost
 
                     _ ->
                         Bytes.Decode.fail

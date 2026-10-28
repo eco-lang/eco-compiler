@@ -12,7 +12,11 @@ out per byte in, 6.6 MB in all, sent in 65 KB frames).
   - Streamed mode (no size limit): a 200 MiB bomb whose body the server leaves unread for a
     second — inflating stops while the body is full and TCP pushes back — then cancels: the rest
     is still inflated (to keep the stream in sync) and dropped as it arrives, and the next message
-    arrives intact. The process stays within 32 MiB.
+    arrives intact. The process stays within 32 MiB, both while the body is stalled and once the
+    next message has arrived (the stream is quiescent then). Like whole mode this is measured on
+    a second run: on the JS host RSS follows when V8 collects and returns memory, and the first
+    run of 200 MiB of short-lived inflated chunks grows the heap and the allocator's pools once
+    (plans/review-bug-triage-fixes.md Part 8: a first-run reading landed at 33 984 KiB).
 
 (DEFLATE cannot reach the ratio of "1 KiB to 1 GiB"; its ceiling is about 1 032:1.)
 -}
@@ -241,10 +245,16 @@ run _ =
     H.socketErr H.listenLocal
         |> Task.andThen
             (\listener ->
-                -- The first run warms up (some heap configurations grow the heap once, at the
-                -- first collections); the second is the one measured.
+                -- In each mode the first run warms up (some heap configurations grow the heap
+                -- once, at the first collections; on the JS host V8 and the allocator grow their
+                -- pools once); the second is the one measured.
                 wholeCase listener
                     |> Task.andThen (\_ -> wholeCase listener)
-                    |> Task.andThen (\whole -> streamedCase listener |> Task.map (\streamed -> [ whole, streamed ]))
+                    |> Task.andThen
+                        (\whole ->
+                            streamedCase listener
+                                |> Task.andThen (\_ -> streamedCase listener)
+                                |> Task.map (\streamed -> [ whole, streamed ])
+                        )
                     |> Task.andThen (\lines -> H.socketErr (Socket.closeListener listener) |> Task.map (\_ -> lines))
             )

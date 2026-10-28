@@ -122,7 +122,8 @@ monomorphizeWithReport lssConfig limits entryPointName globalTypeEnv globalGraph
 
 
 {-| Returns the monomorphized graph of an id-assigned graph, entered from the
-definition named `entryPointName` that `EntryPrep.findEntryPointId` finds,
+definition named `entryPointName` that `EntryPrep.findEntryPointId` finds (in
+the root module `assigned.entryHome` when that is given),
 together with the LSS census text, which is `Just` exactly when `lss.report` is
 on.
 
@@ -144,7 +145,7 @@ monomorphizeWithReportAssigned lssConfig limits entryPointName globalTypeEnv ass
         mvarState =
             assigned.mvarState
     in
-    case EntryPrep.findEntryPointId entryPointName nodesWithIds of
+    case EntryPrep.findEntryPointId assigned.entryHome entryPointName nodesWithIds of
         Nothing ->
             Err ("No " ++ entryPointName ++ " function found")
 

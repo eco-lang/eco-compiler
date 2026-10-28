@@ -2,9 +2,9 @@ module TestLogic.Generate.JavaScript.InfiniteFloatLiteralTest exposing (suite)
 
 {-| An infinite Float literal (`1e400`) in Elm source reaches the JavaScript
 backend as an infinite `Opt.Float`, and
-`Compiler.Generate.JavaScript.Expression` emits it as `Infinity.0`, which is
-not JavaScript: `eco make --output=main.js` on such a program writes a file
-that node rejects with "SyntaxError: Unexpected number"
+`Compiler.Generate.JavaScript.Expression` emitted it as `Infinity.0`, which is
+not JavaScript: `eco make --output=main.js` on such a program wrote a file
+that node rejected with "SyntaxError: Unexpected number"
 (`var $author$project$Main$big = Infinity.0;`).
 
 Also covered by the unit test
@@ -13,8 +13,6 @@ the `Opt.Float` by hand; here the input is source text, parsed, canonicalized,
 type checked and optimized by the erased path the JS build uses
 (`Compiler.LocalOpt.Erased.Module.optimize`), and every definition is
 generated with `Expression.generate`.
-
-EXPECTED TO FAIL until fixed.
 
 -}
 

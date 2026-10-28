@@ -99,7 +99,9 @@ exit code =
 handle of the child.
 
 The request carries no stream settings; `spawnProcess` is the form that takes
-them. A failed request fails with the `ProcessError` that
+them. A command that cannot be started (not found, not executable) is a failed
+request: the eco-io handler in `bin/eco-io-handler.js` answers it with the
+start error and hands out no handle. A failed request fails with the `ProcessError` that
 `Eco.Process.Error.ofKernelTuple` gives for it and `cmd`. A 2xx reply whose
 `value` cannot be read as an integer crashes the program.
 
@@ -129,7 +131,8 @@ number only when standard input is `CreatePipe`, and that number, made into an
 and `Eco.File.close`. No handle is returned for standard output or standard
 error.
 
-A failed request fails with the `ProcessError` that
+A command that cannot be started is a failed request, as for `spawn`. A failed
+request fails with the `ProcessError` that
 `Eco.Process.Error.ofKernelTuple` gives for it and `config.cmd`. A 2xx reply
 whose `value` cannot be read as these two handles crashes the program.
 
@@ -168,12 +171,12 @@ spawnProcess config =
 exit code: `ExitSuccess` for 0 and `ExitFailure` for any other number.
 
 The code is the number eco-io replies with. The eco-io handler in
-`bin/eco-io-handler.js` replies 0 for a handle it does not know and for a child
-killed by a signal, so both give `ExitSuccess`. That handler starts listening
-for the child's exit only when asked, so for a child that ended before it was
-first waited for, it never replies and the task never completes. Once a `wait`
-has replied, the handler forgets the handle, so a later `wait` on it gives
-`ExitSuccess`. A failed request crashes the program.
+`bin/eco-io-handler.js` records each child's exit as soon as it happens, so a
+child that ended before it was waited for is answered at once. A child killed
+by a signal gives 128 plus the signal's number, as a shell reports it. The
+handler replies 0 for a handle it does not know, which gives `ExitSuccess`;
+once a `wait` has replied, the handler forgets the handle, so a later `wait` on
+it gives `ExitSuccess`. A failed request crashes the program.
 
 -}
 wait : ProcessHandle -> Task Never ExitCode

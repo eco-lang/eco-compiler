@@ -1,7 +1,7 @@
 module Text.PrettyPrint.ANSI.LeijenTest exposing (suite)
 
-{-| Regression tests for `Text.PrettyPrint.ANSI.Leijen`. EXPECTED TO FAIL until
-the bugs are fixed.
+{-| Regression tests for `Text.PrettyPrint.ANSI.Leijen`, pinning two bugs fixed
+2026-10-28 (plans/review-bug-triage-fixes.md, Part 5):
 
   - `hcatHelp`'s `[ doc ] -> doc` case discards the accumulator, so `hcat`
     keeps only the last document (`hcat [a, b, c]` renders `"c"`). This reaches

@@ -59,6 +59,19 @@ var _Console_readAll = __Scheduler_binding(function(callback) {
     process.stdin.resume();
 });
 
+// Eco.Console.isTerminal : Int -> Task Never Bool
+// Whether a standard handle (0, 1 or 2) is a terminal; any other handle,
+// such as a process stream, answers false.
+var _Console_isTerminal = function(handle) {
+    return __Scheduler_binding(function(callback) {
+        var value = false;
+        if (handle === 0 || handle === 1 || handle === 2) {
+            try { value = require('tty').isatty(handle); } catch (e) { value = false; }
+        }
+        callback(__Scheduler_succeed(value));
+    });
+};
+
 // Eco.Console.log : String -> a -> a
 // Pure side-effect: writes `tag` (with newline) to stderr and returns `value`
 // unchanged. Mirrors Debug.log's pattern but is allowed under --optimize.

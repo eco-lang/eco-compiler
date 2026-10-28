@@ -7,15 +7,16 @@ the later occurrence as the first region of a duplicate error (e.g.
 `ExportDuplicate`, `DuplicateCtor`). Upstream Elm (`foldl' union`) and `insert`
 / `union` keep source order.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 
 import Compiler.Canonicalize.Environment.Dups as Dups
+import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as R
-import Compiler.Data.OneOrMore as OneOrMore
 import Expect
 import Test exposing (Test)
 

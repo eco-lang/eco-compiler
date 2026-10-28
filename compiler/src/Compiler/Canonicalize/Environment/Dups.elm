@@ -63,33 +63,28 @@ type alias ToError =
 
 
 {-| Returns a `Dict` from each name in the tracker to the value of its one
-occurrence, or fails with the error `toError` builds for a name that occurs more
-than once.
+occurrence, or fails with the errors `toError` builds for the names that occur
+more than once.
 
-Names are checked in ascending order and the first duplicated one stops the
-check, so only one error is reported. Its two regions are the first two
-occurrences in the order the tracker holds them.
+Every name is checked, in ascending order, and each duplicated one adds an
+error, so the failure carries one error per duplicated name, in that order.
+Each error's two regions are the name's first two occurrences in the order the
+tracker holds them.
 
 -}
 detect : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict Name a)
 detect toError dict =
-    Dict.foldl
-        (\name values ->
-            ReportingResult.andThen
-                (\acc ->
-                    ReportingResult.map (\b -> Dict.insert name b acc)
-                        (detectHelp toError name values)
-                )
-        )
-        (ReportingResult.ok Dict.empty)
-        dict
+    ReportingResult.traverse
+        (\( name, values ) -> ReportingResult.map (Tuple.pair name) (detectHelp toError name values))
+        (Dict.toList dict)
+        |> ReportingResult.map Dict.fromList
 
 
 {-| Returns what `detect` returns, but with each key carrying the region of the
 name's occurrence.
 
-The failure is the same as `detect`'s. A duplicated name is keyed at `A.zero`
-until the check reaches it, but it then fails, so no such key is ever returned.
+The failure is the same as `detect`'s. A duplicated name is keyed at `A.zero`,
+but the check then fails, so no such key is ever returned.
 
 -}
 detectLocated : ToError -> Tracker a -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
@@ -140,18 +135,18 @@ detectHelp toError name values =
 
 
 {-| Returns a dictionary from each field name, carrying the region it was
-written at, to its value, or fails with `DuplicateField` for the first field
-name, in ascending order, that occurs more than once.
+written at, to its value, or fails with a `DuplicateField` for each field
+name that occurs more than once, in ascending order of name.
 -}
 checkLocatedFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
 checkLocatedFields fields =
     detectLocated Error.DuplicateField (List.foldr addField none fields)
 
 
-{-| Returns a dictionary from each field name to its value, or fails with
-`DuplicateField` for the first field name, in ascending order, that occurs more
-than once. The regions in the error are those of its first two occurrences in
-the list.
+{-| Returns a dictionary from each field name to its value, or fails with a
+`DuplicateField` for each field name that occurs more than once, in ascending
+order of name. The regions in each error are those of the name's first two
+occurrences in the list.
 -}
 checkFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict Name a)
 checkFields fields =
@@ -201,9 +196,9 @@ union a b =
 
 
 {-| Returns a tracker holding every occurrence in every tracker of the list.
-Where several hold a name, a later tracker's occurrences come before an earlier
-one's.
+Where several hold a name, an earlier tracker's occurrences come before a later
+one's, so the occurrences stay in source order when the list is.
 -}
 unions : List (Tracker a) -> Tracker a
 unions dicts =
-    List.foldl union Dict.empty dicts
+    List.foldl (\dict acc -> union acc dict) Dict.empty dicts

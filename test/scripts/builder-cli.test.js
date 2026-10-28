@@ -1,6 +1,6 @@
 // Regression tests for Builder/Terminal bugs observable through the `eco make` front end
 // (compiler/bin/index.js, run against the built build/compiler/build-xhr/bin/guida.js).
-// S2 verification, builder batch. Every test here is EXPECTED TO FAIL until the bug it names is fixed:
+// S2 verification, builder batch. Each test pins a bug that is now fixed:
 //   1. Builder.Build.handleCachedDepsStatus: deleting a module that an unchanged module imports
 //      crashes with "Error from `Main` should have been reported already." (DepsNotFound -> RBlocked,
 //      RNotFound not counted by addErrors).

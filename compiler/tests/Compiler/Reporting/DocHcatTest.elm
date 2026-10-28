@@ -5,7 +5,8 @@ module Compiler.Reporting.DocHcatTest exposing (suite)
 the last one instead of concatenating them, so callers such as the finite-list
 printing in `Compiler.Reporting.Error.Pattern` lose content.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

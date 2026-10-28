@@ -6,7 +6,8 @@ taking the leading run (upstream uses `takeWhile`), so `if x then` at the `i`
 gives `Lower 'i' "ifxthen"` instead of `Keyword "if"`, and `|> f <| g` gives
 `Operator "|><|"`. Syntax reports then name the wrong text.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

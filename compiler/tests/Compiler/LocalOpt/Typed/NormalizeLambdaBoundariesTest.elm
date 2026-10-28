@@ -1,10 +1,11 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundariesTest exposing (suite)
 
-{-| Regression test for a suspected variable-capture bug in
+{-| Regression test for a variable-capture bug in
 `Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries` (recomment-bugs.txt,
 NormalizeLambdaBoundaries.elm line 885).
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.4); the text
+below describes the old behaviour.
 
 The case-boundary rewrite names its fresh parameters after the first branch's
 parameters with `_hl_` and a counter appended, and the counter restarts at 0
@@ -17,9 +18,17 @@ without stopping at binders. In
                 \a -> a
 
             False ->
-                \b -> apply (\y -> case t of
-                                    True -> \a -> a + b
-                                    False -> \a -> a) 1
+                \b ->
+                    apply
+                        (\y ->
+                            case t of
+                                True ->
+                                    \a -> a + b
+
+                                False ->
+                                    \a -> a
+                        )
+                        1
 
 the inner boundary is normalized first, giving `\y a_hl_0 -> ... a_hl_0 + b`.
 The outer boundary then renames `b` to its own fresh `a_hl_0`, which the inner

@@ -1,12 +1,9 @@
 module Builder.Reporting.ExitDocsDataTest exposing (suite)
 
-{-| Reproduces a bug in `Builder.Reporting.Exit.toDocsProblemReport`: the
-`DP_Data` report says "The response body contains " ++ body ++ " bytes",
-inserting the body text where its length belongs (`RP_Data` correctly uses
-`String.fromInt (String.length body)`).
-
-EXPECTED TO FAIL until the bug is fixed.
-
+{-| Regression test for `Builder.Reporting.Exit.toDocsProblemReport`: the
+`DP_Data` report once said "The response body contains " ++ body ++ " bytes",
+inserting the body text where its length belongs. It now uses
+`String.fromInt (String.length body)`, as `RP_Data` does.
 -}
 
 import Builder.Reporting.Exit as Exit

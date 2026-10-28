@@ -576,7 +576,7 @@ toDocsProblemReport problem context =
                 [ D.fromChars url |> D.dullyellow |> D.indent 4
                 , D.reflow <|
                     "I got the data back, but it was not what I was expecting. The response body contains "
-                        ++ body
+                        ++ String.fromInt (String.length body)
                         ++ " bytes. Here is the "
                         ++ (if String.length body <= 76 then
                                 "whole thing:"
@@ -967,12 +967,16 @@ dependency constraints.
 `SolverBadCacheData` means the cached copy was corrupt; its report tells the
 user that the copy has been deleted. `SolverBadHttpData` carries the URL whose
 response could not be read, and `SolverBadHttp` a failed request.
+`SolverBadLocalOutline` is a `--local-package` whose own `elm.json` (at the
+path given) is not a package outline: the decoding error, or `Nothing` for an
+application outline. That file is the user's and is never deleted.
 
 -}
 type Solver
     = SolverBadCacheData Pkg.Name V.Version
     | SolverBadHttpData Pkg.Name V.Version String
     | SolverBadHttp Pkg.Name V.Version Http.Error
+    | SolverBadLocalOutline Pkg.Name FilePath (Maybe (Decode.Error OutlineProblem))
 
 
 {-| Builds the report for a solver failure.
@@ -980,6 +984,22 @@ type Solver
 toSolverReport : Solver -> Help.Report
 toSolverReport problem =
     case problem of
+        SolverBadLocalOutline pkg path maybeError ->
+            let
+                reason : String
+                reason =
+                    "I need the elm.json of the local package " ++ Pkg.toChars pkg ++ " (--local-package), but I ran into a problem with it."
+            in
+            case maybeError of
+                Just decodeError ->
+                    Json.ExplicitReason reason |> Json.toReport path (Json.FailureToReport toOutlineProblemReport) decodeError
+
+                Nothing ->
+                    Help.report "PROBLEM SOLVING PACKAGE CONSTRAINTS"
+                        (Just path)
+                        reason
+                        [ D.reflow "It describes an application, but a --local-package must be a package." ]
+
         SolverBadCacheData pkg vsn ->
             Help.report "PROBLEM SOLVING PACKAGE CONSTRAINTS"
                 Nothing
@@ -2100,7 +2120,8 @@ toRedirectDoc response =
 {-| A reason `make` could not produce its output.
 
 `MakeNoOutline` means there is no elm.json. `MakeCannotOptimizeAndDebug` means
-both `--optimize` and `--debug` were given. `MakeAppNeedsFileNames` and
+both `--optimize` and `--debug` were given, and `MakeDocsWithFileNames` that
+`--docs` was given with files named. `MakeAppNeedsFileNames` and
 `MakePkgNeedsExposing` mean there were no files to compile, in an application
 and in a package with no exposed modules. `MakeMultipleFilesIntoHtml` means
 several files were given for HTML output, and `MakeNoMain` that the file given
@@ -2117,6 +2138,7 @@ constructors wrap a shared failure.
 type Make
     = MakeNoOutline
     | MakeCannotOptimizeAndDebug
+    | MakeDocsWithFileNames
     | MakeBadDetails Details
     | MakeAppNeedsFileNames
     | MakePkgNeedsExposing
@@ -2141,6 +2163,13 @@ makeToReport make =
                 "It looks like you are starting a new Elm project. Very exciting! Try running:"
                 [ D.fromChars "elm init" |> D.green |> D.indent 4
                 , "It will help you get set up. It is really simple!" |> D.reflow
+                ]
+
+        MakeDocsWithFileNames ->
+            Help.report "CLASHING FLAGS"
+                Nothing
+                "I cannot write --docs when files are named."
+                [ D.reflow "Documentation is written for a package's exposed modules, so run `eco make --docs=docs.json` with no file names in a package."
                 ]
 
         MakeCannotOptimizeAndDebug ->
@@ -2725,9 +2754,10 @@ type Generate
 {-| Builds the report for a code generation failure.
 
 A monomorphization error is reported as a likely compiler bug, except when its
-message starts with `"specialization "`: that is the specialization limit
-being reached, which is a condition of the program rather than a fault of the
-compiler.
+message starts with `"specialization "` or `"STAGE ARITY LIMIT"`: those are the
+specialization limit and the closure stage arity limit (`HEAP_078`) being
+reached, conditions of the program rather than faults of the compiler. A stage
+arity error gets a report of its own, with advice on staying under the limit.
 
 -}
 toGenerateReport : Generate -> Help.Report
@@ -2771,17 +2801,30 @@ toGenerateReport problem =
                 ]
 
         GenerateMonomorphizationError errorMessage ->
-            Help.report "MONOMORPHIZATION ERROR"
-                Nothing
-                "An error occurred during monomorphization:"
-                ((D.fromChars errorMessage |> D.red |> D.indent 4)
-                    :: (if String.startsWith "specialization " errorMessage then
-                            []
+            if String.startsWith "STAGE ARITY LIMIT" errorMessage then
+                Help.report "STAGE ARITY LIMIT"
+                    Nothing
+                    "This program needs a closure bigger than Eco can build:"
+                    [ D.fromChars errorMessage |> D.red |> D.indent 4
+                    , D.reflow <|
+                        "After specialization, a function value holds one slot per parameter and per captured variable, "
+                            ++ "and every type a captured polymorphic local function is used at becomes a variable of its own. "
+                            ++ "To stay under the limit, move such a local function to the top level, where it is "
+                            ++ "not captured, or capture one record instead of many values."
+                    ]
 
-                        else
-                            [ "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow ]
-                       )
-                )
+            else
+                Help.report "MONOMORPHIZATION ERROR"
+                    Nothing
+                    "An error occurred during monomorphization:"
+                    ((D.fromChars errorMessage |> D.red |> D.indent 4)
+                        :: (if String.startsWith "specialization " errorMessage then
+                                []
+
+                            else
+                                [ "This is likely a compiler bug. Please report it with a minimal reproduction case." |> D.reflow ]
+                           )
+                    )
 
         GenerateNativeDriverError errorMessage ->
             Help.report "NATIVE LOWERING ERROR"

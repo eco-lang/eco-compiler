@@ -5405,8 +5405,8 @@ its self tail calls renamed (`renameTailCalls`).
 renameMonoDef : Name -> Mono.MonoDef -> Mono.MonoDef
 renameMonoDef newName def =
     case def of
-        Mono.MonoDef _ expr ->
-            Mono.MonoDef newName expr
+        Mono.MonoDef oldName expr ->
+            Mono.MonoDef newName (Traverse.renameLocal oldName newName expr)
 
         Mono.MonoTailDef oldName args expr ->
             Mono.MonoTailDef newName args (renameTailCalls oldName newName expr)

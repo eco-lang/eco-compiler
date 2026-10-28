@@ -1,5 +1,5 @@
 module Compiler.Pipeline.Steps exposing
-    ( assignFlagsFor, prepare, prepareEntry
+    ( assignFlagsFor, prepare, prepareRoot, prepareEntry
     , PreMono, preMono, checkMinted
     , monomorphize, monomorphizeEntry, checkStageArity, checkLayout
     , inline, prune, checkPruned
@@ -35,7 +35,7 @@ under `mono.validate`.
 
 # Preparation
 
-@docs assignFlagsFor, prepare, prepareEntry
+@docs assignFlagsFor, prepare, prepareRoot, prepareEntry
 
 
 # Pre-monomorphization
@@ -65,6 +65,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Eco.Config as Config
+import Compiler.Elm.ModuleName as ModuleName
 import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
@@ -124,6 +125,14 @@ mint fresh ids for it through `Compiler.GlobalOpt.PreMono.Fresh`.
 prepare : Config.EcoConfig -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
 prepare ecoConfig typedGraph =
     prepareEntry ecoConfig "main" typedGraph
+
+
+{-| Returns what `prepare` does, but taking as the entry point the `main` of
+module `rootHome` only, not the first `main` of any module.
+-}
+prepareRoot : Config.EcoConfig -> ModuleName.Canonical -> TOpt.GlobalGraph Name -> EntryPrep.Assigned
+prepareRoot ecoConfig rootHome typedGraph =
+    EntryPrep.assignIn (assignFlagsFor ecoConfig) (Just rootHome) "main" typedGraph
 
 
 {-| Returns what `prepare` does, but taking the top-level value named `entry`

@@ -1,7 +1,6 @@
 ---
-status: partial
+status: done
 updated: 2026-10-28
-remaining: "Parts 2-8 not started; Part 1 (32-bit Char) implemented 2026-10-28, bootstrap fixed point (4b/8c/9b) not yet run for it"
 ---
 
 # Fixes for the review-bug triage
@@ -22,7 +21,7 @@ reference for implementation, not a patch to apply blindly, since the parts over
 
 | Part | Items | Confidence | Validated |
 |---|---|---|---|
-| 1 Char 32-bit (DONE 2026-10-28, bootstrap pending) | one change set | compiler high; dialect/runtime/kernels medium | compiler side prototyped (astral unit tests pass; codegen checkers updated); C++ is a design only |
+| 1 Char 32-bit (DONE 2026-10-28) | one change set | compiler high; dialect/runtime/kernels medium | compiler side prototyped (astral unit tests pass; codegen checkers updated); C++ is a design only |
 | 2 Parser + 5.1 | Unicode identifiers; `andThen` | high (JS host), medium-high (native) | yes; private compiler rebuilt, self-compiles, E2E source compiles |
 | 3a Mono | 3.1 aliases, 3.2 local rename, 3.5 nested destructure | high, high, medium-high | pipeline tests pass (both engines for 3.1/3.2) |
 | 3b Optimizer | 3.3 let rec type, 3.4 lambda boundaries, 3.6 entry main, 3.7 accessors, 3.8 erased tail call | high, high, high (wiring medium-high), medium-high, high | unit tests pass; E2E sources compile to correct MLIR (not run) |

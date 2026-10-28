@@ -1033,28 +1033,28 @@ facts =
           , TypeFaithful
                 { scope = Transports
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
-                , evidence = "class: cheap | entry: ConsoleExports.cpp:Eco_Kernel_Console_log:21-23 | helpers: Console.cpp:log:144-163 | type: Eco/Console.elm:81 (String -> a -> a, alias-seeded) | B1: B1(b)+B1(c) -- Console.cpp:162 `return value;` is the arg's ONLY use | B2: no static/global/task write in Console.cpp | B3: no allocClosure/Tag_Closure | audited: 2026-08-20"
+                , evidence = "class: cheap | entry: ConsoleExports.cpp:Eco_Kernel_Console_log:25-27 | helpers: Console.cpp:log:177-196 | type: Eco/Console.elm:89 (String -> a -> a, alias-seeded) | B1: B1(b)+B1(c) -- Console.cpp:195 `return value;` is the arg's ONLY use | B2: no static/global/task write in Console.cpp | B3: no allocClosure/Tag_Closure | audited: 2026-08-20 | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 5 item 3 - Console.cpp gains isTerminal (a Task_Binding over an unboxed-Int handle tuple whose body calls isatty and succeeds with a Bool) plus the _eco_stdin_fd/_eco_isatty helpers, and ConsoleExports.cpp gains Eco_Kernel_Console_isTerminal; neither touches this kernel's code, no static/global/task write, no closure alloc; no application, retention, fabrication or type change; B1-B3 unchanged; line cites updated | audited: 2026-10-28"
                 }
           )
         , ( ( "Eco", "Console", "readAll" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
-                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readAll:17-19 | helpers: Console.cpp:readAll:140-142 | type: Eco/Console.elm:71 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :141) | B3: binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readAll:17-19 | helpers: Console.cpp:readAll:165-167 | type: Eco/Console.elm:71 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :166) | B3: binding closure only | audited: 2026-08-20 | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 5 item 3 - Console.cpp gains isTerminal (a Task_Binding over an unboxed-Int handle tuple whose body calls isatty and succeeds with a Bool) plus the _eco_stdin_fd/_eco_isatty helpers, and ConsoleExports.cpp gains Eco_Kernel_Console_isTerminal; neither touches this kernel's code, no static/global/task write, no closure alloc; no application, retention, fabrication or type change; B1-B3 unchanged; line cites updated | audited: 2026-10-28"
                 }
           )
         , ( ( "Eco", "Console", "readLine" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
-                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readLine:13-15 | helpers: Console.cpp:readLine:136-138 | type: Eco/Console.elm:63 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :137) | B3: binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_readLine:13-15 | helpers: Console.cpp:readLine:161-163 | type: Eco/Console.elm:63 | B1: vacuous (no function-capable position) | B2: nothing captured (unit(), :162) | B3: binding closure only | audited: 2026-08-20 | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 5 item 3 - Console.cpp gains isTerminal (a Task_Binding over an unboxed-Int handle tuple whose body calls isatty and succeeds with a Bool) plus the _eco_stdin_fd/_eco_isatty helpers, and ConsoleExports.cpp gains Eco_Kernel_Console_isTerminal; neither touches this kernel's code, no static/global/task write, no closure alloc; no application, retention, fabrication or type change; B1-B3 unchanged; line cites updated | audited: 2026-10-28"
                 }
           )
         , ( ( "Eco", "Console", "write" )
           , TypeFaithful
                 { scope = Inert
                 , files = [ "eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp", "eco-kernel-cpp/src/eco-kernel/Console.cpp" ]
-                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_write:9-11 | helpers: Console.cpp:write:126-134 | type: Eco/Console.elm:55 | B1: vacuous (no function-capable position) | B2: String captured :129-133, set-flow inert | B3: binding closure only | audited: 2026-08-20"
+                , evidence = "class: vacuous | entry: ConsoleExports.cpp:Eco_Kernel_Console_write:9-11 | helpers: Console.cpp:write:151-159 | type: Eco/Console.elm:55 | B1: vacuous (no function-capable position) | B2: String captured :154-158, set-flow inert | B3: binding closure only | audited: 2026-08-20 | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 5 item 3 - Console.cpp gains isTerminal (a Task_Binding over an unboxed-Int handle tuple whose body calls isatty and succeeds with a Bool) plus the _eco_stdin_fd/_eco_isatty helpers, and ConsoleExports.cpp gains Eco_Kernel_Console_isTerminal; neither touches this kernel's code, no static/global/task write, no closure alloc; no application, retention, fabrication or type change; B1-B3 unchanged; line cites updated | audited: 2026-10-28"
                 }
           )
         , ( ( "Eco", "Crash", "crash" )

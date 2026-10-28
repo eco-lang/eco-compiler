@@ -25,8 +25,8 @@ Whether a failure stops the computation depends on how its steps are combined.
 errors of all the failing steps, earlier steps' errors first; this is how a
 pass reports many problems at once. `andThen` cannot do this, because its next
 step is made from the value of the step before, so a failure ends the
-computation there. `loop`, `mapTraverseWithKey` and `indexedTraverse` also
-stop at the first failure.
+computation there. `mapTraverseWithKey` and `indexedTraverse` collect errors
+the same way `traverse` does; `loop` stops at the first failure.
 
 
 # Types
@@ -279,38 +279,13 @@ last, and succeeds with the list of results in the same order.
 
 Every element is run, even after one has failed, each starting from the info
 and warnings the element before it left. If any fail, the result carries the
-errors of every failing element, in list order.
+errors of every failing element, in list order. The traversal is tail-recursive,
+so it is stack-safe on long lists.
 
 -}
 traverse : (a -> RResult i w x b) -> List a -> RResult i w x (List b)
-traverse func =
-    List.foldl
-        (\a (RResult acc) ->
-            RResult <|
-                \i w ->
-                    let
-                        (RResult kv) =
-                            func a
-                    in
-                    case acc i w of
-                        ROk i1 w1 accList ->
-                            case kv i1 w1 of
-                                ROk i2 w2 value ->
-                                    ROk i2 w2 (value :: accList)
-
-                                RErr i2 w2 e2 ->
-                                    RErr i2 w2 e2
-
-                        RErr i1 w1 e1 ->
-                            case kv i1 w1 of
-                                ROk i2 w2 _ ->
-                                    RErr i2 w2 e1
-
-                                RErr i2 w2 e2 ->
-                                    RErr i2 w2 (OneOrMore.more e1 e2)
-        )
-        (ok [])
-        >> map List.reverse
+traverse =
+    collectAll
 
 
 {-| Returns a computation that runs `f` on each key and value of `dict`, and
@@ -319,45 +294,68 @@ it, with the result of `f`.
 
 Entries are run in ascending order of their projected keys; `keyComparison` is
 passed to `Data.Map.toList`, which ignores it. Info and warnings pass from each
-entry to the next. The first entry whose computation fails ends the traversal,
-and the result carries only that entry's errors.
+entry to the next. Every entry is run, even after one has failed; if any fail,
+the result carries the errors of every failing entry, in key order.
 
 -}
 mapTraverseWithKey : (k -> comparable) -> (k -> a -> RResult i w x b) -> DataMap.Dict comparable k a -> RResult i w x (DataMap.Dict comparable k b)
 mapTraverseWithKey toComparable f dict =
-    loop (mapTraverseWithKeyHelp toComparable f) ( DataMap.toList dict, DataMap.empty )
-
-
-{-| Performs one iteration of the loop behind `mapTraverseWithKey`. Given the
-entries still to run and the dictionary built so far, it returns `Done` with
-that dictionary when no entries remain, and otherwise runs `f` on the first
-entry and returns `Loop` with the rest and the dictionary extended by its
-result.
--}
-mapTraverseWithKeyHelp :
-    (k -> comparable)
-    -> (k -> a -> RResult i w x b)
-    -> ( List ( k, a ), DataMap.Dict comparable k b )
-    -> RResult i w x (Step ( List ( k, a ), DataMap.Dict comparable k b ) (DataMap.Dict comparable k b))
-mapTraverseWithKeyHelp toComparable f ( pairs, result ) =
-    case pairs of
-        [] ->
-            ok (Done result)
-
-        ( k, a ) :: rest ->
-            map (\b -> Loop ( rest, DataMap.insert toComparable k b result )) (f k a)
+    collectAll (\( k, a ) -> map (Tuple.pair k) (f k a)) (DataMap.toList dict)
+        |> map (List.foldl (\( k, b ) acc -> DataMap.insert toComparable k b acc) DataMap.empty)
 
 
 {-| Returns a computation that runs `func` on each element of `xs` together with
 its position, counted from `Index.first`, and succeeds with the results in the
 order of the list.
 
-Unlike `traverse`, the elements run from last to first: info and warnings pass
-from each element to the one before it in the list. The first failure in that
-order, which is the failing element nearest the end of the list, ends the
-traversal, and the result carries only that element's errors.
+Like `traverse`, the elements run first to last, info and warnings pass from
+each element to the next, every element is run even after one has failed, and
+the result carries the errors of every failing element, in list order.
 
 -}
 indexedTraverse : (Index.ZeroBased -> a -> RResult i w error b) -> List a -> RResult i w error (List b)
 indexedTraverse func xs =
-    List.foldr (\a -> andThen (\acc -> map (\b -> b :: acc) a)) (ok []) (Index.indexedMap func xs)
+    collectAll identity (Index.indexedMap func xs)
+
+
+{-| Runs `func` on each element first to last, threading info and warnings,
+running every element even after a failure, and joining the errors of every
+failing element in list order. Tail-recursive, so stack-safe on long lists.
+-}
+collectAll : (a -> RResult i w x b) -> List a -> RResult i w x (List b)
+collectAll func xs =
+    RResult (\i w -> collectAllHelp func xs i w (Ok []))
+
+
+collectAllHelp : (a -> RResult i w x b) -> List a -> i -> w -> Result (OneOrMore.OneOrMore x) (List b) -> RStep i w x (List b)
+collectAllHelp func xs i w acc =
+    case xs of
+        [] ->
+            case acc of
+                Ok revValues ->
+                    ROk i w (List.reverse revValues)
+
+                Err errs ->
+                    RErr i w errs
+
+        x :: rest ->
+            let
+                (RResult k) =
+                    func x
+            in
+            case k i w of
+                ROk i1 w1 value ->
+                    collectAllHelp func rest i1 w1 (Result.map ((::) value) acc)
+
+                RErr i1 w1 e ->
+                    collectAllHelp func
+                        rest
+                        i1
+                        w1
+                        (case acc of
+                            Ok _ ->
+                                Err e
+
+                            Err es ->
+                                Err (OneOrMore.more es e)
+                        )

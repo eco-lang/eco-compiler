@@ -1,10 +1,11 @@
 module Compiler.LocalOpt.Erased.ExpressionTest exposing (suite)
 
-{-| Regression test for a suspected bug in
+{-| Regression test for a bug in
 `Compiler.LocalOpt.Erased.Expression.optimizeTail` (S2 list,
 LocalOpt/Erased/Expression.elm lines 672 and 709-710).
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.8); the text
+below describes the old behaviour.
 
 In `optimizeTail`, the `Can.LetRec` arm with two or more (mutually recursive)
 definitions folds the definitions around `optimize cycle body` instead of

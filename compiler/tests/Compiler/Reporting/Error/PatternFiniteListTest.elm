@@ -9,7 +9,8 @@ missing finite-list pattern such as `[1, 2]`:
 
 Today the missing pattern prints as `[1]`; it should print `[1,2]`.
 
-EXPECTED TO FAIL until the bugs are fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

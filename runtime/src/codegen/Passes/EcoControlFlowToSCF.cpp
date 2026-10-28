@@ -28,7 +28,10 @@
 #include "../EcoOps.h"
 #include "../Passes.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
+
+#include <cstdint>
 #define DEBUG_TYPE "eco-cf-to-scf"
 
 using namespace mlir;
@@ -81,6 +84,19 @@ bool isIntegerCase(CaseOp op) {
     if (!caseKindAttr)
         return false;
     return caseKindAttr.getValue() == "int";
+}
+
+/// Check if every tag of an int case lies in [0, INT32_MAX], the range in
+/// which scf.index_switch is exact: the upstream SCF->CF lowering casts the
+/// index selector and the case values to i32 for cf.switch, so a larger tag
+/// would be truncated (5000000000 would match 705032704). Int cases with a
+/// tag outside that range lower to the i64 compare chain instead
+/// (CaseToScfIfChainPattern). CGEN_048.
+static bool intTagsFitI32Switch(CaseOp op) {
+    for (int64_t tag : op.getTags())
+        if (tag < 0 || tag > INT32_MAX)
+            return false;
+    return true;
 }
 
 /// Check if this is a character case (case_kind = "chr").
@@ -399,15 +415,11 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         if (isStringCase(op))
             return failure();
 
-        // Int cases: only use index_switch if all tags are non-negative
-        // (negative values can't be cast to index type safely)
-        if (isIntegerCase(op)) {
-            ArrayRef<int64_t> tags = op.getTags();
-            for (int64_t tag : tags) {
-                if (tag < 0)
-                    return failure();  // Fall through to comparison chain pattern
-            }
-        }
+        // Int cases: only use index_switch if all tags lie in [0, INT32_MAX]
+        // (the SCF->CF lowering switches on i32); others take the i64
+        // comparison chain pattern.
+        if (isIntegerCase(op) && !intTagsFitI32Switch(op))
+            return failure();
         // Char cases: always OK (Unicode codepoints are non-negative)
 
         // Skip cases inside joinpoint bodies - these may have different control
@@ -462,8 +474,30 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
                 // Boxed eco.value - unbox to i64
                 intVal = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
             }
+            // The SCF->CF lowering truncates the selector to i32, so a
+            // scrutinee outside [0, INT32_MAX] (2^32 + 7, or a negative one)
+            // could alias a case value. Clamp such a scrutinee to a sentinel
+            // that is no case value, so it reaches the default region. The
+            // sentinel is the least non-negative value not among the
+            // non-default tags: at most tags.size() - 1, so within range.
+            int64_t sentinel = 0;
+            {
+                llvm::SmallDenseSet<int64_t> caseTags(tags.begin(),
+                                                      tags.end() - 1);
+                while (caseTags.contains(sentinel))
+                    ++sentinel;
+            }
+            auto maxC = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI64IntegerAttr(INT32_MAX));
+            // Unsigned compare: negative scrutinees are out of range too.
+            auto inRange = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::ule, intVal, maxC);
+            auto sentC = rewriter.create<arith::ConstantOp>(
+                loc, rewriter.getI64IntegerAttr(sentinel));
+            Value clamped = rewriter.create<arith::SelectOp>(
+                loc, inRange, intVal, sentC);
             indexTag = rewriter.create<arith::IndexCastOp>(
-                loc, rewriter.getIndexType(), intVal);
+                loc, rewriter.getIndexType(), clamped);
         } else {
             // ADT case: extract constructor tag and cast to index
             auto tag = rewriter.create<GetTagOp>(loc, rewriter.getI32Type(),
@@ -537,7 +571,8 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Pattern: eco.case -> nested scf.if chain (for string/negative-int cases)
+// Pattern: eco.case -> nested scf.if chain (int cases with tags outside
+// [0, INT32_MAX])
 //===----------------------------------------------------------------------===//
 
 /// Helper to clone an alternative's body, converting eco.yield to scf.yield.
@@ -558,7 +593,8 @@ static void cloneAlternativeWithScfYield(Region &alt, PatternRewriter &rewriter,
     }
 }
 
-/// Lowers eco.case to nested scf.if chain for int cases with negative tags.
+/// Lowers eco.case to nested scf.if chain for int cases with a tag outside
+/// [0, INT32_MAX] (negative, or 2^31 and above), comparing in i64.
 /// Each alternative (except the last default) becomes an equality comparison:
 /// if (val == tag) { alt } else { next check... }
 ///
@@ -579,20 +615,13 @@ struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
         if (alts.size() <= 2)
             return failure();
 
-        // Only handle int cases with negative tags
+        // Only handle int cases with a tag outside [0, INT32_MAX]
         // (String cases are handled by CF lowering since they need runtime calls)
         if (!isIntegerCase(op))
             return failure();
 
-        bool hasNegativeTag = false;
-        for (int64_t tag : op.getTags()) {
-            if (tag < 0) {
-                hasNegativeTag = true;
-                break;
-            }
-        }
-        if (!hasNegativeTag)
-            return failure();  // Non-negative int cases use index_switch
+        if (intTagsFitI32Switch(op))
+            return failure();  // Such int cases use index_switch
 
         // All alternatives must end with eco.yield
         if (!hasPureYieldAlternatives(op))
@@ -613,7 +642,8 @@ struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
     }
 
 private:
-    /// Build nested scf.if chain for int case with negative tags.
+    /// Build nested scf.if chain for an int case with a tag outside
+    /// [0, INT32_MAX].
     LogicalResult lowerIntCaseToIfChain(CaseOp op, PatternRewriter &rewriter,
                                         Location loc,
                                         SmallVector<Type> &resultTypes) const {
@@ -632,44 +662,29 @@ private:
             unboxed = rewriter.create<UnboxOp>(loc, i64Ty, scrutinee);
         }
 
-        // Build chain from back to front: last alternative is default (else)
-        // Work backwards: start with default, then wrap each preceding alt
+        // Build the chain front to back: each non-default alternative is an
+        // scf.if, and the last (default) alternative is the innermost else.
         size_t numAlts = alts.size();
+        ValueRange results = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
+                                             resultTypes, 0, numAlts);
 
-        // Start with the default (last) alternative - this becomes innermost else
-        // We'll build this as we construct the chain
-        Value result = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
-                                       resultTypes, 0, numAlts);
-
-        rewriter.replaceOp(op, result);
+        rewriter.replaceOp(op, results);
         return success();
     }
 
-    /// Recursively build the if-chain for int cases.
-    /// altIdx is the current alternative being processed.
-    Value buildIntIfChain(PatternRewriter &rewriter, Location loc,
-                          Value unboxed, ArrayRef<int64_t> tags,
-                          MutableArrayRef<Region> alts,
-                          SmallVector<Type> &resultTypes,
-                          size_t altIdx, size_t numAlts) const {
-        // Base case: last alternative is the default (no condition check)
-        if (altIdx == numAlts - 1) {
-            // Create a dummy scf.if that always takes the then branch,
-            // or just inline the default. For simplicity, wrap in scf.if with true.
-            auto trueConst = rewriter.create<arith::ConstantOp>(
-                loc, rewriter.getI1Type(), rewriter.getBoolAttr(true));
-            auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, trueConst,
-                                                   /*withElseRegion=*/false);
-            // Fill then region with default alternative
-            {
-                Block *thenBlock = &ifOp.getThenRegion().front();
-                rewriter.setInsertionPointToStart(thenBlock);
-                IRMapping mapping;
-                cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
-            }
-            return ifOp.getResult(0);
-        }
-
+    /// Recursively build the if-chain for int cases: the scf.if testing
+    /// alternative altIdx (altIdx < numAlts - 1), whose else region holds the
+    /// rest of the chain, or the last (default) alternative itself when altIdx
+    /// is the second-to-last. Returns the results of that scf.if.
+    ///
+    /// (Before 2026-10-28 the default was wrapped in an scf.if on `true`
+    /// without an else region, which fails verification when the case yields
+    /// values.)
+    ValueRange buildIntIfChain(PatternRewriter &rewriter, Location loc,
+                               Value unboxed, ArrayRef<int64_t> tags,
+                               MutableArrayRef<Region> alts,
+                               SmallVector<Type> &resultTypes,
+                               size_t altIdx, size_t numAlts) const {
         // Create comparison: unboxed == tags[altIdx]
         auto tagConst = rewriter.create<arith::ConstantOp>(
             loc, rewriter.getI64IntegerAttr(tags[altIdx]));
@@ -693,7 +708,7 @@ private:
             cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
         }
 
-        // Fill else region with recursive chain
+        // Fill else region with the default alternative or the rest of the chain
         {
             Block *elseBlock = &ifOp.getElseRegion().front();
             if (!elseBlock->empty()) {
@@ -701,12 +716,20 @@ private:
                     rewriter.eraseOp(existingYield);
             }
             rewriter.setInsertionPointToStart(elseBlock);
-            Value innerResult = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
-                                                resultTypes, altIdx + 1, numAlts);
-            rewriter.create<scf::YieldOp>(loc, innerResult);
+            if (altIdx + 2 == numAlts) {
+                IRMapping mapping;
+                cloneAlternativeWithScfYield(alts[altIdx + 1], rewriter, loc, mapping);
+            } else {
+                ValueRange inner = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
+                                                   resultTypes, altIdx + 1, numAlts);
+                // The recursive call moved the insertion point into its own
+                // regions; the yield belongs after the inner scf.if.
+                rewriter.setInsertionPointToEnd(elseBlock);
+                rewriter.create<scf::YieldOp>(loc, inner);
+            }
         }
 
-        return ifOp.getResult(0);
+        return ifOp.getResults();
     }
 };
 
@@ -1239,8 +1262,8 @@ struct EcoControlFlowToSCFPass
             // 1. Joinpoint patterns first (higher benefit to consume
             //    case+joinpoint together)
             // 2. Then case patterns for remaining cases
-            // 3. If-chain pattern last (fallback for int cases with negative
-            //    tags)
+            // 3. If-chain pattern last (fallback for int cases with a tag
+            //    outside [0, INT32_MAX])
             // The memo for containsNestedStringCase is per chunk; its
             // driver-listener hook evicts erased ops so address reuse can't
             // resurrect stale answers.

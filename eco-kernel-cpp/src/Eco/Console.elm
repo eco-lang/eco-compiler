@@ -1,6 +1,6 @@
 module Eco.Console exposing
     ( Handle(..), stdout, stderr
-    , write, readLine, readAll
+    , write, readLine, readAll, isTerminal
     , log
     )
 
@@ -16,7 +16,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 # Operations
 
-@docs write, readLine, readAll
+@docs write, readLine, readAll, isTerminal
 
 
 # Debugging
@@ -72,6 +72,14 @@ readAll : Task IOError String
 readAll =
     Eco.Kernel.Console.readAll
         |> Task.mapError IOErr.ofKernelTuple
+
+
+{-| Whether the stream the handle names is a terminal. Only the standard
+streams (handles 0, 1 and 2) can answer `True`.
+-}
+isTerminal : Handle -> Task Never Bool
+isTerminal (Handle h) =
+    Eco.Kernel.Console.isTerminal h
 
 
 {-| Debug-style trace function. Writes `tag` to stderr and returns `value`

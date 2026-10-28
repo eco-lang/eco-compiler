@@ -1,12 +1,11 @@
 module Utils.MainTest exposing (suite)
 
-{-| Regression tests for helpers in `Utils.Main`. EXPECTED TO FAIL until the
-bugs are fixed.
+{-| Regression tests for helpers in `Utils.Main`.
 
-  - `dictFromListWith` folds with `Dict.update k (Maybe.map ...)`, which never
-    inserts an absent key, so it always returns `Dict.empty`. Its callers
-    (`Builder.Build.checkUniqueRoots`, `Builder.Elm.Outline.detectDuplicates`)
-    therefore never detect duplicates.
+  - `dictFromListWith` once folded with `Dict.update k (Maybe.map ...)`, which
+    never inserts an absent key, so it always returned `Dict.empty` and its
+    callers (`Builder.Build.checkUniqueRoots`, `Builder.Build.checkRoots`,
+    `Builder.Elm.Outline.detectDuplicates`) never detected duplicates.
 
 -}
 

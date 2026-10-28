@@ -1,12 +1,12 @@
 module Compiler.Json.DecodeTest exposing (suite)
 
-{-| Regression tests for the parse errors of `Compiler.Json.Decode`. EXPECTED TO
-FAIL until the bug is fixed.
+{-| Regression tests for the parse errors of `Compiler.Json.Decode`.
 
 `pValue`'s `P.oneOf Start` replaces every empty failure with `Start`, and
-`P.andThen` keeps `Eerr` after a consuming parser, so `ObjectColon`,
-`ObjectField` and `ArrayEnd` are never produced: `{"a" 1}`, `{"a":1, x}` and
-`[1, 2 x` are all reported as `Start 1 1` instead of at the mistake.
+`P.andThen` once kept `Eerr` after a consuming parser, so `ObjectColon`,
+`ObjectField` and `ArrayEnd` were never produced: `{"a" 1}`, `{"a":1, x}` and
+`[1, 2 x` were all reported as `Start 1 1`. Now that `andThen` promotes such a
+failure to `Cerr`, each is reported at the mistake.
 
 -}
 

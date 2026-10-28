@@ -3,14 +3,15 @@ module CaseCharEscapedDuplicateTest exposing (main)
 {-| A `case` on Char with two patterns for the same character written
 differently ('a' and '\u{0061}').
 
-Reproduces: Compiler.AST.DecisionTree.Test.testToComparable keys IsChr (and
-IsStr) by the escaped literal TEXT, and Nitpick.PatternMatches compares
-literals by text too, so the second pattern is not seen as redundant and the
-decision tree gets two edges for the same value. The MLIR eco.case then has a
-duplicate tag ([97, 97, 98, 0]) and lowering fails with
-"'scf.index_switch' op has duplicate case value: 97".
-
-EXPECTED TO FAIL until the bug is fixed.
+Compiler.AST.DecisionTree.Test.testToComparable used to key IsChr (and IsStr)
+by the escaped literal TEXT, so the decision tree got two edges for the same
+value; the MLIR eco.case then had a duplicate tag ([97, 97, 98, 0]) and
+lowering failed with "'scf.index_switch' op has duplicate case value: 97".
+Tests are now keyed by the value the literal denotes
+(Compiler.Elm.String.valueKey), so the eco.case is [97, 98, 0] and the second
+'a' pattern is never reached. Nitpick.PatternMatches still compares literals
+by text, so the second pattern is not reported as redundant (as in upstream
+Elm). Also covered by compiler/tests/Compiler/AST/DecisionTree/TestKeyTest.elm.
 
 -}
 

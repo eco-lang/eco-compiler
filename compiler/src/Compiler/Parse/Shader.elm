@@ -160,7 +160,7 @@ eatShader src pos end row col =
             let
                 newPos : Int
                 newPos =
-                    pos + P.getCharWidth word
+                    pos + P.charWidthAt src pos end word
             in
             eatShader src newPos end row (col + 1)
 

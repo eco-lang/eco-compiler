@@ -348,9 +348,6 @@ and the whole name, that first character included.
 `Other` carries the character at the position when it is none of the above,
 and is `Other Nothing` when there is no character there.
 
-The text in `Keyword`, `Operator`, `Upper` and `Lower` is not always one
-token, because `whatIsNext` gathers it from the rest of the line.
-
 -}
 type Next
     = Keyword String
@@ -365,12 +362,11 @@ type Next
 judged by its first character: an upper-case or lower-case ASCII letter, an
 operator character, or a closing bracket, else `Other`.
 
-After the first character, the text carried is every identifier character
-(ASCII letter, digit or `_`) for a name, or every operator character for an
-operator, in the rest of the line, with the others skipped rather than ending
-it. On a line reading `foo bar`, the result at the `f` is `Lower 'f' "foobar"`,
-and a lower-case word is a `Keyword` only when what is gathered this way is a
-reserved word.
+After the first character, the text carried is the run of identifier
+characters (ASCII letter, digit or `_`) for a name, or the run of operator
+characters for an operator, that follows it; the first other character ends
+it. On a line reading `foo bar`, the result at the `f` is `Lower 'f' "foo"`,
+and a lower-case word is a `Keyword` when that word is a reserved word.
 
 The line is found by its number. When there is no line `row`, or `col` is past
 its end, the result is `Other Nothing`.
@@ -389,13 +385,13 @@ whatIsNext sourceLines row col =
 
                 c :: cs ->
                     if Char.isUpper c then
-                        Upper c (List.filter isInner cs |> String.fromList)
+                        Upper c (takeWhile isInner cs |> String.fromList)
 
                     else if Char.isLower c then
                         detectKeywords c (String.fromList cs)
 
                     else if isSymbol c then
-                        Operator (c :: List.filter isSymbol cs |> String.fromList)
+                        Operator (c :: takeWhile isSymbol cs |> String.fromList)
 
                     else if c == ')' then
                         Close "parenthesis" ')'
@@ -410,19 +406,16 @@ whatIsNext sourceLines row col =
                         Other (Just c)
 
 
-{-| Returns `Keyword` when `c` followed by the identifier characters kept from
-`rest` is a reserved word of `Compiler.Parse.Variable`, and `Lower` otherwise.
-
-The identifier characters of `rest` are all of them, not only the run at its
-start: other characters are skipped, not stopped at.
-
+{-| Returns `Keyword` when `c` followed by the run of identifier characters at
+the start of `rest` is a reserved word of `Compiler.Parse.Variable`, and
+`Lower` otherwise.
 -}
 detectKeywords : Char -> String -> Next
 detectKeywords c rest =
     let
         cs : String
         cs =
-            List.filter isInner (String.toList rest) |> String.fromList
+            takeWhile isInner (String.toList rest) |> String.fromList
 
         name : String
         name =
@@ -433,6 +426,22 @@ detectKeywords c rest =
 
     else
         Lower c name
+
+
+{-| Returns the longest prefix of `list` whose elements all satisfy `isGood`.
+-}
+takeWhile : (a -> Bool) -> List a -> List a
+takeWhile isGood list =
+    case list of
+        x :: xs ->
+            if isGood x then
+                x :: takeWhile isGood xs
+
+            else
+                []
+
+        [] ->
+            []
 
 
 {-| Returns whether `char` may appear after the first letter of a name: an

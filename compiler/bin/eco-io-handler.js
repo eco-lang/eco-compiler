@@ -60,6 +60,47 @@ let streamHandleCounter = 1000;
 const mVars = {};
 let mVarNextId = 0;
 
+// Console.readAll: stdin can be read to its end once; later calls get "".
+const stdinAll = { state: "idle", waiters: [] }; // idle | reading | ended
+
+// File.lock: in-process exclusive locks, path -> queue of waiting responders.
+// (Exclusion between processes is not provided.)
+const fileLocks = new Map();
+
+// Exit status of a child: its code, or 128 + signal number when killed.
+function exitStatusOf(code, signal) {
+  if (code !== null && code !== undefined) return code;
+  const n = (signal && os.constants.signals[signal]) || 0;
+  return 128 + n;
+}
+
+// Track a started child: record its exit status as soon as it exits, and
+// answer any Process.wait already waiting.
+function registerChild(child) {
+  processCounter++;
+  const entry = { child, status: undefined, waiters: [] };
+  processes[processCounter] = entry;
+  child.on("error", () => {}); // a later error must not crash the host
+  child.on("exit", (code, signal) => {
+    entry.status = exitStatusOf(code, signal);
+    const ws = entry.waiters;
+    entry.waiters = [];
+    for (const w of ws) w(entry.status);
+  });
+  return processCounter;
+}
+
+// Spawn `cmd`; on success call onStarted(child) at once, and when the child
+// never started (no pid) answer 500 with the spawn error instead.
+function spawnChild(cmd, cmdArgs, options, respond, onStarted) {
+  const child = child_process.spawn(cmd, cmdArgs, options);
+  if (child.pid === undefined) {
+    child.once("error", (e) => respond(500, ioErrorBody(e)));
+    return;
+  }
+  onStarted(child);
+}
+
 // Set when a driver's eco-io route catches an exception (the request is
 // answered 500). The compiler may still go on to exit 0 and leave a truncated
 // .mlir behind, so a failed handler forces a non-zero exit status.
@@ -211,22 +252,51 @@ function handleEcoIO(parsed, rawRespond) {
         output: process.stdout,
         terminal: false,
       });
+      let answered = false;
       rl.once("line", (line) => {
-        rl.close();
+        answered = true;
         respond(200, JSON.stringify({ value: line }));
+        rl.close();
       });
       rl.once("close", () => {
+        if (answered) return;
+        answered = true;
         respond(200, JSON.stringify({ value: "" }));
       });
       break;
     }
 
+    case "Console.isTerminal": {
+      // Whether a standard handle (0, 1 or 2) is a terminal; any other handle,
+      // such as a process stream, answers false.
+      const { handle } = args;
+      let value = false;
+      if (handle === 0 || handle === 1 || handle === 2) {
+        try { value = require("node:tty").isatty(handle); } catch (e) { value = false; }
+      }
+      respond(200, JSON.stringify({ value }));
+      break;
+    }
+
     case "Console.readAll": {
+      if (stdinAll.state === "ended") {
+        respond(200, JSON.stringify({ value: "" }));
+        break;
+      }
+      if (stdinAll.state === "reading") {
+        stdinAll.waiters.push(() => respond(200, JSON.stringify({ value: "" })));
+        break;
+      }
+      stdinAll.state = "reading";
       const chunks = [];
       process.stdin.setEncoding("utf8");
       process.stdin.on("data", (chunk) => chunks.push(chunk));
-      process.stdin.on("end", () => {
+      process.stdin.once("end", () => {
+        stdinAll.state = "ended";
         respond(200, JSON.stringify({ value: chunks.join("") }));
+        const ws = stdinAll.waiters;
+        stdinAll.waiters = [];
+        for (const w of ws) w();
       });
       process.stdin.resume();
       break;
@@ -325,14 +395,26 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "File.lock": {
-      // TODO: implement file locking
-      respond(200, "");
+      const queue = fileLocks.get(args.path);
+      if (queue === undefined) {
+        fileLocks.set(args.path, []);
+        respond(200, "");
+      } else {
+        queue.push(respond);
+      }
       break;
     }
 
     case "File.unlock": {
-      // TODO: implement file unlocking
-      respond(200, "");
+      const queue = fileLocks.get(args.path);
+      if (queue !== undefined && queue.length > 0) {
+        const next = queue.shift();
+        respond(200, "");
+        next(200, "");
+      } else {
+        fileLocks.delete(args.path);
+        respond(200, "");
+      }
       break;
     }
 
@@ -477,12 +559,9 @@ function handleEcoIO(parsed, rawRespond) {
 
     case "Process.spawn": {
       try {
-        processCounter++;
-        const child = child_process.spawn(args.cmd, args.args, {
-          stdio: ["inherit", "inherit", "inherit"],
+        spawnChild(args.cmd, args.args, { stdio: ["inherit", "inherit", "inherit"] }, respond, (child) => {
+          respond(200, JSON.stringify({ value: registerChild(child) }));
         });
-        processes[processCounter] = child;
-        respond(200, JSON.stringify({ value: processCounter }));
       } catch (e) {
         respond(500, ioErrorBody(e));
       }
@@ -492,7 +571,6 @@ function handleEcoIO(parsed, rawRespond) {
     case "Process.spawnProcess": {
       try {
         const { cmd, args: spawnArgs, stdin, stdout, stderr } = args;
-        processCounter++;
 
         const stdioConfig = [
           stdin === "pipe" ? "pipe" : "inherit",
@@ -500,22 +578,24 @@ function handleEcoIO(parsed, rawRespond) {
           stderr === "pipe" ? "pipe" : "inherit",
         ];
 
-        const child = child_process.spawn(cmd, spawnArgs, { stdio: stdioConfig });
-        processes[processCounter] = child;
+        spawnChild(cmd, spawnArgs, { stdio: stdioConfig }, respond, (child) => {
+          const processHandle = registerChild(child);
 
-        let stdinHandle = null;
-        if (stdin === "pipe" && child.stdin) {
-          streamHandleCounter++;
-          streamHandles[streamHandleCounter] = {
-            type: "childStdin",
-            stream: child.stdin,
-          };
-          stdinHandle = streamHandleCounter;
-        }
+          let stdinHandle = null;
+          if (stdin === "pipe" && child.stdin) {
+            child.stdin.on("error", () => {}); // EPIPE once the child has gone
+            streamHandleCounter++;
+            streamHandles[streamHandleCounter] = {
+              type: "childStdin",
+              stream: child.stdin,
+            };
+            stdinHandle = streamHandleCounter;
+          }
 
-        respond(200, JSON.stringify({
-          value: { stdinHandle, processHandle: processCounter }
-        }));
+          respond(200, JSON.stringify({
+            value: { stdinHandle, processHandle }
+          }));
+        });
       } catch (e) {
         respond(500, ioErrorBody(e));
       }
@@ -523,15 +603,17 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "Process.wait": {
-      const proc = processes[args.handle];
-      if (!proc) {
+      const entry = processes[args.handle];
+      if (!entry) {
         respond(200, JSON.stringify({ value: 0 }));
         break;
       }
-      proc.on("exit", (code) => {
+      const answer = (status) => {
         delete processes[args.handle];
-        respond(200, JSON.stringify({ value: code || 0 }));
-      });
+        respond(200, JSON.stringify({ value: status }));
+      };
+      if (entry.status !== undefined) answer(entry.status);
+      else entry.waiters.push(answer);
       break;
     }
 
@@ -568,7 +650,8 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "Runtime.loadState": {
-      respond(200, JSON.stringify({ value: global._ecoReplState || null }));
+      const saved = global._ecoReplState;
+      respond(200, JSON.stringify({ value: saved === undefined ? null : saved }));
       break;
     }
 
@@ -588,13 +671,24 @@ function handleEcoIO(parsed, rawRespond) {
     }
 
     case "MVar.drop": {
+      const dropped = mVars[args.id];
       delete mVars[args.id];
       respond(200, JSON.stringify({ value: null }));
+      if (dropped) {
+        // A waiter on a dropped MVar can never be answered with a value.
+        for (const w of dropped.waiters) {
+          w.respond(500, JSON.stringify({ error: "MVar " + args.id + " was dropped while waited on" }));
+        }
+      }
       break;
     }
 
     case "MVar.read": {
       const mvar = mVars[args.id];
+      if (!mvar) {
+        respond(500, JSON.stringify({ error: "unknown MVar " + args.id }));
+        break;
+      }
       if (mvar.value !== undefined) {
         respond(200, toArrayBuffer(mvar.value));
       } else {
@@ -605,6 +699,10 @@ function handleEcoIO(parsed, rawRespond) {
 
     case "MVar.take": {
       const mvar = mVars[args.id];
+      if (!mvar) {
+        respond(500, JSON.stringify({ error: "unknown MVar " + args.id }));
+        break;
+      }
       if (mvar.value !== undefined) {
         const val = mvar.value;
         mvar.value = undefined;
@@ -619,7 +717,16 @@ function handleEcoIO(parsed, rawRespond) {
     // --- Http ---
     case "Http.fetch": {
       const { method, url: fetchUrl, headers: fetchHeaders } = args;
-      const parsedUrl = new URL(fetchUrl);
+      const fail = (text) => respond(200, JSON.stringify({
+        value: { statusCode: 0, statusText: text, url: fetchUrl }
+      }));
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(fetchUrl);
+      } catch (e) {
+        fail("bad URL: " + e.message);
+        break;
+      }
       const client = parsedUrl.protocol === "https:" ? https : http;
 
       const headerObj = {};
@@ -639,12 +746,12 @@ function handleEcoIO(parsed, rawRespond) {
             };
             if (encoding === "gzip") {
               zlib.gunzip(buffer, (err, decoded) => {
-                if (err) { respond(500, JSON.stringify({ error: err.message })); return; }
+                if (err) { fail("cannot decode gzip body: " + err.message); return; }
                 decode(decoded);
               });
             } else if (encoding === "deflate") {
               zlib.inflate(buffer, (err, decoded) => {
-                if (err) { respond(500, JSON.stringify({ error: err.message })); return; }
+                if (err) { fail("cannot decode deflate body: " + err.message); return; }
                 decode(decoded);
               });
             } else {
@@ -675,12 +782,32 @@ function handleEcoIO(parsed, rawRespond) {
     case "Http.getArchive": {
       const { url: archiveUrl } = args;
 
-      const download = (downloadUrl) => {
-        const parsedUrl = new URL(downloadUrl);
+      const MAX_REDIRECTS = 10;
+      const fail = (message) => respond(200, JSON.stringify({ value: { error: message } }));
+      const download = (downloadUrl, redirects) => {
+        let parsedUrl;
+        try {
+          parsedUrl = new URL(downloadUrl);
+        } catch (e) {
+          fail("bad URL " + downloadUrl + ": " + e.message);
+          return;
+        }
         const client = parsedUrl.protocol === "https:" ? https : http;
         const req = client.request(parsedUrl, { method: "GET" }, (res) => {
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            download(res.headers.location);
+            res.resume();
+            if (redirects >= MAX_REDIRECTS) {
+              fail("too many redirects from " + archiveUrl);
+              return;
+            }
+            let next;
+            try {
+              next = new URL(res.headers.location, parsedUrl).href;
+            } catch (e) {
+              fail("bad redirect Location " + res.headers.location + ": " + e.message);
+              return;
+            }
+            download(next, redirects + 1);
             return;
           }
           if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -713,7 +840,7 @@ function handleEcoIO(parsed, rawRespond) {
         req.end();
       };
 
-      download(archiveUrl);
+      download(archiveUrl, 0);
       break;
     }
 
@@ -773,6 +900,10 @@ function handleEcoIOBinary(op, request, rawRespond) {
     case "MVar.put": {
       const id = parseInt(request.requestHeaders.getHeader("X-Eco-MVar-Id"));
       const mvar = mVars[id];
+      if (!mvar) {
+        respond(500, JSON.stringify({ error: "unknown MVar " + id }));
+        break;
+      }
       if (mvar.value === undefined) {
         mvar.value = request.body;
         respond(200, "");

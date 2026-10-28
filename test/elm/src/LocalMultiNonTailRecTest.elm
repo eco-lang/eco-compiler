@@ -3,11 +3,11 @@ module LocalMultiNonTailRecTest exposing (main)
 {-| Regression: a NON-tail-recursive let-bound polymorphic function used at
 two types (Int and Float).
 
-Specialize.renameMonoDef renames self-references only for MonoTailDef, so the
-second specialisation's recursive call still targets the first instance (at
-the other type).
-
-EXPECTED TO FAIL until the bug is fixed.
+Each specialisation after the first is a copy named `sumL$1`, ..., but its
+recursive call kept the bare name `sumL`, so it targeted the first instance
+(at the other type). Self-references are now renamed with
+MonoTraverse.renameLocal in both engines (MonoSolver.Translate.buildLocalDefs
+and Specialize.renameMonoDef), as tail defs already were.
 
 -}
 

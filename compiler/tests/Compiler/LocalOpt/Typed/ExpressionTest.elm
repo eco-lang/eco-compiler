@@ -1,10 +1,11 @@
 module Compiler.LocalOpt.Typed.ExpressionTest exposing (suite)
 
-{-| Regression test for a suspected bug in
+{-| Regression test for a bug in
 `Compiler.LocalOpt.Typed.Expression.optimizePotentialTailCallDef`
 (recomment-bugs.txt, LocalOpt/Typed/Expression.elm lines 1290-1296).
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.3); the text
+below describes the old behaviour.
 
 The `Can.Def` arm passes the definition's whole function type on to
 `optimizePotentialTailCall`, but the `Can.TypedDef` arm passes the

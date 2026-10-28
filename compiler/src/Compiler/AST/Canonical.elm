@@ -1097,13 +1097,8 @@ ctorOptsDecoder =
 
 {-| Encodes a field update: the region of the field's name in the fixed
 encoding of `Compiler.Reporting.Annotation.regionEncoder`, then the new value
-with the expression codec, which writes every string inline.
-
-The expression codec does not round-trip every expression. Within a record
-literal or a record update, it writes each field name without its region, but
-its decoder reads a region before each name, so `fieldUpdateDecoder` misreads
-a value containing either.
-
+with the expression codec, which writes every string inline. Within a record
+literal or a record update, each field name is written with its region.
 -}
 fieldUpdateEncoder : FieldUpdate -> Bytes.Encode.Encoder
 fieldUpdateEncoder (FieldUpdate fieldRegion expr) =
@@ -1336,13 +1331,13 @@ expr_Encoder expr_ =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 23
                 , exprEncoder record
-                , BE.assocListDict (A.toValue >> BE.string) fieldUpdateEncoder updates
+                , BE.assocListDict (A.locatedEncoder BE.string) fieldUpdateEncoder updates
                 ]
 
         Record fields ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 24
-                , BE.assocListDict (A.toValue >> BE.string) exprEncoder fields
+                , BE.assocListDict (A.locatedEncoder BE.string) exprEncoder fields
                 ]
 
         Unit ->

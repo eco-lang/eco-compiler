@@ -25,11 +25,17 @@ What the tests establish:
     with the parser's own `NumberEnd` error, and `0xDE_AD_BE_EF` with its
     `NumberHexDigit` error; a parser that stopped before the `_` or the `b` and
     succeeded would leave input over and fail these tests.
+  - 64-bit: a literal's value is its digits modulo 2^64 read as two's
+    complement, so `0xFFFFFFFFC0000000` is -2^30 and `0xFFFFFFFFFFFFFFFF` and
+    `18446744073709551615` are -1; `5000000000` is read exactly. `0x` alone and
+    `0xFG` are `NumberHexDigit` errors. `0x7FFFFFFFFFFFFFFF` needs 63
+    significant bits, which the JavaScript-hosted compiler (the one these tests
+    run on) cannot hold, so it is a `NumberInexactOnHost` error; natively it
+    would read exactly.
 
 Among what is not tested: lower-case hexadecimal digits, a leading zero
 (`NumberNoLeadingZero`), a `.` with no digit after it (`NumberDot`), an
-exponent with no digits, literals too large for an `Int`, where an error is
-reported, and `precedence`.
+exponent with no digits, and `precedence`.
 
 -}
 
@@ -40,8 +46,8 @@ import Expect
 import Test exposing (Test)
 
 
-{-| The number parser tests, in four groups: integer, float, hexadecimal and
-invalid literals.
+{-| The number parser tests, in five groups: integer, float, hexadecimal,
+invalid and 64-bit literals.
 -}
 suite : Test
 suite =
@@ -128,6 +134,43 @@ suite =
                     |> Expect.equal (Err (NumberError E.NumberEnd))
               )
                 |> Test.test "Binary literals not supported 0b1010"
+            ]
+        , Test.describe "64-bit"
+            [ (\_ ->
+                singleNumber "0xFFFFFFFFC0000000"
+                    |> Expect.equal (Ok (N.Int -1073741824 "0xFFFFFFFFC0000000"))
+              )
+                |> Test.test "Sign-extended mask 0xFFFFFFFFC0000000 is -2^30"
+            , (\_ ->
+                singleNumber "0xFFFFFFFFFFFFFFFF"
+                    |> Expect.equal (Ok (N.Int -1 "0xFFFFFFFFFFFFFFFF"))
+              )
+                |> Test.test "All ones 0xFFFFFFFFFFFFFFFF is -1"
+            , (\_ ->
+                singleNumber "18446744073709551615"
+                    |> Expect.equal (Ok (N.Int -1 "18446744073709551615"))
+              )
+                |> Test.test "Decimal 2^64-1 is -1"
+            , (\_ ->
+                singleNumber "5000000000"
+                    |> Expect.equal (Ok (N.Int 5000000000 "5000000000"))
+              )
+                |> Test.test "Above 2^32 5000000000"
+            , (\_ ->
+                singleNumber "0x7FFFFFFFFFFFFFFF"
+                    |> Expect.equal (Err (NumberError E.NumberInexactOnHost))
+              )
+                |> Test.test "63 significant bits on the JS host 0x7FFFFFFFFFFFFFFF"
+            , (\_ ->
+                singleNumber "0x"
+                    |> Expect.equal (Err (NumberError E.NumberHexDigit))
+              )
+                |> Test.test "No hex digits 0x"
+            , (\_ ->
+                singleNumber "0xFG"
+                    |> Expect.equal (Err (NumberError E.NumberHexDigit))
+              )
+                |> Test.test "Hex digits then a name character 0xFG"
             ]
         ]
 

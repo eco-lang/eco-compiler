@@ -17,7 +17,7 @@ A _document_ (`Doc`) is a description of text that the renderer lays out later,
 once the page width is known. It is the `Pretty.Doc` of the
 `the-sett/elm-pretty-printer` package, so the layout rules are that package's.
 Do not read the names here as promises: `fill` indents and does not pad to a
-width, and `hcat` keeps only the last of its documents.
+width.
 
 Most combinators come down to one idea, the _group_. A line break inside a
 group is either taken or, if the whole group fits on the remaining line,
@@ -138,46 +138,80 @@ displayIO handle simpleDoc =
 {-| Lays out `doc` for a page `w` columns wide, keeping each group on one line
 where it fits in what remains of the line. The first argument is ignored.
 
-Styles become `SSGR` pieces. Before each string that carries a style come the
-SGR commands for that style, and before the first string without a style that
-follows, a reset. The indentation after a line break is a string without a
+Styles become `SSGR` pieces. Before a string whose style differs from the
+style in force come a reset, if any style is in force, then the SGR commands
+for its own style; a run of strings with the same style gets them once. Before
+the first string without a style that follows styled text comes a reset, and a
+document that ends in styled text ends with one. A string whose style has every
+field off (the style `plain` gives) counts as unstyled, so it produces no
+escape sequences. The indentation after a line break is a string without a
 style, so the first line break after styled text is preceded by a reset.
-
-Three consequences are easy to miss. Between two styled strings there is no
-reset, so the attributes of the first stay on for the second: underline
-followed by red gives underlined red. A document that ends in styled text ends
-without a reset. And a string whose style has every field off still counts as
-styled, so a reset still comes before the next string without a style, although
-it set nothing; `plain` gives every string such a style.
 
 -}
 renderPretty : Int -> Doc -> SimpleDoc
 renderPretty w doc =
     PR.pretty w
-        { init = { styled = False, newline = False, list = [] }
+        { init = { style = Nothing, newline = False, list = [] }
         , tagged =
             \style str acc ->
-                { acc | styled = True, list = SText str :: SSGR (styleToSgrs style) :: acc.list }
-        , untagged =
-            \str acc ->
-                let
-                    newAcc : { styled : Bool, newline : Bool, list : List (SimpleDoc -> SimpleDoc) }
-                    newAcc =
-                        if acc.styled then
-                            { acc | styled = False, list = SSGR [ Ansi.Reset ] :: acc.list }
+                if style == defaultStyle then
+                    untaggedStep str acc
 
-                        else
-                            acc
-                in
-                if newAcc.newline then
-                    { newAcc | newline = False, list = SLine (String.length str) :: newAcc.list }
+                else if acc.style == Just style then
+                    { acc | list = SText str :: acc.list }
 
                 else
-                    { newAcc | list = SText str :: newAcc.list }
+                    let
+                        sgrs : List Ansi.SGR
+                        sgrs =
+                            if acc.style == Nothing then
+                                styleToSgrs style
+
+                            else
+                                Ansi.Reset :: styleToSgrs style
+                    in
+                    { acc | style = Just style, list = SText str :: SSGR sgrs :: acc.list }
+        , untagged = untaggedStep
         , newline = \acc -> { acc | newline = True }
-        , outer = \{ list } -> List.foldl (<|) SEmpty list
+        , outer =
+            \{ style, list } ->
+                List.foldl (<|)
+                    SEmpty
+                    (if style == Nothing then
+                        list
+
+                     else
+                        SSGR [ Ansi.Reset ] :: list
+                    )
         }
         doc
+
+
+{-| One unstyled string for `renderPretty`: a reset first if the text before it
+was styled, and the pending line break, if any, in place of the string.
+-}
+untaggedStep : String -> RenderAcc -> RenderAcc
+untaggedStep str acc =
+    let
+        newAcc : RenderAcc
+        newAcc =
+            if acc.style /= Nothing then
+                { acc | style = Nothing, list = SSGR [ Ansi.Reset ] :: acc.list }
+
+            else
+                acc
+    in
+    if newAcc.newline then
+        { newAcc | newline = False, list = SLine (String.length str) :: newAcc.list }
+
+    else
+        { newAcc | list = SText str :: newAcc.list }
+
+
+{-| The state `renderPretty` threads through the layout.
+-}
+type alias RenderAcc =
+    { style : Maybe Style, newline : Bool, list : List (SimpleDoc -> SimpleDoc) }
 
 
 {-| Returns the SGR commands that turn on `style`: bold, then underline, then
@@ -310,10 +344,8 @@ text =
 {-| Gives every string in the document the style with bold, underline and
 colour all off, so that rendering it sets no colour or attribute.
 
-Every string comes out carrying that style, including any that had none, and
-`renderPretty` treats a string with a style as styled whatever the style is. A
-document passed through `plain` therefore still renders with a reset before
-each line break that follows text.
+`renderPretty` treats a string with that style as unstyled, so a document
+passed through `plain` renders with no escape sequences at all.
 
 -}
 plain : Doc -> Doc
@@ -406,17 +438,15 @@ hang =
     P.hang
 
 
-{-| Returns `empty` for an empty list and the document itself for a list of
-one. For a list of two or more it returns only the last document; the others
-are dropped.
+{-| Joins the documents in order with nothing between them. An empty list gives
+`empty`.
 -}
 hcat : List Doc -> Doc
 hcat docs =
     hcatHelp docs empty
 
 
-{-| Returns `acc` if `docs` is empty, and otherwise the last of `docs`. The
-accumulated documents are discarded when one document remains.
+{-| Appends each of `docs`, in order, after `acc`.
 -}
 hcatHelp : List Doc -> Doc -> Doc
 hcatHelp docs acc =
@@ -424,11 +454,8 @@ hcatHelp docs acc =
         [] ->
             acc
 
-        [ doc ] ->
-            doc
-
         doc :: ds ->
-            hcatHelp ds (P.append doc acc)
+            hcatHelp ds (P.append acc doc)
 
 
 {-| Joins the documents with a space between each pair. The separator is

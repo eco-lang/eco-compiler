@@ -14,7 +14,7 @@ two errors exit with code 1.
 Every message goes to stderr, the successful help and overview included. A
 message is a list of documents, printed one after another with a blank line
 after each and laid out for a width of 80 columns. Colour is stripped when
-`System.IO.isTerminal` reports that output is not a terminal.
+`System.IO.isTerminal` reports that stderr is not a terminal.
 
 The executable name shown in usage lines is the file-name part of
 `Utils.Main.envGetProgName`.
@@ -81,13 +81,13 @@ exitFailure =
 
 The documents are printed one after another, each followed by a blank line, at
 a width of 80 columns, and with their colour stripped when
-`System.IO.isTerminal` reports that output is not a terminal. One more newline
+`System.IO.isTerminal` reports that stderr is not a terminal. One more newline
 ends the output.
 
 -}
 exitWith : Exit.ExitCode -> List P.Doc -> Task Never a
 exitWith code docs =
-    IO.isTerminal
+    IO.isTerminal IO.stderr
         |> Task.andThen
             (\isTerminal ->
                 let
@@ -655,6 +655,12 @@ flagErrorToDocs flagError =
                                 |> P.indent 4
                             ]
                     )
+
+        FlagRepeated flagName ->
+            flagErrorHelp "This flag was given more than once:"
+                ("--" ++ flagName)
+                [ reflow "Give it once."
+                ]
 
         FlagUnknown unknown flags ->
             flagErrorHelp "I do not recognize this flag:"

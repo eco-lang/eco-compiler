@@ -7,7 +7,8 @@ with its result type. Monomorphize.Specialize treats the TailDef type as the
 whole function type (MonoTailFunc), so the local function gets a non-function
 mono type. The same program without the let annotation works.
 Unit test: compiler/tests/Compiler/LocalOpt/Typed/ExpressionTest.elm.
-EXPECTED TO FAIL until fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.3); the text
+below describes the old behaviour.
 Observed: the compiler itself dies with "RangeError: Maximum call stack size
 exceeded" (no .mlir written).
 -}

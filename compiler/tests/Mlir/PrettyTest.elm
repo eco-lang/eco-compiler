@@ -1,19 +1,17 @@
 module Mlir.PrettyTest exposing (suite)
 
-{-| Regression tests for `Mlir.Pretty`. EXPECTED TO FAIL until the bugs they
-reproduce are fixed.
+{-| Regression tests for `Mlir.Pretty`, for bugs since fixed (each expected
+output checked against `mlir-opt`):
 
-Bugs reproduced (each output checked against `mlir-opt`):
-
-  - An op with a `callee` attribute prints its attributes as `<{...}>`
+  - An op with a `callee` attribute printed its attributes as `<{...}>`
     properties, but after its regions; MLIR's generic form wants properties
-    before the regions (`"op"() <{callee = @f}> ({...}) : ...`). The current
+    before the regions (`"op"() <{callee = @f}> ({...}) : ...`). The old
     output `"op"() ({...}) <{callee = @f}>` is rejected by the MLIR parser.
-  - A `UnitAttr` element of an array prints as nothing (`[]` or `[, ...]`)
+  - A `UnitAttr` element of an array printed as nothing (`[]` or `[, ...]`)
     instead of `unit`.
-  - Without `_operand_types`, an operand whose type is not in the environment
+  - Without `_operand_types`, an operand whose type was not in the environment
     of its own block (a value defined in an enclosing region, or by an earlier
-    top-level op) is silently left out of the signature, which then has fewer
+    top-level op) was silently left out of the signature, which then had fewer
     types than operands.
 
 -}

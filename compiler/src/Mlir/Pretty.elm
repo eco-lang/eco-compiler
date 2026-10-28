@@ -12,19 +12,20 @@ whatever the operation:
 
 This module prints only the generic form, so it needs no syntax of any
 dialect's own, except that an operation with a `callee` attribute has its
-attributes printed as `<{...}>` rather than `{...}`.
+attributes printed as `<{...}>` properties, before its regions, rather than as
+a `{...}` dictionary after them.
 
 One part of the generic form is not held by the operation it describes: an
 `MlirOp` names its operands but does not give their types. When the operation
 has an `_operand_types` attribute, a list of `TypeAttr`s, those types are
-printed. Otherwise each operand is looked up among the values defined earlier
-in the same block, which are the block's arguments and the results of the
-operations printed before it. A top-level operation has nothing to look its
-operands up in, so only `_operand_types` gives its operand types. That lookup
-reaches no further than the block, neither into an enclosing region nor into
-another block of the same region, and an operand it does not find is left out,
-so the printed operand types can be fewer than the operands. The `_operand_types` attribute is itself printed with
-the other attributes.
+printed. Otherwise each operand is looked up among the values in scope: the
+arguments of its block and of every enclosing block, and the results of the
+operations printed before it in each of those blocks (for `ppModule`, also the
+earlier top-level operations; `ppTopLevelOp` starts from nothing). The lookup
+does not reach into another block of the same region, and an operand it does
+not find is left out, so the printed operand types can be fewer than the
+operands. The `_operand_types` attribute is itself printed with the other
+attributes.
 
 Locations are accepted but not printed: the location of every operation and of
 the module prints as nothing.
@@ -32,7 +33,9 @@ the module prints as nothing.
 A module can be printed whole by `ppModule`, or piece by piece as
 `ppModuleHeader`, then `ppTopLevelOp` for each top-level operation, then
 `ppModuleFooter`. Joined together, the pieces are the text `ppModule` gives for
-a module of those operations.
+a module of those operations, as long as no top-level operation names the
+result of an earlier one as an operand without an `_operand_types` attribute
+(`ppModule` can look such an operand's type up; `ppTopLevelOp` cannot).
 
 A `StringAttr` holds its text with escape sequences written out, as
 `Mlir.Mlir` describes, and is rewritten on the way out: a `\uXXXX` escape
@@ -186,7 +189,9 @@ ppTopLevelOp op =
 
 
 {-| Returns the text of a whole module: `ppModuleHeader`, then each operation
-of its body as `ppTopLevelOp` prints it, then `ppModuleFooter`.
+of its body, then `ppModuleFooter`. Each operation is printed as `ppTopLevelOp`
+prints it, except that the results of the operations before it are in scope for
+its operand types.
 -}
 ppModule : MlirModule -> String
 ppModule m =
@@ -194,9 +199,15 @@ ppModule m =
         header =
             ppModuleHeader
 
+        step op ( linesRev, env ) =
+            ( ppOp 1 env op :: linesRev
+            , List.foldl (\( n, t ) acc -> Dict.insert n t acc) env op.results
+            )
+
         bodyStr =
-            m.body
-                |> List.map ppTopLevelOp
+            List.foldl step ( [], Dict.empty ) m.body
+                |> Tuple.first
+                |> List.reverse
                 |> String.concat
 
         footer =
@@ -211,19 +222,23 @@ one level deeper.
 
 The entry block is given the label `bb0`, whose header is left out when the
 block has no arguments. Each block's operand types are looked up starting from
-its own arguments only.
+`outerEnv`, the values in scope at the operation that holds the region, plus
+the block's own arguments.
 
 -}
-ppRegion : Int -> MlirRegion -> String
-ppRegion indent (MlirRegion r) =
+ppRegion : Int -> SsaEnv -> MlirRegion -> String
+ppRegion indent outerEnv (MlirRegion r) =
     let
+        withArgs args =
+            List.foldl (\( n, t ) acc -> Dict.insert n t acc) outerEnv args
+
         entryStr =
-            ppBlockWithLabel indent "bb0" (Dict.fromList r.entry.args) r.entry
+            ppBlockWithLabel indent "bb0" (withArgs r.entry.args) r.entry
 
         labeledStrs =
             r.blocks
                 |> OrderedDict.toList
-                |> List.map (\( label, blk ) -> ppBlockWithLabel indent label (Dict.fromList blk.args) blk)
+                |> List.map (\( label, blk ) -> ppBlockWithLabel indent label (withArgs blk.args) blk)
                 |> String.concat
     in
     entryStr ++ labeledStrs
@@ -297,14 +312,17 @@ ppBlockWithLabel indent label env0 blk =
 
 The result names and the `=` after them are left out when there are no
 results, and the successors, regions and attributes are each left out when
-there are none. Successors are printed as given, inside brackets. Each region
+there are none. Successors are printed as given, inside brackets. An operation
+with a `callee` attribute prints its attributes as `<{...}>` properties before
+its regions; any other prints them as a `{...}` dictionary after them. Each region
 is wrapped in braces, its block headers two levels deeper than the operation
 and their operations three, and its closing brace at the operation's own
 indent, and the regions are joined by commas inside parentheses.
 
 The operand types come from the `_operand_types` attribute when there is one
 and it is an array, keeping only its `TypeAttr` elements, and otherwise from
-looking each operand up in `env`, leaving out any not found. A single result
+looking each operand up in `env`, leaving out any not found. `env` also
+becomes the outer scope of the operation's regions. A single result
 type is printed bare; no result, or several, are printed as a parenthesised
 list. The location prints as nothing, so the line ends in a space before the
 newline.
@@ -341,7 +359,7 @@ ppOp indent env op =
                 rs ->
                     let
                         ppOneRegion r =
-                            "{\n" ++ ppRegion (indent + 2) r ++ pad ++ "}"
+                            "{\n" ++ ppRegion (indent + 2) env r ++ pad ++ "}"
                     in
                     String.concat
                         [ " ("
@@ -353,6 +371,14 @@ ppOp indent env op =
 
         attrsStr =
             ppAttrs op.attrs
+
+        -- `<{...}>` properties precede the regions; a `{...}` dictionary follows them.
+        ( propsStr, plainAttrsStr ) =
+            if Dict.member "callee" op.attrs then
+                ( attrsStr, "" )
+
+            else
+                ( "", attrsStr )
 
         insTys =
             case Dict.get "_operand_types" op.attrs of
@@ -410,8 +436,9 @@ ppOp indent env op =
         , operandsStr
         , ")"
         , succStr
+        , propsStr
         , regionsStr
-        , attrsStr
+        , plainAttrsStr
         , sigStr
         , locStr
         , "\n"
@@ -753,7 +780,7 @@ is followed by `: type` when it has a type, and a `TypedFloatAttr` always is;
 `ppFloatLiteral` spells its value. An
 `ArrayAttr (Just t)` prints as `array<t: ...>` (`array<t>` when empty) and an `ArrayAttr Nothing` as
 `[...]`, with each element spelled by this function. A `SymbolRefAttr` gets
-MLIR's leading `@`, a `UnitAttr` prints as nothing, and a `VisibilityAttr`
+MLIR's leading `@`, a `UnitAttr` prints as `unit`, and a `VisibilityAttr`
 of `Private` prints as the quoted string `"private"`.
 
 -}
@@ -800,7 +827,7 @@ ppAttr attr =
             "@" ++ s
 
         UnitAttr ->
-            ""
+            "unit"
 
         VisibilityAttr v ->
             case v of

@@ -1,5 +1,5 @@
 // Regression tests for further bugs in compiler/bin/eco-io-handler.js (S2 verification, builder batch).
-// Every test here is EXPECTED TO FAIL until the bug it names is fixed:
+// Each test pins a bug that is now fixed:
 //   1. Console.readAll called again after stdin ended never answers (adds listeners for an 'end' that already fired).
 //   2. File.lock is a no-op: a second lock of the same path is granted while the first is held.
 //   3. Runtime.loadState returns null for a saved falsy value (`_ecoReplState || null`).

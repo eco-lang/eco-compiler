@@ -38,11 +38,10 @@ conjunction, a paragraph that opens with an underlined `Note:` or `Hint:`, a
 link to a page of documentation on elm-lang.org, a count of arguments, an
 ordinal such as `2nd`, and a box diagram of a cycle of names.
 
-Four of the passed-through combinators do not do what their names suggest. `a`
+Three of the passed-through combinators do not do what their names suggest. `a`
 and `plus` take their arguments in pipeline order, so `x |> a y` is `x`
 immediately followed by `y` and `x |> plus y` puts a space between them. `fill`
-indents a document and does not pad it to a width. `hcat` keeps only the last
-of two or more documents.
+indents a document and does not pad it to a width.
 
 
 # Document Type
@@ -167,12 +166,7 @@ toAnsi handle doc =
 
 
 {-| Returns `doc` as text laid out for a page 80 columns wide, with every
-colour and underline switched off.
-
-Switching the styles off does not leave the text free of escape sequences: a
-reset sequence still comes before each line break that follows text, as
-`Text.PrettyPrint.ANSI.Leijen.plain` describes.
-
+colour and underline switched off, so the text holds no escape sequences.
 -}
 toString : Doc -> String
 toString doc =
@@ -184,8 +178,8 @@ about a thousand million columns wide, so that every group fits on its line
 and none of its breaks is taken.
 
 A break that is not in a group, such as one between the documents of `vcat` or
-`stack`, is still taken, so the result can contain line breaks. Reset escape
-sequences remain, as they do in `toString`.
+`stack`, is still taken, so the result can contain line breaks. Like
+`toString`, the result holds no escape sequences.
 
 -}
 toLine : Doc -> String
@@ -495,18 +489,17 @@ isWindows =
 {-| Returns `doc` laid out for a page 80 columns wide, as a JSON array of runs
 of text.
 
-A new run starts before each styled string and at each reset, so two runs in a
-row can have the same style. A run with no style is a JSON string. A run with a
+A new run starts at each change of style and at each reset. A run with no style is a JSON string. A run with a
 style is an object with fields `bold` and `underline`, both booleans, `color`,
 which is a `Color` name or `null`, and `string`, the text. Line breaks are
 written into the text as a newline followed by the indentation of the next
 line.
 
-The style of a run is what a terminal would show at that point, so where one
-styled string follows another with no reset between them, as
-`Text.PrettyPrint.ANSI.Leijen.renderPretty` describes, the second run keeps the
-attributes of the first. A run can be empty: when the document begins with
-styled text, the array begins with the empty string. No function in
+The style of a run is what a terminal would show at that point; a change of
+style resets the previous one, as `Text.PrettyPrint.ANSI.Leijen.renderPretty`
+describes, so a run never keeps the attributes of the run before it. A run can
+be empty: when the document begins with styled text, the array begins with the
+empty string. No function in
 `Text.PrettyPrint.ANSI.Leijen` makes text bold.
 
 -}
@@ -563,7 +556,8 @@ type Color
 commands, or since the start.
 
 Every list of SGR commands in `simpleDoc` closes the current run, even one that
-is empty or one that does not change the style.
+is empty or one that does not change the style, except a list at the very end
+(the closing reset), which starts no new run.
 
 -}
 toJsonHelp : Style -> List String -> P.SimpleDoc -> List E.Value
@@ -577,6 +571,9 @@ toJsonHelp style revChunks simpleDoc =
 
         P.SLine indent_ rest ->
             toJsonHelp style (String.repeat indent_ " " :: "\n" :: revChunks) rest
+
+        P.SSGR _ P.SEmpty ->
+            [ encodeChunks style revChunks ]
 
         P.SSGR sgrs rest ->
             encodeChunks style revChunks :: toJsonHelp (sgrToStyle sgrs style) [] rest
@@ -820,9 +817,8 @@ hang =
     P.hang
 
 
-{-| Returns `empty` for an empty list and the document itself for a list of
-one. For a list of two or more it returns only the last document, as
-`Text.PrettyPrint.ANSI.Leijen.hcat` describes; the others are dropped.
+{-| Joins the documents in order with nothing between them. An empty list gives
+`empty`.
 -}
 hcat : List Doc -> Doc
 hcat =

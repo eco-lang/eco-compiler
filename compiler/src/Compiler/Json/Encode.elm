@@ -16,9 +16,9 @@ Printing adds no escaping. A string is written between quotes exactly as the
 `Value` holds it, and so is every object key. Whether a string is escaped is
 therefore decided when its `Value` is made: `string` and `chars` escape their
 argument, and `name` takes its argument as already safe to print. Escaping
-covers only carriage return, newline, double quote and backslash. A tab or any
-other character below U+0020 is written as it is, which is not valid JSON, and
-object keys are never escaped at all.
+covers carriage return, newline, tab, double quote and backslash, which get
+their two-character escapes, and every other character below U+0020, which is
+written as `\u00XX`. Object keys are never escaped at all.
 
 Text that `Compiler.Json.Decode.string` returns still has its escapes in it, as
 that module describes, so it goes back out through `name`. Passing it to
@@ -112,8 +112,7 @@ object =
     Object
 
 
-{-| Returns a JSON string holding `str`, with carriage returns, newlines, double
-quotes and backslashes escaped. No other character is escaped.
+{-| Returns a JSON string holding `str`, escaped as `escape` describes.
 -}
 string : String -> Value
 string str =
@@ -183,9 +182,10 @@ chars chrs =
     StringVal (escape chrs)
 
 
-{-| Returns `chrs` with each carriage return, newline, double quote and
-backslash replaced by its two-character JSON escape. Every other character,
-including a tab or another control character, is kept as it is.
+{-| Returns `chrs` with each carriage return, newline, tab, double quote and
+backslash replaced by its two-character JSON escape, and every other character
+below U+0020 by its `\u00XX` escape, in lower-case hexadecimal. Every other
+character is kept as it is.
 -}
 escape : String -> String
 escape chrs =
@@ -205,10 +205,24 @@ escape chrs =
                     '\\' ->
                         "\\\\"
 
+                    '\t' ->
+                        "\\t"
+
                     _ ->
-                        String.fromChar c
+                        if Char.toCode c < 0x20 then
+                            "\\u00" ++ hexDigit (Char.toCode c // 16) ++ hexDigit (modBy 16 (Char.toCode c))
+
+                        else
+                            String.fromChar c
             )
         |> String.concat
+
+
+{-| The lower-case hexadecimal digit for `n`, which is between 0 and 15.
+-}
+hexDigit : Int -> String
+hexDigit n =
+    String.slice n (n + 1) "0123456789abcdef"
 
 
 

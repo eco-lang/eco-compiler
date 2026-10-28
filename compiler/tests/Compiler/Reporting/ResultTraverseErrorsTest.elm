@@ -11,7 +11,8 @@ module Compiler.Reporting.ResultTraverseErrorsTest exposing (suite)
     entry's errors are reported, not every entry's (upstream
     `Map.traverseWithKey` accumulates).
 
-EXPECTED TO FAIL until the bugs are fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

@@ -28,10 +28,11 @@ allows two replacements:
     rewritten (`home`), numbered from a counter that the caller passes in
     and gets back.
 
-A placeholder that fits neither case is left in place. Many positions are
-rewritten with no expected type at all, among them call arguments, list
-elements, record update values and closure captures, so a placeholder can
-survive this pass.
+A placeholder that fits neither case is left in place. List elements take the
+list's element type as their expected type, call arguments the callee's
+parameter types and record update values the updated field's type; closure
+captures and tail-call arguments are rewritten with no expected type at all,
+so a placeholder can still survive this pass.
 
 @docs accessorTypeNeedsDefer, rewriteNode
 
@@ -387,6 +388,14 @@ rewriteExpr home counter env maybeExpected expr =
 
         MonoRecordUpdate recordExpr updates monoType ->
             let
+                updateFieldType n =
+                    case monoType of
+                        MRecord _ ft ->
+                            Dict.get n ft
+
+                        _ ->
+                            Nothing
+
                 ( recordExpr1, _, c1 ) =
                     rewriteExpr home counter env Nothing recordExpr
 
@@ -395,7 +404,7 @@ rewriteExpr home counter env maybeExpected expr =
                         (\( n, e ) ( acc, c ) ->
                             let
                                 ( e1, _, c3 ) =
-                                    rewriteExpr home c env Nothing e
+                                    rewriteExpr home c env (updateFieldType n) e
                             in
                             ( ( n, e1 ) :: acc, c3 )
                         )
@@ -448,15 +457,15 @@ rewriteExpr home counter env maybeExpected expr =
 
                 ( newArgsRev, c2 ) =
                     List.foldl
-                        (\a ( acc, c ) ->
+                        (\( argExpected, a ) ( acc, c ) ->
                             let
                                 ( a1, _, c3 ) =
-                                    rewriteExpr home c env Nothing a
+                                    rewriteExpr home c env argExpected a
                             in
                             ( a1 :: acc, c3 )
                         )
                         ( [], c1 )
-                        argExprs
+                        (zip (paramTypes (List.length argExprs) (Mono.typeOf funcExpr1)) argExprs)
 
                 newArgs =
                     List.reverse newArgsRev
@@ -611,12 +620,20 @@ rewriteExpr home counter env maybeExpected expr =
                         (\e ( acc, c ) ->
                             let
                                 ( e1, _, c2 ) =
-                                    rewriteExpr home c env Nothing e
+                                    rewriteExpr home c env elemExpected e
                             in
                             ( e1 :: acc, c2 )
                         )
                         ( [], counter )
                         items
+
+                elemExpected =
+                    case t of
+                        MList _ elemType ->
+                            Just elemType
+
+                        _ ->
+                            Nothing
             in
             ( MonoList region (List.reverse newItemsRev) t, VI_Unknown, c1 )
 
@@ -727,6 +744,27 @@ rewriteChoice home counter env maybeExpected choice =
 
         Jump i ->
             ( Jump i, counter )
+
+
+{-| The expected types of the first `count` arguments of a call on a function
+of type `funcType`, read through its stages; `Nothing` past the last one known.
+-}
+paramTypes : Int -> MonoType -> List (Maybe MonoType)
+paramTypes count funcType =
+    if count <= 0 then
+        []
+
+    else
+        case funcType of
+            MFunction _ _ params result ->
+                let
+                    here =
+                        List.map Just (List.take count params)
+                in
+                here ++ paramTypes (count - List.length here) result
+
+            _ ->
+                List.repeat count Nothing
 
 
 {-| Pairs the elements of two lists in order, stopping at the end of the shorter.

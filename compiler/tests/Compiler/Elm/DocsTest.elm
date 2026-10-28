@@ -1,7 +1,7 @@
 module Compiler.Elm.DocsTest exposing (suite)
 
-{-| Regression test for `Compiler.Elm.Docs.checkNames`. EXPECTED TO FAIL until
-the bug is fixed.
+{-| Regression test for `Compiler.Elm.Docs.checkNames`, pinning a bug fixed
+2026-10-28 (plans/review-bug-triage-fixes.md, Part 5).
 
 `checkNames` folds the exposed names and the `@docs` names with `Dict.merge`,
 but its step functions (`loneExport`, `checkBoth`, `loneDoc`) ignore the

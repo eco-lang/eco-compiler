@@ -124,7 +124,18 @@ generate mode parentModule expression =
             JS.ExprTrackedString parentModule start string |> JsExpr
 
         Opt.Int (A.Region start _) int ->
-            JS.ExprTrackedInt parentModule start int |> JsExpr
+            if int < 0 then
+                -- A negative literal value (a hex literal at or above 2^63, or a
+                -- folded negation) is written as a negation of its magnitude, so
+                -- it is parenthesized where it must be: an atomic `-1` after a
+                -- prefix `-` would print `--1`, which is not JS. The magnitude
+                -- is taken from the text, which is exact even for `-2^63`.
+                JS.ExprTrackedFloat parentModule start (String.dropLeft 1 (String.fromInt int))
+                    |> JS.ExprPrefix JS.PrefixNegate
+                    |> JsExpr
+
+            else
+                JS.ExprTrackedInt parentModule start int |> JsExpr
 
         Opt.Float (A.Region start _) float ->
             let
@@ -132,7 +143,9 @@ generate mode parentModule expression =
                     String.fromFloat float
             in
             -- From 1e21 on the text is in exponent form ("1e+21"), where ".0" is not JS.
-            (if float == toFloat (floor float) && not (String.contains "e" text) && not (String.contains "." text) then
+            -- Infinity and NaN print as JS identifiers, which take no ".0" either;
+            -- testing them first also keeps `floor` away from them.
+            (if not (isInfinite float) && not (isNaN float) && float == toFloat (floor float) && not (String.contains "e" text) && not (String.contains "." text) then
                 text ++ ".0"
 
              else
@@ -677,8 +690,8 @@ callHelpers =
 
 
 {-| Generates a call of a global from `elm/core`, writing it inline where the
-module's helper knows how: `Basics`, `Bitwise`, `Tuple` and, by name, a module
-whose name equals `Name.jsArray`. Any other call is an ordinary call.
+module's helper knows how: `Basics`, `Bitwise`, `Tuple` and `Elm.JsArray`
+(`Name.jsArray`). Any other call is an ordinary call.
 -}
 generateCoreCall : Mode.Mode -> ModuleName.Canonical -> A.Position -> Opt.Global -> List Opt.Expr -> JS.Expr
 generateCoreCall mode parentModule pos (Opt.Global ((ModuleName.Canonical _ moduleName) as home) name) args =

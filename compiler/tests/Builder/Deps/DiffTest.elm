@@ -1,13 +1,10 @@
 module Builder.Deps.DiffTest exposing (suite)
 
 {-| Regression test for Builder.Deps.Diff.isEquivalentUnion: the union's type
-variable lists are only compared through constructor arguments, so a union
-whose (exposed) constructors carry no arguments never compares them. Changing
-opaque `type Foo a` to `type Foo a b` is judged a PATCH though every `Foo x`
-annotation in user code breaks.
-
-EXPECTED TO FAIL until the bug is fixed.
-
+variable lists were once only compared through constructor arguments, so a
+union whose (exposed) constructors carry no arguments never compared them.
+Changing opaque `type Foo a` to `type Foo a b` was judged a PATCH though every
+`Foo x` annotation in user code breaks. The arities are now compared.
 -}
 
 import Builder.Deps.Diff as Diff

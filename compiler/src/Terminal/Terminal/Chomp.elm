@@ -638,8 +638,9 @@ findFlagHelp revPrev loneFlag flagPrefix chunks =
 with `-`, and otherwise succeeds without taking anything.
 
 It does not look at flag names: any string left that starts with `-` counts. So
-it is meant to run after every flag chomper, and a second occurrence of a known
-flag, a lone `-` or a negative number is reported as unknown. Repeats of a flag
+it is meant to run after every flag chomper. A second occurrence of a known
+flag fails with `FlagRepeated`; a lone `-` or a negative number is reported as
+unknown. Repeats of a flag
 chomped with `chompRepeatableFlag` are accepted, because that chomper takes out
 every occurrence before this check runs. The error carries
 the first such string and the `Flags` description, from which nearby names can
@@ -658,9 +659,18 @@ checkForUnknownFlags flags =
                     ChomperOk suggest chunks ()
 
                 ((Chunk _ unknownFlag) :: _) as unknownFlags ->
-                    ChomperErr
-                        (makeSuggestion suggest (suggestFlag unknownFlags flags))
-                        (FlagUnknown unknownFlag flags)
+                    let
+                        flagName : String
+                        flagName =
+                            List.head (String.split "=" unknownFlag) |> Maybe.withDefault unknownFlag
+                    in
+                    if flagName /= "--help" && List.member flagName (getFlagNames flags []) then
+                        ChomperErr suggest (FlagRepeated (String.dropLeft 2 flagName))
+
+                    else
+                        ChomperErr
+                            (makeSuggestion suggest (suggestFlag unknownFlags flags))
+                            (FlagUnknown unknownFlag flags)
 
 
 {-| Returns the names in `flags`, and `--help`, that begin with the string of

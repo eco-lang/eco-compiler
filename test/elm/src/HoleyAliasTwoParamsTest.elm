@@ -2,12 +2,11 @@ module HoleyAliasTwoParamsTest exposing (main)
 
 {-| Regression: multi-parameter Holey type alias in a constructor field.
 
-Analysis.convertCanTypeNameToMVarId binds every alias formal parameter to
-the one dummy id TypeIds.firstMVarId, so Zonk/TypeSubst resolve every
-parameter of `Pair a b` to the same (last) argument: `Pair Int String`
-becomes `( String, String )`.
-
-EXPECTED TO FAIL until the bug is fixed.
+Analysis.convertCanTypeNameToMVarId used to bind every alias formal parameter
+to the one dummy id TypeIds.firstMVarId, so the ctor-shape table resolved
+every parameter of `Pair a b` to the same (last) argument: `Pair Int String`
+became `( String, String )`. Each formal now gets its own id by position.
+`GBox` crosses the parameters (`Pair x y`, `Rec y x`).
 
 -}
 
@@ -18,7 +17,7 @@ import Html exposing (text)
 -- CHECK: pairStr: "hi"
 -- CHECK: recFloat: 2.5
 -- CHECK: recInt: 7
--- CHECK: box: Box (42,"hi")
+-- CHECK: box: Box (42, "hi")
 -- CHECK: rbox: RBox { first = 7, second = 2.5 }
 
 

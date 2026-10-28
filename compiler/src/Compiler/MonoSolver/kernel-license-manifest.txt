@@ -9,14 +9,14 @@
 # plans/kernel-parametricity-license.md section 2. Regenerating a
 # hash without advancing the row's 'audited:' date is the
 # violation, not the fix.
-27a74c878f9d582a8052dd0906c6baf1914308b5b9c03a19caf98d80b3101cef  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.log
-d3350c9c2ef0878f58e57381349c78bf289e9c7f61c19c4bc2594860fc3dd0e4  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.log
-27a74c878f9d582a8052dd0906c6baf1914308b5b9c03a19caf98d80b3101cef  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.readAll
-d3350c9c2ef0878f58e57381349c78bf289e9c7f61c19c4bc2594860fc3dd0e4  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.readAll
-27a74c878f9d582a8052dd0906c6baf1914308b5b9c03a19caf98d80b3101cef  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.readLine
-d3350c9c2ef0878f58e57381349c78bf289e9c7f61c19c4bc2594860fc3dd0e4  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.readLine
-27a74c878f9d582a8052dd0906c6baf1914308b5b9c03a19caf98d80b3101cef  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.write
-d3350c9c2ef0878f58e57381349c78bf289e9c7f61c19c4bc2594860fc3dd0e4  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.write
+0f04fef84dfb80e74546013eb732ba32518438c387c551201ccff02f43f51edc  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.log
+3bf9afada51ba6560b6079c27b965449df09ff2712fd1a8f686f2d87a68316b2  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.log
+0f04fef84dfb80e74546013eb732ba32518438c387c551201ccff02f43f51edc  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.readAll
+3bf9afada51ba6560b6079c27b965449df09ff2712fd1a8f686f2d87a68316b2  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.readAll
+0f04fef84dfb80e74546013eb732ba32518438c387c551201ccff02f43f51edc  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.readLine
+3bf9afada51ba6560b6079c27b965449df09ff2712fd1a8f686f2d87a68316b2  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.readLine
+0f04fef84dfb80e74546013eb732ba32518438c387c551201ccff02f43f51edc  eco-kernel-cpp/src/eco-kernel/Console.cpp  Eco.Console.write
+3bf9afada51ba6560b6079c27b965449df09ff2712fd1a8f686f2d87a68316b2  eco-kernel-cpp/src/eco-kernel/ConsoleExports.cpp  Eco.Console.write
 3438044f237582753d8576f5e647aad31c901f1aa0291d0286e0e57fe3e211e6  eco-kernel-cpp/src/eco-kernel/Crash.cpp  Eco.Crash.crash
 4a7a4f02748a2b03f7ddcd5c4ac7a50355a5b5c76634850059a3acf42cd49cac  eco-kernel-cpp/src/eco-kernel/CrashExports.cpp  Eco.Crash.crash
 b52bbed8fe45ab75d46ba1a8f7dd2d40f307f78b10f139b81011ca893bc70eeb  eco-kernel-cpp/src/eco-kernel/Env.cpp  Eco.Env.lookup

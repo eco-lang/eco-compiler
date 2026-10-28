@@ -14,9 +14,8 @@ the file. The other kind holds the errors of modules that failed to compile, and
 for those the layout and the JSON both come from `Compiler.Reporting.Error`.
 
 The output functions write a document to standard output or standard error, with
-its colours as ANSI escape sequences when the program is attached to a
-terminal. `System.IO.isTerminal` currently answers `True` whatever is attached,
-so in practice the escape sequences are always written.
+its colours as ANSI escape sequences when that stream is a terminal, as
+`System.IO.isTerminal` reports, and as plain text otherwise.
 
 
 # Report Construction
@@ -177,7 +176,7 @@ reportToJson report_ =
 
 
 {-| Writes `doc` to standard output, with ANSI colours if `System.IO.isTerminal`
-answers `True` and as plain text otherwise. It currently always answers `True`.
+answers `True` for it and as plain text otherwise.
 -}
 toStdout : D.Doc -> Task Never ()
 toStdout doc =
@@ -185,7 +184,7 @@ toStdout doc =
 
 
 {-| Writes `doc` to standard error, with ANSI colours if `System.IO.isTerminal`
-answers `True` and as plain text otherwise. It currently always answers `True`.
+answers `True` for it and as plain text otherwise.
 -}
 toStderr : D.Doc -> Task Never ()
 toStderr doc =
@@ -193,15 +192,12 @@ toStderr doc =
 
 
 {-| Writes `doc` to `handle`, with ANSI colours if `System.IO.isTerminal`
-answers `True` and as plain text otherwise.
-
-The question is not asked about `handle`, and `isTerminal` currently always
-answers `True`, so the escape sequences are written even to a file or a pipe.
-
+answers `True` for `handle` and as plain text otherwise, so a file or a pipe
+gets no escape sequences.
 -}
 toHandle : IO.Handle -> D.Doc -> Task Never ()
 toHandle handle doc =
-    IO.isTerminal
+    IO.isTerminal handle
         |> Task.andThen
             (\isTerminal ->
                 if isTerminal then

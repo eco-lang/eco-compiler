@@ -1,18 +1,19 @@
 module Compiler.Parse.VariableNonAsciiTest exposing (suite)
 
-{-| Reproduces a bug in `Compiler.Parse.Variable`: the non-ASCII branches of
-the identifier scanners (`getLowerWidthHelp`, `getUpperWidthHelp`,
-`getInnerWidthHelp` with `chr2`/`chr3`/`chr4`) were ported from a UTF-8 byte
-scanner and are applied to UTF-16 Elm strings. A character 0xC0-0xF7 is decoded
-together with the following characters as if they were continuation bytes
-(read with `P.unsafeIndex`, ignoring `end`). Consequences pinned here:
+{-| Pins the non-ASCII branches of the identifier scanners in
+`Compiler.Parse.Variable` (`getLowerWidthHelp`, `getUpperWidthHelp`,
+`getInnerWidthHelp`). They once decoded a character 0xC0-0xF7 together with the
+following characters as if they were UTF-8 continuation bytes (read with
+`P.unsafeIndex`, ignoring `end`) and then applied elm/core's ASCII-only
+`Char.isLower`. They now classify the code point with `Compiler.Parse.Unicode`,
+as upstream Elm does. Pinned here:
 
-  - `café` is not read as one identifier (upstream Elm accepts Unicode letters);
-  - `xÃ$` is accepted as ONE identifier containing `$`;
-  - an `é` among the last characters of the input crashes via unsafeIndex
-    instead of giving a parse error.
+  - `café` is one identifier (upstream Elm accepts Unicode letters);
+  - `xÃ$` is not one identifier containing `$`;
+  - an `é` at the end of the input is read as a letter, not a crash in
+    `unsafeIndex`.
 
-EXPECTED TO FAIL until the bug is fixed.
+More cases are in `Compiler.Parse.VariableUnicodeExtraTest`.
 
 -}
 
@@ -32,18 +33,18 @@ suite =
     Test.describe "Variable non-ASCII identifiers"
         [ Test.test "x followed by A-tilde and $ is not one identifier" <|
             \_ ->
-                parseLower "x\u{00C3}$"
-                    |> Expect.notEqual (Ok "x\u{00C3}$")
+                parseLower "xÃ$"
+                    |> Expect.notEqual (Ok "xÃ$")
         , Test.test "café is one lower-case identifier" <|
             \_ ->
-                parseLower "caf\u{00E9}"
-                    |> Expect.equal (Ok "caf\u{00E9}")
+                parseLower "café"
+                    |> Expect.equal (Ok "café")
         , Test.test "a lone é at the end of input gives an error, not a crash" <|
             \_ ->
-                case parseLower "\u{00E9}" of
+                case parseLower "é" of
                     Err _ ->
                         Expect.pass
 
                     Ok name ->
-                        Expect.equal "\u{00E9}" name
+                        Expect.equal "é" name
         ]

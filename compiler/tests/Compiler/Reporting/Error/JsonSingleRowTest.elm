@@ -6,7 +6,8 @@ any `Expecting` problem whose value lies on one row (the usual scalar case,
 e.g. a number in elm.json where a string is wanted) crashes the compiler
 instead of producing a report.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

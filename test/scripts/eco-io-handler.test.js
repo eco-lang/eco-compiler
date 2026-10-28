@@ -1,5 +1,5 @@
-// Regression tests for bugs in compiler/bin/eco-io-handler.js (recomment-bugs.txt).
-// EXPECTED TO FAIL until the bugs are fixed:
+// Regression tests for bugs in compiler/bin/eco-io-handler.js (recomment-bugs.txt),
+// all fixed:
 //   1. Console.readLine answers twice (rl.close() fires 'close' -> respond("") before respond(line)).
 //   2. Process.spawn / Process.spawnProcess of a missing command crash the host (no 'error' listener).
 //   3. Process.wait never answers if the child already exited.

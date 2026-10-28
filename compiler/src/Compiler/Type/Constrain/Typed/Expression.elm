@@ -575,10 +575,11 @@ type alias LetFrame =
 {-| Builds the constraint for a chain of `let`s, nesting down the body, without
 using stack for its length.
 
-Each level's body is checked against that level's own fresh variable, and the
-variable is then equated with the level's expectation under category `Lambda`.
-So a mismatch between a `let`'s body and what is expected of it is reported at
-the whole `let`.
+The innermost body is checked against the outermost expectation, as upstream
+does, so a mismatch between a `let`'s body and what is expected of it is
+reported at the body. Each level's fresh variable, recorded for its node, is
+then bound to the type the level's expectation asks for; that equation only
+binds a fresh variable, so it never fails and never reports.
 
 -}
 constrainLetSpine : RigidTypeVar -> Can.Expr -> E.Expected Type -> IO Constraint
@@ -605,7 +606,7 @@ letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                 ( s2, () ) =
                     NodeIds.recordNodeVar exprInfo.id exprVar s1
             in
-            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetDef def, expected = expected } :: frames) s2
+            letSpineGo rtv body expected ({ region = region, exprVar = exprVar, payload = LetDef def, expected = expected } :: frames) s2
 
         Can.LetRec defs body ->
             let
@@ -615,7 +616,7 @@ letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                 ( s2, () ) =
                     NodeIds.recordNodeVar exprInfo.id exprVar s1
             in
-            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetRecDefs defs, expected = expected } :: frames) s2
+            letSpineGo rtv body expected ({ region = region, exprVar = exprVar, payload = LetRecDefs defs, expected = expected } :: frames) s2
 
         Can.LetDestruct pattern defExpr body ->
             let
@@ -625,7 +626,7 @@ letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
                 ( s2, () ) =
                     NodeIds.recordNodeVar exprInfo.id exprVar s1
             in
-            letSpineGo rtv body (NoExpectation (VarN exprVar)) ({ region = region, exprVar = exprVar, payload = LetDestructPat pattern defExpr, expected = expected } :: frames) s2
+            letSpineGo rtv body expected ({ region = region, exprVar = exprVar, payload = LetDestructPat pattern defExpr, expected = expected } :: frames) s2
 
         _ ->
             let
@@ -636,7 +637,8 @@ letSpineGo rtv ((A.At region exprInfo) as current) expected frames s0 =
 
 
 {-| Builds one `let` level's constraint around `bodyCon`: its definitions scope
-over the body, and its variable is equated with the level's expectation.
+over the body, and its variable is bound to the type the level's expectation
+asks for.
 -}
 applyLetFrame : RigidTypeVar -> Constraint -> LetFrame -> IO Constraint
 applyLetFrame rtv bodyCon frame =
@@ -655,10 +657,25 @@ applyLetFrame rtv bodyCon frame =
                 Type.exists [ frame.exprVar ]
                     (CAnd
                         [ letCon
-                        , CEqual frame.region Lambda (VarN frame.exprVar) frame.expected
+                        , CEqual frame.region Lambda (VarN frame.exprVar) (NoExpectation (expectedType frame.expected))
                         ]
                     )
             )
+
+
+{-| The type an expectation asks for, whatever its origin.
+-}
+expectedType : E.Expected Type -> Type
+expectedType expected =
+    case expected of
+        NoExpectation tipe ->
+            tipe
+
+        FromContext _ _ tipe ->
+            tipe
+
+        FromAnnotation _ _ _ tipe ->
+            tipe
 
 
 

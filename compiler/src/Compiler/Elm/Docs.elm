@@ -20,9 +20,8 @@ record in binary.
 
 `fromModule` refuses a module whose exposed API is not fully documented. It
 compares the names the overview lists on its `@docs` lines with the names in the
-module's `exposing` list, though only the last name in character-code order,
-across both lists, decides the outcome, and each exposed name needs a doc
-comment. A value also needs a type annotation, because its documented type is
+module's `exposing` list, reporting every name missing from one side, and each
+exposed name needs a doc comment. A value also needs a type annotation, because its documented type is
 the annotated one; a type alias or custom type needs only the comment. The
 errors it returns are `Compiler.Reporting.Error.Docs.Error`, which that module
 describes; this module's own `Error` is only for reading `docs.json`.
@@ -476,10 +475,10 @@ documented.
 
 It fails with `ImplicitExposing` for a module that uses `exposing (..)`, with
 `NoDocs` for one without a doc comment of its own, and with `SyntaxProblem` when
-a `@docs` line does not parse. Then it fails with `NameProblems` when the last
-name in key order (by character code, so upper-case names come before
-lower-case ones), of the `@docs` names and the exposed names together, is
-missing from one side or listed twice; earlier mismatches are not detected.
+a `@docs` line does not parse. Then it fails with `NameProblems` when any of
+the `@docs` names and the exposed names is missing from one side or listed
+twice, with one problem per such name in key order (by character code, so
+upper-case names come before lower-case ones).
 Last, it fails with `DefProblems` for exposed names with no doc comment, and for
 exposed values with no type annotation; an exposed operator needs both
 on the function it stands for. A missing annotation on a value is reported
@@ -685,7 +684,7 @@ untilDocs src pos end row col =
                 let
                     newPos : Int
                     newPos =
-                        pos + P.getCharWidth word
+                        pos + P.charWidthAt src pos end word
                 in
                 untilDocs src newPos end row (col + 1)
 
@@ -694,14 +693,9 @@ untilDocs src pos end row col =
 -- ====== CHECK NAMES ======
 
 
-{-| Returns the outcome of checking the last name in key order across `names`,
-the names on the `@docs` lines, and `exports`: `NameProblems` when that name is
-missing from one side or listed twice in `names`.
-
-The merge of the two lists discards the result built for each earlier name, so
-the outcome is that of the last name in order, and `NameProblems` holds at most
-one problem.
-
+{-| Checks every name across `names`, the names on the `@docs` lines, and
+`exports`. Fails with `NameProblems` when any name is missing from one side or
+listed twice in `names`, holding one problem per such name, in key order.
 -}
 checkNames : Dict Name (A.Located Can.Export) -> List (A.Located Name) -> Result E.Error ()
 checkNames exports names =
@@ -711,16 +705,22 @@ checkNames exports names =
             List.foldl addName Dict.empty names
 
         loneExport : Name -> A.Located Can.Export -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
-        loneExport name export_ _ =
-            onlyInExports name export_
+        loneExport name export_ acc =
+            keepBoth acc (onlyInExports name export_)
 
         checkBoth : Name -> A.Located Can.Export -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
-        checkBoth n _ r _ =
-            isUnique n r
+        checkBoth n _ r acc =
+            keepBoth acc (isUnique n r)
 
         loneDoc : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
-        loneDoc name regions _ =
-            onlyInDocs name regions
+        loneDoc name regions acc =
+            keepBoth acc (onlyInDocs name regions)
+
+        keepBoth : ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
+        keepBoth acc next =
+            ReportingResult.ok (\_ r -> r)
+                |> ReportingResult.apply acc
+                |> ReportingResult.apply next
     in
     case ReportingResult.run (Dict.merge loneExport checkBoth loneDoc exports docs (ReportingResult.ok A.zero)) of
         ( _, Ok _ ) ->

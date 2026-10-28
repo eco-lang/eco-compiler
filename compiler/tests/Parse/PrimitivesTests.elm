@@ -1,7 +1,7 @@
 module Parse.PrimitivesTests exposing (suite)
 
-{-| Tests for `Compiler.Parse.Primitives.getCharWidth`, the number of UTF-16
-code units a character occupies in an Elm string.
+{-| Tests for `Compiler.Parse.Primitives.getCharWidth` and `codePointAt`, the
+number of UTF-16 code units a character occupies in an Elm string.
 
 The parser's positions are indexes into the source string counted in UTF-16
 code units, and scanners such as the line-comment scanner in
@@ -26,6 +26,11 @@ What the tests establish:
 Among what is not tested:
 
   - The characters at the boundary, U+FFFF and U+10000.
+
+`codePointAt` is tested for a BMP character, a pair as a host that joins it in
+`String.uncons` gives it and as one that does not, a pair cut by the end, and a
+lone surrogate.
+
   - How any scanner uses the width to advance its position.
 
 -}
@@ -112,5 +117,37 @@ suite =
                     |> Expect.equal 2
               )
                 |> Test.test "Fire"
+            ]
+        , Test.describe "codePointAt"
+            [ (\_ ->
+                P.codePointAt "aé" 1 2 0xE9
+                    |> Expect.equal ( 0xE9, 1 )
+              )
+                |> Test.test "a BMP character is itself, width 1"
+            , (\_ ->
+                P.codePointAt "🔥" 0 2 0x0001F525
+                    |> Expect.equal ( 0x0001F525, 2 )
+              )
+                |> Test.test "a joined pair (as String.uncons gives it) is width 2"
+            , (\_ ->
+                P.codePointAt "🔥" 0 2 0xD83D
+                    |> Expect.equal ( 0x0001F525, 2 )
+              )
+                |> Test.test "a high surrogate given alone is joined with its low surrogate"
+            , (\_ ->
+                P.codePointAt "🔥" 0 1 0xD83D
+                    |> Expect.equal ( 0xD83D, 1 )
+              )
+                |> Test.test "a high surrogate is not joined across the end"
+            , (\_ ->
+                P.codePointAt "🔥" 0 1 0x0001F525
+                    |> Expect.equal ( 0xD83D, 1 )
+              )
+                |> Test.test "a joined pair cut by the end is its high surrogate, width 1"
+            , (\_ ->
+                P.codePointAt "\u{D800}x" 0 2 0xD800
+                    |> Expect.equal ( 0xD800, 1 )
+              )
+                |> Test.test "a lone high surrogate is itself, width 1"
             ]
         ]

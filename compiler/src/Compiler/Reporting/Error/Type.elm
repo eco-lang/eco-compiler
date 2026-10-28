@@ -2918,12 +2918,6 @@ errorEncoder error =
 
 
 {-| A decoder for a type error written by `errorEncoder`.
-
-Not every error survives the round trip. A `RecordUpdateKeys` context holds
-the update's field values as expressions, and they are encoded with
-`Compiler.AST.Canonical.fieldUpdateEncoder`, which cannot be read back when a
-value contains a record literal or a record update.
-
 -}
 errorDecoder : Bytes.Decode.Decoder Error
 errorDecoder =

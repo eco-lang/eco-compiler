@@ -1,6 +1,6 @@
 // Regression tests for builder-group bugs reproduced through the real `eco` CLI
 // (compiler/bin/index.js, run against the built build/compiler/build-xhr/bin/guida.js).
-// Every test here is EXPECTED TO FAIL until the bug it names is fixed. Each is also pinned by
+// Each test pins a bug that is now fixed. Each is also pinned by
 // a unit elm-test under compiler/tests/ (named in the test's comment).
 // `eco diff` tests use a throwaway local package server (GUIDA_REGISTRY) and a throwaway HOME.
 // Run: node --test test/scripts/cli-builder.test.js

@@ -218,9 +218,11 @@ size (Handle h) =
 
 {-| Asks eco-io to lock the file at `path`.
 
-The server in this repository takes no lock and succeeds at once, as do the
-native build's kernels. Nothing waits, and nothing keeps another process
-out.
+The eco-io handler in `bin/eco-io-handler.js` keeps an exclusive lock per path
+within its own process: the task completes once no other holder has the lock,
+and waiters are served in the order they asked. It does not keep another
+process out (Node has no portable file lock). The native build's kernels take
+no lock and succeed at once.
 
 -}
 lock : String -> Task IOError ()
@@ -230,9 +232,9 @@ lock path =
         |> Task.mapError IOErr.ofKernelTuple
 
 
-{-| Asks eco-io to release the lock on the file at `path`. Like `lock`, it
-succeeds at once and does nothing in the server in this repository and in the
-native build's kernels.
+{-| Asks eco-io to release the lock on the file at `path`, handing it to the
+next waiter in the eco-io handler in `bin/eco-io-handler.js`. It succeeds at
+once, and does nothing in the native build's kernels.
 -}
 unlock : String -> Task IOError ()
 unlock path =

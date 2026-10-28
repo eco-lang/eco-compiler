@@ -139,9 +139,7 @@ A wildcard prints as `_`, and characters and strings are quoted. A constructor
 named `#N` (a tuple of four or more) has no special case and prints as a
 constructor.
 
-A finite list's entries are joined with `D.hcat`, which keeps only the last
-document it is given (see `Compiler.Reporting.Doc.hcat`), so a list of two or
-more entries does not print in full.
+A finite list prints as `[` and its entries in order, separated by `,`, then `]`.
 
 -}
 patternToDoc : Context -> P.Pattern -> D.Doc
@@ -231,8 +229,7 @@ patternToDoc context pattern =
 
 {-| A pattern seen as a list, if it is one.
 
-`FiniteList` is a list ending in `[]`. Its entries are in reverse order, as
-`delist` collects them. `Conses` is a chain of heads, in order, ending in a
+`FiniteList` is a list ending in `[]`, with its entries in order. `Conses` is a chain of heads, in order, ending in a
 tail that is not a list constructor. `NonList` is any other pattern.
 
 -}
@@ -249,7 +246,7 @@ delist : P.Pattern -> List P.Pattern -> Structure
 delist pattern revEntries =
     case pattern of
         P.Ctor _ "[]" [] ->
-            FiniteList revEntries
+            FiniteList (List.reverse revEntries)
 
         P.Ctor _ "::" [ hd, tl ] ->
             delist tl (hd :: revEntries)

@@ -6,7 +6,8 @@ first `main` in graph key order across ALL modules. The imported module
 EntryAuxWithMain also defines `main` and sorts first, so the compiled program
 runs the helper's `main` instead of this module's.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.6); the text
+below describes the old behaviour.
 
 -}
 

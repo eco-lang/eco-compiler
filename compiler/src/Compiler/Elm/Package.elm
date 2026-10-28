@@ -555,7 +555,7 @@ It reads characters for which `isGoodChar` holds and dashes, and stops at
 `end`, at a second dash in a row, or at any other character. `prevWasDash` says
 whether the character before `pos` was a dash. The part is malformed when it
 stops at a second dash, which is where it ends, or when a dash is the last
-character before `end`. A dash before any other stopping character is accepted.
+character before it stops, at `end` or at any other character.
 
 -}
 chompName : (Char -> Bool) -> String -> Int -> Int -> Bool -> ( Bool, Int )
@@ -580,7 +580,7 @@ chompName isGoodChar src pos end prevWasDash =
                 chompName isGoodChar src (pos + 1) end True
 
         else
-            ( True, pos )
+            ( not prevWasDash, pos )
 
 
 

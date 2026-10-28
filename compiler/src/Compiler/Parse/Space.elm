@@ -309,7 +309,7 @@ eat eatType comments src pos end row col =
                     let
                         newPos : Int
                         newPos =
-                            pos + P.getCharWidth word
+                            pos + P.charWidthAt src pos end word
                     in
                     eat (EatLineComment startPos) comments src newPos end row (col + 1)
 
@@ -405,7 +405,7 @@ eatMultiCommentHelp src pos end row col openComments =
             let
                 newPos : Int
                 newPos =
-                    pos + P.getCharWidth word
+                    pos + P.charWidthAt src pos end word
             in
             eatMultiCommentHelp src newPos end row (col + 1) openComments
 

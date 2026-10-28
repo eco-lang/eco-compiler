@@ -315,9 +315,8 @@ in `"dependencies"`, unless it is `elm/core` itself. An application must have
 `elm/core` as a direct dependency and `elm/json` as a direct or indirect one,
 and every source directory must exist. Test dependencies are not looked at.
 
-There is also a check that no two source directories name the same directory
-once canonicalised, but it never reports one: it groups the directories with
-`Utils.dictFromListWith`, which always returns an empty dictionary.
+No two source directories may name the same directory once canonicalised
+(`detectDuplicates`).
 
 The program crashes if the file cannot be read.
 
@@ -447,9 +446,8 @@ toAbsolute root srcDir =
 {-| Returns the canonical path of a directory that two of `srcDirs` both name,
 with the two entries as written, or `Nothing`.
 
-The entries are grouped by canonical path with `Utils.dictFromListWith`, which
-never adds a key, so the grouping is empty and the result is always `Nothing`.
-The paths are still canonicalised.
+The entries are grouped by canonical path with `Utils.dictFromListWith`, in
+list order, so the two entries are the first two that name that directory.
 
 -}
 detectDuplicates : FilePath -> List SrcDir -> Task Never (Maybe ( FilePath, ( FilePath, FilePath ) ))

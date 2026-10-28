@@ -1,10 +1,9 @@
 module Compiler.Json.EncodeTest exposing (suite)
 
-{-| Regression tests for `Compiler.Json.Encode` escaping. EXPECTED TO FAIL until
-the bugs are fixed.
+{-| Regression tests for `Compiler.Json.Encode` escaping.
 
-`escape` handles only CR, LF, `"` and `\`; any other character below U+0020 is
-written raw, which is not valid JSON. Reached by `eco make --docs` on a doc
+`escape` once handled only CR, LF, `"` and `\`, so any other character below
+U+0020 was written raw, which is not valid JSON; now it is escaped. Reached by `eco make --docs` on a doc
 comment holding U+0001 (test/scripts/cli-builder.test.js). Validity is checked
 with `elm/json`.
 

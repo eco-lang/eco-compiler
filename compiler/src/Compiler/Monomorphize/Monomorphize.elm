@@ -109,7 +109,7 @@ monomorphizeWithLimitsAssigned limits entryPointName globalTypeEnv assigned =
         mvarEnv =
             State.initMVarEnv assigned.mvarState.nextId assigned.mvarState.superVars
     in
-    case EntryPrep.findEntryPointId entryPointName nodesWithIds of
+    case EntryPrep.findEntryPointId assigned.entryHome entryPointName nodesWithIds of
         Nothing ->
             Err ("No " ++ entryPointName ++ " function found")
 

@@ -1,14 +1,12 @@
 module Compiler.Parse.PrimitivesAndThenConsumedTest exposing (suite)
 
-{-| Reproduces a bug in `Compiler.Parse.Primitives.andThen`: when the first
+{-| Pins `Compiler.Parse.Primitives.andThen` after consumption: when the first
 parser consumed input (`Cok`) and the second fails without consuming (`Eerr`),
-the result is passed on as `Eerr` instead of being promoted to `Cerr`. An
-enclosing `oneOf` then tries its next alternative from the original position
-even though input was consumed (upstream Elm passes `cerr` as the second
-parser's empty-error continuation; `loop` and `inContext` here promote too).
-
-EXPECTED TO FAIL until the bug is fixed.
-
+the result is promoted to `Cerr`, so an enclosing `oneOf` does not try its next
+alternative from the original position once input was consumed. This matches
+upstream Elm, which passes `cerr` as the second parser's empty-error
+continuation, and `loop` and `inContext` here. Before the fix the `Eerr` was
+passed on as it was.
 -}
 
 import Compiler.Parse.Primitives as P

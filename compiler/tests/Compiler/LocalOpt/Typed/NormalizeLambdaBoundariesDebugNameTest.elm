@@ -1,10 +1,11 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundariesDebugNameTest exposing (suite)
 
-{-| Regression test for a suspected bug in
+{-| Regression test for a bug in
 `Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries.renameExpr` (S2 list,
 NormalizeLambdaBoundaries.elm lines 199 and 223).
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.4); the text
+below describes the old behaviour.
 
 `renameExpr` applies the rename environment to the name inside a `VarDebug`
 node, which is the name of a `Debug` function (`log`, `todo`, ...), not a local

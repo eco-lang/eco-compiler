@@ -35,6 +35,7 @@ import Compiler.AST.StringTable as StringTable exposing (StringTable)
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.String as ES
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -79,9 +80,9 @@ type Test
 them in sets or as `Dict` keys.
 
 Each kind of test has its own prefix, so tests of different kinds never share
-a key, and an `IsCtor` key includes all five of its fields. A literal is keyed
-by its escaped text, so two literals that denote the same value can get
-different keys, for instance `'a'` and `'\u{0061}'`.
+a key, and an `IsCtor` key includes all five of its fields. A `Char` or
+`String` literal is keyed by the value it denotes (`Compiler.Elm.String.valueKey`),
+so `'a'` and `'\u{0061}'` share a key.
 
 -}
 testToComparable : Test -> String
@@ -118,10 +119,10 @@ testToComparable test =
             "I" ++ String.fromInt n
 
         IsChr c ->
-            "H" ++ c
+            "H" ++ ES.valueKey c
 
         IsStr s ->
-            "S" ++ s
+            "S" ++ ES.valueKey s
 
         IsBool b ->
             if b then

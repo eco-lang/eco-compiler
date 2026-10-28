@@ -314,7 +314,7 @@ parser =
 {-| A parser for one number of a version: either a single `0`, or a run of
 digits that starts with any other digit.
 
-It reads as many digits as follow, with no bound on the value. It fails, at the
+It reads as many digits as follow. It fails, having read input, when the value is above `maxComponent`, and at the
 current position, when the next character is not a digit or there is none.
 
 -}
@@ -348,7 +348,11 @@ numberParser =
                         newState =
                             P.State { st | pos = newPos, col = st.col + (newPos - st.pos) }
                     in
-                    P.Cok total newState
+                    if total > maxComponent then
+                        P.Cerr st.row st.col Tuple.pair
+
+                    else
+                        P.Cok total newState
 
                 else
                     P.Eerr st.row st.col Tuple.pair
@@ -358,7 +362,7 @@ numberParser =
 with the position just past the last digit.
 
 It stops at the first character that is not a digit, or at `end`. Despite the
-name, nothing bounds the value to 16 bits.
+name, the total is capped at `maxComponent + 1` so a long run cannot overflow.
 
 -}
 chompWord16 : String -> Int -> Int -> Int -> ( Int, Int )
@@ -373,10 +377,18 @@ chompWord16 src pos end total =
                 P.unsafeIndex src pos
         in
         if isDigit word then
-            chompWord16 src (pos + 1) end (10 * total + (Char.toCode word - 0x30))
+            chompWord16 src (pos + 1) end (Basics.min (maxComponent + 1) (10 * total + (Char.toCode word - 0x30)))
 
         else
             ( total, pos )
+
+
+{-| The largest number a version component may be: 65535, a 16-bit word, as
+in the reference compiler.
+-}
+maxComponent : Int
+maxComponent =
+    65535
 
 
 {-| Returns whether a character is one of the ASCII digits `0` to `9`.

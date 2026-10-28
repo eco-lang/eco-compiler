@@ -49,6 +49,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.Data.Index as Index
+import Compiler.Elm.String as ES
 import Compiler.Reporting.Annotation as A
 import Data.Set as EverySet
 import Prelude
@@ -575,7 +576,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                 Can.PChr chr ->
                     case test of
                         Test.IsChr testChr ->
-                            if chr == testChr then
+                            if ES.valueKey chr == ES.valueKey testChr then
                                 Just (Branch goal (start ++ end))
 
                             else
@@ -587,7 +588,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                 Can.PStr str _ ->
                     case test of
                         Test.IsStr testStr ->
-                            if str == testStr then
+                            if ES.valueKey str == ES.valueKey testStr then
                                 Just (Branch goal (start ++ end))
 
                             else

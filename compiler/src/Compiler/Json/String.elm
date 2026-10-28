@@ -105,7 +105,7 @@ chompChunks src pos end start revChunks =
                 let
                     width : Int
                     width =
-                        P.getCharWidth word
+                        P.charWidthAt src pos end word
 
                     newPos : Int
                     newPos =

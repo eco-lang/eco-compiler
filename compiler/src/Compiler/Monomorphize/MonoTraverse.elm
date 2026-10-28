@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.MonoTraverse exposing
-    ( traverseExpr, mapExpr
+    ( traverseExpr, mapExpr, renameLocal
     , foldExpr, foldExprAccFirst
     , mapNodeTypes, anyNodeType
     , childrenOf
@@ -43,7 +43,7 @@ a partial application, or as a value stored in data.
 
 # Context-Threaded Traversal
 
-@docs traverseExpr, mapExpr
+@docs traverseExpr, mapExpr, renameLocal
 
 
 # Fold
@@ -1637,3 +1637,63 @@ specEdgesOfExpr body =
         )
         []
         body
+
+
+{-| Returns `expr` with every reference to the local `oldName` renamed to
+`newName`: variable uses, tail calls, and closure captures, whose names must
+change together with the uses inside the closure. Elm forbids shadowing, so
+every occurrence of the name is the same variable.
+-}
+renameLocal : String -> String -> Mono.MonoExpr -> Mono.MonoExpr
+renameLocal oldName newName expr =
+    if oldName == newName then
+        expr
+
+    else
+        mapExpr
+            (\e ->
+                case e of
+                    Mono.MonoVarLocal n t ->
+                        if n == oldName then
+                            Just (Mono.MonoVarLocal newName t)
+
+                        else
+                            Nothing
+
+                    Mono.MonoTailCall n args t ->
+                        if n == oldName then
+                            Just (Mono.MonoTailCall newName args t)
+
+                        else
+                            Nothing
+
+                    Mono.MonoClosure info body t ->
+                        if List.any (\( n, _, _ ) -> n == oldName) info.captures then
+                            Just
+                                (Mono.MonoClosure
+                                    { info
+                                        | captures =
+                                            List.map
+                                                (\( n, ce, u ) ->
+                                                    ( if n == oldName then
+                                                        newName
+
+                                                      else
+                                                        n
+                                                    , ce
+                                                    , u
+                                                    )
+                                                )
+                                                info.captures
+                                    }
+                                    body
+                                    t
+                                )
+
+                        else
+                            Nothing
+
+                    _ ->
+                        Nothing
+            )
+            expr

@@ -1,7 +1,7 @@
 module Compiler.Monomorphize.Analysis exposing
     ( computeCtorShapesForGraph
     , lookupUnion
-    , convertCanTypeNameToMVarId
+    , convertCanTypeNameToMVarId, instantiateCtorField
     )
 
 {-| The code generator lays out every value of a custom type by its constructor,
@@ -27,7 +27,7 @@ step that other modules use as well.
 
 @docs lookupUnion
 
-@docs convertCanTypeNameToMVarId
+@docs convertCanTypeNameToMVarId, instantiateCtorField
 
 -}
 
@@ -478,9 +478,12 @@ buildCtorShapeFromUnion home env subst nameToId (Can.Ctor ctorData) =
 
 A type variable missing from `nameToId` crashes the compiler. A record
 extension variable missing from it is dropped, leaving a closed record. Inside
-an alias, the alias's own parameters are not looked up in `nameToId`: every one
-of them, in the argument list and in the body, gets the same id,
-`TypeIds.firstMVarId`.
+an alias, the alias's own parameters are not looked up in `nameToId`: each
+formal gets its own id by position (`TypeIds.firstMVarId`, then the next ...),
+used both as its parameter id in the argument list and in the body. These ids
+may coincide with ids in `nameToId`; that is safe because an alias body
+mentions only its own formals and the arguments are converted with the outer
+`nameToId`.
 
 Arrows are built with `Can.tLambda`, so they carry no arrow identity. A type
 from here must not be loaded into a `Compiler.MonoSolver.Store`; the store
@@ -521,19 +524,27 @@ convertCanTypeNameToMVarId nameToId canType =
         Can.TAlias canonical name args aliasType ->
             let
                 -- The alias's formal parameters are bound by the alias, not the union.
+                -- One id per formal, by position; the body mentions only the formals.
+                formalIds : List ( Name, TypeIds.MVarId )
+                formalIds =
+                    List.foldl
+                        (\( n, _ ) ( acc, nextId ) -> ( ( n, nextId ) :: acc, Id.succ nextId ))
+                        ( [], TypeIds.firstMVarId )
+                        args
+                        |> Tuple.first
+                        |> List.reverse
+
                 innerNameToId : Dict.Dict Name TypeIds.MVarId
                 innerNameToId =
-                    List.foldl
-                        (\( n, _ ) acc -> Dict.insert n TypeIds.firstMVarId acc)
-                        nameToId
-                        args
+                    List.foldl (\( n, pid ) acc -> Dict.insert n pid acc) nameToId formalIds
             in
             Can.TAlias canonical
                 name
-                (List.map
-                    (\( _, t ) ->
-                        ( TypeIds.firstMVarId, convertCanTypeNameToMVarId nameToId t )
+                (List.map2
+                    (\( _, pid ) ( _, t ) ->
+                        ( pid, convertCanTypeNameToMVarId nameToId t )
                     )
+                    formalIds
                     args
                 )
                 (case aliasType of
@@ -586,3 +597,38 @@ computeCtorShapesForGraph globalTypeEnv nodes =
     Mono.layoutMapFoldl (\monoType _ acc -> processCustomType monoType acc)
         Mono.layoutMapEmpty
         customTypes
+
+
+{-| Returns a constructor field's declared type `fieldType` with the custom
+type's parameters `vars` replaced by `typeArgs`.
+-}
+instantiateCtorField : List Name -> List Mono.MonoType -> Can.Type Name -> Mono.MonoType
+instantiateCtorField vars typeArgs fieldType =
+    let
+        ( nameToId, env ) =
+            List.foldl
+                (\varName ( acc, e ) ->
+                    let
+                        ( mvarId, e1 ) =
+                            State.freshMVar Mono.CEcoValue e
+                    in
+                    ( Dict.insert varName mvarId acc, e1 )
+                )
+                ( Dict.empty, State.initMVarEnv TypeIds.firstMVarId Dict.empty )
+                vars
+
+        subst : Substitution
+        subst =
+            List.foldl
+                (\( varName, monoType ) acc ->
+                    case Dict.get varName nameToId of
+                        Just mvarId ->
+                            Dict.insert (Id.toComparable mvarId) monoType acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                (List.map2 Tuple.pair vars typeArgs)
+    in
+    TypeSubst.applySubstPure env subst (convertCanTypeNameToMVarId nameToId fieldType)

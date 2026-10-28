@@ -1,8 +1,8 @@
 //===- Console.cpp - Console kernel module implementation -----------------===//
 //
 // Per KERNEL_TASK_IO_001 / plans/defer-eager-kernel-tasks-via-binding.md
-// Phase 1: `write`, `readLine`, `readAll` are returned as Task_Bindings so
-// the actual stdin/stdout IO runs when the scheduler steps the binding (NOT
+// Phase 1: `write`, `readLine`, `readAll`, `isTerminal` are returned as
+// Task_Bindings so the actual stdin/stdout IO (or isatty query) runs when the scheduler steps the binding (NOT
 // at the kernel call site). `log` is the explicit Q7/KERNEL_TASK_IO_001
 // exemption — it's an identity helper that returns its `value` arg, not a
 // Task, and stays eager.
@@ -33,6 +33,8 @@ namespace { inline int _eco_write(int fd, const void* buf, unsigned int len) {
 namespace {
 inline int _eco_stdout_fd() { return ::_fileno(stdout); }
 inline int _eco_stderr_fd() { return ::_fileno(stderr); }
+inline int _eco_stdin_fd() { return ::_fileno(stdin); }
+inline bool _eco_isatty(int fd) { return ::_isatty(fd) != 0; }
 }
 #else
 #include <unistd.h>
@@ -42,6 +44,8 @@ namespace { inline ssize_t _eco_write(int fd, const void* buf, size_t len) {
 namespace {
 inline int _eco_stdout_fd() { return STDOUT_FILENO; }
 inline int _eco_stderr_fd() { return STDERR_FILENO; }
+inline int _eco_stdin_fd() { return STDIN_FILENO; }
+inline bool _eco_isatty(int fd) { return ::isatty(fd) != 0; }
 }
 #endif
 
@@ -121,6 +125,27 @@ HPointer readAllBody(HPointer /*captured*/) {
     return succeedString(content);
 }
 
+// Body for `isTerminal`. Captured payload is a Tuple2 with the handle as an
+// unboxed Int (slot 0) and unit (slot 1). Handles 0, 1 and 2 are the standard
+// streams; any other handle (e.g. a process stream) answers False.
+HPointer isTerminalBody(HPointer captured) {
+    int64_t handle;
+    {
+        Tuple2* tup = static_cast<Tuple2*>(
+            Elm::Allocator::instance().resolve(captured));
+        handle = tup->a.i;
+    }
+    bool tty = false;
+    if (handle == 0) {
+        tty = _eco_isatty(_eco_stdin_fd());
+    } else if (handle == 1) {
+        tty = _eco_isatty(_eco_stdout_fd());
+    } else if (handle == 2) {
+        tty = _eco_isatty(_eco_stderr_fd());
+    }
+    return succeedBool(tty);
+}
+
 } // anonymous namespace
 
 uint64_t write(uint64_t handle, uint64_t content) {
@@ -139,6 +164,14 @@ uint64_t readLine() {
 
 uint64_t readAll() {
     return Export::encode(Eco::Kernel::makeBinding<readAllBody>(Elm::alloc::unit()));
+}
+
+uint64_t isTerminal(uint64_t handle) {
+    HPointer payload = Elm::alloc::tuple2(
+        Elm::alloc::unboxedInt(static_cast<int64_t>(handle)),
+        Elm::alloc::boxed(Elm::alloc::unit()),
+        /*unboxed_mask=*/0x1);
+    return Export::encode(Eco::Kernel::makeBinding<isTerminalBody>(payload));
 }
 
 uint64_t log(uint64_t tag, uint64_t value) {

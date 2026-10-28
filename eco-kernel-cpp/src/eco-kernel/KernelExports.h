@@ -153,6 +153,9 @@ HPtr Eco_Kernel_Console_readLine();
 // Read all of stdin as string. Returns Task IOError String.
 HPtr Eco_Kernel_Console_readAll();
 
+// Whether a standard handle (0, 1 or 2) is a terminal. Returns Task Never Bool.
+HPtr Eco_Kernel_Console_isTerminal(HPtr handle);
+
 // log(tag, value): write tag to stderr, return value unchanged.
 // `String -> a -> a` from Elm's perspective. Allowed under --optimize.
 HPtr Eco_Kernel_Console_log(HPtr tag, HPtr value);

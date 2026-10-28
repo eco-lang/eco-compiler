@@ -96,6 +96,12 @@ put encoder (MVar id) value =
 
 
 {-| Asks eco-io to discard the MVar, together with any value it holds.
+
+A task still waiting on it (a `read` or `take` of it while empty, or a `put`
+to it while full) can then never be answered with a value: the eco-io handler
+in `bin/eco-io-handler.js` fails those requests, and they crash the program.
+So does any later request naming a dropped MVar.
+
 -}
 drop : MVar a -> Task Never ()
 drop (MVar id) =

@@ -18,6 +18,10 @@ HPtr Eco_Kernel_Console_readAll() {
     ECO_KERNEL_GUARD( return HPtr::fromBits(Console::readAll()); )
 }
 
+HPtr Eco_Kernel_Console_isTerminal(HPtr handle) {
+    ECO_KERNEL_GUARD( return HPtr::fromBits(Console::isTerminal(handle.toBits())); )
+}
+
 HPtr Eco_Kernel_Console_log(HPtr tag, HPtr value) {
     ECO_KERNEL_GUARD( return HPtr::fromBits(Console::log(tag.toBits(), value.toBits())); )
 }

@@ -636,9 +636,13 @@ getConstraints pkg vsn =
                     let
                         -- A local package may not be copied into the cache yet,
                         -- so its elm.json is read from its source directory.
+                        localSource : Maybe String
+                        localSource =
+                            Stuff.localPackageSource st.cache pkg
+
                         home : String
                         home =
-                            case Stuff.localPackageSource st.cache pkg of
+                            case localSource of
                                 Just source ->
                                     source
 
@@ -657,6 +661,7 @@ getConstraints pkg vsn =
                             , vsn = vsn
                             , home = home
                             , path = home ++ "/elm.json"
+                            , isLocal = localSource /= Nothing
                             }
                     in
                     File.exists ctx.path
@@ -681,6 +686,7 @@ type alias ConstraintLoadContext =
     , vsn : V.Version
     , home : String
     , path : String
+    , isLocal : Bool
     }
 
 
@@ -706,8 +712,10 @@ loadConstraintsFromCache ctx =
 
 {-| Decodes the `elm.json` text `bytes` read from `ctx.path` and returns its constraints.
 
-If it does not decode as a package outline, the file at `ctx.path` is deleted
-and the search fails with `SolverBadCacheData`; it does not backtrack.
+If it does not decode as a package outline, the search fails without
+backtracking: for a local package with `SolverBadLocalOutline`, leaving the
+user's file alone, and otherwise the cached file at `ctx.path` is deleted and
+it fails with `SolverBadCacheData`.
 
 -}
 parseAndValidateCachedConstraints : ConstraintLoadContext -> String -> Task Never (InnerSolver Constraints)
@@ -717,8 +725,26 @@ parseAndValidateCachedConstraints ctx bytes =
             validateCachedConstraints ctx cs
 
         Err _ ->
-            File.remove ctx.path
-                |> Task.map (\_ -> ISErr (Exit.SolverBadCacheData ctx.pkg ctx.vsn))
+            if ctx.isLocal then
+                -- The user's own file (--local-package): never delete it.
+                Task.succeed (ISErr (Exit.SolverBadLocalOutline ctx.pkg ctx.path (localOutlineError bytes)))
+
+            else
+                File.remove ctx.path
+                    |> Task.map (\_ -> ISErr (Exit.SolverBadCacheData ctx.pkg ctx.vsn))
+
+
+{-| The decoding error of a local package's `elm.json` text, or `Nothing` when it
+decodes as an outline but not as a package one.
+-}
+localOutlineError : String -> Maybe (D.Error Exit.OutlineProblem)
+localOutlineError bytes =
+    case D.fromByteString Outline.decoder bytes of
+        Err e ->
+            Just e
+
+        Ok _ ->
+            Nothing
 
 
 {-| Returns `cs` with the state that remembers them.

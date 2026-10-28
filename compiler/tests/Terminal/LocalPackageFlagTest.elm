@@ -28,8 +28,8 @@ by `checkForUnknownFlags`:
   - A lone `--local-package` with nothing after it fails with
     `FlagWithNoValue`.
 
-For `chompNormalFlag`, the same flag given twice fails with `FlagUnknown`
-naming the second occurrence.
+For `chompNormalFlag`, the same flag given twice fails with `FlagRepeated`
+naming the flag.
 
 Among what is not tested: the expectation and suggestion carried by an error,
 a value written after a following flag, and an empty package author or project.
@@ -106,10 +106,10 @@ suite =
                 \_ ->
                     chompRepeatable [ "--local-package" ]
                         |> Expect.equal (Err "no value: local-package")
-            , test "a repeated ordinary flag is still rejected as unknown" <|
+            , test "a repeated ordinary flag is rejected as repeated" <|
                 \_ ->
                     chompNormal [ "--local-package=eco/kernel=../k", "--local-package=eco/system=../s" ]
-                        |> Expect.equal (Err "unknown: --local-package=eco/system=../s")
+                        |> Expect.equal (Err "repeated: local-package")
             ]
         ]
 
@@ -180,3 +180,6 @@ describeError error =
 
         BadFlag (FlagUnknown string _) ->
             "unknown: " ++ string
+
+        BadFlag (FlagRepeated name) ->
+            "repeated: " ++ name

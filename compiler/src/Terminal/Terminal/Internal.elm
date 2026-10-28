@@ -253,9 +253,11 @@ parsed.
 `FlagWithNoValue name expectation` is a flag that takes a value but was given
 none.
 
+`FlagRepeated name` is a flag the command has that was given more than once.
+
 `FlagUnknown typed flags` is a string starting with `-` that was left over once
-the command's flags had been taken out, such as a flag the command does not
-have or a second occurrence of one it does. `typed` is the string exactly as
+the command's flags had been taken out and is not one of its flags, such as a
+flag the command does not have. `typed` is the string exactly as
 given, dashes included, and `flags` is the description of every flag the
 command does accept, from which nearby names can be suggested.
 
@@ -265,6 +267,7 @@ type FlagError
     | FlagWithBadValue String String Expectation
     | FlagWithNoValue String Expectation
     | FlagUnknown String Flags
+    | FlagRepeated String
 
 
 {-| What was wanted where an argument or flag value was missing or bad: the

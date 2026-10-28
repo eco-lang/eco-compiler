@@ -479,15 +479,15 @@ suite : Test
 suite =
     Test.describe "Golden constraint fingerprints (byte-identity gate)"
         [ goldenSrc "literals-containers" ( 2511266603, 4226193006 ) literalsContainers
-        , goldenSrc "access-update-accessor" ( 2324415555, 136880178 ) accessUpdateAccessor
+        , goldenSrc "access-update-accessor" ( 3026365807, 1043082062 ) accessUpdateAccessor
         , goldenSrc "binop-chains" ( 430831143, 3366310689 ) binopChains
-        , goldenSrc "pipe-chains" ( 1069070543, 2887143088 ) pipeChains
-        , goldenSrc "call-shapes" ( 132171800, 639265737 ) callShapes
+        , goldenSrc "pipe-chains" ( 2678310403, 64681076 ) pipeChains
+        , goldenSrc "call-shapes" ( 1746417324, 3223559557 ) callShapes
         , goldenSrc "if-chain" ( 2818725526, 50115275 ) ifChain
         , goldenSrc "case-list-patterns" ( 3193721138, 773629378 ) caseListPatterns
         , goldenSrc "case-misc-patterns" ( 2621323093, 2815270446 ) caseMiscPatterns
         , goldenSrc "record-unit-lambdas" ( 2397726897, 3888057001 ) recordUnitLambdas
-        , goldenSrc "let-family" ( 3480157346, 776512907 ) letFamily
+        , goldenSrc "let-family" ( 3899926726, 1369469687 ) letFamily
         , goldenSrc "top-level-vars" ( 2604201531, 227965378 ) topLevelVars
         , goldenSrc "typed-defs" ( 3380026013, 2639813465 ) typedDefs
         , goldenCan "kernel-var" ( 2702318790, 1175847913 ) kernelVar

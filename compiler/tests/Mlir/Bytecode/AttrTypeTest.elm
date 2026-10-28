@@ -1,16 +1,15 @@
 module Mlir.Bytecode.AttrTypeTest exposing (suite)
 
-{-| Regression tests for `Mlir.Bytecode.AttrType`. EXPECTED TO FAIL until the
-bugs they reproduce are fixed.
+{-| Regression tests for `Mlir.Bytecode.AttrType`, for two bugs since fixed:
 
-Bugs reproduced:
-
-  - Untyped `ArrayAttr` keys join their parts with `,` without quoting, so
-    `[ "a,s:b" ]` and `[ "a", "b" ]` share an entry (reached by string case
-    patterns: test/elm/src/StringCasePatternCommaTest.elm).
-  - A dense array element is written as its low 32 bits followed by zero
-    bytes, so the `i64` element -1 is written `FF FF FF FF 00 00 00 00` instead
-    of eight `FF` bytes, and 2^32 is written as 0.
+  - Untyped `ArrayAttr` keys joined their parts with `,` without quoting, so
+    `[ "a,s:b" ]` and `[ "a", "b" ]` shared an entry (reached by string case
+    patterns: test/elm/src/StringCasePatternCommaTest.elm). Parts are now
+    length-prefixed.
+  - A dense array element was written as its low 32 bits followed by zero
+    bytes, so the `i64` element -1 was written `FF FF FF FF 00 00 00 00`
+    instead of eight `FF` bytes, and 2^32 was written as 0. All 64 bits are
+    now written.
 
 -}
 

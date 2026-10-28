@@ -8,7 +8,8 @@ region first). So a `FieldUpdate` whose value is a record literal, encoded with
 the public `Can.fieldUpdateEncoder` (used by the type-error codec in
 Compiler.Reporting.Error.Type for RecordUpdateKeys), does not round-trip.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 -}
 

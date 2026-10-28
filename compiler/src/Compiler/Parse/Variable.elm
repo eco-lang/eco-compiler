@@ -12,7 +12,7 @@ parsers that read one.
 An _identifier_ is a first character followed by any number of _inner
 characters_. The first character is a lower-case letter for the name of a
 value, and an upper-case letter for the name of a type, a constructor or one
-part of a module name. An inner character is a letter, a digit or `_`. A
+part of a module name. An inner character is a letter, an ASCII digit or `_`. A
 _qualified_ name is preceded by its _home_, the name of a module, written as
 upper-case identifiers each followed by a dot, as in `List.map` or
 `Json.Decode.Decoder`. The parsers with `foreign` in their names read a name
@@ -30,19 +30,18 @@ module name that is not followed by an upper-case identifier, which is `Cerr`.
 Most of the file is the character tests, which give a character's _width_: how
 many units of the position it takes as part of an identifier, or 0 when it
 cannot be one. An ASCII character is tested directly, and has a width of 1 when
-it is allowed in that place. Any other character is tested as though the text
-were UTF-8 bytes, which it is not. A character with a code from 0xC0 to 0xF7 is
-taken together with the one, two or three characters after it, and the group is
-decoded as the bytes of one UTF-8 character. The group has a width of 2, 3 or 4
-when the decoded character is an ASCII letter of the case required, since
-elm/core's `Char.isUpper`, `Char.isLower` and `Char.isAlpha` accept only ASCII
-letters. Any other character has a width of 0. So a non-ASCII letter is accepted
-only as part of a group that decodes to an ASCII letter, as in `Âb`, and such a
-group can put characters that are not letters into a name: `xÃ$` is one
-identifier. Whatever its width, an identifier character advances the column by
-one. The characters after the first in a group are read without checking them
-against the end of the input, and one past the end of the whole text is a crash
-in `unsafeIndex`.
+it is allowed in that place. Any other character is classified by its Unicode
+code point, as upstream Elm does with GHC's `Data.Char`: the first character of
+an upper-case identifier must be an upper-case or title-case letter (categories
+Lu, Lt), of a lower-case identifier a lower-case letter (Ll), and an inner
+character any letter (Lu, Ll, Lt, Lm, Lo). So `Été` and `naïve` are names, a
+CJK letter (Lo) may continue a name but not start one, and a non-ASCII digit is
+not an inner character. The tables are in `Compiler.Parse.Unicode`, since
+elm/core's `Char.isUpper`, `Char.isLower` and `Char.isAlpha` accept only ASCII.
+`Compiler.Parse.Primitives.codePointAt` joins a surrogate pair, so a character
+above U+FFFF has a width of 2 on either host, and a lone surrogate is not an
+identifier character. Nothing at or past the end of the input is read, and
+whatever its width, an identifier character advances the column by one.
 
 
 # Variable Types
@@ -67,10 +66,10 @@ in `unsafeIndex`.
 
 -}
 
-import Bitwise
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Parse.Unicode as Unicode
 import Data.Set as EverySet exposing (EverySet)
 
 
@@ -452,26 +451,24 @@ chompUpper src pos end col =
 
 
 {-| Returns the width of the first character of an upper-case identifier at
-`pos`: 1 for `A` to `Z`, 2 to 4 for a group of characters accepted as the
-module docstring describes, and 0 when there is none, including at or past
-`end`.
+`pos`: 1 for `A` to `Z` or another upper-case or title-case letter in the Basic
+Multilingual Plane, 2 for one above U+FFFF, and 0 when there is none, including
+at or past `end`.
 -}
 getUpperWidth : String -> Int -> Int -> Int
 getUpperWidth src pos end =
     if pos < end then
-        getUpperWidthHelp src pos (P.unsafeIndex src pos)
+        getUpperWidthHelp src pos end (P.unsafeIndex src pos)
 
     else
         0
 
 
-{-| Returns the width `getUpperWidth` gives, where `word` is the character at
-`pos` in `src`. The third argument, the end of the input, is ignored, so a
-group is decoded from the characters after `pos` without checking them against
-the end; past the end of `src`, `unsafeIndex` crashes.
+{-| Returns the width `getUpperWidth` gives, where `pos < end` and `word` is the
+character at `pos` in `src`.
 -}
-getUpperWidthHelp : String -> Int -> Char -> Int
-getUpperWidthHelp src pos word =
+getUpperWidthHelp : String -> Int -> Int -> Char -> Int
+getUpperWidthHelp src pos end word =
     let
         code : Int
         code =
@@ -480,32 +477,11 @@ getUpperWidthHelp src pos word =
     if code >= 0x41 {- A -} && code <= 0x5A {- Z -} then
         1
 
-    else if code < 0xC0 then
+    else if code < 0x80 then
         0
-
-    else if code < 0xE0 then
-        if Char.isUpper (chr2 src pos word) then
-            2
-
-        else
-            0
-
-    else if code < 0xF0 then
-        if Char.isUpper (chr3 src pos word) then
-            3
-
-        else
-            0
-
-    else if code < 0xF8 then
-        if Char.isUpper (chr4 src pos word) then
-            4
-
-        else
-            0
 
     else
-        0
+        nonAsciiWidth Unicode.isUpper src pos end code
 
 
 
@@ -531,24 +507,24 @@ chompLower src pos end col =
 
 
 {-| Returns the width of the first character of a lower-case identifier at
-`pos`: 1 for `a` to `z`, 2 to 4 for an accepted group of characters, and 0 when
-there is none, including at or past `end`.
+`pos`: 1 for `a` to `z` or another lower-case letter in the Basic Multilingual
+Plane, 2 for one above U+FFFF, and 0 when there is none, including at or past
+`end`.
 -}
 getLowerWidth : String -> Int -> Int -> Int
 getLowerWidth src pos end =
     if pos < end then
-        getLowerWidthHelp src pos (P.unsafeIndex src pos)
+        getLowerWidthHelp src pos end (P.unsafeIndex src pos)
 
     else
         0
 
 
-{-| Returns the width `getLowerWidth` gives, where `word` is the character at
-`pos` in `src`. Like `getUpperWidthHelp`, it ignores its third argument and
-reads a group without checking it against the end of the input.
+{-| Returns the width `getLowerWidth` gives, where `pos < end` and `word` is the
+character at `pos` in `src`.
 -}
-getLowerWidthHelp : String -> Int -> Char -> Int
-getLowerWidthHelp src pos word =
+getLowerWidthHelp : String -> Int -> Int -> Char -> Int
+getLowerWidthHelp src pos end word =
     let
         code : Int
         code =
@@ -557,32 +533,11 @@ getLowerWidthHelp src pos word =
     if code >= 0x61 {- a -} && code <= 0x7A {- z -} then
         1
 
-    else if code < 0xC0 then
+    else if code < 0x80 then
         0
-
-    else if code < 0xE0 then
-        if Char.isLower (chr2 src pos word) then
-            2
-
-        else
-            0
-
-    else if code < 0xF0 then
-        if Char.isLower (chr3 src pos word) then
-            3
-
-        else
-            0
-
-    else if code < 0xF8 then
-        if Char.isLower (chr4 src pos word) then
-            4
-
-        else
-            0
 
     else
-        0
+        nonAsciiWidth Unicode.isLower src pos end code
 
 
 
@@ -606,30 +561,24 @@ chompInnerChars src pos end col =
         chompInnerChars src (pos + width) end (col + 1)
 
 
-{-| Returns the width of the inner character at `pos`: 1 for an ASCII letter, a
-digit or `_`, 2 to 4 for a group of characters accepted as the module docstring
-describes, and 0 when there is none, including at or past `end`.
+{-| Returns the width of the inner character at `pos`: 1 for an ASCII letter, an
+ASCII digit, `_` or another letter in the Basic Multilingual Plane, 2 for a
+letter above U+FFFF, and 0 when there is none, including at or past `end`.
 -}
 getInnerWidth : String -> Int -> Int -> Int
 getInnerWidth src pos end =
     if pos < end then
-        getInnerWidthHelp src pos (P.unsafeIndex src pos)
+        getInnerWidthHelp src pos end (P.unsafeIndex src pos)
 
     else
         0
 
 
-{-| Returns the width of an inner character, where `word` must be the character
-at `pos` in `src`: 1 for an ASCII letter, a digit or `_`, 2 to 4 for a group of
-characters accepted as the module docstring describes, and 0 otherwise.
-
-The third argument, the end of the input, is ignored. For a character with a
-code from 0xC0 to 0xF7, the one to three characters after `pos` are read
-whatever the end, and reading past the end of `src` crashes in `unsafeIndex`.
-
+{-| Returns the width `getInnerWidth` gives, where `pos < end` and `word` must
+be the character at `pos` in `src`. Nothing at or past `end` is read.
 -}
-getInnerWidthHelp : String -> Int -> Char -> Int
-getInnerWidthHelp src pos word =
+getInnerWidthHelp : String -> Int -> Int -> Char -> Int
+getInnerWidthHelp src pos end word =
     let
         code : Int
         code =
@@ -647,142 +596,29 @@ getInnerWidthHelp src pos word =
     else if code == 0x5F {- _ -} then
         1
 
-    else if code < 0xC0 then
+    else if code < 0x80 then
         0
 
-    else if code < 0xE0 then
-        if Char.isAlpha (chr2 src pos word) then
-            2
+    else
+        nonAsciiWidth Unicode.isAlpha src pos end code
 
-        else
-            0
 
-    else if code < 0xF0 then
-        if Char.isAlpha (chr3 src pos word) then
-            3
 
-        else
-            0
+-- ====== NON-ASCII CHARACTERS ======
 
-    else if code < 0xF8 then
-        if Char.isAlpha (chr4 src pos word) then
-            4
 
-        else
-            0
+{-| Returns the width of the non-ASCII character at `pos`, whose `Char` as
+`P.unsafeIndex` returned it has code `code`, when `isClass` accepts its code
+point, and 0 when it does not.
+-}
+nonAsciiWidth : (Int -> Bool) -> String -> Int -> Int -> Int -> Int
+nonAsciiWidth isClass src pos end code =
+    let
+        ( cp, width ) =
+            P.codePointAt src pos end code
+    in
+    if isClass cp then
+        width
 
     else
         0
-
-
-
--- ====== EXTRACT CHARACTERS ======
-
-
-{-| Returns the character that `firstWord` and the character after `pos` would
-encode if they were the two bytes of a UTF-8 sequence. Nothing checks that
-either is in the range of such a byte.
--}
-chr2 : String -> Int -> Char -> Char
-chr2 src pos firstWord =
-    let
-        i1 : Int
-        i1 =
-            unpack firstWord
-
-        i2 : Int
-        i2 =
-            unpack (P.unsafeIndex src (pos + 1))
-
-        c1 : Int
-        c1 =
-            (i1 - 0xC0) |> Bitwise.shiftLeftBy 6
-
-        c2 : Int
-        c2 =
-            i2 - 0x80
-    in
-    Char.fromCode (c1 + c2)
-
-
-{-| Returns the character that `firstWord` and the two characters after `pos`
-would encode if they were the three bytes of a UTF-8 sequence, without checking
-that any of them is in the range of such a byte.
--}
-chr3 : String -> Int -> Char -> Char
-chr3 src pos firstWord =
-    let
-        i1 : Int
-        i1 =
-            unpack firstWord
-
-        i2 : Int
-        i2 =
-            unpack (P.unsafeIndex src (pos + 1))
-
-        i3 : Int
-        i3 =
-            unpack (P.unsafeIndex src (pos + 2))
-
-        c1 : Int
-        c1 =
-            (i1 - 0xE0) |> Bitwise.shiftLeftBy 12
-
-        c2 : Int
-        c2 =
-            (i2 - 0x80) |> Bitwise.shiftLeftBy 6
-
-        c3 : Int
-        c3 =
-            i3 - 0x80
-    in
-    Char.fromCode (c1 + c2 + c3)
-
-
-{-| Returns the character that `firstWord` and the three characters after `pos`
-would encode if they were the four bytes of a UTF-8 sequence, without checking
-that any of them is in the range of such a byte.
--}
-chr4 : String -> Int -> Char -> Char
-chr4 src pos firstWord =
-    let
-        i1 : Int
-        i1 =
-            unpack firstWord
-
-        i2 : Int
-        i2 =
-            unpack (P.unsafeIndex src (pos + 1))
-
-        i3 : Int
-        i3 =
-            unpack (P.unsafeIndex src (pos + 2))
-
-        i4 : Int
-        i4 =
-            unpack (P.unsafeIndex src (pos + 3))
-
-        c1 : Int
-        c1 =
-            (i1 - 0xF0) |> Bitwise.shiftLeftBy 18
-
-        c2 : Int
-        c2 =
-            (i2 - 0x80) |> Bitwise.shiftLeftBy 12
-
-        c3 : Int
-        c3 =
-            (i3 - 0x80) |> Bitwise.shiftLeftBy 6
-
-        c4 : Int
-        c4 =
-            i4 - 0x80
-    in
-    Char.fromCode (c1 + c2 + c3 + c4)
-
-
-{-| Returns the code of a character, as `Char.toCode` does.
--}
-unpack : Char -> Int
-unpack =
-    Char.toCode

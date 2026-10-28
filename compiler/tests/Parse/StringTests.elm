@@ -13,9 +13,8 @@ says the literal is not multi-line.
   - `\u{1F648}`, a code point above U+FFFF, becomes the surrogate pair
     `\uD83D\uDE48`.
   - `\u{0001}` becomes `\u0001`.
-  - `\u{FFFF}` becomes `\uD7FF\uDFFF`. This is what the code produces, not a
-    valid encoding of U+FFFF: the code point is sent down the surrogate path,
-    which yields a high half below the surrogate range.
+  - `\u{FFFF}`, the last code point of the Basic Multilingual Plane, becomes
+    the single escape `\uFFFF`.
   - `\u{10000}`, the first code point above U+FFFF, becomes `\uD800\uDC00`.
 
 Among what is not tested: multi-line literals, the other escapes, malformed or
@@ -48,7 +47,7 @@ suite =
                 |> Test.test "\\u{0001}"
             , (\_ ->
                 singleString "\"\\u{FFFF}\""
-                    |> Expect.equal (Ok ( "\\uD7FF\\uDFFF", False ))
+                    |> Expect.equal (Ok ( "\\uFFFF", False ))
               )
                 |> Test.test "\\u{FFFF}"
             , (\_ ->

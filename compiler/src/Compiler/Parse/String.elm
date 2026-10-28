@@ -147,7 +147,7 @@ chompChar src pos end row col numChars mostRecent =
             let
                 width : Int
                 width =
-                    P.getCharWidth word
+                    P.charWidthAt src pos end word
 
                 newPos : Int
                 newPos =
@@ -333,7 +333,7 @@ singleString src pos end row col initialPos revChunks =
             let
                 newPos : Int
                 newPos =
-                    pos + P.getCharWidth word
+                    pos + P.charWidthAt src pos end word
             in
             singleString src newPos end row (col + 1) initialPos revChunks
 
@@ -413,7 +413,7 @@ multiString src pos end row col initialPos sr sc revChunks =
             let
                 newPos : Int
                 newPos =
-                    pos + P.getCharWidth word
+                    pos + P.charWidthAt src pos end word
             in
             multiString src newPos end row (col + 1) initialPos sr sc revChunks
 

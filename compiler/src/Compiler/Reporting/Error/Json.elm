@@ -40,7 +40,6 @@ import Compiler.Json.Decode exposing (DecodeExpectation(..), Error(..), ParseErr
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code
-import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -51,9 +50,7 @@ import Utils.Main as Utils
 {-| Returns the report for `err`, an error from reading the file at `path`.
 
 `ftr` builds the report for a failure of the caller's own type `x`, and `reason`
-opens the first paragraph of every other report. A decode problem whose
-expected value starts and ends on the same row crashes rather than returning a
-report.
+opens the first paragraph of every other report.
 
 -}
 toReport : String -> FailureToReport x -> Error x -> Reason -> Help.Report
@@ -182,6 +179,36 @@ parseErrorToReport path source parseError reason =
                         "This error is commonly caused by trailing commas in JSON objects. "
                             ++ "Those are actually disallowed by <https://json.org> so check the previous line "
                             ++ "for a trailing comma that may need to be deleted."
+                    , objectNote
+                    ]
+                )
+
+        ObjectFirstField row col ->
+            toSnippet "EXPECTING A FIELD NAME"
+                row
+                col
+                ( "I was partway through parsing a JSON object when I got stuck here:"
+                , D.stack
+                    [ D.fillSep
+                        [ D.fromChars "I"
+                        , D.fromChars "was"
+                        , D.fromChars "expecting"
+                        , D.fromChars "a"
+                        , D.fromChars "field"
+                        , D.fromChars "name"
+                        , D.fromChars "in"
+                        , D.fromChars "double"
+                        , D.fromChars "quotes,"
+                        , D.fromChars "like"
+                        , D.dullyellow (D.fromChars "\"type\"")
+                        , D.fromChars "or"
+                        , D.dullyellow (D.fromChars "\"dependencies\"")
+                        , D.fromChars "or"
+                        , D.fromChars "a"
+                        , D.fromChars "closing"
+                        , D.fromChars "curly"
+                        , D.fromChars "brace."
+                        ]
                     , objectNote
                     ]
                 )
@@ -453,7 +480,8 @@ found at the given region and `context`.
 
 The opening sentence is chosen from the innermost one or two steps of
 `context`, and the second says what was expected. When the region spans more
-than one row the snippet shows only its first row; when it starts and ends on the same row this crashes.
+than one row the snippet shows only its first row; when it starts and ends on
+the same row the snippet shows the whole region.
 
 -}
 expectationToReport : String -> Code.Source -> Context -> A.Region -> DecodeExpectation -> Reason -> Help.Report
@@ -468,7 +496,7 @@ expectationToReport path source context (A.Region start end) expectation reason 
         region : A.Region
         region =
             if sr == er then
-                crash "region"
+                A.Region start end
 
             else
                 A.Region start start

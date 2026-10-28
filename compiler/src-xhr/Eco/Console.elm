@@ -1,6 +1,6 @@
 module Eco.Console exposing
     ( Handle(..), stdout, stderr
-    , write, readLine, readAll
+    , write, readLine, readAll, isTerminal
     , log
     )
 
@@ -10,17 +10,19 @@ server that `Eco.XHR` sends IO requests to.
 
 Each operation here is sent to eco-io as an _op_, a string naming the
 operation, as `Eco.XHR` describes: `write` sends `"Console.write"`, `readLine`
-sends `"Console.readLine"` and `readAll` sends `"Console.readAll"`. The native
+sends `"Console.readLine"`, `readAll` sends `"Console.readAll"` and
+`isTerminal` sends `"Console.isTerminal"`. The native
 build compiles a twin of this module with the same exposed names and signatures
 in its place.
 
 Output goes to a _handle_, a number naming a stream to write to. `stdout` and
 `stderr` are the two the module defines.
 
-The three operations fail with an `IOError`, decoded from the failure tuple by
+`write`, `readLine` and `readAll` fail with an `IOError`, decoded from the failure tuple by
 `Eco.IO.Error.ofKernelTuple`. A failure to reach eco-io at all is therefore an
 `OtherIOError` with tag 0. A reply to `readLine` or `readAll` that succeeds but
-carries no string `value` crashes the program instead.
+carries no string `value` crashes the program instead. `isTerminal` cannot
+fail: any failure, including one to reach eco-io, answers `False`.
 
 `log` is the exception: it sends nothing and prints nothing in this build.
 
@@ -32,7 +34,7 @@ carries no string `value` crashes the program instead.
 
 # Operations
 
-@docs write, readLine, readAll
+@docs write, readLine, readAll, isTerminal
 
 
 # Debugging
@@ -43,6 +45,7 @@ carries no string `value` crashes the program instead.
 
 import Eco.IO.Error as IOErr exposing (IOError)
 import Eco.XHR
+import Json.Decode as Decode
 import Json.Encode as Encode
 import Task exposing (Task)
 
@@ -115,3 +118,14 @@ native build's twin of this module does print the tag.
 log : String -> a -> a
 log _ value =
     value
+
+
+{-| Returns whether the stream the handle names is a terminal. Any failure
+answers `False`.
+-}
+isTerminal : Handle -> Task Never Bool
+isTerminal (Handle h) =
+    Eco.XHR.jsonTask "Console.isTerminal"
+        (Encode.object [ ( "handle", Encode.int h ) ])
+        Decode.bool
+        |> Task.onError (\_ -> Task.succeed False)

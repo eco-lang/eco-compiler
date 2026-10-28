@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.EntryPrep exposing
-    ( Assigned, assign
+    ( Assigned, assign, assignIn
     , flagsDecoderName, findEntryPointId, findNodeAnnotationType
     )
 
@@ -16,12 +16,13 @@ any other type gets none. Then it runs `AssignMVarIds.assignIds`, whose module
 docstring describes the ids. The decoder node is built with names and so is
 inserted before the ids are assigned.
 
-The entry is found by its name alone, in any module: the first `Define` or
-`TrackedDefine` with that name in the graph's key order. `findEntryPointId` and
+The entry is the `Define` or `TrackedDefine` with that name in the root
+module when one is given (`assignIn`); otherwise, by its name alone, the first
+such node in any module, in the graph's key order. `findEntryPointId` and
 `findNodeAnnotationType` look up the entry and a node's annotation in the
 graph after assignment.
 
-@docs Assigned, assign
+@docs Assigned, assign, assignIn
 @docs flagsDecoderName, findEntryPointId, findNodeAnnotationType
 
 -}
@@ -53,6 +54,7 @@ type alias Assigned =
     { graph : TOpt.GlobalGraph TypeIds.MVarId
     , flagsGlobal : Maybe TOpt.Global
     , mvarState : AssignMVarIds.GlobalMVarState
+    , entryHome : Maybe ModuleName.Canonical
     }
 
 
@@ -64,10 +66,19 @@ The pair is passed to `AssignMVarIds.assignIds` as its `useSolverRoots` and
 
 -}
 assign : ( Bool, Bool ) -> Name -> TOpt.GlobalGraph Name -> Assigned
-assign ( useSolverRoots, censusOn ) entryPointName graph =
+assign flags entryPointName graph =
+    assignIn flags Nothing entryPointName graph
+
+
+{-| `assign`, with the entry looked up in module `entryHome` only when that is
+given. The module is kept in the result as `entryHome`, so that the
+monomorphizer enters the same definition.
+-}
+assignIn : ( Bool, Bool ) -> Maybe ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> Assigned
+assignIn ( useSolverRoots, censusOn ) entryHome entryPointName graph =
     let
         ( graphWithFlags, maybeFlagsGlobal ) =
-            insertFlagsDecoderNode entryPointName graph
+            insertFlagsDecoderNode entryHome entryPointName graph
 
         ( assignedGraph, mvarState ) =
             AssignMVarIds.assignIds useSolverRoots censusOn graphWithFlags
@@ -75,6 +86,7 @@ assign ( useSolverRoots, censusOn ) entryPointName graph =
     { graph = assignedGraph
     , flagsGlobal = maybeFlagsGlobal
     , mvarState = mvarState
+    , entryHome = entryHome
     }
 
 
@@ -99,11 +111,83 @@ holds for the type as written, and otherwise the decoder `Port.toFlagsDecoder`
 builds for `flags`.
 
 -}
-insertFlagsDecoderNode : Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
-insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
+insertFlagsDecoderNode : Maybe ModuleName.Canonical -> Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertFlagsDecoderNode entryHome entryPointName ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
     let
         entryMeta : Maybe ( ModuleName.Canonical, Can.Type Name )
         entryMeta =
+            findEntryPointId entryHome entryPointName nodes
+                |> Maybe.map (\( TOpt.Global home _, tipe ) -> ( home, tipe ))
+    in
+    case entryMeta of
+        Nothing ->
+            ( graph, Nothing )
+
+        Just ( home, tipe ) ->
+            insertDecoderFor home tipe graph
+
+
+{-| Adds the flags decoder for an entry in `home` of type `tipe`, when that
+type is a `Program`.
+-}
+insertDecoderFor : ModuleName.Canonical -> Can.Type Name -> TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph Name, Maybe TOpt.Global )
+insertDecoderFor home tipe ((TOpt.GlobalGraph nodes fields annots roots varSupers) as graph) =
+    case Type.deepDealias tipe of
+        Can.TType hm nm [ flagsType, _, _ ] ->
+            if hm == ModuleName.platform && nm == Name.program then
+                let
+                    decoderCanType : Can.Type Name
+                    decoderCanType =
+                        Can.TType ModuleName.jsonDecode "Decoder" [ flagsType ]
+
+                    -- An eco/system Environment cannot come from JSON.
+                    ( deps, _, decoderExpr ) =
+                        if EcoEnvironment.isEnvironmentFlags tipe then
+                            Names.run
+                                (Names.registerGlobal A.zero
+                                    EcoEnvironment.systemHome
+                                    EcoEnvironment.environmentDecoderName
+                                    decoderCanType
+                                    Nothing
+                                )
+
+                        else
+                            Names.run (Port.toFlagsDecoder flagsType)
+
+                    flagsGlobal : TOpt.Global
+                    flagsGlobal =
+                        TOpt.Global home flagsDecoderName
+
+                    node : TOpt.Node Name
+                    node =
+                        TOpt.Define decoderExpr deps { tipe = decoderCanType, tvar = Nothing }
+                in
+                ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots varSupers
+                , Just flagsGlobal
+                )
+
+            else
+                ( graph, Nothing )
+
+        _ ->
+            ( graph, Nothing )
+
+
+{-| Returns the global and annotation type of the entry: the `Define` or
+`TrackedDefine` named `entryPointName` in module `entryHome` when that is given,
+otherwise the first one with that name in any module, or `Nothing`.
+-}
+findEntryPointId : Maybe ModuleName.Canonical -> Name -> DMap.Dict String TOpt.Global (TOpt.Node id) -> Maybe ( TOpt.Global, Can.Type id )
+findEntryPointId entryHome entryPointName nodes =
+    case entryHome of
+        Just home ->
+            let
+                global =
+                    TOpt.Global home entryPointName
+            in
+            Maybe.map (Tuple.pair global) (findNodeAnnotationType global nodes)
+
+        Nothing ->
             DMap.foldl
                 (\global node acc ->
                     case acc of
@@ -112,16 +196,16 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
 
                         Nothing ->
                             case ( global, node ) of
-                                ( TOpt.Global home name, TOpt.Define _ _ meta ) ->
+                                ( TOpt.Global _ name, TOpt.Define _ _ meta ) ->
                                     if name == entryPointName then
-                                        Just ( home, meta.tipe )
+                                        Just ( global, meta.tipe )
 
                                     else
                                         Nothing
 
-                                ( TOpt.Global home name, TOpt.TrackedDefine _ _ _ meta ) ->
+                                ( TOpt.Global _ name, TOpt.TrackedDefine _ _ _ meta ) ->
                                     if name == entryPointName then
-                                        Just ( home, meta.tipe )
+                                        Just ( global, meta.tipe )
 
                                     else
                                         Nothing
@@ -131,91 +215,12 @@ insertFlagsDecoderNode entryPointName ((TOpt.GlobalGraph nodes fields annots roo
                 )
                 Nothing
                 nodes
-    in
-    case entryMeta of
-        Nothing ->
-            ( graph, Nothing )
-
-        Just ( home, tipe ) ->
-            case Type.deepDealias tipe of
-                Can.TType hm nm [ flagsType, _, _ ] ->
-                    if hm == ModuleName.platform && nm == Name.program then
-                        let
-                            decoderCanType : Can.Type Name
-                            decoderCanType =
-                                Can.TType ModuleName.jsonDecode "Decoder" [ flagsType ]
-
-                            -- An eco/system Environment cannot come from JSON.
-                            ( deps, _, decoderExpr ) =
-                                if EcoEnvironment.isEnvironmentFlags tipe then
-                                    Names.run
-                                        (Names.registerGlobal A.zero
-                                            EcoEnvironment.systemHome
-                                            EcoEnvironment.environmentDecoderName
-                                            decoderCanType
-                                            Nothing
-                                        )
-
-                                else
-                                    Names.run (Port.toFlagsDecoder flagsType)
-
-                            flagsGlobal : TOpt.Global
-                            flagsGlobal =
-                                TOpt.Global home flagsDecoderName
-
-                            node : TOpt.Node Name
-                            node =
-                                TOpt.Define decoderExpr deps { tipe = decoderCanType, tvar = Nothing }
-                        in
-                        ( TOpt.GlobalGraph (DMap.insert TOpt.toComparableGlobal flagsGlobal node nodes) fields annots roots varSupers
-                        , Just flagsGlobal
-                        )
-
-                    else
-                        ( graph, Nothing )
-
-                _ ->
-                    ( graph, Nothing )
-
-
-{-| Returns the global and annotation type of the first `Define` or
-`TrackedDefine` named `entryPointName` in `nodes`, in any module, or `Nothing`.
--}
-findEntryPointId : Name -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
-findEntryPointId entryPointName nodes =
-    DMap.foldl
-        (\global node acc ->
-            case acc of
-                Just _ ->
-                    acc
-
-                Nothing ->
-                    case ( global, node ) of
-                        ( TOpt.Global _ name, TOpt.Define _ _ meta ) ->
-                            if name == entryPointName then
-                                Just ( global, meta.tipe )
-
-                            else
-                                Nothing
-
-                        ( TOpt.Global _ name, TOpt.TrackedDefine _ _ _ meta ) ->
-                            if name == entryPointName then
-                                Just ( global, meta.tipe )
-
-                            else
-                                Nothing
-
-                        _ ->
-                            Nothing
-        )
-        Nothing
-        nodes
 
 
 {-| Returns the annotation type of the node at `global` when it is a `Define` or
 `TrackedDefine`, and `Nothing` for any other node or a missing one.
 -}
-findNodeAnnotationType : TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe (Can.Type TypeIds.MVarId)
+findNodeAnnotationType : TOpt.Global -> DMap.Dict String TOpt.Global (TOpt.Node id) -> Maybe (Can.Type id)
 findNodeAnnotationType global nodes =
     case DMap.get TOpt.toComparableGlobal global nodes of
         Just (TOpt.Define _ _ meta) ->

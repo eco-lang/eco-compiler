@@ -1,12 +1,11 @@
 module Compiler.Elm.VersionTest exposing (suite)
 
-{-| Regression test for `Compiler.Elm.Version` number parsing. EXPECTED TO FAIL
-until the bug is fixed.
+{-| Regression test for `Compiler.Elm.Version` number parsing.
 
-`chompWord16` accumulates `10 * total + digit` with no bound, so a component
-such as `99999999999999999999` is accepted: an inexact float under JS, a
-wrapped (possibly negative) Int64 natively. It should be rejected (the
-reference compiler's components are Word16).
+`chompWord16` once accumulated `10 * total + digit` with no bound, so a
+component such as `99999999999999999999` was accepted: an inexact float under
+JS, a wrapped (possibly negative) Int64 natively. A component above 65535 is
+now rejected (the reference compiler's components are Word16).
 
 -}
 

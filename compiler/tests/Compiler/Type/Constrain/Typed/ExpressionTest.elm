@@ -4,7 +4,8 @@ module Compiler.Type.Constrain.Typed.ExpressionTest exposing (suite)
 `Compiler.Type.Constrain.Typed.Expression.constrainLetSpine` (S2 list,
 Type/Constrain/Typed/Expression.elm lines 608 and 658).
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, Part 5); the tests pin
+the fix.
 
 The let spine constrains the innermost `let` body against `NoExpectation` of a
 fresh variable and only equates that variable with the outer expectation in

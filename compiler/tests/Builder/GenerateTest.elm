@@ -3,13 +3,12 @@ module Builder.GenerateTest exposing (suite)
 {-| Regression test for Builder.Generate.validateStageArityLimit: a program
 whose closure exceeds the stage arity limit (a condition of the program, not a
 compiler fault) is thrown as `GenerateMonomorphizationError` with a message
-starting "STAGE ARITY LIMIT". `toGenerateReport` only spares messages starting
-"specialization ", so the report tells the user "This is likely a compiler bug".
+starting "STAGE ARITY LIMIT". `toGenerateReport` once spared only messages
+starting "specialization ", so the report told the user "This is likely a
+compiler bug"; it now gives that message a STAGE ARITY LIMIT report.
 
 The message is built exactly as `Compiler.Pipeline.Steps.checkStageArity`
 builds it.
-
-EXPECTED TO FAIL until the bug is fixed.
 
 -}
 

@@ -503,13 +503,11 @@ tuple =
     "Tuple"
 
 
-{-| The text `JsArray`: the name of the type `Elm.JsArray.JsArray`, and the
-kernel module `Elm.Kernel.JsArray` without its `Elm.Kernel.` part. elm/core
-has no module named `JsArray`.
+{-| The name of elm/core's module `Elm.JsArray`.
 -}
 jsArray : Name
 jsArray =
-    "JsArray"
+    "Elm.JsArray"
 
 
 {-| The name of the kernel module `Elm.Kernel.Json`, without its `Elm.Kernel.`

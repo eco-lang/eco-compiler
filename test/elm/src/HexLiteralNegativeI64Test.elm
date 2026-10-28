@@ -1,17 +1,17 @@
 module HexLiteralNegativeI64Test exposing (main)
 
-{-| A hex Int literal at or above 2^63 wraps to a negative i64 constant (Eco
-Int is 64-bit two's complement; the --text-mlir output shows exactly these
-values). Below -2^30 the MLIR bytecode writer then mis-encodes it when the
-compiler runs as JavaScript: `Mlir.Bytecode.VarInt.encodeSignedVarInt`
-computes the zigzag with `Bitwise.xor`, which truncates to 32 bits, and every
-such constant reads back as -9223372036854775808.
+{-| A hex Int literal at or above 2^63 means its 64-bit two's-complement value
+(Eco Int is 64-bit), so these masks are negative i64 constants. Two bugs, both
+fixed, broke this when the compiler runs as JavaScript (as the E2E harnesses
+run it, with bytecode output): the parser accumulated the digits in a double,
+inexact above 2^53 (`Compiler.Data.Int64` now reads the text exactly), and
+`Mlir.Bytecode.VarInt.encodeSignedVarInt` computed the zigzag with
+`Bitwise.xor`, which truncates to 32 bits, so every such constant read back as
+-9223372036854775808.
 A plain negative literal (-3000000000) does not reach the bug: the compiler
 emits it as a positive constant plus eco.int.negate.
-Also covered by the unit test compiler/tests/Mlir/Bytecode/VarIntTest.elm.
-
-EXPECTED TO FAIL until fixed (the E2E harnesses compile with the JS-hosted
-compiler and bytecode output).
+Also covered by the unit tests compiler/tests/Mlir/Bytecode/VarIntTest.elm and
+compiler/tests/Parse/NumberTests.elm.
 -}
 
 -- CHECK: boundary: -1073741824

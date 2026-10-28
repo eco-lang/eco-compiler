@@ -185,8 +185,8 @@ They are when they have the same constructor names in the same order and each
 constructor's argument types are equivalent, with the union's type variables
 paired in order. Each argument type is checked on its own, together with the
 variable list, so the renaming need only be consistent within one argument and
-the variable list. When no constructor has an argument, the variable lists are
-never compared.
+the variable list. The variable lists must have the same length, which also
+covers an opaque union and one whose constructors have no arguments.
 
 -}
 isEquivalentUnion : Docs.Union -> Docs.Union -> Bool
@@ -205,7 +205,8 @@ isEquivalentUnion (Docs.Union oldComment oldVars oldCtors) (Docs.Union newCommen
             (List.length oldTypes == List.length newTypes)
                 && List.all identity allEquivalent
     in
-    (List.length oldCtors == List.length newCtors)
+    (List.length oldVars == List.length newVars)
+        && (List.length oldCtors == List.length newCtors)
         && List.all identity (List.map2 (==) (List.map Tuple.first oldCtors) (List.map Tuple.first newCtors))
         && List.all identity (Dict.values (dictIntersectionWith equiv (Dict.fromList oldCtors) (Dict.fromList newCtors)))
 

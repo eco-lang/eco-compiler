@@ -4679,7 +4679,7 @@ once per type, and nests the `let`s around the already translated body.
 The body's uses already name the instances' bindings (`f`, `f$1`, ...). Each
 instance's definition is translated at its type in a scratch store
 (`retranslateTailAtInstance`), and its references to itself, tail calls
-included, are renamed to the instance's name (`renameSelfReferences`).
+included, are renamed to the instance's name (`MonoTraverse.renameLocal`).
 
 -}
 translateTailDefInstances : Name -> List ( A.Located Name, Can.Type TypeIds.MVarId ) -> TOpt.Expr TypeIds.MVarId -> Can.Type TypeIds.MVarId -> List Engine.NumberInstance -> Mono.MonoExpr -> Can.Type TypeIds.MVarId -> Step Mono.MonoExpr
@@ -4689,7 +4689,7 @@ translateTailDefInstances name typedArgs tailBody defCanType instances monoBody 
             (\( ord, inst ) sx ->
                 case retranslateTailAtInstance name ord typedArgs tailBody defCanType inst.monoType sx of
                     ( ( monoParams, monoTailBody ), sx1 ) ->
-                        ( Mono.MonoTailDef inst.freshName monoParams (renameSelfReferences name inst.freshName monoTailBody), sx1 )
+                        ( Mono.MonoTailDef inst.freshName monoParams (MonoTraverse.renameLocal name inst.freshName monoTailBody), sx1 )
             )
             (List.indexedMap Tuple.pair instances)
             s0
@@ -4756,66 +4756,6 @@ retranslateTailAtInstance name ord typedArgs tailBody defCanType instType s0 =
             case step sFresh of
                 ( result, s1 ) ->
                     ( result, { s1 | store = sT.store, memo = sT.memo, revMemo = sT.revMemo, itemAux = Engine.restoredAux sT.itemAux s1.itemAux } )
-
-
-{-| Returns `expr` with every reference to the local `oldName` renamed to
-`newName`: variable uses, tail calls, and closure captures, whose names must
-change together with the uses inside the closure. Elm forbids shadowing, so
-every occurrence of the name is the same variable.
--}
-renameSelfReferences : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
-renameSelfReferences oldName newName expr =
-    if oldName == newName then
-        expr
-
-    else
-        MonoTraverse.mapExpr
-            (\e ->
-                case e of
-                    Mono.MonoVarLocal n t ->
-                        if n == oldName then
-                            Just (Mono.MonoVarLocal newName t)
-
-                        else
-                            Nothing
-
-                    Mono.MonoTailCall n args t ->
-                        if n == oldName then
-                            Just (Mono.MonoTailCall newName args t)
-
-                        else
-                            Nothing
-
-                    Mono.MonoClosure info body t ->
-                        if List.any (\( n, _, _ ) -> n == oldName) info.captures then
-                            Just
-                                (Mono.MonoClosure
-                                    { info
-                                        | captures =
-                                            List.map
-                                                (\( n, ce, u ) ->
-                                                    ( if n == oldName then
-                                                        newName
-
-                                                      else
-                                                        n
-                                                    , ce
-                                                    , u
-                                                    )
-                                                )
-                                                info.captures
-                                    }
-                                    body
-                                    t
-                                )
-
-                        else
-                            Nothing
-
-                    _ ->
-                        Nothing
-            )
-            expr
 
 
 {-| Returns a local tail-recursive function's parameter types and its own
@@ -5341,8 +5281,10 @@ buildRefinedDestructorWith gte rootName eagerRootType path inst s0 =
 
 {-| Returns `container` with the slot `path` selects (a tuple element, record
 field, constructor field or unboxed value) replaced by `leaf`, other slots
-unchanged. Returns `Nothing` for a list path, a path it cannot follow, or a
-constructor field whose declared type is not a bare type parameter.
+unchanged. A constructor field may have any declared type: the type arguments
+it mentions are rebound to the parts of `leaf` at the same positions
+(`rebindTypeArgs`). Returns `Nothing` for a list path, a path it cannot follow,
+or a `leaf` whose shape does not match the field's declared type.
 -}
 refineRootInstance : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Mono.MonoType -> Maybe Mono.MonoType
 refineRootInstance gte container path leaf =
@@ -5380,9 +5322,10 @@ refineRootInstance gte container path leaf =
             Nothing
 
 
-{-| Returns the custom type `container` with the type argument that
-constructor `ctorName`'s field `idx` is declared as set to `leaf`, when that
-field's declared type is a bare type parameter; otherwise `Nothing`.
+{-| Returns the custom type `container` with the type arguments that
+constructor `ctorName`'s field `idx` mentions rebound so that the field's type
+becomes `leaf` (`rebindTypeArgs`); `Nothing` when the field is missing or
+`leaf` does not match the field's declared shape.
 -}
 replaceCustomSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceCustomSlot gte ctorName idx container leaf =
@@ -5391,30 +5334,7 @@ replaceCustomSlot gte ctorName idx container leaf =
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     findCtorArg ctorName idx unionData.alts
-                        |> Maybe.andThen
-                            (\fieldCanType ->
-                                case fieldCanType of
-                                    Can.TVar paramName ->
-                                        paramPosition paramName unionData.vars
-                                            |> Maybe.map
-                                                (\pos ->
-                                                    Mono.mCustom home
-                                                        typeName
-                                                        (List.indexedMap
-                                                            (\i t ->
-                                                                if i == pos then
-                                                                    leaf
-
-                                                                else
-                                                                    t
-                                                            )
-                                                            typeArgs
-                                                        )
-                                                )
-
-                                    _ ->
-                                        Nothing
-                            )
+                        |> Maybe.andThen (\fieldCanType -> rebindTypeArgs home typeName unionData.vars typeArgs fieldCanType leaf)
 
                 Nothing ->
                     Nothing
@@ -5423,9 +5343,109 @@ replaceCustomSlot gte ctorName idx container leaf =
             Nothing
 
 
-{-| Returns the custom type `container` with the type argument its single
-constructor's single field is declared as set to `leaf`, when that field's
-declared type is a bare type parameter; otherwise `Nothing`.
+{-| Returns `MCustom home typeName` with each parameter that the declared field
+type `fieldCanType` mentions set to the type `leaf` gives it there, other
+arguments unchanged. `Nothing` when `leaf` does not match the field's shape or
+gives one parameter two different types.
+-}
+rebindTypeArgs : ModuleName.Canonical -> Name -> List Name -> List Mono.MonoType -> Can.Type Name -> Mono.MonoType -> Maybe Mono.MonoType
+rebindTypeArgs home typeName vars typeArgs fieldCanType leaf =
+    matchParams fieldCanType leaf Dict.empty
+        |> Maybe.map
+            (\bound ->
+                Mono.mCustom home
+                    typeName
+                    (List.map2 (\v t -> Dict.get v bound |> Maybe.withDefault t) vars typeArgs)
+            )
+
+
+{-| Binds the type variables of a declared type to the parts of `mono` at the
+same positions. A function type binds nothing (its parameters keep their
+current arguments). `Nothing` on a shape mismatch or a conflicting binding.
+-}
+matchParams : Can.Type Name -> Mono.MonoType -> Dict.Dict Name Mono.MonoType -> Maybe (Dict.Dict Name Mono.MonoType)
+matchParams canType mono acc =
+    let
+        matchList cs ms a =
+            if List.length cs == List.length ms then
+                List.foldl (\( c, m ) -> Maybe.andThen (matchParams c m)) (Just a) (List.map2 Tuple.pair cs ms)
+
+            else
+                Nothing
+    in
+    case ( canType, mono ) of
+        ( Can.TVar n, _ ) ->
+            case Dict.get n acc of
+                Nothing ->
+                    Just (Dict.insert n mono acc)
+
+                Just prev ->
+                    if prev == mono then
+                        Just acc
+
+                    else
+                        Nothing
+
+        ( Can.TType _ _ args, Mono.MCustom _ _ _ margs ) ->
+            matchList args margs acc
+
+        ( Can.TType _ _ [ a ], Mono.MList _ m ) ->
+            matchParams a m acc
+
+        ( Can.TType _ _ [], _ ) ->
+            Just acc
+
+        ( Can.TTuple a b rest, Mono.MTuple _ ms ) ->
+            matchList (a :: b :: rest) ms acc
+
+        ( Can.TUnit, _ ) ->
+            Just acc
+
+        ( Can.TRecord fields _, Mono.MRecord _ mfields ) ->
+            Dict.foldl
+                (\fname (Can.FieldType _ ft) ma ->
+                    case Dict.get fname mfields of
+                        Just mf ->
+                            Maybe.andThen (matchParams ft mf) ma
+
+                        Nothing ->
+                            Nothing
+                )
+                (Just acc)
+                fields
+
+        ( Can.TLambda _ _ _, Mono.MFunction _ _ _ _ ) ->
+            Just acc
+
+        ( Can.TAlias _ _ _ (Can.Filled inner), _ ) ->
+            matchParams inner mono acc
+
+        ( Can.TAlias _ _ args (Can.Holey inner), _ ) ->
+            -- Match the body with the formals, then each argument with its formal's binding.
+            matchParams inner mono Dict.empty
+                |> Maybe.andThen
+                    (\formals ->
+                        List.foldl
+                            (\( formal, argT ) ma ->
+                                case Dict.get formal formals of
+                                    Just m ->
+                                        Maybe.andThen (matchParams argT m) ma
+
+                                    Nothing ->
+                                        ma
+                            )
+                            (Just acc)
+                            args
+                    )
+
+        _ ->
+            Nothing
+
+
+{-| Returns the custom type `container` with the type arguments its single
+constructor's single field mentions rebound so that the field's type becomes
+`leaf` (`rebindTypeArgs`); `Nothing` when the type is not such a wrapper or
+`leaf` does not match the field's declared shape.
 -}
 replaceUnboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType -> Maybe Mono.MonoType
 replaceUnboxSlot gte container leaf =
@@ -5436,23 +5456,8 @@ replaceUnboxSlot gte container leaf =
                     case unionData.alts of
                         [ Can.Ctor c ] ->
                             case c.args of
-                                [ Can.TVar paramName ] ->
-                                    paramPosition paramName unionData.vars
-                                        |> Maybe.map
-                                            (\pos ->
-                                                Mono.mCustom home
-                                                    typeName
-                                                    (List.indexedMap
-                                                        (\i t ->
-                                                            if i == pos then
-                                                                leaf
-
-                                                            else
-                                                                t
-                                                        )
-                                                        typeArgs
-                                                    )
-                                            )
+                                [ fieldCanType ] ->
+                                    rebindTypeArgs home typeName unionData.vars typeArgs fieldCanType leaf
 
                                 _ ->
                                     Nothing
@@ -5467,19 +5472,9 @@ replaceUnboxSlot gte container leaf =
             Nothing
 
 
-{-| Returns the position of a type parameter in a type's parameter list.
--}
-paramPosition : Name -> List Name -> Maybe Int
-paramPosition name vars =
-    List.indexedMap Tuple.pair vars
-        |> List.filter (\( _, v ) -> v == name)
-        |> List.head
-        |> Maybe.map Tuple.first
-
-
 {-| Returns the type of the slot `path` selects in `container`, or `Nothing`
-for a list path, a path it cannot follow, or a constructor field whose
-declared type is not a bare type parameter.
+for a list path or a path it cannot follow. A constructor field's type is its
+declared type instantiated at `container`'s type arguments.
 -}
 navigateType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> TOpt.Path -> Maybe Mono.MonoType
 navigateType gte container path =
@@ -5513,7 +5508,8 @@ navigateType gte container path =
 
 
 {-| Returns the type of constructor `ctorName`'s field `idx` in the custom
-type `container`, when the field's declared type is a bare type parameter.
+type `container`: its declared type instantiated at `container`'s type
+arguments (`Analysis.instantiateCtorField`).
 -}
 customSlot : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Maybe Mono.MonoType
 customSlot gte ctorName idx container =
@@ -5522,16 +5518,7 @@ customSlot gte ctorName idx container =
             case Analysis.lookupUnion gte home typeName of
                 Just (Can.Union unionData) ->
                     findCtorArg ctorName idx unionData.alts
-                        |> Maybe.andThen
-                            (\fieldCanType ->
-                                case fieldCanType of
-                                    Can.TVar paramName ->
-                                        paramPosition paramName unionData.vars
-                                            |> Maybe.andThen (\pos -> List.head (List.drop pos typeArgs))
-
-                                    _ ->
-                                        Nothing
-                            )
+                        |> Maybe.map (Analysis.instantiateCtorField unionData.vars typeArgs)
 
                 Nothing ->
                     Nothing
@@ -5541,8 +5528,8 @@ customSlot gte ctorName idx container =
 
 
 {-| Returns the type of the single field of a custom type with one
-constructor of one field, when that field's declared type is a bare type
-parameter.
+constructor of one field: its declared type instantiated at the type's
+arguments (`Analysis.instantiateCtorField`).
 -}
 unboxSlot : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Maybe Mono.MonoType
 unboxSlot gte container =
@@ -5553,9 +5540,8 @@ unboxSlot gte container =
                     case unionData.alts of
                         [ Can.Ctor c ] ->
                             case c.args of
-                                [ Can.TVar paramName ] ->
-                                    paramPosition paramName unionData.vars
-                                        |> Maybe.andThen (\pos -> List.head (List.drop pos typeArgs))
+                                [ fieldCanType ] ->
+                                    Just (Analysis.instantiateCtorField unionData.vars typeArgs fieldCanType)
 
                                 _ ->
                                     Nothing
@@ -6384,7 +6370,7 @@ buildLocalDefs name defBody maybeEntry s0 =
                     (\( ord, inst ) sx ->
                         case retranslateAtInstance name ord defBody inst.monoType sx of
                             ( e, sx1 ) ->
-                                ( Mono.MonoDef inst.freshName e, sx1 )
+                                ( Mono.MonoDef inst.freshName (MonoTraverse.renameLocal name inst.freshName e), sx1 )
                     )
                     (List.indexedMap Tuple.pair (Mono.specMapValues entry.instances))
                     s0

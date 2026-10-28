@@ -7,11 +7,12 @@ accessor whose field is itself a function is always deferred, so `.op` placed
 in a list literal survives to Compiler.Generate.MLIR.Expr, which crashes on any
 MonoAccessorValue.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.7); the text
+below describes the old behaviour.
 
 -}
 
--- CHECK: results: [11,20]
+-- CHECK: results: [11, 20]
 
 import Html exposing (text)
 

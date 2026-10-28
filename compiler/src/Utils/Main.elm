@@ -414,17 +414,23 @@ mapTraverseWithKey toComparable f =
         (Task.succeed Map.empty)
 
 
-{-| Returns an empty `Dict`, whatever the list holds.
-
-Each pair only updates a key that is already in the dictionary, and the fold
-starts from an empty one, so no key is ever added and `f` is never called.
-
+{-| Returns a `Dict` of every key in the list. A key that appears once holds its
+value; a repeated key holds `f old new` folded in list order, where `old` is the
+value gathered so far and `new` the later one.
 -}
 dictFromListWith : (a -> a -> a) -> List ( comparable, a ) -> Dict comparable a
 dictFromListWith f =
     List.foldl
         (\( k, a ) ->
-            Dict.update k (Maybe.map (flip f a))
+            Dict.update k
+                (\maybeOld ->
+                    case maybeOld of
+                        Just old ->
+                            Just (f old a)
+
+                        Nothing ->
+                            Just a
+                )
         )
         Dict.empty
 

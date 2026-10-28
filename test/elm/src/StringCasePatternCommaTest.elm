@@ -1,16 +1,14 @@
 module StringCasePatternCommaTest exposing (main)
 
 {-| Two string `case` expressions whose pattern lists are ["a,s:b", "z"] and
-["a", "b", "z"] share one attribute-table entry in the MLIR bytecode:
-`Mlir.Bytecode.AttrType.attrToKey` joins an untyped ArrayAttr's element keys
-("s:" ++ text) with "," unquoted, so both `string_patterns` arrays get the key
-"aa:s:a,s:b,s:z" and one case gets the other's patterns (today eco-boot-native
-rejects the bytecode: "string_patterns has 2 elements but expected 3"; the
---text-mlir output of the same compile runs correctly).
+["a", "b", "z"] used to share one attribute-table entry in the MLIR bytecode:
+`Mlir.Bytecode.AttrType.attrToKey` joined an untyped ArrayAttr's element keys
+("s:" ++ text) with "," unquoted, so both `string_patterns` arrays got the key
+"aa:s:a,s:b,s:z" and one case got the other's patterns (eco-boot-native
+rejected the bytecode: "string_patterns has 2 elements but expected 3"). The
+element keys are now length-prefixed.
 Also covered by the unit test compiler/tests/Mlir/Bytecode/AttrTypeTest.elm
 ("untyped array keys do not collide when a string holds ','").
-
-EXPECTED TO FAIL until fixed.
 -}
 
 -- CHECK: one_comma: "comma"

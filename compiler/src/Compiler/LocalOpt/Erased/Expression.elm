@@ -712,7 +712,7 @@ optimizeTail cycle rootName argNames ((A.At region exprInfo) as locExpr) =
                         (\def bod ->
                             Names.andThen (optimizeDef cycle def) bod
                         )
-                        (optimize cycle body)
+                        (optimizeTail cycle rootName argNames body)
                         defs
 
         Can.LetDestruct pattern expr body ->

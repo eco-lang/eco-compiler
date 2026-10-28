@@ -1,13 +1,17 @@
 module Compiler.Generate.JavaScript.ExpressionTest exposing (suite)
 
-{-| Regression tests for two bugs in `Compiler.Generate.JavaScript.Expression`.
-Both are EXPECTED TO FAIL until the bugs are fixed.
+{-| Regression tests for bugs, since fixed, in
+`Compiler.Generate.JavaScript.Expression`.
 
-  - An infinite Float literal (`1e400`) prints as `Infinity`, passes the
-    whole-number test, and is emitted as `Infinity.0`, which is not JavaScript.
-  - `generateCoreCall` compares the module name with `Name.jsArray` (`"JsArray"`),
-    but elm/core's module is `Elm.JsArray`, so `generateJsArrayCall` never runs
-    and `JsArray.singleton x` is an ordinary call instead of `[x]`.
+  - An infinite Float literal (`1e400`) printed as `Infinity`, passed the
+    whole-number test, and was emitted as `Infinity.0`, which is not JavaScript.
+  - `generateCoreCall` compared the module name with `Name.jsArray`, which was
+    `"JsArray"`, but elm/core's module is `Elm.JsArray`, so
+    `generateJsArrayCall` never ran and `JsArray.singleton x` was an ordinary
+    call instead of `[x]`.
+  - A negative Int literal value (a hex literal at or above 2^63, such as
+    `0xFFFFFFFFFFFFFFFF`, is -1) under a prefix negation would print as `--1`,
+    which is not JavaScript; it prints as a parenthesized negation.
 
 -}
 
@@ -53,4 +57,16 @@ suite =
                     )
                     |> String.startsWith "["
                     |> Expect.equal True
+        , test "a negative Int literal prints as a negation of its magnitude" <|
+            \_ ->
+                render (Opt.Int A.zero -1)
+                    |> Expect.equal "-1"
+        , test "negate of a negative Int literal is not --1" <|
+            \_ ->
+                render
+                    (Opt.Call A.zero
+                        (Opt.VarGlobal A.zero (Opt.Global (ModuleName.Canonical Pkg.core "Basics") "negate"))
+                        [ Opt.Int A.zero -1 ]
+                    )
+                    |> Expect.equal "-(-1)"
         ]

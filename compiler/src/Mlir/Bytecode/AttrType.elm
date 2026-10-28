@@ -61,6 +61,7 @@ import Bitwise
 import Bytes
 import Bytes.Decode as BD
 import Bytes.Encode as BE
+import Compiler.Data.Int64 as Int64
 import Dict exposing (Dict)
 import Mlir.Bytecode.DialectSection as DialectSection exposing (DialectRegistry)
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
@@ -219,9 +220,10 @@ The key is made from what the attribute is encoded as, so `BoolAttr` and the
 with `?` in place of any other element, so two typed arrays encoded alike can
 still have different keys.
 
-Text goes into the key as it is, with no quoting, and `String.fromFloat` gives
-0 and -0 the same text, so two attributes encoded differently can still have
-the same key.
+The parts of an untyped array or of a dictionary are each length-prefixed, so
+text inside them (a `,`, a `=`) cannot make two different lists share a key.
+`String.fromFloat` gives 0 and -0 the same text, so those two float attributes
+still share a key.
 
 -}
 attrToKey : MlirAttr -> String
@@ -277,7 +279,7 @@ attrToKey attr =
                             )
 
         ArrayAttr Nothing items ->
-            "aa:" ++ String.join "," (List.map attrToKey items)
+            "aa:" ++ String.concat (List.map lengthPrefixed items)
 
         SymbolRefAttr s ->
             "r:" ++ s
@@ -313,11 +315,30 @@ singleDigitValues items =
 
 
 {-| Returns the entry key of the attribute dictionary `d`, made from each name
-and its value's `attrToKey`, in name order.
+and its value's `attrToKey`, in name order, each length-prefixed so that no
+text inside a name or a value can make two dictionaries share a key.
 -}
 dictToKey : Dict String MlirAttr -> String
 dictToKey d =
-    "d:{" ++ (Dict.toList d |> List.map (\( k, v ) -> k ++ "=" ++ attrToKey v) |> String.join ",") ++ "}"
+    "d:{"
+        ++ (Dict.toList d
+                |> List.map (\( k, v ) -> String.fromInt (String.length k) ++ ":" ++ k ++ lengthPrefixed v)
+                |> String.concat
+           )
+        ++ "}"
+
+
+{-| Returns the key of `attr` preceded by its length and a `:`, so that a list
+of such keys can be split back unambiguously whatever text the keys hold.
+-}
+lengthPrefixed : MlirAttr -> String
+lengthPrefixed attr =
+    let
+        key : String
+        key =
+            attrToKey attr
+    in
+    String.fromInt (String.length key) ++ ":" ++ key
 
 
 {-| Returns the entry key of `ty`: its MLIR spelling, such as `i64` or
@@ -980,23 +1001,32 @@ denseElemBytes ty =
             8
 
 
-{-| One dense array element `v` in `w` bytes, little-endian. Byte k is
-`(v >> 8k) & 0xFF` for k < 4, and bytes 4..7 are 0: every value written is
-non-negative and below 2^31, so an `i64` element is written as it always was.
+{-| One dense array element `v` in `w` bytes, little-endian two's complement.
+An 8-byte element carries all 64 bits (`Compiler.Data.Int64.toWords`); the
+common case of a value in [0, 2^31) skips the split.
 -}
 encodeDenseElem : Int -> Int -> BE.Encoder
 encodeDenseElem w v =
-    BE.sequence
-        (List.map
-            (\k ->
-                if k < 4 then
-                    BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy (8 * k) v) 0xFF)
+    case w of
+        1 ->
+            BE.unsignedInt8 (Bitwise.and v 0xFF)
 
-                else
-                    BE.unsignedInt8 0
-            )
-            (List.range 0 (w - 1))
-        )
+        2 ->
+            BE.unsignedInt16 Bytes.LE (Bitwise.and v 0xFFFF)
+
+        4 ->
+            BE.unsignedInt32 Bytes.LE (Bitwise.shiftRightZfBy 0 (Bitwise.and v 0xFFFFFFFF))
+
+        _ ->
+            if v >= 0 && v <= 0x7FFFFFFF then
+                BE.sequence [ BE.unsignedInt32 Bytes.LE v, BE.unsignedInt32 Bytes.LE 0 ]
+
+            else
+                let
+                    ( hi, lo ) =
+                        Int64.toWords v
+                in
+                BE.sequence [ BE.unsignedInt32 Bytes.LE lo, BE.unsignedInt32 Bytes.LE hi ]
 
 
 {-| Returns the contents of the attribute and type data section and of its

@@ -16,7 +16,7 @@ What is built depends on whether any files are named. With none, the project
 must be a package, and its exposed modules are built, with their documentation
 written to the `--docs` file when one is given. With files named, those files
 are the roots of the build, and the result is written in the form `--output`
-selects.
+selects; `--docs` is then rejected (`MakeDocsWithFileNames`).
 
 The output form is decided by the output file's name alone (see
 `parseOutput`). A `.js` file gets JavaScript, a `.html` file a page that runs
@@ -260,14 +260,16 @@ runHelp root paths style stats (Flags flagsData) =
 
 
 {-| Builds while holding the lock of the build dir, after checking that
-`--debug` and `--optimize` are not both given.
+`--docs` is not given with files named and that `--debug` and `--optimize` are
+not both given.
 -}
 runHelpWithScope : FilePath -> List String -> Reporting.Style -> FEStats.Handle -> Bool -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> List ( Pkg.Name, FilePath ) -> Bool -> Maybe String -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
 runHelpWithScope root paths style stats noCache debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage localPackages textMlir maybeConfigPath registryPolicy scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
-            (getMode debug optimize
+            (checkDocsWithPaths paths maybeDocs
+                |> Task.andThen (\_ -> getMode debug optimize)
                 |> Task.andThen (loadDetailsAndBuild root paths style stats noCache withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage localPackages textMlir maybeConfigPath registryPolicy scope)
             )
         )
@@ -586,8 +588,21 @@ getStyle report =
             Task.succeed Reporting.json
 
 
-{-| Returns the generation mode for `debug` and `optimize`, failing with
-`MakeCannotOptimizeAndDebug` when both are set.
+{-| Fails with `MakeDocsWithFileNames` when `--docs` is given and files are
+named: docs are only written for a package's exposed modules.
+-}
+checkDocsWithPaths : List String -> Maybe FilePath -> Task Exit.Make ()
+checkDocsWithPaths paths maybeDocs =
+    case ( paths, maybeDocs ) of
+        ( _ :: _, Just _ ) ->
+            Task.throw Exit.MakeDocsWithFileNames
+
+        _ ->
+            Task.succeed ()
+
+
+{-| Returns the JavaScript mode the flags select, failing with
+`MakeCannotOptimizeAndDebug` when both are given.
 -}
 getMode : Bool -> Bool -> Task Exit.Make DesiredMode
 getMode debug optimize =
@@ -867,14 +882,18 @@ output =
 {-| Reads an `--output` value, choosing the output form from the name.
 
 `/dev/null`, `NUL` and `<|null` give `DevNull`. A name ending in `.html`, `.js`
-or `.mlir` gives `Html`, `JS` or `MLIR`, provided something comes before the
-extension. The empty string is rejected, and every other name gives `ELF`.
+or `.mlir` gives `Html`, `JS` or `MLIR`. A file name that is only one of those
+extensions (`.js`, `out/.mlir`) and the empty string are rejected, and every
+other name gives `ELF`.
 
 -}
 parseOutput : String -> Maybe Output
 parseOutput name =
     if isDevNull name then
         Just DevNull
+
+    else if List.member (Utils.fpTakeFileName name) [ ".html", ".js", ".mlir" ] then
+        Nothing
 
     else if hasExt ".html" name then
         Just (Html name)

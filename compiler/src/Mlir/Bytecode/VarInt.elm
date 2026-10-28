@@ -25,32 +25,34 @@ the width of `Bitwise`. Under JavaScript, Elm's `Bitwise` operations work on
 32-bit integers, so a value can be shifted into place beside its length bits
 only while it fits in 28 bits. Every value at or above 2^28 is written in the
 9-byte form instead, where the value is not shifted left beside length bits
-and the upper four bytes are found by dividing. That division goes through a
-`Float`, so the 9-byte form is exact while the magnitude of the value is at
-most 2^53. A negative value is also written in the 9-byte form, as its 64-bit
-two's complement.
+but split into two unsigned 32-bit words (`Compiler.Data.Int64.toWords`). That
+split is exact for every value the host holds exactly: natively every `Int`,
+and under JavaScript every whole number within the 64-bit range. A negative
+value is also written in the 9-byte form, as its 64-bit two's complement.
 
 _Zigzag encoding_ maps a signed integer to an unsigned one so that values of
 small magnitude stay small: 0, -1, 1, -2, 2 become 0, 1, 2, 3, 4.
-`encodeSignedVarInt` applies it before writing a PrefixVarInt.
+`encodeSignedVarInt` applies it before writing a PrefixVarInt, on the two
+32-bit words when the doubled value would not be exact under JavaScript.
 
 @docs encodeVarInt, encodeSignedVarInt, varIntWidth
 
 -}
 
 import Bitwise
+import Bytes
 import Bytes.Encode as BE
+import Compiler.Data.Int64 as Int64
 
 
 {-| Creates an encoder that writes `value` as a PrefixVarInt.
 
 A `value` from 0 to below 2^28 is written in the shortest of the 1-, 2-, 3-
 and 4-byte forms that holds it. Anything larger is written in the 9-byte
-form, exact while it is at most 2^53.
+form.
 
 A negative `value` is not rejected. It is written in the 9-byte form as its
-64-bit two's complement, that is, as the unsigned integer 2^64 + `value`,
-exact while its magnitude is at most 2^53.
+64-bit two's complement, that is, as the unsigned integer 2^64 + `value`.
 
 -}
 encodeVarInt : Int -> BE.Encoder
@@ -137,93 +139,74 @@ encodeLargeVarInt value =
 
 
 {-| Creates an encoder that writes `value` in the 9-byte form: a zero byte, then
-`value` as a 64-bit little-endian two's complement integer.
-
-The upper four bytes come from `shiftRightBy`, which divides through a `Float`
-for these shift amounts, so the result is exact while the magnitude of `value`
-is at most 2^53.
-
+`value` as a 64-bit little-endian two's complement integer, exact for every
+value the host holds exactly.
 -}
 encode9Bytes : Int -> BE.Encoder
 encode9Bytes value =
+    let
+        ( hi, lo ) =
+            Int64.toWords value
+    in
+    encodeWords9 hi lo
+
+
+{-| Creates an encoder that writes the 9-byte form of the 64-bit value whose
+unsigned 32-bit words are `hi` and `lo`.
+-}
+encodeWords9 : Int -> Int -> BE.Encoder
+encodeWords9 hi lo =
     BE.sequence
         [ BE.unsignedInt8 0x00
-        , BE.unsignedInt8 (Bitwise.and value 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 8 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 16 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 24 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (shiftRightBy 32 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (shiftRightBy 40 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (shiftRightBy 48 value) 0xFF)
-        , BE.unsignedInt8 (Bitwise.and (shiftRightBy 56 value) 0xFF)
+        , BE.unsignedInt32 Bytes.LE lo
+        , BE.unsignedInt32 Bytes.LE hi
         ]
 
 
 {-| Creates an encoder that writes `value` zigzag-encoded as a PrefixVarInt: a
 `value` of zero or more becomes `2 * value`, and a negative one becomes
-`-2 * value - 1`.
+`-2 * value - 1`, both taken as unsigned 64-bit integers.
 
-The negative case is computed as `Bitwise.xor (value * 2) -1`. Under
-JavaScript that is right only while `value * 2` fits in a signed 32-bit
-integer, that is, for `value` down to -2^30. Below that the doubled value
-wraps to 32 bits before the xor, so the number written is not the zigzag
-encoding of `value`.
+When the magnitude of `value` is below 2^52 the doubled value is below 2^53 and
+is computed directly, exact on both hosts. Otherwise the zigzag is computed as
+`(value << 1) ^ (value >> 63)` on the two 32-bit words of `value` and written
+in the 9-byte form, so every 64-bit value, `-2^63` included, is exact.
 
 -}
 encodeSignedVarInt : Int -> BE.Encoder
 encodeSignedVarInt value =
-    let
-        -- (value << 1) ^ (value >> 63), with the sign word chosen by case.
-        zigzag =
-            if value >= 0 then
-                value * 2
+    if value >= 0 && value < 0x0010000000000000 then
+        encodeVarInt (value * 2)
 
-            else
-                Bitwise.xor (value * 2) -1
-    in
-    encodeVarInt zigzag
-
-
-{-| Returns `value` shifted right by `amount` bits, rounding toward negative
-infinity as an arithmetic shift does.
-
-Shifts of up to 31 bits use `Bitwise.shiftRightBy`. Longer ones divide by
-2^`amount` as a `Float` and take the floor, because under JavaScript
-`Bitwise.shiftRightBy` works on 32 bits. The division is exact while the
-magnitude of `value` is at most 2^53.
-
-Under JavaScript a shift of up to 31 bits is right only for a `value` that fits
-in a signed 32-bit integer. `encode9Bytes` calls this only with shifts of 32 or
-more.
-
--}
-shiftRightBy : Int -> Int -> Int
-shiftRightBy amount value =
-    if amount <= 31 then
-        Bitwise.shiftRightBy amount value
+    else if value < 0 && value > -0x0010000000000000 then
+        encodeVarInt (-2 * value - 1)
 
     else
         let
-            divisor =
-                powOf2 amount
+            ( hi, lo ) =
+                Int64.toWords value
+
+            shiftedHi : Int
+            shiftedHi =
+                Bitwise.or (Bitwise.shiftLeftBy 1 hi) (Bitwise.shiftRightZfBy 31 lo)
+
+            shiftedLo : Int
+            shiftedLo =
+                Bitwise.shiftLeftBy 1 lo
+
+            sign : Int
+            sign =
+                if value < 0 then
+                    0xFFFFFFFF
+
+                else
+                    0
         in
-        floor (toFloat value / divisor)
+        encodeWords9 (u32 (Bitwise.xor shiftedHi sign)) (u32 (Bitwise.xor shiftedLo sign))
 
 
-{-| Returns 2^`n` as a `Float`, or 1.0 for an `n` of zero or less.
-
-Above 30 it multiplies by 2^30 as many times as needed rather than shifting,
-because under JavaScript `Bitwise.shiftLeftBy` works on 32 bits, and
-`1 << 32` is 1.
-
+{-| Returns the low 32 bits of `x` as an unsigned number, on either host.
 -}
-powOf2 : Int -> Float
-powOf2 n =
-    if n <= 0 then
-        1.0
-
-    else if n <= 30 then
-        toFloat (Bitwise.shiftLeftBy n 1)
-
-    else
-        toFloat (Bitwise.shiftLeftBy 30 1) * powOf2 (n - 30)
+u32 : Int -> Int
+u32 x =
+    Bitwise.shiftRightZfBy 0 (Bitwise.and x 0xFFFFFFFF)

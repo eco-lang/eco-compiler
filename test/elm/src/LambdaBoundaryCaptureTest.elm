@@ -7,7 +7,8 @@ case boundary and renameExpr does not stop at binders, so merging the outer
 case boundary renames `b` to `a_hl_0`, which the already-merged inner lambda's
 parameter captures: `a + b` computes `100 + 100` instead of `100 + 5`.
 
-EXPECTED TO FAIL until the bug is fixed.
+Fixed 2026-10-28 (plans/review-bug-triage-fixes.md, item 3.4); the text
+below describes the old behaviour.
 -}
 
 -- CHECK: result: 105

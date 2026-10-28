@@ -918,10 +918,10 @@ dependency also exposes the name, the import is ambiguous; otherwise the file's
 modification time decides whether the module is cached.
 -}
 crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Foreign -> FilePath -> Task Never Status
-crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
+crawlSinglePath ((Env envData) as env) mvar docsNeed name needsDocs buildID locals foreigns path =
     case Dict.get name foreigns of
         Just (Details.Foreign dep deps) ->
-            Import.Ambiguous path [] dep deps |> SBadImport |> Task.succeed
+            Import.Ambiguous (Utils.fpMakeRelative envData.root path) [] dep deps |> SBadImport |> Task.succeed
 
         Nothing ->
             File.getTime path
@@ -1192,8 +1192,11 @@ checkCachedModule :
     -> Task Never BResult
 checkCachedModule ((Env envData) as env) root projectType resultsMVar name path time deps hasMain lastChange lastCompile =
     Utils.readMVar resultDictDecoder resultsMVar
-        |> Task.andThen (\resultDict -> checkDeps root envData.maybeBuildDir resultDict deps lastCompile)
-        |> Task.andThen (handleCachedDepsStatus env root projectType name path time deps hasMain lastChange)
+        |> Task.andThen
+            (\resultDict ->
+                checkDeps root envData.maybeBuildDir resultDict deps lastCompile
+                    |> Task.andThen (handleCachedDepsStatus env resultDict root projectType name path time deps hasMain lastChange)
+            )
 
 
 {-| Decides the result of a module whose file has not changed from its imports'
@@ -1203,13 +1206,14 @@ With no import changed, the module is reused only if the artifact this build
 reads is on disk, `.ecot` on a typed build and `.eco` on an untyped one. A
 module last compiled for the other kind of build looks unchanged, but may lack
 that artifact, and is compiled again when it is missing. With a changed import
-the module is compiled again. A failed import blocks it, and so does an import
-that cannot be found, since the module's source has not been read to report
-the error against.
+the module is compiled again. A failed import blocks it. An import that cannot
+be found is reported against the module: its source is read and parsed for the
+import lines, as `makeImportError` does for a changed module.
 
 -}
 handleCachedDepsStatus :
     Env
+    -> ResultDict
     -> FilePath
     -> Parse.ProjectType
     -> ModuleName.Raw
@@ -1220,7 +1224,7 @@ handleCachedDepsStatus :
     -> Details.BuildID
     -> DepsStatus
     -> Task Never BResult
-handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange depsStatus =
+handleCachedDepsStatus ((Env envData) as env) resultDict root projectType name path time deps hasMain lastChange depsStatus =
     case depsStatus of
         DepsSame same cached ->
             let
@@ -1242,8 +1246,17 @@ handleCachedDepsStatus ((Env envData) as env) root projectType name path time de
         DepsBlock ->
             Task.succeed RBlocked
 
-        DepsNotFound _ ->
-            Task.succeed RBlocked
+        DepsNotFound problems ->
+            File.readUtf8 (Utils.fpCombine root path)
+                |> Task.map
+                    (\source ->
+                        case Parse.fromByteString projectType source of
+                            Ok (Src.Module srcData) ->
+                                Error.BadImports (toImportErrors env resultDict srcData.imports problems) |> Error.Module name path time source |> RProblem
+
+                            Err err ->
+                                Error.BadSyntax err |> Error.Module name path time source |> RProblem
+                    )
 
 
 {-| Returns `RCached` when `artifactExists`, with the interface MVar created
@@ -1811,9 +1824,8 @@ addToGraph name status graph =
 module the crawl found in a source directory, also has, and returns
 `BP_RootNameDuplicate` for it.
 
-The outside roots are grouped by name with `Utils.dictFromListWith`, which
-returns an empty dict for any input, so as written this always returns
-`Nothing`.
+The outside roots are grouped by name with `Utils.dictFromListWith`, in the
+order given, so a clash between outside roots names the first two paths.
 
 -}
 checkUniqueRoots : Dict ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
@@ -2540,8 +2552,8 @@ findRoots env paths =
 {-| Returns each root's location after checking that no two paths lead to the
 same file (`BP_MainPathDuplicate`).
 
-The paths are grouped with `Utils.dictFromListWith`, which returns an empty
-dict for any input, so as written this check never fails.
+The paths are grouped by absolute path with `Utils.dictFromListWith`, in the
+order given, so the error names the first two relative paths of that file.
 
 -}
 checkRoots : NE.Nonempty RootInfo -> Result Exit.BuildProjectProblem (NE.Nonempty RootLocation)

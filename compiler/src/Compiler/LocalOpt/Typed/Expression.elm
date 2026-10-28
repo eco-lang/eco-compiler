@@ -1289,8 +1289,11 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
             in
             optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType localAnnotationVars
 
-        Can.TypedDef (A.At region name) _ typedArgs body defType ->
+        Can.TypedDef (A.At region name) _ typedArgs body _ ->
             let
+                ( _, defType ) =
+                    getDefNameAndType exprTypes def
+
                 localAnnotationVars =
                     case findVarLocalTvar name exprVars body of
                         Just v ->

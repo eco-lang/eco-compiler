@@ -49,6 +49,7 @@ because it is the one other parser that reads a digit.
 -}
 
 import Compiler.AST.Utils.Binop as Binop
+import Compiler.Data.Int64 as Int64
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Error.Syntax as E
@@ -62,9 +63,9 @@ import Compiler.Reporting.Error.Syntax as E
 name, which a number must not run into: an ASCII letter, a digit, `_`, or a
 character `Compiler.Parse.Variable.getInnerWidthHelp` accepts beyond ASCII.
 -}
-isDirtyEnd : String -> Int -> Char -> Bool
-isDirtyEnd src pos word =
-    Var.getInnerWidthHelp src pos word > 0
+isDirtyEnd : String -> Int -> Int -> Char -> Bool
+isDirtyEnd src pos end word =
+    Var.getInnerWidthHelp src pos end word > 0
 
 
 {-| Returns whether a character is one of the ASCII digits `0` to `9`.
@@ -86,9 +87,12 @@ with a fraction, an exponent or both. In each, the `String` is the literal as it
 appears in the source, such as `0x1F` or `1.50e3`, so a value can be printed the
 way it was written.
 
-The value of an `Int` is accumulated digit by digit with no overflow check, so
-the value of a literal too large for an `Int` is not reliable. The value of a
-`Float` is `String.toFloat` of the text.
+The value of an `Int` is its digits taken modulo 2^64 and read as two's
+complement, so `0xFFFFFFFFFFFFFFFF` and `18446744073709551615` are both `-1`
+(`Compiler.Data.Int64`). Under the JavaScript-hosted compiler a value that needs
+more than 53 significant bits cannot be held exactly, and `number` reports it as
+a `NumberInexactOnHost` error rather than rounding it. The value of a `Float` is
+`String.toFloat` of the text.
 
 -}
 type Number
@@ -152,15 +156,25 @@ number toExpectation toError =
                                 newCol =
                                     st.col + (newPos - st.pos)
 
-                                integer : Number
-                                integer =
-                                    Int n (String.slice st.pos newPos st.src)
+                                text : String
+                                text =
+                                    String.slice st.pos newPos st.src
 
                                 newState : P.State
                                 newState =
                                     P.State { st | pos = newPos, col = newCol }
                             in
-                            P.Cok integer newState
+                            -- Fast path: an accumulator in [0, 2^53] is exact on both hosts.
+                            if n >= 0 && n <= 0x0020000000000000 then
+                                P.Cok (Int n text) newState
+
+                            else
+                                case Int64.fromLiteral text of
+                                    Just exact ->
+                                        P.Cok (Int exact text) newState
+
+                                    Nothing ->
+                                        P.Cerr st.row st.col (toError E.NumberInexactOnHost)
 
                         OkFloat newPos ->
                             let
@@ -204,7 +218,9 @@ scanning stopped. That is often, but not always, the character that broke the
 rule: for a bad fraction it is the `.`, and for a hexadecimal literal cut short
 by the end of the input it is the end.
 
-`OkInt` is an integer literal, and its second `Int` is the value.
+`OkInt` is an integer literal, and its second `Int` is the value as
+accumulated, with no overflow check; `number` rereads the text when it is not in
+[0, 2^53].
 
 `OkFloat` is a float literal. It carries no value; `number` reads that from the
 text.
@@ -248,7 +264,7 @@ chompInt src pos end n =
         else if word == 'e' || word == 'E' then
             chompExponent src (pos + 1) end
 
-        else if isDirtyEnd src pos word then
+        else if isDirtyEnd src pos end word then
             Err_ pos E.NumberEnd
 
         else
@@ -307,7 +323,7 @@ chompFractionHelp src pos end =
         else if word == 'e' || word == 'E' then
             chompExponent src (pos + 1) end
 
-        else if isDirtyEnd src pos word then
+        else if isDirtyEnd src pos end word then
             Err_ pos E.NumberEnd
 
         else
@@ -411,7 +427,7 @@ chompZero src pos end =
         else if isDecimalDigit word then
             Err_ pos E.NumberNoLeadingZero
 
-        else if isDirtyEnd src pos word then
+        else if isDirtyEnd src pos end word then
             Err_ pos E.NumberEnd
 
         else
@@ -428,7 +444,9 @@ chompHexInt src pos end =
         ( newPos, answer ) =
             chompHex src pos end
     in
-    if answer < 0 then
+    -- Decided by position, not by `answer < 0`: natively a long literal wraps
+    -- to a negative value.
+    if newPos == pos || (newPos < end && isDirtyEnd src newPos end (charAtPos newPos src)) then
         Err_ newPos E.NumberHexDigit
 
     else
@@ -448,7 +466,10 @@ name. It is `-2` when scanning stops at a character that may continue a name
 but is not a hexadecimal digit, such as `g` or `_`, whether or not digits came
 before it; the position is then that character.
 
-There is no overflow check on the value.
+There is no overflow check on the value: a run of more than 13 digits can
+wrap (natively) or lose precision (under JavaScript), and a wrapped value can be
+negative, so a caller reading a long run must not take a negative value as one
+of the two cases above. `chompHexInt` decides by position instead.
 
 -}
 chompHex : String -> Int -> Int -> ( Int, Int )
@@ -467,40 +488,47 @@ chompHexHelp src pos end answer accumulator =
 
     else
         let
-            newAnswer : Int
-            newAnswer =
-                stepHex src pos (charAtPos pos src) accumulator
+            word : Char
+            word =
+                charAtPos pos src
+
+            digit : Int
+            digit =
+                hexDigitValue word
         in
-        if newAnswer < 0 then
+        -- Classify by the character, not by the sign of the value: natively a
+        -- long literal wraps to a negative Int.
+        if digit < 0 then
             ( pos
-            , if newAnswer == -1 then
-                answer
+            , if isDirtyEnd src pos end word then
+                -2
 
               else
-                -2
+                answer
             )
 
         else
+            let
+                newAnswer : Int
+                newAnswer =
+                    16 * accumulator + digit
+            in
             chompHexHelp src (pos + 1) end newAnswer newAnswer
 
 
-{-| Returns `acc` extended by the hexadecimal digit `word`, the character at
-`pos`. For a character that is not a hexadecimal digit it returns `-2` when the
-character may continue a name and `-1` otherwise.
+{-| Returns the value of the hexadecimal digit `word`, upper or lower case, or
+`-1` for any other character.
 -}
-stepHex : String -> Int -> Char -> Int -> Int
-stepHex src pos word acc =
+hexDigitValue : Char -> Int
+hexDigitValue word =
     if '0' <= word && word <= '9' then
-        16 * acc + (Char.toCode word - Char.toCode '0')
+        Char.toCode word - Char.toCode '0'
 
     else if 'a' <= word && word <= 'f' then
-        16 * acc + 10 + (Char.toCode word - Char.toCode 'a')
+        10 + (Char.toCode word - Char.toCode 'a')
 
     else if 'A' <= word && word <= 'F' then
-        16 * acc + 10 + (Char.toCode word - Char.toCode 'A')
-
-    else if isDirtyEnd src pos word then
-        -2
+        10 + (Char.toCode word - Char.toCode 'A')
 
     else
         -1

@@ -1,12 +1,11 @@
 module Compiler.Elm.PackageTest exposing (suite)
 
-{-| Regression test for `Compiler.Elm.Package` name parsing. EXPECTED TO FAIL
-until the bug is fixed.
+{-| Regression test for `Compiler.Elm.Package` name parsing.
 
-`chompName` returns success when it stops at a character that is not part of a
-name even if the previous character was a dash, so an author ending in a dash
-(`elm-/core`) is accepted. A trailing dash is only rejected at the end of the
-input (`elm/core-` is rejected).
+`chompName` once returned success when it stopped at a character that is not
+part of a name even if the previous character was a dash, so an author ending
+in a dash (`elm-/core`) was accepted; a trailing dash was only rejected at the
+end of the input (`elm/core-`). Both are rejected now.
 
 -}
 

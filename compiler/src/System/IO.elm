@@ -29,8 +29,10 @@ here.
 Console output is best-effort. `write`, `writeLn`, `print` and `printLn` cannot
 fail: an error from the write is discarded and the task succeeds. `readLine`
 and `writeString` fail with an `IOError`, as `Eco.IO.Error` describes,
-and `crashOnError` turns such a failure into a crash. `flush` and `isTerminal`
-ask the host nothing: `flush` does nothing, and `isTerminal` answers `True`.
+and `crashOnError` turns such a failure into a crash. `flush` asks the host
+nothing and does nothing. `isTerminal` asks the host, through
+`Eco.Console.isTerminal`, whether a handle is a terminal; it cannot fail, and
+answers `False` when the host cannot tell.
 
 `LockSharedExclusive`, `MVar`, `ChItem` and `Stream` are defined here, but this
 module has no operations on them. The operations on MVars, channels
@@ -246,12 +248,12 @@ flush =
     Task.succeed ()
 
 
-{-| Answers `True` for every handle, without asking the host whether the handle
-is a terminal.
+{-| Asks the host whether `handle` is a terminal. Answers `False` when the host
+cannot tell, and for a handle that is not one of the standard streams.
 -}
-isTerminal : Task Never Bool
-isTerminal =
-    Task.succeed True
+isTerminal : Handle -> Task Never Bool
+isTerminal (Handle fd) =
+    Eco.Console.isTerminal (Eco.Console.Handle fd)
 
 
 {-| Turns a task that can fail with an `IOError` into one that cannot, by

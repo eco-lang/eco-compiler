@@ -1,9 +1,9 @@
 module NonAsciiIdentifierTest exposing (main)
 
-{-| Bug: Compiler.Parse.Variable non-ASCII identifier scanning decodes UTF-16
-strings as UTF-8 bytes, so `café` is not read as one identifier.
+{-| Pins that `café` is read as one identifier: Compiler.Parse.Variable
+classifies a non-ASCII character by its Unicode code point (it once decoded
+UTF-16 strings as UTF-8 bytes and rejected the name).
 Unit test: compiler/tests/Compiler/Parse/VariableNonAsciiTest.elm.
-EXPECTED TO FAIL until fixed.
 -}
 
 -- CHECK: NonAsciiIdentifierTest: 7

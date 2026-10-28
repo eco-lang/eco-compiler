@@ -757,8 +757,7 @@ was reported, both counted from 1.
 `Start` is reported where the top-level value could not be read: the text there
 does not begin a string, object, array, unsigned integer, or `true`, `false` or
 `null` as a whole word. A value that cannot be read inside an object or array
-is handled like a mistake in the structure of an object or array, as described
-below, and most of those also become `Start`.
+is reported where it begins, with the error of the value's own first token.
 
 `StringProblem` is a string, value or key, that is not well formed; the
 `StringProblem` says how.
@@ -772,20 +771,19 @@ read as a whole number, and the error is whatever the text after it causes.
 
 `BadEnd` is text other than whitespace after the one value.
 
-`ObjectField`, `ObjectColon`, `ObjectEnd` and `ArrayEnd` name a missing key,
-colon, comma or closing bracket, but as the parser is written only `ObjectEnd`
-is ever produced. A mistake in the structure of an object or array fails without
-counting as having read anything, as `Compiler.Parse.Primitives` describes for
-`andThen`, so it is passed outwards. The nearest object, the one it is in or one
-around it, that has already read a comma and the entry after it turns it into
-`ObjectEnd`, at the position where that object looked for its next `,` or `}`.
-With no such object it becomes `Start`, at the first character of the top-level
-value.
+`ObjectFirstField` is an object whose `{` is followed by neither a key nor `}`.
+`ObjectField`, `ObjectColon`, `ObjectEnd` and `ArrayEnd` name what was missing:
+a key after a comma, a colon, a comma or `}`, and a comma or `]`. Each is
+reported where the missing token was looked for: once an object or array has
+read its opening bracket, `P.andThen` reports a later failure as having read
+input (see `Compiler.Parse.Primitives`), so no enclosing `oneOf` replaces it
+with `Start`.
 
 -}
 type ParseError
     = Start Row Col
     | ObjectField Row Col
+    | ObjectFirstField Row Col
     | ObjectColon Row Col
     | ObjectEnd Row Col
     | ArrayEnd Row Col
@@ -868,7 +866,7 @@ pObject =
         |> P.andThen (\_ -> spaces)
         |> P.andThen
             (\_ ->
-                P.oneOf ObjectField
+                P.oneOf ObjectFirstField
                     [ pField
                         |> P.andThen
                             (\entry ->
@@ -948,8 +946,9 @@ pArray =
 `,` and an element, then the `]`. `revEntries` holds the elements read so far,
 latest first.
 
-It calls itself through `P.andThen` rather than using `P.loop`, so its own
-rounds never turn a failure into one that has read input, unlike an object's.
+It calls itself through `P.andThen` rather than using `P.loop`. Once a `,` has
+been read, a failure in the rest of the round counts as having read input, so
+it is reported where it happened.
 
 -}
 pArrayHelp : List AST -> Parser AST_
@@ -1127,7 +1126,7 @@ pStringHelp src pos end row col =
                     let
                         newPos : Int
                         newPos =
-                            pos + P.getCharWidth word
+                            pos + P.charWidthAt src pos end word
                     in
                     pStringHelp src newPos end row (col + 1)
 
