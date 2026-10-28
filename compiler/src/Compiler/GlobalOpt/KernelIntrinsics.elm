@@ -387,8 +387,9 @@ bitwiseIntrinsic name argTypes =
 {-| Returns the intrinsic for a call of the `Utils` kernel function `name`:
 equality, ordering, `compare` and `++`.
 
-Int, Float and Char get their own comparison operations. Char ordering
-compares unsigned. Two Bools are compared as Bools. Two
+Int, Float and Char get their own comparison operations. Char ordering is
+the backend lowering's sort-key order (KERN_008: code-point order, and UTF-16
+string order for an encoded case-mapping result). Two Bools are compared as Bools. Two
 values of the same boxed type (see `boxedComparable`) get `ValueEq`; a type
 variable or a function type gets no intrinsic and stays a kernel call.
 `compare` is an intrinsic for Int, Float, Char and

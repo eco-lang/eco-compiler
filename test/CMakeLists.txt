@@ -25,6 +25,7 @@ set(ELM_TEST_PACKAGES
     elm-regex
     elm-time
     elm-url
+    elm-conformance
     stress-elm
 )
 include(${CMAKE_SOURCE_DIR}/cmake/EcoCreateDirLink.cmake)
@@ -101,6 +102,7 @@ add_executable(test
         allocator/Utf8Test.cpp
         allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
+        allocator/CaseMapTest.cpp
         allocator/StringFormsCompareTest.cpp
         allocator/ListOpsTest.cpp
         allocator/ChunkedListTest.cpp

@@ -89,12 +89,13 @@ ECO_BOOT_NATIVE_LINK = ECO_BOOT_NATIVE
 COMPILER_MLIR_OVERRIDE: Path | None = None
 
 
-def select_build_tree(tree: str, compiler_mlir: str | None = None) -> None:
+def select_build_tree(tree: str, compiler_mlir: str | None = None,
+                      lower_with_tree: bool = False) -> None:
     """Point the link step (and the linked binary's name) at `tree`, and
     optionally the lowering input at `compiler_mlir`. Each (MLIR, tree) pair
     gets its own object and binary name, so switching either never reuses an
     artefact built from the other."""
-    global BUILD_TREE, ECO_BOOT_NATIVE_LINK, ECO_COMPILER
+    global BUILD_TREE, ECO_BOOT_NATIVE_LINK, ECO_COMPILER, ECO_BOOT_NATIVE
     global ECO_COMPILER_MLIR, ECO_COMPILER_OBJ, COMPILER_MLIR_OVERRIDE
     BUILD_TREE = REPO_ROOT / tree
     ECO_BOOT_NATIVE_LINK = BUILD_TREE / "runtime/src/codegen/eco-boot-native"
@@ -108,6 +109,13 @@ def select_build_tree(tree: str, compiler_mlir: str | None = None) -> None:
         stem = f"eco-compiler-{COMPILER_MLIR_OVERRIDE.stem}"
     if BUILD_TREE != PRIMARY_TREE:
         stem = f"{stem}-{BUILD_TREE.name}"
+        # A tree whose compile-time options change LOWERING (e.g.
+        # -DECO_CHAR_CASE_EXPANSION=OFF, plans/char-case-mapping-elm-exact.md)
+        # must lower with its own eco-boot-native, into its own object file.
+        if lower_with_tree:
+            ECO_BOOT_NATIVE = BUILD_TREE / "runtime/src/codegen/eco-boot-native"
+            ECO_COMPILER_OBJ = ECO_COMPILER_OBJ.with_name(
+                f"{ECO_COMPILER_OBJ.stem}-{BUILD_TREE.name}.o")
     ECO_COMPILER = BUILD_KERNEL / "bin" / stem
 
 
@@ -1929,6 +1937,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "the object file is still lowered by build/, only "
                         "the link differs. The binary is "
                         "eco-compiler-<tree> for a non-default tree.")
+    p.add_argument("--lower-with-build-tree", action="store_true",
+                   help="also LOWER with the --build-tree's eco-boot-native, "
+                        "into <stem>-<tree>.o: for a tree whose options change "
+                        "the lowering, e.g. -DECO_CHAR_CASE_EXPANSION=OFF.")
 
     sub = p.add_subparsers(dest="cmd", required=False)
 
@@ -1998,7 +2010,8 @@ def main():
         cmd_diff(args)
         return
 
-    select_build_tree(args.build_tree, args.compiler_mlir)
+    select_build_tree(args.build_tree, args.compiler_mlir,
+                      getattr(args, "lower_with_build_tree", False))
     if getattr(args, "repeat", 1) < 1:
         parser.error("--repeat must be >= 1")
     machine, results_root = resolve_paths(args)

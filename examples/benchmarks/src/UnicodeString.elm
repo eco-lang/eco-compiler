@@ -12,11 +12,9 @@ emoji into its two surrogates, where Elm gives one character
 (`plans/benchmark-suite-expansion.md`, Status).
 
 Checked at every size against the generated code points: the length in UTF-16 units, the sum of
-the code points (via `foldl`), the position of every occurrence of the marker word, the ASCII
-letters after `toUpper`, a slice's length and code points, and reversing twice giving the text
-back. Only the ASCII part of `toUpper` is checked: eco's native `String.toUpper` maps ASCII
-letters only (`Char.toUpper` in `elm-kernel-cpp` has a TODO for full Unicode), so é stays é where
-Elm gives É.
+the code points (via `foldl`), the position of every occurrence of the marker word, the sum of the
+code points after `toUpper` (é è à ж и л have one-code-point upper cases, so the length does not
+change), a slice's length and code points, and reversing twice giving the text back.
 
 -}
 
@@ -107,32 +105,16 @@ utf16Length cp =
         1
 
 
-{-| The ASCII part of a code point after upper-casing, 0 for anything else.
+{-| A pool code point after upper-casing: a-z, é è à (to É È À) and ж и л (to Ж И Л) move down
+by 32; space, the marker's capitals and the CJK characters have no case.
 -}
-asciiUpper : Int -> Int
-asciiUpper cp =
-    if cp >= 0x61 && cp <= 0x7A then
+upperCase : Int -> Int
+upperCase cp =
+    if (cp >= 0x61 && cp <= 0x7A) || cp == 0xE9 || cp == 0xE8 || cp == 0xE0 || cp == 0x0436 || cp == 0x0438 || cp == 0x043B then
         cp - 32
 
-    else if cp < 0x80 then
-        cp
-
     else
-        0
-
-
-asciiSum : String -> Int
-asciiSum s =
-    String.foldl
-        (\c acc ->
-            if Char.toCode c < 0x80 then
-                acc + Char.toCode c
-
-            else
-                acc
-        )
-        0
-        s
+        cp
 
 
 codeSum : String -> Int
@@ -180,8 +162,8 @@ bench n =
         == List.sum points
         && String.indexes marker text
         == markerPositions
-        && asciiSum (String.toUpper text)
-        == List.sum (List.map asciiUpper points)
+        && codeSum (String.toUpper text)
+        == List.sum (List.map upperCase points)
         && String.length (String.toUpper text)
         == length
         && String.reverse (String.reverse text)

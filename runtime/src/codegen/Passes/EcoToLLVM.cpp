@@ -19,6 +19,7 @@
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../BF/BFOps.h"
+#include "../../allocator/CharValue.hpp"
 #include "../Passes.h"
 
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
@@ -246,6 +247,22 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // bytecode, unlike a module attr).
             if (funcOp->hasAttr("eco.list_chunks"))
                 runtime.listChunks = true;
+        }
+
+        // Char case-mapping build guard (KERN_008, CharValue::kBuildGuardSymbol):
+        // call the empty `eco_char_case_expansion_on/_off` of this backend's
+        // setting at the top of @main, so a runtime built with the other
+        // setting fails to link or resolve it.
+        if (auto mainFn = module.lookupSymbol<func::FuncOp>("main")) {
+            if (!mainFn.getBody().empty()) {
+                OpBuilder gb(ctx);
+                gb.setInsertionPointToStart(&mainFn.getBody().front());
+                auto guardFn = runtime.getOrCreateFunc(
+                    gb, Elm::CharValue::kBuildGuardSymbol,
+                    LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx), {}),
+                    /*gcLeaf=*/true);
+                gb.create<LLVM::CallOp>(mainFn.getLoc(), guardFn, ValueRange{});
+            }
         }
 
         // Chunked-list mode: inject `call @eco_enable_list_chunks()` at the

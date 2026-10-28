@@ -10,6 +10,7 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
+#include "allocator/CharValue.hpp"
 #include "allocator/ListOps.hpp"
 
 #include <vector>
@@ -162,8 +163,7 @@ static int compareUnboxableSlot(Allocator& allocator,
             if (a.f == b.f) return 0;
             return a.f < b.f ? -1 : 1;
         case 3:
-            if (a.c == b.c) return 0;
-            return a.c < b.c ? -1 : 1;
+            return Elm::CharValue::compare(a.c, b.c);   // KERN_008 order
         default: {
             // Both slots are boxed HPointers - recurse.
             void* ao; void* bo; bool eq;
@@ -261,8 +261,8 @@ static int compareListElem(Elm::Allocator& allocator,
             } else {
                 u32 bv = static_cast<ElmChar*>(boxedPtr)->value;
                 u32 uv = prim.c;
-                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
-                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+                if (aKind == 0) { ord = Elm::CharValue::compare(bv, uv); }
+                else             { ord = Elm::CharValue::compare(uv, bv); }
             }
             return ord;
         }
@@ -343,15 +343,16 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Char: {
-            // Chars order by code point, like the eco.char.lt intrinsic.
-            // elm/core's JS compares Chars as UTF-16 strings; the two orders
-            // differ only between U+E000..U+FFFF and astral code points (JS
-            // puts the astral surrogate pair first) - a documented divergence.
+            // Chars order by CharValue::sortKey, like the eco.char.lt
+            // intrinsic (KERN_008): code-point order for ordinary Chars, and
+            // for an encoded case-mapping result (Char.toUpper 'ß' == "SS")
+            // the order of its expansion as a UTF-16 string, as in elm/core's
+            // JS. Between ordinary Chars the two orders differ only between
+            // U+E000..U+FFFF and astral code points (JS puts the astral
+            // surrogate pair first) - a documented divergence.
             ElmChar* ac = static_cast<ElmChar*>(a);
             ElmChar* bc = static_cast<ElmChar*>(b);
-            if (ac->value < bc->value) return -1;
-            if (ac->value > bc->value) return 1;
-            return 0;
+            return Elm::CharValue::compare(ac->value, bc->value);
         }
 
         case Tag_String: {

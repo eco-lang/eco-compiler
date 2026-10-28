@@ -1093,6 +1093,27 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
             }
         }
     }
+    // `-- XFAIL-NATIVE: <reason>` (CheckPatterns.hpp): the run is expected to fail.
+    std::vector<std::optional<std::string>> xfail(numTests);
+    for (size_t i = 0; i < numTests; i++) {
+        try {
+            xfail[i] = eco_test::xfailNativeReason(readFile(elmPaths[i]));
+        } catch (...) {
+            xfail[i] = std::nullopt;
+        }
+    }
+    // An expected failure becomes a pass with a note; an unexpected pass, a failure.
+    auto applyXfail = [&](size_t i, const eco_test::ChildOutcome& o, eco_test::ChildVerdict& v) {
+        if (!xfail[i] || o.interrupted) return;
+        if (!v.passed) {
+            std::string first = v.error.substr(0, v.error.find('\n'));
+            v.passed = true;
+            v.note = "XFAIL: " + *xfail[i] + " -- " + first;
+        } else {
+            v.passed = false;
+            v.error = "XPASS: the test passes natively; remove its -- XFAIL-NATIVE line";
+        }
+    };
     const std::string flagsArg = encodeStressFlags(flags);
 
     auto run = eco_test::runSpawnedChildren(
@@ -1118,6 +1139,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                     const auto rec = eco_test::resultRecord<ElmSharedTestResult>(o);
                     if (rec.completed) accumulateFromShared(&rec);
                 }
+                applyXfail(i, o, v);
                 return v;
             }
             const auto rec = eco_test::resultRecord<ElmSharedTestResult>(o);
@@ -1129,12 +1151,14 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
             }
             v.passed = v.error.empty();
             if (rec.completed) accumulateFromShared(&rec);
+            applyXfail(i, o, v);
             return v;
         });
 
     ParallelTestSummary summary;
     summary.passCount = run.passCount;
     summary.failCount = run.failCount;
+    summary.xfailCount = run.xfailCount;
     summary.failedTests = std::move(run.failedTests);
     return summary;
 }
@@ -1321,6 +1345,10 @@ public:
                                            checkProcessOutput_);
         }
 
+        if (summary.xfailCount > 0) {
+            std::cout << "\n" << summary.xfailCount << " of " << summary.passCount
+                      << " passing tests are expected failures (XFAIL-NATIVE)\n";
+        }
         lastPassCount_ = summary.passCount;
         lastFailCount_ = summary.failCount + compileFailed;
         lastFailedTests_.insert(lastFailedTests_.end(),

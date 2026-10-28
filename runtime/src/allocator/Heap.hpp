@@ -436,7 +436,9 @@ typedef struct {
     i64 value;
 } ElmInt;
 
-// Boxed Unicode code point (0..0x10FFFF; lone surrogates are their unit value).
+// Boxed Char value (KERN_008, CharValue.hpp): a Unicode code point
+// (0..0x10FFFF; lone surrogates are their unit value) or an encoded
+// case-mapping result.
 typedef struct {
     Header header;
     u32 value;

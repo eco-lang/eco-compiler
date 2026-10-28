@@ -254,11 +254,12 @@ add_custom_target(eco-system-examples
     VERBATIM
 )
 
-# The eco-system E2E suite on the JS target (plans/eco-system-library.md Phase 10, decision D15):
-# test/scripts/run-js-e2e.js compiles every test/eco-system test to JS with Stage 1 (guida.js),
-# runs it with node against its own HTTP test server, and checks the same CHECK / CHECK-NOT /
-# EXIT / STDIN directives as the native harness (plus `-- SKIP-JS: <reason>`). Work files go
-# to ${CMAKE_BINARY_DIR}/test/js-e2e. `full` runs it after the native suite.
+# The JS-target E2E suites (plans/eco-system-library.md Phase 10, decision D15;
+# plans/char-case-mapping-elm-exact.md Step 0): test/scripts/run-js-e2e.js compiles every
+# test/eco-system and test/elm-conformance test to JS with Stage 1 (guida.js), runs it with node
+# against its own HTTP test server, and checks the same CHECK / CHECK-NOT / EXIT / STDIN
+# directives as the native harness (plus `-- SKIP-JS: <reason>`, not allowed in elm-conformance).
+# Work files go to ${CMAKE_BINARY_DIR}/test/js-e2e/<project>. `full` runs it after the native suite.
 # Usage: cmake --build build --target run-js-e2e
 #        TEST_FILTER=Stream cmake --build build --target run-js-e2e   (comma-separated substrings)
 if(NOT WIN32)
@@ -266,7 +267,7 @@ if(NOT WIN32)
         COMMAND ${CMAKE_COMMAND} -E env GUIDA_JS_PATH=${BUILD_XHR_DIR}/bin/guida.js
             sh -c "${NODE_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/scripts/run-js-e2e.js --build-dir ${CMAKE_BINARY_DIR} --repo-root ${CMAKE_SOURCE_DIR} $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
         DEPENDS guida
-        COMMENT "Running the eco-system E2E tests on the JS target (node)"
+        COMMENT "Running the eco-system and elm-conformance E2E tests on the JS target (node)"
         USES_TERMINAL
     )
 endif()

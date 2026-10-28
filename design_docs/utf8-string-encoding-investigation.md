@@ -232,7 +232,7 @@ UTF-16 implementation, including surrogate-half iteration order.
 | `trim`, `trimLeft`, `trimRight` | ASCII whitespace scan on bytes; result is a sub-view | better — today flattens |
 | `toInt`, `toFloat` | already ASCII-narrowed (`narrowAsciiToStack`); UTF-8 bytes *are* the narrow form | better — narrowing becomes a pointer pass |
 | `foldl`, `foldr`, `map`, `filter`, `any`, `all`, `toList` | streaming UTF-8 decoder that **yields surrogate halves for 4-byte sequences** (hi then lo) reproduces UTF-16 iteration exactly; results of `map`/`filter` materialize as UTF-16 (they're fresh strings anyway) | equal (single pass either way; foldr needs the two-pass or reverse-iterate trick UTF-8 supports via lead-byte scan-back) |
-| `toUpper`, `toLower` | ASCII-only mapping today ⇒ byte-wise on UTF-8, non-ASCII bytes pass through untouched (multibyte sequences have all bytes ≥ 0x80) | equal or better |
+| `toUpper`, `toLower` | ASCII-only mapping today ⇒ byte-wise on UTF-8, non-ASCII bytes pass through untouched (multibyte sequences have all bytes ≥ 0x80) (Updated 2026-10-28: the mapping is full Unicode now, plans/char-case-mapping-elm-exact.md, but UTF-8 forms are all ASCII, so the UTF-8 arm stays byte-wise) | equal or better |
 | `fromInt`, `fromFloat` (intrinsics) | output is pure ASCII — either encoding valid; keep emitting UTF-16 leaves (zero churn) | equal |
 
 ### 3.2 Identical but with an O(scan) index translation — keep UTF-8, scan once

@@ -156,11 +156,13 @@ struct ChildVerdict {
     bool passed = false;
     std::string error;
     std::string output;              // printed under the test name
+    std::string note;                // printed after OK, e.g. "XFAIL: <reason> -- <error>"
 };
 
 struct SpawnedRunSummary {
     size_t passCount = 0;
     size_t failCount = 0;
+    size_t xfailCount = 0;           // passes that are expected failures (`-- XFAIL-NATIVE:`)
     std::vector<std::string> failedTests;
 };
 
@@ -184,7 +186,7 @@ inline std::string signalDescription(int sig) {
 }
 
 inline void printChildResult(const std::string& name, const std::string& output, bool passed,
-                             const std::string& error) {
+                             const std::string& error, const std::string& note = std::string()) {
     namespace Color = Testing::Color;
     std::ostringstream oss;
     oss << "- " << Color::bold() << name << Color::reset() << "\n";
@@ -193,7 +195,9 @@ inline void printChildResult(const std::string& name, const std::string& output,
         if (output.back() != '\n') oss << "\n";
     }
     if (passed) {
-        oss << Color::bold() << Color::green() << "OK" << Color::reset() << "\n";
+        oss << Color::bold() << Color::green() << "OK" << Color::reset();
+        if (!note.empty()) oss << " (" << note << ")";
+        oss << "\n";
     } else {
         oss << Color::bold() << Color::red() << "FAILED" << Color::reset() << ": " << Color::red() << error
             << Color::reset() << "\n";
@@ -237,9 +241,10 @@ inline SpawnedRunSummary runSpawnedChildren(
     std::vector<Running> running;
 
     auto report = [&](size_t idx, const ChildVerdict& v) {
-        printChildResult(names[idx], v.output, v.passed, v.error);
+        printChildResult(names[idx], v.output, v.passed, v.error, v.note);
         if (v.passed) {
             summary.passCount++;
+            if (!v.note.empty()) summary.xfailCount++;
         } else {
             summary.failCount++;
             summary.failedTests.push_back(names[idx]);

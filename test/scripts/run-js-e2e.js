@@ -1,25 +1,32 @@
 #!/usr/bin/env node
-// run-js-e2e.js — the eco-system E2E suite on the JS target (plans/eco-system-library.md
-// Phase 10, decision D15). Node only, no dependencies.
+// run-js-e2e.js — the JS-target E2E suites (plans/eco-system-library.md Phase 10, decision D15;
+// plans/char-case-mapping-elm-exact.md Step 0). Node only, no dependencies.
 //
 // Usage:
 //   node test/scripts/run-js-e2e.js --build-dir <build> [--repo-root <repo>]
-//        [--filter <substr>[,<substr>...]] [--jobs <n>] [--timeout <seconds>] [--verbose]
+//        [--project <name>[,<name>...]] [--filter <substr>[,<substr>...]] [--jobs <n>]
+//        [--timeout <seconds>] [--verbose]
+//   node test/scripts/run-js-e2e.js --project <name> --record <TestName>
 //
-// For every test/eco-system/src/*.elm with a top-level `main`:
-//   1. The test project (elm.json + src/*.elm) is mirrored into <build>/test/js-e2e/project
+// Projects (default: all, in this order; projectSpecs below):
+//   eco-system       test/eco-system, compiled with --local-package eco/system=<repo>/system-kernel-cpp
+//   elm-conformance  test/elm-conformance, stock elm/core only: the Elm-vs-eco conformance tests,
+//                    which the native harness runs too. Compiled programs get the mode guard
+//                    (patchModeGuard), and `-- SKIP-JS:` is a failure there.
+// For every <project>/src/*.elm with a top-level `main`:
+//   1. The test project (elm.json + src/*.elm) is mirrored into <build>/test/js-e2e/<name>/project
 //      (files are only rewritten when their content changed, so the compiler's caches and
 //      this runner's up-to-date checks keep working). The checked-in TestServerConfig.elm
 //      reads this runner's HTTP test server (js-e2e-http-server.js, the twin of
 //      test/TestHttpServer.hpp) from ECO_TEST_HTTP_URL / ECO_TEST_HTTPS_URL.
 //   2. Each test is compiled with the Stage-1 compiler (compiler/bin/index.js + guida.js)
-//      to <build>/test/js-e2e/out/<Name>.js, with --local-package eco/system=<repo>/system-kernel-cpp.
+//      to <build>/test/js-e2e/<name>/out/<Name>.js, with the project's --local-package flags.
 //      A test is recompiled when its .js is older than the test, any helper module,
-//      elm.json, any file under system-kernel-cpp/src, or guida.js. The first compile runs
-//      alone (it seeds the package caches), the rest in parallel with --builddir=<Name>.
+//      elm.json, the project's shared inputs, this runner, or guida.js. The first compile of
+//      a project runs alone (it seeds the package caches), the rest in parallel.
 //   3. Each test runs as `node <Name>.run.js` (a two-line launcher installing the
 //      XMLHttpRequest shim js-e2e-xhr.js, which elm/http needs on Node, and calling
-//      Elm.<Name>.init()) in its own child process, cwd <build>/test/js-e2e, with:
+//      Elm.<Name>.init()) in its own child process, with:
 //        stdin          the `-- STDIN:` text through a pipe, else /dev/null
 //        ECO_TEST_PORT  a free TCP port (test/TestPort.hpp)
 //        ECO_TEST_HTTP_URL, ECO_TEST_HTTPS_URL  the HTTP test server (test/TestServerConfig.hpp;
@@ -31,10 +38,12 @@
 //   4. `-- SKIP-JS: <reason>` (at the start of a line) skips the test on this target. Use
 //      it only for behaviour that genuinely exists only natively, always with a reason.
 //      `-- LINUX-ONLY: <reason>` skips it on a host that is not Linux, as the native
-//      harnesses do (test/CheckPatterns.hpp).
-// Each test's output is kept in <build>/test/js-e2e/out/<Name>.log. The summary line is
-// "Tests run: N, passed: P, failed: F, skipped: S"; the exit status is 1 if any test
-// failed (or failed to compile), else 0.
+//      harnesses do (test/CheckPatterns.hpp). `-- XFAIL-NATIVE:` is ignored here.
+//   --record <TestName> runs one test without checking it and prints each non-empty output
+//   line as `-- CHECK: <line>`; it fails if the run fails or prints non-ASCII.
+// Each test's output is kept in <build>/test/js-e2e/<name>/out/<Name>.log. Each project prints
+// "<name>: tests run: N, passed: P, failed: F, skipped: S", then the total line
+// "Tests run: ..."; the exit status is 1 if any test failed (or failed to compile), else 0.
 'use strict';
 
 const fs = require('fs');
@@ -55,6 +64,8 @@ function parseArgs(argv) {
         compileJobs: Math.max(1, os.cpus().length),
         timeoutSec: 60,
         verbose: false,
+        projects: [],
+        record: null,
     };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
@@ -74,8 +85,12 @@ function parseArgs(argv) {
             case '--jobs': case '-j': opts.jobs = Math.max(1, parseInt(val(), 10) || 1); break;
             case '--timeout': opts.timeoutSec = Math.max(1, parseInt(val(), 10) || 60); break;
             case '--verbose': case '-v': opts.verbose = true; break;
+            case '--project':
+                opts.projects.push(...val().split(',').map((s) => s.trim()).filter(Boolean));
+                break;
+            case '--record': opts.record = val(); break;
             case '--help': case '-h':
-                console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 34)
+                console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 47)
                     .map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
                 process.exit(0);
                 break;
@@ -329,23 +344,79 @@ function launcher(name) {
         "require('./" + name + ".js').Elm." + name + '.init();\n';
 }
 
-// --- Main ----------------------------------------------------------------------------------------
+// --- Projects --------------------------------------------------------------------------------
 
-async function main() {
-    const opts = parseArgs(process.argv.slice(2));
+// The test projects this runner knows. `modeGuard` patches the compiled program so that a
+// Char equality whose debug-mode answer differs from --optimize throws (patchModeGuard);
+// `allowSkipJs: false` makes a `-- SKIP-JS:` line a failure.
+function projectSpecs(repo) {
+    const pkgDir = path.join(repo, 'system-kernel-cpp');
+    return [
+        { name: 'eco-system', dir: path.join(repo, 'test', 'eco-system'),
+          localPackages: ['eco/system=' + pkgDir],
+          sharedInputs: [path.join(pkgDir, 'src'), path.join(pkgDir, 'elm.json')],
+          modeGuard: false, allowSkipJs: true },
+        { name: 'elm-conformance', dir: path.join(repo, 'test', 'elm-conformance'),
+          localPackages: [], sharedInputs: [],
+          modeGuard: true, allowSkipJs: false,
+          unicodeTables: path.join(repo, 'runtime', 'src', 'allocator', 'CaseMapTables.hpp') },
+    ];
+}
+
+// --- Mode guard (plans/char-case-mapping-elm-exact.md Step 0.3) ------------------------------
+
+// The conformance tests are compiled in debug mode (Debug.log is rejected under --optimize),
+// where a Char is a `String` object and _Utils_eqHelp's `for (var key in x)` walk makes
+// `x == y` a prefix test. Their reference semantics is --optimize (string equality), so any
+// Char equality whose two answers differ is made to throw.
+const GUARD_MARKER = '/* eco-conformance mode guard */';
+const EQ_DEF = 'function _Utils_eqHelp(x, y, depth, stack)';
+const GUARD = GUARD_MARKER + '\n' +
+    'function _Utils_eqHelp(x, y, depth, stack) {\n' +
+    '\tvar r = _Utils_eqHelp_raw(x, y, depth, stack);\n' +
+    '\tif (x instanceof String && y instanceof String && r !== (x.valueOf() === y.valueOf()))\n' +
+    "\t\tthrow new Error('eco-conformance: Char equality differs between debug and --optimize: '\n" +
+    "\t\t\t+ JSON.stringify(x.valueOf()) + ' == ' + JSON.stringify(y.valueOf()));\n" +
+    '\treturn r;\n' +
+    '}\n';
+
+function patchModeGuard(jsFile) {
+    const src = fs.readFileSync(jsFile, 'utf8');
+    if (src.includes(GUARD_MARKER)) return;
+    const first = src.indexOf(EQ_DEF);
+    if (first < 0 || src.indexOf(EQ_DEF, first + 1) >= 0) {
+        throw new Error('stock elm/core Utils.js changed; update patchModeGuard (' + jsFile + ')');
+    }
+    fs.writeFileSync(jsFile, src.slice(0, first) + GUARD +
+        'function _Utils_eqHelp_raw(x, y, depth, stack)' + src.slice(first + EQ_DEF.length));
+}
+
+// --- One project ---------------------------------------------------------------------------------
+
+async function runProject(spec, opts, server) {
     const repo = opts.repoRoot;
-    const testDir = path.join(repo, 'test', 'eco-system');
+    const testDir = spec.dir;
     const srcDir = path.join(testDir, 'src');
-    const work = path.join(opts.buildDir, 'test', 'js-e2e');
+    const work = path.join(opts.buildDir, 'test', 'js-e2e', spec.name);
     const project = path.join(work, 'project');
     const outDir = path.join(work, 'out');
     const compilerJs = path.join(repo, 'compiler', 'bin', 'index.js');
     const guidaJs = process.env.GUIDA_JS_PATH || path.join(opts.buildDir, 'compiler', 'build-xhr', 'bin', 'guida.js');
-    const pkgDir = path.join(repo, 'system-kernel-cpp');
     for (const f of [compilerJs, guidaJs, path.join(testDir, 'elm.json')]) {
         if (!fs.existsSync(f)) throw new Error('missing ' + f + ' (build the `guida` target first)');
     }
     fs.mkdirSync(outDir, { recursive: true });
+    if (spec.unicodeTables) {
+        // The recorded expectations are node's case mapping; eco's tables must be the same
+        // Unicode version (plans/char-case-mapping-elm-exact.md Step 1).
+        const m = /kUnicodeVersion = "([^"]+)"/.exec(fs.readFileSync(spec.unicodeTables, 'utf8'));
+        const tables = m ? m[1] : '(none)';
+        if (tables !== process.versions.unicode) {
+            throw new Error('node ' + process.version + ' has Unicode ' + process.versions.unicode +
+                ', tables are Unicode ' + tables + ': use a node with Unicode ' + tables +
+                ' or regenerate the tables (and re-record the conformance tests)');
+        }
+    }
 
     // 1. Mirror the project; discover the tests.
     writeIfChanged(path.join(project, 'elm.json'), fs.readFileSync(path.join(testDir, 'elm.json')));
@@ -362,17 +433,17 @@ async function main() {
         }
     }
 
-    // The HTTP test server, on an ephemeral port; the tests read its URL from the
-    // environment (TestServerConfig.elm), so nothing is regenerated per run.
-    const server = await startTestHttpServer(0);
     const serverEnv = {
         ECO_TEST_HTTP_URL: 'http://127.0.0.1:' + server.port,
         ECO_TEST_HTTPS_URL: 'https://127.0.0.1:' + server.port,
     };
 
-    const selected = tests.filter((t) =>
-        !opts.filters.length || opts.filters.some((f) => ('eco-system/' + t.name).includes(f)));
-    console.log('JS E2E (eco-system): ' + selected.length + ' of ' + tests.length + ' tests selected' +
+    const selected = opts.record
+        ? tests.filter((t) => t.name === opts.record)
+        : tests.filter((t) =>
+            !opts.filters.length || opts.filters.some((f) => (spec.name + '/' + t.name).includes(f)));
+    if (opts.record && !selected.length) throw new Error('--record: no test ' + opts.record + ' in ' + spec.name);
+    console.log('JS E2E (' + spec.name + '): ' + selected.length + ' of ' + tests.length + ' tests selected' +
         (opts.filters.length ? ' (filter: ' + opts.filters.join(',') + ')' : '') +
         '; HTTP test server on 127.0.0.1:' + server.port);
 
@@ -389,16 +460,21 @@ async function main() {
             results.set(t.name, { status: 'fail', message: String(e.message || e) });
             continue;
         }
-        if (skip !== null) results.set(t.name, { status: 'skip', message: skip });
+        if (skip !== null && !spec.allowSkipJs) {
+            results.set(t.name, { status: 'fail', message: 'SKIP-JS is not allowed here: ' +
+                spec.name + ' tests must run on both targets' });
+        } else if (skip !== null) results.set(t.name, { status: 'skip', message: skip });
         else toRun.push(t);
     }
 
     // 2. Compile.
     const shared = Math.max(
         mtimeMs(path.join(project, 'elm.json')),
-        newestMtime(path.join(pkgDir, 'src')),
-        mtimeMs(path.join(pkgDir, 'elm.json')),
+        ...spec.sharedInputs.map((p) => {
+            try { return fs.statSync(p).isDirectory() ? newestMtime(p) : mtimeMs(p); } catch (e) { return -1; }
+        }),
         mtimeMs(guidaJs),
+        mtimeMs(__filename),   // the mode guard is part of the compiled output
         ...fs.readdirSync(path.join(project, 'src'))
             .filter((f) => f.endsWith('.elm') && !tests.some((t) => t.name + '.elm' === f))
             .map((f) => mtimeMs(path.join(project, 'src', f))));
@@ -409,8 +485,8 @@ async function main() {
     console.log('Compiling: ' + (toRun.length - stale.length) + ' up to date, ' + stale.length + ' to compile');
     const compileOne = async (t, buildDir) => {
         const js = path.join(outDir, t.name + '.js');
-        const args = [compilerJs, 'make', 'src/' + t.name + '.elm', '--output=' + js,
-            '--local-package', 'eco/system=' + pkgDir];
+        const args = [compilerJs, 'make', 'src/' + t.name + '.elm', '--output=' + js];
+        for (const lp of spec.localPackages) args.push('--local-package', lp);
         if (buildDir) args.push('--builddir=' + buildDir);
         const r = await run(process.execPath, args, {
             cwd: project,
@@ -419,6 +495,11 @@ async function main() {
         if (r.code !== 0 || !fs.existsSync(js)) {
             try { fs.unlinkSync(js); } catch (e) { /* none */ }
             results.set(t.name, { status: 'fail', message: 'compile failed (exit ' + r.code + '):\n' + r.output.slice(0, 4000) });
+        } else if (spec.modeGuard) {
+            try { patchModeGuard(js); } catch (e) {
+                try { fs.unlinkSync(js); } catch (e2) { /* none */ }
+                results.set(t.name, { status: 'fail', message: String(e.message || e) });
+            }
         }
         writeIfChanged(path.join(outDir, t.name + '.run.js'),
             launcher(t.name));
@@ -435,6 +516,7 @@ async function main() {
     // 3. Run.
     const runnable = toRun.filter((t) => !results.has(t.name));
     console.log('Running ' + runnable.length + ' tests (max ' + opts.jobs + ' parallel)...');
+    const outputs = new Map();
     const runOne = async (t) => {
         const port = await pickFreePort();
         const started = Date.now();
@@ -462,19 +544,40 @@ async function main() {
         });
         const ms = Date.now() - started;
         fs.writeFileSync(path.join(outDir, t.name + '.log'), r.output);
+        outputs.set(t.name, r);
         let message = '';
         if (r.timedOut) message = 'timed out after ' + opts.timeoutSec + ' s';
         else if (r.signal) message = 'killed by ' + r.signal;
         else if (r.code !== t.exit) message = 'exit code ' + r.code + ', expected ' + t.exit;
-        if (!message) message = verifyPatterns(r.output, t.patterns);
+        if (!message && !opts.record) message = verifyPatterns(r.output, t.patterns);
         if (message) message += '\n--- output ---\n' + r.output.slice(0, 4000);
         results.set(t.name, { status: message ? 'fail' : 'pass', message, ms });
+        if (opts.record) return;
         const res = results.get(t.name);
-        console.log((res.status === 'pass' ? '  PASS ' : '  FAIL ') + t.name + ' (' + ms + ' ms)' +
+        console.log((res.status === 'pass' ? '  PASS ' : '  FAIL ') + spec.name + '/' + t.name + ' (' + ms + ' ms)' +
             (res.status === 'fail' ? '\n    ' + message.split('\n').join('\n    ') : ''));
     };
     await pool(runnable, opts.jobs, runOne);
-    await server.close();
+
+    // --record: print the run's output as CHECK lines (plans/char-case-mapping-elm-exact.md 0.4).
+    if (opts.record) {
+        const t = selected[0];
+        const res = results.get(t.name);
+        if (res.status !== 'pass') {
+            console.log('  FAIL ' + spec.name + '/' + t.name + '\n    ' + res.message.split('\n').join('\n    '));
+            return { passed: 0, failed: 1, skipped: 0, failures: [spec.name + '/' + t.name] };
+        }
+        // Elm's debug-build banner is JS-only output, not part of the expectation.
+        const lines = outputs.get(t.name).output.split('\n').map((l) => l.replace(/\r$/, ''))
+            .filter((l) => l.trim() && !l.startsWith('Compiled in DEV mode.'));
+        const bad = lines.filter((l) => /[^\x00-\x7f]/.test(l));
+        if (bad.length) {
+            console.log('  FAIL ' + t.name + ': non-ASCII output; print code points, not text:\n    ' + bad.join('\n    '));
+            return { passed: 0, failed: 1, skipped: 0, failures: [spec.name + '/' + t.name] };
+        }
+        for (const l of lines) console.log('-- CHECK: ' + l);
+        return { passed: 1, failed: 0, skipped: 0, failures: [] };
+    }
 
     // 4. Summary.
     let passed = 0, failed = 0, skipped = 0;
@@ -482,14 +585,51 @@ async function main() {
     for (const t of selected) {
         const r = results.get(t.name);
         if (r.status === 'pass') passed++;
-        else if (r.status === 'skip') { skipped++; console.log('  SKIP ' + t.name + ': ' + r.message); }
+        else if (r.status === 'skip') { skipped++; console.log('  SKIP ' + spec.name + '/' + t.name + ': ' + r.message); }
         else {
             failed++;
-            failures.push(t.name);
-            if (!runnable.includes(t)) console.log('  FAIL ' + t.name + '\n    ' + r.message.split('\n').join('\n    '));
+            failures.push(spec.name + '/' + t.name);
+            if (!runnable.includes(t)) console.log('  FAIL ' + spec.name + '/' + t.name + '\n    ' + r.message.split('\n').join('\n    '));
         }
     }
-    console.log('\nTests run: ' + (passed + failed) + ', passed: ' + passed + ', failed: ' + failed +
+    console.log(spec.name + ': tests run: ' + (passed + failed) + ', passed: ' + passed + ', failed: ' + failed +
+        ', skipped: ' + skipped + '\n');
+    return { passed, failed, skipped, failures };
+}
+
+// --- Main ----------------------------------------------------------------------------------------
+
+async function main() {
+    const opts = parseArgs(process.argv.slice(2));
+    const specs = projectSpecs(opts.repoRoot);
+    const unknown = opts.projects.filter((n) => !specs.some((s) => s.name === n));
+    if (unknown.length) throw new Error('unknown project(s): ' + unknown.join(', ') +
+        ' (known: ' + specs.map((s) => s.name).join(', ') + ')');
+    if (opts.record && opts.projects.length !== 1) throw new Error('--record needs exactly one --project');
+    const chosen = specs.filter((s) => !opts.projects.length || opts.projects.includes(s.name));
+
+    // The single-project layout's work directories, from before the runner took several.
+    const work = path.join(opts.buildDir, 'test', 'js-e2e');
+    for (const old of ['project', 'out']) {
+        fs.rmSync(path.join(work, old), { recursive: true, force: true });
+    }
+
+    // The HTTP test server, on an ephemeral port, shared by every project; the tests read its
+    // URL from the environment (TestServerConfig.elm), so nothing is regenerated per run.
+    const server = await startTestHttpServer(0);
+    let passed = 0, failed = 0, skipped = 0;
+    const failures = [];
+    try {
+        for (const spec of chosen) {
+            const r = await runProject(spec, opts, server);
+            passed += r.passed; failed += r.failed; skipped += r.skipped;
+            failures.push(...r.failures);
+        }
+    } finally {
+        await server.close();
+    }
+    if (opts.record) return failed ? 1 : 0;
+    console.log('Tests run: ' + (passed + failed) + ', passed: ' + passed + ', failed: ' + failed +
         ', skipped: ' + skipped);
     if (failures.length) console.log('Failed: ' + failures.join(' '));
     return failed ? 1 : 0;

@@ -18,6 +18,7 @@
 #define ECO_STRING_OPS_H
 
 #include "Allocator.hpp"
+#include "CaseMap.hpp"
 #include "HeapHelpers.hpp"
 #include "Utf8.hpp"
 #include <algorithm>
@@ -425,12 +426,15 @@ inline u16 charAt(void* str, i64 index) {
 // Code points (a Char is a Unicode code point; a String is UTF-16 units)
 // ============================================================================
 //
-// A Char is a 32-bit code point (REP_ABI_001: Char -> i32). Strings stay
+// A Char is a 32-bit Char value (REP_ABI_001: Char -> i32; KERN_008): a code
+// point, or an encoded case-mapping result such as Char.toUpper 'ß' == "SS",
+// whose String is 2-3 UTF-16 units (CharValue.hpp, CaseMap.hpp). Strings stay
 // UTF-16, so every kernel that turns a String into Chars (toList, foldl,
 // foldr, map, filter, any, all, uncons) decodes code points with
-// nextCodePoint / prevCodePoint, and every kernel that turns Chars into a
-// String (cons, fromChar, fromList, map, filter) encodes them with
-// encodeCodePoint / appendCodePoint.
+// nextCodePoint / prevCodePoint (never an encoded value), and every kernel
+// that turns Chars into a String (cons, fromChar, fromList, map) encodes them
+// with encodeCodePoint / appendCodePoint, which write an encoded value's
+// whole expansion.
 //
 // Only a VALID high+low surrogate pair is combined. A lone surrogate is a
 // Char of its own unit value and re-encodes to that one unit, which keeps
@@ -467,24 +471,20 @@ inline u32 prevCodePoint(const u16* p, size_t& i) {
     return u;
 }
 
-// Number of UTF-16 units encodeCodePoint writes for cp (1 or 2).
-inline u32 codePointUnits(u32 cp) { return (cp > 0xFFFFu && cp <= 0x10FFFFu) ? 2 : 1; }
+// Number of UTF-16 units encodeCodePoint writes for a Char value (1 to
+// CharValue::kMaxCharUnits).
+inline u32 codePointUnits(u32 cp) { return CaseMap::units(cp); }
 
-// Writes cp as UTF-16 into out (room for 2 units); returns the unit count.
-// cp <= 0xFFFF (including a lone surrogate) is one unit; 0x10000..0x10FFFF is
-// a surrogate pair. Values above 0x10FFFF cannot be produced by Char.fromCode
-// or eco.char.fromInt (both map them to U+FFFD) and are written as U+FFFD.
-inline u32 encodeCodePoint(u32 cp, u16* out) {
-    if (cp <= 0xFFFFu) { out[0] = static_cast<u16>(cp); return 1; }
-    if (cp > 0x10FFFFu) { out[0] = 0xFFFDu; return 1; }
-    u32 v = cp - 0x10000u;
-    out[0] = static_cast<u16>(0xD800u + (v >> 10));
-    out[1] = static_cast<u16>(0xDC00u + (v & 0x3FFu));
-    return 2;
-}
+// Writes a Char value as UTF-16 into out (room for CharValue::kMaxCharUnits
+// units); returns the unit count. cp <= 0xFFFF (including a lone surrogate) is
+// one unit; 0x10000..0x10FFFF is a surrogate pair; an encoded case-mapping
+// result (KERN_008) is its expansion. 0x110000..0x1FFFFF cannot be produced by
+// Char.fromCode or eco.char.fromInt (both map it to U+FFFD) and is written as
+// U+FFFD.
+inline u32 encodeCodePoint(u32 cp, u16* out) { return CaseMap::writeUnits(cp, out); }
 
 inline void appendCodePoint(std::vector<u16>& out, u32 cp) {
-    u16 buf[2];
+    u16 buf[CharValue::kMaxCharUnits];
     u32 n = encodeCodePoint(cp, buf);
     out.insert(out.end(), buf, buf + n);
 }
@@ -785,8 +785,57 @@ HPointer indexes(void* needle, void* haystack);
 // Transformation
 // ============================================================================
 
+// Full Unicode case mapping of a String with a non-ASCII unit
+// (plans/char-case-mapping-elm-exact.md Step 3): node's toUpperCase /
+// toLowerCase per code point (CaseMap.hpp), expansions included ("ß" ->
+// "SS"), and for toLower the Final_Sigma rule for U+03A3. The source is a
+// C-heap snapshot, so the allocations below cannot invalidate it and nothing
+// needs rooting. An all-ASCII result becomes a UTF-8 string when enabled.
+inline HPointer caseMapGeneral(void* str, bool upper) {
+    std::u16string src = toStdU16String(str);
+    const u16* p = reinterpret_cast<const u16*>(src.data());
+    const size_t n = src.size();
+    std::vector<u16> out;
+    out.reserve(n + 8);
+    u16 acc = 0;
+    for (size_t i = 0; i < n;) {
+        const size_t start = i;
+        const u32 cp = nextCodePoint(p, n, i);
+        u32 m;
+        if (!upper && cp == 0x3A3u) {
+            m = CaseMap::finalSigmaAt(p, n, start, i) ? 0x3C2u : 0x3C3u;
+        } else {
+            m = upper ? CaseMap::upper(cp) : CaseMap::lower(cp);
+        }
+        const size_t before = out.size();
+        appendCodePoint(out, m);
+        for (size_t k = before; k < out.size(); ++k) acc |= out[k];
+    }
+    if (acc < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
+        AsciiOut ao = allocAsciiOut(out.size());
+        for (size_t k = 0; k < out.size(); ++k) ao.dst[k] = static_cast<u8>(out[k]);
+        return finishAsciiOut(ao);
+    }
+    return alloc::allocString(out.data(), out.size());
+}
+
+// True iff every UTF-16 unit of str is < 0x80 (UTF-8 forms are all ASCII).
+// No allocation.
+inline bool allUnitsAscii(void* str) {
+    bool ascii = true;
+    forEachSegmentEx(
+        str,
+        [&](const u16* q, u32 k) {
+            for (u32 j = 0; j < k && ascii; ++j) ascii = q[j] < 0x80;
+        },
+        [](const u8*, u32) {});
+    return ascii;
+}
+
 /**
- * Converts string to uppercase (ASCII only).
+ * Converts string to uppercase: full Unicode case mapping (node's
+ * toUpperCase; plans/char-case-mapping-elm-exact.md), so it equals
+ * String.fromList (List.map Char.toUpper (String.toList s)).
  */
 inline HPointer toUpper(void* str) {
     if (!str) return alloc::emptyString();
@@ -807,8 +856,11 @@ inline HPointer toUpper(void* str) {
         return finishAsciiOut(out);
     }
 
-    // Root the source across allocStringBlank (which may GC); after the
-    // alloc, resolve back and copy directly into the result chars[].
+    // A non-ASCII unit needs the full mapping (which may change the length).
+    if (!allUnitsAscii(str)) return caseMapGeneral(str, /*upper=*/true);
+
+    // All ASCII: map in place. Root the source across allocStringBlank (which
+    // may GC); after the alloc, resolve back and copy into the result chars[].
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
     alloc::BlankString out;
@@ -825,7 +877,10 @@ inline HPointer toUpper(void* str) {
 }
 
 /**
- * Converts string to lowercase (ASCII only).
+ * Converts string to lowercase: full Unicode case mapping (node's
+ * toLowerCase; plans/char-case-mapping-elm-exact.md), with Final_Sigma for
+ * U+03A3, so it equals mapping Char.toLower over the string except for a
+ * word-final capital sigma.
  */
 inline HPointer toLower(void* str) {
     if (!str) return alloc::emptyString();
@@ -845,6 +900,9 @@ inline HPointer toLower(void* str) {
         }
         return finishAsciiOut(out);
     }
+
+    // A non-ASCII unit needs the full mapping (which may change the length).
+    if (!allUnitsAscii(str)) return caseMapGeneral(str, /*upper=*/false);
 
     auto& allocator = Allocator::instance();
     HPointer srcHp = allocator.wrap(str);
@@ -1343,14 +1401,15 @@ inline HPointer fromChar(u32 c) {
         u8 b = static_cast<u8>(c);
         return makeUtf8LeafFromBytes(&b, 1);
     }
-    u16 buf[2];
+    // c < 0x80 above stays exact: an encoded value is >= 0x200000.
+    u16 buf[CharValue::kMaxCharUnits];
     u32 n = encodeCodePoint(c, buf);
     return alloc::allocString(buf, n);
 }
 
 /**
- * Prepends a character (a code point: 1 UTF-16 unit, or 2 for an astral
- * code point) to a string: cons.
+ * Prepends a character (a Char value: 1 UTF-16 unit, 2 for an astral code
+ * point, 2-3 for an encoded case-mapping result) to a string: cons.
  *
  * Snapshots the source bytes via toStdU16String first so a slice input
  * works the same as a leaf input. Always returns a flat leaf in Phase 1.
@@ -1358,7 +1417,7 @@ inline HPointer fromChar(u32 c) {
 inline HPointer cons(u32 c, void* str) {
     if (!str) return fromChar(c);
     u32 len = rawLen(str);
-    u16 units[2];
+    u16 units[CharValue::kMaxCharUnits];   // an encoded value writes 2-3
     u32 n = encodeCodePoint(c, units);
     size_t total_len = static_cast<size_t>(len) + n;
 

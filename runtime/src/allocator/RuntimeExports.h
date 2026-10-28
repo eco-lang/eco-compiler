@@ -296,6 +296,15 @@ HPtr eco_alloc_float(double value);
 /// @return HPointer (as uint64_t) to the allocated ElmChar object
 HPtr eco_alloc_char(uint32_t value);
 
+/// Build-mismatch guard for ECO_CHAR_CASE_EXPANSION (KERN_008, CharValue::kBuildGuardSymbol):
+/// empty; exactly one of the two is defined, the one of this runtime's setting. The backend
+/// calls the one of its own setting at the top of @main.
+#if ECO_CHAR_CASE_EXPANSION
+void eco_char_case_expansion_on(void);
+#else
+void eco_char_case_expansion_off(void);
+#endif
+
 /// Generic allocation with specified size and tag.
 /// @param size Size in bytes to allocate
 /// @param tag Object type tag (Tag enum value)

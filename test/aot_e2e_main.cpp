@@ -137,6 +137,7 @@ struct TestCase {
     std::string aot_shadow;    // absolute path to AOT shadow dir (cwd for compile)
     std::string display_name;  // "<pkg>/<stem>"
     std::string skip_reason;   // non-empty: "SKIP-AOT: <why>" / "LINUX-ONLY: <why>", not run
+    std::optional<std::string> xfail_reason;  // `-- XFAIL-NATIVE: <why>` (CheckPatterns.hpp)
 };
 
 // Packages contributing E2E test sources. Matches the JIT runner's
@@ -145,7 +146,7 @@ struct TestCase {
 const std::vector<std::string>& aot_test_packages() {
     static const std::vector<std::string> pkgs = {
         "elm", "elm-bytes", "eco-kernel", "eco-system", "elm-core", "elm-html", "elm-http",
-        "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url",
+        "elm-json", "elm-parser", "elm-regex", "elm-time", "elm-url", "elm-conformance",
     };
     return pkgs;
 }
@@ -220,6 +221,7 @@ std::vector<TestCase> discover_all() {
                 std::ifstream in(p);
                 std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
                 if (auto why = eco_test::hostSkipReason(src)) tc.skip_reason = *why;
+                tc.xfail_reason = eco_test::xfailNativeReason(src);
             }
             cases.push_back(std::move(tc));
         }
@@ -272,8 +274,10 @@ ProcResult spawn_capture(const std::vector<std::string>& argv,
 struct TestResult {
     std::string display_name;
     bool passed = false;
+    bool ran = false;          // the ELF was run (a compile/link failure never XFAILs)
     std::string failure_reason;
     std::string failure_detail;
+    std::string xfail_note;    // non-empty: an expected failure reported as a pass
 };
 
 std::optional<std::string> slurp(const std::string& path) {
@@ -351,7 +355,7 @@ ProcResult run_elf(const std::string& elf_path, const std::string& cwd,
     return spawn_capture(argv, env, cwd, 64 * 1024, stdin_text);
 }
 
-TestResult run_one(const TestCase& tc) {
+TestResult run_one_unmarked(const TestCase& tc) {
     TestResult r;
     r.display_name = tc.display_name;
 
@@ -421,6 +425,7 @@ TestResult run_one(const TestCase& tc) {
     std::string elf_output;
     int elf_exit = 0;
     {
+        r.ran = true;
         ProcResult p = run_elf(elf_out, tc.aot_shadow, stdin_text);
         elf_output = p.output;
         elf_exit = p.exit_code;
@@ -462,6 +467,23 @@ TestResult run_one(const TestCase& tc) {
         return r;
     }
     r.passed = true;
+    return r;
+}
+
+// Applies `-- XFAIL-NATIVE:`: a run that fails its checks passes with a note,
+// one that passes fails (XPASS), so a stale mark cannot linger.
+TestResult run_one(const TestCase& tc) {
+    TestResult r = run_one_unmarked(tc);
+    if (!tc.xfail_reason || !r.ran) return r;
+    if (!r.passed) {
+        r.passed = true;
+        r.xfail_note = "XFAIL: " + *tc.xfail_reason + " -- " + r.failure_reason;
+        r.failure_reason.clear();
+        r.failure_detail.clear();
+    } else {
+        r.passed = false;
+        r.failure_reason = "XPASS: the test passes natively; remove its -- XFAIL-NATIVE line";
+    }
     return r;
 }
 
@@ -625,7 +647,11 @@ int main(int argc, char** argv) {
         std::lock_guard<std::mutex> lk(results_mu);
         if (r.passed) {
             std::cout << g_color.green() << "PASS" << g_color.reset()
-                      << "  " << r.display_name << "\n";
+                      << "  " << r.display_name;
+            if (!r.xfail_note.empty()) {
+                std::cout << g_color.dim() << "  (" << r.xfail_note << ")" << g_color.reset();
+            }
+            std::cout << "\n";
         } else {
             std::cout << g_color.red()   << "FAIL" << g_color.reset()
                       << "  " << r.display_name
@@ -665,8 +691,11 @@ int main(int argc, char** argv) {
         for (auto& w : workers) w.join();
     }
 
-    std::size_t passed = 0, failed = 0;
-    for (const auto& r : results) (r.passed ? passed : failed)++;
+    std::size_t passed = 0, failed = 0, xfailed = 0;
+    for (const auto& r : results) {
+        (r.passed ? passed : failed)++;
+        if (!r.xfail_note.empty()) xfailed++;
+    }
 
     std::cout << "\n"
               << g_color.bold() << "=== AOT E2E Summary ===\n" << g_color.reset()
@@ -675,6 +704,7 @@ int main(int argc, char** argv) {
               << "Tests failed: " << (failed ? g_color.red() : g_color.dim())
               << failed << g_color.reset() << "\n"
               << "Tests skipped: " << skipped.size() << " (SKIP-AOT, LINUX-ONLY)\n"
+              << "Of the passes, expected failures: " << xfailed << " (XFAIL-NATIVE)\n"
               << "\nResult: " << (failed == 0 ? g_color.green() : g_color.red())
               << (failed == 0 ? "PASSED" : "FAILED") << g_color.reset() << "\n";
 

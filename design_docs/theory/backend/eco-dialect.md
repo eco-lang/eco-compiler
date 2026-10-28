@@ -14,7 +14,7 @@ The types make a value's form in the intermediate code explicit and keep it sepa
 
 The boxed type, written `!eco.value`, is one machine word. It holds either the address of a heap object or an embedded constant, told apart by a bit in the word. True, False, the empty list and every constructor with no fields are embedded constants. How the word is encoded, and what each Elm type becomes in each representation, is described in [value-representation.md](../value-representation.md).
 
-Elm's primitives are plain MLIR types: Int is a 64-bit integer, Float a 64-bit float, Char a 32-bit integer holding a Unicode code point and Bool a single bit (`i1`). The single-bit Bool exists only in the intermediate code. In heap fields, closures and at call boundaries a Bool is always boxed, as one of the two embedded constants.
+Elm's primitives are plain MLIR types: Int is a 64-bit integer, Float a 64-bit float, Char a 32-bit integer holding a Unicode code point or an encoded multi-code-point case-mapping result (KERN_008) and Bool a single bit (`i1`). The single-bit Bool exists only in the intermediate code. In heap fields, closures and at call boundaries a Bool is always boxed, as one of the two embedded constants.
 
 Six aggregate types hold a small group of values outside the heap: a pair, a triple, a record, a custom-type value, a list cell and a closure environment. They lower to LLVM struct values and never to heap pointers.
 

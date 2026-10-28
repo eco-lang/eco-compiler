@@ -31,10 +31,10 @@ namespace eco {
 /// EcoGCPrepare — see Ops.td's Eco_CallOp description for the license.
 inline constexpr llvm::StringLiteral kCseSafeAttrName{"eco.cse_safe"};
 
-/// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: a Unicode code
-/// point 0..0x10FFFF held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3
-/// (Char) heap/closure word holds the code point zero-extended to 64 bits
-/// (REP_HEAP_002).
+/// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: a Char value
+/// (a Unicode code point 0..0x10FFFF, or an encoded case-mapping result,
+/// KERN_008) held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3 (Char)
+/// heap/closure word holds it zero-extended to 64 bits (REP_HEAP_002).
 inline constexpr unsigned kEcoCharBits = 32;
 
 /// True iff `t` is the Char SSA type (i32). Use this - never a literal width -

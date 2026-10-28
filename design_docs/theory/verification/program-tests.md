@@ -42,13 +42,13 @@ Directives are comments at the start of a line. They fall into three groups by w
 
 1. Output directives say which lines must appear and which must not. They borrow LLVM's FileCheck syntax, with plain, negative, unordered, label, same-line and next-line variants. The unordered and label variants mean only what the plain one means. Matches may come in any order unless a same-line or next-line variant ties one to the match before it. A pattern may hold regular expressions in double braces. One variant matches the program's generated MLIR text instead of its run output, for a test whose point is the code the compiler emits.
 2. A flags directive passes JSON to the program as its start-up flags.
-3. Process directives describe the program as an operating-system process: the exit status it must return (`-- EXIT:`), text to feed on its standard input (`-- STDIN:`), and markers that restrict a test to Linux or keep it off the JavaScript or AOT path. A restricting marker must state its reason.
+3. Process directives describe the program as an operating-system process: the exit status it must return (`-- EXIT:`), text to feed on its standard input (`-- STDIN:`), and markers that restrict a test to Linux or keep it off the JavaScript or AOT path. A restricting marker must state its reason. `-- XFAIL-NATIVE:` marks a test that is expected to fail on the native runners only: a failing run counts as a pass, labelled XFAIL, and a passing run counts as a failure (XPASS), so the mark is removed as soon as the behaviour is fixed. A compile failure is never expected.
 
 One parser in C++ reads all of them, and the JIT runner, the AOT runner and the codegen test hosts share it. An unknown variant is a parse error. If the parser skipped unknown variants, a fixture with a misspelled directive would assert nothing and still pass, and a check that cannot fail is worse than none. The JavaScript runner is a Node script, so it reads the same directive syntax with its own code, and it ignores directives about MLIR text, which it never produces.
 
 ## The corpus
 
-The programs are split into packages by what they exercise. Each package is a directory with its own Elm project file, listed once in the test build's package list, which makes a shadow copy of each in the build tree so the compiler's caches stay out of the source tree. Six kinds of package hold whole programs, ordered from the language outward.
+The programs are split into packages by what they exercise. Each package is a directory with its own Elm project file, listed once in the test build's package list, which makes a shadow copy of each in the build tree so the compiler's caches stay out of the source tree. Seven kinds of package hold whole programs, ordered from the language outward.
 
 1. The language corpus (`test/elm/`, about 640 programs) is the largest. It covers the core language and code generation: case expressions, closures, partial application, records, tail recursion and representation corner cases. Many of its programs are regression pins like the one above.
 2. One suite per standard Elm package (core, bytes, JSON, parser, regex, time, URL, HTTP and HTML) exercises that package's C++ kernel through its public Elm interface. The language corpus does not cover these kernels systematically, so each package gets its own suite.
@@ -56,6 +56,7 @@ The programs are split into packages by what they exercise. Each package is a di
 4. The system suite (`test/eco-system/`) tests Eco's public system library: files, sockets, TLS, child processes, HTTP servers, WebSockets, streams, HTML serialization and program lifetime.
 5. The stress suite holds longer programs built on a shared harness module.
 6. The conformance package holds scripts and one Elm WebSocket client that third-party protocol suites drive.
+7. The Elm conformance package (`test/elm-conformance/`) is unrelated to the one above. It holds stock-elm/core programs whose expectations were recorded from Elm itself on Node (`run-js-e2e.js --record`). The JavaScript runner and the native runners both check them, so they show where Eco's behaviour differs from Elm's. On the JavaScript side, a guard makes any Char equality throw if Elm's debug build and `--optimize` would answer it differently.
 
 Each package's runner is a thin wrapper over one shared base (`ElmE2ETestBase.hpp`), parameterized by name and directory. Copies of a runner of about a thousand lines drift apart, and a fix to one misses the others. With one base, a fix to how programs are compiled or matched reaches every package.
 

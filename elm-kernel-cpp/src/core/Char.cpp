@@ -1,4 +1,5 @@
 #include "Char.hpp"
+#include "allocator/CaseMap.hpp"
 #include <stdexcept>
 
 namespace Elm::Kernel::Char {
@@ -49,13 +50,14 @@ int32_t toCode(char32_t c) {
      *
      * PSEUDOCODE:
      * - In JS, need to handle UTF-16 surrogate pairs for chars > 0xFFFF
-     * - In C++, char32_t directly holds the Unicode code point
-     * - Just return the char32_t value as int32_t
+     * - In C++, a Char value (KERN_008) holds the code point, or an encoded
+     *   case-mapping result whose first code point is charCodeAt(0)'s answer
+     * - Return CharValue::firstCodePoint (value & 0x1FFFFF)
      *
      * HELPERS: None
      * LIBRARIES: None
      */
-    return static_cast<int32_t>(c);
+    return static_cast<int32_t>(Elm::CharValue::firstCodePoint(static_cast<uint32_t>(c)));
 }
 
 char32_t toLower(char32_t c) {
@@ -70,14 +72,12 @@ char32_t toLower(char32_t c) {
      * HELPERS: __Utils_chr (not needed in C++)
      * LIBRARIES: ICU (for full Unicode) or <cctype> tolower (ASCII only)
      *
-     * NOTE: This implementation only handles ASCII. Full Unicode case
-     * conversion requires ICU or a Unicode-aware library.
+     * NOTE: full Unicode case mapping, node's toLowerCase per code point,
+     * from the generated tables (CaseMap.hpp, plans/char-case-mapping-elm-exact.md).
+     * A result of more than one code point (toLower 'İ' == "i̇") is an encoded
+     * Char value (KERN_008), as Elm's Char holds the whole string.
      */
-    if (c >= U'A' && c <= U'Z') {
-        return c + 32;
-    }
-    // TODO: Full Unicode case conversion requires ICU
-    return c;
+    return static_cast<char32_t>(Elm::CaseMap::lower(static_cast<uint32_t>(c)));
 }
 
 char32_t toUpper(char32_t c) {
@@ -92,14 +92,12 @@ char32_t toUpper(char32_t c) {
      * HELPERS: __Utils_chr (not needed in C++)
      * LIBRARIES: ICU (for full Unicode) or <cctype> toupper (ASCII only)
      *
-     * NOTE: This implementation only handles ASCII. Full Unicode case
-     * conversion requires ICU or a Unicode-aware library.
+     * NOTE: full Unicode case mapping, node's toUpperCase per code point,
+     * from the generated tables (CaseMap.hpp, plans/char-case-mapping-elm-exact.md).
+     * A result of more than one code point (toUpper 'ß' == "SS") is an encoded
+     * Char value (KERN_008), as Elm's Char holds the whole string.
      */
-    if (c >= U'a' && c <= U'z') {
-        return c - 32;
-    }
-    // TODO: Full Unicode case conversion requires ICU
-    return c;
+    return static_cast<char32_t>(Elm::CaseMap::upper(static_cast<uint32_t>(c)));
 }
 
 char32_t toLocaleLower(char32_t c) {
@@ -114,10 +112,12 @@ char32_t toLocaleLower(char32_t c) {
      * HELPERS: __Utils_chr (not needed in C++)
      * LIBRARIES: ICU with locale support
      *
-     * NOTE: This implementation falls back to non-locale toLower.
-     * Full locale-aware case conversion requires ICU.
+     * NOTE: the default locale's mapping, which is what toLocaleLowerCase()
+     * with no argument gives on node (plans/char-case-mapping-elm-exact.md,
+     * "Locale variants"). In a browser with a Turkish, Azeri or Lithuanian
+     * locale Elm would apply that locale's rules; eco does not (a documented
+     * divergence).
      */
-    // TODO: Locale-aware case conversion requires ICU
     return toLower(c);
 }
 
@@ -133,10 +133,12 @@ char32_t toLocaleUpper(char32_t c) {
      * HELPERS: __Utils_chr (not needed in C++)
      * LIBRARIES: ICU with locale support
      *
-     * NOTE: This implementation falls back to non-locale toUpper.
-     * Full locale-aware case conversion requires ICU.
+     * NOTE: the default locale's mapping, which is what toLocaleUpperCase()
+     * with no argument gives on node (plans/char-case-mapping-elm-exact.md,
+     * "Locale variants"). In a browser with a Turkish, Azeri or Lithuanian
+     * locale Elm would apply that locale's rules; eco does not (a documented
+     * divergence).
      */
-    // TODO: Locale-aware case conversion requires ICU
     return toUpper(c);
 }
 

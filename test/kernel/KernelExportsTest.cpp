@@ -12,6 +12,8 @@
 #include "../../runtime/src/allocator/RuntimeExports.h"
 #include "../../runtime/src/allocator/BytesOps.hpp"
 #include "../../runtime/src/allocator/StringOps.hpp"
+#include "../../runtime/src/allocator/CaseMap.hpp"
+#include "../../elm-kernel-cpp/src/core/Utils.hpp"
 #include "../../runtime/src/allocator/ElmBytesRuntime.h"
 #include "../../elm-kernel-cpp/src/KernelExports.h"
 #include "../../elm-kernel-cpp/src/ExportHelpers.hpp"
@@ -310,6 +312,113 @@ static void test_char_code_point_kernels() {
     l = alloc::cons(alloc::unboxedChar(u'a'), l, static_cast<u8>(3));
     TEST_ASSERT(unitsOf(Elm_Kernel_String_fromList(HPtr::fromHPointer(l))) == aEmojiB);
     Allocator::instance().getRootSet().removeRoot(&l);
+}
+
+// K17: encoded case-mapping Char values (KERN_008, plans/char-case-mapping-elm-exact.md Step 2)
+// at the kernel boundary: ordering, and the String writers that expand them. Synthetic values
+// (0x53 | (rank+1) << 21) and table values (CaseMap::upper) are fed directly. Skipped in a build
+// with ECO_CHAR_CASE_EXPANSION off, where no value is encoded.
+static void test_char_encoded_kernels() {
+    if constexpr (Elm::CharValue::kExpansions) {
+        initAllocator();
+        const uint32_t R = 0x52, S = 0x53, T = 0x54, e0 = 0x53u | (1u << 21), e1 = 0x53u | (2u << 21);
+        auto lt = [](uint32_t a, uint32_t b) { return Ex::decodeBoxedBool(Elm_Kernel_Utils_lt_Char(a, b).toBits()); };
+        auto ge = [](uint32_t a, uint32_t b) { return Ex::decodeBoxedBool(Elm_Kernel_Utils_ge_Char(a, b).toBits()); };
+        auto ord = [](uint64_t enc) { return enc == Kernel::Utils::getOrderLT() ? -1 : enc == Kernel::Utils::getOrderGT() ? 1 : 0; };
+        const uint32_t order[] = {R, S, e0, e1, T, 0xE000u, 0x1F600u};
+        for (size_t i = 0; i + 1 < sizeof order / sizeof order[0]; i++) {
+            TEST_ASSERT(lt(order[i], order[i + 1]) && !lt(order[i + 1], order[i]));
+            TEST_ASSERT(ge(order[i + 1], order[i]) && !ge(order[i], order[i + 1]));
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Char(order[i], order[i + 1]).toBits()) == -1);
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Char(order[i + 1], order[i]).toBits()) == 1);
+        }
+        TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Char((1ull << 40) | e0, e0).toBits()) == 0);
+        // Utils::compare on boxed Chars (cmp's Tag_Char arm).
+        {
+            HPointer a = eco_alloc_char(e0).toHPointer();
+            Allocator::instance().getRootSet().addRoot(&a);
+            HPointer b = eco_alloc_char(T).toHPointer();
+            Allocator::instance().getRootSet().addRoot(&b);
+            auto& A = Allocator::instance();
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(a), HPtr::fromHPointer(b)).toBits()) == -1);
+            HPointer c = eco_alloc_char(S).toHPointer();
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(a), HPtr::fromHPointer(c)).toBits()) == 1);
+            (void)A;
+            A.getRootSet().removeRoot(&b);
+            A.getRootSet().removeRoot(&a);
+        }
+        // ... and on two lists of unboxed Chars (compareUnboxableSlot kind 3): [S, e0] < [S, T].
+        {
+            HPointer l1 = alloc::listNil(), l2 = alloc::listNil();
+            auto& rs = Allocator::instance().getRootSet();
+            rs.addRoot(&l1);
+            rs.addRoot(&l2);
+            l1 = alloc::cons(alloc::unboxedChar(e0), l1, static_cast<u8>(3));
+            l1 = alloc::cons(alloc::unboxedChar(S), l1, static_cast<u8>(3));
+            l2 = alloc::cons(alloc::unboxedChar(T), l2, static_cast<u8>(3));
+            l2 = alloc::cons(alloc::unboxedChar(S), l2, static_cast<u8>(3));
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(l1), HPtr::fromHPointer(l2)).toBits()) == -1);
+            TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(l2), HPtr::fromHPointer(l1)).toBits()) == 1);
+            rs.removeRoot(&l2);
+            rs.removeRoot(&l1);
+        }
+        // String writers expand: cons, fromChar, fromList (pre-count + write).
+        const uint32_t ss = CaseMap::upper(0xDF), iota = CaseMap::upper(0x390);
+        TEST_ASSERT(unitsOf(Elm_Kernel_String_cons(ss, strFromU16(u"x"))) == u"SSx");
+        TEST_ASSERT(unitsOf(HPtr::fromHPointer(StringOps::fromChar(ss))) == u"SS");
+        {
+            HPointer l = alloc::listNil();
+            Allocator::instance().getRootSet().addRoot(&l);
+            l = alloc::cons(alloc::unboxedChar(iota), l, static_cast<u8>(3));
+            l = alloc::cons(alloc::unboxedChar(u'x'), l, static_cast<u8>(3));
+            l = alloc::cons(alloc::unboxedChar(ss), l, static_cast<u8>(3));
+            std::u16string want = u"SSxΪ́";
+            HPtr got = Elm_Kernel_String_fromList(HPtr::fromHPointer(l));
+            TEST_ASSERT(unitsOf(got) == want);
+            TEST_ASSERT(StringOps::length(Allocator::instance().resolve(got.toHPointer())) == 6);
+            Allocator::instance().getRootSet().removeRoot(&l);
+        }
+        // Debug.toString prints the expansion: 'SS' (the Debug printer's capture path).
+        TEST_ASSERT(unitsOf(Elm_Kernel_Debug_toString(eco_alloc_char(ss))) == u"'SS'");
+        // A value in the never-produced 0x110000..0x1FFFFF range writes U+FFFD.
+        u16 buf[CharValue::kMaxCharUnits];
+        TEST_ASSERT(StringOps::encodeCodePoint(0x150000u, buf) == 1 && buf[0] == 0xFFFDu);
+    }
+}
+
+// K18: Char and String case mapping (plans/char-case-mapping-elm-exact.md Step 3): full Unicode,
+// expansions as encoded Char values (KERN_008), Final_Sigma in String.toLower. Skipped in a build
+// with ECO_CHAR_CASE_EXPANSION off.
+static void test_case_mapping_kernels() {
+    if constexpr (Elm::CharValue::kExpansions) {
+        initAllocator();
+        const uint32_t ss = Elm_Kernel_Char_toUpper(0xDF);
+        TEST_ASSERT(Elm::CharValue::isEncoded(ss));
+        TEST_ASSERT(Elm_Kernel_Char_toCode(ss) == 83);
+        TEST_ASSERT(unitsOf(HPtr::fromHPointer(StringOps::fromChar(Elm_Kernel_Char_toLower(ss)))) == u"ss");
+        TEST_ASSERT(Elm_Kernel_Char_toLocaleUpper(0xDF) == ss);
+        TEST_ASSERT(Elm_Kernel_Char_toUpper(0xE9) == 0xC9 && Elm_Kernel_Char_toLower(0x416) == 0x436);
+        TEST_ASSERT(Elm_Kernel_Char_toUpper((0xABCDull << 32) | 'a') == 'A');
+
+        // String.toUpper "straße" == "STRASSE", as an all-ASCII (UTF-8) string when enabled.
+        HPtr up = Elm_Kernel_String_toUpper(strFromU16(u"straße"));
+        TEST_ASSERT(unitsOf(up) == u"STRASSE");
+        if (Allocator::instance().getConfig().utf8_strings_enabled) {
+            TEST_ASSERT(StringOps::isUtf8(Allocator::instance().resolve(up.toHPointer())));
+        }
+        // Final_Sigma: word-final capital sigma lowers to U+03C2.
+        TEST_ASSERT(unitsOf(Elm_Kernel_String_toLower(strFromU16(u"ΟΔΟΣ ΟΔΟΣ")))
+                    == u"οδος οδος");
+        TEST_ASSERT(unitsOf(Elm_Kernel_String_toLower(strFromU16(u"Σ"))) == u"σ");
+        // A slice input whose last unit is the sigma: the rule sees the slice, not its base.
+        std::u16string longText(300, u'Α');
+        longText[150] = u'Σ';
+        HPtr slice = Elm_Kernel_String_slice(0, 151, strFromU16(longText));
+        std::u16string lowered = unitsOf(Elm_Kernel_String_toLower(slice));
+        TEST_ASSERT(lowered.size() == 151 && lowered[150] == u'ς' && lowered[0] == u'α');
+        // Expansion inside a longer string, and an astral letter.
+        TEST_ASSERT(unitsOf(Elm_Kernel_String_toUpper(strFromU16(u"ﬁx\U00010428"))) == u"FIX\U00010400");
+    }
 }
 
 // K12: elm_bytebuffer_len / _data / _with_data are correct for flat + large
@@ -688,6 +797,8 @@ static void test_kernel_shift_count_mod_64() {
 void registerKernelExportsTests(Testing::TestSuite& suite) {
     suite.add(Testing::UnitTest("K14 kernel integer division is total (CGEN_084)", test_kernel_int_division_total));
     suite.add(Testing::UnitTest("K15 kernel shift count mod 64 (CGEN_085)", test_kernel_shift_count_mod_64));
+    suite.add(Testing::UnitTest("K17 encoded case-mapping Chars at the kernel boundary (KERN_008)", test_char_encoded_kernels));
+    suite.add(Testing::UnitTest("K18 Char and String case mapping (full Unicode, Final_Sigma)", test_case_mapping_kernels));
     suite.add(Testing::UnitTest("K1 encoder size matches write", test_encoder_size_matches_write));
     suite.add(Testing::UnitTest("K2 encoder endianness bytes", test_encoder_endianness_bytes));
     suite.add(Testing::UnitTest("K3 encoder utf8 astral", test_encoder_utf8_astral));

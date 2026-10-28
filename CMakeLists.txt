@@ -130,6 +130,17 @@ else()
     add_compile_definitions(ENABLE_P1_CENSUS=0)
 endif()
 
+# Elm-exact multi-code-point Char case mapping (plans/char-case-mapping-elm-exact.md, KERN_008).
+# OFF compiles the encoded-Char paths out and leaves expanding code points (ß, ﬁ, ...) unchanged.
+# Read only by runtime/src/allocator/CharValue.hpp; a program lowered with one setting refuses to
+# link against a runtime built with the other (eco_char_case_expansion_on/_off).
+option(ECO_CHAR_CASE_EXPANSION "Elm-exact multi-code-point Char case mapping" ON)
+if(ECO_CHAR_CASE_EXPANSION)
+    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=1)
+else()
+    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=0)
+endif()
+
 # Per-GC `[heap-trace] …` diagnostics. When OFF (default), the trace prints
 # and their gathering logic are compiled out so they cost nothing on the hot
 # path. When ON, the existing `ECO_HEAP_TRACE` env-var still gates emission at
@@ -1526,8 +1537,12 @@ add_custom_target(stress
 # so only Stage 1 is needed — no Stage 2+ build.
 # run-js-e2e (compiler/CMakeLists.txt) exists on POSIX hosts only.
 set(_full_js_e2e)
+set(_full_casemap_check)
 if(NOT WIN32)
     set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e)
+    # The case tables must be the running node's (plans/char-case-mapping-elm-exact.md Step 1).
+    set(_full_casemap_check COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-casemap-tables.sh
+        ${CMAKE_SOURCE_DIR} ${NODE_EXECUTABLE})
 endif()
 add_custom_target(full
     COMMAND python3 ${CMAKE_SOURCE_DIR}/test/scripts/check-root-bounded.py ${CMAKE_SOURCE_DIR}
@@ -1536,12 +1551,14 @@ add_custom_target(full
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-homes.sh ${CMAKE_SOURCE_DIR}
     # Reserved ctor tags in Compiler.Data.CtorTag must equal the runtime's (SD-18).
     COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-ctor-tags.sh ${CMAKE_SOURCE_DIR}
+    ${_full_casemap_check}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test eco-system-core-test eco-system-examples
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
-    # The eco-system suite on the JS target (plans/eco-system-library.md Phase 10).
+    # The eco-system and elm-conformance suites on the JS target (plans/eco-system-library.md
+    # Phase 10, plans/char-case-mapping-elm-exact.md).
     ${_full_js_e2e}
     COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E and the JS eco-system E2E"
     USES_TERMINAL

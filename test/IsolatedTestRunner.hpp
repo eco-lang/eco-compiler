@@ -46,6 +46,7 @@ struct SharedTestResult {
 struct ParallelTestSummary {
     size_t passCount = 0;
     size_t failCount = 0;
+    size_t xfailCount = 0;   // of passCount: expected failures (`-- XFAIL-NATIVE:`)
     std::vector<std::string> failedTests;
 };
 

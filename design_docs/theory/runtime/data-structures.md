@@ -61,7 +61,7 @@ Notice that a rope appears only above the flatten limit, which is 128 Ki code un
 
 `uncons` always returns a slice or view for the rest of the string and skips the copy of short ranges. A fold that calls `uncons` repeatedly then allocates in proportion to the string's length in total, instead of copying the rest at every step.
 
-The operations that make a new string out of an old one, such as `toUpper`, `reverse`, `repeat`, `pad`, `map`, `filter` and `cons`, allocate one flat result and fill it straight from the source's segments. When the source is ASCII the result is ASCII too, and it comes back as a UTF-8 string.
+The operations that make a new string out of an old one, such as `toUpper`, `reverse`, `repeat`, `pad`, `map`, `filter` and `cons`, allocate one flat result and fill it straight from the source's segments. When the source is ASCII the result is ASCII too, and it comes back as a UTF-8 string. `toUpper` and `toLower` take that path only for an all-ASCII source. Otherwise they apply full Unicode case mapping to a C-heap copy, and the result can have a different length ("straße" becomes "STRASSE").
 
 ASCII results are kept in UTF-8 wherever an operation can see that they are ASCII, including results computed from UTF-16 inputs. Without that, one UTF-16 operand in a chain of appends would widen every result after it. The narrowing happens in the constructors that see the content: character conversion, `cons`, short slices and the flat result of mixed inputs (the "chain healing" in the pseudocode).
 

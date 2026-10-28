@@ -669,6 +669,13 @@ inline std::string verifyPatterns(const std::string& output,
 //                    the test needs Linux (e.g. /dev/full); every harness skips
 //                    it, printing the reason, on any other host. The JS runner
 //                    reads it too (test/scripts/run-js-e2e.js).
+//   -- XFAIL-NATIVE: <reason>
+//                    the native harnesses (JIT and AOT) expect the test's output
+//                    or exit checks to fail: a failure is reported as a pass
+//                    (XFAIL), a pass as a failure (XPASS) so a stale mark cannot
+//                    linger. A compile failure stays a failure. The JS runner
+//                    ignores it: on JS the test must pass
+//                    (plans/char-case-mapping-elm-exact.md Step 0).
 // ----------------------------------------------------------------------------
 
 namespace detail {
@@ -754,6 +761,19 @@ inline std::optional<std::string> hostSkipReason(const std::string& content) {
     });
     return result;
 #endif
+}
+
+/// The `-- XFAIL-NATIVE:` reason (first occurrence; "no reason given" when
+/// blank), or nullopt when the test has no such line.
+inline std::optional<std::string> xfailNativeReason(const std::string& content) {
+    std::optional<std::string> result;
+    detail::forEachDirectiveLine(content, "-- XFAIL-NATIVE:", [&](const std::string& rest) {
+        if (result) return;
+        std::string t = trimCheckPattern(rest);
+        bool blank = t.find_first_not_of(" \t") == std::string::npos;
+        result = blank ? std::string("no reason given") : t;
+    });
+    return result;
 }
 
 } // namespace eco_test

@@ -20,7 +20,7 @@ Each workload checks itself as strongly as it can, at whatever size it runs:
   the generator), sudoku (a direct validity check of every solution), flood-fill (union-find over
   the same grid), matmul (a closed form, within rounding), floyd-warshall (symmetry, zero diagonal
   and four rows against BFS), unicode-string (lengths, sums and positions from the code points;
-  only the ASCII part of `toUpper`), base64 (the round trip and the RFC vectors), utf8-bytes,
+  the code-point sum after `toUpper`), base64 (the round trip and the RFC vectors), utf8-bytes,
   json-shapes and json-decoders (the round trip to the generated value), json-parser (agreement
   with `Json.Decode`), dict-algebra, set-algebra and popcount (closed forms), dict-int,
   dict-string, dict-tuple and set-distinct (recomputed without the structure), shuffle-sort (a

@@ -355,6 +355,15 @@ extern "C" void eco_enable_list_chunks(void) {
     eco_g_list_chunks = true;
 }
 
+// Build-mismatch guard for ECO_CHAR_CASE_EXPANSION (CharValue::kBuildGuardSymbol): only the
+// function of this runtime's setting exists, so a program lowered with the other setting does
+// not link (AOT) or does not resolve (JIT).
+#if ECO_CHAR_CASE_EXPANSION
+extern "C" void eco_char_case_expansion_on(void) {}
+#else
+extern "C" void eco_char_case_expansion_off(void) {}
+#endif
+
 // Cons-site tally (ECO_CONS_SITES=1, measurement builds): counts cons
 // allocations by caller return address; dumped at exit with the main-module
 // base so sites can be symbolized offline via addr2line. Thread-local maps
@@ -3124,12 +3133,11 @@ static void print_string(void* str) {
     output_char('"');
 }
 
-// Print a character value (a Unicode code point) in Elm syntax. Like Elm's
-// Debug.toString, a printable non-ASCII Char is emitted as itself (UTF-8);
-// control characters and lone surrogates (not encodable in UTF-8) are
-// escaped as \uXXXX hex.
-static void print_char(u32 c) {
-    output_char('\'');
+// Print one code point of a Char's string. Like Elm's Debug.toString, a
+// printable non-ASCII code point is emitted as itself (UTF-8); control
+// characters and lone surrogates (not encodable in UTF-8) are escaped as
+// \uXXXX hex.
+static void print_char_cp(u32 c) {
     if (c == '\'') {
         output_text("\\'");
     } else if (c == '\\') {
@@ -3163,6 +3171,20 @@ static void print_char(u32 c) {
             buf[4] = '\0';
         }
         output_text(buf);
+    }
+}
+
+// Print a Char value in Elm syntax: its code point, or an encoded case-mapping
+// result's whole expansion (KERN_008), between single quotes: 'SS' for
+// Char.toUpper 'ß', as Elm prints it. With ECO_CHAR_CASE_EXPANSION off the
+// expansion arm is compiled out.
+static void print_char(u32 c) {
+    output_char('\'');
+    if (Elm::CharValue::isEncoded(c)) {
+        const Elm::CaseMap::Entry& e = Elm::CaseMap::entry(c);
+        for (u32 i = 0; i < e.len; i++) print_char_cp(e.units[i]);
+    } else {
+        print_char_cp(c);
     }
     output_char('\'');
 }

@@ -152,7 +152,7 @@ Code and documents:
 
 - `docs/testing.md`: how to run the tests. It omits the AOT, equivalence and JavaScript runners, the static scripts, the model and GenMC checks, the defect guards and the conformance scripts.
 - `CMakeLists.txt` (targets `check`, `full`, `stress`, `tla-canary`, `register-guards`) and `test/CMakeLists.txt` (`ELM_TEST_PACKAGES`, the package shadow trees, `run-aot-e2e`, `run-mlir-equivalence`, `run-js-e2e`). The canary's strictness is set by `ECO_TLA_CANARY_STRICT`.
-- `test/CheckPatterns.hpp`: the shared `CHECK` directive parser, the `LINUX-ONLY:` and `SKIP-AOT:` markers. The codegen harnesses match in FileCheck order; the whole-program harnesses use its order-insensitive mode, in which `CHECK-DAG` is an alias for `CHECK`.
+- `test/CheckPatterns.hpp`: the shared `CHECK` directive parser, the `LINUX-ONLY:`, `SKIP-AOT:` and `XFAIL-NATIVE:` markers. The codegen harnesses match in FileCheck order; the whole-program harnesses use its order-insensitive mode, in which `CHECK-DAG` is an alias for `CHECK`.
 - `test/ElmE2ETestBase.hpp`, `test/TestSuite.hpp`, `test/IsolatedTestRunner.hpp`, `test/SpawnedChildren.hpp`: the whole-program base and the isolated-child runner.
 - `test/main.cpp`, `test/aot_e2e_main.cpp`, `test/mlir_equivalence_main.cpp`: the JIT, AOT and equivalence runners.
 - `compiler/tests/TestLogic/`, `compiler/tests/SourceIR/`: the compiler invariant checkers and their corpus. `Compiler.Pipeline.Steps` is the only way in.

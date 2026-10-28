@@ -41,6 +41,7 @@
 #include "allocator/Utf8Test.hpp"
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
+#include "allocator/CaseMapTest.hpp"
 #include "allocator/StringFormsCompareTest.hpp"
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/ChunkedListTest.hpp"
@@ -82,6 +83,7 @@
 #include "eco-kernel/EcoKernelTest.hpp"
 #include "eco-system/EcoSystemTest.hpp"
 #include "elm-core/ElmCoreTest.hpp"
+#include "elm-conformance/ElmConformanceTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
 #include "elm-parser/ElmParserTest.hpp"
 #include "elm-regex/ElmRegexTest.hpp"
@@ -1143,6 +1145,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite stringOpsTests("StringOps");
     registerStringOpsTests(stringOpsTests);
 
+    // Char case-mapping tables and the Char value encoding (KERN_008)
+    Testing::TestSuite caseMapTests("CaseMap");
+    registerCaseMapTests(caseMapTests);
+
     // HEAP_025: equal/compare across the six string forms
     Testing::TestSuite stringFormsCompareTests("StringFormsCompare");
     registerStringFormsCompareTests(stringFormsCompareTests);
@@ -1329,6 +1335,7 @@ int main(int argc, char* argv[]) {
 
     // Elm package E2E tests
     auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
+    auto elmConformanceTests = ElmConformanceTest::buildElmConformanceTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
     auto elmParserTests = ElmParserTest::buildElmParserTestSuite();
     auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
@@ -1348,6 +1355,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8Tests));
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
+    suite.add(std::move(caseMapTests));
     suite.add(std::move(stringFormsCompareTests));
     suite.add(std::move(listOpsTests));
     suite.add(std::move(chunkedListTests));
@@ -1378,6 +1386,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(ecoKernelTests));
     suite.add(std::move(ecoSystemTests));
     suite.add(std::move(elmCoreTests));
+    suite.add(std::move(elmConformanceTests));
     suite.add(std::move(elmJsonTests));
     suite.add(std::move(elmParserTests));
     suite.add(std::move(elmRegexTests));

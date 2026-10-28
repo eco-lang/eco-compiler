@@ -80,6 +80,17 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_intern_closure0),
                 llvm::JITSymbolFlags::Exported);
+#if ECO_CHAR_CASE_EXPANSION
+        symbolMap[interner("eco_char_case_expansion_on")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_char_case_expansion_on),
+                llvm::JITSymbolFlags::Exported);
+#else
+        symbolMap[interner("eco_char_case_expansion_off")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_char_case_expansion_off),
+                llvm::JITSymbolFlags::Exported);
+#endif
         symbolMap[interner("eco_alloc_int")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_int),

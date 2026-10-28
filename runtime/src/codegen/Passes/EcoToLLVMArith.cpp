@@ -8,6 +8,7 @@
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
+#include "../../allocator/CharValue.hpp"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 
@@ -900,8 +901,16 @@ struct CharToIntOpLowering : public OpConversionPattern<CharToIntOp> {
     matchAndRewrite(CharToIntOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
-        // Zero-extend the i32 code point to i64 (code points are never negative)
-        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, i64Ty, adaptor.getValue());
+        // Char.toCode (KERN_008): the code point, or an encoded case-mapping
+        // result's first code point = value & 0x1FFFFF, zero-extended to i64.
+        // With ECO_CHAR_CASE_EXPANSION off no value is encoded: no mask.
+        Value v = adaptor.getValue();
+        if constexpr (Elm::CharValue::kExpansions) {
+            Value mask = rewriter.create<arith::ConstantIntOp>(
+                op.getLoc(), Elm::CharValue::kFirstMask, /*width=*/eco::kEcoCharBits);
+            v = rewriter.create<arith::AndIOp>(op.getLoc(), v, mask);
+        }
+        rewriter.replaceOpWithNewOp<arith::ExtUIOp>(op, i64Ty, v);
         return success();
     }
 };
@@ -936,6 +945,25 @@ struct CharFromIntOpLowering : public OpConversionPattern<CharFromIntOp> {
 // Char Comparisons
 //===----------------------------------------------------------------------===//
 
+// The ordering key of a Char value (KERN_008, CharValue::sortKey): rotl32(x, 11),
+// which LLVM turns into one `rol`. Chars order by the unsigned compare of the
+// keys: code-point order for ordinary Chars, UTF-16 string order wherever an
+// encoded case-mapping result takes part. With ECO_CHAR_CASE_EXPANSION off the
+// key is the value itself and the comparisons emit a plain unsigned compare.
+static Value charSortKey(OpBuilder &b, Location loc, Value x) {
+    if constexpr (Elm::CharValue::kExpansions) {
+        auto c = [&](int64_t v) {
+            return b.create<arith::ConstantIntOp>(loc, v, /*width=*/eco::kEcoCharBits);
+        };
+        Value hi = b.create<arith::ShLIOp>(loc, x, c(11));
+        Value lo = b.create<arith::ShRUIOp>(loc, x, c(Elm::CharValue::kRankShift));
+        return b.create<arith::OrIOp>(loc, hi, lo);
+    } else {
+        (void)b; (void)loc;
+        return x;
+    }
+}
+
 struct CharLtOpLowering : public OpConversionPattern<CharLtOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -943,7 +971,9 @@ struct CharLtOpLowering : public OpConversionPattern<CharLtOp> {
     matchAndRewrite(CharLtOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-            op, arith::CmpIPredicate::ult, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpIPredicate::ult,
+            charSortKey(rewriter, op.getLoc(), adaptor.getLhs()),
+            charSortKey(rewriter, op.getLoc(), adaptor.getRhs()));
         return success();
     }
 };
@@ -955,7 +985,9 @@ struct CharLeOpLowering : public OpConversionPattern<CharLeOp> {
     matchAndRewrite(CharLeOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-            op, arith::CmpIPredicate::ule, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpIPredicate::ule,
+            charSortKey(rewriter, op.getLoc(), adaptor.getLhs()),
+            charSortKey(rewriter, op.getLoc(), adaptor.getRhs()));
         return success();
     }
 };
@@ -967,7 +999,9 @@ struct CharGtOpLowering : public OpConversionPattern<CharGtOp> {
     matchAndRewrite(CharGtOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-            op, arith::CmpIPredicate::ugt, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpIPredicate::ugt,
+            charSortKey(rewriter, op.getLoc(), adaptor.getLhs()),
+            charSortKey(rewriter, op.getLoc(), adaptor.getRhs()));
         return success();
     }
 };
@@ -979,7 +1013,9 @@ struct CharGeOpLowering : public OpConversionPattern<CharGeOp> {
     matchAndRewrite(CharGeOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpIOp>(
-            op, arith::CmpIPredicate::uge, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpIPredicate::uge,
+            charSortKey(rewriter, op.getLoc(), adaptor.getLhs()),
+            charSortKey(rewriter, op.getLoc(), adaptor.getRhs()));
         return success();
     }
 };
@@ -1122,11 +1158,13 @@ struct CharCmpOrderOpLowering : public OpConversionPattern<CharCmpOrderOp> {
     matchAndRewrite(CharCmpOrderOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        // Char compares are unsigned (mirrors eco.char.lt).
+        // Char compares are unsigned compares of the sort keys (mirrors eco.char.lt).
+        Value lhs = charSortKey(rewriter, loc, adaptor.getLhs());
+        Value rhs = charSortKey(rewriter, loc, adaptor.getRhs());
         Value isLt = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::ult, adaptor.getLhs(), adaptor.getRhs());
+            loc, arith::CmpIPredicate::ult, lhs, rhs);
         Value isGt = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::ugt, adaptor.getLhs(), adaptor.getRhs());
+            loc, arith::CmpIPredicate::ugt, lhs, rhs);
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
         return success();
     }
