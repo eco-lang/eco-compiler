@@ -27,14 +27,14 @@ namespace eco::platform {
 
 #if !defined(_WIN32)
 namespace detail {
-/// Returns the platform's native directory separator.
+// Returns the platform's native directory separator.
 inline char dirSep() { return '/'; }
 }
 #else
 namespace detail {
-/// Returns the platform's native directory separator.
+// Returns the platform's native directory separator.
 inline char dirSep() { return '\\'; }
-/// Returns `s` with every backslash replaced by a forward slash.
+// Returns `s` with every backslash replaced by a forward slash.
 inline std::string toForwardSlashes(std::string s) {
     for (char& c : s) if (c == '\\') c = '/';
     return s;
@@ -42,15 +42,15 @@ inline std::string toForwardSlashes(std::string s) {
 }
 #endif
 
-/// Returns the path of the running executable, or "" if it cannot be
-/// determined.
-///
-/// On Linux it is the target of /proc/self/exe, and a path of PATH_MAX bytes
-/// or more is silently cut short. On Darwin it is the dyld path resolved by
-/// realpath, or the unresolved dyld path if realpath fails. On Windows it is
-/// the module path converted to UTF-8, with backslashes turned into forward
-/// slashes; a path that does not fit in 32768 UTF-16 units is not detected
-/// and comes back cut short.
+// Returns the path of the running executable, or "" if it cannot be
+// determined.
+//
+// On Linux it is the target of /proc/self/exe, and a path of PATH_MAX bytes
+// or more is silently cut short. On Darwin it is the dyld path resolved by
+// realpath, or the unresolved dyld path if realpath fails. On Windows it is
+// the module path converted to UTF-8, with backslashes turned into forward
+// slashes; a path that does not fit in 32768 UTF-16 units is not detected
+// and comes back cut short.
 inline std::string currentExecutablePath() {
 #if defined(_WIN32)
     // GetModuleFileNameW reports truncation by filling the whole buffer, so
@@ -92,10 +92,10 @@ inline std::string currentExecutablePath() {
 #endif
 }
 
-/// Returns the directory that holds the running executable: the path from
-/// `currentExecutablePath` up to its last '/'. Returns "" if the path cannot
-/// be determined, and also for an executable directly under "/", and "." if
-/// the path contains no '/'.
+// Returns the directory that holds the running executable: the path from
+// `currentExecutablePath` up to its last '/'. Returns "" if the path cannot
+// be determined, and also for an executable directly under "/", and "." if
+// the path contains no '/'.
 inline std::string currentExecutableDir() {
     std::string exe = currentExecutablePath();
     if (exe.empty())

@@ -26,10 +26,10 @@ using namespace mlir;
 namespace eco {
 
 namespace {
-/// The instant timeline seconds are measured from: when this file's static
-/// variables are initialised.
+// The instant timeline seconds are measured from: when this file's static
+// variables are initialised.
 const LoweringStats::Clock::time_point kProcessEpoch = LoweringStats::Clock::now();
-/// Returns whether `ECO_LOWERING_TIMELINE` was set when first asked.
+// Returns whether `ECO_LOWERING_TIMELINE` was set when first asked.
 bool timelineEnabled() {
     static const bool on = ::getenv("ECO_LOWERING_TIMELINE") != nullptr;
     return on;
@@ -53,8 +53,8 @@ void LoweringStats::timelineMark(llvm::StringRef name, bool begin) {
 }
 
 namespace {
-/// The identifier the next `LoweringStats` takes. It starts at 1 because 0 is
-/// what a thread's cache holds before it has cached anything.
+// The identifier the next `LoweringStats` takes. It starts at 1 because 0 is
+// what a thread's cache holds before it has cached anything.
 std::atomic<uint64_t> gNextStatsGen{1};
 } // namespace
 
@@ -88,9 +88,9 @@ void LoweringStats::recordPass(llvm::StringRef name, Duration duration) {
 
 namespace {
 
-/// Returns `d` with two decimals in microseconds (written "µs") below 1 ms, in
-/// milliseconds below 1 s, and otherwise in seconds, padded on the left to
-/// `width` display columns.
+// Returns `d` with two decimals in microseconds (written "µs") below 1 ms, in
+// milliseconds below 1 s, and otherwise in seconds, padded on the left to
+// `width` display columns.
 std::string formatDuration(LoweringStats::Duration d, int width) {
     using namespace std::chrono;
     double us = duration<double, std::micro>(d).count();
@@ -116,19 +116,21 @@ std::string formatDuration(LoweringStats::Duration d, int width) {
     return body;
 }
 
-/// One line of a printed table.
+/**
+ * One line of a printed table.
+ */
 struct Row {
-    /// Points into the `StringMap` passed to `printSection`; valid only during
-    /// that call.
+    // Points into the `StringMap` passed to `printSection`; valid only during
+    // that call.
     llvm::StringRef name;
     LoweringStats::Duration total;
     uint64_t count;
 };
 
-/// Writes `table` to `os` under `title`, sorted by descending time, with a
-/// percentage of `denom` per row (of the table's own sum when `denom` is zero)
-/// and a closing total. Names longer than 44 bytes are cut short. Writes
-/// nothing for an empty table.
+// Writes `table` to `os` under `title`, sorted by descending time, with a
+// percentage of `denom` per row (of the table's own sum when `denom` is zero)
+// and a closing total. Names longer than 44 bytes are cut short. Writes
+// nothing for an empty table.
 void printSection(llvm::raw_ostream &os, llvm::StringRef title,
                   const llvm::StringMap<LoweringStats::Entry> &table,
                   LoweringStats::Duration denom) {
@@ -218,11 +220,13 @@ void LoweringStats::print(llvm::raw_ostream &os) const {
 
 namespace {
 
-/// The instrumentation `LoweringStats::makePassInstrumentation` returns.
+/**
+ * The instrumentation `LoweringStats::makePassInstrumentation` returns.
+ */
 class StatsPassInstrumentation : public PassInstrumentation {
 public:
-    /// Creates an instrumentation recording into `stats`, which it keeps a
-    /// reference to.
+    // Creates an instrumentation recording into `stats`, which it keeps a
+    // reference to.
     explicit StatsPassInstrumentation(LoweringStats &stats) : stats_(stats) {}
 
     void runBeforePass(Pass *pass, Operation *op) override {
@@ -244,17 +248,17 @@ public:
     }
 
 private:
-    /// Start times of the passes currently running on one thread.
+    // Start times of the passes currently running on one thread.
     using StartMap = std::unordered_map<Pass *, LoweringStats::Clock::time_point>;
 
-    /// Returns the calling thread's start-time map, shared by every instance
-    /// of this class on that thread.
+    // Returns the calling thread's start-time map, shared by every instance
+    // of this class on that thread.
     static StartMap &startTimes() {
         thread_local StartMap m;
         return m;
     }
 
-    /// Records the time since `pass` started on this thread, if it did.
+    // Records the time since `pass` started on this thread, if it did.
     void finalize(Pass *pass) {
         auto &m = startTimes();
         auto it = m.find(pass);
@@ -265,7 +269,7 @@ private:
         stats_.recordPass(pass->getName(), duration);
     }
 
-    LoweringStats &stats_; ///< Must outlive this instrumentation.
+    LoweringStats &stats_; // Must outlive this instrumentation.
 };
 
 } // namespace

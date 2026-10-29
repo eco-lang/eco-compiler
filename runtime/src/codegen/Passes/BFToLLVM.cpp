@@ -53,11 +53,13 @@ namespace {
 // Type Converter
 //===----------------------------------------------------------------------===//
 
-/// The type converter for this pass: a `bf.cursor` becomes the LLVM struct
-/// `{ptr, ptr}` (current, end), and an `eco.value` becomes ptr addrspace(1).
-///
-/// The `eco.value` conversion must agree with the one EcoToLLVM uses, since
-/// both passes convert the same values.
+/**
+ * The type converter for this pass: a `bf.cursor` becomes the LLVM struct
+ * `{ptr, ptr}` (current, end), and an `eco.value` becomes ptr addrspace(1).
+ *
+ * The `eco.value` conversion must agree with the one EcoToLLVM uses, since
+ * both passes convert the same values.
+ */
 class BFTypeConverter : public LLVMTypeConverter {
 public:
     explicit BFTypeConverter(MLIRContext *ctx) : LLVMTypeConverter(ctx) {
@@ -95,8 +97,10 @@ public:
 // Runtime Function Declarations & Cache
 //===----------------------------------------------------------------------===//
 
-/// The runtime helper declarations the lowering patterns call, found or
-/// created once per module by `ensureRuntimeFunctions`.
+/**
+ * The runtime helper declarations the lowering patterns call, found or
+ * created once per module by `ensureRuntimeFunctions`.
+ */
 struct BFRuntimeFuncs {
     LLVM::LLVMFuncOp allocBytebuffer;
     LLVM::LLVMFuncOp bytebufferLen;
@@ -110,13 +114,13 @@ struct BFRuntimeFuncs {
     LLVM::LLVMFuncOp encoderWriteInto;
 };
 
-/// Returns the runtime helpers the patterns call, declaring in `module` each
-/// one that `symTable` does not already hold as an LLVM function.
-///
-/// It also declares `elm_maybe_nothing` and `elm_maybe_just`, which the result
-/// does not include. New declarations go at the start of the module body and
-/// are added to `symTable`. When it declares anything, `builder`'s insertion
-/// point is left at the start of the module body.
+// Returns the runtime helpers the patterns call, declaring in `module` each
+// one that `symTable` does not already hold as an LLVM function.
+//
+// It also declares `elm_maybe_nothing` and `elm_maybe_just`, which the result
+// does not include. New declarations go at the start of the module body and
+// are added to `symTable`. When it declares anything, `builder`'s insertion
+// point is left at the start of the module body.
 static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder,
                                              mlir::SymbolTable &symTable) {
     auto loc = module.getLoc();
@@ -167,8 +171,8 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
-/// Builds a cursor value of LLVM type `cursorLLVMType` from `ptr` (current)
-/// and `end`.
+// Builds a cursor value of LLVM type `cursorLLVMType` from `ptr` (current)
+// and `end`.
 static Value createCursor(OpBuilder &builder, Location loc, Value ptr,
                           Value end, Type cursorLLVMType) {
     Value cursor = builder.create<LLVM::UndefOp>(loc, cursorLLVMType);
@@ -179,22 +183,22 @@ static Value createCursor(OpBuilder &builder, Location loc, Value ptr,
     return cursor;
 }
 
-/// Returns the current pointer of a lowered `cursor`.
+// Returns the current pointer of a lowered `cursor`.
 static Value extractPtr(OpBuilder &builder, Location loc, Value cursor) {
     auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
     return builder.create<LLVM::ExtractValueOp>(loc, ptrType, cursor,
                                                  ArrayRef<int64_t>{0});
 }
 
-/// Returns the end pointer of a lowered `cursor`.
+// Returns the end pointer of a lowered `cursor`.
 static Value extractEnd(OpBuilder &builder, Location loc, Value cursor) {
     auto ptrType = LLVM::LLVMPointerType::get(builder.getContext());
     return builder.create<LLVM::ExtractValueOp>(loc, ptrType, cursor,
                                                  ArrayRef<int64_t>{1});
 }
 
-/// Returns a lowered cursor whose current pointer is `bytes` bytes past
-/// `cursor`'s and whose end is the same. Nothing checks it against the end.
+// Returns a lowered cursor whose current pointer is `bytes` bytes past
+// `cursor`'s and whose end is the same. Nothing checks it against the end.
 static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
                            Value bytes, Type cursorLLVMType) {
     Value ptr = extractPtr(builder, loc, cursor);
@@ -230,25 +234,27 @@ static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
 // from the buffer this analysis finds for their cursor, after the allocation;
 // elm_utf8_decode re-derives its own source pointer.
 
-/// The analysis and rewrite described above, for the top-level ops of one
-/// module.
-///
-/// One object is run on each top-level op in turn, and its cursor classes
-/// accumulate across them. After `run` it answers `bufferOf` for the lowering
-/// patterns, so it must outlive the conversion.
+/**
+ * The analysis and rewrite described above, for the top-level ops of one
+ * module.
+ *
+ * One object is run on each top-level op in turn, and its cursor classes
+ * accumulate across them. After `run` it answers `bufferOf` for the lowering
+ * patterns, so it must outlive the conversion.
+ */
 class CursorGCSafety {
 public:
-    /// Creates an analysis that looks up callees in `symbols`, which it keeps
-    /// a reference to and which must outlive it.
+    // Creates an analysis that looks up callees in `symbols`, which it keeps
+    // a reference to and which must outlive it.
     explicit CursorGCSafety(SymbolTable &symbols) : symbols(symbols) {}
 
-    /// Rewrites `top` so that no cursor is live across a GC point, then checks
-    /// that none is. Emits an error on the offending op and fails when a
-    /// cursor that must be re-derived has no single buffer in scope, when an
-    /// encoder buffer that must be a builder was not made by bf.alloc or has a
-    /// cursor used outside the bf.alloc's block or by a terminator, or when the
-    /// check finds a cursor use reachable through a GC point. On failure `top`
-    /// may already be partly rewritten.
+    // Rewrites `top` so that no cursor is live across a GC point, then checks
+    // that none is. Emits an error on the offending op and fails when a
+    // cursor that must be re-derived has no single buffer in scope, when an
+    // encoder buffer that must be a builder was not made by bf.alloc or has a
+    // cursor used outside the bf.alloc's block or by a terminator, or when the
+    // check finds a cursor use reachable through a GC point. On failure `top`
+    // may already be partly rewritten.
     LogicalResult run(Operation *top) {
         buildClasses(top);
         if (failed(insertRebases(top)) || failed(insertBuilders(top)))
@@ -256,27 +262,27 @@ public:
         return verify(top);
     }
 
-    /// Returns the buffer `cursor` points into, or a null value when its class
-    /// has no buffer or two different ones.
+    // Returns the buffer `cursor` points into, or a null value when its class
+    // has no buffer or two different ones.
     Value bufferOf(Value cursor) {
         Value rep = find(cursor);
         auto it = buffers.find(rep);
         return it == buffers.end() || ambiguous.contains(rep) ? Value() : it->second;
     }
 
-    /// Returns whether `op`, or an op nested in it, may run a GC.
-    ///
-    /// The answer is conservative: an op not known to be GC-free counts as a GC
-    /// point. A bf op is one only if it is bf.alloc, bf.read.bytes or
-    /// bf.read.utf8. An `eco.call` is not one if it carries
-    /// `eco.callee_gc_leaf`, and neither is any `eco.call`, `func.call` or
-    /// `llvm.call` whose callee is a scratch helper, a cursor marker (as
-    /// `eco::markers` defines them) or an LLVM function declared with the
-    /// `gc-leaf-function` passthrough. An scf op or `eco.case` is one only if
-    /// something inside it is; any other op with regions is one. Other LLVM
-    /// ops and terminators are not. A pure op is one only if it is an
-    /// `eco.construct.*` (list, tuple, record, custom) or `eco.box`. Any other
-    /// op is. Answers are memoized per op.
+    // Returns whether `op`, or an op nested in it, may run a GC.
+    //
+    // The answer is conservative: an op not known to be GC-free counts as a GC
+    // point. A bf op is one only if it is bf.alloc, bf.read.bytes or
+    // bf.read.utf8. An `eco.call` is not one if it carries
+    // `eco.callee_gc_leaf`, and neither is any `eco.call`, `func.call` or
+    // `llvm.call` whose callee is a scratch helper, a cursor marker (as
+    // `eco::markers` defines them) or an LLVM function declared with the
+    // `gc-leaf-function` passthrough. An scf op or `eco.case` is one only if
+    // something inside it is; any other op with regions is one. Other LLVM
+    // ops and terminators are not. A pure op is one only if it is an
+    // `eco.construct.*` (list, tuple, record, custom) or `eco.box`. Any other
+    // op is. Answers are memoized per op.
     bool mayCollect(Operation *op) {
         auto it = memo.find(op);
         if (it != memo.end())
@@ -287,27 +293,27 @@ public:
     }
 
 private:
-    SymbolTable &symbols; ///< The module's symbols, owned by the caller.
-    DenseMap<Operation *, bool> memo; ///< `mayCollect` answers so far.
-    /// Union-find over cursor values: one class per set of cursors that point
-    /// into the same buffer. A value absent from `parent` is its own class.
+    SymbolTable &symbols; // The module's symbols, owned by the caller.
+    DenseMap<Operation *, bool> memo; // `mayCollect` answers so far.
+    // Union-find over cursor values: one class per set of cursors that point
+    // into the same buffer. A value absent from `parent` is its own class.
     DenseMap<Value, Value> parent;
-    DenseMap<Value, Value> buffers;       ///< Class representative -> buffer.
-    llvm::DenseSet<Value> ambiguous;      ///< Representatives with two buffers.
-    SmallVector<Value> cursors;           ///< Every cursor value seen, including rebased ones.
-    SmallVector<Value> rebasedCursors;    ///< One member per rebase inserted.
+    DenseMap<Value, Value> buffers;       // Class representative -> buffer.
+    llvm::DenseSet<Value> ambiguous;      // Representatives with two buffers.
+    SmallVector<Value> cursors;           // Every cursor value seen, including rebased ones.
+    SmallVector<Value> rebasedCursors;    // One member per rebase inserted.
 
-    /// Returns whether `v` is a `bf.cursor`.
+    // Returns whether `v` is a `bf.cursor`.
     static bool isCursor(Value v) { return isa<bf::CursorType>(v.getType()); }
 
-    /// Returns whether `op` belongs to the dialect with namespace `ns`.
+    // Returns whether `op` belongs to the dialect with namespace `ns`.
     static bool inDialect(Operation *op, StringRef ns) {
         return op->getName().getDialectNamespace() == ns;
     }
 
-    /// Returns whether a call to `name` cannot run a GC: it is a scratch
-    /// helper, a cursor marker, or an LLVM function in `symbols` declared with
-    /// the `gc-leaf-function` passthrough.
+    // Returns whether a call to `name` cannot run a GC: it is a scratch
+    // helper, a cursor marker, or an LLVM function in `symbols` declared with
+    // the `gc-leaf-function` passthrough.
     bool leafCallee(StringRef name) {
         if (eco::markers::isScratchHelper(name) || eco::markers::isCursorMarker(name))
             return true;
@@ -320,8 +326,8 @@ private:
         return false;
     }
 
-    /// Computes `mayCollect` for `op` without consulting the memo for `op`
-    /// itself.
+    // Computes `mayCollect` for `op` without consulting the memo for `op`
+    // itself.
     bool computeMayCollect(Operation *op) {
         if (op->getNumRegions() > 0) {
             // Structured control flow collects iff something inside it does;
@@ -361,7 +367,7 @@ private:
         return true;
     }
 
-    /// Returns the representative of `v`'s class, compressing the path.
+    // Returns the representative of `v`'s class, compressing the path.
     Value find(Value v) {
         auto it = parent.find(v);
         if (it == parent.end() || it->second == v)
@@ -371,9 +377,9 @@ private:
         return root;
     }
 
-    /// Merges the classes of `a` and `b` when both are cursors, keeping `b`'s
-    /// representative. A buffer `a`'s class had is recorded for the merged
-    /// class, which becomes ambiguous if it differs from `b`'s.
+    // Merges the classes of `a` and `b` when both are cursors, keeping `b`'s
+    // representative. A buffer `a`'s class had is recorded for the merged
+    // class, which becomes ambiguous if it differs from `b`'s.
     void unite(Value a, Value b) {
         if (!isCursor(a) || !isCursor(b))
             return;
@@ -391,22 +397,22 @@ private:
             ambiguous.insert(rb);
     }
 
-    /// Records `buffer` as the buffer of the class `rep` represents, marking
-    /// the class ambiguous if it already had a different one.
+    // Records `buffer` as the buffer of the class `rep` represents, marking
+    // the class ambiguous if it already had a different one.
     void setBuffer(Value rep, Value buffer) {
         auto [it, inserted] = buffers.try_emplace(rep, buffer);
         if (!inserted && it->second != buffer)
             ambiguous.insert(rep);
     }
 
-    /// Unites `a` and `b` pairwise, up to the shorter of the two.
+    // Unites `a` and `b` pairwise, up to the shorter of the two.
     void uniteRange(ValueRange a, ValueRange b) {
         for (auto [x, y] : llvm::zip(a, b))
             unite(x, y);
     }
 
-    /// Collects every cursor block argument and op result in `top`, and puts
-    /// each cursor into the class of the cursor it is derived from.
+    // Collects every cursor block argument and op result in `top`, and puts
+    // each cursor into the class of the cursor it is derived from.
     void buildClasses(Operation *top) {
         top->walk([&](Block *block) {
             for (BlockArgument arg : block->getArguments())
@@ -461,9 +467,9 @@ private:
         });
     }
 
-    /// Returns whether `v` is defined in a block that contains `op`, or an
-    /// ancestor of it, and before that ancestor. This is structural dominance:
-    /// it looks only up the region nesting, not across blocks.
+    // Returns whether `v` is defined in a block that contains `op`, or an
+    // ancestor of it, and before that ancestor. This is structural dominance:
+    // it looks only up the region nesting, not across blocks.
     static bool visibleAt(Value v, Operation *op) {
         Block *defBlock = v.getParentBlock();
         Operation *anc = defBlock->findAncestorOpInBlock(*op);
@@ -473,8 +479,8 @@ private:
         return !def || (def != anc && def->isBeforeInBlock(anc));
     }
 
-    /// Returns whether `v` has a use, possibly nested, in an op after `op` in
-    /// `op`'s block.
+    // Returns whether `v` has a use, possibly nested, in an op after `op` in
+    // `op`'s block.
     static bool usedAfter(Value v, Operation *op) {
         Block *block = op->getBlock();
         for (Operation *user : v.getUsers()) {
@@ -485,9 +491,9 @@ private:
         return false;
     }
 
-    /// Sets `buffer` to the buffer of `cursor` and succeeds when that buffer is
-    /// known, is an `eco.value` and is visible at `at`. Otherwise emits an
-    /// error on `at` and fails; `buffer` then holds whatever `bufferOf` gave.
+    // Sets `buffer` to the buffer of `cursor` and succeeds when that buffer is
+    // known, is an `eco.value` and is visible at `at`. Otherwise emits an
+    // error on `at` and fails; `buffer` then holds whatever `bufferOf` gave.
     LogicalResult bufferFor(Value cursor, Operation *at, Value &buffer) {
         buffer = bufferOf(cursor);
         if (!buffer) {
@@ -503,15 +509,15 @@ private:
         return success();
     }
 
-    /// Brackets each GC point in `top` with bf.cursor.offsets and
-    /// bf.cursor.rebase for every cursor visible at it and used after it, and
-    /// redirects those later uses to the rebased cursor. Also requires a known
-    /// buffer for the cursor of every bf.read.bytes and bf.read.utf8. Fails,
-    /// with an error emitted, as `bufferFor` does.
-    ///
-    /// A cursor used inside a nested op after the GC point is redirected too.
-    /// A rebased cursor joins the class of the one it replaces and is itself
-    /// considered at later GC points.
+    // Brackets each GC point in `top` with bf.cursor.offsets and
+    // bf.cursor.rebase for every cursor visible at it and used after it, and
+    // redirects those later uses to the rebased cursor. Also requires a known
+    // buffer for the cursor of every bf.read.bytes and bf.read.utf8. Fails,
+    // with an error emitted, as `bufferFor` does.
+    //
+    // A cursor used inside a nested op after the GC point is redirected too.
+    // A rebased cursor joins the class of the one it replaces and is itself
+    // considered at later GC points.
     LogicalResult insertRebases(Operation *top) {
         SmallVector<Block *> blocks;
         top->walk([&](Block *b) { blocks.push_back(b); });
@@ -565,18 +571,18 @@ private:
         return failure(wr.wasInterrupted());
     }
 
-    /// Marks as a builder each buffer that an encoder writes after a GC point,
-    /// by inserting bf.builder.begin right after its bf.alloc and
-    /// bf.builder.end after the last op in that block that uses one of its
-    /// rebased cursor classes.
-    ///
-    /// A buffer written after a GC point has survived a GC. HEAP_SNAPSHOT_001
-    /// forbids writing into an object that has survived a GC unless its
-    /// builder bit is set, and a builder is kept young until the bit is
-    /// cleared (HEAP_BUILDER_001). An encoder buffer is one reached from a
-    /// bf.cursor.init, not a bf.decoder.cursor.init. Fails with an error when
-    /// such a buffer is not the result of bf.alloc, or when one of its cursors
-    /// is used outside the bf.alloc's block or by a terminator.
+    // Marks as a builder each buffer that an encoder writes after a GC point,
+    // by inserting bf.builder.begin right after its bf.alloc and
+    // bf.builder.end after the last op in that block that uses one of its
+    // rebased cursor classes.
+    //
+    // A buffer written after a GC point has survived a GC. HEAP_SNAPSHOT_001
+    // forbids writing into an object that has survived a GC unless its
+    // builder bit is set, and a builder is kept young until the bit is
+    // cleared (HEAP_BUILDER_001). An encoder buffer is one reached from a
+    // bf.cursor.init, not a bf.decoder.cursor.init. Fails with an error when
+    // such a buffer is not the result of bf.alloc, or when one of its cursors
+    // is used outside the bf.alloc's block or by a terminator.
     LogicalResult insertBuilders(Operation *top) {
         llvm::DenseSet<Value> rebasedReps;
         for (Value v : rebasedCursors)
@@ -620,13 +626,13 @@ private:
         return success();
     }
 
-    /// Returns a GC point that lies on some path from `v`'s definition to
-    /// `user`, or null if there is none.
-    ///
-    /// A loop containing `user` that may collect counts as one, because a
-    /// later iteration reuses the cursor after the GC. When `user` is in a
-    /// different block of the same region as the definition, any GC point
-    /// anywhere in that region counts.
+    // Returns a GC point that lies on some path from `v`'s definition to
+    // `user`, or null if there is none.
+    //
+    // A loop containing `user` that may collect counts as one, because a
+    // later iteration reuses the cursor after the GC. When `user` is in a
+    // different block of the same region as the definition, any GC point
+    // anywhere in that region counts.
     Operation *collectBetween(Value v, Operation *user) {
         Block *defBlock = v.getParentBlock();
         Operation *cur = user;
@@ -661,8 +667,8 @@ private:
         return nullptr;
     }
 
-    /// Checks that no cursor operand in `top` is reachable from its definition
-    /// through a GC point, and emits an error on the first use that is.
+    // Checks that no cursor operand in `top` is reachable from its definition
+    // through a GC point, and emits an error on the first use that is.
     LogicalResult verify(Operation *top) {
         WalkResult wr = top->walk([&](Operation *user) {
             for (Value v : user->getOperands()) {
@@ -685,14 +691,16 @@ private:
 // Lowering Patterns
 //===----------------------------------------------------------------------===//
 
-/// Lowers bf.alloc to a call of `elm_alloc_bytebuffer`, whose ptr addrspace(1)
-/// result is the converted `eco.value` with no cast.
-///
-/// Like every pattern here that takes `rt`, it keeps a reference to it, which
-/// must outlive the pattern.
+/**
+ * Lowers bf.alloc to a call of `elm_alloc_bytebuffer`, whose ptr addrspace(1)
+ * result is the converted `eco.value` with no cast.
+ *
+ * Like every pattern here that takes `rt`, it keeps a reference to it, which
+ * must outlive the pattern.
+ */
 struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations.
+    // Creates the pattern over `rt`'s declarations.
     AllocOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -709,11 +717,13 @@ struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
     }
 };
 
-/// Lowers bf.cursor.init to a cursor from the buffer's data pointer to that
-/// pointer plus its length, both read from the runtime.
+/**
+ * Lowers bf.cursor.init to a cursor from the buffer's data pointer to that
+ * pointer plus its length, both read from the runtime.
+ */
 struct CursorInitOpLowering : public OpConversionPattern<bf::CursorInitOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     CursorInitOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -741,8 +751,10 @@ struct CursorInitOpLowering : public OpConversionPattern<bf::CursorInitOp> {
     }
 };
 
-/// Lowers bf.write.u8 to a store of the value's low byte and a cursor one byte
-/// further on.
+/**
+ * Lowers bf.write.u8 to a store of the value's low byte and a cursor one byte
+ * further on.
+ */
 struct WriteU8OpLowering : public OpConversionPattern<bf::WriteU8Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -769,12 +781,14 @@ struct WriteU8OpLowering : public OpConversionPattern<bf::WriteU8Op> {
     }
 };
 
-/// Lowers bf.write.u16 to an unaligned store of the value's low 16 bits and a
-/// cursor two bytes further on.
-///
-/// The bytes are swapped for big-endian and stored as they are otherwise, so
-/// the result is right only on a little-endian target. The 32-bit and float
-/// writes below do the same.
+/**
+ * Lowers bf.write.u16 to an unaligned store of the value's low 16 bits and a
+ * cursor two bytes further on.
+ *
+ * The bytes are swapped for big-endian and stored as they are otherwise, so
+ * the result is right only on a little-endian target. The 32-bit and float
+ * writes below do the same.
+ */
 struct WriteU16OpLowering : public OpConversionPattern<bf::WriteU16Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -805,8 +819,10 @@ struct WriteU16OpLowering : public OpConversionPattern<bf::WriteU16Op> {
     }
 };
 
-/// Lowers bf.write.u32 to an unaligned store of the value's low 32 bits and a
-/// cursor four bytes further on.
+/**
+ * Lowers bf.write.u32 to an unaligned store of the value's low 32 bits and a
+ * cursor four bytes further on.
+ */
 struct WriteU32OpLowering : public OpConversionPattern<bf::WriteU32Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -837,8 +853,10 @@ struct WriteU32OpLowering : public OpConversionPattern<bf::WriteU32Op> {
     }
 };
 
-/// Lowers bf.write.f32 to an unaligned store of the f64 value rounded to f32,
-/// and a cursor four bytes further on.
+/**
+ * Lowers bf.write.f32 to an unaligned store of the f64 value rounded to f32,
+ * and a cursor four bytes further on.
+ */
 struct WriteF32OpLowering : public OpConversionPattern<bf::WriteF32Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -875,8 +893,10 @@ struct WriteF32OpLowering : public OpConversionPattern<bf::WriteF32Op> {
     }
 };
 
-/// Lowers bf.write.f64 to an unaligned store of the value and a cursor eight
-/// bytes further on.
+/**
+ * Lowers bf.write.f64 to an unaligned store of the value and a cursor eight
+ * bytes further on.
+ */
 struct WriteF64OpLowering : public OpConversionPattern<bf::WriteF64Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -911,11 +931,13 @@ struct WriteF64OpLowering : public OpConversionPattern<bf::WriteF64Op> {
     }
 };
 
-/// Lowers bf.write.bytes to a memcpy of the source buffer's whole contents and
-/// a cursor that many bytes further on.
+/**
+ * Lowers bf.write.bytes to a memcpy of the source buffer's whole contents and
+ * a cursor that many bytes further on.
+ */
 struct WriteBytesOpLowering : public OpConversionPattern<bf::WriteBytesOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     WriteBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -949,11 +971,13 @@ struct WriteBytesOpLowering : public OpConversionPattern<bf::WriteBytesOp> {
     }
 };
 
-/// Lowers bf.write.utf8 to a call of `elm_utf8_copy`, and a cursor advanced by
-/// the byte count it returns.
+/**
+ * Lowers bf.write.utf8 to a call of `elm_utf8_copy`, and a cursor advanced by
+ * the byte count it returns.
+ */
 struct WriteUtf8OpLowering : public OpConversionPattern<bf::WriteUtf8Op> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     WriteUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -977,10 +1001,12 @@ struct WriteUtf8OpLowering : public OpConversionPattern<bf::WriteUtf8Op> {
     }
 };
 
-/// Lowers bf.utf8_width to a call of `elm_utf8_width`.
+/**
+ * Lowers bf.utf8_width to a call of `elm_utf8_width`.
+ */
 struct Utf8WidthOpLowering : public OpConversionPattern<bf::Utf8WidthOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     Utf8WidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -996,10 +1022,12 @@ struct Utf8WidthOpLowering : public OpConversionPattern<bf::Utf8WidthOp> {
     }
 };
 
-/// Lowers bf.bytes_width to a call of `elm_bytebuffer_len`.
+/**
+ * Lowers bf.bytes_width to a call of `elm_bytebuffer_len`.
+ */
 struct BytesWidthOpLowering : public OpConversionPattern<bf::BytesWidthOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     BytesWidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1015,11 +1043,13 @@ struct BytesWidthOpLowering : public OpConversionPattern<bf::BytesWidthOp> {
     }
 };
 
-/// Lowers bf.encoder.width to a call of `elm_encoder_size`, the runtime walker
-/// that measures an encoder tree's width in bytes.
+/**
+ * Lowers bf.encoder.width to a call of `elm_encoder_size`, the runtime walker
+ * that measures an encoder tree's width in bytes.
+ */
 struct EncoderWidthOpLowering : public OpConversionPattern<bf::EncoderWidthOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     EncoderWidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1035,15 +1065,17 @@ struct EncoderWidthOpLowering : public OpConversionPattern<bf::EncoderWidthOp> {
     }
 };
 
-/// Lowers bf.write.encoder to a call of `elm_encoder_write_into` at the
-/// cursor's current pointer, and a cursor advanced by the byte count it
-/// returns.
-///
-/// `mayCollect` does not count this op as a GC point, so the walker must not
-/// run a GC.
+/**
+ * Lowers bf.write.encoder to a call of `elm_encoder_write_into` at the
+ * cursor's current pointer, and a cursor advanced by the byte count it
+ * returns.
+ *
+ * `mayCollect` does not count this op as a GC point, so the walker must not
+ * run a GC.
+ */
 struct WriteEncoderOpLowering : public OpConversionPattern<bf::WriteEncoderOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     WriteEncoderOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1067,8 +1099,10 @@ struct WriteEncoderOpLowering : public OpConversionPattern<bf::WriteEncoderOp> {
     }
 };
 
-/// Lowers bf.require to an i1 that is true when the cursor's current pointer
-/// plus the required byte count does not pass its end, compared unsigned.
+/**
+ * Lowers bf.require to an i1 that is true when the cursor's current pointer
+ * plus the required byte count does not pass its end, compared unsigned.
+ */
 struct RequireOpLowering : public OpConversionPattern<bf::RequireOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1101,7 +1135,9 @@ struct RequireOpLowering : public OpConversionPattern<bf::RequireOp> {
 // yields the value and a cursor past it. No read checks the end; a preceding
 // bf.require is what checks the end.
 
-/// Lowers bf.read.u8 to a byte load zero-extended to i64.
+/**
+ * Lowers bf.read.u8 to a byte load zero-extended to i64.
+ */
 struct ReadU8OpLowering : public OpConversionPattern<bf::ReadU8Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1125,7 +1161,9 @@ struct ReadU8OpLowering : public OpConversionPattern<bf::ReadU8Op> {
     }
 };
 
-/// Lowers bf.read.i8 to a byte load sign-extended to i64.
+/**
+ * Lowers bf.read.i8 to a byte load sign-extended to i64.
+ */
 struct ReadI8OpLowering : public OpConversionPattern<bf::ReadI8Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1149,7 +1187,9 @@ struct ReadI8OpLowering : public OpConversionPattern<bf::ReadI8Op> {
     }
 };
 
-/// Lowers bf.read.u16 to a 16-bit value zero-extended to i64.
+/**
+ * Lowers bf.read.u16 to a 16-bit value zero-extended to i64.
+ */
 struct ReadU16OpLowering : public OpConversionPattern<bf::ReadU16Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1192,7 +1232,9 @@ struct ReadU16OpLowering : public OpConversionPattern<bf::ReadU16Op> {
     }
 };
 
-/// Lowers bf.read.i16 to a 16-bit value sign-extended to i64.
+/**
+ * Lowers bf.read.i16 to a 16-bit value sign-extended to i64.
+ */
 struct ReadI16OpLowering : public OpConversionPattern<bf::ReadI16Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1233,7 +1275,9 @@ struct ReadI16OpLowering : public OpConversionPattern<bf::ReadI16Op> {
     }
 };
 
-/// Lowers bf.read.u32 to a 32-bit value zero-extended to i64.
+/**
+ * Lowers bf.read.u32 to a 32-bit value zero-extended to i64.
+ */
 struct ReadU32OpLowering : public OpConversionPattern<bf::ReadU32Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1276,7 +1320,9 @@ struct ReadU32OpLowering : public OpConversionPattern<bf::ReadU32Op> {
     }
 };
 
-/// Lowers bf.read.i32 to a 32-bit value sign-extended to i64.
+/**
+ * Lowers bf.read.i32 to a 32-bit value sign-extended to i64.
+ */
 struct ReadI32OpLowering : public OpConversionPattern<bf::ReadI32Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1319,7 +1365,9 @@ struct ReadI32OpLowering : public OpConversionPattern<bf::ReadI32Op> {
     }
 };
 
-/// Lowers bf.read.f32 to a 32-bit pattern read as f32 and extended to f64.
+/**
+ * Lowers bf.read.f32 to a 32-bit pattern read as f32 and extended to f64.
+ */
 struct ReadF32OpLowering : public OpConversionPattern<bf::ReadF32Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1364,7 +1412,9 @@ struct ReadF32OpLowering : public OpConversionPattern<bf::ReadF32Op> {
     }
 };
 
-/// Lowers bf.read.f64 to a 64-bit pattern read as f64.
+/**
+ * Lowers bf.read.f64 to a 64-bit pattern read as f64.
+ */
 struct ReadF64OpLowering : public OpConversionPattern<bf::ReadF64Op> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1407,16 +1457,16 @@ struct ReadF64OpLowering : public OpConversionPattern<bf::ReadF64Op> {
     }
 };
 
-/// Returns the converted form of the buffer `gc` found for `cursor`, or a null
-/// value when it found none.
+// Returns the converted form of the buffer `gc` found for `cursor`, or a null
+// value when it found none.
 static Value convertedBufferOf(CursorGCSafety &gc, Value cursor,
                                ConversionPatternRewriter &rewriter) {
     Value buffer = gc.bufferOf(cursor);
     return buffer ? rewriter.getRemappedValue(buffer) : Value();
 }
 
-/// Returns the i64 offsets of a lowered `cursor`'s current and end pointers
-/// from `data`, the start of its buffer's body.
+// Returns the i64 offsets of a lowered `cursor`'s current and end pointers
+// from `data`, the start of its buffer's body.
 static std::pair<Value, Value> cursorOffsets(OpBuilder &builder, Location loc,
                                              Value cursor, Value data) {
     auto i64 = builder.getI64Type();
@@ -1427,11 +1477,13 @@ static std::pair<Value, Value> cursorOffsets(OpBuilder &builder, Location loc,
             builder.create<LLVM::SubOp>(loc, end, base)};
 }
 
-/// Lowers bf.cursor.offsets to the cursor's two offsets from the start of its
-/// buffer's body.
+/**
+ * Lowers bf.cursor.offsets to the cursor's two offsets from the start of its
+ * buffer's body.
+ */
 struct CursorOffsetsOpLowering : public OpConversionPattern<bf::CursorOffsetsOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     CursorOffsetsOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1447,11 +1499,13 @@ struct CursorOffsetsOpLowering : public OpConversionPattern<bf::CursorOffsetsOp>
     }
 };
 
-/// Lowers bf.cursor.rebase to a cursor at the given offsets from the start of
-/// the buffer's body, as the body is at that point.
+/**
+ * Lowers bf.cursor.rebase to a cursor at the given offsets from the start of
+ * the buffer's body, as the body is at that point.
+ */
 struct CursorRebaseOpLowering : public OpConversionPattern<bf::CursorRebaseOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     CursorRebaseOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1471,13 +1525,15 @@ struct CursorRebaseOpLowering : public OpConversionPattern<bf::CursorRebaseOp> {
     }
 };
 
-/// Lowers bf.builder.begin or bf.builder.end, whichever `OpT` is, to a call of
-/// `fn` on the buffer. `fn` is the runtime function that sets or clears the
-/// buffer's builder bit, as `elm_bytebuffer_builder_begin` describes.
+/**
+ * Lowers bf.builder.begin or bf.builder.end, whichever `OpT` is, to a call of
+ * `fn` on the buffer. `fn` is the runtime function that sets or clears the
+ * buffer's builder bit, as `elm_bytebuffer_builder_begin` describes.
+ */
 template <typename OpT>
 struct BuilderBitOpLowering : public OpConversionPattern<OpT> {
     LLVM::LLVMFuncOp fn;
-    /// Creates the pattern calling `fn`.
+    // Creates the pattern calling `fn`.
     BuilderBitOpLowering(const TypeConverter &tc, MLIRContext *ctx, LLVM::LLVMFuncOp fn)
         : OpConversionPattern<OpT>(tc, ctx), fn(fn) {}
 
@@ -1490,18 +1546,20 @@ struct BuilderBitOpLowering : public OpConversionPattern<OpT> {
     }
 };
 
-/// Lowers bf.read.bytes to a new ByteBuffer holding the next `len` bytes, a
-/// cursor past them, and an `ok` that is always true.
-///
-/// The allocation may run a GC that moves the source buffer, so the cursor's
-/// offsets are taken before it and the source pointer and new cursor are
-/// rebuilt from the source buffer after it. The pattern fails to match when
-/// `gc` knows no buffer for the cursor. It keeps references to `rt` and `gc`,
-/// which must outlive it.
+/**
+ * Lowers bf.read.bytes to a new ByteBuffer holding the next `len` bytes, a
+ * cursor past them, and an `ok` that is always true.
+ *
+ * The allocation may run a GC that moves the source buffer, so the cursor's
+ * offsets are taken before it and the source pointer and new cursor are
+ * rebuilt from the source buffer after it. The pattern fails to match when
+ * `gc` knows no buffer for the cursor. It keeps references to `rt` and `gc`,
+ * which must outlive it.
+ */
 struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
     const BFRuntimeFuncs &rt;
     CursorGCSafety &gc;
-    /// Creates the pattern over `rt`'s declarations and `gc`'s buffers.
+    // Creates the pattern over `rt`'s declarations and `gc`'s buffers.
     ReadBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt,
                         CursorGCSafety &gc)
         : OpConversionPattern(tc, ctx), rt(rt), gc(gc) {}
@@ -1553,19 +1611,21 @@ struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
     }
 };
 
-/// Lowers bf.read.utf8 to a call of `elm_utf8_decode` on the next `len`
-/// bytes, a cursor past them, and an `ok` that is true when the result is not
-/// null.
-///
-/// `elm_utf8_decode` is given the buffer and an offset rather than a pointer,
-/// because it allocates; its own comment says how it keeps the buffer safe.
-/// The new cursor is rebuilt from the buffer after the call. The offset is
-/// truncated to 32 bits. The pattern fails to match when `gc` knows no buffer
-/// for the cursor. It keeps references to `rt` and `gc`, which must outlive it.
+/**
+ * Lowers bf.read.utf8 to a call of `elm_utf8_decode` on the next `len`
+ * bytes, a cursor past them, and an `ok` that is true when the result is not
+ * null.
+ *
+ * `elm_utf8_decode` is given the buffer and an offset rather than a pointer,
+ * because it allocates; its own comment says how it keeps the buffer safe.
+ * The new cursor is rebuilt from the buffer after the call. The offset is
+ * truncated to 32 bits. The pattern fails to match when `gc` knows no buffer
+ * for the cursor. It keeps references to `rt` and `gc`, which must outlive it.
+ */
 struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
     const BFRuntimeFuncs &rt;
     CursorGCSafety &gc;
-    /// Creates the pattern over `rt`'s declarations and `gc`'s buffers.
+    // Creates the pattern over `rt`'s declarations and `gc`'s buffers.
     ReadUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt,
                        CursorGCSafety &gc)
         : OpConversionPattern(tc, ctx), rt(rt), gc(gc) {}
@@ -1610,10 +1670,12 @@ struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
     }
 };
 
-/// Lowers bf.decoder.cursor.init the same way as bf.cursor.init.
+/**
+ * Lowers bf.decoder.cursor.init the same way as bf.cursor.init.
+ */
 struct DecoderCursorInitOpLowering : public OpConversionPattern<bf::DecoderCursorInitOp> {
     const BFRuntimeFuncs &rt;
-    /// Creates the pattern over `rt`'s declarations, which must outlive it.
+    // Creates the pattern over `rt`'s declarations, which must outlive it.
     DecoderCursorInitOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
         : OpConversionPattern(tc, ctx), rt(rt) {}
 
@@ -1641,7 +1703,9 @@ struct DecoderCursorInitOpLowering : public OpConversionPattern<bf::DecoderCurso
     }
 };
 
-/// Lowers bf.cursor.ptr to the cursor's current pointer as an i64.
+/**
+ * Lowers bf.cursor.ptr to the cursor's current pointer as an i64.
+ */
 struct CursorPtrOpLowering : public OpConversionPattern<bf::CursorPtrOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1661,11 +1725,13 @@ struct CursorPtrOpLowering : public OpConversionPattern<bf::CursorPtrOp> {
 // Pass Definition
 //===----------------------------------------------------------------------===//
 
-/// The module pass `createBFToLLVMPass` returns, registered as `bf-to-llvm`.
-///
-/// It converts only the top-level ops that contain a bf op, and converts no
-/// non-bf op, though their operands may be bridged with
-/// unrealized_conversion_cast. A module with no bf op is left unchanged.
+/**
+ * The module pass `createBFToLLVMPass` returns, registered as `bf-to-llvm`.
+ *
+ * It converts only the top-level ops that contain a bf op, and converts no
+ * non-bf op, though their operands may be bridged with
+ * unrealized_conversion_cast. A module with no bf op is left unchanged.
+ */
 struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(BFToLLVMPass)
 

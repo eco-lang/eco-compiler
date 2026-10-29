@@ -16,22 +16,22 @@
 
 namespace {
 
-/// Returns the HPointer whose word is `val`.
+// Returns the HPointer whose word is `val`.
 inline Elm::HPointer u64ToHPointer(uint64_t val) {
     Elm::HPointer hp;
     std::memcpy(&hp, &val, sizeof(hp));
     return hp;
 }
 
-/// Returns the word of `hp`.
+// Returns the word of `hp`.
 inline uint64_t hpointerToU64(Elm::HPointer hp) {
     uint64_t result;
     std::memcpy(&result, &hp, sizeof(result));
     return result;
 }
 
-/// Returns the heap object the word `val` refers to, or null when `val` is an embedded constant
-/// (`ptr_ind` set). The null word 0 is not a constant and is passed to `resolve`.
+// Returns the heap object the word `val` refers to, or null when `val` is an embedded constant
+// (`ptr_ind` set). The null word 0 is not a constant and is passed to `resolve`.
 inline void* u64ToPtr(uint64_t val) {
     Elm::HPointer hp = u64ToHPointer(val);
     if (hp.ptr_ind != 0) {

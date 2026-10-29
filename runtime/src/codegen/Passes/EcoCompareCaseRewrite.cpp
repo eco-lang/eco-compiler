@@ -74,12 +74,14 @@ using namespace ::eco;
 
 namespace {
 
-/// The constructor tags of `Basics.Order`. They must match the compiler's
-/// constructor ids and Utils.cpp's `Order` constants; nothing here checks that.
+/**
+ * The constructor tags of `Basics.Order`. They must match the compiler's
+ * constructor ids and Utils.cpp's `Order` constants; nothing here checks that.
+ */
 enum : int64_t { kOrderLT = 0, kOrderEQ = 1, kOrderGT = 2 };
 
-/// Returns whether the pass runs: true unless `ECO_CMPCASE` is exactly `0`.
-/// The variable is read once per process.
+// Returns whether the pass runs: true unless `ECO_CMPCASE` is exactly `0`.
+// The variable is read once per process.
 bool cmpCaseEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_CMPCASE");
@@ -88,20 +90,24 @@ bool cmpCaseEnabled() {
     return on;
 }
 
-/// Returns whether `ECO_CMPCASE` is set to a non-empty value, which asks for
-/// the census line. The variable is read on every call.
+// Returns whether `ECO_CMPCASE` is set to a non-empty value, which asks for
+// the census line. The variable is read on every call.
 bool cmpCaseNamed() {
     const char *e = ::getenv("ECO_CMPCASE");
     return e && *e;
 }
 
-/// The kind of comparison that produced an `Order` value, which decides the
-/// tests that replace it.
+/**
+ * The kind of comparison that produced an `Order` value, which decides the
+ * tests that replace it.
+ */
 enum class ProducerKind { Int, Float, Char, String, BoxedKernel };
 
-/// An `Order`-producing op matched by `matchProducer`, with its two operands.
-///
-/// `op` points into the module and is valid until the op is erased.
+/**
+ * An `Order`-producing op matched by `matchProducer`, with its two operands.
+ *
+ * `op` points into the module and is valid until the op is erased.
+ */
 struct Producer {
     Operation *op;
     Value lhs;
@@ -109,10 +115,10 @@ struct Producer {
     ProducerKind kind;
 };
 
-/// Returns whether `op` produces an `Order` this pass can replace, and if so
-/// writes it to `out`; `out` is unchanged otherwise. The producers are the four
-/// `cmp_order` ops and an `eco.call` to `Elm_Kernel_Utils_compare` with two
-/// operands and one result.
+// Returns whether `op` produces an `Order` this pass can replace, and if so
+// writes it to `out`; `out` is unchanged otherwise. The producers are the four
+// `cmp_order` ops and an `eco.call` to `Elm_Kernel_Utils_compare` with two
+// operands and one result.
 bool matchProducer(Operation *op, Producer &out) {
     if (auto c = dyn_cast<IntCmpOrderOp>(op)) {
         out = {op, c.getLhs(), c.getRhs(), ProducerKind::Int};
@@ -143,12 +149,12 @@ bool matchProducer(Operation *op, Producer &out) {
     return false;
 }
 
-/// Adds a private `func.func` declaration of `Elm_Kernel_Utils_cmp3`, taking
-/// two `!eco.value` and returning i64, at the end of `m`, unless a `func.func`
-/// of that name is already in the module body. The declaration is marked
-/// `is_kernel`, and its function type is the kernel ABI, which later passes
-/// take as given (KERN_006). It also carries `eco.logical_param_types` and
-/// `eco.logical_result_types`.
+// Adds a private `func.func` declaration of `Elm_Kernel_Utils_cmp3`, taking
+// two `!eco.value` and returning i64, at the end of `m`, unless a `func.func`
+// of that name is already in the module body. The declaration is marked
+// `is_kernel`, and its function type is the kernel ABI, which later passes
+// take as given (KERN_006). It also carries `eco.logical_param_types` and
+// `eco.logical_result_types`.
 void ensureUtilsCmp3Decl(ModuleOp m) {
     // Scanned from the end: this runs once per rewritten boxed site, and the
     // declaration it creates is appended at the end, so after the first call
@@ -170,12 +176,12 @@ void ensureUtilsCmp3Decl(ModuleOp m) {
     f->setAttr("eco.logical_result_types", b.getStrArrayAttr({"int"}));
 }
 
-/// Emits, at `b`'s insertion point, the i1 values "lhs < rhs" and "lhs > rhs"
-/// for the comparison `p` made, and returns them in that order. For a string or
-/// boxed producer it also emits the three-way compare whose sign they test, so
-/// that compare now runs where the tests are placed rather than where `p.op`
-/// was; for a boxed producer it may add the `Elm_Kernel_Utils_cmp3` declaration
-/// to `module`.
+// Emits, at `b`'s insertion point, the i1 values "lhs < rhs" and "lhs > rhs"
+// for the comparison `p` made, and returns them in that order. For a string or
+// boxed producer it also emits the three-way compare whose sign they test, so
+// that compare now runs where the tests are placed rather than where `p.op`
+// was; for a boxed producer it may add the `Elm_Kernel_Utils_cmp3` declaration
+// to `module`.
 std::pair<Value, Value> emitTests(OpBuilder &b, Location loc,
                                   const Producer &p, ModuleOp module) {
     Type i1Ty = b.getI1Type();
@@ -213,10 +219,10 @@ std::pair<Value, Value> emitTests(OpBuilder &b, Location loc,
     llvm_unreachable("unhandled ProducerKind");
 }
 
-/// Replaces `prodOp` and the case on its result with the nested Bool cases
-/// described in the file comment, and returns whether it did. On false the IR
-/// is unchanged. On true both `prodOp` and the original case are erased, and
-/// the original case's regions have been moved into the new cases.
+// Replaces `prodOp` and the case on its result with the nested Bool cases
+// described in the file comment, and returns whether it did. On false the IR
+// is unchanged. On true both `prodOp` and the original case are erased, and
+// the original case's regions have been moved into the new cases.
 bool tryRewrite(Operation *prodOp, ModuleOp module) {
     Producer p;
     if (!matchProducer(prodOp, p))
@@ -297,22 +303,24 @@ bool tryRewrite(Operation *prodOp, ModuleOp module) {
     return true;
 }
 
-/// The module pass that applies `tryRewrite` to every `Order` producer.
+/**
+ * The module pass that applies `tryRewrite` to every `Order` producer.
+ */
 struct EcoCompareCaseRewritePass
     : public PassWrapper<EcoCompareCaseRewritePass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoCompareCaseRewritePass)
 
-    /// Returns the pass's command-line name.
+    // Returns the pass's command-line name.
     StringRef getArgument() const override { return "eco-compare-case-rewrite"; }
 
-    /// Returns the pass's one-line help text.
+    // Returns the pass's one-line help text.
     StringRef getDescription() const override {
         return "Rewrite compare + case-on-Order into direct comparisons "
                "(deletes the Order round-trip)";
     }
 
-    /// Rewrites every eligible site in the module, unless `ECO_CMPCASE` is
-    /// `0`, and prints the census when `ECO_CMPCASE` is set.
+    // Rewrites every eligible site in the module, unless `ECO_CMPCASE` is
+    // `0`, and prints the census when `ECO_CMPCASE` is set.
     void runOnOperation() override {
         if (!cmpCaseEnabled())
             return;

@@ -29,20 +29,20 @@ namespace eco::symgraph {
 
 namespace {
 
-/// The edges of one node or one non-symbol op: pairs of target node index and
-/// edge kinds.
+// The edges of one node or one non-symbol op: pairs of target node index and
+// edge kinds.
 using EdgeList = std::vector<std::pair<uint32_t, uint8_t>>;
 
-/// Returns whether `a` is of a kind that cannot contain a symbol reference, so
-/// that it need not be walked.
+// Returns whether `a` is of a kind that cannot contain a symbol reference, so
+// that it need not be walked.
 bool isSymbolFreeLeaf(Attribute a) {
     return isa<IntegerAttr, FloatAttr, StringAttr, TypeAttr, UnitAttr,
                DenseArrayAttr, DenseIntOrFPElementsAttr, LLVM::LinkageAttr,
                LLVM::CConvAttr, LLVM::FastmathFlagsAttr>(a);
 }
 
-/// Calls `fn(ref, isCallee)` for every symbol reference in `a`, including `a`
-/// itself and any nested inside it. Does nothing for a null `a`.
+// Calls `fn(ref, isCallee)` for every symbol reference in `a`, including `a`
+// itself and any nested inside it. Does nothing for a null `a`.
 void visitAttr(Attribute a, bool isCallee,
                llvm::function_ref<void(SymbolRefAttr, bool)> fn) {
     if (!a || isSymbolFreeLeaf(a))
@@ -54,14 +54,16 @@ void visitAttr(Attribute a, bool isCallee,
     a.walk([&](SymbolRefAttr r) { fn(r, isCallee); });
 }
 
-/// How `forEachRef` reads an op's attributes. `Fast` reads them as
-/// `forEachSymbolRef` describes. `Dictionary` walks `getAttrDictionary()` and is
-/// used only by the `ECO_SYMREF_VALIDATE` check in `build`.
+/**
+ * How `forEachRef` reads an op's attributes. `Fast` reads them as
+ * `forEachSymbolRef` describes. `Dictionary` walks `getAttrDictionary()` and is
+ * used only by the `ECO_SYMREF_VALIDATE` check in `build`.
+ */
 enum class RefMode { Fast, Dictionary };
 
-/// Calls `fn(ref, isCallee)` for every symbol reference in `op`'s own
-/// attributes, read as `mode` says. In both modes `isCallee` is true only for an
-/// `llvm.call`'s `callee`.
+// Calls `fn(ref, isCallee)` for every symbol reference in `op`'s own
+// attributes, read as `mode` says. In both modes `isCallee` is true only for an
+// `llvm.call`'s `callee`.
 void forEachRef(Operation *op, RefMode mode,
                 llvm::function_ref<void(SymbolRefAttr, bool)> fn) {
     const bool isCall = isa<LLVM::CallOp>(op);
@@ -94,10 +96,10 @@ void forEachRef(Operation *op, RefMode mode,
         visitAttr(na.getValue(), false, fn);
 }
 
-/// Appends to `out` the edges from `root` and every op nested in it, classified
-/// by the rules in the header's file comment, then sorts all of `out` by target
-/// and merges entries with the same target by OR-ing their kinds. References to
-/// names `g` has no node for are dropped. Reads `g` and the IR only.
+// Appends to `out` the edges from `root` and every op nested in it, classified
+// by the rules in the header's file comment, then sorts all of `out` by target
+// and merges entries with the same target by OR-ing their kinds. References to
+// names `g` has no node for are dropped. Reads `g` and the IR only.
 void collect(Operation *root, const Graph &g, EdgeList &out,
              bool keepUnusedAddressOf, RefMode mode = RefMode::Fast) {
     auto add = [&](StringAttr s, uint8_t kind) {
@@ -146,8 +148,8 @@ void collect(Operation *root, const Graph &g, EdgeList &out,
     out.resize(w);
 }
 
-/// Returns whether `ECO_SYMREF_VALIDATE` is set to a value that is not empty and
-/// does not start with `0`. The variable is read on the first call only.
+// Returns whether `ECO_SYMREF_VALIDATE` is set to a value that is not empty and
+// does not start with `0`. The variable is read on the first call only.
 bool symrefValidate() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_SYMREF_VALIDATE");

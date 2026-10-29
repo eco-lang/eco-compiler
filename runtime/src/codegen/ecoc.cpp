@@ -89,11 +89,11 @@
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
 
-/// Does nothing; calling it keeps the "eco-gc" GC strategy registration from
-/// being dropped when it comes from a static library.
+// Does nothing; calling it keeps the "eco-gc" GC strategy registration from
+// being dropped when it comes from a static library.
 namespace eco { void linkEcoGCStrategy(); }
-/// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that
-/// the object file holding the "eco-gc" strategy registration is linked in.
+// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that
+// the object file holding the "eco-gc" strategy registration is linked in.
 static struct EcoGCStrategyLinker {
     EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLinker;
@@ -102,17 +102,17 @@ static struct EcoGCStrategyLinker {
 #include "../allocator/Allocator.hpp"
 #include "KernelExports.h"
 
-/// Registers the Eco kernel's GC roots; here, does nothing.
-///
-/// The Eco kernel library, which defines the real function, is not linked
-/// into this tool. A weak reference to a missing symbol would be null on ELF
-/// but is refused by the macOS linker, so this weak empty definition stands in
-/// for it. A strong definition in the same link would replace it.
+// Registers the Eco kernel's GC roots; here, does nothing.
+//
+// The Eco kernel library, which defines the real function, is not linked
+// into this tool. A weak reference to a missing symbol would be null on ELF
+// but is refused by the macOS linker, so this weak empty definition stands in
+// for it. A strong definition in the same link would replace it.
 extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots() {}
-/// Registers the GC roots of the Elm kernel's `Order` singletons, defined in the
-/// `ElmKernel` library this tool links. The declaration is weak except on
-/// Windows, where it is an ordinary declaration that the definition in
-/// `ElmKernel` satisfies.
+// Registers the GC roots of the Elm kernel's `Order` singletons, defined in the
+// `ElmKernel` library this tool links. The declaration is weak except on
+// Windows, where it is an ordinary declaration that the definition in
+// `ElmKernel` satisfies.
 #if defined(_WIN32)
 extern "C" void Eco_Kernel_Order_register_gc_roots();
 #else
@@ -127,14 +127,14 @@ namespace cl = llvm::cl;
 // Command Line Options
 //===----------------------------------------------------------------------===//
 
-/// The input file, which must hold one MLIR module.
+// The input file, which must hold one MLIR module.
 static cl::opt<std::string> inputFilename(
     cl::Positional,
     cl::desc("<input .mlir file>"),
     cl::Required);
 
-/// The `-o` option. It is parsed and never read: output goes to standard
-/// output or standard error as the file comment says.
+// The `-o` option. It is parsed and never read: output goes to standard
+// output or standard error as the file comment says.
 static cl::opt<std::string> outputFilename(
     "o",
     cl::desc("Output filename (default: stdout)"),
@@ -142,10 +142,12 @@ static cl::opt<std::string> outputFilename(
     cl::init("-"));
 
 namespace {
-/// What `-emit` asks for: where the lowering stops and what is done with the
-/// result. The file comment lists what each value produces.
+/**
+ * What `-emit` asks for: where the lowering stops and what is done with the
+ * result. The file comment lists what each value produces.
+ */
 enum Action {
-    None, ///< Not a value `-emit` accepts.
+    None, // Not a value `-emit` accepts.
     DumpMLIR,
     DumpMLIREco,
     DumpMLIROpt,
@@ -155,7 +157,7 @@ enum Action {
 };
 } // namespace
 
-/// The `-emit` option, defaulting to `DumpMLIRLLVM`.
+// The `-emit` option, defaulting to `DumpMLIRLLVM`.
 static cl::opt<enum Action> emitAction(
     "emit",
     cl::desc("Select the kind of output desired"),
@@ -169,34 +171,34 @@ static cl::opt<enum Action> emitAction(
         clEnumValN(RunJIT, "jit", "JIT compile and run")),
     cl::init(DumpMLIRLLVM));
 
-/// The `-opt` option. For `llvm` and `jit` it raises the backend job to
-/// `llvm::CodeGenOptLevel::Aggressive`, which also enables the `$cap` inline
-/// prepass, and for `llvm` it then runs LLVM's O3 optimization pipeline
-/// (`makeOptimizingTransformer`) on the module before printing.
+// The `-opt` option. For `llvm` and `jit` it raises the backend job to
+// `llvm::CodeGenOptLevel::Aggressive`, which also enables the `$cap` inline
+// prepass, and for `llvm` it then runs LLVM's O3 optimization pipeline
+// (`makeOptimizingTransformer`) on the module before printing.
 static cl::opt<bool> enableOpt(
     "opt",
     cl::desc("Enable LLVM optimizations"),
     cl::init(false));
 
-/// The `-exe-reachability` option. It sets `EcoPipelineOptions::reachability`
-/// with the roots an executable has, `main` and `__eco_init_globals`, so the
-/// full lowering erases and internalizes as for an executable, unless
-/// `ECO_REACH_MLIR` is `0`. It is refused with `-emit=jit`. `capClosedWorld`
-/// stays false, as the backend here expects.
+// The `-exe-reachability` option. It sets `EcoPipelineOptions::reachability`
+// with the roots an executable has, `main` and `__eco_init_globals`, so the
+// full lowering erases and internalizes as for an executable, unless
+// `ECO_REACH_MLIR` is `0`. It is refused with `-emit=jit`. `capClosedWorld`
+// stays false, as the backend here expects.
 static cl::opt<bool> exeReachability(
     "exe-reachability",
     cl::desc("Erase what main/__eco_init_globals cannot reach and "
              "internalize the rest, as for an executable (not with -emit=jit)"),
     cl::init(false));
 
-/// The `-verify-diagnostics` option. It is parsed and never read.
+// The `-verify-diagnostics` option. It is parsed and never read.
 static cl::opt<bool> verifyDiagnostics(
     "verify-diagnostics",
     cl::desc("Check that emitted diagnostics match expected"),
     cl::init(false));
 
-/// The `-dump-rs4gc-ir` option: a file to which `-emit=llvm` writes the
-/// module as text IR right after RS4GC. Empty for none.
+// The `-dump-rs4gc-ir` option: a file to which `-emit=llvm` writes the
+// module as text IR right after RS4GC. Empty for none.
 static cl::opt<std::string> dumpRS4GCIR(
     "dump-rs4gc-ir",
     cl::desc("Dump LLVM IR to file after RS4GC pass (for GC diagnostics)"),
@@ -207,18 +209,18 @@ static cl::opt<std::string> dumpRS4GCIR(
 // MLIR Loading
 //===----------------------------------------------------------------------===//
 
-/// The `-no-verify-parse` option: parse without the verifier. `main` verifies
-/// the module straight after parsing whatever this says, so invalid IR is
-/// still refused.
+// The `-no-verify-parse` option: parse without the verifier. `main` verifies
+// the module straight after parsing whatever this says, so invalid IR is
+// still refused.
 static llvm::cl::opt<bool> noVerifyParse(
     "no-verify-parse",
     llvm::cl::desc("Parse the input without running the verifier (diagnostic "
                    "dumps of invalid IR, e.g. with --emit=mlir)"),
     llvm::cl::init(false));
 
-/// Parses the module in `sourceMgr` into `context`, verifying it unless
-/// `-no-verify-parse` is given. Returns null after printing a message if
-/// parsing fails.
+// Parses the module in `sourceMgr` into `context`, verifying it unless
+// `-no-verify-parse` is given. Returns null after printing a message if
+// parsing fails.
 static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
                                        llvm::SourceMgr &sourceMgr) {
     ParserConfig config(&context, /*verifyAfterParse=*/!noVerifyParse);
@@ -236,13 +238,13 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
 
 
 
-/// Lowers `module` in place with the pipeline `action` stops after: the
-/// eco-to-eco stage (`eco::buildEcoToEcoPipeline`) for `DumpMLIREco`, through
-/// the M4 slot for `DumpMLIROpt`, and the full lowering to the LLVM dialect
-/// for every other action.
-///
-/// Returns 0 on success and 1 if the pass manager options or a pass fail, or
-/// if `-exe-reachability` is combined with `RunJIT`.
+// Lowers `module` in place with the pipeline `action` stops after: the
+// eco-to-eco stage (`eco::buildEcoToEcoPipeline`) for `DumpMLIREco`, through
+// the M4 slot for `DumpMLIROpt`, and the full lowering to the LLVM dialect
+// for every other action.
+//
+// Returns 0 on success and 1 if the pass manager options or a pass fail, or
+// if `-exe-reachability` is combined with `RunJIT`.
 static int runPipeline(ModuleOp module, Action action) {
     PassManager pm(module->getName());
 
@@ -279,14 +281,14 @@ static int runPipeline(ModuleOp module, Action action) {
 // LLVM IR Emission
 //===----------------------------------------------------------------------===//
 
-/// Translates `module`, which must already be in the LLVM dialect, to LLVM
-/// IR, runs `eco::runEcoBackend` on it as a `DumpLLVMText` job, and prints the
-/// result to standard output.
-///
-/// The target machine is detected from the host. The job adds no
-/// frame-pointer attributes, and writes the post-RS4GC dump `-dump-rs4gc-ir`
-/// names. With `-opt`, the module is optimized at O3 after the backend and
-/// before printing. Returns 0 on success, or 1 after printing a message.
+// Translates `module`, which must already be in the LLVM dialect, to LLVM
+// IR, runs `eco::runEcoBackend` on it as a `DumpLLVMText` job, and prints the
+// result to standard output.
+//
+// The target machine is detected from the host. The job adds no
+// frame-pointer attributes, and writes the post-RS4GC dump `-dump-rs4gc-ir`
+// names. With `-opt`, the module is optimized at O3 after the backend and
+// before printing. Returns 0 on success, or 1 after printing a message.
 static int dumpLLVMIR(ModuleOp module) {
     registerBuiltinDialectTranslation(*module->getContext());
     registerLLVMDialectTranslation(*module->getContext());
@@ -356,21 +358,21 @@ static int dumpLLVMIR(ModuleOp module) {
 // JIT Execution
 //===----------------------------------------------------------------------===//
 
-/// Compiles `module`, which must already be in the LLVM dialect, with
-/// `eco::EcoJIT`, starts the runtime on the calling thread, and calls `main`
-/// through its packed wrapper.
-///
-/// Before `main` runs, the kernel GC roots are registered, `__eco_init_globals`
-/// is called if the module defines it, the effect managers are registered,
-/// and the stack maps of the compiled code are parsed into the global stack
-/// map. The module is lowered by `eco::runEcoBackend` as a `JITInvokePacked`
-/// job with frame-pointer attributes, at `Aggressive` with `-opt` and `None`
-/// otherwise.
-///
-/// Prints `main() returned: ` and the 64-bit result, the stack map size when
-/// there is one, and a completion line, all to standard output. Returns 0
-/// then, or 1 after printing a message if the engine cannot be created or
-/// `main` cannot be found or called.
+// Compiles `module`, which must already be in the LLVM dialect, with
+// `eco::EcoJIT`, starts the runtime on the calling thread, and calls `main`
+// through its packed wrapper.
+//
+// Before `main` runs, the kernel GC roots are registered, `__eco_init_globals`
+// is called if the module defines it, the effect managers are registered,
+// and the stack maps of the compiled code are parsed into the global stack
+// map. The module is lowered by `eco::runEcoBackend` as a `JITInvokePacked`
+// job with frame-pointer attributes, at `Aggressive` with `-opt` and `None`
+// otherwise.
+//
+// Prints `main() returned: ` and the 64-bit result, the stack map size when
+// there is one, and a completion line, all to standard output. Returns 0
+// then, or 1 after printing a message if the engine cannot be created or
+// `main` cannot be found or called.
 static int runJIT(ModuleOp module) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
@@ -464,9 +466,9 @@ static int runJIT(ModuleOp module) {
 // Main
 //===----------------------------------------------------------------------===//
 
-/// Parses the options, then loads, verifies and lowers the input as `-emit`
-/// asks. Returns 0 on success and 1 on any failure, after printing a message
-/// for most of them.
+// Parses the options, then loads, verifies and lowers the input as `-emit`
+// asks. Returns 0 on success and 1 on any failure, after printing a message
+// for most of them.
 int main(int argc, char **argv) {
     llvm::InitLLVM initLLVM(argc, argv);
 

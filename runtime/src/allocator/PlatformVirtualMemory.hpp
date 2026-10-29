@@ -24,63 +24,63 @@
 
 namespace Elm::platform {
 
-/// Reserves `size` bytes of address space at an address the OS chooses, and
-/// returns its base, or `nullptr` on failure. The range is not accessible until
-/// subranges of it are committed with `commitAt`.
+// Reserves `size` bytes of address space at an address the OS chooses, and
+// returns its base, or `nullptr` on failure. The range is not accessible until
+// subranges of it are committed with `commitAt`.
 void* reserveAddressSpace(std::size_t size);
 
-/// Reserves `size` bytes of address space and returns its base `b`, or `nullptr`
-/// if `size` is zero, exceeds `limit`, or no fitting range could be reserved.
-/// Except in ThreadSanitizer builds with `limit` below 512 GB, `b + size <= limit`.
-///
-/// It tries bases at multiples of 1 TB from 1 TB upwards (after, under
-/// ThreadSanitizer, 64 GB steps below 512 GB), then accepts an OS-chosen address
-/// only if it happens to fit. Like `reserveAddressSpace`, the range is not
-/// accessible until committed.
+// Reserves `size` bytes of address space and returns its base `b`, or `nullptr`
+// if `size` is zero, exceeds `limit`, or no fitting range could be reserved.
+// Except in ThreadSanitizer builds with `limit` below 512 GB, `b + size <= limit`.
+//
+// It tries bases at multiples of 1 TB from 1 TB upwards (after, under
+// ThreadSanitizer, 64 GB steps below 512 GB), then accepts an OS-chosen address
+// only if it happens to fit. Like `reserveAddressSpace`, the range is not
+// accessible until committed.
 void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit);
 
-/// Makes `[addr, addr + size)` readable and writable, and returns `addr`, or
-/// `nullptr` on failure. The range must lie wholly within one reservation, and
-/// `addr` and `size` must be multiples of the OS page size.
-///
-/// On POSIX this maps fresh zero pages over the range, so committing a range that
-/// is already committed discards its contents. On Win64 committing it again keeps
-/// them.
+// Makes `[addr, addr + size)` readable and writable, and returns `addr`, or
+// `nullptr` on failure. The range must lie wholly within one reservation, and
+// `addr` and `size` must be multiples of the OS page size.
+//
+// On POSIX this maps fresh zero pages over the range, so committing a range that
+// is already committed discards its contents. On Win64 committing it again keeps
+// them.
 void* commitAt(void* addr, std::size_t size);
 
-/// Returns `[addr, addr + size)` to the reserved state: it stays claimed, its
-/// memory is given back, and any access faults until it is committed again.
-/// Returns true on success.
+// Returns `[addr, addr + size)` to the reserved state: it stays claimed, its
+// memory is given back, and any access faults until it is committed again.
+// Returns true on success.
 bool decommit(void* addr, std::size_t size);
 
-/// Gives the memory of a committed range back to the OS and leaves the range
-/// committed, readable and writable, reading as zero. Unlike `decommit`, the
-/// range stays accessible. `addr` and `size` must be multiples of the OS page
-/// size. Returns true on success.
+// Gives the memory of a committed range back to the OS and leaves the range
+// committed, readable and writable, reading as zero. Unlike `decommit`, the
+// range stays accessible. `addr` and `size` must be multiples of the OS page
+// size. Returns true on success.
 bool resetPagesToZero(void* addr, std::size_t size);
 
-/// Asks the OS to drop the memory behind a committed range, keeping the range
-/// mapped, and returns true on success. On POSIX this is
-/// `madvise(MADV_DONTNEED)`; on Linux the range then reads as zero, but on other
-/// systems its contents are not specified. On Win64 it does nothing and returns
-/// true, so the contents are kept.
+// Asks the OS to drop the memory behind a committed range, keeping the range
+// mapped, and returns true on success. On POSIX this is
+// `madvise(MADV_DONTNEED)`; on Linux the range then reads as zero, but on other
+// systems its contents are not specified. On Win64 it does nothing and returns
+// true, so the contents are kept.
 bool discardPages(void* addr, std::size_t size);
 
-/// Faults a committed range into memory as writable without changing its
-/// contents, and returns true on success. Only Linux supports it, through
-/// `madvise(MADV_POPULATE_WRITE)`, which kernels older than 5.14 refuse; anywhere
-/// else, and on such kernels, it returns false.
+// Faults a committed range into memory as writable without changing its
+// contents, and returns true on success. Only Linux supports it, through
+// `madvise(MADV_POPULATE_WRITE)`, which kernels older than 5.14 refuse; anywhere
+// else, and on such kernels, it returns false.
 bool populatePagesWrite(void* addr, std::size_t size);
 
-/// Returns the process's resident set size in bytes: on Linux, the second field
-/// of `/proc/self/statm` times the page size. Returns 0 on other platforms, or if
-/// the file cannot be read.
+// Returns the process's resident set size in bytes: on Linux, the second field
+// of `/proc/self/statm` times the page size. Returns 0 on other platforms, or if
+// the file cannot be read.
 std::size_t processResidentBytes();
 
-/// Releases a whole reservation, committed parts included, and returns true on
-/// success. `addr` must be the base a reserve function returned and `size` the
-/// size that was requested. Win64 ignores `size` and releases the whole
-/// reservation at `addr`; POSIX unmaps exactly `[addr, addr + size)`.
+// Releases a whole reservation, committed parts included, and returns true on
+// success. `addr` must be the base a reserve function returned and `size` the
+// size that was requested. Win64 ignores `size` and releases the whole
+// reservation at `addr`; POSIX unmaps exactly `[addr, addr + size)`.
 bool releaseReservation(void* addr, std::size_t size);
 
 } // namespace Elm::platform

@@ -30,21 +30,21 @@ using namespace llvm;
 
 namespace {
 
-/// Returns whether `T` is `ptr addrspace(1)`, the GC-tracked pointer type.
+// Returns whether `T` is `ptr addrspace(1)`, the GC-tracked pointer type.
 static bool isAS1Ptr(Type *T) {
     if (auto *PT = dyn_cast<PointerType>(T))
         return PT->getAddressSpace() == 1;
     return false;
 }
 
-/// Returns whether `F` is non-null and carries the `gc-leaf-function`
-/// attribute.
+// Returns whether `F` is non-null and carries the `gc-leaf-function`
+// attribute.
 static bool isGCLeafCallee(Function *F) {
     return F && F->hasFnAttribute("gc-leaf-function");
 }
 
-/// Returns whether `V` is an integer constant equal to the word of the False,
-/// True or Empty embedded constant.
+// Returns whether `V` is an integer constant equal to the word of the False,
+// True or Empty embedded constant.
 static bool isEmbeddedConstant(Value *V) {
     auto *CI = dyn_cast<ConstantInt>(V);
     if (!CI) return false;
@@ -55,8 +55,8 @@ static bool isEmbeddedConstant(Value *V) {
            val == ve::encodeConstant(ve::Empty);
 }
 
-/// Returns the allocas in `F` whose address, through casts and GEPs, is the
-/// first argument of a direct call to `eco_gc_push_stack_range`.
+// Returns the allocas in `F` whose address, through casts and GEPs, is the
+// first argument of a direct call to `eco_gc_push_stack_range`.
 static DenseSet<AllocaInst *> findGCArgsAllocas(Function &F) {
     DenseSet<AllocaInst *> result;
     for (auto &BB : F) {
@@ -86,8 +86,8 @@ static DenseSet<AllocaInst *> findGCArgsAllocas(Function &F) {
     return result;
 }
 
-/// Returns the pointer `V` is derived from through any chain of GEPs, bitcasts
-/// and address-space casts.
+// Returns the pointer `V` is derived from through any chain of GEPs, bitcasts
+// and address-space casts.
 static Value *stripToBase(Value *V) {
     while (true) {
         if (auto *GEP = dyn_cast<GetElementPtrInst>(V)) {
@@ -103,7 +103,7 @@ static Value *stripToBase(Value *V) {
     return V;
 }
 
-/// Returns true for every store.
+// Returns true for every store.
 static bool isRecognisedStoreTarget(StoreInst *SI,
                                      const DenseSet<AllocaInst *> &gcArgsAllocas) {
     Value *ptr = SI->getPointerOperand();
@@ -118,7 +118,7 @@ static bool isRecognisedStoreTarget(StoreInst *SI,
     return true;
 }
 
-/// Returns true for every load, as `isRecognisedStoreTarget` does for stores.
+// Returns true for every load, as `isRecognisedStoreTarget` does for stores.
 static bool isRecognisedLoadSource(LoadInst *LI,
                                     const DenseSet<AllocaInst *> &gcArgsAllocas) {
     Value *ptr = LI->getPointerOperand();
@@ -131,9 +131,9 @@ static bool isRecognisedLoadSource(LoadInst *LI,
     return true;
 }
 
-/// Returns whether `PTI` has at least one use and every use is an `lshr`,
-/// `and`, `icmp`, `select`, `trunc` or `zext` in its own block. Nothing calls
-/// it.
+// Returns whether `PTI` has at least one use and every use is an `lshr`,
+// `and`, `icmp`, `select`, `trunc` or `zext` in its own block. Nothing calls
+// it.
 static bool isTagBitTestChain(PtrToIntInst *PTI) {
     BasicBlock *BB = PTI->getParent();
     for (User *U : PTI->users()) {
@@ -148,10 +148,10 @@ static bool isTagBitTestChain(PtrToIntInst *PTI) {
     return !PTI->user_empty();
 }
 
-/// Stops the process with `report_fatal_error` unless every use of `PTI` is a
-/// store of it, a call to a gc-leaf, `eco_`-prefixed or intrinsic callee
-/// (gc.statepoint included), an `lshr`, `and`, `icmp`, `select`, `trunc`,
-/// `zext`, `or` or `xor` in its block, an `inttoptr`, or a phi.
+// Stops the process with `report_fatal_error` unless every use of `PTI` is a
+// store of it, a call to a gc-leaf, `eco_`-prefixed or intrinsic callee
+// (gc.statepoint included), an `lshr`, `and`, `icmp`, `select`, `trunc`,
+// `zext`, `or` or `xor` in its block, an `inttoptr`, or a phi.
 static void verifyPtrToInt(PtrToIntInst *PTI,
                             const DenseSet<AllocaInst *> &gcArgsAllocas,
                             Function &F) {
@@ -215,10 +215,10 @@ static void verifyPtrToInt(PtrToIntInst *PTI,
     }
 }
 
-/// Stops the process with `report_fatal_error` unless the operand of `ITP` is
-/// the False, True or Empty constant word, a load, a `ptrtoint`, a call or
-/// invoke, an `extractvalue`, or a phi or select whose incoming values are each
-/// one of the first three.
+// Stops the process with `report_fatal_error` unless the operand of `ITP` is
+// the False, True or Empty constant word, a load, a `ptrtoint`, a call or
+// invoke, an `extractvalue`, or a phi or select whose incoming values are each
+// one of the first three.
 static void verifyIntToPtr(IntToPtrInst *ITP,
                             const DenseSet<AllocaInst *> &gcArgsAllocas,
                             Function &F) {
@@ -307,17 +307,19 @@ PreservedAnalyses eco::EcoPtrIntVerifyPass::run(
 
 namespace {
 
-/// A function pass that replaces each `extractvalue` whose field it can trace
-/// to a value with that value, and deletes the `insertvalue` chains left dead.
-///
-/// It exists so that no aggregate holding a `ptr addrspace(1)` reaches RS4GC.
-/// SROA breaks up aggregates kept in allocas; this breaks up those built in
-/// registers. InstCombine and InstSimplify would also do this, but they fold
-/// operations whose result is undefined, such as `fptosi` of an infinity or a
-/// NaN, and the pipeline does not want those folded. This pass creates no
-/// instructions.
+/**
+ * A function pass that replaces each `extractvalue` whose field it can trace
+ * to a value with that value, and deletes the `insertvalue` chains left dead.
+ *
+ * It exists so that no aggregate holding a `ptr addrspace(1)` reaches RS4GC.
+ * SROA breaks up aggregates kept in allocas; this breaks up those built in
+ * registers. InstCombine and InstSimplify would also do this, but they fold
+ * operations whose result is undefined, such as `fptosi` of an infinity or a
+ * NaN, and the pipeline does not want those folded. This pass creates no
+ * instructions.
+ */
 struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
-    /// Returns whether `a` and `b` are the same index list.
+    // Returns whether `a` and `b` are the same index list.
     static bool indicesEq(ArrayRef<unsigned> a, ArrayRef<unsigned> b) {
         if (a.size() != b.size()) return false;
         for (size_t i = 0; i < a.size(); ++i)
@@ -325,17 +327,17 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
         return true;
     }
 
-    /// Returns the value at `wantIndices` in `agg`, found by walking back
-    /// through its `insertvalue` chain, or null when it cannot be found.
-    ///
-    /// An `insertvalue` with different indices is passed over as writing
-    /// another field. At the base of the chain, an undef or poison aggregate
-    /// gives the sentinel `UndefValue::get(nullptr)`, which `run` replaces by
-    /// an undef of the extract's type, and a `ConstantAggregateZero`,
-    /// `ConstantStruct`, `ConstantArray` or `ConstantVector` is indexed into;
-    /// any other constant gives null. The constant case matters because
-    /// IRBuilder folds an `insertvalue` of a constant into undef into a
-    /// constant aggregate, which can sit beneath the inserts that remain.
+    // Returns the value at `wantIndices` in `agg`, found by walking back
+    // through its `insertvalue` chain, or null when it cannot be found.
+    //
+    // An `insertvalue` with different indices is passed over as writing
+    // another field. At the base of the chain, an undef or poison aggregate
+    // gives the sentinel `UndefValue::get(nullptr)`, which `run` replaces by
+    // an undef of the extract's type, and a `ConstantAggregateZero`,
+    // `ConstantStruct`, `ConstantArray` or `ConstantVector` is indexed into;
+    // any other constant gives null. The constant case matters because
+    // IRBuilder folds an `insertvalue` of a constant into undef into a
+    // constant aggregate, which can sit beneath the inserts that remain.
     static Value *traceMatchingInsert(Value *agg,
                                       ArrayRef<unsigned> wantIndices) {
         while (auto *IV = dyn_cast<InsertValueInst>(agg)) {
@@ -374,8 +376,8 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
         return nullptr;
     }
 
-    /// Folds every traceable `extractvalue` in `F`, then deletes every
-    /// trivially dead `insertvalue` chain in it.
+    // Folds every traceable `extractvalue` in `F`, then deletes every
+    // trivially dead `insertvalue` chain in it.
     PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
         bool changed = false;
         SmallVector<ExtractValueInst *, 16> work;
@@ -416,18 +418,20 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
     }
 };
 
-/// A diagnostic module pass that, when `ECO_FCA_SCAN` is set, lists every
-/// instruction whose result or an operand is an aggregate holding a
-/// `ptr addrspace(1)`, then stops the process if it found any.
-///
-/// These are the instructions the pipeline assumes RS4GC cannot handle. The
-/// pass runs after the folding and before RS4GC, so what it lists survived the
-/// folding, and it names the function and block.
-/// With nothing found it prints `FCA-SCAN: clean`. When `ECO_FCA_SCAN` is
-/// unset it does nothing.
+/**
+ * A diagnostic module pass that, when `ECO_FCA_SCAN` is set, lists every
+ * instruction whose result or an operand is an aggregate holding a
+ * `ptr addrspace(1)`, then stops the process if it found any.
+ *
+ * These are the instructions the pipeline assumes RS4GC cannot handle. The
+ * pass runs after the folding and before RS4GC, so what it lists survived the
+ * folding, and it names the function and block.
+ * With nothing found it prints `FCA-SCAN: clean`. When `ECO_FCA_SCAN` is
+ * unset it does nothing.
+ */
 struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
-    /// Returns whether `T` is, or contains as a struct field or array element,
-    /// `ptr addrspace(1)`. Vectors are not looked into.
+    // Returns whether `T` is, or contains as a struct field or array element,
+    // `ptr addrspace(1)`. Vectors are not looked into.
     static bool aggWithGCPtr(Type *T) {
         if (auto *PT = dyn_cast<PointerType>(T))
             return PT->getAddressSpace() == 1;
@@ -441,12 +445,12 @@ struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
             return aggWithGCPtr(AT->getElementType());
         return false;
     }
-    /// Returns whether `T` is a struct or array type.
+    // Returns whether `T` is a struct or array type.
     static bool isAggregate(Type *T) {
         return isa<StructType>(T) || isa<ArrayType>(T);
     }
 
-    /// Scans the defined functions of `M`, as the type comment describes.
+    // Scans the defined functions of `M`, as the type comment describes.
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
         if (!::getenv("ECO_FCA_SCAN"))
             return PreservedAnalyses::all();
@@ -483,22 +487,24 @@ struct FcaScanPass : public PassInfoMixin<FcaScanPass> {
     }
 };
 
-/// A module pass that replaces every call to a slot-cast barrier with the plain
-/// cast it stands for, then deletes the barrier's declaration (REP_LLVM_002).
-///
-/// The barriers, named in `EcoSlotCastBarriers.h`, keep boxed-slot crossings
-/// from being folded before RS4GC, so this must run after RS4GC. It runs before
-/// `EcoPtrIntVerifyPass`, which therefore sees the plain casts. Each cast is
-/// built where its call was, so it dominates every use the call had. A module
-/// without the barrier declarations is left unchanged.
-///
-/// A use of a barrier that is not a direct call, or one that survives the
-/// replacement, stops the process with `report_fatal_error` in every build: a
-/// barrier left in the module would be an undefined symbol at link time.
+/**
+ * A module pass that replaces every call to a slot-cast barrier with the plain
+ * cast it stands for, then deletes the barrier's declaration (REP_LLVM_002).
+ *
+ * The barriers, named in `EcoSlotCastBarriers.h`, keep boxed-slot crossings
+ * from being folded before RS4GC, so this must run after RS4GC. It runs before
+ * `EcoPtrIntVerifyPass`, which therefore sees the plain casts. Each cast is
+ * built where its call was, so it dominates every use the call had. A module
+ * without the barrier declarations is left unchanged.
+ *
+ * A use of a barrier that is not a direct call, or one that survives the
+ * replacement, stops the process with `report_fatal_error` in every build: a
+ * barrier left in the module would be an undefined symbol at link time.
+ */
 struct StripEcoCastBarriersPass : public PassInfoMixin<StripEcoCastBarriersPass> {
-    /// Replaces the calls to the barrier named `name` in `M` with `inttoptr`
-    /// to `ptr addrspace(1)` when `toPtr` is set, or `ptrtoint` to `i64`
-    /// otherwise, deletes it, and returns whether it was declared.
+    // Replaces the calls to the barrier named `name` in `M` with `inttoptr`
+    // to `ptr addrspace(1)` when `toPtr` is set, or `ptrtoint` to `i64`
+    // otherwise, deletes it, and returns whether it was declared.
     static bool stripOne(Module &M, StringRef name, bool toPtr) {
         Function *barrier = M.getFunction(name);
         if (!barrier)
@@ -527,7 +533,7 @@ struct StripEcoCastBarriersPass : public PassInfoMixin<StripEcoCastBarriersPass>
         return true;
     }
 
-    /// Strips both barriers from `M`.
+    // Strips both barriers from `M`.
     PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
         bool a = stripOne(M, eco::kSlotToHPtrSym, /*toPtr=*/true);
         bool b = stripOne(M, eco::kHPtrToSlotSym, /*toPtr=*/false);

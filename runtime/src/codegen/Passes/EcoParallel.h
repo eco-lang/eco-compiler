@@ -23,18 +23,18 @@
 
 namespace eco {
 
-/// Calls `fn(lo, hi)` for contiguous half-open ranges that together cover
-/// `[0, n)` exactly once, in parallel on `ctx`'s thread pool.
-///
-/// The number of chunks is `ceil(n / minPerChunk)`, capped at 8 times the
-/// context's thread count. When multithreading is disabled on `ctx`, or the
-/// chunk count is 1 (`n <= minPerChunk`), `fn(0, n)` is called once on the
-/// calling thread. Nothing is called when `n` is 0. `minPerChunk` must not be
-/// 0.
-///
-/// Calls may run concurrently on different threads, so `fn` must touch only
-/// state owned by the indices it is given. The call returns after every chunk
-/// has finished. `fn` is captured by reference and not kept after the call.
+// Calls `fn(lo, hi)` for contiguous half-open ranges that together cover
+// `[0, n)` exactly once, in parallel on `ctx`'s thread pool.
+//
+// The number of chunks is `ceil(n / minPerChunk)`, capped at 8 times the
+// context's thread count. When multithreading is disabled on `ctx`, or the
+// chunk count is 1 (`n <= minPerChunk`), `fn(0, n)` is called once on the
+// calling thread. Nothing is called when `n` is 0. `minPerChunk` must not be
+// 0.
+//
+// Calls may run concurrently on different threads, so `fn` must touch only
+// state owned by the indices it is given. The call returns after every chunk
+// has finished. `fn` is captured by reference and not kept after the call.
 template <typename Fn>
 void forEachChunk(mlir::MLIRContext *ctx, size_t n, Fn &&fn,
                   size_t minPerChunk = 16) {

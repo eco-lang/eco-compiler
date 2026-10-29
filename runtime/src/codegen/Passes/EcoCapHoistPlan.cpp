@@ -63,8 +63,8 @@ using namespace mlir;
 
 namespace {
 
-/// Returns whether `op`'s `passthrough` attribute holds `key`, either as a
-/// bare string or as the first element of a key-value pair.
+// Returns whether `op`'s `passthrough` attribute holds `key`, either as a
+// bare string or as the first element of a key-value pair.
 bool hasPassthrough(Operation *op, llvm::StringRef key) {
     auto pt = op->getAttrOfType<ArrayAttr>("passthrough");
     if (!pt)
@@ -82,50 +82,54 @@ bool hasPassthrough(Operation *op, llvm::StringRef key) {
     }
     return false;
 }
-/// Returns whether `op` carries the passthrough `gc-leaf-function`.
+// Returns whether `op` carries the passthrough `gc-leaf-function`.
 bool isGcLeaf(Operation *op) { return hasPassthrough(op, "gc-leaf-function"); }
-/// Returns whether `op` carries any of the `eco-cap-*` function attributes.
+// Returns whether `op` carries any of the `eco-cap-*` function attributes.
 bool hasCapAttr(Operation *op) {
     return hasPassthrough(op, eco::caphoist::kAttrBudget) ||
            hasPassthrough(op, eco::caphoist::kAttrTop) ||
            hasPassthrough(op, eco::caphoist::kAttrCovered);
 }
-/// Returns whether environment variable `n` is set to anything other than an
-/// empty string or `"0"`. It is read on every call.
+// Returns whether environment variable `n` is set to anything other than an
+// empty string or `"0"`. It is read on every call.
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// One top-level symbol of the module, with its outgoing references, as this
-/// pass uses them.
-///
-/// Elements are indexed as the nodes of the `symgraph::Graph` they are copied
-/// from. `defined` is set only for a function with a body.
+/**
+ * One top-level symbol of the module, with its outgoing references, as this
+ * pass uses them.
+ *
+ * Elements are indexed as the nodes of the `symgraph::Graph` they are copied
+ * from. `defined` is set only for a function with a body.
+ */
 struct SymNode {
-    /// The symbol operation, owned by the module.
+    // The symbol operation, owned by the module.
     Operation *op = nullptr;
     bool isFunc = false, defined = false, interposable = false;
     std::vector<int> refs;     // every symbol referenced (reachability)
     std::vector<int> addrRefs; // references that take the address
-    /// Index into the solver's node vector; -1 for a symbol that is not a defined function.
+    // Index into the solver's node vector; -1 for a symbol that is not a defined function.
     int defIdx = -1;
 };
 
-/// The pass returned by `eco::createEcoCapHoistPlanPass`, registered as
-/// `eco-cap-hoist-plan`.
+/**
+ * The pass returned by `eco::createEcoCapHoistPlanPass`, registered as
+ * `eco-cap-hoist-plan`.
+ */
 struct EcoCapHoistPlanPass
     : public PassWrapper<EcoCapHoistPlanPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoCapHoistPlanPass)
 
-    /// Creates a pass with an open world and no roots.
+    // Creates a pass with an open world and no roots.
     EcoCapHoistPlanPass() = default;
-    /// Creates a pass that plans with `closedWorld`, treating `roots` as the
-    /// externally visible entry points, named as in MLIR.
+    // Creates a pass that plans with `closedWorld`, treating `roots` as the
+    // externally visible entry points, named as in MLIR.
     EcoCapHoistPlanPass(bool closedWorld, std::vector<std::string> roots)
         : closedWorld(closedWorld), roots(std::move(roots)) {}
-    /// Creates a copy of `o` with the same options, as MLIR does when it
-    /// clones a pass.
+    // Creates a copy of `o` with the same options, as MLIR does when it
+    // clones a pass.
     EcoCapHoistPlanPass(const EcoCapHoistPlanPass &o)
         : PassWrapper(o), closedWorld(o.closedWorld), roots(o.roots) {}
 

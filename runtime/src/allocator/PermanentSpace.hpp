@@ -37,24 +37,26 @@
 
 namespace Elm {
 
-/// The process's permanent space: memory outside the heap range that no collector traces, moves or frees.
-///
-/// There is one, obtained with `instance`; it is created on first use and never destroyed. The
-/// reservation is made by the first `allocate`, and is retried by later calls if it failed.
+/**
+ * The process's permanent space: memory outside the heap range that no collector traces, moves or frees.
+ *
+ * There is one, obtained with `instance`; it is created on first use and never destroyed. The
+ * reservation is made by the first `allocate`, and is retried by later calls if it failed.
+ */
 class PermanentSpace {
 public:
-    /// Returns the process's permanent space.
+    // Returns the process's permanent space.
     static PermanentSpace &instance();
 
-    /// Returns an 8-aligned block of `bytes`, rounded up to a multiple of 8, of permanent memory, or null
-    /// if the reservation could not be made, the reservation is full, or committing pages failed.
-    ///
-    /// Pages are committed in 16 MiB steps as the space grows. The block is never freed or reused.
-    /// Calls are serialized by a mutex.
+    // Returns an 8-aligned block of `bytes`, rounded up to a multiple of 8, of permanent memory, or null
+    // if the reservation could not be made, the reservation is full, or committing pages failed.
+    //
+    // Pages are committed in 16 MiB steps as the space grows. The block is never freed or reused.
+    // Calls are serialized by a mutex.
     void *allocate(std::size_t bytes);
 
-    /// Returns whether `p` lies in the part of permanent space handed out so far; false before the first
-    /// successful `allocate`. Takes no lock: it reads the base and the used size with acquire loads.
+    // Returns whether `p` lies in the part of permanent space handed out so far; false before the first
+    // successful `allocate`. Takes no lock: it reads the base and the used size with acquire loads.
     bool contains(const void *p) const {
         const char *b = base_.load(std::memory_order_acquire);
         const char *c = static_cast<const char *>(p);
@@ -62,34 +64,36 @@ public:
                c < b + used_.load(std::memory_order_acquire);
     }
 
-    /// Counters of what has been put in permanent space. `eco_caf_promote` updates all but the
-    /// `interned_*` pair, which code allocating here directly is expected to update.
+    /**
+     * Counters of what has been put in permanent space. `eco_caf_promote` updates all but the
+     * `interned_*` pair, which code allocating here directly is expected to update.
+     */
     struct Stats {
-        std::atomic<std::uint64_t> values_promoted{0}; ///< CAF values copied into permanent space.
-        /// CAF values left as they were because they are not heap pointers: embedded constants and, when
-        /// promotion is enabled, null words and addresses outside the heap.
+        std::atomic<std::uint64_t> values_promoted{0}; // CAF values copied into permanent space.
+        // CAF values left as they were because they are not heap pointers: embedded constants and, when
+        // promotion is enabled, null words and addresses outside the heap.
         std::atomic<std::uint64_t> values_constant{0};
-        /// CAF values left on the heap because a copy was refused or could not be completed.
+        // CAF values left on the heap because a copy was refused or could not be completed.
         std::atomic<std::uint64_t> values_declined{0};
         std::atomic<std::uint64_t> objects_copied{0};
         std::atomic<std::uint64_t> bytes_copied{0};
-        /// Bytes allocated for copies that were then given up; they stay allocated and nothing points at them.
+        // Bytes allocated for copies that were then given up; they stay allocated and nothing points at them.
         std::atomic<std::uint64_t> bytes_abandoned{0};
-        std::atomic<std::uint64_t> slots_rooted{0}; ///< CAF slots registered as JIT roots.
+        std::atomic<std::uint64_t> slots_rooted{0}; // CAF slots registered as JIT roots.
         std::atomic<std::uint64_t> interned_objects{0};
         std::atomic<std::uint64_t> interned_bytes{0};
     };
-    /// The counters, read and written without a lock.
+    // The counters, read and written without a lock.
     Stats stats;
 
 private:
-    /// Creates the space with nothing reserved.
+    // Creates the space with nothing reserved.
     PermanentSpace() = default;
 
-    /// Makes the reservation if it has not been made, and returns whether it exists. `mutex_` must be held.
+    // Makes the reservation if it has not been made, and returns whether it exists. `mutex_` must be held.
     bool ensureReservedLocked();
 
-    std::mutex mutex_; ///< Held by `allocate` throughout; guards `reserved_` and `committed_`.
+    std::mutex mutex_; // Held by `allocate` throughout; guards `reserved_` and `committed_`.
     std::atomic<char *> base_{nullptr};
     std::size_t reserved_ = 0;
     std::size_t committed_ = 0;
@@ -98,24 +102,24 @@ private:
 
 } // namespace Elm
 
-/// Returns the word to store in a CAF's memo slot for the freshly computed value `bits`: a pointer to a
-/// copy of the value in permanent space, or `bits` itself.
-///
-/// The copy is of the whole graph the value reaches through the heap, with its internal pointers
-/// rewritten to the copies, so it obeys permanent space's rules. `bits` is returned unchanged when it is
-/// an embedded constant, null or an address outside the heap, and when promotion is disabled or refused.
-/// Promotion is disabled when the environment variable `ECO_CAF_PERMANENT` starts with `0` (read once).
-/// It is refused when the graph holds a large String or Bytes, or an object `visitHeapChildren`
-/// declines, and abandoned if permanent space runs out partway. A refused or abandoned value is not
-/// changed; an abandoned copy's bytes stay allocated (`Stats::bytes_abandoned`).
-///
-/// Whenever `bits` is returned and is not an embedded constant, `slot` is registered as a JIT root of the
-/// calling thread's root set, so the slot must stay valid for as long as that root set may be scanned.
-/// With promotion enabled, a null word or an address outside the heap is the exception and is not rooted.
-/// The function never writes `*slot`.
-///
-/// The calling thread must have a heap. No collection may run during the call: the graph is traversed
-/// and copied by raw address. The function itself allocates nothing on the managed heap.
+// Returns the word to store in a CAF's memo slot for the freshly computed value `bits`: a pointer to a
+// copy of the value in permanent space, or `bits` itself.
+//
+// The copy is of the whole graph the value reaches through the heap, with its internal pointers
+// rewritten to the copies, so it obeys permanent space's rules. `bits` is returned unchanged when it is
+// an embedded constant, null or an address outside the heap, and when promotion is disabled or refused.
+// Promotion is disabled when the environment variable `ECO_CAF_PERMANENT` starts with `0` (read once).
+// It is refused when the graph holds a large String or Bytes, or an object `visitHeapChildren`
+// declines, and abandoned if permanent space runs out partway. A refused or abandoned value is not
+// changed; an abandoned copy's bytes stay allocated (`Stats::bytes_abandoned`).
+//
+// Whenever `bits` is returned and is not an embedded constant, `slot` is registered as a JIT root of the
+// calling thread's root set, so the slot must stay valid for as long as that root set may be scanned.
+// With promotion enabled, a null word or an address outside the heap is the exception and is not rooted.
+// The function never writes `*slot`.
+//
+// The calling thread must have a heap. No collection may run during the call: the graph is traversed
+// and copied by raw address. The function itself allocates nothing on the managed heap.
 extern "C" std::uint64_t eco_caf_promote(std::uint64_t bits, std::uint64_t *slot);
 
 #endif // ECO_PERMANENT_SPACE_H

@@ -23,23 +23,23 @@
 
 namespace eco {
 
-/// The symbol of the barrier that converts an `i64` slot word to a
-/// `ptr addrspace(1)`.
+// The symbol of the barrier that converts an `i64` slot word to a
+// `ptr addrspace(1)`.
 inline constexpr const char kSlotToHPtrSym[] = "__eco_slot_to_hptr";
-/// The symbol of the barrier that converts a `ptr addrspace(1)` to an `i64`
-/// slot word.
+// The symbol of the barrier that converts a `ptr addrspace(1)` to an `i64`
+// slot word.
 inline constexpr const char kHPtrToSlotSym[] = "__eco_hptr_to_slot";
 
-/// Returns whether slot crossings are emitted as barrier calls rather than bare
-/// casts. This is true unless the environment variable
-/// `ECO_SLOT_CAST_BARRIERS` is exactly `0`. The variable is read on the first
-/// call and the answer is kept for the life of the process.
-///
-/// Turning barriers off is safe only if no inlining before RS4GC can bring a
-/// cast pair together across a safepoint. When this returns false, the
-/// backend's `$cap` inline prepass (`runCapInlinePrepass`, EcoBackend.cpp)
-/// restricts its size-based selection to functions whose bodies make no
-/// GC-capable calls (an explicit `ECO_CAP_INLINE_LIST` bypasses this).
+// Returns whether slot crossings are emitted as barrier calls rather than bare
+// casts. This is true unless the environment variable
+// `ECO_SLOT_CAST_BARRIERS` is exactly `0`. The variable is read on the first
+// call and the answer is kept for the life of the process.
+//
+// Turning barriers off is safe only if no inlining before RS4GC can bring a
+// cast pair together across a safepoint. When this returns false, the
+// backend's `$cap` inline prepass (`runCapInlinePrepass`, EcoBackend.cpp)
+// restricts its size-based selection to functions whose bodies make no
+// GC-capable calls (an explicit `ECO_CAP_INLINE_LIST` bypasses this).
 inline bool slotCastBarriersEnabled() {
     static const bool enabled = [] {
         const char *e = ::getenv("ECO_SLOT_CAST_BARRIERS");

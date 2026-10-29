@@ -38,11 +38,13 @@
 
 namespace eco::platform {
 
-/// The bytes of one module's stack map section, as they lie in its loaded image.
-///
-/// `data` points into the module's image and stays valid while the module stays loaded. A null `data` means no
-/// section was found, and then `size` is 0. `size` is the number of bytes at `data`; nothing enforces this, since
-/// both members are public.
+/**
+ * The bytes of one module's stack map section, as they lie in its loaded image.
+ *
+ * `data` points into the module's image and stays valid while the module stays loaded. A null `data` means no
+ * section was found, and then `size` is 0. `size` is the number of bytes at `data`; nothing enforces this, since
+ * both members are public.
+ */
 struct StackMapSection {
     const uint8_t* data = nullptr;
     size_t size = 0;
@@ -50,12 +52,12 @@ struct StackMapSection {
 
 #if defined(_WIN32)
 
-/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module whose
-/// image contains `addr`. Returns an empty section if there is no such module or it has no such section.
-///
-/// The PE section is the first whose 8-byte short name is ".llvm_st", the first 8 characters of
-/// ".llvm_stackmaps". Its size is the section's virtual size, or its raw data size when the virtual size is 0.
-/// The module's reference count is not changed. Only 64-bit PE images are handled.
+// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module whose
+// image contains `addr`. Returns an empty section if there is no such module or it has no such section.
+//
+// The PE section is the first whose 8-byte short name is ".llvm_st", the first 8 characters of
+// ".llvm_stackmaps". Its size is the section's virtual size, or its raw data size when the virtual size is 0.
+// The module's reference count is not changed. Only 64-bit PE images are handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     HMODULE hmod = nullptr;
     if (addr == nullptr) {
@@ -88,9 +90,9 @@ inline StackMapSection findStackMapSection(const void* addr) {
 
 #elif defined(__APPLE__)
 
-/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the loaded image
-/// (executable or shared object) containing `addr`, as `dladdr` reports it. Returns an empty section if there is
-/// no such image, or it has no such section or an empty one. Only 64-bit Mach-O images are handled.
+// Returns the stack map section of the main executable when `addr` is null, and otherwise of the loaded image
+// (executable or shared object) containing `addr`, as `dladdr` reports it. Returns an empty section if there is
+// no such image, or it has no such section or an empty one. Only 64-bit Mach-O images are handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     const struct mach_header_64* header = nullptr;
     if (addr == nullptr) {
@@ -111,12 +113,12 @@ inline StackMapSection findStackMapSection(const void* addr) {
 
 #else // ELF
 
-/// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module with a
-/// `PT_LOAD` segment containing `addr`. Returns an empty section if there is no such module, its file cannot be
-/// read, or it has no section named ".llvm_stackmaps".
-///
-/// Reads the module's section headers from its file on disk, so each call that finds a module opens and reads a
-/// file. Only 64-bit ELF is handled.
+// Returns the stack map section of the main executable when `addr` is null, and otherwise of the module with a
+// `PT_LOAD` segment containing `addr`. Returns an empty section if there is no such module, its file cannot be
+// read, or it has no section named ".llvm_stackmaps".
+//
+// Reads the module's section headers from its file on disk, so each call that finds a module opens and reads a
+// file. Only 64-bit ELF is handled.
 inline StackMapSection findStackMapSection(const void* addr) {
     struct CallbackData {
         uintptr_t target; // 0 = the main executable

@@ -31,27 +31,29 @@ using namespace mlir;
 
 namespace {
 
-/// The pass that puts a stale-HPointer check in front of each boxed-slot store.
-///
-/// It does nothing unless this file is built with ECO_LOWERING_VALIDATION.
+/**
+ * The pass that puts a stale-HPointer check in front of each boxed-slot store.
+ *
+ * It does nothing unless this file is built with ECO_LOWERING_VALIDATION.
+ */
 struct EcoBoxedStoreVerifyPass
     : public PassWrapper<EcoBoxedStoreVerifyPass, OperationPass<ModuleOp>> {
 
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoBoxedStoreVerifyPass)
 
-    /// Returns the pass's command-line name.
+    // Returns the pass's command-line name.
     StringRef getArgument() const override {
         return "eco-boxed-store-verify";
     }
-    /// Returns the pass's one-line help text.
+    // Returns the pass's one-line help text.
     StringRef getDescription() const override {
         return "Insert eco_validate_nursery_hptr_bits before LLVM StoreOps "
                "marked with eco.boxed_slot (debug-only barrier on direct "
                "compiled-Elm boxed-slot stores)";
     }
 
-    /// Inserts the validator call before every tagged store in the module whose
-    /// value is an i64. A tagged store of any other type gets no call.
+    // Inserts the validator call before every tagged store in the module whose
+    // value is an i64. A tagged store of any other type gets no call.
     void runOnOperation() override {
 #ifndef ECO_LOWERING_VALIDATION
         return;

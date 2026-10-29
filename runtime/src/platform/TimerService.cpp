@@ -3,8 +3,8 @@
 
 namespace Elm::Platform {
 
-/// The timer service, once `instance` has created it. It is never deleted, so the detached worker thread, which
-/// uses it, never outlives it, and no static destructor can run in the wrong order against the scheduler's.
+// The timer service, once `instance` has created it. It is never deleted, so the detached worker thread, which
+// uses it, never outlives it, and no static destructor can run in the wrong order against the scheduler's.
 static TimerService* s_instance = nullptr;
 
 TimerService& TimerService::instance() {

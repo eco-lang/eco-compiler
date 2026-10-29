@@ -45,21 +45,19 @@ What the tests establish:
   - Test 5: `nonesuch` used at `Int -> List String` type checks, so a kernel
     without a row is unconstrained.
   - Test 6: every entry of `KernelIntrinsics.rows` has the prefix `Elm` or
-    `Eco`, a non-empty `files` whose every path contains a `/` and does not
-    start with one, an `evidence` containing the text `audited:`, and a
-    non-empty `useSites`. Every row that fails is reported, with its full
-    kernel name and each check it fails.
-  - Test 7: `KernelIntrinsics.auditedFiles` is non-empty, sorted, and has no
-    repeated entry.
+    `Eco` and a non-empty `useSites`. Every row that fails is reported, with
+    its full kernel name and each check it fails. Each row's C++ audit and
+    file pins are kept in CSV files beside the kernel license table and are
+    checked by `test/scripts/check-kernel-license-manifest.sh`, which also
+    took over the former test 7.
   - Test 8: `KernelIntrinsics.lookup` finds a row for `Elm`, `List`,
     `fromArray` and none for `Eco`, `List`, `fromArray`. The prefix has to be
     part of the key because one home and name can name two different kernels,
     such as `File.size` under `Elm` and under `Eco`.
 
 Among what is not tested: how the type checker applies the `addField` and
-`toArray` rows; the name a type error is reported under; that `useSites` and
-`evidence` say anything beyond the checks of test 6; and that `auditedFiles`
-agrees with any manifest.
+`toArray` rows; the name a type error is reported under; and that `useSites`
+says anything beyond the check of test 6.
 
 -}
 
@@ -111,7 +109,7 @@ suite =
         , Test.test "5. an UNANNOTATED kernel is still unconstrained (the table is opt-in)" <|
             \() ->
                 expectTypeChecks "an unannotated kernel must stay unconstrained" unannotatedKernelModule
-        , Test.test "6. discipline: every row is prefix-keyed, evidenced and pins its C++" <|
+        , Test.test "6. discipline: every row is prefix-keyed and records its use sites" <|
             \() ->
                 let
                     bad =
@@ -128,26 +126,11 @@ suite =
 
                                               else
                                                 Just "prefix must be Elm or Eco"
-                                            , if List.isEmpty row.files then
-                                                Just "empty files (unguarded by the rot manifest)"
-
-                                              else
-                                                Nothing
-                                            , if String.contains "audited:" row.evidence then
-                                                Nothing
-
-                                              else
-                                                Just "evidence lacks an `audited:` date"
                                             , if String.isEmpty row.useSites then
                                                 Just "empty useSites (the fail-stop evidence)"
 
                                               else
                                                 Nothing
-                                            , if List.all (\f -> not (String.startsWith "/" f) && String.contains "/" f) row.files then
-                                                Nothing
-
-                                              else
-                                                Just "files must be repo-relative"
                                             ]
                                 in
                                 if List.isEmpty problems then
@@ -159,18 +142,6 @@ suite =
                             KernelIntrinsics.rows
                 in
                 Expect.equal [] bad
-        , Test.test "7. discipline: auditedFiles is non-empty, sorted and deduplicated" <|
-            \() ->
-                let
-                    files =
-                        KernelIntrinsics.auditedFiles
-                in
-                Expect.all
-                    [ \() -> Expect.notEqual [] files
-                    , \() -> Expect.equal (List.sort files) files
-                    , \() -> Expect.equal (List.length (dedupe (List.sort files))) (List.length files)
-                    ]
-                    ()
         , Test.test "8. discipline: lookup is keyed by PREFIX, not just (home, name)" <|
             \() ->
                 Expect.all
@@ -192,23 +163,6 @@ expectTypeChecks what modul =
 
         outcome ->
             Expect.fail (what ++ ", but " ++ TypeCheckErrors.describeOutcome outcome)
-
-
-{-| Removes each element that equals the one before it, so a sorted list loses
-its repeats.
--}
-dedupe : List String -> List String
-dedupe xs =
-    case xs of
-        a :: b :: rest ->
-            if a == b then
-                dedupe (b :: rest)
-
-            else
-                a :: dedupe (b :: rest)
-
-        _ ->
-            xs
 
 
 {-| The source type `Int`.

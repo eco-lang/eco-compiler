@@ -33,7 +33,7 @@ using namespace ::eco;
 
 namespace {
 
-/// Returns whether any `eco.jump` nested anywhere in `op`'s body targets `op`'s own id.
+// Returns whether any `eco.jump` nested anywhere in `op`'s body targets `op`'s own id.
 bool isLoopingJoinpoint(JoinpointOp op) {
     auto jpId = op.getId();
     bool hasLoopingJump = false;
@@ -49,10 +49,10 @@ bool isLoopingJoinpoint(JoinpointOp op) {
     return hasLoopingJump;
 }
 
-/// Returns whether `op`'s body contains exactly one `eco.return`.
-///
-/// Every `eco.return` nested anywhere in the body is counted, including those inside case alternatives and nested
-/// joinpoints, whether or not it is reachable. Returns in the continuation are not counted.
+// Returns whether `op`'s body contains exactly one `eco.return`.
+//
+// Every `eco.return` nested anywhere in the body is counted, including those inside case alternatives and nested
+// joinpoints, whether or not it is reachable. Returns in the continuation are not counted.
 bool isSingleExitJoinpoint(JoinpointOp op) {
     int returnCount = 0;
 
@@ -66,8 +66,8 @@ bool isSingleExitJoinpoint(JoinpointOp op) {
     return returnCount == 1;
 }
 
-/// Returns whether the first op of the entry block of `op`'s continuation is an `eco.jump` to `op`'s id. An empty
-/// continuation or entry block is not normalized.
+// Returns whether the first op of the entry block of `op`'s continuation is an `eco.jump` to `op`'s id. An empty
+// continuation or entry block is not normalized.
 bool hasNormalizedContinuation(JoinpointOp op) {
     Region &cont = op.getContinuation();
 
@@ -86,12 +86,12 @@ bool hasNormalizedContinuation(JoinpointOp op) {
     return false;
 }
 
-/// Returns whether `op`'s body is a simple case dispatch: the entry block holds an `eco.case`, before any terminator,
-/// and among that case's alternatives at least one ends in `eco.return` and at least one ends in an `eco.jump` to
-/// `op`'s id.
-///
-/// Only the first `eco.case` of the entry block is examined, and only the terminator of each alternative's first
-/// block. Other alternatives, such as ones ending in a jump to another joinpoint, do not disqualify the body.
+// Returns whether `op`'s body is a simple case dispatch: the entry block holds an `eco.case`, before any terminator,
+// and among that case's alternatives at least one ends in `eco.return` and at least one ends in an `eco.jump` to
+// `op`'s id.
+//
+// Only the first `eco.case` of the entry block is examined, and only the terminator of each alternative's first
+// block. Other alternatives, such as ones ending in a jump to another joinpoint, do not disqualify the body.
 bool hasSimpleCaseDispatch(JoinpointOp op) {
     Region &body = op.getBody();
 
@@ -141,7 +141,9 @@ bool hasSimpleCaseDispatch(JoinpointOp op) {
     return hasExitBranch && hasLoopBranch;
 }
 
-/// The module pass that labels every `eco.joinpoint` in the module, nested ones included.
+/**
+ * The module pass that labels every `eco.joinpoint` in the module, nested ones included.
+ */
 struct JoinpointNormalizationPass
     : public PassWrapper<JoinpointNormalizationPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(JoinpointNormalizationPass)
@@ -152,7 +154,7 @@ struct JoinpointNormalizationPass
         return "Classify joinpoints for SCF lowering eligibility";
     }
 
-    /// Adds `scf_candidate`, and `scf_case_loop` where it applies, to each candidate joinpoint in the module.
+    // Adds `scf_candidate`, and `scf_case_loop` where it applies, to each candidate joinpoint in the module.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = module.getContext();

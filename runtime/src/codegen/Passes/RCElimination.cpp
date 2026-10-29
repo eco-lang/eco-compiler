@@ -23,8 +23,10 @@ using namespace ::eco;
 
 namespace {
 
-/// The `eco-rc-elimination` module pass, whose contract is on
-/// `eco::createRCEliminationPass` in `Passes.h`.
+/**
+ * The `eco-rc-elimination` module pass, whose contract is on
+ * `eco::createRCEliminationPass` in `Passes.h`.
+ */
 struct RCEliminationPass
     : public PassWrapper<RCEliminationPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(RCEliminationPass)

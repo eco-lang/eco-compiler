@@ -46,40 +46,42 @@
 
 namespace eco::markers {
 
-/// How the hoisting view classifies a direct call. `FromDecl` means the
-/// callee is not in the table and is classified by its declaration: gc-leaf,
-/// a libm function, or a defined callee.
+/**
+ * How the hoisting view classifies a direct call. `FromDecl` means the
+ * callee is not in the table and is classified by its declaration: gc-leaf,
+ * a libm function, or a defined callee.
+ */
 enum class Hoist { FromDecl, Leaf, NotLeaf };
 
-/// Returns whether `c` is one of the list-cursor functions that
-/// `EcoListCursor` emits, all of which both views treat as leaf.
-///
-/// The `__eco_list_cur*` and `__eco_list_step_*_inline` markers are declared
-/// without gc-leaf and expand into loads. `eco_list_pos_view` is a runtime
-/// function, not a marker, and is in the set as well.
+// Returns whether `c` is one of the list-cursor functions that
+// `EcoListCursor` emits, all of which both views treat as leaf.
+//
+// The `__eco_list_cur*` and `__eco_list_step_*_inline` markers are declared
+// without gc-leaf and expand into loads. `eco_list_pos_view` is a runtime
+// function, not a marker, and is in the set as well.
 inline bool isCursorMarker(llvm::StringRef c) {
     return c.starts_with("__eco_list_cur") ||
            c == "__eco_list_step_node_inline" ||
            c == "__eco_list_step_idx_inline" || c == "eco_list_pos_view";
 }
 
-/// Returns whether `c` is one of the list scratch-stack runtime calls that
-/// cannot collect: `eco_scratch_mark` and the two pushes.
-///
-/// `EcoListTemplate` declares them without gc-leaf, and the LLVM backend
-/// stamps them gc-leaf before capacity hoisting. `eco_scratch_finish`
-/// allocates and is not in the set.
+// Returns whether `c` is one of the list scratch-stack runtime calls that
+// cannot collect: `eco_scratch_mark` and the two pushes.
+//
+// `EcoListTemplate` declares them without gc-leaf, and the LLVM backend
+// stamps them gc-leaf before capacity hoisting. `eco_scratch_finish`
+// allocates and is not in the set.
 inline bool isScratchHelper(llvm::StringRef c) {
     return c == "eco_scratch_mark" || c == "eco_scratch_push_boxed" ||
            c == "eco_scratch_push_scalar";
 }
 
-/// Returns whether `c` is one of the libm functions that LLVM's
-/// `callsGCLeafFunction` treats as gc-leaf through the target library info,
-/// whatever its declaration says.
-///
-/// The passes that classify calls in MLIR cannot ask LLVM, so they use this
-/// list to give the same answer.
+// Returns whether `c` is one of the libm functions that LLVM's
+// `callsGCLeafFunction` treats as gc-leaf through the target library info,
+// whatever its declaration says.
+//
+// The passes that classify calls in MLIR cannot ask LLVM, so they use this
+// list to give the same answer.
 inline bool isLibmLeaf(llvm::StringRef c) {
     static const char *names[] = {
         "asin", "acos",  "atan",  "atan2", "sin",   "cos",  "tan",
@@ -91,26 +93,26 @@ inline bool isLibmLeaf(llvm::StringRef c) {
     return false;
 }
 
-/// Returns whether `c` is a headroom breaker: a runtime allocation entry
-/// point that is gc-leaf but bumps the nursery, so it uses up headroom that a
-/// hoisted capacity check reserved.
-///
-/// These are `eco_gc_alloc_region_fast` and every `eco_alloc_*_fast` name.
+// Returns whether `c` is a headroom breaker: a runtime allocation entry
+// point that is gc-leaf but bumps the nursery, so it uses up headroom that a
+// hoisted capacity check reserved.
+//
+// These are `eco_gc_alloc_region_fast` and every `eco_alloc_*_fast` name.
 inline bool isHeadroomBreaker(llvm::StringRef c) {
     return c == "eco_gc_alloc_region_fast" ||
            (c.starts_with("eco_alloc_") && c.ends_with("_fast"));
 }
 
-/// Returns how a direct call to `callee` is classified after the expansions
-/// that precede capacity hoisting.
-///
-/// `__eco_list_tail_inline` is `NotLeaf`, because its expansion calls
-/// `eco_list_tail_hybrid`, which can collect. `__eco_value_eq` expands into
-/// code that calls `Elm_Kernel_Utils_equal`, so it is `Leaf` only when
-/// `valueEqLeaf` is true, which the caller may set only when that function
-/// is, or will be made, gc-leaf.
-/// Cursor markers and scratch helpers are `Leaf`. Every other callee,
-/// including other markers, is `FromDecl`.
+// Returns how a direct call to `callee` is classified after the expansions
+// that precede capacity hoisting.
+//
+// `__eco_list_tail_inline` is `NotLeaf`, because its expansion calls
+// `eco_list_tail_hybrid`, which can collect. `__eco_value_eq` expands into
+// code that calls `Elm_Kernel_Utils_equal`, so it is `Leaf` only when
+// `valueEqLeaf` is true, which the caller may set only when that function
+// is, or will be made, gc-leaf.
+// Cursor markers and scratch helpers are `Leaf`. Every other callee,
+// including other markers, is `FromDecl`.
 inline Hoist hoistView(llvm::StringRef callee, bool valueEqLeaf) {
     if (callee == "__eco_list_tail_inline")
         return Hoist::NotLeaf;
@@ -121,33 +123,35 @@ inline Hoist hoistView(llvm::StringRef callee, bool valueEqLeaf) {
     return Hoist::FromDecl;
 }
 
-/// Whether a call can reach a collection once every expansion before RS4GC
-/// has run, as the final view classifies it.
-///
-/// `FromDecl` means the callee is not in the table and its declaration
-/// decides: gc-leaf, a libm function or a leaf intrinsic. `Leaf` and `Poison`
-/// mean the call cannot and can collect. `UnlessCovered` means leaf only
-/// inside a function that capacity hoisting covers, where the bump is
-/// unchecked. `ValueEq` means leaf only when the planned value-eq predicate
-/// holds.
+/**
+ * Whether a call can reach a collection once every expansion before RS4GC
+ * has run, as the final view classifies it.
+ *
+ * `FromDecl` means the callee is not in the table and its declaration
+ * decides: gc-leaf, a libm function or a leaf intrinsic. `Leaf` and `Poison`
+ * mean the call cannot and can collect. `UnlessCovered` means leaf only
+ * inside a function that capacity hoisting covers, where the bump is
+ * unchecked. `ValueEq` means leaf only when the planned value-eq predicate
+ * holds.
+ */
 enum class Final { FromDecl, Leaf, Poison, UnlessCovered, ValueEq };
 
-/// Returns whether `c` has the `__eco_` prefix that every marker name has.
-///
-/// `EcoGcFreePropagation` rejects a call to a declared function with such a
-/// name that `finalView` classifies as `FromDecl`, so every marker needs a
-/// row in `finalView`.
+// Returns whether `c` has the `__eco_` prefix that every marker name has.
+//
+// `EcoGcFreePropagation` rejects a call to a declared function with such a
+// name that `finalView` classifies as `FromDecl`, so every marker needs a
+// row in `finalView`.
 inline bool isMarkerName(llvm::StringRef c) { return c.starts_with("__eco_"); }
 
-/// Returns how a call to `c` is classified once every expansion before RS4GC
-/// has run.
-///
-/// `__eco_alloc_inline` expands into a nursery bump whose slow path can
-/// collect, unless capacity hoisting has made the bump unchecked, so it is
-/// `UnlessCovered`. `__eco_value_eq` is `ValueEq`. `__eco_list_tail_inline`,
-/// `__eco_sat_begin` and `__eco_sat_end` are `Poison`. The pointer and
-/// projection markers, the cursor markers and the scratch helpers are `Leaf`.
-/// Anything else is `FromDecl`.
+// Returns how a call to `c` is classified once every expansion before RS4GC
+// has run.
+//
+// `__eco_alloc_inline` expands into a nursery bump whose slow path can
+// collect, unless capacity hoisting has made the bump unchecked, so it is
+// `UnlessCovered`. `__eco_value_eq` is `ValueEq`. `__eco_list_tail_inline`,
+// `__eco_sat_begin` and `__eco_sat_end` are `Poison`. The pointer and
+// projection markers, the cursor markers and the scratch helpers are `Leaf`.
+// Anything else is `FromDecl`.
 inline Final finalView(llvm::StringRef c) {
     if (c == "__eco_alloc_inline")
         return Final::UnlessCovered;
@@ -164,14 +168,14 @@ inline Final finalView(llvm::StringRef c) {
     return Final::FromDecl;
 }
 
-/// Returns whether a declaration of `c`, a function that an expansion before
-/// RS4GC calls, must be gc-leaf: 1 if it must, 0 if it must not, and -1 if
-/// the table says nothing about `c`.
-///
-/// The slow paths `eco_list_tail_hybrid`, `eco_alloc_inline_slow` and
-/// `eco_ensure_nursery_slow` must not be gc-leaf, because they can collect.
-/// `Elm_Kernel_Utils_equal` must be gc-leaf exactly when `veq`, the planned
-/// value-eq predicate, holds.
+// Returns whether a declaration of `c`, a function that an expansion before
+// RS4GC calls, must be gc-leaf: 1 if it must, 0 if it must not, and -1 if
+// the table says nothing about `c`.
+//
+// The slow paths `eco_list_tail_hybrid`, `eco_alloc_inline_slow` and
+// `eco_ensure_nursery_slow` must not be gc-leaf, because they can collect.
+// `Elm_Kernel_Utils_equal` must be gc-leaf exactly when `veq`, the planned
+// value-eq predicate, holds.
 inline int expansionCalleeLeaf(llvm::StringRef c, bool veq) {
     if (c == "eco_list_tail_hybrid" || c == "eco_alloc_inline_slow" ||
         c == "eco_ensure_nursery_slow")
@@ -185,13 +189,13 @@ inline int expansionCalleeLeaf(llvm::StringRef c, bool veq) {
     return -1;
 }
 
-/// Returns whether `c` names a function that may be gc-leaf on its own
-/// authority: a runtime, kernel or LLVM intrinsic function, or a libm
-/// function.
-///
-/// The test is by prefix (`eco_`, `__eco_`, `Elm_Kernel_`, `Eco_Kernel_`,
-/// `llvm.`), so it trusts any function so named. Callers reject a gc-leaf
-/// definition with any other name unless a gc-free plan stamped it.
+// Returns whether `c` names a function that may be gc-leaf on its own
+// authority: a runtime, kernel or LLVM intrinsic function, or a libm
+// function.
+//
+// The test is by prefix (`eco_`, `__eco_`, `Elm_Kernel_`, `Eco_Kernel_`,
+// `llvm.`), so it trusts any function so named. Callers reject a gc-leaf
+// definition with any other name unless a gc-free plan stamped it.
 inline bool isTrustedLeafDecl(llvm::StringRef c) {
     return c.starts_with("eco_") || c.starts_with("__eco_") ||
            c.starts_with("Elm_Kernel_") || c.starts_with("Eco_Kernel_") ||

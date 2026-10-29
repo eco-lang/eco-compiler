@@ -11,22 +11,46 @@
 # miscompile, not a test failure. Elm tests cannot read files, so the guard
 # lives here, in the build tree.
 #
-# Two directions are checked, and BOTH matter:
+# The audit data lives in two CSV files beside KernelSetFacts.elm, not in the
+# Elm tables, which keep only what the compiler reads:
 #
-#   1. HASH: every C++ file a licensed row depends on still has the sha256 it
-#      had when the audit was performed.
-#   2. COVERAGE: the (kernel, file) pairs pinned by the manifest are exactly
-#      the pairs the `TypeFaithful` rows declare. This catches the other
-#      failure — a new licensed row landing with no manifest entry, which
-#      would otherwise be unguarded forever.
+#   kernel-license-files.csv   kernel,file,sha256,audited
+#       One line per (licensed or intrinsic-annotated kernel x audited C++
+#       file), with the file's sha256 and the date of the kernel's latest
+#       audit when the hash was taken.
+#   kernel-license-audit.csv   kernel,date,plan,note
+#       One line per audit or re-audit of a row. `date` is YYYY-MM-DD (empty
+#       only for a first audit whose date was never recorded); `plan` names
+#       the plans/*.md file behind it, if any.
 #
-# `--update` regenerates the manifest from the current rows and file
-# contents. Running it is the LAST step of a re-audit, never a way to make a
-# red build green: bumping a hash without advancing the row's `audited:` date
-# in its evidence string is precisely the review violation this guard exists
-# to surface.
+# A license kernel is named `<Prefix>.<Home>.<name>` (`Elm.File.size`), an
+# intrinsic annotation `<Prefix>.Kernel.<Home>.<name>`, so an intrinsic pin is
+# never confused with a license pin on the same file. The `kernel` and `date`
+# columns never contain a comma; `note` may, and is quoted.
 #
-# Scope note (deliberate): the manifest pins the kernel's OWN C++ — the entry
+# Checks:
+#
+#   1. HASH: every pinned file still has its sha256.
+#   2. COVERAGE: the kernels pinned in the files CSV are exactly the
+#      `TypeFaithful` rows of KernelSetFacts.elm plus the rows of
+#      KernelIntrinsics.elm, every pinned path is repo-relative, and no row
+#      pins the other kernel tree's C++ (an `Elm` row nothing under
+#      eco-kernel-cpp/ or system-kernel-cpp/, an `Eco` row nothing under
+#      elm-kernel-cpp/).
+#   3. AUDIT: every row of either table has an audit line, every audit line
+#      names a row, a license's first audit carries the class:, entry:,
+#      type:, B1:, B2: and B3: markers and a `Positional` row's carries
+#      entry:, a license is `Inert` exactly when its audit says
+#      `class: vacuous`, and each pin's `audited` date is its kernel's latest
+#      audit date.
+#
+# `--update` re-hashes the pinned files and sets each pin's `audited` date. It
+# is the LAST step of a re-audit, never a way to make a red build green: it
+# refuses to change a hash unless the kernel has an audit line dated after the
+# pin's current `audited` date. New pins are added to the files CSV by hand,
+# with the sha256 and audited columns left empty for `--update` to fill.
+#
+# Scope note (deliberate): the CSV pins the kernel's OWN C++ — the entry
 # point's file and the helper files the audit had to read. It does NOT pin
 # globally-sanctioned runtime machinery (the four `eco_apply_closure*`
 # application entries, allocator/list-builder headers). Those are shared by
@@ -43,19 +67,18 @@ if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
     exit 2
 fi
 
-FACTS="$ROOT/compiler/src/Compiler/MonoSolver/KernelSetFacts.elm"
+DIR="$ROOT/compiler/src/Compiler/MonoSolver"
+FACTS="$DIR/KernelSetFacts.elm"
 INTRINSICS="$ROOT/compiler/src/Compiler/Type/KernelIntrinsics.elm"
-MANIFEST="$ROOT/compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt"
+FILES_CSV="$DIR/kernel-license-files.csv"
+AUDIT_CSV="$DIR/kernel-license-audit.csv"
 
-if [ ! -f "$FACTS" ]; then
-    echo "check-kernel-license-manifest: cannot read $FACTS" >&2
-    exit 2
-fi
-
-if [ ! -f "$INTRINSICS" ]; then
-    echo "check-kernel-license-manifest: cannot read $INTRINSICS" >&2
-    exit 2
-fi
+for f in "$FACTS" "$INTRINSICS" "$FILES_CSV" "$AUDIT_CSV"; do
+    if [ ! -f "$f" ]; then
+        echo "check-kernel-license-manifest: cannot read $f" >&2
+        exit 2
+    fi
+done
 
 # --- sha256 front-end (Linux coreutils / BSD / macOS) ------------------------
 sha256_of() {
@@ -73,173 +96,176 @@ TMP="${TMPDIR:-/tmp}/kernel-license-$$"
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
-# --- extract (kernel, file) pairs from the TypeFaithful rows -----------------
+# --- the rows of the two Elm tables: kernel <TAB> kind <TAB> scope -----------
 #
 # The table's shape is fixed by elm-format, so a small state machine is
 # enough and avoids a Python dependency in the build graph:
 #
 #     , ( ( "Elm", "JsArray", "map" )
 #       , TypeFaithful
-#             { files = [ "elm-kernel-cpp/src/core/JsArrayExports.cpp" ]
-#             , evidence = "..."
+#             { scope = Transports
 #             }
 #       )
 #
-# A `( ( "Prefix", "Home", "name" )` line opens a row (resetting the licensed
-# flag, so a `Positional` row contributes nothing); `files = [ ... ]` is
-# collected across lines until its closing bracket. A license pin is labelled
-# `<Prefix>.<Home>.<name>` (`Elm.File.size`, `Eco.File.size`): the prefix is part
-# of the table's key since SD-16 (plans/kernel-table-prefix-keys.md).
-awk '
-    {
-        if ($0 ~ /\( \( "[^"]+", "[^"]+", "[^"]+" \)/) {
-            s = $0
-            sub(/^[^(]*\( \( "/, "", s)
-            p = s
-            sub(/".*/, "", p)
-            t = s
-            sub(/^[^"]*", "/, "", t)
-            h = t
-            sub(/".*/, "", h)
-            n = t
-            sub(/^[^"]*", "/, "", n)
-            sub(/".*/, "", n)
-            kernel = p "." h "." n
-            licensed = 0
-            collecting = 0
-        }
-        if ($0 ~ /TypeFaithful/) { licensed = 1 }
-        if (licensed && $0 ~ /files[ ]*=/) { collecting = 1 }
-        if (collecting) {
-            rest = $0
-            while (match(rest, /"[^"]*"/)) {
-                v = substr(rest, RSTART + 1, RLENGTH - 2)
-                print kernel "\t" v
-                rest = substr(rest, RSTART + RLENGTH)
-            }
-            if ($0 ~ /\]/) { collecting = 0 }
-        }
+# A `( ( "Prefix", "Home", "name" )` line opens a row. A `TransportsAs` scope
+# may start on the line after `scope =`, below a comment.
+cat > "$TMP/rows.awk" <<'AWK'
+function flush() { if (kernel != "") print kernel "\t" kind "\t" scope }
+{
+    if ($0 ~ /\( \( "[^"]+", "[^"]+", "[^"]+" \)/) {
+        flush()
+        s = $0
+        sub(/^[^(]*\( \( "/, "", s)
+        p = s; sub(/".*/, "", p)
+        t = s; sub(/^[^"]*", "/, "", t)
+        h = t; sub(/".*/, "", h)
+        n = t; sub(/^[^"]*", "/, "", n); sub(/".*/, "", n)
+        kernel = p "." h "." n
+        kind = "-"; scope = "-"; inscope = 0
+        next
     }
-' "$FACTS" > "$TMP/declared.raw"
-
-# --- the same, for the INTRINSIC ANNOTATION table ----------------------------
-#
-# An intrinsic annotation is the same species of claim as a license — a
-# statement about a C++ body that Elm cannot see — so it is pinned the same way.
-# Its rows are keyed by a THREE-tuple (prefix, home, name) and every row has
-# `files`, so the state machine is the license one minus the TypeFaithful flag:
-#
-#     , ( ( "Elm", "List", "fromArray" )
-#       , { annotation = ...
-#         , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
-#         }
-#       )
-#
-# Labelled `<Prefix>.Kernel.<Home>.<name>` so an intrinsic pin is never confused
-# with a license pin on the same file.
-awk '
-    {
-        if ($0 ~ /\( \( "[^"]+", "[^"]+", "[^"]+" \)/) {
-            s = $0
-            sub(/^[^(]*\( \( "/, "", s)
-            p = s
-            sub(/".*/, "", p)
-            t = s
-            sub(/^[^"]*", "/, "", t)
-            h = t
-            sub(/".*/, "", h)
-            n = t
-            sub(/^[^"]*", "/, "", n)
-            sub(/".*/, "", n)
-            kernel = p ".Kernel." h "." n
-            collecting = 0
-        }
-        if (kernel != "" && $0 ~ /files[ ]*=/) { collecting = 1 }
-        if (collecting) {
-            rest = $0
-            while (match(rest, /"[^"]*"/)) {
-                v = substr(rest, RSTART + 1, RLENGTH - 2)
-                print kernel "\t" v
-                rest = substr(rest, RSTART + RLENGTH)
-            }
-            if ($0 ~ /\]/) { collecting = 0 }
-        }
+    if (kernel == "") next
+    if ($0 ~ /^[ \t]*, TypeFaithful[ \t]*$/) kind = "TypeFaithful"
+    if ($0 ~ /^[ \t]*, Positional[ \t]*$/) kind = "Positional"
+    if ($0 ~ /scope =/) inscope = 1
+    if (inscope && $0 !~ /^[ \t]*--/) {
+        if (match($0, /TransportsAs/)) { scope = "TransportsAs"; inscope = 0 }
+        else if (match($0, /Transports/)) { scope = "Transports"; inscope = 0 }
+        else if (match($0, /Inert/)) { scope = "Inert"; inscope = 0 }
     }
-' "$INTRINSICS" >> "$TMP/declared.raw"
+}
+END { flush() }
+AWK
+awk -f "$TMP/rows.awk" "$FACTS" > "$TMP/rows"
 
-sort -u "$TMP/declared.raw" > "$TMP/declared"
+# The intrinsic annotation table is keyed the same way; its rows are labelled
+# `<Prefix>.Kernel.<Home>.<name>`.
+awk '
+    /\( \( "[^"]+", "[^"]+", "[^"]+" \)/ {
+        s = $0
+        sub(/^[^(]*\( \( "/, "", s)
+        p = s; sub(/".*/, "", p)
+        t = s; sub(/^[^"]*", "/, "", t)
+        h = t; sub(/".*/, "", h)
+        n = t; sub(/^[^"]*", "/, "", n); sub(/".*/, "", n)
+        print p ".Kernel." h "." n "\tIntrinsic\t-"
+    }
+' "$INTRINSICS" >> "$TMP/rows"
 
-# --- --update: regenerate the manifest ---------------------------------------
+sort -u "$TMP/rows" > "$TMP/rows.sorted"
+awk -F'\t' '$2 == "TypeFaithful" || $2 == "Intrinsic" { print $1 }' "$TMP/rows.sorted" | sort -u > "$TMP/pinnable"
+
+# --- the CSVs -----------------------------------------------------------------
+# kernel <TAB> latest audit date (empty when no audit line has a date)
+awk -F, 'NR > 1 { k = $1; if (!(k in latest)) latest[k] = ""; if ($2 > latest[k]) latest[k] = $2 }
+         END { for (k in latest) print k "\t" latest[k] }' "$AUDIT_CSV" | sort > "$TMP/latest"
+
+# --- --update: re-hash the pins ----------------------------------------------
 if [ "$MODE" = "--update" ]; then
-    # ASCII ONLY in this header, deliberately. test/CMakeLists.txt reads the
-    # manifest with file(STRINGS), which splits lines at non-ASCII bytes; a
-    # header containing a section sign or an em dash gets torn into fragments,
-    # and a fragment like "2 checklist - see" happily matches a
-    # "<hex> <path> <rest>" pattern. That produced a phantom dependency on a
-    # file named "checklist" and broke the build graph once already.
-    {
-        echo "# LSS_022 kernel parametricity license - rot manifest."
-        echo "# GENERATED by test/scripts/check-kernel-license-manifest.sh --update."
-        echo "#"
-        echo "# One line per (licensed kernel x audited C++ file):"
-        echo "#     <sha256>  <repo-relative path>  <Home.name>"
-        echo "#"
-        echo "# A hash mismatch means the audited body changed and the license"
-        echo "# must be re-established by re-running the checklist in"
-        echo "# plans/kernel-parametricity-license.md section 2. Regenerating a"
-        echo "# hash without advancing the row's 'audited:' date is the"
-        echo "# violation, not the fix."
-    } > "$MANIFEST.new"
-
-    while IFS="$(printf '\t')" read -r kernel file; do
+    head -n 1 "$FILES_CSV" > "$TMP/files.new"
+    REFUSED=0
+    tail -n +2 "$FILES_CSV" | while IFS=, read -r kernel file want audited; do
         [ -n "$kernel" ] || continue
         if [ ! -f "$ROOT/$file" ]; then
-            echo "check-kernel-license-manifest: $kernel lists a file that does not exist: $file" >&2
-            exit 1
+            echo "check-kernel-license-manifest: $kernel pins a file that does not exist: $file" >&2
+            echo "FAIL" >> "$TMP/refused"
+            continue
         fi
-        echo "$(sha256_of "$ROOT/$file")  $file  $kernel"
-    done < "$TMP/declared" | sort -k3,3 -k2,2 >> "$MANIFEST.new"
-
-    mv "$MANIFEST.new" "$MANIFEST"
-    echo "check-kernel-license-manifest: wrote $(grep -c '^[0-9a-f]' "$MANIFEST") pins to $MANIFEST"
+        got=$(sha256_of "$ROOT/$file")
+        latest=$(awk -F'\t' -v k="$kernel" '$1 == k { print $2 }' "$TMP/latest")
+        if [ "$got" != "$want" ] && [ -n "$audited" ] && ! [ "$latest" \> "$audited" ]; then
+            echo "check-kernel-license-manifest: refusing to re-hash $file for $kernel:" >&2
+            echo "  its latest audit ($latest) is not after the pin's ($audited). Add a" >&2
+            echo "  re-audit line to kernel-license-audit.csv first." >&2
+            echo "FAIL" >> "$TMP/refused"
+            echo "$kernel,$file,$want,$audited"
+            continue
+        fi
+        echo "$kernel,$file,$got,$latest"
+    done | sort -t, -k1,1 -k2,2 >> "$TMP/files.new"
+    if [ -f "$TMP/refused" ]; then
+        exit 1
+    fi
+    mv "$TMP/files.new" "$FILES_CSV"
+    echo "check-kernel-license-manifest: wrote $(($(wc -l < "$FILES_CSV") - 1)) pins to $FILES_CSV"
     exit 0
 fi
 
-# --- check mode --------------------------------------------------------------
-if [ ! -f "$MANIFEST" ]; then
-    if [ ! -s "$TMP/declared" ]; then
-        # No licensed rows and no manifest: consistent (the Wave-0 state).
-        exit 0
-    fi
-    echo "check-kernel-license-manifest: $MANIFEST is missing, but KernelSetFacts.elm" >&2
-    echo "  declares licensed kernels. Run: $0 $ROOT --update" >&2
-    exit 1
-fi
-
-grep '^[0-9a-f]' "$MANIFEST" | awk '{ print $3 "\t" $2 }' | sort -u > "$TMP/pinned"
-
+# --- check mode ----------------------------------------------------------------
 STATUS=0
+fail() { echo "check-kernel-license-manifest: $*" >&2; STATUS=1; }
 
-if ! diff -u "$TMP/pinned" "$TMP/declared" > "$TMP/coverage.diff" 2>&1; then
-    echo "check-kernel-license-manifest: MANIFEST COVERAGE MISMATCH" >&2
-    echo "  The (kernel, file) pairs pinned by the manifest differ from the ones" >&2
-    echo "  the TypeFaithful rows in KernelSetFacts.elm declare." >&2
-    echo "  '-' lines are pinned but no longer declared; '+' lines are declared" >&2
-    echo "  but unpinned — an UNGUARDED license." >&2
-    echo "" >&2
+# 2. COVERAGE
+tail -n +2 "$FILES_CSV" | cut -d, -f1 | sort -u > "$TMP/pinned"
+if ! diff -u "$TMP/pinned" "$TMP/pinnable" > "$TMP/coverage.diff" 2>&1; then
+    fail "PIN COVERAGE MISMATCH"
+    echo "  The kernels pinned in kernel-license-files.csv differ from the" >&2
+    echo "  TypeFaithful rows of KernelSetFacts.elm and the rows of" >&2
+    echo "  KernelIntrinsics.elm. '-' lines are pinned but no longer rows; '+'" >&2
+    echo "  lines are rows with no pin — an UNGUARDED license or annotation." >&2
     sed 's/^/  /' "$TMP/coverage.diff" >&2
-    echo "" >&2
-    echo "  Fix: re-audit per plans/kernel-parametricity-license.md §2, then run" >&2
-    echo "       $0 $ROOT --update" >&2
-    STATUS=1
+    echo "  Fix: re-audit per plans/kernel-parametricity-license.md §2, add the" >&2
+    echo "  pins and the audit line, then run $0 $ROOT --update" >&2
 fi
 
-grep '^[0-9a-f]' "$MANIFEST" | while read -r want file kernel; do
+tail -n +2 "$FILES_CSV" | awk -F, '
+    $2 ~ /^\// || $2 !~ /\// { print "  " $1 ": " $2 " is not a repo-relative path" }
+    $1 ~ /^Elm\./ && ($2 ~ /^eco-kernel-cpp\// || $2 ~ /^system-kernel-cpp\//) { print "  " $1 " pins the eco kernel C++ " $2 }
+    $1 ~ /^Eco\./ && $2 ~ /^elm-kernel-cpp\// { print "  " $1 " pins the elm kernel C++ " $2 }
+' > "$TMP/paths"
+if [ -s "$TMP/paths" ]; then
+    fail "bad pinned paths:"
+    cat "$TMP/paths" >&2
+fi
+
+# 3. AUDIT
+cut -f1 "$TMP/rows.sorted" | sort -u > "$TMP/rowkernels"
+tail -n +2 "$AUDIT_CSV" | cut -d, -f1 | sort -u > "$TMP/audited"
+if ! diff -u "$TMP/audited" "$TMP/rowkernels" > "$TMP/audit.diff" 2>&1; then
+    fail "AUDIT COVERAGE MISMATCH"
+    echo "  '-' lines are audited kernels with no row; '+' lines are rows with no" >&2
+    echo "  line in kernel-license-audit.csv." >&2
+    sed 's/^/  /' "$TMP/audit.diff" >&2
+fi
+
+awk -F, 'NR > 1 && $2 != "" && $2 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ { print "  line " NR ": bad date " $2 }' \
+    "$AUDIT_CSV" > "$TMP/dates"
+awk -F'\t' '$2 == "" { print "  " $1 " has no dated audit" }' "$TMP/latest" >> "$TMP/dates"
+if [ -s "$TMP/dates" ]; then
+    fail "bad audit dates:"
+    cat "$TMP/dates" >&2
+fi
+
+# The first audit line of each kernel carries the markers.
+awk -F'\t' 'NR == FNR { kind[$1] = $2; scope[$1] = $3; next }
+    FNR == 1 { next }
+    {
+        split($0, f, ",")
+        k = f[1]
+        if (k in seen) next
+        seen[k] = 1
+        if (kind[k] == "TypeFaithful") {
+            n = split("class: entry: type: B1: B2: B3:", req, " ")
+            for (i = 1; i <= n; i++) if (index($0, req[i]) == 0) print "  " k ": first audit lacks " req[i]
+            vac = index($0, "class: vacuous") > 0
+            if (vac != (scope[k] == "Inert")) print "  " k ": scope " scope[k] " but the audit class " (vac ? "is" : "is not") " vacuous"
+        } else if (kind[k] == "Positional") {
+            if (index($0, "entry:") == 0) print "  " k ": first audit lacks entry:"
+        }
+    }' "$TMP/rows.sorted" "$AUDIT_CSV" > "$TMP/markers"
+if [ -s "$TMP/markers" ]; then
+    fail "malformed audits:"
+    cat "$TMP/markers" >&2
+fi
+
+# 1. HASH, and each pin's audited date.
+tail -n +2 "$FILES_CSV" | while IFS=, read -r kernel file want audited; do
+    [ -n "$kernel" ] || continue
     if [ ! -f "$ROOT/$file" ]; then
         echo "check-kernel-license-manifest: kernel $kernel is licensed against" >&2
         echo "  $file, which no longer exists." >&2
         echo "  Re-audit per plans/kernel-parametricity-license.md §2 and update" >&2
-        echo "  the manifest." >&2
+        echo "  the pins." >&2
         echo "FAIL" >> "$TMP/hashfail"
         continue
     fi
@@ -251,12 +277,18 @@ grep '^[0-9a-f]' "$MANIFEST" | while read -r want file kernel; do
         echo "    current: $got" >&2
         echo "  Re-audit per plans/kernel-parametricity-license.md §2 (application-only" >&2
         echo "  through the sanctioned entry points, no retention, no fabrication or" >&2
-        echo "  laundering, honest type), then update the manifest hash AND advance the" >&2
-        echo "  row's 'audited:' date in its evidence string. Updating the hash without" >&2
-        echo "  a re-audit note is the violation this check exists to catch." >&2
+        echo "  laundering, honest type), add a dated re-audit line for the kernel to" >&2
+        echo "  kernel-license-audit.csv, then run $0 <repo-root> --update." >&2
         echo "  If the kernel can no longer be licensed, demote the row to Positional" >&2
         echo "  or delete it — a wrong license is a miscompile, a missing one costs" >&2
         echo "  only precision." >&2
+        echo "FAIL" >> "$TMP/hashfail"
+        continue
+    fi
+    latest=$(awk -F'\t' -v k="$kernel" '$1 == k { print $2 }' "$TMP/latest")
+    if [ "$audited" != "$latest" ]; then
+        echo "check-kernel-license-manifest: $kernel pins $file as audited $audited," >&2
+        echo "  but its latest audit line is dated $latest. Run $0 <repo-root> --update." >&2
         echo "FAIL" >> "$TMP/hashfail"
     fi
 done

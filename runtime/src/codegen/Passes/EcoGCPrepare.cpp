@@ -65,8 +65,8 @@ using namespace mlir;
 
 namespace {
 
-/// Returns whether `op` is one of the eco ops that allocate a heap object, and so belongs in an
-/// allocation group.
+// Returns whether `op` is one of the eco ops that allocate a heap object, and so belongs in an
+// allocation group.
 static bool isMayAllocOp(Operation *op) {
     return isa<eco::AllocateStringOp>(op) ||
            isa<eco::AllocateClosureOp>(op) ||
@@ -79,10 +79,10 @@ static bool isMayAllocOp(Operation *op) {
            isa<eco::AllocateOp>(op);
 }
 
-/// Returns whether `op` allocates an object whose size `getFixedAllocSizeForGrouping` knows, which
-/// is what a group of more than one requires: a string allocation, a list cell, a tuple, a record,
-/// a custom value, or a box of an i64, f64 or i16. Closure allocations, `eco.allocate` and a box
-/// of any other type are not.
+// Returns whether `op` allocates an object whose size `getFixedAllocSizeForGrouping` knows, which
+// is what a group of more than one requires: a string allocation, a list cell, a tuple, a record,
+// a custom value, or a box of an i64, f64 or i16. Closure allocations, `eco.allocate` and a box
+// of any other type are not.
 static bool hasFixedAllocSize(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type inputType = boxOp.getValue().getType();
@@ -96,11 +96,11 @@ static bool hasFixedAllocSize(Operation *op) {
            isa<eco::CustomConstructOp>(op);
 }
 
-/// Returns the size in bytes, a multiple of 8, of the object `op` allocates, or 0 when `op` is not
-/// one `hasFixedAllocSize` accepts.
-///
-/// The values must agree with `computeAllocSize` in EcoToLLVMHeap.cpp, which the group lowering
-/// uses to size the region.
+// Returns the size in bytes, a multiple of 8, of the object `op` allocates, or 0 when `op` is not
+// one `hasFixedAllocSize` accepts.
+//
+// The values must agree with `computeAllocSize` in EcoToLLVMHeap.cpp, which the group lowering
+// uses to size the region.
 static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     constexpr int64_t HeaderSize = 8;
 
@@ -124,19 +124,19 @@ static int64_t getFixedAllocSizeForGrouping(Operation *op) {
     return 0;
 }
 
-/// The combined size in bytes that an allocation group must stay below. A member that would bring
-/// the total to this or more starts a new group instead.
-///
-/// This is not the runtime's default large-object threshold, `LARGE_OBJECT_THRESHOLD`, which is
-/// 8 KiB. EcoToLLVMHeap.cpp and Heap.hpp assert that the widest record and custom are smaller than
-/// 32 KiB, each with its own copy of the number.
+// The combined size in bytes that an allocation group must stay below. A member that would bring
+// the total to this or more starts a new group instead.
+//
+// This is not the runtime's default large-object threshold, `LARGE_OBJECT_THRESHOLD`, which is
+// 8 KiB. EcoToLLVMHeap.cpp and Heap.hpp assert that the widest record and custom are smaller than
+// 32 KiB, each with its own copy of the number.
 static constexpr int64_t GroupLargeObjectThreshold = 32 * 1024; // 32 KiB
 
-/// Returns whether `op` is a terminator, a partial-application op (`eco.papCreate`,
-/// `eco.papExtend`) or a call.
-///
-/// Grouping does not depend on the answer: `processBlock` ends a group at every op that
-/// `isMayAllocOp` rejects, and these ops are among them.
+// Returns whether `op` is a terminator, a partial-application op (`eco.papCreate`,
+// `eco.papExtend`) or a call.
+//
+// Grouping does not depend on the answer: `processBlock` ends a group at every op that
+// `isMayAllocOp` rejects, and these ops are among them.
 static bool isGroupBarrier(Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
         return true;
@@ -156,20 +156,20 @@ static bool isGroupBarrier(Operation *op) {
 // the ops that separate them. It only counts and changes no IR.
 //===----------------------------------------------------------------------===//
 
-/// Returns whether the merge census is on, which it is when `ECO_GCPREPARE_CENSUS` is set to any
-/// value. The environment is read once.
+// Returns whether the merge census is on, which it is when `ECO_GCPREPARE_CENSUS` is set to any
+// value. The environment is read once.
 static bool censusEnabled() {
     static const bool on = ::getenv("ECO_GCPREPARE_CENSUS") != nullptr;
     return on;
 }
 
-/// Returns whether a group whose members all have an inline lowering is split into groups of one.
-/// True unless `ECO_GCPREPARE_SPLIT_INLINE_GROUPS` is exactly `0`. The environment is read once.
-///
-/// The split is made because a group lowers to a call of `eco_gc_alloc_region_fast` and one
-/// `eco_init_*_at` call per member, while each of the same ops lowered alone is allocated inline,
-/// with a runtime call only on the nursery-full path, and stored directly. `processBlock` splits
-/// only when `eco::detail::inlineAllocEnabled()` is also true, since otherwise there is no inline lowering.
+// Returns whether a group whose members all have an inline lowering is split into groups of one.
+// True unless `ECO_GCPREPARE_SPLIT_INLINE_GROUPS` is exactly `0`. The environment is read once.
+//
+// The split is made because a group lowers to a call of `eco_gc_alloc_region_fast` and one
+// `eco_init_*_at` call per member, while each of the same ops lowered alone is allocated inline,
+// with a runtime call only on the nursery-full path, and stored directly. `processBlock` splits
+// only when `eco::detail::inlineAllocEnabled()` is also true, since otherwise there is no inline lowering.
 static bool splitInlineGroupsEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_GCPREPARE_SPLIT_INLINE_GROUPS");
@@ -178,13 +178,13 @@ static bool splitInlineGroupsEnabled() {
     return on;
 }
 
-/// Returns whether `op`, lowered on its own, is allocated inline: a box of an i64, f64 or i16, a
-/// list cell, a tuple, or a record or custom of at most 4096 bytes. This must agree with the
-/// patterns in EcoToLLVMHeap.cpp that lower each of these ops outside a group.
-///
-/// A string allocation can be in a group but is never allocated inline, so it returns false, and
-/// a group containing one is kept: splitting it would replace one region call with an allocation
-/// call per object. Any op not listed also returns false.
+// Returns whether `op`, lowered on its own, is allocated inline: a box of an i64, f64 or i16, a
+// list cell, a tuple, or a record or custom of at most 4096 bytes. This must agree with the
+// patterns in EcoToLLVMHeap.cpp that lower each of these ops outside a group.
+//
+// A string allocation can be in a group but is never allocated inline, so it returns false, and
+// a group containing one is kept: splitting it would replace one region call with an allocation
+// call per object. Any op not listed also returns false.
 static bool hasInlineSingletonLowering(Operation *op) {
     if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
         Type t = boxOp.getValue().getType();
@@ -199,19 +199,21 @@ static bool hasInlineSingletonLowering(Operation *op) {
 }
 
 namespace {
-/// The merge census's counts, accumulated over every run of the pass in the process.
-///
-/// A run is a sequence of adjacent groupable allocations, cut at the size limit but not at
-/// member-result uses, so it may span several groups; `runs2plus` and `runObjects` count the runs
-/// of two or more and their members. A window is the non-empty
-/// sequence of ops between the last allocation of a run and the next groupable allocation, and
-/// `windows` counts them, split into `winNoCall`, `winLeafOnly` (calls, all gc-leaf) and
-/// `winHardBarrier`. `winHardBarrier` stays 0, because a hard barrier ends the run before a window
-/// containing it is classified. A window with no hard barrier is counted once more: `blockedDeps` when the
-/// next allocation uses a result from the window or the run, `blockedSize` when it would bring the
-/// run to `GroupLargeObjectThreshold` or more, otherwise `mergeableLeaf` or `mergeableFree`.
-/// `splitGroups`/`splitObjects` and `keptGroups`/`keptObjects` count the groups of two or more
-/// that were split into groups of one or kept, and their members, while the split is on.
+/**
+ * The merge census's counts, accumulated over every run of the pass in the process.
+ *
+ * A run is a sequence of adjacent groupable allocations, cut at the size limit but not at
+ * member-result uses, so it may span several groups; `runs2plus` and `runObjects` count the runs
+ * of two or more and their members. A window is the non-empty
+ * sequence of ops between the last allocation of a run and the next groupable allocation, and
+ * `windows` counts them, split into `winNoCall`, `winLeafOnly` (calls, all gc-leaf) and
+ * `winHardBarrier`. `winHardBarrier` stays 0, because a hard barrier ends the run before a window
+ * containing it is classified. A window with no hard barrier is counted once more: `blockedDeps` when the
+ * next allocation uses a result from the window or the run, `blockedSize` when it would bring the
+ * run to `GroupLargeObjectThreshold` or more, otherwise `mergeableLeaf` or `mergeableFree`.
+ * `splitGroups`/`splitObjects` and `keptGroups`/`keptObjects` count the groups of two or more
+ * that were split into groups of one or kept, and their members, while the split is on.
+ */
 struct MergeCensus {
     uint64_t blocks = 0, groupableAllocs = 0, runs2plus = 0, runObjects = 0;
     uint64_t windows = 0, winNoCall = 0, winLeafOnly = 0, winHardBarrier = 0;
@@ -221,16 +223,16 @@ struct MergeCensus {
 };
 } // namespace
 
-/// The census counts since the process started; the pass never resets them, so each run prints
-/// cumulative totals. It has no lock, and is written only when the census
-/// is on, in which case `runOnOperation` processes the functions on one thread.
+// The census counts since the process started; the pass never resets them, so each run prints
+// cumulative totals. It has no lock, and is written only when the census
+// is on, in which case `runOnOperation` processes the functions on one thread.
 static MergeCensus gCensus;
 
-/// Returns whether `op` is one that a later allocation could not be moved above to join an earlier
-/// run: a terminator, an op with regions, a partial-application op (`eco.papCreate`,
-/// `eco.papExtend`, `eco.papCreateGroup`), a `func.call`, or an `eco.call` without
-/// `eco.callee_gc_leaf`. An `eco.call` with that attribute calls a function that cannot collect,
-/// so it is not a barrier.
+// Returns whether `op` is one that a later allocation could not be moved above to join an earlier
+// run: a terminator, an op with regions, a partial-application op (`eco.papCreate`,
+// `eco.papExtend`, `eco.papCreateGroup`), a `func.call`, or an `eco.call` without
+// `eco.callee_gc_leaf`. An `eco.call` with that attribute calls a function that cannot collect,
+// so it is not a barrier.
 static bool isHardMotionBarrier(Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
         return true;
@@ -253,8 +255,8 @@ static bool isHardMotionBarrier(Operation *op) {
     return false;
 }
 
-/// Returns whether `op` is an `eco.call` or a `func.call`. The census uses it to tell a window with
-/// no call from one whose calls are all gc-leaf.
+// Returns whether `op` is an `eco.call` or a `func.call`. The census uses it to tell a window with
+// no call from one whose calls are all gc-leaf.
 static bool isAnyCall(Operation *op) {
     return isa<eco::CallOp>(op) || isa<func::CallOp>(op);
 }
@@ -263,8 +265,10 @@ static bool isAnyCall(Operation *op) {
 // EcoGCPreparePass
 //===----------------------------------------------------------------------===//
 
-/// The pass that forms and marks allocation groups and removes `eco.cse_safe`, as the file comment
-/// describes, in every function defined at the top level of a module.
+/**
+ * The pass that forms and marks allocation groups and removes `eco.cse_safe`, as the file comment
+ * describes, in every function defined at the top level of a module.
+ */
 struct EcoGCPreparePass
     : public PassWrapper<EcoGCPreparePass, OperationPass<ModuleOp>> {
 
@@ -317,8 +321,8 @@ struct EcoGCPreparePass
     }
 
 private:
-    /// Processes every block of `func`, including the blocks nested in the regions of its ops.
-    /// Does nothing for a declaration.
+    // Processes every block of `func`, including the blocks nested in the regions of its ops.
+    // Does nothing for a declaration.
     void processFunction(func::FuncOp func) {
         if (func.isExternal()) return;
 
@@ -330,12 +334,12 @@ private:
         });
     }
 
-    /// Adds the merge census counts for `block` to `gCensus`, as `MergeCensus` defines them. Changes
-    /// no IR; `apply` is ignored.
-    ///
-    /// Runs are cut at the size threshold, at a hard motion barrier, and at any other op between
-    /// allocations (the allocation after it is counted as starting a new run), but not, unlike
-    /// groups, where one member uses another's result.
+    // Adds the merge census counts for `block` to `gCensus`, as `MergeCensus` defines them. Changes
+    // no IR; `apply` is ignored.
+    //
+    // Runs are cut at the size threshold, at a hard motion barrier, and at any other op between
+    // allocations (the allocation after it is counted as starting a new run), but not, unlike
+    // groups, where one member uses another's result.
     void scanBlockForMerges(Block &block, bool apply) {
         (void)apply;
         ++gCensus.blocks;
@@ -440,9 +444,9 @@ private:
         closeRun();
     }
 
-    /// Forms the allocation groups of `block` and marks them, then removes `eco.cse_safe` from each
-    /// `eco.call` directly in `block`. The blocks nested in its ops' regions are left to their own
-    /// call.
+    // Forms the allocation groups of `block` and marks them, then removes `eco.cse_safe` from each
+    // `eco.call` directly in `block`. The blocks nested in its ops' regions are left to their own
+    // call.
     void processBlock(Block &block) {
         if (censusEnabled())
             scanBlockForMerges(block, /*apply=*/false);

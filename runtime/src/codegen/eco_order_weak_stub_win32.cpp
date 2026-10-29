@@ -15,8 +15,8 @@
 
 #if defined(_WIN32)
 
-/// Does nothing. The definition `Eco_Kernel_Order_register_gc_roots` resolves
-/// to when no other definition is linked.
+// Does nothing. The definition `Eco_Kernel_Order_register_gc_roots` resolves
+// to when no other definition is linked.
 extern "C" void Eco_Kernel_Order_register_gc_roots_default() {}
 
 #pragma comment( \

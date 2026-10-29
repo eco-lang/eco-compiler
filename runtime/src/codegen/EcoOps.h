@@ -41,27 +41,27 @@
 #include "eco/EcoOps.h.inc"
 
 namespace eco {
-/// The name of the unit attribute that marks an `eco.call` as free of memory effects.
-///
-/// A call carrying it reports no effects (`CallOp::getEffects`), so MLIR may merge two identical calls or erase one
-/// whose result is unused. It does not make the call speculatable, so it does not let a call be hoisted or executed
-/// speculatively. The verifier accepts it only on a direct call that is not `musttail`. The pass from
-/// `createEcoGCPreparePass` removes it from every call, so no pass after that one may rely on it.
+// The name of the unit attribute that marks an `eco.call` as free of memory effects.
+//
+// A call carrying it reports no effects (`CallOp::getEffects`), so MLIR may merge two identical calls or erase one
+// whose result is unused. It does not make the call speculatable, so it does not let a call be hoisted or executed
+// speculatively. The verifier accepts it only on a direct call that is not `musttail`. The pass from
+// `createEcoGCPreparePass` removes it from every call, so no pass after that one may rely on it.
 inline constexpr llvm::StringLiteral kCseSafeAttrName{"eco.cse_safe"};
 
-/// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: a Char value
-/// (a Unicode code point 0..0x10FFFF, or an encoded case-mapping result,
-/// KERN_008) held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3 (Char)
-/// heap/closure word holds it zero-extended to 64 bits (REP_HEAP_002).
+// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: a Char value
+// (a Unicode code point 0..0x10FFFF, or an encoded case-mapping result,
+// KERN_008) held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3 (Char)
+// heap/closure word holds it zero-extended to 64 bits (REP_HEAP_002).
 inline constexpr unsigned kEcoCharBits = 32;
 
-/// True iff `t` is the Char SSA type (i32). Use this - never a literal width -
-/// wherever an integer type means Char. Note i32 is also the ctor-tag type
-/// (eco.get_tag) and the BytesFusion counter type; those never reach a
-/// slot-kind classifier, and this helper must not be applied in BF lowering.
+// True iff `t` is the Char SSA type (i32). Use this - never a literal width -
+// wherever an integer type means Char. Note i32 is also the ctor-tag type
+// (eco.get_tag) and the BytesFusion counter type; those never reach a
+// slot-kind classifier, and this helper must not be applied in BF lowering.
 inline bool isEcoCharType(mlir::Type t) { return t.isInteger(kEcoCharBits); }
 
-/// The Char SSA type (i32).
+// The Char SSA type (i32).
 inline mlir::IntegerType getEcoCharType(mlir::MLIRContext *ctx) {
   return mlir::IntegerType::get(ctx, kEcoCharBits);
 }

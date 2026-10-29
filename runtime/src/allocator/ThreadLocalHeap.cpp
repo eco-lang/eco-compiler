@@ -229,6 +229,10 @@ ThreadLocalHeap::~ThreadLocalHeap() {
 }
 // TLA-REGION(TLH.destructor) end
 
+// ============================================================================
+// Allocation.
+// ============================================================================
+
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     size = (size + 7) & ~static_cast<size_t>(7);
 
@@ -582,6 +586,10 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     assert(false && "Failed to allocate in old gen.");
     return nullptr;
 }
+
+// ============================================================================
+// Collection.
+// ============================================================================
 
 bool ThreadLocalHeap::shouldCollectAtSafepoint() const {
     if (force_gc_)
@@ -1036,6 +1044,10 @@ void ThreadLocalHeap::forEachMajorRoot(RootSet& root_set, F&& f) {
     }
 }
 
+// ============================================================================
+// The incremental mark cycle.
+// ============================================================================
+
 // Returns the steady clock's time in nanoseconds.
 static inline uint64_t cycleNowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1319,6 +1331,10 @@ std::vector<void*> ThreadLocalHeap::traceOldReachableForValidation(bool* complet
     return old_out;
 }
 #endif
+
+// ============================================================================
+// Roots.
+// ============================================================================
 
 const std::unordered_set<HPointer*>& ThreadLocalHeap::collectRoots() {
     return nursery_.getRootSet().getRoots();

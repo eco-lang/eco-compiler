@@ -19,8 +19,10 @@ using namespace mlir;
 
 namespace {
 
-/// The per-function pass that reports each `eco.call` still carrying
-/// `eco.cse_safe` as an error and then fails.
+/**
+ * The per-function pass that reports each `eco.call` still carrying
+ * `eco.cse_safe` as an error and then fails.
+ */
 struct EcoGCLivenessAuditPass
     : public PassWrapper<EcoGCLivenessAuditPass, OperationPass<func::FuncOp>> {
 
@@ -32,8 +34,8 @@ struct EcoGCLivenessAuditPass
                "purity attr (debug-only)";
     }
 
-    /// Skips external functions. Without `ECO_LOWERING_VALIDATION` it returns
-    /// at once.
+    // Skips external functions. Without `ECO_LOWERING_VALIDATION` it returns
+    // at once.
     void runOnOperation() override {
 #ifndef ECO_LOWERING_VALIDATION
         return;

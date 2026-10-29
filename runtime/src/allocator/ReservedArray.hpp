@@ -37,19 +37,21 @@
 
 namespace Elm {
 
-/// A fixed-capacity array of `T` whose elements never move, grown by committing a longer prefix.
-///
-/// An array is empty until `reserve` succeeds. From then until `release`, or the next `reserve`,
-/// `data()` is fixed, and indices below `committed()` are addressable. Pointers and references to
-/// elements stay valid across `ensureCommitted` and `discard`, and are invalidated by `release`,
-/// `reserve` and destruction. A `ReservedArray` cannot be copied or moved. The destructor releases
-/// the reservation.
-///
-/// Concurrency: one thread, the owner, calls `reserve`, `ensureCommitted`, `discard` and `release`.
-/// `ensureCommitted` publishes the new count with a release store after the memory is committed,
-/// and `committed()` reads it with an acquire load, so another thread that reads `committed()` may
-/// address the indices below it while the owner grows the array. Nothing here synchronises access
-/// to the elements themselves, nor makes `release` or `reserve` safe while another thread reads.
+/**
+ * A fixed-capacity array of `T` whose elements never move, grown by committing a longer prefix.
+ *
+ * An array is empty until `reserve` succeeds. From then until `release`, or the next `reserve`,
+ * `data()` is fixed, and indices below `committed()` are addressable. Pointers and references to
+ * elements stay valid across `ensureCommitted` and `discard`, and are invalidated by `release`,
+ * `reserve` and destruction. A `ReservedArray` cannot be copied or moved. The destructor releases
+ * the reservation.
+ *
+ * Concurrency: one thread, the owner, calls `reserve`, `ensureCommitted`, `discard` and `release`.
+ * `ensureCommitted` publishes the new count with a release store after the memory is committed,
+ * and `committed()` reads it with an acquire load, so another thread that reads `committed()` may
+ * address the indices below it while the owner grows the array. Nothing here synchronises access
+ * to the elements themselves, nor makes `release` or `reserve` safe while another thread reads.
+ */
 template <class T>
 class ReservedArray {
     static_assert(std::is_trivially_copyable_v<T> &&
@@ -58,12 +60,12 @@ class ReservedArray {
                   "destructible T (elements come from zero pages)");
 
 public:
-    /// The default granule, and the unit `ensureCommitted` rounds its commits up to unless the
-    /// granule is larger: 64 KiB, or the OS page size if that is larger.
+    // The default granule, and the unit `ensureCommitted` rounds its commits up to unless the
+    // granule is larger: 64 KiB, or the OS page size if that is larger.
     static constexpr size_t kCommitChunkBytes =
         (size_t{64} * 1024 > OS_PAGE_SIZE) ? size_t{64} * 1024 : OS_PAGE_SIZE;
-    /// The size of a transparent huge page where the base page is 4 KiB, for use as the granule
-    /// passed to `reserve`.
+    // The size of a transparent huge page where the base page is 4 KiB, for use as the granule
+    // passed to `reserve`.
     static constexpr size_t kHugePageBytes = size_t{2} * 1024 * 1024;
 
     ReservedArray() = default;
@@ -73,14 +75,14 @@ public:
     ReservedArray& operator=(ReservedArray&&) = delete;
     ~ReservedArray() { release(); }
 
-    /// Releases any previous reservation, then reserves address space for `capacity` elements and
-    /// commits none of it. Returns false if the address space cannot be reserved, leaving the array
-    /// empty. A zero `capacity` reserves nothing and returns true.
-    ///
-    /// `granule` must be a power of two, and is raised to the OS page size if smaller. The base of
-    /// the array is aligned to it, the reservation is a whole number of granules, `discard` gives
-    /// memory back only in whole granules, and `ensureCommitted` commits in units of the larger of
-    /// `granule` and `kCommitChunkBytes`. `capacity * sizeof(T)` must not overflow.
+    // Releases any previous reservation, then reserves address space for `capacity` elements and
+    // commits none of it. Returns false if the address space cannot be reserved, leaving the array
+    // empty. A zero `capacity` reserves nothing and returns true.
+    //
+    // `granule` must be a power of two, and is raised to the OS page size if smaller. The base of
+    // the array is aligned to it, the reservation is a whole number of granules, `discard` gives
+    // memory back only in whole granules, and `ensureCommitted` commits in units of the larger of
+    // `granule` and `kCommitChunkBytes`. `capacity * sizeof(T)` must not overflow.
     bool reserve(size_t capacity, size_t granule = kCommitChunkBytes) {
         release();
         if (capacity == 0) return true;
@@ -104,8 +106,8 @@ public:
         return true;
     }
 
-    /// Gives the whole reservation back to the OS and leaves the array empty. Does nothing to an
-    /// array that is already empty.
+    // Gives the whole reservation back to the OS and leaves the array empty. Does nothing to an
+    // array that is already empty.
     void release() {
         if (raw_base_ != nullptr) {
             platform::releaseReservation(raw_base_, raw_bytes_);
@@ -119,13 +121,13 @@ public:
         committed_.store(0, std::memory_order_relaxed);
     }
 
-    /// Makes indices `[0, n)` addressable, without moving any element. Newly committed elements
-    /// read as zero, and elements already committed keep their values. Does nothing if `n` is not
-    /// more than `committed()`. Prints a message and aborts the process if `n` exceeds the
-    /// capacity, which includes any `n > 0` on an empty array, or if the commit fails.
-    ///
-    /// `committed()` may afterwards exceed `n`, up to the end of the last unit committed or the
-    /// capacity, whichever is smaller.
+    // Makes indices `[0, n)` addressable, without moving any element. Newly committed elements
+    // read as zero, and elements already committed keep their values. Does nothing if `n` is not
+    // more than `committed()`. Prints a message and aborts the process if `n` exceeds the
+    // capacity, which includes any `n > 0` on an empty array, or if the commit fails.
+    //
+    // `committed()` may afterwards exceed `n`, up to the end of the last unit committed or the
+    // capacity, whichever is smaller.
     void ensureCommitted(size_t n) {
         if (n <= committed_.load(std::memory_order_relaxed)) return;
         if (n > capacity_) {
@@ -154,10 +156,10 @@ public:
         committed_.store(c, std::memory_order_release);
     }
 
-    /// Sets elements `[first, first + count)` to zero, and gives back to the OS the memory of the
-    /// granules wholly inside that range where the OS allows (otherwise they are zeroed in place).
-    /// The range stays committed, and `committed()` does not change. `first + count` must not
-    /// exceed `committed()`, which is asserted when assertions are enabled.
+    // Sets elements `[first, first + count)` to zero, and gives back to the OS the memory of the
+    // granules wholly inside that range where the OS allows (otherwise they are zeroed in place).
+    // The range stays committed, and `committed()` does not change. `first + count` must not
+    // exceed `committed()`, which is asserted when assertions are enabled.
     void discard(size_t first, size_t count) {
         if (count == 0) return;
         assert(first + count <= committed());
@@ -180,36 +182,36 @@ public:
         std::memset(phi, 0, static_cast<size_t>(hi - phi));
     }
 
-    /// Returns element `i`. `i` must be less than `committed()`, which is asserted when assertions
-    /// are enabled.
+    // Returns element `i`. `i` must be less than `committed()`, which is asserted when assertions
+    // are enabled.
     T& operator[](size_t i) {
         assert(i < committed() && "ReservedArray index past committed prefix");
         return base_[i];
     }
-    /// Returns element `i` of a const array, as the non-const overload does.
+    // Returns element `i` of a const array, as the non-const overload does.
     const T& operator[](size_t i) const {
         assert(i < committed() && "ReservedArray index past committed prefix");
         return base_[i];
     }
 
-    /// Returns the address of element 0, or a null pointer if the array is empty. It stays the same
-    /// until `release` or the next `reserve`.
+    // Returns the address of element 0, or a null pointer if the array is empty. It stays the same
+    // until `release` or the next `reserve`.
     T* data() { return base_; }
-    /// Returns the address of element 0 of a const array, as the non-const overload does.
+    // Returns the address of element 0 of a const array, as the non-const overload does.
     const T* data() const { return base_; }
-    /// Returns the number of elements the reservation holds, or 0 if the array is empty.
+    // Returns the number of elements the reservation holds, or 0 if the array is empty.
     size_t capacity() const { return capacity_; }
-    /// Returns the number of leading elements that are addressable. Safe to call from a thread
-    /// other than the owner (see the class comment).
+    // Returns the number of leading elements that are addressable. Safe to call from a thread
+    // other than the owner (see the class comment).
     size_t committed() const { return committed_.load(std::memory_order_acquire); }
-    /// Returns the size of the reservation in bytes, excluding the alignment slack: the capacity
-    /// in bytes, rounded up to a whole granule.
+    // Returns the size of the reservation in bytes, excluding the alignment slack: the capacity
+    // in bytes, rounded up to a whole granule.
     size_t reservedBytes() const { return reserved_bytes_; }
-    /// Returns the number of bytes committed from the base. Only the owner may call it.
+    // Returns the number of bytes committed from the base. Only the owner may call it.
     size_t committedBytes() const { return committed_bytes_; }
 
 private:
-    /// Returns `v` rounded up to a multiple of `a`, which must be a power of two.
+    // Returns `v` rounded up to a multiple of `a`, which must be a power of two.
     static size_t roundUp(size_t v, size_t a) { return (v + a - 1) & ~(a - 1); }
 
     // The reservation as the platform returned it, including the alignment slack, which is what

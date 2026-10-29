@@ -18,11 +18,11 @@ using namespace mlir;
 
 namespace eco {
 
-/// Returns the map from each name listed below, mangled by `interner`, to the
-/// address of that function in this process, as an exported absolute symbol.
-///
-/// Exactly one of `eco_char_case_expansion_on` and `eco_char_case_expansion_off` is in the map: the one this
-/// runtime is built to define.
+// Returns the map from each name listed below, mangled by `interner`, to the
+// address of that function in this process, as an exported absolute symbol.
+//
+// Exactly one of `eco_char_case_expansion_on` and `eco_char_case_expansion_off` is in the map: the one this
+// runtime is built to define.
 static llvm::orc::SymbolMap buildRuntimeSymbolMap(
     llvm::orc::MangleAndInterner interner) {
     llvm::orc::SymbolMap symbolMap;

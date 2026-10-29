@@ -48,44 +48,44 @@
 
 namespace eco {
 
-/// Returns how many partitions `lowerMlirSplit` should make of `module` for
-/// `job`, where 1 means that the module should not be split in MLIR.
-///
-/// The result is 1 when the environment variable `ECO_MLIR_SPLIT` is `0`, when
-/// `job` is not an `EmitObjectFile` job at an optimization level above `None`
-/// with `parallelOpt` `Cgu` or `Dev` and without `rs4gcAfterOpt`, or when the
-/// module's MLIRContext has multithreading disabled. Otherwise it is what
-/// `choosePartitionCountForCount` gives for the module's defined functions,
-/// `job.splitCodegen` and `job.splitEligible`.
+// Returns how many partitions `lowerMlirSplit` should make of `module` for
+// `job`, where 1 means that the module should not be split in MLIR.
+//
+// The result is 1 when the environment variable `ECO_MLIR_SPLIT` is `0`, when
+// `job` is not an `EmitObjectFile` job at an optimization level above `None`
+// with `parallelOpt` `Cgu` or `Dev` and without `rs4gcAfterOpt`, or when the
+// module's MLIRContext has multithreading disabled. Otherwise it is what
+// `choosePartitionCountForCount` gives for the module's defined functions,
+// `job.splitCodegen` and `job.splitEligible`.
 unsigned mlirSplitPartitionCount(mlir::ModuleOp module,
                                  const EcoBackendJob &job);
 
-/// Splits `module` into `numPartitions` partitions and lowers each to an
-/// object file on its own thread, as `runEcoBackend` would lower the whole
-/// module for `base`. A function named `main` is renamed `eco_main` in the
-/// objects; the caller must not rename it beforehand.
-///
-/// `numPartitions` must be at least 1, normally the count from
-/// `mlirSplitPartitionCount`. Partition 0 is written to `base.objectFilePath`
-/// and the others to new temporary files. On success, if `result` is not null,
-/// its `objectFiles` lists all of them, partition 0 first, and its
-/// `ownedTempFiles` the temporary ones, which the caller must delete.
-///
-/// Once the partitions are built, the operations in `module`'s body are erased
-/// on another thread, which is joined before the call returns. The caller must
-/// not use the module's contents after the call, even on failure; only when
-/// building the partitions fails is the module left as it was. Its
-/// MLIRContext is shared by the partitions and must outlive the call.
-///
-/// Returns an error if a declaration or import copy does not carry its
-/// owner's `eco-cap-*` attributes, if a temporary file cannot be created, if
-/// translating, finishing reachability, creating the target machine or
-/// `runEcoBackend` fails for a partition (the error of the lowest-numbered
-/// failing partition is returned), if a partition kept an import copy whose
-/// owner's prepass deleted the body, which would leave an undefined reference
-/// at link time, or if `joinPartitionGcLeafReports` fails. On any
-/// error after the partitions are built, the temporary files are removed;
-/// `base.objectFilePath` is not.
+// Splits `module` into `numPartitions` partitions and lowers each to an
+// object file on its own thread, as `runEcoBackend` would lower the whole
+// module for `base`. A function named `main` is renamed `eco_main` in the
+// objects; the caller must not rename it beforehand.
+//
+// `numPartitions` must be at least 1, normally the count from
+// `mlirSplitPartitionCount`. Partition 0 is written to `base.objectFilePath`
+// and the others to new temporary files. On success, if `result` is not null,
+// its `objectFiles` lists all of them, partition 0 first, and its
+// `ownedTempFiles` the temporary ones, which the caller must delete.
+//
+// Once the partitions are built, the operations in `module`'s body are erased
+// on another thread, which is joined before the call returns. The caller must
+// not use the module's contents after the call, even on failure; only when
+// building the partitions fails is the module left as it was. Its
+// MLIRContext is shared by the partitions and must outlive the call.
+//
+// Returns an error if a declaration or import copy does not carry its
+// owner's `eco-cap-*` attributes, if a temporary file cannot be created, if
+// translating, finishing reachability, creating the target machine or
+// `runEcoBackend` fails for a partition (the error of the lowest-numbered
+// failing partition is returned), if a partition kept an import copy whose
+// owner's prepass deleted the body, which would leave an undefined reference
+// at link time, or if `joinPartitionGcLeafReports` fails. On any
+// error after the partitions are built, the temporary files are removed;
+// `base.objectFilePath` is not.
 llvm::Error lowerMlirSplit(mlir::ModuleOp module, const EcoBackendJob &base,
                            unsigned numPartitions, EcoBackendResult *result);
 

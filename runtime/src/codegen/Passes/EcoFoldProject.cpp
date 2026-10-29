@@ -41,8 +41,8 @@ using namespace ::eco;
 
 namespace {
 
-/// Returns whether the pass folds anything: false only when `ECO_MLIR_FOLD` is exactly `0`. The variable is read
-/// once per process.
+// Returns whether the pass folds anything: false only when `ECO_MLIR_FOLD` is exactly `0`. The variable is read
+// once per process.
 bool foldEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_MLIR_FOLD");
@@ -53,30 +53,32 @@ bool foldEnabled() {
     return on;
 }
 
-/// Returns whether `ECO_MLIR_FOLD` is `census`, which asks for the fold totals on stderr. Read on every call.
+// Returns whether `ECO_MLIR_FOLD` is `census`, which asks for the fold totals on stderr. Read on every call.
 bool foldCensus() {
     const char *e = ::getenv("ECO_MLIR_FOLD");
     return e && llvm::StringRef(e) == "census";
 }
 
-/// Returns whether folding is limited to ops whose operand is defined in their own block: true when
-/// `ECO_MLIR_FOLD_BLOCK_LOCAL` is set to a non-empty value other than `0`. Read on every call.
+// Returns whether folding is limited to ops whose operand is defined in their own block: true when
+// `ECO_MLIR_FOLD_BLOCK_LOCAL` is set to a non-empty value other than `0`. Read on every call.
 bool blockLocalOnly() {
     const char *e = ::getenv("ECO_MLIR_FOLD_BLOCK_LOCAL");
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// The number of folds made, and of candidate ops skipped by the block-local limit, over the functions of one
-/// chunk.
+/**
+ * The number of folds made, and of candidate ops skipped by the block-local limit, over the functions of one
+ * chunk.
+ */
 struct FoldCounts {
     unsigned folded = 0, tagFolded = 0, skippedNonLocal = 0;
 };
 
-/// Folds the projections, list heads and tails, and `eco.get_tag` ops in `func` whose `fold()` succeeds with one
-/// result, except those skipped by the block-local limit, and adds the folds and skips to `c`.
-///
-/// Every change stays inside `func`: uses are replaced, folded ops are erased, and the only op created is an
-/// `arith.constant` in the folded op's block. An attribute result that is not a `TypedAttr` is not applied.
+// Folds the projections, list heads and tails, and `eco.get_tag` ops in `func` whose `fold()` succeeds with one
+// result, except those skipped by the block-local limit, and adds the folds and skips to `c`.
+//
+// Every change stays inside `func`: uses are replaced, folded ops are erased, and the only op created is an
+// `arith.constant` in the folded op's block. An attribute result that is not a `TypedAttr` is not applied.
 void foldFunction(func::FuncOp func, FoldCounts &c) {
     SmallVector<Operation *> dead;
 
@@ -122,10 +124,12 @@ void foldFunction(func::FuncOp func, FoldCounts &c) {
         op->erase();
 }
 
-/// The `eco-fold-project` pass: a module pass that folds every function with a body, in parallel chunks.
-///
-/// It is a module pass rather than one nested on functions so that the pass manager runs it once per module instead
-/// of once per function.
+/**
+ * The `eco-fold-project` pass: a module pass that folds every function with a body, in parallel chunks.
+ *
+ * It is a module pass rather than one nested on functions so that the pass manager runs it once per module instead
+ * of once per function.
+ */
 struct EcoFoldProjectPass
     : public PassWrapper<EcoFoldProjectPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoFoldProjectPass)

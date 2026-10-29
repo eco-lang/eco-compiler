@@ -57,19 +57,19 @@ using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
-/// Returns whether every byte of the string-case pattern `s` is below 0x80.
-/// Such a pattern's global holds bytes; any other's holds UTF-16 code units.
+// Returns whether every byte of the string-case pattern `s` is below 0x80.
+// Such a pattern's global holds bytes; any other's holds UTF-16 code units.
 static bool isAsciiCasePattern(llvm::StringRef s);
 
 namespace {
 
-/// Returns whether a string case compares with the `__eco_value_eq` marker
-/// rather than a call to the `Elm_Kernel_Utils_equal` kernel function. It is true unless
-/// `ECO_VALUE_EQ_STRCASE` is exactly `0`, and is read once per process.
-///
-/// EcoControlFlowToSCF.cpp holds an identical copy for the string cases it
-/// lowers. The two must change together, or the two kinds of string case
-/// will compare differently.
+// Returns whether a string case compares with the `__eco_value_eq` marker
+// rather than a call to the `Elm_Kernel_Utils_equal` kernel function. It is true unless
+// `ECO_VALUE_EQ_STRCASE` is exactly `0`, and is read once per process.
+//
+// EcoControlFlowToSCF.cpp holds an identical copy for the string cases it
+// lowers. The two must change together, or the two kinds of string case
+// will compare differently.
 static bool valueEqStrCaseEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_VALUE_EQ_STRCASE");
@@ -82,13 +82,15 @@ static bool valueEqStrCaseEnabled() {
 // eco.return -> func.return
 //===----------------------------------------------------------------------===//
 
-/// The pattern that turns `eco.return` into `func.return`.
-///
-/// An `eco.return` with more than one operand is taken to be in a function
-/// that returns through a caller-provided slot (CGEN_067): the slot is the
-/// enclosing `llvm.func`'s first argument, laid out as a struct of the
-/// operands' types. Each operand is stored into its field and the function
-/// returns nothing. It is an error if there is no enclosing `llvm.func`.
+/**
+ * The pattern that turns `eco.return` into `func.return`.
+ *
+ * An `eco.return` with more than one operand is taken to be in a function
+ * that returns through a caller-provided slot (CGEN_067): the slot is the
+ * enclosing `llvm.func`'s first argument, laid out as a struct of the
+ * operands' types. Each operand is stored into its field and the function
+ * returns nothing. It is an error if there is no enclosing `llvm.func`.
+ */
 struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -127,17 +129,19 @@ struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
 // eco.get_tag -> Extract constructor tag from ADT value
 //===----------------------------------------------------------------------===//
 
-/// The pattern that turns `eco.get_tag` into a call that returns the value's
-/// constructor tag.
-///
-/// When `inlineDerefExtEnabled()` holds, the call is to the gc-leaf
-/// `__eco_get_tag_inline` marker, which the LLVM-IR backend later replaces
-/// with an inline test. Otherwise it is to the runtime's `eco_get_tag`.
+/**
+ * The pattern that turns `eco.get_tag` into a call that returns the value's
+ * constructor tag.
+ *
+ * When `inlineDerefExtEnabled()` holds, the call is to the gc-leaf
+ * `__eco_get_tag_inline` marker, which the LLVM-IR backend later replaces
+ * with an inline test. Otherwise it is to the runtime's `eco_get_tag`.
+ */
 struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
-    /// The runtime declarations; must outlive the pattern.
+    // The runtime declarations; must outlive the pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; it keeps a reference to `runtime`.
+    // Creates the pattern; it keeps a reference to `runtime`.
     GetTagOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -169,26 +173,28 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 // eco.case -> cf.switch on constructor tag
 //===----------------------------------------------------------------------===//
 
-/// The pattern that turns an `eco.case` outside any `scf` region into
-/// `cf` blocks, in the four ways the file comment describes.
+/**
+ * The pattern that turns an `eco.case` outside any `scf` region into
+ * `cf` blocks, in the four ways the file comment describes.
+ */
 struct CaseOpLowering : public OpConversionPattern<CaseOp> {
-    /// The runtime declarations and the string-case ids; must outlive the
-    /// pattern.
+    // The runtime declarations and the string-case ids; must outlive the
+    // pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; it keeps a reference to `runtime`.
+    // Creates the pattern; it keeps a reference to `runtime`.
     CaseOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                    const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Replaces the Int case (`isIntCase`) or Char case `op` with a
-    /// `cf.switch` on the scrutinee's number, compared as 64 bits for Int and
-    /// 32 bits for Char against the case's tags.
-    ///
-    /// The scrutinee may be an unboxed `i64` or `i32`, or a boxed value, whose
-    /// number is read as the word after the header. A boxed scrutinee must
-    /// be a heap object, not an embedded constant. The last alternative is
-    /// the default.
+    // Replaces the Int case (`isIntCase`) or Char case `op` with a
+    // `cf.switch` on the scrutinee's number, compared as 64 bits for Int and
+    // 32 bits for Char against the case's tags.
+    //
+    // The scrutinee may be an unboxed `i64` or `i32`, or a boxed value, whose
+    // number is read as the word after the header. A boxed scrutinee must
+    // be a heap object, not an embedded constant. The last alternative is
+    // the default.
     LogicalResult
     lowerIntegerOrCharCase(CaseOp op, OpAdaptor adaptor,
                            ConversionPatternRewriter &rewriter,
@@ -401,16 +407,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         return success();
     }
 
-    /// Replaces the String case `op` with a chain of equality tests: pattern
-    /// i is compared with the scrutinee, and a match branches to alternative
-    /// i. A scrutinee matching no pattern takes the last alternative.
-    ///
-    /// The comparison is the `__eco_value_eq` marker or `Elm_Kernel_Utils_equal`, as
-    /// `valueEqStrCaseEnabled` decides. Each non-empty pattern is built as a
-    /// string from its global `__eco_str_case_<id>_<i>`; the empty pattern
-    /// is the embedded Empty constant. It is an error if `op` has no
-    /// `string_patterns`, and `preMaterializeStringCases` must have given
-    /// `op` an id (asserted).
+    // Replaces the String case `op` with a chain of equality tests: pattern
+    // i is compared with the scrutinee, and a match branches to alternative
+    // i. A scrutinee matching no pattern takes the last alternative.
+    //
+    // The comparison is the `__eco_value_eq` marker or `Elm_Kernel_Utils_equal`, as
+    // `valueEqStrCaseEnabled` decides. Each non-empty pattern is built as a
+    // string from its global `__eco_str_case_<id>_<i>`; the empty pattern
+    // is the embedded Empty constant. It is an error if `op` has no
+    // `string_patterns`, and `preMaterializeStringCases` must have given
+    // `op` an id (asserted).
     LogicalResult
     lowerStringCase(CaseOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const {
@@ -949,27 +955,27 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 // Joinpoint/Jump lowering with EcoCFContext
 //===----------------------------------------------------------------------===//
 
-/// Copies the operations of `sourceBlock` to the rewriter's insertion point,
-/// mapping values through `mapping`, which gains the copies' results.
-///
-/// An `eco.return` becomes a branch with no operands to `exitBlock`; an
-/// `eco.jump` is copied for `JumpOpLowering` to lower; a nested
-/// `eco.joinpoint` is lowered at once by `lowerNestedJoinpoint`. The
-/// joinpoints it meets are recorded in `cfCtx`. `targetBlock` and
-/// `isBodyRegion` are not used.
+// Copies the operations of `sourceBlock` to the rewriter's insertion point,
+// mapping values through `mapping`, which gains the copies' results.
+//
+// An `eco.return` becomes a branch with no operands to `exitBlock`; an
+// `eco.jump` is copied for `JumpOpLowering` to lower; a nested
+// `eco.joinpoint` is lowered at once by `lowerNestedJoinpoint`. The
+// joinpoints it meets are recorded in `cfCtx`. `targetBlock` and
+// `isBodyRegion` are not used.
 static void lowerJoinpointRegion(
     Block &sourceBlock, Block *targetBlock, Block *exitBlock,
     IRMapping &mapping, ConversionPatternRewriter &rewriter,
     const TypeConverter *typeConverter, EcoCFContext &cfCtx, bool isBodyRegion);
 
-/// Lowers `nestedJP`, met while copying an enclosing joinpoint's region, at
-/// the rewriter's insertion block: that block branches to a new continuation
-/// block, the body becomes a block taking the body's arguments, and an
-/// `eco.return` in either branches to a new exit block, where the insertion
-/// point is left. The body block is
-/// recorded in `cfCtx`. Values from the enclosing region are taken through
-/// `mapping`, which is not changed. `outerExitBlock` is not used, so an
-/// `eco.return` in the nested joinpoint branches to its own exit block.
+// Lowers `nestedJP`, met while copying an enclosing joinpoint's region, at
+// the rewriter's insertion block: that block branches to a new continuation
+// block, the body becomes a block taking the body's arguments, and an
+// `eco.return` in either branches to a new exit block, where the insertion
+// point is left. The body block is
+// recorded in `cfCtx`. Values from the enclosing region are taken through
+// `mapping`, which is not changed. `outerExitBlock` is not used, so an
+// `eco.return` in the nested joinpoint branches to its own exit block.
 static void lowerNestedJoinpoint(
     JoinpointOp nestedJP, Block *outerExitBlock,
     IRMapping &mapping, ConversionPatternRewriter &rewriter,
@@ -1047,20 +1053,22 @@ static void lowerJoinpointRegion(
     }
 }
 
-/// The pattern that turns `eco.joinpoint` into blocks: the operations after
-/// it move to an exit block, the continuation region is copied into a block
-/// the joinpoint's block branches to, and the body is copied into a block
-/// whose arguments are the body's arguments. An `eco.return` in either
-/// region becomes a branch with no operands to the exit block.
-///
-/// The body block is recorded in `cfCtx` under the enclosing function and the
-/// joinpoint id, before the regions are copied, so that `JumpOpLowering` can
-/// find it.
+/**
+ * The pattern that turns `eco.joinpoint` into blocks: the operations after
+ * it move to an exit block, the continuation region is copied into a block
+ * the joinpoint's block branches to, and the body is copied into a block
+ * whose arguments are the body's arguments. An `eco.return` in either
+ * region becomes a branch with no operands to the exit block.
+ *
+ * The body block is recorded in `cfCtx` under the enclosing function and the
+ * joinpoint id, before the regions are copied, so that `JumpOpLowering` can
+ * find it.
+ */
 struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
-    /// The joinpoint table; must outlive the pattern.
+    // The joinpoint table; must outlive the pattern.
     EcoCFContext &cfCtx;
 
-    /// Creates the pattern; it keeps a reference to `cfCtx`.
+    // Creates the pattern; it keeps a reference to `cfCtx`.
     JoinpointOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                         EcoCFContext &cfCtx)
         : OpConversionPattern(typeConverter, ctx), cfCtx(cfCtx) {}
@@ -1134,10 +1142,12 @@ struct JoinpointOpLowering : public OpConversionPattern<JoinpointOp> {
 // eco.yield
 //===----------------------------------------------------------------------===//
 
-/// The pattern that fails the conversion with an error on any `eco.yield` it
-/// is asked to convert. `CaseOpLowering` replaces the yields of the cases it
-/// lowers itself, so one reaching this pattern belongs to a case nothing
-/// lowered.
+/**
+ * The pattern that fails the conversion with an error on any `eco.yield` it
+ * is asked to convert. `CaseOpLowering` replaces the yields of the cases it
+ * lowers itself, so one reaching this pattern belongs to a case nothing
+ * lowered.
+ */
 struct YieldOpLowering : public OpConversionPattern<YieldOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -1150,15 +1160,17 @@ struct YieldOpLowering : public OpConversionPattern<YieldOp> {
     }
 };
 
-/// The pattern that turns `eco.jump` into a branch, with the jump's
-/// arguments, to the block recorded in `cfCtx` for its target joinpoint in
-/// the enclosing function. A jump to an id with no recorded block is an
-/// error.
+/**
+ * The pattern that turns `eco.jump` into a branch, with the jump's
+ * arguments, to the block recorded in `cfCtx` for its target joinpoint in
+ * the enclosing function. A jump to an id with no recorded block is an
+ * error.
+ */
 struct JumpOpLowering : public OpConversionPattern<JumpOp> {
-    /// The joinpoint table; must outlive the pattern.
+    // The joinpoint table; must outlive the pattern.
     EcoCFContext &cfCtx;
 
-    /// Creates the pattern; it keeps a reference to `cfCtx`.
+    // Creates the pattern; it keeps a reference to `cfCtx`.
     JumpOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                    EcoCFContext &cfCtx)
         : OpConversionPattern(typeConverter, ctx), cfCtx(cfCtx) {}

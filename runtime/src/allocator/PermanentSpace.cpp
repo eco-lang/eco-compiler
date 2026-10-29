@@ -29,9 +29,9 @@
 
 namespace Elm {
 
-/// The size of the permanent space's address reservation: 8 GiB, the most it can ever hold.
+// The size of the permanent space's address reservation: 8 GiB, the most it can ever hold.
 static constexpr std::size_t kPermanentReserve = 8ull << 30;
-/// How much of the reservation `allocate` commits at a time when it needs more: 16 MiB.
+// How much of the reservation `allocate` commits at a time when it needs more: 16 MiB.
 static constexpr std::size_t kPermanentCommitStep = 16ull << 20;
 
 PermanentSpace &PermanentSpace::instance() {

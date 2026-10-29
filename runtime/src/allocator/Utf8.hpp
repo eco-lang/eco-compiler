@@ -28,24 +28,26 @@
 namespace Elm {
 namespace Utf8 {
 
-/// What one `scan` learned about a range of bytes.
+/**
+ * What one `scan` learned about a range of bytes.
+ */
 struct ScanResult {
-    bool valid;      ///< The range is strictly valid UTF-8.
-    bool ascii;      ///< The range is valid and every byte is below 0x80. Always false when `valid` is false.
-    /// The length of the range in UTF-16 code units. When `valid` is false it
-    /// counts only the sequences before the first invalid one.
+    bool valid;      // The range is strictly valid UTF-8.
+    bool ascii;      // The range is valid and every byte is below 0x80. Always false when `valid` is false.
+    // The length of the range in UTF-16 code units. When `valid` is false it
+    // counts only the sequences before the first invalid one.
     u32  utf16Units;
 };
 
-/// Checks that the `len` bytes at `p` are strictly valid UTF-8, as the file
-/// comment defines it, and counts the UTF-16 code units they decode to.
-///
-/// A code point above 0xFFFF counts as two units, a surrogate pair; every
-/// other code point counts as one. A valid range is therefore all ASCII
-/// exactly when its unit count equals `len`, which is how `ascii` is decided.
-/// The scan stops at the first invalid sequence. An empty range is valid and
-/// ASCII, with no units. `p` must point to at least `len` readable bytes; it
-/// is not kept.
+// Checks that the `len` bytes at `p` are strictly valid UTF-8, as the file
+// comment defines it, and counts the UTF-16 code units they decode to.
+//
+// A code point above 0xFFFF counts as two units, a surrogate pair; every
+// other code point counts as one. A valid range is therefore all ASCII
+// exactly when its unit count equals `len`, which is how `ascii` is decided.
+// The scan stops at the first invalid sequence. An empty range is valid and
+// ASCII, with no units. `p` must point to at least `len` readable bytes; it
+// is not kept.
 inline ScanResult scan(const u8* p, size_t len) {
     u32 units = 0;
     size_t i = 0;
@@ -93,10 +95,10 @@ inline ScanResult scan(const u8* p, size_t len) {
     return {true, units == static_cast<u32>(len), units};
 }
 
-/// Returns whether every one of the `len` bytes at `p` is below 0x80.
-///
-/// Such a range is valid UTF-8 and its UTF-16 unit count is `len`, so this is
-/// a cheaper test than `scan` when only the all-ASCII case is wanted.
+// Returns whether every one of the `len` bytes at `p` is below 0x80.
+//
+// Such a range is valid UTF-8 and its UTF-16 unit count is `len`, so this is
+// a cheaper test than `scan` when only the all-ASCII case is wanted.
 inline bool allAscii(const u8* p, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         if (p[i] & 0x80) return false;
@@ -104,12 +106,12 @@ inline bool allAscii(const u8* p, size_t len) {
     return true;
 }
 
-/// Writes each of the `n` bytes at `src`, zero-extended, to the `n` UTF-16
-/// code units at `dst`.
-///
-/// The bytes must all be below 0x80, which nothing here checks; only then is
-/// each unit the character its byte encodes. `dst` must have room for `n`
-/// units.
+// Writes each of the `n` bytes at `src`, zero-extended, to the `n` UTF-16
+// code units at `dst`.
+//
+// The bytes must all be below 0x80, which nothing here checks; only then is
+// each unit the character its byte encodes. `dst` must have room for `n`
+// units.
 inline void widenAscii(const u8* src, size_t n, u16* dst) {
     for (size_t i = 0; i < n; ++i) {
         dst[i] = static_cast<u16>(src[i]);

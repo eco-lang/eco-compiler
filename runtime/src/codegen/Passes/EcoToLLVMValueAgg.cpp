@@ -47,8 +47,8 @@ namespace {
 // Helpers
 //===----------------------------------------------------------------------===//
 
-/// Builds a value of the LLVM struct type `structTy` whose field i is
-/// `elements[i]`.
+// Builds a value of the LLVM struct type `structTy` whose field i is
+// `elements[i]`.
 static Value buildStruct(ConversionPatternRewriter &rewriter, Location loc,
                          Type structTy, ValueRange elements) {
     Value agg = rewriter.create<LLVM::UndefOp>(loc, structTy);
@@ -59,12 +59,12 @@ static Value buildStruct(ConversionPatternRewriter &rewriter, Location loc,
     return agg;
 }
 
-/// Returns `val` as the i64 word a store function takes: a boxed value through
-/// `heapStoreValueToI64`, a narrower integer zero-extended, an f64 bitcast, and
-/// anything else unchanged.
-///
-/// `widenFieldToI64` in EcoToLLVMHeap.cpp is a separate copy of this function;
-/// the two must change together.
+// Returns `val` as the i64 word a store function takes: a boxed value through
+// `heapStoreValueToI64`, a narrower integer zero-extended, an f64 bitcast, and
+// anything else unchanged.
+//
+// `widenFieldToI64` in EcoToLLVMHeap.cpp is a separate copy of this function;
+// the two must change together.
 static Value widenFieldToI64Local(Value val, Location loc,
                                   ConversionPatternRewriter &rewriter) {
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
@@ -80,11 +80,11 @@ static Value widenFieldToI64Local(Value val, Location loc,
     return val;
 }
 
-/// Returns the slot kinds of `elements`, as `slotKindOf` gives them, packed 2
-/// bits each into one word with the first in the lowest bits.
-///
-/// Used for tuples, whose kinds fit one word; at most 32 elements are allowed,
-/// which is asserted. Records and customs use `packKinds` instead.
+// Returns the slot kinds of `elements`, as `slotKindOf` gives them, packed 2
+// bits each into one word with the first in the lowest bits.
+//
+// Used for tuples, whose kinds fit one word; at most 32 elements are allowed,
+// which is asserted. Records and customs use `packKinds` instead.
 static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     assert(elements.size() <= 32 && "kindBitmapFor: more kinds than one word");
     SmallVector<uint8_t> kinds;
@@ -93,7 +93,7 @@ static int64_t kindBitmapFor(ArrayRef<Type> elements) {
     return static_cast<int64_t>(kindsWord(kinds, 0, elements.size()));
 }
 
-/// Returns field `index` of the struct value `agg`, of LLVM type `fieldTy`.
+// Returns field `index` of the struct value `agg`, of LLVM type `fieldTy`.
 static Value extractField(ConversionPatternRewriter &rewriter, Location loc,
                           Value agg, int64_t index, Type fieldTy) {
     return rewriter.create<LLVM::ExtractValueOp>(
@@ -104,7 +104,9 @@ static Value extractField(ConversionPatternRewriter &rewriter, Location loc,
 // eco.make.* -> insertvalue chain
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.make.tuple2` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.tuple2` to a struct built from its operands, in order.
+ */
 struct Tuple2MakeOpLowering : public OpConversionPattern<Tuple2MakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -120,7 +122,9 @@ struct Tuple2MakeOpLowering : public OpConversionPattern<Tuple2MakeOp> {
     }
 };
 
-/// The lowering of `eco.make.tuple3` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.tuple3` to a struct built from its operands, in order.
+ */
 struct Tuple3MakeOpLowering : public OpConversionPattern<Tuple3MakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -136,7 +140,9 @@ struct Tuple3MakeOpLowering : public OpConversionPattern<Tuple3MakeOp> {
     }
 };
 
-/// The lowering of `eco.make.record` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.record` to a struct built from its operands, in order.
+ */
 struct RecordMakeOpLowering : public OpConversionPattern<RecordMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -152,7 +158,9 @@ struct RecordMakeOpLowering : public OpConversionPattern<RecordMakeOp> {
     }
 };
 
-/// The lowering of `eco.make.custom` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.custom` to a struct built from its operands, in order.
+ */
 struct CustomMakeOpLowering : public OpConversionPattern<CustomMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -168,7 +176,9 @@ struct CustomMakeOpLowering : public OpConversionPattern<CustomMakeOp> {
     }
 };
 
-/// The lowering of `eco.make.cons` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.cons` to a struct built from its operands, in order.
+ */
 struct ConsMakeOpLowering : public OpConversionPattern<ConsMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -184,7 +194,9 @@ struct ConsMakeOpLowering : public OpConversionPattern<ConsMakeOp> {
     }
 };
 
-/// The lowering of `eco.make.closure_env` to a struct built from its operands, in order.
+/**
+ * The lowering of `eco.make.closure_env` to a struct built from its operands, in order.
+ */
 struct ClosureEnvMakeOpLowering : public OpConversionPattern<ClosureEnvMakeOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -204,16 +216,18 @@ struct ClosureEnvMakeOpLowering : public OpConversionPattern<ClosureEnvMakeOp> {
 // eco.to_heap
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.to_heap`, which allocates the heap object for a tuple,
-/// record, custom or cons aggregate and stores its fields.
-///
-/// The object has the layout the corresponding `eco.construct.*` lowering in
-/// EcoToLLVMHeap.cpp writes. A closure environment operand is not handled and
-/// the match fails.
+/**
+ * The lowering of `eco.to_heap`, which allocates the heap object for a tuple,
+ * record, custom or cons aggregate and stores its fields.
+ *
+ * The object has the layout the corresponding `eco.construct.*` lowering in
+ * EcoToLLVMHeap.cpp writes. A closure environment operand is not handled and
+ * the match fails.
+ */
 struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     ToHeapOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -638,26 +652,28 @@ struct ToHeapOpLowering : public OpConversionPattern<ToHeapOp> {
 // eco.from_heap
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.from_heap`, which reads every field of a heap tuple,
-/// record, custom or cons object into the struct of its value aggregate type.
-///
-/// The object is read with the layout `eco.to_heap` writes. A closure
-/// environment result is not handled and the match fails.
+/**
+ * The lowering of `eco.from_heap`, which reads every field of a heap tuple,
+ * record, custom or cons object into the struct of its value aggregate type.
+ *
+ * The object is read with the layout `eco.to_heap` writes. A closure
+ * environment result is not handled and the match fails.
+ */
 struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     FromHeapOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Returns the field at `offsetBytes` in the object at `ptr`, as a value of
-    /// the LLVM type `elemTy`.
-    ///
-    /// `ptr` is either a `ptr addrspace(1)` or an address-space-0 pointer, and
-    /// the field address is in the same space. The 64-bit slot is loaded as i64,
-    /// then turned into a boxed value, bitcast to f64 or truncated to a narrower
-    /// integer; any other `elemTy` is loaded directly at that type.
+    // Returns the field at `offsetBytes` in the object at `ptr`, as a value of
+    // the LLVM type `elemTy`.
+    //
+    // `ptr` is either a `ptr addrspace(1)` or an address-space-0 pointer, and
+    // the field address is in the same space. The 64-bit slot is loaded as i64,
+    // then turned into a boxed value, bitcast to f64 or truncated to a narrower
+    // integer; any other `elemTy` is loaded directly at that type.
     Value loadFieldAt(ConversionPatternRewriter &rewriter, Location loc,
                       Value ptr, int64_t offsetBytes, Type elemTy) const {
         auto *ctx = rewriter.getContext();
@@ -762,21 +778,23 @@ struct FromHeapOpLowering : public OpConversionPattern<FromHeapOp> {
 // eco.make.closure
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.make.closure`, which allocates a Closure of the op's
-/// arity for the op's function and stores the captures of a closure
-/// environment into it.
-///
-/// The evaluator slot holds the descriptor emitted for the bare function (see
-/// `emitEvalDescAddrForFuncSymbol`), so the function must already take the
-/// closure calling convention; no wrapper is made. The parameter kinds in the
-/// packed word are the capture kinds, with the remaining parameters up to the
-/// arity boxed; kinds past the 20 that fit the packed word go in extension
-/// kind words after the arity slots. The result kind is the op's optional
-/// `_result_kind` attribute, boxed when absent.
+/**
+ * The lowering of `eco.make.closure`, which allocates a Closure of the op's
+ * arity for the op's function and stores the captures of a closure
+ * environment into it.
+ *
+ * The evaluator slot holds the descriptor emitted for the bare function (see
+ * `emitEvalDescAddrForFuncSymbol`), so the function must already take the
+ * closure calling convention; no wrapper is made. The parameter kinds in the
+ * packed word are the capture kinds, with the remaining parameters up to the
+ * arity boxed; kinds past the 20 that fit the packed word go in extension
+ * kind words after the arity slots. The result kind is the op's optional
+ * `_result_kind` attribute, boxed when absent.
+ */
 struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     MakeClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                           const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -908,16 +926,18 @@ struct MakeClosureOpLowering : public OpConversionPattern<MakeClosureOp> {
 // eco.project.closure on a closure environment
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.project.closure` whose operand is a closure
-/// environment, to an `extractvalue`.
-///
-/// It has benefit 2, so it is tried before the heap-closure lowering in
-/// EcoToLLVMClosures.cpp, and its match fails for an operand that did not
-/// convert to a struct, which leaves the op to that lowering.
+/**
+ * The lowering of `eco.project.closure` whose operand is a closure
+ * environment, to an `extractvalue`.
+ *
+ * It has benefit 2, so it is tried before the heap-closure lowering in
+ * EcoToLLVMClosures.cpp, and its match fails for an operand that did not
+ * convert to a struct, which leaves the op to that lowering.
+ */
 struct ProjectClosureFromEnvLowering
     : public OpConversionPattern<ProjectClosureOp> {
 
-    /// Creates the pattern.
+    // Creates the pattern.
     ProjectClosureFromEnvLowering(EcoTypeConverter &typeConverter,
                                   MLIRContext *ctx)
         : OpConversionPattern<ProjectClosureOp>(typeConverter, ctx,

@@ -1304,9 +1304,9 @@ endif()
 # can become false with nothing failing -- the symptom is a wrong fast-dispatch
 # stamp, i.e. a miscompile. Elm tests cannot read files, so the guard is a
 # build-tree check: sha256 every audited file, AND cross-check that the
-# manifest's (kernel, file) pairs are exactly the ones the rows declare (so a
-# new licensed row with no manifest entry fails loudly instead of going
-# unguarded forever).
+# kernels pinned in kernel-license-files.csv are exactly the licensed rows (so
+# a new licensed row with no pin fails loudly instead of going unguarded
+# forever), and that every row has an audit in kernel-license-audit.csv.
 #
 # It lives HERE, not in test/CMakeLists.txt where the script sits, because
 # test/ is added EXCLUDE_FROM_ALL -- a custom target defined there never joins
@@ -1314,28 +1314,29 @@ endif()
 # build` runs it, and therefore so do `check` and `full`. It costs
 # milliseconds.
 #
-# The DEPENDS list is read from the manifest at configure time, so touching an
-# audited kernel body re-runs the check without a reconfigure. Adding a NEW
+# The DEPENDS list is read from the files CSV at configure time, so touching
+# an audited kernel body re-runs the check without a reconfigure. Adding a NEW
 # licensed row does need a reconfigure to pin its file -- the coverage half of
 # the check is what catches that case.
 # ============================================================================
 set(KERNEL_LICENSE_MANIFEST
-        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-manifest.txt")
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-files.csv")
 set(KERNEL_LICENSE_CHECKER
         "${CMAKE_SOURCE_DIR}/test/scripts/check-kernel-license-manifest.sh")
 set(KERNEL_LICENSE_DEPS
         "${KERNEL_LICENSE_CHECKER}"
         "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/KernelSetFacts.elm"
+        "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/MonoSolver/kernel-license-audit.csv"
         # The intrinsic ANNOTATION table is the same species of claim about C++
         # (plans/kernel-intrinsic-annotations.md) and the checker harvests it
         # alongside the license table, so it is an input here too.
         "${CMAKE_SOURCE_DIR}/compiler/src/Compiler/Type/KernelIntrinsics.elm")
 if(EXISTS "${KERNEL_LICENSE_MANIFEST}")
     list(APPEND KERNEL_LICENSE_DEPS "${KERNEL_LICENSE_MANIFEST}")
-    file(STRINGS "${KERNEL_LICENSE_MANIFEST}" _license_lines REGEX "^[0-9a-f]+  [^ ]+  ")
+    file(STRINGS "${KERNEL_LICENSE_MANIFEST}" _license_lines REGEX "^[A-Za-z]+\\.[^,]+,[^,]+,")
     foreach(_line IN LISTS _license_lines)
-        # "<sha256>  <repo-relative path>  <Home.name>"
-        string(REGEX REPLACE "^[0-9a-f]+  ([^ ]+)  .*$" "\\1" _licensed_file "${_line}")
+        # "<kernel>,<repo-relative path>,<sha256>,<audited>"
+        string(REGEX REPLACE "^[^,]+,([^,]+),.*$" "\\1" _licensed_file "${_line}")
         # Guard, not decoration: file(STRINGS) splits lines at non-ASCII bytes,
         # so a stray fragment can match a hex-ish pattern and yield a path that
         # does not exist. Depending on it wedges the build graph with "missing

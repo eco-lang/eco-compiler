@@ -70,34 +70,34 @@ namespace StringOps {
 //
 // None of these accepts null: each reads the header of `obj`, which must be a String object.
 
-/// Returns whether `obj` is a flat UTF-16 form: a UTF-16 leaf or a large String. A UTF-8 leaf is
-/// not one.
+// Returns whether `obj` is a flat UTF-16 form: a UTF-16 leaf or a large String. A UTF-8 leaf is
+// not one.
 inline bool isLeaf(void* obj) {
     Tag t = alloc::getTag(obj);
     return t == Tag_String || t == Tag_LargeStringHeader;
 }
 
-/// Returns whether `obj` is a slice.
+// Returns whether `obj` is a slice.
 inline bool isSlice(void* obj) { return alloc::getTag(obj) == Tag_StringSlice; }
 
-/// Returns whether `obj` is a rope.
+// Returns whether `obj` is a rope.
 inline bool isRope(void* obj) { return alloc::getTag(obj) == Tag_StringRope; }
 
-/// Returns whether `obj` is a UTF-8 view.
+// Returns whether `obj` is a UTF-8 view.
 inline bool isUtf8View(void* obj) { return alloc::getTag(obj) == Tag_StringUtf8View; }
-/// Returns whether `obj` is a UTF-8 leaf.
+// Returns whether `obj` is a UTF-8 leaf.
 inline bool isUtf8Leaf(void* obj) { return alloc::getTag(obj) == Tag_StringUtf8Leaf; }
-/// Returns whether `obj` is either UTF-8 form, a leaf or a view.
+// Returns whether `obj` is either UTF-8 form, a leaf or a view.
 inline bool isUtf8(void* obj) {
     Tag t = alloc::getTag(obj);
     return t == Tag_StringUtf8View || t == Tag_StringUtf8Leaf;
 }
 
-/// Returns the ASCII bytes of the UTF-8 form `o` and their count, which is also its length.
-///
-/// `o` must be a UTF-8 form; anything else is read as a view. The pointer is valid until the next
-/// allocation, or, when a view's base is large Bytes, while that base is live. A view whose base
-/// is the null word gives null and 0.
+// Returns the ASCII bytes of the UTF-8 form `o` and their count, which is also its length.
+//
+// `o` must be a UTF-8 form; anything else is read as a view. The pointer is valid until the next
+// allocation, or, when a view's base is large Bytes, while that base is live. A view whose base
+// is the null word gives null and 0.
 inline std::pair<const u8*, u32> utf8Bytes(void* o) {
     Header* hdr = static_cast<Header*>(o);
     if (hdr->tag == Tag_StringUtf8Leaf) {
@@ -121,18 +121,18 @@ inline std::pair<const u8*, u32> utf8Bytes(void* o) {
     return {p + v->offset, v->byteLen};
 }
 
-/// Returns the length of `obj` in UTF-16 units, which every form keeps in `header.size`.
+// Returns the length of `obj` in UTF-16 units, which every form keeps in `header.size`.
 inline u32 rawLen(void* obj) { return static_cast<Header*>(obj)->size; }
 
-/// Returns the height of `obj` as a rope tree: a rope's stored height, and 0 for every other form.
+// Returns the height of `obj` as a rope tree: a rope's stored height, and 0 for every other form.
 inline u32 heightOf(void* obj) {
     Tag t = alloc::getTag(obj);
     if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->height;
     return 0;
 }
 
-/// Returns the number of flat pieces in `obj`: a rope's stored leaf count, and 1 for every other
-/// form.
+// Returns the number of flat pieces in `obj`: a rope's stored leaf count, and 1 for every other
+// form.
 inline u32 leafCountOf(void* obj) {
     Tag t = alloc::getTag(obj);
     if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->leafCount;
@@ -147,92 +147,94 @@ inline u32 leafCountOf(void* obj) {
 // Constructors of the forms, and flattening
 // ============================================================================
 
-/// Returns a new UTF-16 String holding the `len` units at `data`, or the Empty constant when `len`
-/// is 0. A GC point; as for `alloc::allocString`, `data` must not point into the collected heap.
+// Returns a new UTF-16 String holding the `len` units at `data`, or the Empty constant when `len`
+// is 0. A GC point; as for `alloc::allocString`, `data` must not point into the collected heap.
 HPointer makeLeafFromBuffer(const u16* data, u32 len);
 
-/// Returns a new slice of the `len` units of `base` starting at unit `offset`, or the Empty
-/// constant when `len` is 0.
-///
-/// `base` must be a UTF-16 leaf or a large String, and the run must lie inside it; nothing here
-/// checks either. `base` is kept alive across the allocation. A GC point.
+// Returns a new slice of the `len` units of `base` starting at unit `offset`, or the Empty
+// constant when `len` is 0.
+//
+// `base` must be a UTF-16 leaf or a large String, and the run must lie inside it; nothing here
+// checks either. `base` is kept alive across the allocation. A GC point.
 HPointer makeSlice(HPointer base, u32 offset, u32 len);
 
-/// Returns a new rope that is `left` followed by `right`, or one of them alone when the other is
-/// empty (the Empty constant, another embedded constant, or of length 0), or the Empty constant
-/// when both are.
-///
-/// The rope's height is one more than its taller child's, and its leaf count is the sum of its
-/// children's. Both arguments are kept alive across the allocation. A GC point.
+// Returns a new rope that is `left` followed by `right`, or one of them alone when the other is
+// empty (the Empty constant, another embedded constant, or of length 0), or the Empty constant
+// when both are.
+//
+// The rope's height is one more than its taller child's, and its leaf count is the sum of its
+// children's. Both arguments are kept alive across the allocation. A GC point.
 HPointer makeRope(HPointer left, HPointer right);
 
-/// Returns a new UTF-8 view of the `len` bytes of `base` starting at byte `byteOffset`, or the Empty
-/// constant when `len` is 0.
-///
-/// `base` must be a ByteBuffer, large Bytes or UTF-8 leaf, or a Bytes slice or UTF-8 view of one;
-/// a slice or view is replaced by its own base, with the offsets added, so a view's base is never
-/// itself a slice or view. The bytes must be ASCII and lie inside the base; nothing here checks
-/// either. `base` is kept alive across the allocation. A GC point.
+// Returns a new UTF-8 view of the `len` bytes of `base` starting at byte `byteOffset`, or the Empty
+// constant when `len` is 0.
+//
+// `base` must be a ByteBuffer, large Bytes or UTF-8 leaf, or a Bytes slice or UTF-8 view of one;
+// a slice or view is replaced by its own base, with the offsets added, so a view's base is never
+// itself a slice or view. The bytes must be ASCII and lie inside the base; nothing here checks
+// either. `base` is kept alive across the allocation. A GC point.
 HPointer makeUtf8View(HPointer base, u32 byteOffset, u32 len);
 
-/// Returns a new String holding a copy of the `len` bytes at `bytes`, or the Empty constant when
-/// `len` is 0.
-///
-/// The bytes must all be below 0x80; only `ECO_HEAP_VALIDATE` builds check it. The result is a
-/// UTF-8 leaf, except that it is a UTF-16 String when UTF-8 Strings are disabled or when the leaf
-/// would reach the large-object threshold, since there is no large UTF-8 form. `bytes` may point
-/// into the collected heap: it is copied before the allocation. A GC point.
+// Returns a new String holding a copy of the `len` bytes at `bytes`, or the Empty constant when
+// `len` is 0.
+//
+// The bytes must all be below 0x80; only `ECO_HEAP_VALIDATE` builds check it. The result is a
+// UTF-8 leaf, except that it is a UTF-16 String when UTF-8 Strings are disabled or when the leaf
+// would reach the large-object threshold, since there is no large UTF-8 form. `bytes` may point
+// into the collected heap: it is copied before the allocation. A GC point.
 HPointer makeUtf8LeafFromBytes(const u8* bytes, u32 len);
 
-/// A UTF-8 form allocated but not yet written: the means by which an operation that knows its
-/// result is ASCII produces it in a UTF-8 form.
-///
-/// `allocAsciiOut(len)` makes one; the caller writes exactly `len` bytes, all below 0x80, to `dst`,
-/// and passes it to `finishAsciiOut` for the String. `dst` is into a UTF-8 leaf when the leaf would
-/// be below the large-object threshold, and into the pinned body of new large Bytes otherwise. A
-/// leaf can move, so the caller must not allocate between the two calls. The caller must also check
-/// that UTF-8 Strings are enabled before making one, because nothing here does.
+/**
+ * A UTF-8 form allocated but not yet written: the means by which an operation that knows its
+ * result is ASCII produces it in a UTF-8 form.
+ *
+ * `allocAsciiOut(len)` makes one; the caller writes exactly `len` bytes, all below 0x80, to `dst`,
+ * and passes it to `finishAsciiOut` for the String. `dst` is into a UTF-8 leaf when the leaf would
+ * be below the large-object threshold, and into the pinned body of new large Bytes otherwise. A
+ * leaf can move, so the caller must not allocate between the two calls. The caller must also check
+ * that UTF-8 Strings are enabled before making one, because nothing here does.
+ */
 struct AsciiOut {
-    HPointer hp;    ///< The leaf, when `isLeaf`, or else the large Bytes the view will refer to.
-    u8* dst;        ///< Where the `len` bytes are written. Not owned.
+    HPointer hp;    // The leaf, when `isLeaf`, or else the large Bytes the view will refer to.
+    u8* dst;        // Where the `len` bytes are written. Not owned.
     u32 len;
-    bool isLeaf;    ///< True when `dst` is in a UTF-8 leaf; false when it is in large Bytes.
+    bool isLeaf;    // True when `dst` is in a UTF-8 leaf; false when it is in large Bytes.
 };
-/// Allocates an `AsciiOut` for `len` bytes. `len` must be more than 0, which is asserted, and at
-/// most 0xFFFFFFFF. A GC point.
+// Allocates an `AsciiOut` for `len` bytes. `len` must be more than 0, which is asserted, and at
+// most 0xFFFFFFFF. A GC point.
 AsciiOut allocAsciiOut(size_t len);
-/// Returns the String whose bytes were written to `out`: the leaf itself, or a new UTF-8 view of all
-/// the large Bytes, which allocates and is then a GC point. `out.dst` must not be used afterwards.
-/// Only `ECO_HEAP_VALIDATE` builds check that the bytes are below 0x80.
+// Returns the String whose bytes were written to `out`: the leaf itself, or a new UTF-8 view of all
+// the large Bytes, which allocates and is then a GC point. `out.dst` must not be used afterwards.
+// Only `ECO_HEAP_VALIDATE` builds check that the bytes are below 0x80.
 HPointer finishAsciiOut(const AsciiOut& out);
 
-/// Returns `s` as a flat UTF-16 String with the same units.
-///
-/// `s` itself is returned when it is a UTF-16 leaf, a large String or an embedded constant, and
-/// the Empty constant when it is of length 0. Any other form is copied into a new UTF-16 String,
-/// which is a large String when it reaches the large-object threshold. A GC point.
+// Returns `s` as a flat UTF-16 String with the same units.
+//
+// `s` itself is returned when it is a UTF-16 leaf, a large String or an embedded constant, and
+// the Empty constant when it is of length 0. Any other form is copied into a new UTF-16 String,
+// which is a large String when it reaches the large-object threshold. A GC point.
 HPointer flattenToLeaf(HPointer s);
 
-/// Returns `s` in a form an operation needing random access can index directly, unless it is too
-/// long to copy.
-///
-/// A UTF-16 leaf, a large String or an embedded constant is returned as it is. A UTF-8 form is
-/// always copied into a UTF-16 String, as `flattenToLeaf` does. A slice or rope is copied when its
-/// length is at most `string_flatten_limit`, and otherwise returned as it is, so the caller must
-/// still handle a slice or rope. A GC point.
+// Returns `s` in a form an operation needing random access can index directly, unless it is too
+// long to copy.
+//
+// A UTF-16 leaf, a large String or an embedded constant is returned as it is. A UTF-8 form is
+// always copied into a UTF-16 String, as `flattenToLeaf` does. A slice or rope is copied when its
+// length is at most `string_flatten_limit`, and otherwise returned as it is, so the caller must
+// still handle a slice or rope. A GC point.
 HPointer ensureFlat(HPointer s);
 
 // ============================================================================
 // Length and Character Access
 // ============================================================================
 
-/// Returns the length of `str` in UTF-16 units, as Elm's `String.length` counts it; 0 for null.
+// Returns the length of `str` in UTF-16 units, as Elm's `String.length` counts it; 0 for null.
 inline i64 length(void* str) {
     if (!str) return 0;
     return static_cast<i64>(rawLen(str));
 }
 
-/// Returns whether `ptr` is the Empty constant, which is how the empty String is held.
+// Returns whether `ptr` is the Empty constant, which is how the empty String is held.
 inline bool isEmpty(HPointer ptr) {
     return alloc::isConstant(ptr) && Elm::alloc::isEmptyString(ptr);
 }
@@ -249,15 +251,15 @@ inline std::u16string toStdU16String(void* str);
 // form, or one such piece of a rope. Visiting the segments in order reads a String of any form
 // without copying it.
 
-/// Calls `u16cb(p, n)` for each UTF-16 segment of `str` and `u8cb(p, n)` for each UTF-8 segment, in
-/// order, skipping empty ones; for null it calls neither.
-///
-/// The pointers are into the Strings themselves, valid until the next allocation (or while the
-/// String is live, for a large String's body), so a callback may keep them while no allocation
-/// happens. A callback must not allocate while the walk is in progress, since the rest of the walk
-/// reads `str` through raw pointers. A rope is walked with an explicit stack in a `std::vector`, so
-/// a deep rope uses no recursion; that vector is the walk's only allocation, and it is in C++
-/// memory, not the Elm heap.
+// Calls `u16cb(p, n)` for each UTF-16 segment of `str` and `u8cb(p, n)` for each UTF-8 segment, in
+// order, skipping empty ones; for null it calls neither.
+//
+// The pointers are into the Strings themselves, valid until the next allocation (or while the
+// String is live, for a large String's body), so a callback may keep them while no allocation
+// happens. A callback must not allocate while the walk is in progress, since the rest of the walk
+// reads `str` through raw pointers. A rope is walked with an explicit stack in a `std::vector`, so
+// a deep rope uses no recursion; that vector is the walk's only allocation, and it is in C++
+// memory, not the Elm heap.
 template <class F16, class F8>
 inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     if (!str) return;
@@ -329,12 +331,12 @@ inline void forEachSegmentEx(void* str, F16&& u16cb, F8&& u8cb) {
     }
 }
 
-/// Calls `cb(p, n)` with the UTF-16 units of `str`, in order, as `forEachSegmentEx` does, but with
-/// each UTF-8 segment widened to UTF-16 in pieces of at most 512 units.
-///
-/// For a widened piece, `p` points into a buffer on this function's stack and is valid only during
-/// that call of `cb`. A caller that keeps segment pointers must use `forEachSegmentEx`. `cb` must
-/// not allocate.
+// Calls `cb(p, n)` with the UTF-16 units of `str`, in order, as `forEachSegmentEx` does, but with
+// each UTF-8 segment widened to UTF-16 in pieces of at most 512 units.
+//
+// For a widened piece, `p` points into a buffer on this function's stack and is valid only during
+// that call of `cb`. A caller that keeps segment pointers must use `forEachSegmentEx`. `cb` must
+// not allocate.
 template <class F>
 inline void forEachSegment(void* str, F&& cb) {
     forEachSegmentEx(
@@ -353,8 +355,8 @@ inline void forEachSegment(void* str, F&& cb) {
         });
 }
 
-/// Writes the UTF-16 units of `str` to `dst`, which must have room for `rawLen(str)` of them.
-/// Writes nothing for null. Does not allocate on the Elm heap.
+// Writes the UTF-16 units of `str` to `dst`, which must have room for `rawLen(str)` of them.
+// Writes nothing for null. Does not allocate on the Elm heap.
 inline void copyInto(void* str, u16* dst) {
     forEachSegment(str, [&](const u16* p, u32 n) {
         std::memcpy(dst, p, n * sizeof(u16));
@@ -362,11 +364,11 @@ inline void copyInto(void* str, u16* dst) {
     });
 }
 
-/// Returns the UTF-16 unit at index `index` of `str`, or 0 when `str` is null or `index` is out of
-/// range.
-///
-/// A rope is descended by comparing `index` with its left child's length, without recursion, so the
-/// cost grows with the rope's depth. Does not allocate.
+// Returns the UTF-16 unit at index `index` of `str`, or 0 when `str` is null or `index` is out of
+// range.
+//
+// A rope is descended by comparing `index` with its left child's length, without recursion, so the
+// cost grows with the rope's depth. Does not allocate.
 inline u16 charAt(void* str, i64 index) {
     if (!str) return 0;
     auto& allocator = Allocator::instance();
@@ -419,18 +421,18 @@ inline u16 charAt(void* str, i64 index) {
 // high-then-low surrogate pair. A lone surrogate decodes to its own unit value and encodes back to
 // that one unit, so decoding a String and encoding the Chars again gives the same units.
 
-/// Returns whether the UTF-16 unit `u` is a high (leading) surrogate.
+// Returns whether the UTF-16 unit `u` is a high (leading) surrogate.
 inline bool isHighSurrogate(u32 u) { return u >= 0xD800u && u <= 0xDBFFu; }
-/// Returns whether the UTF-16 unit `u` is a low (trailing) surrogate.
+// Returns whether the UTF-16 unit `u` is a low (trailing) surrogate.
 inline bool isLowSurrogate(u32 u) { return u >= 0xDC00u && u <= 0xDFFFu; }
 
-/// Returns the code point that the surrogate pair `hi`, `lo` encodes. Neither is checked.
+// Returns the code point that the surrogate pair `hi`, `lo` encodes. Neither is checked.
 inline u32 combineSurrogates(u32 hi, u32 lo) {
     return 0x10000u + ((hi - 0xD800u) << 10) + (lo - 0xDC00u);
 }
 
-/// Returns the code point that starts at `p[i]` and advances `i` past it, by 2 for a valid
-/// surrogate pair and by 1 otherwise. `i` must be less than `len`.
+// Returns the code point that starts at `p[i]` and advances `i` past it, by 2 for a valid
+// surrogate pair and by 1 otherwise. `i` must be less than `len`.
 inline u32 nextCodePoint(const u16* p, size_t len, size_t& i) {
     u32 u = p[i++];
     if (isHighSurrogate(u) && i < len && isLowSurrogate(p[i])) {
@@ -439,11 +441,11 @@ inline u32 nextCodePoint(const u16* p, size_t len, size_t& i) {
     return u;
 }
 
-/// Returns the code point that ends just before `p[i]` and moves `i` back to its first unit. `i`
-/// must be more than 0.
-///
-/// A low surrogate combines only with a high surrogate before it, so stepping back from the end
-/// gives the code points that `nextCodePoint` gives from the start, in reverse.
+// Returns the code point that ends just before `p[i]` and moves `i` back to its first unit. `i`
+// must be more than 0.
+//
+// A low surrogate combines only with a high surrogate before it, so stepping back from the end
+// gives the code points that `nextCodePoint` gives from the start, in reverse.
 inline u32 prevCodePoint(const u16* p, size_t& i) {
     u32 u = p[--i];
     if (isLowSurrogate(u) && i > 0 && isHighSurrogate(p[i - 1])) {
@@ -452,23 +454,23 @@ inline u32 prevCodePoint(const u16* p, size_t& i) {
     return u;
 }
 
-/// Returns how many UTF-16 units `encodeCodePoint` writes for the Char value `cp`, from 1 to
-/// `CharValue::kMaxCharUnits`.
+// Returns how many UTF-16 units `encodeCodePoint` writes for the Char value `cp`, from 1 to
+// `CharValue::kMaxCharUnits`.
 inline u32 codePointUnits(u32 cp) { return CaseMap::units(cp); }
 
-/// Writes the Char value `cp` to `out` as UTF-16 units and returns how many it wrote, as
-/// `CaseMap::writeUnits` does. `out` must have room for `CharValue::kMaxCharUnits` units.
+// Writes the Char value `cp` to `out` as UTF-16 units and returns how many it wrote, as
+// `CaseMap::writeUnits` does. `out` must have room for `CharValue::kMaxCharUnits` units.
 inline u32 encodeCodePoint(u32 cp, u16* out) { return CaseMap::writeUnits(cp, out); }
 
-/// Appends the UTF-16 units of the Char value `cp` to `out`.
+// Appends the UTF-16 units of the Char value `cp` to `out`.
 inline void appendCodePoint(std::vector<u16>& out, u32 cp) {
     u16 buf[CharValue::kMaxCharUnits];
     u32 n = encodeCodePoint(cp, buf);
     out.insert(out.end(), buf, buf + n);
 }
 
-/// Returns the code point that starts at unit `i` of `str`, whose length is `len`, and advances `i`
-/// as `nextCodePoint` does. Reads through `charAt`, so works on any form without allocating.
+// Returns the code point that starts at unit `i` of `str`, whose length is `len`, and advances `i`
+// as `nextCodePoint` does. Reads through `charAt`, so works on any form without allocating.
 inline u32 codePointAt(void* str, size_t len, size_t& i) {
     u32 u = charAt(str, static_cast<i64>(i++));
     if (isHighSurrogate(u) && i < len) {
@@ -482,13 +484,13 @@ inline u32 codePointAt(void* str, size_t len, size_t& i) {
 // Concatenation
 // ============================================================================
 
-/// Returns `a` followed by `b`.
-///
-/// When either is null or empty, the other is returned as it is. When the total length is at most
-/// `string_flatten_limit` the result is a new copy: a UTF-8 form when UTF-8 Strings are enabled and
-/// either both are UTF-8 forms or the units are all ASCII, and a UTF-16 String otherwise.
-/// Above that length the result is a rope sharing `a` and `b`, built without copying either. A GC
-/// point.
+// Returns `a` followed by `b`.
+//
+// When either is null or empty, the other is returned as it is. When the total length is at most
+// `string_flatten_limit` the result is a new copy: a UTF-8 form when UTF-8 Strings are enabled and
+// either both are UTF-8 forms or the units are all ASCII, and a UTF-16 String otherwise.
+// Above that length the result is a rope sharing `a` and `b`, built without copying either. A GC
+// point.
 inline HPointer append(void* a, void* b) {
     if (!a && !b) return alloc::emptyString();
     if (!a) return Allocator::instance().wrap(b);
@@ -547,54 +549,54 @@ inline HPointer append(void* a, void* b) {
     return makeRope(aHp, bHp);
 }
 
-/// Returns the Strings of the Elm list `stringList` joined in order.
-///
-/// The result is the Empty constant when the total length is 0. Up to `string_flatten_limit` it is
-/// a new copy: a UTF-8 form when UTF-8 Strings are enabled and either every non-empty element is
-/// one or the copied units are all ASCII, and a UTF-16 String otherwise. Above that length it
-/// shares the non-empty elements, as a balanced tree of ropes or, when there is only one, that
-/// element itself. A GC point.
+// Returns the Strings of the Elm list `stringList` joined in order.
+//
+// The result is the Empty constant when the total length is 0. Up to `string_flatten_limit` it is
+// a new copy: a UTF-8 form when UTF-8 Strings are enabled and either every non-empty element is
+// one or the copied units are all ASCII, and a UTF-16 String otherwise. Above that length it
+// shares the non-empty elements, as a balanced tree of ropes or, when there is only one, that
+// element itself. A GC point.
 HPointer concat(HPointer stringList);
 
-/// Returns the Strings of the Elm list `stringList` joined in order, with `sep` between each two
-/// of them, empty ones included. Null `sep` is the empty String.
-///
-/// The result is the Empty constant for an empty list or a total length of 0. Otherwise it is
-/// formed as `concat`'s is, except that the UTF-8 copy also needs `sep` to be empty or a UTF-8
-/// form. A GC point.
+// Returns the Strings of the Elm list `stringList` joined in order, with `sep` between each two
+// of them, empty ones included. Null `sep` is the empty String.
+//
+// The result is the Empty constant for an empty list or a total length of 0. Otherwise it is
+// formed as `concat`'s is, except that the UTF-8 copy also needs `sep` to be empty or a UTF-8
+// form. A GC point.
 HPointer join(void* sep, HPointer stringList);
 
 // ============================================================================
 // Slicing
 // ============================================================================
 
-/// Returns the units of `str` from index `start` up to but not including `end`, as Elm's
-/// `String.slice` does: a negative index counts from the end, and both are then clamped to the
-/// String.
-///
-/// An empty range gives the Empty constant, and the whole String gives `str` itself. A range of at
-/// most `string_tiny_slice_limit` units is copied into a new String. That is a UTF-8 leaf when the
-/// source is a UTF-8 form, or when the source is not a rope, UTF-8 Strings are enabled and the range
-/// is at most 512 units, all ASCII; otherwise it is a UTF-16 String. A longer range shares the
-/// source: it is a UTF-8 view of a UTF-8 form, a slice of a flat form or of a slice's base, and,
-/// for a rope, the slice of the child that holds the range, or a new rope joining the slices of
-/// both children when the range spans them. A GC point.
-///
-/// Known defect: a tiny range that becomes a UTF-16 String (non-ASCII, over 512 units, or UTF-8
-/// Strings disabled), taken from a UTF-16 leaf or a slice of one, is read from the source after the
-/// new String's allocation; if that allocation collects, the result may hold stale units. Rooting
-/// `str` does not prevent this.
+// Returns the units of `str` from index `start` up to but not including `end`, as Elm's
+// `String.slice` does: a negative index counts from the end, and both are then clamped to the
+// String.
+//
+// An empty range gives the Empty constant, and the whole String gives `str` itself. A range of at
+// most `string_tiny_slice_limit` units is copied into a new String. That is a UTF-8 leaf when the
+// source is a UTF-8 form, or when the source is not a rope, UTF-8 Strings are enabled and the range
+// is at most 512 units, all ASCII; otherwise it is a UTF-16 String. A longer range shares the
+// source: it is a UTF-8 view of a UTF-8 form, a slice of a flat form or of a slice's base, and,
+// for a rope, the slice of the child that holds the range, or a new rope joining the slices of
+// both children when the range spans them. A GC point.
+//
+// Known defect: a tiny range that becomes a UTF-16 String (non-ASCII, over 512 units, or UTF-8
+// Strings disabled), taken from a UTF-16 leaf or a slice of one, is read from the source after the
+// new String's allocation; if that allocation collects, the result may hold stale units. Rooting
+// `str` does not prevent this.
 HPointer slice(void* str, i64 start, i64 end);
 
-/// Returns the first `n` units of `str`, or the Empty constant when `n` is not positive. Formed as
-/// by `slice`.
+// Returns the first `n` units of `str`, or the Empty constant when `n` is not positive. Formed as
+// by `slice`.
 inline HPointer left(void* str, i64 n) {
     if (n <= 0) return alloc::emptyString();
     return slice(str, 0, n);
 }
 
-/// Returns the last `n` units of `str`, or the Empty constant when `n` is not positive. Formed as
-/// by `slice`.
+// Returns the last `n` units of `str`, or the Empty constant when `n` is not positive. Formed as
+// by `slice`.
 inline HPointer right(void* str, i64 n) {
     if (n <= 0) return alloc::emptyString();
     if (!str) return alloc::emptyString();
@@ -602,8 +604,8 @@ inline HPointer right(void* str, i64 n) {
     return slice(str, len - n, len);
 }
 
-/// Returns `str` without its first `n` units, formed as by `slice`. When `n` is not positive it
-/// returns `str` itself, so `str` must not then be null.
+// Returns `str` without its first `n` units, formed as by `slice`. When `n` is not positive it
+// returns `str` itself, so `str` must not then be null.
 inline HPointer dropLeft(void* str, i64 n) {
     if (n <= 0) return Allocator::instance().wrap(str);
     if (!str) return alloc::emptyString();
@@ -611,8 +613,8 @@ inline HPointer dropLeft(void* str, i64 n) {
     return slice(str, n, len);
 }
 
-/// Returns `str` without its last `n` units, formed as by `slice`. When `n` is not positive it
-/// returns `str` itself, so `str` must not then be null.
+// Returns `str` without its last `n` units, formed as by `slice`. When `n` is not positive it
+// returns `str` itself, so `str` must not then be null.
 inline HPointer dropRight(void* str, i64 n) {
     if (n <= 0) return Allocator::instance().wrap(str);
     if (!str) return alloc::emptyString();
@@ -624,12 +626,12 @@ inline HPointer dropRight(void* str, i64 n) {
 // Searching
 // ============================================================================
 
-/// Returns the UTF-16 units of `str` and their count when they lie contiguously in memory, which is
-/// when `str` is a UTF-16 leaf, a large String or a slice; otherwise null and 0, as for null, a
-/// rope or a UTF-8 form.
-///
-/// The pointer is valid until the next allocation, or, into a large String's body, while that
-/// String is live.
+// Returns the UTF-16 units of `str` and their count when they lie contiguously in memory, which is
+// when `str` is a UTF-16 leaf, a large String or a slice; otherwise null and 0, as for null, a
+// rope or a UTF-8 form.
+//
+// The pointer is valid until the next allocation, or, into a large String's body, while that
+// String is live.
 inline std::pair<const u16*, u32> singleSegmentView(void* str) {
     if (!str) return {nullptr, 0};
     Header* hdr = static_cast<Header*>(str);
@@ -650,8 +652,8 @@ inline std::pair<const u16*, u32> singleSegmentView(void* str) {
     return {nullptr, 0};
 }
 
-/// Returns whether the units of `needle` occur in `haystack`. A null `needle` occurs in anything, and
-/// a non-null one in no null `haystack`. Does not allocate on the Elm heap.
+// Returns whether the units of `needle` occur in `haystack`. A null `needle` occurs in anything, and
+// a non-null one in no null `haystack`. Does not allocate on the Elm heap.
 inline bool contains(void* needle, void* haystack) {
     if (!needle) return true;
     if (!haystack) return false;
@@ -687,8 +689,8 @@ inline bool contains(void* needle, void* haystack) {
     return false;
 }
 
-/// Returns whether the units of `str` begin with those of `prefix`. A null `prefix` begins anything,
-/// and a non-null one no null `str`. Does not allocate on the Elm heap.
+// Returns whether the units of `str` begin with those of `prefix`. A null `prefix` begins anything,
+// and a non-null one no null `str`. Does not allocate on the Elm heap.
 inline bool startsWith(void* prefix, void* str) {
     if (!prefix) return true;
     if (!str) return false;
@@ -716,8 +718,8 @@ inline bool startsWith(void* prefix, void* str) {
     return true;
 }
 
-/// Returns whether the units of `str` end with those of `suffix`. A null `suffix` ends anything, and
-/// a non-null one no null `str`. Does not allocate on the Elm heap.
+// Returns whether the units of `str` end with those of `suffix`. A null `suffix` ends anything, and
+// a non-null one no null `str`. Does not allocate on the Elm heap.
 inline bool endsWith(void* suffix, void* str) {
     if (!suffix) return true;
     if (!str) return false;
@@ -748,25 +750,25 @@ inline bool endsWith(void* suffix, void* str) {
     return true;
 }
 
-/// Returns an Elm list of every unit index at which `needle` occurs in `haystack`, in increasing
-/// order, overlapping occurrences included.
-///
-/// A null `haystack` gives the empty list. An empty or null `needle` gives every index from 0 to
-/// the length of `haystack` inclusive. A GC point.
+// Returns an Elm list of every unit index at which `needle` occurs in `haystack`, in increasing
+// order, overlapping occurrences included.
+//
+// A null `haystack` gives the empty list. An empty or null `needle` gives every index from 0 to
+// the length of `haystack` inclusive. A GC point.
 HPointer indexes(void* needle, void* haystack);
 
 // ============================================================================
 // Transformation
 // ============================================================================
 
-/// Returns `str` with each code point mapped by `CaseMap::upper`, when `upper`, or else by
-/// `CaseMap::lower`, writing each mapped value's whole expansion, so the length may change.
-///
-/// When lowering, a capital sigma (U+03A3) becomes the final form U+03C2 where
-/// `CaseMap::finalSigmaAt` says it ends a word, and U+03C3 elsewhere. The result is a UTF-8 form
-/// when it is all ASCII and UTF-8 Strings are enabled, and a UTF-16 String otherwise. `str` is
-/// copied into C++ memory first, so it need not stay valid. `str` must be non-null and non-empty.
-/// A GC point.
+// Returns `str` with each code point mapped by `CaseMap::upper`, when `upper`, or else by
+// `CaseMap::lower`, writing each mapped value's whole expansion, so the length may change.
+//
+// When lowering, a capital sigma (U+03A3) becomes the final form U+03C2 where
+// `CaseMap::finalSigmaAt` says it ends a word, and U+03C3 elsewhere. The result is a UTF-8 form
+// when it is all ASCII and UTF-8 Strings are enabled, and a UTF-16 String otherwise. `str` is
+// copied into C++ memory first, so it need not stay valid. `str` must be non-null and non-empty.
+// A GC point.
 inline HPointer caseMapGeneral(void* str, bool upper) {
     std::u16string src = toStdU16String(str);
     const u16* p = reinterpret_cast<const u16*>(src.data());
@@ -795,8 +797,8 @@ inline HPointer caseMapGeneral(void* str, bool upper) {
     return alloc::allocString(out.data(), out.size());
 }
 
-/// Returns whether every UTF-16 unit of `str` is below 0x80; true for null. A UTF-8 segment is
-/// taken to be ASCII without being read. Does not allocate on the Elm heap.
+// Returns whether every UTF-16 unit of `str` is below 0x80; true for null. A UTF-8 segment is
+// taken to be ASCII without being read. Does not allocate on the Elm heap.
 inline bool allUnitsAscii(void* str) {
     bool ascii = true;
     forEachSegmentEx(
@@ -808,12 +810,12 @@ inline bool allUnitsAscii(void* str) {
     return ascii;
 }
 
-/// Returns `str` in upper case, as `caseMapGeneral` maps it, or the Empty constant for null or
-/// empty `str`.
-///
-/// An all-ASCII String needs only `a` to `z` changed: from a UTF-8 form, with UTF-8 Strings
-/// enabled, the result is a UTF-8 form, and otherwise a UTF-16 String of the same length. A String
-/// with any other unit goes through `caseMapGeneral`. A GC point.
+// Returns `str` in upper case, as `caseMapGeneral` maps it, or the Empty constant for null or
+// empty `str`.
+//
+// An all-ASCII String needs only `a` to `z` changed: from a UTF-8 form, with UTF-8 Strings
+// enabled, the result is a UTF-8 form, and otherwise a UTF-16 String of the same length. A String
+// with any other unit goes through `caseMapGeneral`. A GC point.
 inline HPointer toUpper(void* str) {
     if (!str) return alloc::emptyString();
     u32 len = rawLen(str);
@@ -850,13 +852,13 @@ inline HPointer toUpper(void* str) {
     return out.hp;
 }
 
-/// Returns `str` in lower case, as `caseMapGeneral` maps it, or the Empty constant for null or
-/// empty `str`.
-///
-/// An all-ASCII String needs only `A` to `Z` changed: from a UTF-8 form, with UTF-8 Strings
-/// enabled, the result is a UTF-8 form, and otherwise a UTF-16 String of the same length. A String
-/// with any other unit goes through `caseMapGeneral`, which treats a word-final capital sigma
-/// specially. A GC point.
+// Returns `str` in lower case, as `caseMapGeneral` maps it, or the Empty constant for null or
+// empty `str`.
+//
+// An all-ASCII String needs only `A` to `Z` changed: from a UTF-8 form, with UTF-8 Strings
+// enabled, the result is a UTF-8 form, and otherwise a UTF-16 String of the same length. A String
+// with any other unit goes through `caseMapGeneral`, which treats a word-final capital sigma
+// specially. A GC point.
 inline HPointer toLower(void* str) {
     if (!str) return alloc::emptyString();
     u32 len = rawLen(str);
@@ -893,11 +895,11 @@ inline HPointer toLower(void* str) {
     return out.hp;
 }
 
-/// Returns the code points of `str` in reverse order, or the Empty constant for null or empty `str`.
-///
-/// A valid surrogate pair stays in order as one code point; a lone surrogate is moved as a unit. A
-/// flat UTF-16 String of length 1 is returned as it is. From a UTF-8 form, with UTF-8 Strings
-/// enabled, the result is a UTF-8 form; otherwise it is a new UTF-16 String. A GC point.
+// Returns the code points of `str` in reverse order, or the Empty constant for null or empty `str`.
+//
+// A valid surrogate pair stays in order as one code point; a lone surrogate is moved as a unit. A
+// flat UTF-16 String of length 1 is returned as it is. From a UTF-8 form, with UTF-8 Strings
+// enabled, the result is a UTF-8 form; otherwise it is a new UTF-16 String. A GC point.
 inline HPointer reverse(void* str) {
     if (!str) return alloc::emptyString();
     u32 len = rawLen(str);
@@ -941,11 +943,11 @@ inline HPointer reverse(void* str) {
     return out.hp;
 }
 
-/// Returns `str` without the whitespace at either end, where whitespace is only space, tab, line
-/// feed and carriage return.
-///
-/// The result is `str` itself when there is none to remove, the Empty constant when nothing else
-/// remains or `str` is null, and otherwise what `slice` gives for the rest. A GC point.
+// Returns `str` without the whitespace at either end, where whitespace is only space, tab, line
+// feed and carriage return.
+//
+// The result is `str` itself when there is none to remove, the Empty constant when nothing else
+// remains or `str` is null, and otherwise what `slice` gives for the rest. A GC point.
 inline HPointer trim(void* str) {
     if (!str) return alloc::emptyString();
     if (isUtf8(str))
@@ -970,7 +972,7 @@ inline HPointer trim(void* str) {
     return slice(str, static_cast<i64>(start), static_cast<i64>(end));
 }
 
-/// Returns `str` without the whitespace at its start, as `trim` defines and forms it.
+// Returns `str` without the whitespace at its start, as `trim` defines and forms it.
 inline HPointer trimLeft(void* str) {
     if (!str) return alloc::emptyString();
     if (isUtf8(str))
@@ -990,7 +992,7 @@ inline HPointer trimLeft(void* str) {
     return slice(str, static_cast<i64>(start), static_cast<i64>(len));
 }
 
-/// Returns `str` without the whitespace at its end, as `trim` defines and forms it.
+// Returns `str` without the whitespace at its end, as `trim` defines and forms it.
 inline HPointer trimRight(void* str) {
     if (!str) return alloc::emptyString();
     if (isUtf8(str))
@@ -1010,11 +1012,11 @@ inline HPointer trimRight(void* str) {
     return slice(str, 0, static_cast<i64>(end));
 }
 
-/// Returns `n` copies of `str` joined, or the Empty constant when `n` is not positive or `str` is
-/// null or empty.
-///
-/// The result is always a new copy: a UTF-8 form from a UTF-8 form, with UTF-8 Strings enabled, and
-/// a UTF-16 String otherwise. Nothing checks that the total length fits in 32 bits. A GC point.
+// Returns `n` copies of `str` joined, or the Empty constant when `n` is not positive or `str` is
+// null or empty.
+//
+// The result is always a new copy: a UTF-8 form from a UTF-8 form, with UTF-8 Strings enabled, and
+// a UTF-16 String otherwise. Nothing checks that the total length fits in 32 bits. A GC point.
 inline HPointer repeat(void* str, i64 n) {
     if (n <= 0 || !str) return alloc::emptyString();
 
@@ -1051,12 +1053,12 @@ inline HPointer repeat(void* str, i64 n) {
     return out.hp;
 }
 
-/// Returns `str` with copies of the unit `padChar` before it, enough to make it `n` units long.
-///
-/// `str` is returned as it is when it is already at least `n` units long, and when `n` is not
-/// positive (the Empty constant, for null `str`). A null `str` gives `n` pad units. A new result
-/// is a UTF-8 form when `padChar` is below 0x80, UTF-8 Strings are enabled, and `str` is null or a
-/// UTF-8 form; otherwise it is a UTF-16 String. A GC point.
+// Returns `str` with copies of the unit `padChar` before it, enough to make it `n` units long.
+//
+// `str` is returned as it is when it is already at least `n` units long, and when `n` is not
+// positive (the Empty constant, for null `str`). A null `str` gives `n` pad units. A new result
+// is a UTF-8 form when `padChar` is below 0x80, UTF-8 Strings are enabled, and `str` is null or a
+// UTF-8 form; otherwise it is a UTF-16 String. A GC point.
 inline HPointer padLeft(void* str, i64 n, u16 padChar) {
     if (n <= 0) {
         return str ? Allocator::instance().wrap(str) : alloc::emptyString();
@@ -1100,8 +1102,8 @@ inline HPointer padLeft(void* str, i64 n, u16 padChar) {
     return out.hp;
 }
 
-/// Returns `str` with copies of the unit `padChar` after it, enough to make it `n` units long,
-/// in the cases and forms `padLeft` describes.
+// Returns `str` with copies of the unit `padChar` after it, enough to make it `n` units long,
+// in the cases and forms `padLeft` describes.
 inline HPointer padRight(void* str, i64 n, u16 padChar) {
     if (n <= 0) {
         return str ? Allocator::instance().wrap(str) : alloc::emptyString();
@@ -1147,28 +1149,28 @@ inline HPointer padRight(void* str, i64 n, u16 padChar) {
 // Splitting
 // ============================================================================
 
-/// Returns an Elm list of the pieces of `str` between occurrences of `sep`, found from the left
-/// without overlapping.
-///
-/// A null or empty `str` gives a list holding only the empty String, and a null or empty `sep`
-/// gives `toList(str)`. When both are UTF-8 forms and UTF-8 Strings are enabled, each piece is what
-/// `slice` gives for its range, so long pieces share `str`; otherwise each piece is a new UTF-16
-/// String, or the Empty constant when empty. A GC point.
+// Returns an Elm list of the pieces of `str` between occurrences of `sep`, found from the left
+// without overlapping.
+//
+// A null or empty `str` gives a list holding only the empty String, and a null or empty `sep`
+// gives `toList(str)`. When both are UTF-8 forms and UTF-8 Strings are enabled, each piece is what
+// `slice` gives for its range, so long pieces share `str`; otherwise each piece is a new UTF-16
+// String, or the Empty constant when empty. A GC point.
 HPointer split(void* sep, void* str);
 
-/// Returns an Elm list of one-Char Strings, one for each code point of `str` in order, each formed
-/// as `fromChar` forms it. A null or empty `str` gives the empty list. A GC point.
+// Returns an Elm list of one-Char Strings, one for each code point of `str` in order, each formed
+// as `fromChar` forms it. A null or empty `str` gives the empty list. A GC point.
 HPointer toList(void* str);
 
 // ============================================================================
 // Conversion
 // ============================================================================
 
-/// Copies the units of `str` to `buf` as `char`s and sets `*out_len` to how many there are, when
-/// they are all below 0x80 and number at most `cap`; returns whether it did.
-///
-/// `str` must not be null. On failure `*out_len` is unchanged and `buf` may hold a partial copy.
-/// No terminating nul is written. Does not allocate on the Elm heap.
+// Copies the units of `str` to `buf` as `char`s and sets `*out_len` to how many there are, when
+// they are all below 0x80 and number at most `cap`; returns whether it did.
+//
+// `str` must not be null. On failure `*out_len` is unchanged and `buf` may hold a partial copy.
+// No terminating nul is written. Does not allocate on the Elm heap.
 inline bool narrowAsciiToStack(void* str, char* buf, size_t cap, size_t* out_len) {
     if (isUtf8(str)) {
         auto pr = utf8Bytes(str);
@@ -1194,12 +1196,12 @@ inline bool narrowAsciiToStack(void* str, char* buf, size_t cap, size_t* out_len
     return true;
 }
 
-/// Returns `Just` the Int that `str` spells in decimal, or `Nothing`.
-///
-/// It gives `Just` only when `str` is ASCII, at most 64 units long, and in the form
-/// `std::from_chars` accepts for base 10 with nothing left over (an optional `-` and then digits,
-/// with no `+`, no spaces, and a value that fits in 64 bits); anything else, including a null or
-/// empty `str`, gives `Nothing`. A GC point.
+// Returns `Just` the Int that `str` spells in decimal, or `Nothing`.
+//
+// It gives `Just` only when `str` is ASCII, at most 64 units long, and in the form
+// `std::from_chars` accepts for base 10 with nothing left over (an optional `-` and then digits,
+// with no `+`, no spaces, and a value that fits in 64 bits); anything else, including a null or
+// empty `str`, gives `Nothing`. A GC point.
 inline HPointer toInt(void* str) {
     if (!str) return alloc::nothing();
     u32 len = rawLen(str);
@@ -1219,13 +1221,13 @@ inline HPointer toInt(void* str) {
     return alloc::just(alloc::unboxedInt(val), false);
 }
 
-/// Returns `Just` the Float that `str` spells, or `Nothing`, as elm/core's `_String_toFloat` does.
-///
-/// A null or empty `str`, one that is not ASCII or longer than 127 units, or one holding white space
-/// or an `x`, `b` or `o` gives `Nothing`. Otherwise the result is JavaScript's `Number(str)`, which is
-/// `Nothing` only when that is NaN: an out-of-range literal gives `Just` infinity or minus infinity on
-/// overflow and `Just` 0 or a subnormal on underflow, and `Infinity` with an optional sign is
-/// accepted. A GC point.
+// Returns `Just` the Float that `str` spells, or `Nothing`, as elm/core's `_String_toFloat` does.
+//
+// A null or empty `str`, one that is not ASCII or longer than 127 units, or one holding white space
+// or an `x`, `b` or `o` gives `Nothing`. Otherwise the result is JavaScript's `Number(str)`, which is
+// `Nothing` only when that is NaN: an out-of-range literal gives `Just` infinity or minus infinity on
+// overflow and `Just` 0 or a subnormal on underflow, and `Infinity` with an optional sign is
+// accepted. A GC point.
 inline HPointer toFloat(void* str) {
     if (!str) return alloc::nothing();
     u32 len = rawLen(str);
@@ -1273,8 +1275,8 @@ inline HPointer toFloat(void* str) {
     return alloc::just(alloc::unboxedFloat(val), false);
 }
 
-/// Returns the decimal text of `n`, with a leading `-` when negative, as a String formed by
-/// `makeUtf8LeafFromBytes`. A GC point.
+// Returns the decimal text of `n`, with a leading `-` when negative, as a String formed by
+// `makeUtf8LeafFromBytes`. A GC point.
 inline HPointer fromInt(i64 n) {
     // A 64-bit integer with its sign is at most 20 characters.
     char buf[24];
@@ -1284,14 +1286,14 @@ inline HPointer fromInt(i64 n) {
                                  static_cast<u32>(end - buf));
 }
 
-/// Writes the text of `n` as JavaScript's `Number.prototype.toString` writes it to `buf`, which must
-/// have room for 32 bytes, and returns its length. No terminating nul is written.
-///
-/// The text is "NaN", "Infinity" or "-Infinity" for those values, "0" for either zero, and
-/// otherwise the shortest digits that read back as `n`: in fixed notation when
-/// 1e-6 <= |n| < 1e21 ("1000000000", "0.000001"), and in exponent form otherwise ("1e+21",
-/// "1e-7", "1.5e+300"). It does not use `std::to_chars`' own choice between the two notations,
-/// which writes 1e9 as "1e+09".
+// Writes the text of `n` as JavaScript's `Number.prototype.toString` writes it to `buf`, which must
+// have room for 32 bytes, and returns its length. No terminating nul is written.
+//
+// The text is "NaN", "Infinity" or "-Infinity" for those values, "0" for either zero, and
+// otherwise the shortest digits that read back as `n`: in fixed notation when
+// 1e-6 <= |n| < 1e21 ("1000000000", "0.000001"), and in exponent form otherwise ("1e+21",
+// "1e-7", "1.5e+300"). It does not use `std::to_chars`' own choice between the two notations,
+// which writes 1e9 as "1e+09".
 inline size_t formatFloatShortest(f64 n, char* buf) {
     if (std::isnan(n)) {
         std::memcpy(buf, "NaN", 3);
@@ -1363,19 +1365,19 @@ inline size_t formatFloatShortest(f64 n, char* buf) {
     return len;
 }
 
-/// Returns the text `formatFloatShortest` writes for `n`, as a String formed by
-/// `makeUtf8LeafFromBytes`. A GC point.
+// Returns the text `formatFloatShortest` writes for `n`, as a String formed by
+// `makeUtf8LeafFromBytes`. A GC point.
 inline HPointer fromFloat(f64 n) {
     char buf[32];
     size_t len = formatFloatShortest(n, buf);
     return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf), static_cast<u32>(len));
 }
 
-/// Returns the String of the one Char value `c`.
-///
-/// A Char below 0x80, with UTF-8 Strings enabled, gives a one-byte UTF-8 leaf, so that a String
-/// built from ASCII Chars stays in UTF-8 forms. Any other gives a UTF-16 String of the units
-/// `encodeCodePoint` writes. A GC point.
+// Returns the String of the one Char value `c`.
+//
+// A Char below 0x80, with UTF-8 Strings enabled, gives a one-byte UTF-8 leaf, so that a String
+// built from ASCII Chars stays in UTF-8 forms. Any other gives a UTF-16 String of the units
+// `encodeCodePoint` writes. A GC point.
 inline HPointer fromChar(u32 c) {
     if (c < 0x80 && Allocator::instance().getConfig().utf8_strings_enabled) {
         u8 b = static_cast<u8>(c);
@@ -1387,11 +1389,11 @@ inline HPointer fromChar(u32 c) {
     return alloc::allocString(buf, n);
 }
 
-/// Returns the units of the Char value `c` followed by `str`, as a new String; `fromChar(c)` when
-/// `str` is null.
-///
-/// The result is a UTF-8 form when `c` is below 0x80, `str` is a UTF-8 form and UTF-8 Strings are
-/// enabled, and a UTF-16 String otherwise. A GC point.
+// Returns the units of the Char value `c` followed by `str`, as a new String; `fromChar(c)` when
+// `str` is null.
+//
+// The result is a UTF-8 form when `c` is below 0x80, `str` is a UTF-8 form and UTF-8 Strings are
+// enabled, and a UTF-16 String otherwise. A GC point.
 inline HPointer cons(u32 c, void* str) {
     if (!str) return fromChar(c);
     u32 len = rawLen(str);
@@ -1422,61 +1424,61 @@ inline HPointer cons(u32 c, void* str) {
     return out.hp;
 }
 
-/// Returns `Just (c, rest)`, where `c` is the first code point of `str` and `rest` the units after
-/// it, or `Nothing` when `str` is null or empty.
-///
-/// A valid surrogate pair is one code point, and `rest` then starts two units in. Unless `str` is a
-/// rope, `rest` shares `str` rather than copying it, whatever its length: it is a slice of a flat
-/// UTF-16 form or of a slice's base, or a UTF-8 view of a UTF-8 form. So taking the first code point
-/// of each `rest` in turn does not copy the String each time. For a rope, `rest` is what `slice`
-/// gives. A GC point.
+// Returns `Just (c, rest)`, where `c` is the first code point of `str` and `rest` the units after
+// it, or `Nothing` when `str` is null or empty.
+//
+// A valid surrogate pair is one code point, and `rest` then starts two units in. Unless `str` is a
+// rope, `rest` shares `str` rather than copying it, whatever its length: it is a slice of a flat
+// UTF-16 form or of a slice's base, or a UTF-8 view of a UTF-8 form. So taking the first code point
+// of each `rest` in turn does not copy the String each time. For a rope, `rest` is what `slice`
+// gives. A GC point.
 HPointer uncons(void* str);
 
 // ============================================================================
 // Higher-Order Operations
 // ============================================================================
 
-/// A function from a code point to an Elm value. No function in this component takes one.
+// A function from a code point to an Elm value. No function in this component takes one.
 using CharMapper = Unboxable (*)(u32);
 
-/// A function from the code point of one Char to the Char value that replaces it, which may be an
-/// encoded case-mapping result.
+// A function from the code point of one Char to the Char value that replaces it, which may be an
+// encoded case-mapping result.
 using CharToCharMapper = u32 (*)(u32);
 
-/// Returns a new UTF-16 String of the values `mapFunc` gives for the code points of `str`, in order,
-/// each written with its whole expansion, or the Empty constant for null or empty `str`.
-///
-/// `mapFunc` is called once per code point, in order. `str` is copied into C++ memory before the
-/// first call. A GC point.
+// Returns a new UTF-16 String of the values `mapFunc` gives for the code points of `str`, in order,
+// each written with its whole expansion, or the Empty constant for null or empty `str`.
+//
+// `mapFunc` is called once per code point, in order. `str` is copied into C++ memory before the
+// first call. A GC point.
 HPointer map(CharToCharMapper mapFunc, void* str);
 
-/// A test of the code point of one Char. The functions here that take one call it while they hold
-/// raw pointers into the String, so it must not allocate on the Elm heap.
+// A test of the code point of one Char. The functions here that take one call it while they hold
+// raw pointers into the String, so it must not allocate on the Elm heap.
 using CharPredicate = bool (*)(u32);
 
-/// Returns the code points of `str` for which `pred` is true, in order, or the Empty constant when
-/// there are none or `str` is null or empty.
-///
-/// `str` itself is returned when `pred` keeps everything and `str` is a UTF-8 form (with UTF-8
-/// Strings enabled) or a flat UTF-16 form. Otherwise the result is new: a UTF-8 form from a UTF-8
-/// form, with UTF-8 Strings enabled, and a UTF-16 String otherwise. `pred` may be called twice for
-/// each byte of a UTF-8 form. A GC point.
+// Returns the code points of `str` for which `pred` is true, in order, or the Empty constant when
+// there are none or `str` is null or empty.
+//
+// `str` itself is returned when `pred` keeps everything and `str` is a UTF-8 form (with UTF-8
+// Strings enabled) or a flat UTF-16 form. Otherwise the result is new: a UTF-8 form from a UTF-8
+// form, with UTF-8 Strings enabled, and a UTF-16 String otherwise. `pred` may be called twice for
+// each byte of a UTF-8 form. A GC point.
 HPointer filter(CharPredicate pred, void* str);
 
-/// A step of a fold: takes the code point of one Char and the accumulator, and returns the new
-/// accumulator. It may allocate, since the folds read only a copy of the String.
+// A step of a fold: takes the code point of one Char and the accumulator, and returns the new
+// accumulator. It may allocate, since the folds read only a copy of the String.
 using CharFolder = Unboxable (*)(u32, Unboxable);
 
-/// Returns `acc` passed through `fold` with each code point of `str` from first to last, or `acc`
-/// itself for null `str`. `str` is copied into C++ memory before the first call of `fold`.
+// Returns `acc` passed through `fold` with each code point of `str` from first to last, or `acc`
+// itself for null `str`. `str` is copied into C++ memory before the first call of `fold`.
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str);
 
-/// Returns `acc` passed through `fold` with each code point of `str` from last to first, or `acc`
-/// itself for null `str`. `str` is copied into C++ memory before the first call of `fold`.
+// Returns `acc` passed through `fold` with each code point of `str` from last to first, or `acc`
+// itself for null `str`. `str` is copied into C++ memory before the first call of `fold`.
 Unboxable foldr(CharFolder fold, Unboxable acc, void* str);
 
-/// Returns whether `pred` is true for every code point of `str`, stopping at the first that fails;
-/// true for null `str`. Does not allocate on the Elm heap.
+// Returns whether `pred` is true for every code point of `str`, stopping at the first that fails;
+// true for null `str`. Does not allocate on the Elm heap.
 inline bool all(CharPredicate pred, void* str) {
     if (!str) return true;
     size_t len = rawLen(str);
@@ -1486,8 +1488,8 @@ inline bool all(CharPredicate pred, void* str) {
     return true;
 }
 
-/// Returns whether `pred` is true for some code point of `str`, stopping at the first that is;
-/// false for null `str`. Does not allocate on the Elm heap.
+// Returns whether `pred` is true for some code point of `str`, stopping at the first that is;
+// false for null `str`. Does not allocate on the Elm heap.
 inline bool any(CharPredicate pred, void* str) {
     if (!str) return false;
     size_t len = rawLen(str);
@@ -1501,8 +1503,8 @@ inline bool any(CharPredicate pred, void* str) {
 // Utilities
 // ============================================================================
 
-/// Returns a copy of the UTF-16 units of `str`, empty for null. Being C++ memory, the copy stays
-/// valid across collections. Does not allocate on the Elm heap.
+// Returns a copy of the UTF-16 units of `str`, empty for null. Being C++ memory, the copy stays
+// valid across collections. Does not allocate on the Elm heap.
 inline std::u16string toStdU16String(void* str) {
     if (!str) return {};
     Header* hdr = static_cast<Header*>(str);
@@ -1578,23 +1580,25 @@ inline std::u16string toStdU16String(void* str) {
     return out;
 }
 
-/// Returns the text of `str` encoded as UTF-8, empty for null.
-///
-/// A valid surrogate pair becomes one four-byte sequence. A lone surrogate becomes the three-byte
-/// sequence of its unit value, which is not valid UTF-8. Does not allocate on the Elm heap.
+// Returns the text of `str` encoded as UTF-8, empty for null.
+//
+// A valid surrogate pair becomes one four-byte sequence. A lone surrogate becomes the three-byte
+// sequence of its unit value, which is not valid UTF-8. Does not allocate on the Elm heap.
 std::string toStdString(void* str);
 
-/// One segment of a String, as `forEachSegmentEx` gives it, kept so that two Strings' segments can
-/// be walked side by side.
-///
-/// `p` is valid as `forEachSegmentEx` says: until the next allocation.
+/**
+ * One segment of a String, as `forEachSegmentEx` gives it, kept so that two Strings' segments can
+ * be walked side by side.
+ *
+ * `p` is valid as `forEachSegmentEx` says: until the next allocation.
+ */
 struct SegView {
-    const void* p;   ///< The first unit when `isU16`, and otherwise the first byte. Not owned.
-    u32 len;         ///< In units, which for a UTF-8 segment is also bytes.
+    const void* p;   // The first unit when `isU16`, and otherwise the first byte. Not owned.
+    u32 len;         // In units, which for a UTF-8 segment is also bytes.
     bool isU16;
 };
 
-/// Appends the segments of `str` to `out`, in order. Does not allocate on the Elm heap.
+// Appends the segments of `str` to `out`, in order. Does not allocate on the Elm heap.
 inline void collectSegs(void* str, std::vector<SegView>& out) {
     forEachSegmentEx(
         str,
@@ -1602,8 +1606,8 @@ inline void collectSegs(void* str, std::vector<SegView>& out) {
         [&](const u8* p, u32 n) { out.push_back(SegView{p, n, false}); });
 }
 
-/// Returns UTF-16 unit `i` of the segment `s`, a byte of a UTF-8 segment being one unit. `i` must be
-/// less than `s.len`.
+// Returns UTF-16 unit `i` of the segment `s`, a byte of a UTF-8 segment being one unit. `i` must be
+// less than `s.len`.
 inline u16 segElemAt(const SegView& s, u32 i) {
     return s.isU16 ? static_cast<const u16*>(s.p)[i]
                    : static_cast<u16>(static_cast<const u8*>(s.p)[i]);
@@ -1613,15 +1617,15 @@ inline u16 segElemAt(const SegView& s, u32 i) {
 // inline. They are out of line and marked cold so that their larger frames (two vectors of segments)
 // stay out of the inline code at each call site.
 
-/// Returns whether `a` and `b` hold the same units, for any forms. Neither may be null, and they
-/// must have the same length. Does not allocate on the Elm heap.
+// Returns whether `a` and `b` hold the same units, for any forms. Neither may be null, and they
+// must have the same length. Does not allocate on the Elm heap.
 [[gnu::noinline, gnu::cold]] bool equalSlow(void* a, void* b);
-/// Returns a number that is negative, zero or positive as `a` orders before, the same as or after
-/// `b`, as `compare` does, for any forms. Neither may be null. Does not allocate on the Elm heap.
+// Returns a number that is negative, zero or positive as `a` orders before, the same as or after
+// `b`, as `compare` does, for any forms. Neither may be null. Does not allocate on the Elm heap.
 [[gnu::noinline, gnu::cold]] int compareSlow(void* a, void* b);
 
-/// Returns whether `a` and `b` hold the same units, whatever their forms. Null equals only null.
-/// Does not allocate on the Elm heap.
+// Returns whether `a` and `b` hold the same units, whatever their forms. Null equals only null.
+// Does not allocate on the Elm heap.
 inline bool equal(void* a, void* b) {
     if (!a || !b) return a == b;
     Header* ha = static_cast<Header*>(a);
@@ -1645,12 +1649,12 @@ inline bool equal(void* a, void* b) {
     return equalSlow(a, b);
 }
 
-/// Returns a number that is negative, zero or positive as `a` orders before, the same as or after
-/// `b`. Only the sign means anything.
-///
-/// Strings order by their UTF-16 units, compared as unsigned numbers from the first, and a String
-/// orders before any longer String it begins. Null orders before every non-null String and equals
-/// null. Does not allocate on the Elm heap.
+// Returns a number that is negative, zero or positive as `a` orders before, the same as or after
+// `b`. Only the sign means anything.
+//
+// Strings order by their UTF-16 units, compared as unsigned numbers from the first, and a String
+// orders before any longer String it begins. Null orders before every non-null String and equals
+// null. Does not allocate on the Elm heap.
 inline int compare(void* a, void* b) {
     if (!a && !b) return 0;
     if (!a) return -1;

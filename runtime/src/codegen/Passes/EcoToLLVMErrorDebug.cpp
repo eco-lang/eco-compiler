@@ -40,29 +40,31 @@ namespace {
 // eco.dbg -> call eco_dbg_print variants
 //===----------------------------------------------------------------------===//
 
-/// The pattern that lowers `eco.dbg` to calls that print its operands.
-///
-/// When `arg_type_ids` has one entry per operand and there is at least one
-/// operand, it emits a single `eco_dbg_print_typed(values, type_ids, count)`
-/// call over two stack arrays: each i64 or ptr(1) operand as an i64 word
-/// (other types are stored unconverted), and each type id truncated to i32.
-/// Otherwise it emits one call per operand: an i64 operand goes to
-/// `eco_dbg_print_int`, an f64 to `eco_dbg_print_float`, an i32 (a Char) to
-/// `eco_dbg_print_char`, and any other type to `eco_dbg_print` as a
-/// one-element i64 array. The type tested is the operand's type before
-/// conversion. An `eco.dbg` with no operands lowers to nothing.
+/**
+ * The pattern that lowers `eco.dbg` to calls that print its operands.
+ *
+ * When `arg_type_ids` has one entry per operand and there is at least one
+ * operand, it emits a single `eco_dbg_print_typed(values, type_ids, count)`
+ * call over two stack arrays: each i64 or ptr(1) operand as an i64 word
+ * (other types are stored unconverted), and each type id truncated to i32.
+ * Otherwise it emits one call per operand: an i64 operand goes to
+ * `eco_dbg_print_int`, an f64 to `eco_dbg_print_float`, an i32 (a Char) to
+ * `eco_dbg_print_char`, and any other type to `eco_dbg_print` as a
+ * one-element i64 array. The type tested is the operand's type before
+ * conversion. An `eco.dbg` with no operands lowers to nothing.
+ */
 struct DbgOpLowering : public OpConversionPattern<DbgOp> {
-    /// The runtime declarations the call targets come from. It must outlive
-    /// the pattern.
+    // The runtime declarations the call targets come from. It must outlive
+    // the pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; `runtime` is kept by reference.
+    // Creates the pattern; `runtime` is kept by reference.
     DbgOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                   const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Replaces `op` with the print calls described on the type. Always
-    /// succeeds.
+    // Replaces `op` with the print calls described on the type. Always
+    // succeeds.
     LogicalResult
     matchAndRewrite(DbgOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
@@ -152,20 +154,22 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
 // eco.crash -> call eco_crash + unreachable
 //===----------------------------------------------------------------------===//
 
-/// The pattern that lowers `eco.crash` to a call to `eco_crash` with the
-/// message, followed by `llvm.unreachable`.
+/**
+ * The pattern that lowers `eco.crash` to a call to `eco_crash` with the
+ * message, followed by `llvm.unreachable`.
+ */
 struct CrashOpLowering : public OpConversionPattern<CrashOp> {
-    /// The runtime declarations `eco_crash` comes from. It must outlive the
-    /// pattern.
+    // The runtime declarations `eco_crash` comes from. It must outlive the
+    // pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; `runtime` is kept by reference.
+    // Creates the pattern; `runtime` is kept by reference.
     CrashOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                     const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Replaces `op` with the call and the `llvm.unreachable`. Always
-    /// succeeds.
+    // Replaces `op` with the call and the `llvm.unreachable`. Always
+    // succeeds.
     LogicalResult
     matchAndRewrite(CrashOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
@@ -191,24 +195,26 @@ struct CrashOpLowering : public OpConversionPattern<CrashOp> {
 // eco.expect -> conditional crash with passthrough
 //===----------------------------------------------------------------------===//
 
-/// The pattern that lowers `eco.expect` to a conditional branch to a crash.
-///
-/// The op's block is split at the op. The first half ends in a branch on the
-/// condition: true goes on to the second half, false to a new block that
-/// calls `eco_crash` with the message and ends in `llvm.unreachable`. The
-/// op's result is replaced by the passthrough value.
+/**
+ * The pattern that lowers `eco.expect` to a conditional branch to a crash.
+ *
+ * The op's block is split at the op. The first half ends in a branch on the
+ * condition: true goes on to the second half, false to a new block that
+ * calls `eco_crash` with the message and ends in `llvm.unreachable`. The
+ * op's result is replaced by the passthrough value.
+ */
 struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
-    /// The runtime declarations `eco_crash` comes from. It must outlive the
-    /// pattern.
+    // The runtime declarations `eco_crash` comes from. It must outlive the
+    // pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; `runtime` is kept by reference.
+    // Creates the pattern; `runtime` is kept by reference.
     ExpectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                      const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Replaces `op` with the branch and crash block described on the type.
-    /// Always succeeds.
+    // Replaces `op` with the branch and crash block described on the type.
+    // Always succeeds.
     LogicalResult
     matchAndRewrite(ExpectOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {

@@ -1,6 +1,6 @@
 ---
 status: done
-updated: 2026-10-27
+updated: 2026-10-29
 ---
 
 # Kernel Parametricity License — audit-granted "trust the type" rows for KernelSetFacts
@@ -16,6 +16,25 @@ LSS_004 poison and let ordinary instantiation + unification do all transport.
 The plan does NOT perform any audit. It defines (a) exactly what the audit checks in
 the C++, (b) the procedure and evidence format, and (c) every compiler edit that
 encodes a result. All code refs verified at HEAD 2026-08-20.
+
+**Update 2026-10-29: audit data moved out of the Elm tables.** Each row's `evidence`
+string and each license's `files` list are no longer in `KernelSetFacts.elm` or
+`KernelIntrinsics.elm`; the compiler only ever read `scope`. They now live in two CSV
+files beside `KernelSetFacts.elm`, and `kernel-license-manifest.txt` is gone:
+
+- `kernel-license-audit.csv` (`kernel,date,plan,note`): one line per audit or
+  re-audit. The first audit's note carries the §2.6 markers (`class:`, `entry:`,
+  `type:`, `B1:`-`B3:`); the `audited:` marker is now the `date` column. A re-audit
+  ADDS a line rather than appending to a string.
+- `kernel-license-files.csv` (`kernel,file,sha256,audited`): the rot pins, one per
+  (kernel x file), with the date of the kernel's latest audit.
+
+`test/scripts/check-kernel-license-manifest.sh` now also runs the checks that were
+`KernelLicenseTest` tests 5-8 and 16 and `KernelIntrinsicsTest` test 7 (pins exist
+and stay in their own kernel's tree, audit markers, `Inert` iff `class: vacuous`),
+and `--update` refuses to re-hash a file unless its kernel has an audit line dated
+after the pin's. Where this plan says "evidence", "manifest" or `files`, read those
+files.
 
 ---
 

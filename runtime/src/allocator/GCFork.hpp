@@ -22,10 +22,12 @@
 
 namespace Elm::gc {
 
-/// The fork layers, in the order their locks are taken before a fork.
-///
-/// The values are slot indices and their order is the lock order, so they must not be reordered.
-/// `kForkLayers` is the number of layers, not a layer.
+/**
+ * The fork layers, in the order their locks are taken before a fork.
+ *
+ * The values are slot indices and their order is the lock order, so they must not be reordered.
+ * `kForkLayers` is the number of layers, not a layer.
+ */
 enum ForkLayer : unsigned {
     kForkGangs = 0,       // GCBackgroundGang registry + gangs (hold, stop, lock), then GCMarkGang
     kForkAllocator = 1,   // Allocator::thread_mutex_
@@ -34,28 +36,28 @@ enum ForkLayer : unsigned {
     kForkLayers = 4
 };
 
-/// The three handlers one fork layer supplies, as `pthread_atfork` defines them.
-///
-/// `prepare` runs in the forking thread before the fork and takes the layer's locks. `parent` runs
-/// in the parent after the fork and releases them. `child` runs in the child's only thread after
-/// the fork and releases or re-creates them. All three are called without a null check, so none
-/// may be null.
+// The three handlers one fork layer supplies, as `pthread_atfork` defines them.
+//
+// `prepare` runs in the forking thread before the fork and takes the layer's locks. `parent` runs
+// in the parent after the fork and releases them. `child` runs in the child's only thread after
+// the fork and releases or re-creates them. All three are called without a null check, so none
+// may be null.
 struct ForkHooks {
     void (*prepare)();
     void (*parent)();
     void (*child)();
 };
 
-/// Installs `hooks` as the handlers of `layer`, replacing any installed before.
-///
-/// The first call in the process registers this component's handlers with `pthread_atfork`; later
-/// calls only store the pointer. `hooks` is kept, so it must live until the process ends (a static,
-/// in practice). `layer` must be less than `kForkLayers`, which is not checked. A layer installed
-/// after a fork's prepare handler has passed its index is first used by the next fork.
-///
-/// The first call takes the C library's atfork lock. No handler of this component exists before
-/// it, so a concurrent fork cannot be waiting on a runtime lock the caller holds; even so, the
-/// call is best made with no runtime lock held.
+// Installs `hooks` as the handlers of `layer`, replacing any installed before.
+//
+// The first call in the process registers this component's handlers with `pthread_atfork`; later
+// calls only store the pointer. `hooks` is kept, so it must live until the process ends (a static,
+// in practice). `layer` must be less than `kForkLayers`, which is not checked. A layer installed
+// after a fork's prepare handler has passed its index is first used by the next fork.
+//
+// The first call takes the C library's atfork lock. No handler of this component exists before
+// it, so a concurrent fork cannot be waiting on a runtime lock the caller holds; even so, the
+// call is best made with no runtime lock held.
 void registerForkLayer(ForkLayer layer, const ForkHooks& hooks);
 
 } // namespace Elm::gc

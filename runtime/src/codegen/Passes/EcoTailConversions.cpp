@@ -47,16 +47,16 @@ using namespace mlir;
 
 namespace {
 
-/// Returns whether `op` is one of the scf ops that step 1 lowers to cf.
+// Returns whether `op` is one of the scf ops that step 1 lowers to cf.
 bool isScfToLower(Operation *op) {
     return isa<scf::ForallOp, scf::ForOp, scf::IfOp, scf::IndexSwitchOp,
                scf::ParallelOp, scf::WhileOp, scf::ExecuteRegionOp>(op);
 }
 
-/// Appends to `out` every scf op to lower that is nested anywhere under `op`, not including `op` itself.
-///
-/// A parent comes before the ops nested in it, and ops in the same block come last first. `lowerScfToCf` relies
-/// on that order.
+// Appends to `out` every scf op to lower that is nested anywhere under `op`, not including `op` itself.
+//
+// A parent comes before the ops nested in it, and ops in the same block come last first. `lowerScfToCf` relies
+// on that order.
 void collectScfOps(Operation *op, SmallVectorImpl<Operation *> &out) {
     for (Region &r : op->getRegions())
         for (Block &b : r)
@@ -68,22 +68,22 @@ void collectScfOps(Operation *op, SmallVectorImpl<Operation *> &out) {
             }
 }
 
-/// Lowers every scf op in function `f` to cf, and returns failure if one could not be lowered.
-///
-/// `applicator` must hold `frozen`, the SCFToControlFlow patterns, and `rewriter` must have no listener. `target`
-/// and `frozen` are what the conversion driver uses when this falls back to it. `ops` is scratch storage and is
-/// overwritten.
-///
-/// The patterns are applied without the conversion driver because its rewriter always has a listener, and with
-/// a listener each block split moves the ops after the split point one at a time. A listener-free split is a
-/// single list splice. Each lowering splits the op's block at the op and inlines its regions before the
-/// continuation, so the pointers collected up front stay valid. Parents are lowered before their children
-/// because a parent's pattern may expect its regions' blocks to still end in `scf.yield`. Siblings are lowered
-/// last first so that each split moves only the ops up to the next sibling, which is already lowered.
-///
-/// The function is handed to `applyPartialConversion` instead in two cases: a fold that replaces an op, which
-/// would erase nested ops still on the list, and scf ops left after the pass over the list, such as ones a
-/// pattern created.
+// Lowers every scf op in function `f` to cf, and returns failure if one could not be lowered.
+//
+// `applicator` must hold `frozen`, the SCFToControlFlow patterns, and `rewriter` must have no listener. `target`
+// and `frozen` are what the conversion driver uses when this falls back to it. `ops` is scratch storage and is
+// overwritten.
+//
+// The patterns are applied without the conversion driver because its rewriter always has a listener, and with
+// a listener each block split moves the ops after the split point one at a time. A listener-free split is a
+// single list splice. Each lowering splits the op's block at the op and inlines its regions before the
+// continuation, so the pointers collected up front stay valid. Parents are lowered before their children
+// because a parent's pattern may expect its regions' blocks to still end in `scf.yield`. Siblings are lowered
+// last first so that each split moves only the ops up to the next sibling, which is already lowered.
+//
+// The function is handed to `applyPartialConversion` instead in two cases: a fold that replaces an op, which
+// would erase nested ops still on the list, and scf ops left after the pass over the list, such as ones a
+// pattern created.
 LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
                            PatternRewriter &rewriter,
                            SmallVectorImpl<Operation *> &ops,
@@ -121,7 +121,9 @@ LogicalResult lowerScfToCf(Operation *f, PatternApplicator &applicator,
     return success();
 }
 
-/// The pass created by `createEcoTailConversionsPass`, registered as `eco-tail-conversions`.
+/**
+ * The pass created by `createEcoTailConversionsPass`, registered as `eco-tail-conversions`.
+ */
 struct EcoTailConversionsPass
     : public PassWrapper<EcoTailConversionsPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoTailConversionsPass)

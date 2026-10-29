@@ -110,12 +110,12 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
 // GC root range helpers for args-array call sites
 //===----------------------------------------------------------------------===//
 
-/// Emits code that zeroes the `numSlots` 64-bit slots of `argsArray` and
-/// registers slot i as a GC root when `boxed[i]` is true, and returns the
-/// root-range point saved before the registration. Pass that point to
-/// `emitRestoreArgsRootRange` once the array is no longer needed.
-///
-/// `boxed` must have `numSlots` entries; this is asserted.
+// Emits code that zeroes the `numSlots` 64-bit slots of `argsArray` and
+// registers slot i as a GC root when `boxed[i]` is true, and returns the
+// root-range point saved before the registration. Pass that point to
+// `emitRestoreArgsRootRange` once the array is no longer needed.
+//
+// `boxed` must have `numSlots` entries; this is asserted.
 static Value emitPushArgsRootRange(
     ConversionPatternRewriter &rewriter, Location loc,
     const EcoRuntime &runtime,
@@ -139,9 +139,9 @@ static Value emitPushArgsRootRange(
     return saved.getResult();
 }
 
-/// Emits a call that restores the GC root-range stack to `savedRangeDepth`, a
-/// point returned by `eco_gc_stack_range_point`, unregistering every range
-/// pushed since.
+// Emits a call that restores the GC root-range stack to `savedRangeDepth`, a
+// point returned by `eco_gc_stack_range_point`, unregistering every range
+// pushed since.
 static void emitRestoreArgsRootRange(
     ConversionPatternRewriter &rewriter, Location loc,
     const EcoRuntime &runtime,
@@ -154,17 +154,19 @@ static void emitRestoreArgsRootRange(
 // eco.project.closure -> load capture from closure values array
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.project.closure`, which reads value slot `index` of a
-/// closure.
-///
-/// A boxed slot read as `ptr addrspace(1)` is loaded at that type. An unboxed
-/// slot is loaded as i64 and bitcast to f64, truncated to a narrower integer,
-/// or converted with `inttoptr` to the result type. A boxed slot whose result
-/// type is not `ptr addrspace(1)` is returned as the raw i64.
+/**
+ * The lowering of `eco.project.closure`, which reads value slot `index` of a
+ * closure.
+ *
+ * A boxed slot read as `ptr addrspace(1)` is loaded at that type. An unboxed
+ * slot is loaded as i64 and bitcast to f64, truncated to a narrower integer,
+ * or converted with `inttoptr` to the result type. A boxed slot whose result
+ * type is not `ptr addrspace(1)` is returned as the raw i64.
+ */
 struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     ProjectClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
@@ -236,13 +238,15 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
 // eco.allocate_closure -> call eco_alloc_closure
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.allocate_closure` to a call to `eco_alloc_closure`
-/// with the descriptor of the bare function symbol (not of a wrapper) and the
-/// arity. The call may collect.
+/**
+ * The lowering of `eco.allocate_closure` to a call to `eco_alloc_closure`
+ * with the descriptor of the bare function symbol (not of a wrapper) and the
+ * arity. The call may collect.
+ */
 struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     AllocateClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
@@ -272,12 +276,12 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
 // Closure wrappers, and eco.papCreate
 //===----------------------------------------------------------------------===//
 
-/// Returns whether `func` has the shape of a function that already takes an
-/// argument array: one pointer parameter, returning i64 or a pointer.
-///
-/// The shape alone does not decide it, because a converted eco function can
-/// have it too. Callers apply it only to functions absent from
-/// `runtime.origFuncTypes`.
+// Returns whether `func` has the shape of a function that already takes an
+// argument array: one pointer parameter, returning i64 or a pointer.
+//
+// The shape alone does not decide it, because a converted eco function can
+// have it too. Callers apply it only to functions absent from
+// `runtime.origFuncTypes`.
 static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
     auto funcType = func.getFunctionType();
     if (funcType.getNumParams() != 1) {
@@ -293,41 +297,41 @@ static bool usesArgsArrayConvention(LLVM::LLVMFuncOp func) {
     return isa<LLVM::LLVMPointerType>(retType);
 }
 
-/// Returns the closure wrapper for the function `funcName` of `arity`
-/// parameters and result kind `resultKind`, creating it if it does not exist,
-/// and writes its name to `outName` when that is not null.
-///
-/// The wrapper is an internal function of type `R (ptr)` that reads `arity`
-/// 64-bit slots from the array its argument points to, converts slot i to the
-/// type of the target's parameter i, and calls the target. Slot conventions:
-/// - With `typedNewargs`, an Int, Float or Char slot holds the raw value (Char
-///   zero-extended) and any other slot an HPointer.
-/// - Without it, every slot holds an HPointer, and an Int, Float or Char is
-///   read from offset 8 of the boxed object. Nothing in this file asks for
-///   this convention.
-///
-/// `resultKind` (0 boxed, 1 Int, 2 Float, 3 Char) sets `R`. For a boxed
-/// result `R` is `ptr` and a primitive returned by the target is boxed with
-/// `eco_alloc_int`, `eco_alloc_float` or `eco_alloc_char`. Otherwise `R` is
-/// i64, f64 or i32, and the target's own return type must already be that
-/// type (asserted for Int and Float; a Char result is widened or narrowed to
-/// i32). The name is `__closure_wrapper_typed_<funcName>` (without `_typed_`
-/// when `typedNewargs` is false), with `_ri`, `_rf` or `_rc` appended for a
-/// primitive result kind.
-///
-/// The target's parameter types come from `runtime.origFuncTypes`, then from a
-/// `func.func`, then from an `llvm.func`. When the target appears only in
-/// `origFuncTypes`, an external declaration of it is created. A function with
-/// no known signature is fatal if its name starts with `Elm_Kernel_`, and is
-/// otherwise declared external with `arity` i64 parameters. A function absent
-/// from `origFuncTypes` that already takes an argument array
-/// (`usesArgsArrayConvention`) is returned as its own wrapper.
-///
-/// When `runtime.topLog` is set the wrapper is logged to be built later
-/// (`emitTopLevel`) and a null function is returned, as it is for a wrapper
-/// already logged but not yet built; `outName` is set in both cases. The
-/// function only creates operations, so it takes a plain `OpBuilder` and can
-/// run in the pre-pass as well as from a pattern.
+// Returns the closure wrapper for the function `funcName` of `arity`
+// parameters and result kind `resultKind`, creating it if it does not exist,
+// and writes its name to `outName` when that is not null.
+//
+// The wrapper is an internal function of type `R (ptr)` that reads `arity`
+// 64-bit slots from the array its argument points to, converts slot i to the
+// type of the target's parameter i, and calls the target. Slot conventions:
+// - With `typedNewargs`, an Int, Float or Char slot holds the raw value (Char
+//   zero-extended) and any other slot an HPointer.
+// - Without it, every slot holds an HPointer, and an Int, Float or Char is
+//   read from offset 8 of the boxed object. Nothing in this file asks for
+//   this convention.
+//
+// `resultKind` (0 boxed, 1 Int, 2 Float, 3 Char) sets `R`. For a boxed
+// result `R` is `ptr` and a primitive returned by the target is boxed with
+// `eco_alloc_int`, `eco_alloc_float` or `eco_alloc_char`. Otherwise `R` is
+// i64, f64 or i32, and the target's own return type must already be that
+// type (asserted for Int and Float; a Char result is widened or narrowed to
+// i32). The name is `__closure_wrapper_typed_<funcName>` (without `_typed_`
+// when `typedNewargs` is false), with `_ri`, `_rf` or `_rc` appended for a
+// primitive result kind.
+//
+// The target's parameter types come from `runtime.origFuncTypes`, then from a
+// `func.func`, then from an `llvm.func`. When the target appears only in
+// `origFuncTypes`, an external declaration of it is created. A function with
+// no known signature is fatal if its name starts with `Elm_Kernel_`, and is
+// otherwise declared external with `arity` i64 parameters. A function absent
+// from `origFuncTypes` that already takes an argument array
+// (`usesArgsArrayConvention`) is returned as its own wrapper.
+//
+// When `runtime.topLog` is set the wrapper is logged to be built later
+// (`emitTopLevel`) and a null function is returned, as it is for a wrapper
+// already logged but not yet built; `outName` is set in both cases. The
+// function only creates operations, so it takes a plain `OpBuilder` and can
+// run in the pre-pass as well as from a pattern.
 static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module, StringRef funcName,
                                            int64_t arity, Location loc, const TypeConverter *typeConverter,
                                            const EcoRuntime &runtime,
@@ -652,22 +656,24 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(OpBuilder &rewriter, ModuleOp module,
         });
 }
 
-/// The lowering of `eco.papCreate`, which makes a closure over `function` with
-/// stage arity `arity` and `num_captured` arguments applied.
-///
-/// The evaluator is the descriptor of `function`'s closure wrapper (see
-/// `getOrCreateWrapper`) with the op's `_result_kind`, and the closure's kinds
-/// cover all `arity` parameters (`closureKindsFor`). A closure with no captures, no
-/// `self_capture_indices` and an arity of at most 20 is interned by
-/// `eco_intern_closure0`, which keeps one object per descriptor and returns it
-/// each time. Any other closure is allocated, inline when that is enabled and
-/// the object is at most 4096 bytes, otherwise by `eco_alloc_closure_k`. Its packed word, captures, extension kind words and
-/// any self-references (`self_capture_indices`, slots that hold the closure
-/// itself) are then stored straight through the new pointer.
+/**
+ * The lowering of `eco.papCreate`, which makes a closure over `function` with
+ * stage arity `arity` and `num_captured` arguments applied.
+ *
+ * The evaluator is the descriptor of `function`'s closure wrapper (see
+ * `getOrCreateWrapper`) with the op's `_result_kind`, and the closure's kinds
+ * cover all `arity` parameters (`closureKindsFor`). A closure with no captures, no
+ * `self_capture_indices` and an arity of at most 20 is interned by
+ * `eco_intern_closure0`, which keeps one object per descriptor and returns it
+ * each time. Any other closure is allocated, inline when that is enabled and
+ * the object is at most 4096 bytes, otherwise by `eco_alloc_closure_k`. Its packed word, captures, extension kind words and
+ * any self-references (`self_capture_indices`, slots that hold the closure
+ * itself) are then stored straight through the new pointer.
+ */
 struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     PapCreateOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
@@ -844,20 +850,22 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 // eco.papCreateGroup -> one eco_alloc_closure_group_l call
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.papCreateGroup`, which makes several closures at once,
-/// to one call to `eco_alloc_closure_group_l`.
-///
-/// Each sibling's evaluator is the descriptor of the typed-newargs wrapper of
-/// its `fast_evaluators` entry, and its kinds come from that function's
-/// signature (`deriveAllParamKinds`), padded with boxed to its arity. The
-/// per-sibling data, the captures in one flat array, and `cross_edges` (flat
-/// i64 triples, passed on as they are) go to the runtime in stack arrays. The
-/// runtime writes every closure, including the kinds, and returns the closures
-/// in a stack array that becomes the op's results.
+/**
+ * The lowering of `eco.papCreateGroup`, which makes several closures at once,
+ * to one call to `eco_alloc_closure_group_l`.
+ *
+ * Each sibling's evaluator is the descriptor of the typed-newargs wrapper of
+ * its `fast_evaluators` entry, and its kinds come from that function's
+ * signature (`deriveAllParamKinds`), padded with boxed to its arity. The
+ * per-sibling data, the captures in one flat array, and `cross_edges` (flat
+ * i64 triples, passed on as they are) go to the runtime in stack arrays. The
+ * runtime writes every closure, including the kinds, and returns the closures
+ * in a stack array that becomes the op's results.
+ */
 struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     PapCreateGroupOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
@@ -1156,20 +1164,20 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
 // Direct call when the captures' types are known
 //===----------------------------------------------------------------------===//
 
-/// Emits a call of `fastEvaluator` with the closure's captures followed by
-/// `newArgs`, and returns its result, of type `resultType`.
-///
-/// Capture i is loaded from value slot i at the type `captureAbiTypes[i]`
-/// gives (i64 when the entry is not a type): a pointer type is loaded as that
-/// pointer, f64 as its bits, anything else as i64. The call is indirect,
-/// through the function's address, with a type built from these arguments,
-/// because that type may differ from the callee's converted signature, which
-/// a direct call would have to match. The backend's `runCapInlinePrepass` may
-/// inline a call whose type matches the callee's; any other stays indirect.
-///
-/// When `ECO_LSS_DISPATCH_SITE_COUNTERS` is set (read once per process), a
-/// call to `eco_dispatch_stats_fast` with the closure's evaluator is emitted
-/// first.
+// Emits a call of `fastEvaluator` with the closure's captures followed by
+// `newArgs`, and returns its result, of type `resultType`.
+//
+// Capture i is loaded from value slot i at the type `captureAbiTypes[i]`
+// gives (i64 when the entry is not a type): a pointer type is loaded as that
+// pointer, f64 as its bits, anything else as i64. The call is indirect,
+// through the function's address, with a type built from these arguments,
+// because that type may differ from the callee's converted signature, which
+// a direct call would have to match. The backend's `runCapInlinePrepass` may
+// inline a call whose type matches the callee's; any other stays indirect.
+//
+// When `ECO_LSS_DISPATCH_SITE_COUNTERS` is set (read once per process), a
+// call to `eco_dispatch_stats_fast` with the closure's evaluator is emitted
+// first.
 static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                  Value closureI64, ValueRange newArgs, SymbolRefAttr fastEvaluator,
                                  ArrayAttr captureAbiTypes, Type resultType) {
@@ -1255,9 +1263,9 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
 // Slot kinds
 //===----------------------------------------------------------------------===//
 
-/// Returns the slot kind (ParamKind) of a value of type `ty`: 1 (Int) for i64,
-/// 2 (Float) for f64, 3 (Char) for i32, and 0 (boxed) for anything else,
-/// including other integer widths.
+// Returns the slot kind (ParamKind) of a value of type `ty`: 1 (Int) for i64,
+// 2 (Float) for f64, 3 (Char) for i32, and 0 (boxed) for anything else,
+// including other integer widths.
 static uint8_t mlirTypeToParamKind(Type ty) {
     if (ty.isInteger(64)) return 1;  // PK_Int
     if (ty.isF64()) return 2;        // PK_Float
@@ -1265,15 +1273,15 @@ static uint8_t mlirTypeToParamKind(Type ty) {
     return 0;                        // PK_Boxed
 }
 
-/// Returns the slot kind of each of the first `arity` parameters of
-/// `funcSymbol` (fewer when the function has fewer parameters), by
-/// `mlirTypeToParamKind`.
-///
-/// The signature is looked up in the same order as `getOrCreateWrapper` does
-/// (`origFuncTypes`, `func.func`, `llvm.func`), so that the kinds a closure
-/// records agree with how its wrapper reads the slots. A function with no
-/// signature is a fatal error, rather than a silent all-boxed answer that the
-/// wrapper would contradict.
+// Returns the slot kind of each of the first `arity` parameters of
+// `funcSymbol` (fewer when the function has fewer parameters), by
+// `mlirTypeToParamKind`.
+//
+// The signature is looked up in the same order as `getOrCreateWrapper` does
+// (`origFuncTypes`, `func.func`, `llvm.func`), so that the kinds a closure
+// records agree with how its wrapper reads the slots. A function with no
+// signature is a fatal error, rather than a silent all-boxed answer that the
+// wrapper would contradict.
 static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
                                                 StringRef funcSymbol,
                                                 int64_t arity) {
@@ -1308,10 +1316,10 @@ static SmallVector<uint8_t> deriveAllParamKinds(const EcoRuntime &runtime,
     return kinds;
 }
 
-/// Returns the `arity` slot kinds a closure over `funcSymbol` records (HEAP_078,
-/// CGEN_049). When `isTyped` (the wrapper reads typed slots), they are the
-/// target's parameter kinds; otherwise they are the kinds of `captureTypes` by
-/// `slotKindOf`. Either list is padded with boxed to `arity`.
+// Returns the `arity` slot kinds a closure over `funcSymbol` records (HEAP_078,
+// CGEN_049). When `isTyped` (the wrapper reads typed slots), they are the
+// target's parameter kinds; otherwise they are the kinds of `captureTypes` by
+// `slotKindOf`. Either list is padded with boxed to `arity`.
 static SmallVector<uint8_t> closureKindsFor(const EcoRuntime &runtime,
                                             StringRef funcSymbol, int64_t arity,
                                             bool isTyped, TypeRange captureTypes) {
@@ -1325,10 +1333,10 @@ static SmallVector<uint8_t> closureKindsFor(const EcoRuntime &runtime,
     return kinds;
 }
 
-/// Emits stores of the extension kind words `ext`, zero words included
-/// (HEAP_077), into the closure at `closurePtr`, starting at value slot
-/// `valueSlots`, so that they are its last words. `gepTy` is the type of the
-/// slot addresses computed from `closurePtr`.
+// Emits stores of the extension kind words `ext`, zero words included
+// (HEAP_077), into the closure at `closurePtr`, starting at value slot
+// `valueSlots`, so that they are its last words. `gepTy` is the type of the
+// slot addresses computed from `closurePtr`.
 static void emitClosureExtStores(ConversionPatternRewriter &rewriter, Location loc,
                                  Value closurePtr, Type gepTy, int64_t valueSlots,
                                  ArrayRef<uint64_t> ext) {
@@ -1350,42 +1358,44 @@ static void emitClosureExtStores(ConversionPatternRewriter &rewriter, Location l
 // Evaluator descriptors and saturated-call entries
 //===----------------------------------------------------------------------===//
 
-/// The signature a call site presents to a saturated-call entry: the number
-/// of new arguments `n`, their slot kinds `kc` (2 bits each, argument 0 in the
-/// lowest bits), and the result kind `rc`.
-///
-/// The backend guards a call of `sat[n]` on a closure with stage arity P by
-/// checking, in the closure's packed word, that P minus `n_values` is `n`,
-/// that P is at most `SAT_MAX_ARITY`, that the result kind is `rc` and that
-/// the kinds of the last `n` parameters are `kc`, and then that the entry is
-/// not null. So `sat[n]` of a target can only be reached from a site whose
-/// `kc` equals the target's kinds for its last `n` parameters and whose `rc`
-/// equals its result kind, and an entry is needed only for such a signature.
-/// If the set of recorded signatures and the sites disagree, a missing entry is
-/// null and its guard fails, so the site takes the array path; a spare entry is
-/// unused.
+/**
+ * The signature a call site presents to a saturated-call entry: the number
+ * of new arguments `n`, their slot kinds `kc` (2 bits each, argument 0 in the
+ * lowest bits), and the result kind `rc`.
+ *
+ * The backend guards a call of `sat[n]` on a closure with stage arity P by
+ * checking, in the closure's packed word, that P minus `n_values` is `n`,
+ * that P is at most `SAT_MAX_ARITY`, that the result kind is `rc` and that
+ * the kinds of the last `n` parameters are `kc`, and then that the entry is
+ * not null. So `sat[n]` of a target can only be reached from a site whose
+ * `kc` equals the target's kinds for its last `n` parameters and whose `rc`
+ * equals its result kind, and an entry is needed only for such a signature.
+ * If the set of recorded signatures and the sites disagree, a missing entry is
+ * null and its guard fails, so the site takes the array path; a spare entry is
+ * unused.
+ */
 struct SatSiteSig {
     unsigned n;
     uint64_t kc;
     uint8_t rc;
-    /// Returns whether all three fields are equal.
+    // Returns whether all three fields are equal.
     bool operator==(const SatSiteSig &o) const {
         return n == o.n && kc == o.kc && rc == o.rc;
     }
 };
-/// Every distinct signature the module's closure call sites present, without
-/// duplicates. Filled by `preMaterializeClosureArtifacts`, which clears it
-/// first, and only read afterwards, including by parallel Stage-2 workers.
+// Every distinct signature the module's closure call sites present, without
+// duplicates. Filled by `preMaterializeClosureArtifacts`, which clears it
+// first, and only read afterwards, including by parallel Stage-2 workers.
 static llvm::SmallVector<SatSiteSig, 16> g_satSigs;
-/// For each target named by an `eco.papCreate` or `eco.papCreateGroup` (by its
-/// `fast_evaluators` entry), the smallest number of captures any of them
-/// gives it. A closure's `n_values` starts there and `eco.papExtend` only
-/// adds to it, so no call can reach `sat[N]` for an N above the stage arity
-/// minus this. Filled and read only by the pre-pass.
+// For each target named by an `eco.papCreate` or `eco.papCreateGroup` (by its
+// `fast_evaluators` entry), the smallest number of captures any of them
+// gives it. A closure's `n_values` starts there and `eco.papExtend` only
+// adds to it, so no call can reach `sat[N]` for an N above the stage arity
+// minus this. Filled and read only by the pre-pass.
 static llvm::StringMap<unsigned> g_minCaptured;
 
-/// Returns whether `g_satSigs` holds the signature (`n`, `kc`, `rc`). The
-/// search is linear.
+// Returns whether `g_satSigs` holds the signature (`n`, `kc`, `rc`). The
+// search is linear.
 static bool satSigPresent(unsigned n, uint64_t kc, uint8_t rc) {
     for (const SatSiteSig &s : g_satSigs)
         if (s.n == n && s.kc == kc && s.rc == rc)
@@ -1393,19 +1403,19 @@ static bool satSigPresent(unsigned n, uint64_t kc, uint8_t rc) {
     return false;
 }
 
-/// Counts of the (descriptor, N) pairs `getOrCreateEvalDesc` considered for a
-/// saturated-call entry: all of them, those it made, and those it rejected,
-/// because N is above the reachable bound, because no site has the
-/// signature, or because the target's shape is unsupported. Updated with
-/// relaxed atomics, and printed only by `ecoDumpPapHistogram`.
+// Counts of the (descriptor, N) pairs `getOrCreateEvalDesc` considered for a
+// saturated-call entry: all of them, those it made, and those it rejected,
+// because N is above the reachable bound, because no site has the
+// signature, or because the target's shape is unsupported. Updated with
+// relaxed atomics, and printed only by `ecoDumpPapHistogram`.
 namespace satFilter {
 static std::atomic<uint64_t> considered{0}, byArity{0}, bySignature{0},
     byShape{0}, generated{0};
 }
 
-/// Returns whether saturated-call entries and their call-site markers are
-/// made. True unless `ECO_SAT_FAST` is exactly `0`; read once and kept for
-/// the life of the process.
+// Returns whether saturated-call entries and their call-site markers are
+// made. True unless `ECO_SAT_FAST` is exactly `0`; read once and kept for
+// the life of the process.
 static bool satFastEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_SAT_FAST");
@@ -1414,33 +1424,33 @@ static bool satFastEnabled() {
     return on;
 }
 
-/// Counters of what this file emitted, kept when `ECO_PAP_HISTO` is set and
-/// printed by `ecoDumpPapHistogram`. They change nothing that is emitted.
-/// Only `descN`, `satEntriesN` and `satDiamondN` are incremented anywhere;
-/// the other counters and the per-arity rows stay zero.
+// Counters of what this file emitted, kept when `ECO_PAP_HISTO` is set and
+// printed by `ecoDumpPapHistogram`. They change nothing that is emitted.
+// Only `descN`, `satEntriesN` and `satDiamondN` are incremented anywhere;
+// the other counters and the per-arity rows stay zero.
 namespace papHisto {
 static std::atomic<uint64_t> fastN{0}, inlineN{0}, segunknownN{0}, genericN{0},
     papextendN{0}, satDiamondN{0}, satEntriesN{0}, descN{0};
 static std::atomic<uint64_t> arityInline[9] = {};
 static std::atomic<uint64_t> arityUnknown[9] = {};
 static std::atomic<uint64_t> arityGeneric[9] = {};
-/// Returns whether `ECO_PAP_HISTO` is set, to any value; read once and kept
-/// for the life of the process.
+// Returns whether `ECO_PAP_HISTO` is set, to any value; read once and kept
+// for the life of the process.
 static bool enabled() {
     static const bool on = (::getenv("ECO_PAP_HISTO") != nullptr);
     return on;
 }
-/// Adds one to `bucket[n]`, with every `n` from 8 up counted in `bucket[8]`,
-/// when the counters are enabled. Nothing calls it.
+// Adds one to `bucket[n]`, with every `n` from 8 up counted in `bucket[8]`,
+// when the counters are enabled. Nothing calls it.
 static void bump(std::atomic<uint64_t> *bucket, unsigned n) {
     if (!enabled()) return;
     bucket[n <= 8 ? n : 8].fetch_add(1, std::memory_order_relaxed);
 }
 }  // namespace papHisto
 
-/// Prints the `papHisto` and `satFilter` counters and the recorded call-site
-/// signatures to standard error, when `ECO_PAP_HISTO` is set. This function
-/// has external linkage, but no file in the runtime declares or calls it.
+// Prints the `papHisto` and `satFilter` counters and the recorded call-site
+// signatures to standard error, when `ECO_PAP_HISTO` is set. This function
+// has external linkage, but no file in the runtime declares or calls it.
 void ecoDumpPapHistogram() {
     if (!papHisto::enabled()) return;
     llvm::errs() << "[pap-histo] fast=" << papHisto::fastN
@@ -1472,15 +1482,15 @@ void ecoDumpPapHistogram() {
     llvm::errs() << "\n";
 }
 
-/// Appends to `out` the name of the evaluator descriptor whose generic entry is
-/// `wrapperName`: `__eco_evaldesc_<wrapperName>`.
+// Appends to `out` the name of the evaluator descriptor whose generic entry is
+// `wrapperName`: `__eco_evaldesc_<wrapperName>`.
 static void evalDescName(StringRef wrapperName, llvm::SmallVectorImpl<char> &out) {
     ("__eco_evaldesc_" + wrapperName).toVector(out);
 }
 
-/// Appends to `out` the name of the saturated-call entry of `targetName` for
-/// `n` new arguments: `__closure_sat_<targetName>_n<n>`, with `_ri`, `_rf` or
-/// `_rc` appended for a `resultKind` of Int, Float or Char.
+// Appends to `out` the name of the saturated-call entry of `targetName` for
+// `n` new arguments: `__closure_sat_<targetName>_n<n>`, with `_ri`, `_rf` or
+// `_rc` appended for a `resultKind` of Int, Float or Char.
 static void satEntryName(StringRef targetName, unsigned n, uint8_t resultKind,
                          llvm::SmallVectorImpl<char> &out) {
     const char *k = "";
@@ -1493,9 +1503,9 @@ static void satEntryName(StringRef targetName, unsigned n, uint8_t resultKind,
     ("__closure_sat_" + targetName + "_n" + llvm::Twine(n) + k).toVector(out);
 }
 
-/// Returns the LLVM type a converted function uses for a value of slot kind
-/// `kind` (REP_ABI_001): i64, f64 or i32 for Int, Float or Char, and
-/// `ptr addrspace(1)` for anything else.
+// Returns the LLVM type a converted function uses for a value of slot kind
+// `kind` (REP_ABI_001): i64, f64 or i32 for Int, Float or Char, and
+// `ptr addrspace(1)` for anything else.
 static Type paramKindToLLVMType(MLIRContext *ctx, uint8_t kind) {
     switch (kind) {
         case 1: return IntegerType::get(ctx, 64);
@@ -1505,24 +1515,24 @@ static Type paramKindToLLVMType(MLIRContext *ctx, uint8_t kind) {
     }
 }
 
-/// Makes the saturated-call entry of `targetSymbol` for `n` new arguments
-/// (unless the symbol cache already holds one of its name), writes its name to
-/// `outName`, and returns whether the entry exists.
-///
-/// The entry is an internal function taking a resolved closure base (`ptr`)
-/// and the target's last `n` parameters. It loads the first C = `stageArity` -
-/// `n` arguments from the closure's value slots at the target's parameter
-/// types and calls the target with all of them. A call site knows its own `n`
-/// but not C, so it cannot call the target directly; the entry's type depends
-/// only on the new arguments and the result.
-///
-/// No entry is made, and false is returned, when the target is not a defined
-/// non-variadic function with exactly `stageArity` parameters, when `n` is 0
-/// or above `stageArity`, when `stageArity` is above 16, when the target does
-/// not return the type `paramKindToLLVMType(resultKind)`, or when one of the
-/// first C parameters is not a pointer, f64, i32 or i64. `kindsBitmap` is not
-/// used to build the entry. With `runtime.topLog` set, the entry's body is
-/// logged to be built later; the entry is not added to the symbol cache.
+// Makes the saturated-call entry of `targetSymbol` for `n` new arguments
+// (unless the symbol cache already holds one of its name), writes its name to
+// `outName`, and returns whether the entry exists.
+//
+// The entry is an internal function taking a resolved closure base (`ptr`)
+// and the target's last `n` parameters. It loads the first C = `stageArity` -
+// `n` arguments from the closure's value slots at the target's parameter
+// types and calls the target with all of them. A call site knows its own `n`
+// but not C, so it cannot call the target directly; the entry's type depends
+// only on the new arguments and the result.
+//
+// No entry is made, and false is returned, when the target is not a defined
+// non-variadic function with exactly `stageArity` parameters, when `n` is 0
+// or above `stageArity`, when `stageArity` is above 16, when the target does
+// not return the type `paramKindToLLVMType(resultKind)`, or when one of the
+// first C parameters is not a pointer, f64, i32 or i64. `kindsBitmap` is not
+// used to build the entry. With `runtime.topLog` set, the entry's body is
+// logged to be built later; the entry is not added to the symbol cache.
 static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
                                 const EcoRuntime &runtime, StringRef targetSymbol,
                                 unsigned n, int64_t stageArity,
@@ -1639,21 +1649,21 @@ static bool getOrCreateSatEntry(OpBuilder &builder, ModuleOp module,
     return true;
 }
 
-/// Makes, unless it exists or is pending, the evaluator descriptor whose
-/// generic entry is `wrapperSym`, and writes its name to `outName`.
-///
-/// The descriptor is a constant internal global matching `EvaluatorDesc`:
-/// `generic` = `wrapperSym`, `kinds` = `kindsBitmap`, `result_kind`, and
-/// `stage_arity` = `stageArity`. It has `stageArity` + 1 `sat` entries when
-/// `stageArity` is at most `SAT_MAX_ARITY`, and none otherwise. `sat[N]` is
-/// the saturated-call entry of `targetSymbol` for N when entries are enabled
-/// (`satFastEnabled`), `targetSymbol` is not empty, `stageArity` is at most
-/// 16, N is not above the reachable bound (`g_minCaptured`), some call site
-/// presents the matching signature (`SatSiteSig`), and the entry can be made
-/// (`getOrCreateSatEntry`); every other `sat[N]` is null.
-///
-/// It creates module-level symbols, so it must be called only from the
-/// serial pre-pass, after `g_satSigs` and `g_minCaptured` are filled.
+// Makes, unless it exists or is pending, the evaluator descriptor whose
+// generic entry is `wrapperSym`, and writes its name to `outName`.
+//
+// The descriptor is a constant internal global matching `EvaluatorDesc`:
+// `generic` = `wrapperSym`, `kinds` = `kindsBitmap`, `result_kind`, and
+// `stage_arity` = `stageArity`. It has `stageArity` + 1 `sat` entries when
+// `stageArity` is at most `SAT_MAX_ARITY`, and none otherwise. `sat[N]` is
+// the saturated-call entry of `targetSymbol` for N when entries are enabled
+// (`satFastEnabled`), `targetSymbol` is not empty, `stageArity` is at most
+// 16, N is not above the reachable bound (`g_minCaptured`), some call site
+// presents the matching signature (`SatSiteSig`), and the entry can be made
+// (`getOrCreateSatEntry`); every other `sat[N]` is null.
+//
+// It creates module-level symbols, so it must be called only from the
+// serial pre-pass, after `g_satSigs` and `g_minCaptured` are filled.
 static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
                                 const EcoRuntime &runtime,
                                 StringRef wrapperSym, StringRef targetSymbol,
@@ -1783,24 +1793,24 @@ static void getOrCreateEvalDesc(OpBuilder &builder, ModuleOp module,
         papHisto::descN.fetch_add(1, std::memory_order_relaxed);
 }
 
-/// Returns the context of `b`.
+// Returns the context of `b`.
 static inline MLIRContext *ctx0(OpBuilder &b) { return b.getContext(); }
 
-/// Emits a `__eco_sat_begin` marker for a call of the closure `closureHPtr`
-/// with `newArgs`, to be placed before the call's argument-array sequence, and
-/// returns its token, or a null value when the site is not eligible. The
-/// sequence is closed with `emitSatEnd`. The backend's `expandSatMarkers` may
-/// turn the bracket into a guarded direct call of `sat[N]` (see `SatSiteSig`)
-/// with the bracketed sequence as the fallback.
-///
-/// `kinds` are the slot kinds of the N new arguments as the site knows them
-/// statically, and `resultKind` and `resultType` the result's. The site is
-/// eligible when entries are enabled, N is 1 to 8, `kinds` has N entries, the
-/// result type is `paramKindToLLVMType(resultKind)`, each new argument already
-/// has the type `paramKindToLLVMType` gives its kind, the pre-pass recorded
-/// the signature, and inline dereferencing is enabled. The marker takes the
-/// resolved closure base, N, the packed kinds, the result kind, the offset of
-/// `sat[N]` in a descriptor, and the new arguments.
+// Emits a `__eco_sat_begin` marker for a call of the closure `closureHPtr`
+// with `newArgs`, to be placed before the call's argument-array sequence, and
+// returns its token, or a null value when the site is not eligible. The
+// sequence is closed with `emitSatEnd`. The backend's `expandSatMarkers` may
+// turn the bracket into a guarded direct call of `sat[N]` (see `SatSiteSig`)
+// with the bracketed sequence as the fallback.
+//
+// `kinds` are the slot kinds of the N new arguments as the site knows them
+// statically, and `resultKind` and `resultType` the result's. The site is
+// eligible when entries are enabled, N is 1 to 8, `kinds` has N entries, the
+// result type is `paramKindToLLVMType(resultKind)`, each new argument already
+// has the type `paramKindToLLVMType` gives its kind, the pre-pass recorded
+// the signature, and inline dereferencing is enabled. The marker takes the
+// resolved closure base, N, the packed kinds, the result kind, the offset of
+// `sat[N]` in a descriptor, and the new arguments.
 static Value emitSatBegin(ConversionPatternRewriter &rewriter, Location loc,
                           const EcoRuntime &runtime, Value closureHPtr,
                           ValueRange newArgs, ArrayRef<uint8_t> kinds,
@@ -1869,11 +1879,11 @@ static Value emitSatBegin(ConversionPatternRewriter &rewriter, Location loc,
     return call.getResult();
 }
 
-/// Emits the `__eco_sat_end` marker that closes the bracket opened by the
-/// `emitSatBegin` that returned `tok`, or nothing when `tok` is null.
-/// `slowResult` is the result of the bracketed sequence; when the backend
-/// expands the bracket, the later uses of `slowResult` take the merged result
-/// instead.
+// Emits the `__eco_sat_end` marker that closes the bracket opened by the
+// `emitSatBegin` that returned `tok`, or nothing when `tok` is null.
+// `slowResult` is the result of the bracketed sequence; when the backend
+// expands the bracket, the later uses of `slowResult` take the merged result
+// instead.
 static void emitSatEnd(ConversionPatternRewriter &rewriter, Location loc,
                        const EcoRuntime &runtime, Value tok, Value slowResult) {
     if (!tok)
@@ -1882,15 +1892,15 @@ static void emitSatEnd(ConversionPatternRewriter &rewriter, Location loc,
     rewriter.create<LLVM::CallOp>(loc, marker, ValueRange{tok, slowResult});
 }
 
-/// Makes, unless it exists or is pending, the evaluator descriptor whose
-/// generic entry is the function `funcSymbol` itself, and writes its name,
-/// `__eco_evaldesc_<funcSymbol>`, to `outName`.
-///
-/// This is the descriptor for `eco.allocate_closure` and `eco.make_closure`,
-/// which name a function that is called through an argument array as it is,
-/// with no wrapper. It is laid out as `getOrCreateEvalDesc` lays out its
-/// descriptors, with the same number of `sat` entries, all null. It must be
-/// called only from the serial pre-pass.
+// Makes, unless it exists or is pending, the evaluator descriptor whose
+// generic entry is the function `funcSymbol` itself, and writes its name,
+// `__eco_evaldesc_<funcSymbol>`, to `outName`.
+//
+// This is the descriptor for `eco.allocate_closure` and `eco.make_closure`,
+// which name a function that is called through an argument array as it is,
+// with no wrapper. It is laid out as `getOrCreateEvalDesc` lays out its
+// descriptors, with the same number of `sat` entries, all null. It must be
+// called only from the serial pre-pass.
 static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
                                        const EcoRuntime &runtime,
                                        StringRef funcSymbol, int64_t arity,
@@ -1955,9 +1965,9 @@ static void getOrCreateEvalDescForFunc(OpBuilder &builder, ModuleOp module,
         papHisto::descN.fetch_add(1, std::memory_order_relaxed);
 }
 
-/// Emits and returns the address of the descriptor made by
-/// `getOrCreateEvalDescForFunc` for `funcSymbol`, which must already be in the
-/// symbol cache; this is asserted.
+// Emits and returns the address of the descriptor made by
+// `getOrCreateEvalDescForFunc` for `funcSymbol`, which must already be in the
+// symbol cache; this is asserted.
 static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
                                      const EcoRuntime &runtime,
                                      StringRef funcSymbol) {
@@ -1972,9 +1982,9 @@ static Value emitEvalDescAddrForFunc(OpBuilder &b, Location loc,
     return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
 
-/// Emits and returns the address of the evaluator descriptor of `wrapper`,
-/// which is what a closure's `evaluator` holds. The descriptor must already
-/// be in the symbol cache; this is asserted. `wrapper` must not be null.
+// Emits and returns the address of the evaluator descriptor of `wrapper`,
+// which is what a closure's `evaluator` holds. The descriptor must already
+// be in the symbol cache; this is asserted. `wrapper` must not be null.
 static Value emitEvalDescAddr(OpBuilder &b, Location loc,
                               const EcoRuntime &runtime,
                               LLVM::LLVMFuncOp wrapper) {
@@ -1987,11 +1997,11 @@ static Value emitEvalDescAddr(OpBuilder &b, Location loc,
     return b.create<LLVM::AddressOfOp>(loc, ptrTy, StringRef(nameBuf));
 }
 
-/// Returns whether `getOrCreateWrapper` with `typedNewargs` makes a typed
-/// wrapper for `funcSymbol`, rather than returning the function itself because
-/// it already takes an argument array. The latter is true of a function absent
-/// from `origFuncTypes` whose shape `usesArgsArrayConvention` accepts; its
-/// slots are boxed, and a closure over it must record them so.
+// Returns whether `getOrCreateWrapper` with `typedNewargs` makes a typed
+// wrapper for `funcSymbol`, rather than returning the function itself because
+// it already takes an argument array. The latter is true of a function absent
+// from `origFuncTypes` whose shape `usesArgsArrayConvention` accepts; its
+// slots are boxed, and a closure over it must record them so.
 static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
                                        StringRef funcSymbol) {
     // The same test as in getOrCreateWrapper.
@@ -2003,11 +2013,11 @@ static bool wrapperWillBeTypedNewargs(const EcoRuntime &runtime,
     return true;
 }
 
-/// Appends to `out` the name of the eval layout for `kinds` and `resultKind`:
-/// `__eco_eval_layout_r<resultKind>_<k0>_..._<n>` for n <= 64 kinds, and
-/// `__eco_eval_layout_r<resultKind>_h<hash>_<n>` above, where the hash is the
-/// 64-bit FNV-1a of the kinds in hexadecimal. Two kind lists of more than 64
-/// entries with the same length and hash get the same name.
+// Appends to `out` the name of the eval layout for `kinds` and `resultKind`:
+// `__eco_eval_layout_r<resultKind>_<k0>_..._<n>` for n <= 64 kinds, and
+// `__eco_eval_layout_r<resultKind>_h<hash>_<n>` above, where the hash is the
+// 64-bit FNV-1a of the kinds in hexadecimal. Two kind lists of more than 64
+// entries with the same length and hash get the same name.
 static void evalLayoutName(ArrayRef<uint8_t> kinds, uint8_t resultKind,
                            llvm::SmallVectorImpl<char> &out) {
     llvm::raw_svector_ostream os(out);
@@ -2024,13 +2034,13 @@ static void evalLayoutName(ArrayRef<uint8_t> kinds, uint8_t resultKind,
     os << unsigned(kinds.size());
 }
 
-/// Makes, unless one of its name was already made, the eval layout for `kinds`
-/// and `resultKind`: a private constant global matching `EvalParamLayout`
-/// (`{ i16 num_params, i8 result_kind, i8 pad, [n x i8] kinds }`), named by
-/// `evalLayoutName`. The name is recorded in `runtime.evalLayoutNames`.
-///
-/// It must be called only before `runtime` is frozen, which is asserted:
-/// nothing guards `evalLayoutNames` against the parallel workers.
+// Makes, unless one of its name was already made, the eval layout for `kinds`
+// and `resultKind`: a private constant global matching `EvalParamLayout`
+// (`{ i16 num_params, i8 result_kind, i8 pad, [n x i8] kinds }`), named by
+// `evalLayoutName`. The name is recorded in `runtime.evalLayoutNames`.
+//
+// It must be called only before `runtime` is frozen, which is asserted:
+// nothing guards `evalLayoutNames` against the parallel workers.
 static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
                                    const EcoRuntime &runtime,
                                    ArrayRef<uint8_t> kinds, uint8_t resultKind) {
@@ -2088,9 +2098,9 @@ static void ensureEvalLayoutGlobal(OpBuilder &builder, Location loc,
         });
 }
 
-/// Emits and returns the address of the eval layout for `kinds` and
-/// `resultKind`. Despite the name, it makes nothing: the layout must already
-/// have been made by `ensureEvalLayoutGlobal`, which is asserted.
+// Emits and returns the address of the eval layout for `kinds` and
+// `resultKind`. Despite the name, it makes nothing: the layout must already
+// have been made by `ensureEvalLayoutGlobal`, which is asserted.
 static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
                                    const EcoRuntime &runtime, ArrayRef<uint8_t> kinds,
                                    uint8_t resultKind = 0) {
@@ -2109,17 +2119,17 @@ static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location
 // Calls through the runtime
 //===----------------------------------------------------------------------===//
 
-/// Emits a call of `eco_apply_closure_eval` that applies the closure
-/// `closureHPtr` to the `numArgsI32` typed slots at `typedArgsArray`, described
-/// by the eval layout `layoutPtr`, and returns the result, of type
-/// `resultLLVMType`.
-///
-/// The runtime writes the result into a stack slot in the form `desiredKind`
-/// asks for (0 boxed, 1 Int, 2 Float, 3 Char), boxing or unboxing what the
-/// evaluator returned as needed; the slot is then loaded. The slot is
-/// allocated in the entry block of the function containing `safeOp` (at the
-/// current point when `safeOp` is null or not inside an `llvm.func`), and is
-/// zeroed before the call.
+// Emits a call of `eco_apply_closure_eval` that applies the closure
+// `closureHPtr` to the `numArgsI32` typed slots at `typedArgsArray`, described
+// by the eval layout `layoutPtr`, and returns the result, of type
+// `resultLLVMType`.
+//
+// The runtime writes the result into a stack slot in the form `desiredKind`
+// asks for (0 boxed, 1 Int, 2 Float, 3 Char), boxing or unboxing what the
+// evaluator returned as needed; the slot is then loaded. The slot is
+// allocated in the entry block of the function containing `safeOp` (at the
+// current point when `safeOp` is null or not inside an `llvm.func`), and is
+// zeroed before the call.
 static Value emitClosureEvalCall(ConversionPatternRewriter &rewriter,
                                  Location loc,
                                  const EcoRuntime &runtime,
@@ -2175,27 +2185,27 @@ static Value emitClosureEvalCall(ConversionPatternRewriter &rewriter,
 }
 
 //===----------------------------------------------------------------------===//
-/// Emits a call that applies the closure `closureI64`, known to be saturated by
-/// `newArgs`, to `newArgs`, and returns the result as `resultType`.
-///
-/// The new arguments go into a stack array in the typed convention (a
-/// primitive raw, a pointer through `closureStoreValueToI64`) with the boxed
-/// slots registered as GC roots for the call. Their kinds come from
-/// `origNewArgTypes`, the arguments' eco types, where given, and from their
-/// converted types otherwise. The eval layout passed is `layoutPtr` if given;
-/// otherwise the layout of those kinds with the result kind of `safeOp`'s
-/// `_result_kind` (boxed if absent), or a null pointer when there are no new
-/// arguments.
-///
-/// When the result is an Int, Float or Char (by `origResultType`, or by
-/// `resultType` if that is null), `eco_closure_call_saturated_eval` writes it
-/// unboxed into a stack slot. Otherwise `eco_closure_call_saturated` returns
-/// it. Only the second form is bracketed by saturated-call markers
-/// (`emitSatBegin`); in the first, a begin marker may be emitted with no end,
-/// and the backend then drops it.
-///
-/// `safeOp` is the operation being lowered. It must not be null, and the
-/// stack arrays are allocated in the entry block of its `llvm.func`.
+// Emits a call that applies the closure `closureI64`, known to be saturated by
+// `newArgs`, to `newArgs`, and returns the result as `resultType`.
+//
+// The new arguments go into a stack array in the typed convention (a
+// primitive raw, a pointer through `closureStoreValueToI64`) with the boxed
+// slots registered as GC roots for the call. Their kinds come from
+// `origNewArgTypes`, the arguments' eco types, where given, and from their
+// converted types otherwise. The eval layout passed is `layoutPtr` if given;
+// otherwise the layout of those kinds with the result kind of `safeOp`'s
+// `_result_kind` (boxed if absent), or a null pointer when there are no new
+// arguments.
+//
+// When the result is an Int, Float or Char (by `origResultType`, or by
+// `resultType` if that is null), `eco_closure_call_saturated_eval` writes it
+// unboxed into a stack slot. Otherwise `eco_closure_call_saturated` returns
+// it. Only the second form is bracketed by saturated-call markers
+// (`emitSatBegin`); in the first, a begin marker may be emitted with no end,
+// and the backend then drops it.
+//
+// `safeOp` is the operation being lowered. It must not be null, and the
+// stack arrays are allocated in the entry block of its `llvm.func`.
 static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                    Value closureI64, ValueRange newArgs, Type resultType,
                                    ArrayRef<Type> origNewArgTypes = {},
@@ -2375,37 +2385,39 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
 // eco.papExtend -> extend closure or call if saturated
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.papExtend`, which applies a closure to `newargs`.
-///
-/// Without `remaining_arity` whether the call saturates the closure is decided
-/// at run time (`lowerSegmentationUnknown`, `lowerGenericApply`). With it, a
-/// call whose `newargs` count equals `remaining_arity` is saturated: it calls
-/// `_fast_evaluator` directly when the op has that and `_capture_abi`
-/// (`emitFastClosureCall`), and otherwise goes through the runtime
-/// (`emitInlineClosureCall`). Any other count is a partial application, which
-/// `eco_pap_extend_l` turns into a new closure.
-///
-/// When `ECO_GENCALL_COUNTERS` is set (read once per process), each op without
-/// `remaining_arity` is preceded by a call to `eco_gencall_stats` with its
-/// `_gencall_reason`, or 15 when it has none.
+/**
+ * The lowering of `eco.papExtend`, which applies a closure to `newargs`.
+ *
+ * Without `remaining_arity` whether the call saturates the closure is decided
+ * at run time (`lowerSegmentationUnknown`, `lowerGenericApply`). With it, a
+ * call whose `newargs` count equals `remaining_arity` is saturated: it calls
+ * `_fast_evaluator` directly when the op has that and `_capture_abi`
+ * (`emitFastClosureCall`), and otherwise goes through the runtime
+ * (`emitInlineClosureCall`). Any other count is a partial application, which
+ * `eco_pap_extend_l` turns into a new closure.
+ *
+ * When `ECO_GENCALL_COUNTERS` is set (read once per process), each op without
+ * `remaining_arity` is preceded by a call to `eco_gencall_stats` with its
+ * `_gencall_reason`, or 15 when it has none.
+ */
 struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     PapExtendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
-    /// Replaces `op`, whose `_call_kind` is `segmentation_unknown`, with a call
-    /// of `eco_apply_closure_eval` that applies `closureI64` to `newargs`
-    /// whatever the closure's remaining arity, and returns success.
-    ///
-    /// The new arguments go into a stack array in the typed convention, with
-    /// their boxed slots registered as GC roots for the call, and are
-    /// described by the eval layout of their kinds with the op's
-    /// `_result_kind`. The result is delivered in the kind of the op's
-    /// converted result type. The sequence is bracketed by saturated-call
-    /// markers where eligible (`emitSatBegin`). It emits the same code as
-    /// `lowerGenericApply`.
+    // Replaces `op`, whose `_call_kind` is `segmentation_unknown`, with a call
+    // of `eco_apply_closure_eval` that applies `closureI64` to `newargs`
+    // whatever the closure's remaining arity, and returns success.
+    //
+    // The new arguments go into a stack array in the typed convention, with
+    // their boxed slots registered as GC roots for the call, and are
+    // described by the eval layout of their kinds with the op's
+    // `_result_kind`. The result is delivered in the kind of the op's
+    // converted result type. The sequence is bracketed by saturated-call
+    // markers where eligible (`emitSatBegin`). It emits the same code as
+    // `lowerGenericApply`.
     LogicalResult lowerSegmentationUnknown(PapExtendOp op, OpAdaptor adaptor,
                                            ConversionPatternRewriter &rewriter,
                                            Location loc, Value closureI64,
@@ -2508,11 +2520,11 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         return success();
     }
 
-    /// Replaces `op`, which has no `remaining_arity`, with a call of
-    /// `eco_apply_closure_eval` (CGEN_058), which applies `closureI64` to
-    /// `newargs` whether that leaves the closure short of, at, or past its
-    /// arity, and returns success. The arguments, layout, result and markers
-    /// are as `lowerSegmentationUnknown` describes.
+    // Replaces `op`, which has no `remaining_arity`, with a call of
+    // `eco_apply_closure_eval` (CGEN_058), which applies `closureI64` to
+    // `newargs` whether that leaves the closure short of, at, or past its
+    // arity, and returns success. The arguments, layout, result and markers
+    // are as `lowerSegmentationUnknown` describes.
     LogicalResult lowerGenericApply(PapExtendOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter,
                                     Location loc, Value closureI64,
@@ -2758,20 +2770,22 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 // eco.call -> func.call, or a call through a closure
 //===----------------------------------------------------------------------===//
 
-/// The lowering of `eco.call`.
-///
-/// A call with a callee becomes a `func.call`. When the callee returns more
-/// than one value it is an sret function (`SretFuncOpLowering`): the call
-/// passes a stack slot, allocated in the caller's entry block, as a first
-/// argument, and the results are loaded from it right after the call. A call
-/// with no callee calls the closure that is its first operand, and must
-/// saturate it: `remaining_arity` must be present and equal the number of
-/// other operands, or the pattern fails with an error. It goes through
-/// `emitInlineClosureCall`.
+/**
+ * The lowering of `eco.call`.
+ *
+ * A call with a callee becomes a `func.call`. When the callee returns more
+ * than one value it is an sret function (`SretFuncOpLowering`): the call
+ * passes a stack slot, allocated in the caller's entry block, as a first
+ * argument, and the results are loaded from it right after the call. A call
+ * with no callee calls the closure that is its first operand, and must
+ * saturate it: `remaining_arity` must be present and equal the number of
+ * other operands, or the pattern fails with an error. It goes through
+ * `emitInlineClosureCall`.
+ */
 struct CallOpLowering : public OpConversionPattern<CallOp> {
-    const EcoRuntime &runtime; ///< Must outlive the pattern.
+    const EcoRuntime &runtime; // Must outlive the pattern.
 
-    /// Creates the pattern, which keeps a reference to `runtime`.
+    // Creates the pattern, which keeps a reference to `runtime`.
     CallOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
@@ -2855,12 +2869,12 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
     }
 };
 
-/// Makes the eval layouts a closure call site `op` with new arguments
-/// `origNewargs` may refer to: the layout of their kinds with `resultKind`, the
-/// same kinds with result kind 0, and, when `captureAbi` is not null, the
-/// kinds of `captureAbi` followed by one boxed kind per new argument. More is
-/// made than a site uses; an unreferenced layout is a private global that
-/// LLVM can discard.
+// Makes the eval layouts a closure call site `op` with new arguments
+// `origNewargs` may refer to: the layout of their kinds with `resultKind`, the
+// same kinds with result kind 0, and, when `captureAbi` is not null, the
+// kinds of `captureAbi` followed by one boxed kind per new argument. More is
+// made than a site uses; an unreferenced layout is a private global that
+// LLVM can discard.
 static void preMaterializeApplyLayouts(OpBuilder &builder,
                                        const EcoRuntime &runtime, Operation *op,
                                        ValueRange origNewargs, uint8_t resultKind,

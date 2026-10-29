@@ -27,41 +27,43 @@
 namespace Elm {
 namespace bitscan {
 
-/// Returns the 64-bit word `w` of `bits`, that is, bytes 8w to 8w + 7 read in host byte order.
+// Returns the 64-bit word `w` of `bits`, that is, bytes 8w to 8w + 7 read in host byte order.
 inline uint64_t loadWord(const uint8_t* bits, size_t w) {
     uint64_t v;
     std::memcpy(&v, bits + w * 8, sizeof(v));
     return v;
 }
 
-/// Returns whether bit `bit` of `bits` is set.
+// Returns whether bit `bit` of `bits` is set.
 inline bool testBit(const uint8_t* bits, size_t bit) {
     return (bits[bit >> 3] >> (bit & 7)) & 1u;
 }
-/// Sets bit `bit` of `bits`. The write is a plain, non-atomic byte update.
+// Sets bit `bit` of `bits`. The write is a plain, non-atomic byte update.
 inline void setBit(uint8_t* bits, size_t bit) {
     bits[bit >> 3] |= static_cast<uint8_t>(1u << (bit & 7));
 }
-/// Clears bit `bit` of `bits`. The write is a plain, non-atomic byte update.
+// Clears bit `bit` of `bits`. The write is a plain, non-atomic byte update.
 inline void clearBit(uint8_t* bits, size_t bit) {
     bits[bit >> 3] &= static_cast<uint8_t>(~(1u << (bit & 7)));
 }
 
-/// Returns a word with bits 0, m, 2m, ... below 64 set: the cell-start bits of a word whose bit 0 is a cell start.
-/// `m` must be at least 1.
+// Returns a word with bits 0, m, 2m, ... below 64 set: the cell-start bits of a word whose bit 0 is a cell start.
+// `m` must be at least 1.
 constexpr uint64_t strideMask(uint32_t m) {
     uint64_t v = 0;
     for (uint32_t b = 0; b < 64; b += m) v |= uint64_t{1} << b;
     return v;
 }
 
-/// Precomputed constants for each stride m in [1, 63], indexed by m. Index 0 is unused and zero.
+/**
+ * Precomputed constants for each stride m in [1, 63], indexed by m. Index 0 is unused and zero.
+ */
 struct StrideTables {
-    uint64_t pattern[64];   ///< `strideMask(m)`.
-    uint32_t step[64];      ///< 64 % m: how far the cell-start phase moves from one word to the next.
-    uint64_t inv[64];       ///< ceil(2^32 / m), the reciprocal `divStride` multiplies by.
+    uint64_t pattern[64];   // `strideMask(m)`.
+    uint32_t step[64];      // 64 % m: how far the cell-start phase moves from one word to the next.
+    uint64_t inv[64];       // ceil(2^32 / m), the reciprocal `divStride` multiplies by.
 };
-/// Builds the `StrideTables` for every stride in [1, 63].
+// Builds the `StrideTables` for every stride in [1, 63].
 constexpr StrideTables makeStrideTables() {
     StrideTables t{};
     for (uint32_t m = 1; m < 64; ++m) {
@@ -71,29 +73,29 @@ constexpr StrideTables makeStrideTables() {
     }
     return t;
 }
-/// The stride tables, computed at compile time.
+// The stride tables, computed at compile time.
 inline constexpr StrideTables kStride = makeStrideTables();
 
-/// Returns g / m, rounded down, by multiplying by a reciprocal instead of dividing.
-///
-/// `m` must be in [1, 63] and `g` below 2^16, which covers every bit of a 512 KiB block. Within that range the result
-/// is exact: ceil(2^32 / m) exceeds 2^32 / m by less than 1, so the product overshoots g * 2^32 / m by less than
-/// g < 2^16, which is less than 2^32 / m. It therefore cannot carry past the next multiple of 2^32, and the top 32
-/// bits are g / m.
+// Returns g / m, rounded down, by multiplying by a reciprocal instead of dividing.
+//
+// `m` must be in [1, 63] and `g` below 2^16, which covers every bit of a 512 KiB block. Within that range the result
+// is exact: ceil(2^32 / m) exceeds 2^32 / m by less than 1, so the product overshoots g * 2^32 / m by less than
+// g < 2^16, which is less than 2^32 / m. It therefore cannot carry past the next multiple of 2^32, and the top 32
+// bits are g / m.
 inline uint32_t divStride(uint64_t g, uint32_t m) {
     return static_cast<uint32_t>((g * kStride.inv[m]) >> 32);
 }
 
-/// Returns the first cell k with `from_cell` <= k < `num_cells` whose cell-start bit k * `m` is clear, or `num_cells`
-/// if there is none.
-///
-/// `m` must be at least 1, and `bits` must extend to the end of the word holding bit (`num_cells` - 1) * `m`. For `m`
-/// below 64, every cell start must be below 2^16 (see `divStride`).
-///
-/// For `m` of 64 or more a word holds at most one cell start, so each cell's bit is tested on its own. Otherwise the
-/// scan goes a word at a time: the cell starts in word w are `strideMask(m)` shifted left by (m - r) % m, where
-/// r = 64w % m. r is computed with one modulo on entry and then advanced by 64 % m per word, and the cell index of the
-/// lowest clear start is found with `divStride`, so the loop does no division.
+// Returns the first cell k with `from_cell` <= k < `num_cells` whose cell-start bit k * `m` is clear, or `num_cells`
+// if there is none.
+//
+// `m` must be at least 1, and `bits` must extend to the end of the word holding bit (`num_cells` - 1) * `m`. For `m`
+// below 64, every cell start must be below 2^16 (see `divStride`).
+//
+// For `m` of 64 or more a word holds at most one cell start, so each cell's bit is tested on its own. Otherwise the
+// scan goes a word at a time: the cell starts in word w are `strideMask(m)` shifted left by (m - r) % m, where
+// r = 64w % m. r is computed with one modulo on entry and then advanced by 64 % m per word, and the cell index of the
+// lowest clear start is found with `divStride`, so the loop does no division.
 inline uint32_t nextFreeCell(const uint8_t* bits, uint32_t m,
                              uint32_t from_cell, uint32_t num_cells) {
     if (from_cell >= num_cells) return num_cells;
@@ -127,8 +129,8 @@ inline uint32_t nextFreeCell(const uint8_t* bits, uint32_t m,
     }
 }
 
-/// Returns the first set bit of `bits` in [`from_bit`, `end_bit`), or `end_bit` if there is none. It reads a word at
-/// a time, so `bits` must extend to the end of the word holding bit `end_bit` - 1.
+// Returns the first set bit of `bits` in [`from_bit`, `end_bit`), or `end_bit` if there is none. It reads a word at
+// a time, so `bits` must extend to the end of the word holding bit `end_bit` - 1.
 inline size_t nextSetBit(const uint8_t* bits, size_t from_bit, size_t end_bit) {
     if (from_bit >= end_bit) return end_bit;
     size_t w = from_bit >> 6;
@@ -145,7 +147,7 @@ inline size_t nextSetBit(const uint8_t* bits, size_t from_bit, size_t end_bit) {
     }
 }
 
-/// Returns how many of the cell-start bits k * `m`, for k < `num_cells`, are set. It tests one bit per cell.
+// Returns how many of the cell-start bits k * `m`, for k < `num_cells`, are set. It tests one bit per cell.
 inline uint64_t popcountCellStarts(const uint8_t* bits, uint32_t m,
                                    uint32_t num_cells) {
     uint64_t n = 0;

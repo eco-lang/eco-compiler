@@ -48,18 +48,18 @@ namespace {
 // the state it reads then. `portSend` also references it directly, so that the loop is held from the moment a
 // value is sent rather than from the moment the eco thread picks it up.
 
-/// The keepalive TSFN, set by `elmInit` and released by `ecoEnvCleanup`; null until `elmInit` creates it.
+// The keepalive TSFN, set by `elmInit` and released by `ecoEnvCleanup`; null until `elmInit` creates it.
 napi_threadsafe_function g_keepalive = nullptr;
-/// Whether the program last reported itself busy; true until the first report. Written on the eco thread, read
-/// on the main thread.
+// Whether the program last reported itself busy; true until the first report. Written on the eco thread, read
+// on the main thread.
 std::atomic<bool> g_ecoBusy{true};
 
-/// Evaluates the N-API call `call` and, if it does not return `napi_ok`, tries to throw a JavaScript `Error`
-/// carrying N-API's last error message for `env` and returns `ret` from the enclosing function. If a JavaScript
-/// exception is already pending, as when a called JavaScript function threw, that exception is what propagates.
-///
-/// It is a macro because it returns from its caller. It expands to a statement and evaluates `env` more than
-/// once.
+// Evaluates the N-API call `call` and, if it does not return `napi_ok`, tries to throw a JavaScript `Error`
+// carrying N-API's last error message for `env` and returns `ret` from the enclosing function. If a JavaScript
+// exception is already pending, as when a called JavaScript function threw, that exception is what propagates.
+//
+// It is a macro because it returns from its caller. It expands to a statement and evaluates `env` more than
+// once.
 
 #define NAPI_CALL_RET(env, call, ret)                                       \
     do {                                                                     \
@@ -75,14 +75,14 @@ std::atomic<bool> g_ecoBusy{true};
         }                                                                    \
     } while (0)
 
-/// `NAPI_CALL_RET` returning a null `napi_value`, which N-API treats as `undefined`.
+// `NAPI_CALL_RET` returning a null `napi_value`, which N-API treats as `undefined`.
 #define NAPI_CALL(env, call) NAPI_CALL_RET(env, call, nullptr)
 
-/// The name of the program's root Elm module, as a C string, defined by the compiler in the program object.
-/// The declaration is weak, so the address is null when the program does not define it.
+// The name of the program's root Elm module, as a C string, defined by the compiler in the program object.
+// The declaration is weak, so the address is null when the program does not define it.
 extern "C" __attribute__((weak)) const char* __eco_root_module;
 
-/// Returns `__eco_root_module`, or `"Main"` if it is undefined or null.
+// Returns `__eco_root_module`, or `"Main"` if it is undefined or null.
 const char* rootModuleName() {
     return (&__eco_root_module != nullptr && __eco_root_module != nullptr)
                ? __eco_root_module
@@ -93,24 +93,26 @@ const char* rootModuleName() {
 // Outgoing subscriptions: one TSFN per call to subscribe
 // ---------------------------------------------------------------------------
 
-/// One JavaScript function subscribed to one outgoing port. Its address is the `user` pointer given to
-/// `eco_port_subscribe`, so it is never freed: see `portUnsubscribe`.
+/**
+ * One JavaScript function subscribed to one outgoing port. Its address is the `user` pointer given to
+ * `eco_port_subscribe`, so it is never freed: see `portUnsubscribe`.
+ */
 struct SubEntry {
     std::string port;
-    napi_threadsafe_function tsfn = nullptr;  ///< Calls the subscriber on the main thread; never released.
-    napi_ref fnRef = nullptr;                 ///< The subscriber, held to find this entry on unsubscribe.
+    napi_threadsafe_function tsfn = nullptr;  // Calls the subscriber on the main thread; never released.
+    napi_ref fnRef = nullptr;                 // The subscriber, held to find this entry on unsubscribe.
 };
 
-/// Returns the subscriptions not yet unsubscribed, in the order they were made. Used on the main thread only.
+// Returns the subscriptions not yet unsubscribed, in the order they were made. Used on the main thread only.
 std::vector<SubEntry*>& subEntries() {
     static std::vector<SubEntry*> v;
     return v;
 }
 
-/// Parses the JSON text `data` points to and calls the subscriber `jsCb` with the result, on the main thread.
-///
-/// `data` is a `std::string` allocated by `nodeSink`; this deletes it. If `env` or `jsCb` is null, as when the
-/// TSFN is being torn down, or if any step fails, the subscriber is not called.
+// Parses the JSON text `data` points to and calls the subscriber `jsCb` with the result, on the main thread.
+//
+// `data` is a `std::string` allocated by `nodeSink`; this deletes it. If `env` or `jsCb` is null, as when the
+// TSFN is being torn down, or if any step fails, the subscriber is not called.
 void callJsTrampoline(napi_env env, napi_value jsCb, void* /*ctx*/,
                       void* data) {
     auto* payload = static_cast<std::string*>(data);
@@ -137,11 +139,11 @@ void callJsTrampoline(napi_env env, napi_value jsCb, void* /*ctx*/,
     delete payload;
 }
 
-/// Queues a copy of the payload `json` on the TSFN of the `SubEntry` that `user` points to, for
-/// `callJsTrampoline` to deliver. This is the `eco_port_callback` every subscription is made with.
-///
-/// It runs wherever `eco_port_callback` describes. The TSFN's queue is unbounded, so the call does not wait. The
-/// payload is dropped if `user` or its TSFN is null, if the copy cannot be allocated, or if the TSFN refuses it.
+// Queues a copy of the payload `json` on the TSFN of the `SubEntry` that `user` points to, for
+// `callJsTrampoline` to deliver. This is the `eco_port_callback` every subscription is made with.
+//
+// It runs wherever `eco_port_callback` describes. The TSFN's queue is unbounded, so the call does not wait. The
+// payload is dropped if `user` or its TSFN is null, if the copy cannot be allocated, or if the TSFN refuses it.
 void nodeSink(const char* json, void* user) {
     auto* entry = static_cast<SubEntry*>(user);
     if (entry == nullptr || entry->tsfn == nullptr) return;
@@ -153,10 +155,10 @@ void nodeSink(const char* json, void* user) {
     }
 }
 
-/// References `g_keepalive` if `g_ecoBusy` is set and unreferences it if not; the call queued by `ecoActivity`.
-///
-/// It reads the state when it runs, not when it was queued, so after a burst of reports the TSFN matches the
-/// latest. It does nothing when `env` is null, as when the TSFN is being torn down.
+// References `g_keepalive` if `g_ecoBusy` is set and unreferences it if not; the call queued by `ecoActivity`.
+//
+// It reads the state when it runs, not when it was queued, so after a burst of reports the TSFN matches the
+// latest. It does nothing when `env` is null, as when the TSFN is being torn down.
 void keepaliveTrampoline(napi_env env, napi_value /*jsCb*/, void* /*ctx*/,
                          void* /*data*/) {
     if (env == nullptr || g_keepalive == nullptr) return;
@@ -166,10 +168,10 @@ void keepaliveTrampoline(napi_env env, napi_value /*jsCb*/, void* /*ctx*/,
         napi_unref_threadsafe_function(env, g_keepalive);
 }
 
-/// Records `busy` in `g_ecoBusy` and queues a call to `keepaliveTrampoline`; the idle hook `elmInit` installs.
-///
-/// It runs on the eco thread, possibly with the scheduler's lock held, as `eco_set_idle_hook` describes. It does
-/// not call into the scheduler, and the queue is unbounded, so it does not wait.
+// Records `busy` in `g_ecoBusy` and queues a call to `keepaliveTrampoline`; the idle hook `elmInit` installs.
+//
+// It runs on the eco thread, possibly with the scheduler's lock held, as `eco_set_idle_hook` describes. It does
+// not call into the scheduler, and the queue is unbounded, so it does not wait.
 void ecoActivity(int busy, void* /*user*/) {
     g_ecoBusy.store(busy != 0);
     if (g_keepalive != nullptr)
@@ -181,18 +183,18 @@ void ecoActivity(int busy, void* /*user*/) {
 // ports.<name>.subscribe / unsubscribe / send
 // ---------------------------------------------------------------------------
 
-/// Returns a heap copy of `name` that is never freed, to be the data pointer of a port's JavaScript functions.
+// Returns a heap copy of `name` that is never freed, to be the data pointer of a port's JavaScript functions.
 std::string* internPortName(const char* name) {
     static std::vector<std::string*> names;
     names.push_back(new std::string(name));
     return names.back();
 }
 
-/// Implements `ports.<name>.subscribe(fn)`: subscribes the JavaScript function `fn` to the outgoing port whose
-/// name is the function's data, so that it is called on the main thread with each payload, parsed from JSON.
-///
-/// Throws a `TypeError` if `fn` is not a function. The subscription does not keep Node's event loop alive.
-/// Subscribing the same function twice subscribes it twice.
+// Implements `ports.<name>.subscribe(fn)`: subscribes the JavaScript function `fn` to the outgoing port whose
+// name is the function's data, so that it is called on the main thread with each payload, parsed from JSON.
+//
+// Throws a `TypeError` if `fn` is not a function. The subscription does not keep Node's event loop alive.
+// Subscribing the same function twice subscribes it twice.
 napi_value portSubscribe(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -228,10 +230,10 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-/// Implements `ports.<name>.unsubscribe(fn)`: removes the earliest subscription of `fn` to the port whose name
-/// is the function's data, or does nothing if there is none.
-///
-/// `fn` may still be called afterwards, once for each payload already queued on its TSFN, which is kept.
+// Implements `ports.<name>.unsubscribe(fn)`: removes the earliest subscription of `fn` to the port whose name
+// is the function's data, or does nothing if there is none.
+//
+// `fn` may still be called afterwards, once for each payload already queued on its TSFN, which is kept.
 napi_value portUnsubscribe(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -261,13 +263,13 @@ napi_value portUnsubscribe(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-/// Implements `ports.<name>.send(value)`: serializes `value` with `JSON.stringify` and sends the text to the
-/// incoming port whose name is the function's data, with `eco_port_send`.
-///
-/// Propagates any exception `JSON.stringify` throws; throws a `TypeError` if it does not return a string, as for
-/// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send. On success it references
-/// `g_keepalive` before returning, so that Node's event loop is held until the program next reports itself idle,
-/// if it does; after the program has stopped none follows.
+// Implements `ports.<name>.send(value)`: serializes `value` with `JSON.stringify` and sends the text to the
+// incoming port whose name is the function's data, with `eco_port_send`.
+//
+// Propagates any exception `JSON.stringify` throws; throws a `TypeError` if it does not return a string, as for
+// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send. On success it references
+// `g_keepalive` before returning, so that Node's event loop is held until the program next reports itself idle,
+// if it does; after the program has stopped none follows.
 napi_value portSend(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -311,8 +313,8 @@ napi_value portSend(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-/// Implements `app.stop()`: asks the program to stop with `eco_app_stop` and blocks the main thread until the
-/// eco thread has finished, with `eco_app_join`.
+// Implements `app.stop()`: asks the program to stop with `eco_app_stop` and blocks the main thread until the
+// eco thread has finished, with `eco_app_join`.
 napi_value appStop(napi_env env, napi_callback_info /*info*/) {
     (void)env;
     eco_app_stop();
@@ -324,9 +326,9 @@ napi_value appStop(napi_env env, napi_callback_info /*info*/) {
 // Elm.<RootModule>.init(opts)
 // ---------------------------------------------------------------------------
 
-/// Returns a new `ports` object with one property per port the program has registered: an object with `send`
-/// for an incoming port, or with `subscribe` and `unsubscribe` for any other. Returns null, with a JavaScript
-/// exception pending, if an N-API call fails.
+// Returns a new `ports` object with one property per port the program has registered: an object with `send`
+// for an incoming port, or with `subscribe` and `unsubscribe` for any other. Returns null, with a JavaScript
+// exception pending, if an N-API call fails.
 napi_value buildPortsObject(napi_env env) {
     napi_value ports;
     NAPI_CALL(env, napi_create_object(env, &ports));
@@ -366,19 +368,19 @@ napi_value buildPortsObject(napi_env env) {
     return ports;
 }
 
-/// Whether `elmInit` has started the program.
+// Whether `elmInit` has started the program.
 bool g_inited = false;
 
-/// Implements `Elm.<Root>.init(opts)`: starts the program with `opts.flags` as its flags and returns the app
-/// object, `{ ports, stop }`.
-///
-/// `opts.flags` is serialized with `JSON.stringify`; an exception it throws propagates and nothing is started.
-/// If `opts` is null, a function or a primitive, or `opts.flags` is `undefined` or `JSON.stringify` returns a
-/// non-string, the program is started with no flags, as `eco_app_start` describes for a null `flags_json`. Throws
-/// an `Error` if the program has already been started successfully by this function, or fails to start; since
-/// `eco_app_start` cannot be retried, a later call after a failed start fails too. Before starting it, creates
-/// `g_keepalive`, referenced, and installs `ecoActivity` as the idle hook, so that the loop is held
-/// from the start until the program first reports itself idle.
+// Implements `Elm.<Root>.init(opts)`: starts the program with `opts.flags` as its flags and returns the app
+// object, `{ ports, stop }`.
+//
+// `opts.flags` is serialized with `JSON.stringify`; an exception it throws propagates and nothing is started.
+// If `opts` is null, a function or a primitive, or `opts.flags` is `undefined` or `JSON.stringify` returns a
+// non-string, the program is started with no flags, as `eco_app_start` describes for a null `flags_json`. Throws
+// an `Error` if the program has already been started successfully by this function, or fails to start; since
+// `eco_app_start` cannot be retried, a later call after a failed start fails too. Before starting it, creates
+// `g_keepalive`, referenced, and installs `ecoActivity` as the idle hook, so that the loop is held
+// from the start until the program first reports itself idle.
 napi_value elmInit(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -470,11 +472,11 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
 
 namespace {
 
-/// Stops the program and waits for the eco thread to finish, if `elmInit` started it, then releases
-/// `g_keepalive`; the cleanup hook registered for Node's environment.
-///
-/// The program is stopped here so that the eco thread is not still running when the process's static
-/// destructors run.
+// Stops the program and waits for the eco thread to finish, if `elmInit` started it, then releases
+// `g_keepalive`; the cleanup hook registered for Node's environment.
+//
+// The program is stopped here so that the eco thread is not still running when the process's static
+// destructors run.
 void ecoEnvCleanup(void* /*arg*/) {
     if (g_inited) {
         eco_app_stop();
@@ -489,9 +491,9 @@ void ecoEnvCleanup(void* /*arg*/) {
 
 }  // namespace
 
-/// Returns the addon's exports, `{ Elm: { <Root>: { init } } }`, where `<Root>` is `rootModuleName()`, and
-/// registers `ecoEnvCleanup` to run when Node's environment is torn down. Node calls this when the addon is
-/// loaded. Returns null, with a JavaScript exception pending, if an N-API call fails.
+// Returns the addon's exports, `{ Elm: { <Root>: { init } } }`, where `<Root>` is `rootModuleName()`, and
+// registers `ecoEnvCleanup` to run when Node's environment is torn down. Node calls this when the addon is
+// loaded. Returns null, with a JavaScript exception pending, if an N-API call fails.
 extern "C" napi_value napi_register_module_v1(napi_env env,
                                               napi_value /*exports*/) {
     napi_add_env_cleanup_hook(env, ecoEnvCleanup, nullptr);

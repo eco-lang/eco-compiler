@@ -39,7 +39,7 @@ namespace Elm::platform {
 
 namespace {
 
-/// Returns `s`, read as UTF-8, converted to UTF-16.
+// Returns `s`, read as UTF-8, converted to UTF-16.
 std::wstring widen(const std::string& s) {
     if (s.empty()) return std::wstring();
     const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
@@ -48,12 +48,12 @@ std::wstring widen(const std::string& s) {
     return w;
 }
 
-/// Appends `arg` to `out`, quoted where needed so that `CommandLineToArgvW` (the MSVC C runtime's rules)
-/// reads it back unchanged.
-///
-/// Under those rules backslashes are literal except before a double quote, where 2n backslashes and a
-/// quote mean n backslashes and the end of quoting, and 2n+1 backslashes and a quote mean n backslashes
-/// and a literal quote. An argument that is non-empty and has no blank or quote is appended as it is.
+// Appends `arg` to `out`, quoted where needed so that `CommandLineToArgvW` (the MSVC C runtime's rules)
+// reads it back unchanged.
+//
+// Under those rules backslashes are literal except before a double quote, where 2n backslashes and a
+// quote mean n backslashes and the end of quoting, and 2n+1 backslashes and a quote mean n backslashes
+// and a literal quote. An argument that is non-empty and has no blank or quote is appended as it is.
 void appendQuoted(std::wstring& out, const std::wstring& arg) {
     if (!arg.empty() && arg.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
         out += arg;
@@ -78,7 +78,7 @@ void appendQuoted(std::wstring& out, const std::wstring& arg) {
     out += L'"';
 }
 
-/// Returns the command line for `argv`: each argument quoted by `appendQuoted`, separated by spaces.
+// Returns the command line for `argv`: each argument quoted by `appendQuoted`, separated by spaces.
 std::wstring commandLine(const std::vector<std::wstring>& argv) {
     std::wstring line;
     for (size_t i = 0; i < argv.size(); ++i) {
@@ -88,22 +88,22 @@ std::wstring commandLine(const std::vector<std::wstring>& argv) {
     return line;
 }
 
-/// Returns whether environment names `a` and `b` are equal, ignoring case.
+// Returns whether environment names `a` and `b` are equal, ignoring case.
 bool keyEquals(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(),
                                 static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
 
-/// Returns the name part of the environment entry `kv`, which is everything before the first `=` after the
-/// first character, so that an entry such as `=C:=C:\dir` keeps its leading `=` in the name. An entry with
-/// no such `=` is all name.
+// Returns the name part of the environment entry `kv`, which is everything before the first `=` after the
+// first character, so that an entry such as `=C:=C:\dir` keeps its leading `=` in the name. An entry with
+// no such `=` is all name.
 std::wstring keyOf(const std::wstring& kv) {
     const size_t eq = kv.find(L'=', 1);
     return eq == std::wstring::npos ? kv : kv.substr(0, eq);
 }
 
-/// Builds the child's environment block for `CreateProcessW`: `K=V` entries, each ended by a null
-/// character, sorted by name ignoring case, with one more null character at the end.
+// Builds the child's environment block for `CreateProcessW`: `K=V` entries, each ended by a null
+// character, sorted by name ignoring case, with one more null character at the end.
 std::wstring environmentBlock(const SpawnSpec& spec) {
     std::vector<std::wstring> entries;
     if (spec.envMode != kEnvReplace) {
@@ -135,9 +135,9 @@ std::wstring environmentBlock(const SpawnSpec& spec) {
     return block;
 }
 
-/// Returns the file to execute for `kShellNone`: `program` itself when it contains a `\`, `/` or `:`,
-/// otherwise the match `SearchPathW` finds, trying `.exe` when the name has no extension. Returns an empty
-/// string when there is no match, and `CreateProcessW` is then left to find the program itself.
+// Returns the file to execute for `kShellNone`: `program` itself when it contains a `\`, `/` or `:`,
+// otherwise the match `SearchPathW` finds, trying `.exe` when the name has no extension. Returns an empty
+// string when there is no match, and `CreateProcessW` is then left to find the program itself.
 std::wstring resolveProgram(const std::wstring& program) {
     if (program.find_first_of(L"\\/:") != std::wstring::npos) return program;
     wchar_t buf[MAX_PATH * 4];
@@ -146,7 +146,7 @@ std::wstring resolveProgram(const std::wstring& program) {
     return std::wstring();
 }
 
-/// Returns the `errno` value closest to the Windows error `e`, or `EIO` for any error not listed.
+// Returns the `errno` value closest to the Windows error `e`, or `EIO` for any error not listed.
 int errnoFromWin32(DWORD e) {
     switch (e) {
         case ERROR_FILE_NOT_FOUND:
@@ -161,15 +161,15 @@ int errnoFromWin32(DWORD e) {
     }
 }
 
-/// Closes `h` unless it is null or `INVALID_HANDLE_VALUE`, and sets it to null.
+// Closes `h` unless it is null or `INVALID_HANDLE_VALUE`, and sets it to null.
 void closeH(HANDLE& h) {
     if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h);
     h = nullptr;
 }
 
-/// Returns an inheritable duplicate of the standard handle `which`, or null if the parent has none or it
-/// cannot be duplicated. A duplicate is needed because the inherited-handle list may name only inheritable
-/// handles.
+// Returns an inheritable duplicate of the standard handle `which`, or null if the parent has none or it
+// cannot be duplicated. A duplicate is needed because the inherited-handle list may name only inheritable
+// handles.
 HANDLE inheritableCopy(DWORD which) {
     HANDLE src = GetStdHandle(which), dup = nullptr;
     if (!src || src == INVALID_HANDLE_VALUE) return nullptr;
@@ -178,9 +178,9 @@ HANDLE inheritableCopy(DWORD which) {
     return dup;
 }
 
-/// The guard of `g_handles`.
+// The guard of `g_handles`.
 std::mutex g_handlesMu;
-/// The process handles registered by `registerProcessHandle` and not yet taken, by pid.
+// The process handles registered by `registerProcessHandle` and not yet taken, by pid.
 std::unordered_map<int64_t, HANDLE> g_handles;
 
 } // namespace
@@ -361,7 +361,7 @@ SpawnedChild spawnChild(const SpawnSpec& spec, StdioMode mode, bool newSession) 
 }
 
 namespace {
-/// Returns how the ended process `process` exited, read from its exit code.
+// Returns how the ended process `process` exited, read from its exit code.
 ChildExit exitOf(HANDLE process) {
     ChildExit e;
     DWORD code = 0;
@@ -415,9 +415,9 @@ void releaseChild(SpawnedChild& child) {
 
 namespace {
 
-/// Returns the child's environment for `spec`, as `K=V` strings. A pair in `spec.env` replaces the entry
-/// with the same name, compared case-sensitively, and a later pair with a repeated name replaces an
-/// earlier one.
+// Returns the child's environment for `spec`, as `K=V` strings. A pair in `spec.env` replaces the entry
+// with the same name, compared case-sensitively, and a later pair with a repeated name replaces an
+// earlier one.
 std::vector<std::string> buildEnv(const SpawnSpec& spec) {
     std::vector<std::string> out;
     if (spec.envMode != kEnvReplace) {
@@ -442,8 +442,8 @@ std::vector<std::string> buildEnv(const SpawnSpec& spec) {
     return out;
 }
 
-/// Returns pointers to the characters of each string in `v`, followed by a null pointer. The pointers are
-/// valid while `v` and its strings are unchanged.
+// Returns pointers to the characters of each string in `v`, followed by a null pointer. The pointers are
+// valid while `v` and its strings are unchanged.
 std::vector<char*> cstrs(std::vector<std::string>& v) {
     std::vector<char*> out;
     out.reserve(v.size() + 1);
@@ -452,7 +452,7 @@ std::vector<char*> cstrs(std::vector<std::string>& v) {
     return out;
 }
 
-/// Closes `fd` if it is open, and sets it to -1.
+// Closes `fd` if it is open, and sets it to -1.
 void closeIf(int& fd) {
     if (fd >= 0) {
         ::close(fd);
@@ -460,9 +460,9 @@ void closeIf(int& fd) {
     }
 }
 
-/// Creates a pipe whose two ends are blocking and close-on-exec, writing them to `fds`. Returns zero, or
-/// the `errno` value of the failure. Outside Linux, close-on-exec is set after the pipe is made, and on
-/// failure both ends are closed and set to -1.
+// Creates a pipe whose two ends are blocking and close-on-exec, writing them to `fds`. Returns zero, or
+// the `errno` value of the failure. Outside Linux, close-on-exec is set after the pipe is made, and on
+// failure both ends are closed and set to -1.
 int cloexecPipe(int fds[2]) {
 #if defined(__linux__)
     if (::pipe2(fds, O_CLOEXEC) != 0) return errno;
@@ -482,8 +482,10 @@ int cloexecPipe(int fds[2]) {
 #endif
 }
 
-/// The file-action and attribute objects of one `posix_spawn` call, each destroyed on scope exit if it was
-/// initialised.
+/**
+ * The file-action and attribute objects of one `posix_spawn` call, each destroyed on scope exit if it was
+ * initialised.
+ */
 struct SpawnObjects {
     posix_spawn_file_actions_t fa;
     posix_spawnattr_t attr;
@@ -494,8 +496,8 @@ struct SpawnObjects {
     }
 };
 
-/// Returns how a child exited, from its `waitpid` status `status`. Both flags are false for a status that
-/// is neither an exit nor a signal death.
+// Returns how a child exited, from its `waitpid` status `status`. Both flags are false for a status that
+// is neither an exit nor a signal death.
 ChildExit exitOf(int status) {
     ChildExit e;
     if (WIFEXITED(status)) {

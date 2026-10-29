@@ -30,37 +30,39 @@ namespace eco {
 
 #ifdef ECO_LOWERING_VALIDATION
 
-/// A check, run after RS4GC, of every `ptrtoint` from and `inttoptr` to
-/// `ptr addrspace(1)` in a function.
-///
-/// It stops the process with `llvm::report_fatal_error` when it finds a
-/// conversion it does not accept, and changes nothing. It accepts almost every
-/// shape, so passing it shows little. A `ptrtoint` is rejected only for a use
-/// that is not a store of it, a call to a gc-leaf, `eco_`-prefixed or intrinsic
-/// callee, an `lshr`, `and`, `icmp`, `select`, `trunc`, `zext`, `or` or `xor`
-/// in the same block, an `inttoptr` or a phi. An `inttoptr` is rejected only
-/// when its operand is none of: the False, True or Empty constant word, a
-/// load, a `ptrtoint`, a call or invoke, an `extractvalue`, or a phi or select
-/// built from the first three.
+/**
+ * A check, run after RS4GC, of every `ptrtoint` from and `inttoptr` to
+ * `ptr addrspace(1)` in a function.
+ *
+ * It stops the process with `llvm::report_fatal_error` when it finds a
+ * conversion it does not accept, and changes nothing. It accepts almost every
+ * shape, so passing it shows little. A `ptrtoint` is rejected only for a use
+ * that is not a store of it, a call to a gc-leaf, `eco_`-prefixed or intrinsic
+ * callee, an `lshr`, `and`, `icmp`, `select`, `trunc`, `zext`, `or` or `xor`
+ * in the same block, an `inttoptr` or a phi. An `inttoptr` is rejected only
+ * when its operand is none of: the False, True or Empty constant word, a
+ * load, a `ptrtoint`, a call or invoke, an `extractvalue`, or a phi or select
+ * built from the first three.
+ */
 struct EcoPtrIntVerifyPass : public llvm::PassInfoMixin<EcoPtrIntVerifyPass> {
-    /// Checks every conversion in `F`, and does nothing for a declaration.
+    // Checks every conversion in `F`, and does nothing for a declaration.
     llvm::PreservedAnalyses run(llvm::Function &F,
                                 llvm::FunctionAnalysisManager &FAM);
 };
 
 #endif // ECO_LOWERING_VALIDATION
 
-/// Appends to `MPM` the passes that run RS4GC on a module, in this order:
-/// mem2reg and SROA, a fold of `extractvalue` through `insertvalue` chains,
-/// an aggregate scan that does nothing unless `ECO_FCA_SCAN` is set, RS4GC,
-/// the replacement of slot-cast barrier calls by plain casts, and, in
-/// validation builds only, `EcoPtrIntVerifyPass`.
-///
-/// Adding `RewriteStatepointsForGC` on its own instead would leave the barrier
-/// calls in place and the aggregates unfolded.
-///
-/// When a barrier symbol has a use other than a direct call, or a use survives
-/// the replacement, running the passes stops the process with `llvm::report_fatal_error`, in every build.
+// Appends to `MPM` the passes that run RS4GC on a module, in this order:
+// mem2reg and SROA, a fold of `extractvalue` through `insertvalue` chains,
+// an aggregate scan that does nothing unless `ECO_FCA_SCAN` is set, RS4GC,
+// the replacement of slot-cast barrier calls by plain casts, and, in
+// validation builds only, `EcoPtrIntVerifyPass`.
+//
+// Adding `RewriteStatepointsForGC` on its own instead would leave the barrier
+// calls in place and the aggregates unfolded.
+//
+// When a barrier symbol has a use other than a direct call, or a use survives
+// the replacement, running the passes stops the process with `llvm::report_fatal_error`, in every build.
 void addEcoGCPipeline(llvm::ModulePassManager &MPM);
 
 } // namespace eco

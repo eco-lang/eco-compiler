@@ -15,29 +15,31 @@
 
 namespace Elm {
 
-/// The stack-map roots of one thread: the addresses of stack slots, found by walking that thread's stack, that each
-/// hold an `HPointer` the collector must treat as a root.
-///
-/// The slots are in live stack frames, so the list is meaningful only during the pause in which it was built: once
-/// the thread runs again those frames may be gone. It is GC-internal. Runtime and kernel code must root values
-/// through `RootSet` (`StackRootGuard`, `StackRootRangeGuard`), never by pushing here, and this list is separate from
-/// the shadow stacks `RootSet` keeps.
+/**
+ * The stack-map roots of one thread: the addresses of stack slots, found by walking that thread's stack, that each
+ * hold an `HPointer` the collector must treat as a root.
+ *
+ * The slots are in live stack frames, so the list is meaningful only during the pause in which it was built: once
+ * the thread runs again those frames may be gone. It is GC-internal. Runtime and kernel code must root values
+ * through `RootSet` (`StackRootGuard`, `StackRootRangeGuard`), never by pushing here, and this list is separate from
+ * the shadow stacks `RootSet` keeps.
+ */
 class StackMapRoots {
 public:
-    /// Adds the slot `root`, which must stay valid for as long as the list is used.
+    // Adds the slot `root`, which must stay valid for as long as the list is used.
     void push(HPointer* root) { roots_.push_back(root); }
 
-    /// Removes every root.
+    // Removes every root.
     void clear() { roots_.clear(); }
 
-    /// Returns a mark of the current length, for `restore`.
+    // Returns a mark of the current length, for `restore`.
     size_t point() const { return roots_.size(); }
-    /// Cuts the list back to the first `p` roots, `p` being a mark from `point`. A `p` greater than the length
-    /// appends null slots.
+    // Cuts the list back to the first `p` roots, `p` being a mark from `point`. A `p` greater than the length
+    // appends null slots.
     void restore(size_t p) { roots_.resize(p); }
 
-    /// Returns the roots in the order they were pushed. The reference is to the list itself and is valid while this
-    /// object lives; any push, clear or restore may invalidate iterators and element pointers into it.
+    // Returns the roots in the order they were pushed. The reference is to the list itself and is valid while this
+    // object lives; any push, clear or restore may invalidate iterators and element pointers into it.
     const std::vector<HPointer*>& get() const { return roots_; }
 
 private:

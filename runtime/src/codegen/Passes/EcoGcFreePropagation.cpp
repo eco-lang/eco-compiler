@@ -54,8 +54,8 @@ using namespace mlir;
 
 namespace {
 
-/// Returns whether `op` has a `passthrough` entry named `key`, either as a
-/// bare string or as the key of a key-value pair.
+// Returns whether `op` has a `passthrough` entry named `key`, either as a
+// bare string or as the key of a key-value pair.
 bool hasPassthrough(Operation *op, llvm::StringRef key) {
     auto pt = op->getAttrOfType<ArrayAttr>("passthrough");
     if (!pt)
@@ -73,19 +73,19 @@ bool hasPassthrough(Operation *op, llvm::StringRef key) {
     }
     return false;
 }
-/// Returns whether `op` carries the passthrough `"gc-leaf-function"`.
+// Returns whether `op` carries the passthrough `"gc-leaf-function"`.
 bool isGcLeaf(Operation *op) { return hasPassthrough(op, "gc-leaf-function"); }
 
-/// Returns whether the environment variable `n` is set to anything other than
-/// an empty string or `"0"`. It is read on every call.
+// Returns whether the environment variable `n` is set to anything other than
+// an empty string or `"0"`. It is read on every call.
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// Returns whether `name` is an LLVM intrinsic that LLVM's RS4GC treats as
-/// gc-leaf: any intrinsic LLVM recognises, except the four that can take a
-/// safepoint. An `llvm.` name LLVM does not recognise is not leaf.
+// Returns whether `name` is an LLVM intrinsic that LLVM's RS4GC treats as
+// gc-leaf: any intrinsic LLVM recognises, except the four that can take a
+// safepoint. An `llvm.` name LLVM does not recognise is not leaf.
 bool isLeafIntrinsic(llvm::StringRef name) {
     if (!name.starts_with("llvm."))
         return false;
@@ -97,10 +97,10 @@ bool isLeafIntrinsic(llvm::StringRef name) {
            id != llvm::Intrinsic::memmove_element_unordered_atomic;
 }
 
-/// Returns the value of the module flag `key`, or `std::nullopt` if no
-/// `llvm.module_flags` op in `module` has it. A flag whose value is not a
-/// string gives an empty string. The returned reference points into the
-/// context's attribute storage.
+// Returns the value of the module flag `key`, or `std::nullopt` if no
+// `llvm.module_flags` op in `module` has it. A flag whose value is not a
+// string gives an empty string. The returned reference points into the
+// context's attribute storage.
 std::optional<llvm::StringRef> moduleFlag(ModuleOp module, llvm::StringRef key) {
     for (auto mf : module.getOps<LLVM::ModuleFlagsOp>())
         for (Attribute a : mf.getFlags())
@@ -113,29 +113,33 @@ std::optional<llvm::StringRef> moduleFlag(ModuleOp module, llvm::StringRef key) 
     return std::nullopt;
 }
 
-/// What the pass needs to know about one top-level symbol of the module.
-/// Fields other than `op` are set only for an `llvm.func`.
+/**
+ * What the pass needs to know about one top-level symbol of the module.
+ * Fields other than `op` are set only for an `llvm.func`.
+ */
 struct SymNode {
-    Operation *op = nullptr; ///< The symbol op; it belongs to the module.
-    /// `interposable` means weak, linkonce, extern-weak or common linkage,
-    /// where the definition seen here may not be the one called at run time.
-    /// `covered` means the function has the `eco-cap-covered` passthrough.
+    Operation *op = nullptr; // The symbol op; it belongs to the module.
+    // `interposable` means weak, linkonce, extern-weak or common linkage,
+    // where the definition seen here may not be the one called at run time.
+    // `covered` means the function has the `eco-cap-covered` passthrough.
     bool isFunc = false, defined = false, interposable = false,
          covered = false;
 };
 
-/// The pass that stamps GC-free definitions and records the plan flag.
-///
-/// It does nothing unless `eco::gcFreeLeafMode()` is `Stamp` and
-/// `eco::gcFreeMlirEnabled()` holds, and it leaves a module that already has
-/// an `eco-gcfree-plan` flag unchanged. It fails on a gc-leaf definition
-/// whose name `eco::markers::isTrustedLeafDecl` does not accept, on
-/// `eco-cap-covered` with no capacity-hoisting plan flag, on a malformed
-/// capacity-hoisting plan, on a value-eq setting that differs from the one
-/// the capacity-hoisting plan recorded, and on an `__eco_` call with no
-/// `finalView` row when that call is the first poisoning call its function's
-/// scan reaches. With `ECO_GCFREE_PLAN_STATS` non-empty and not "0" it prints
-/// counts and the time taken to stderr.
+/**
+ * The pass that stamps GC-free definitions and records the plan flag.
+ *
+ * It does nothing unless `eco::gcFreeLeafMode()` is `Stamp` and
+ * `eco::gcFreeMlirEnabled()` holds, and it leaves a module that already has
+ * an `eco-gcfree-plan` flag unchanged. It fails on a gc-leaf definition
+ * whose name `eco::markers::isTrustedLeafDecl` does not accept, on
+ * `eco-cap-covered` with no capacity-hoisting plan flag, on a malformed
+ * capacity-hoisting plan, on a value-eq setting that differs from the one
+ * the capacity-hoisting plan recorded, and on an `__eco_` call with no
+ * `finalView` row when that call is the first poisoning call its function's
+ * scan reaches. With `ECO_GCFREE_PLAN_STATS` non-empty and not "0" it prints
+ * counts and the time taken to stderr.
+ */
 struct EcoGcFreePropagationPass
     : public PassWrapper<EcoGcFreePropagationPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoGcFreePropagationPass)

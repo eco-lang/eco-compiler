@@ -23,20 +23,20 @@ namespace Elm {
 // while it runs; `Free`, `Forward` and any tag not listed are declined because they are not live
 // objects with a known layout.
 
-/// Calls `visit` on each child slot of the heap object `obj`, and returns whether its tag is one
-/// the walk handles.
-///
-/// `obj` must point at a heap object's header, and that object must not move while the call runs.
-/// `visit` is called as `visit(HPointer&)`, with a reference to the slot inside `obj`, so it may
-/// rewrite the slot; the reference is valid only for that call. It is called once per child slot,
-/// in field order, whatever the slot holds, so it must itself
-/// skip embedded constants and words that are not heap addresses.
-///
-/// Pointer-free objects return true with no call. `Tag_Process`, `Tag_Free`, `Tag_Forward` and
-/// unknown tags return false with no call. Only the live part of a variable-length object is
-/// visited: a `Closure`'s first `n_values` slots, a `ListBacking`'s `elems[hd, header.size)` and an
-/// `ElmArray`'s `elements[0, length)`. Every value of a `DynRecord` is visited, whatever its
-/// `unboxed` field holds.
+// Calls `visit` on each child slot of the heap object `obj`, and returns whether its tag is one
+// the walk handles.
+//
+// `obj` must point at a heap object's header, and that object must not move while the call runs.
+// `visit` is called as `visit(HPointer&)`, with a reference to the slot inside `obj`, so it may
+// rewrite the slot; the reference is valid only for that call. It is called once per child slot,
+// in field order, whatever the slot holds, so it must itself
+// skip embedded constants and words that are not heap addresses.
+//
+// Pointer-free objects return true with no call. `Tag_Process`, `Tag_Free`, `Tag_Forward` and
+// unknown tags return false with no call. Only the live part of a variable-length object is
+// visited: a `Closure`'s first `n_values` slots, a `ListBacking`'s `elems[hd, header.size)` and an
+// `ElmArray`'s `elements[0, length)`. Every value of a `DynRecord` is visited, whatever its
+// `unboxed` field holds.
 template <typename F>
 inline bool visitHeapChildren(void *obj, F &&visit) {
     Header *hdr = getHeader(obj);

@@ -29,11 +29,13 @@
 using namespace mlir;
 
 namespace {
-/// A pass that verifies the whole module and fails if verification fails.
-///
-/// It is added right after `EcoPAPSimplify`, so that a driver that turns off
-/// MLIR's verification after each pass still checks the closure rewrites
-/// that pass makes.
+/**
+ * A pass that verifies the whole module and fails if verification fails.
+ *
+ * It is added right after `EcoPAPSimplify`, so that a driver that turns off
+ * MLIR's verification after each pass still checks the closure rewrites
+ * that pass makes.
+ */
 struct VerifyAfterPAPSimplifyPass
     : public PassWrapper<VerifyAfterPAPSimplifyPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VerifyAfterPAPSimplifyPass)
@@ -47,9 +49,9 @@ struct VerifyAfterPAPSimplifyPass
     }
 };
 
-/// Returns whether to add `VerifyAfterPAPSimplifyPass`: always in builds with
-/// `ECO_HEAP_VALIDATE`, and otherwise when `ECO_VERIFY_AFTER_PAPSIMPLIFY` is
-/// set to a non-empty value whose first character is not `0`.
+// Returns whether to add `VerifyAfterPAPSimplifyPass`: always in builds with
+// `ECO_HEAP_VALIDATE`, and otherwise when `ECO_VERIFY_AFTER_PAPSIMPLIFY` is
+// set to a non-empty value whose first character is not `0`.
 bool verifyAfterPAPSimplifyEnabled() {
 #if ECO_HEAP_VALIDATE
     return true;
@@ -98,27 +100,27 @@ void buildEcoToEcoPipeline(PassManager &pm, const EcoPipelineOptions &opts) {
     pm.addPass(eco::createUndefinedFunctionPass());
 }
 
-/// Returns the setting of the environment switch `name`: `defaultOn` when the
-/// variable is unset or empty, off when it is exactly `0`, and on for any
-/// other value.
+// Returns the setting of the environment switch `name`: `defaultOn` when the
+// variable is unset or empty, off when it is exactly `0`, and on for any
+// other value.
 static bool envSwitch(const char *name, bool defaultOn) {
     const char *e = ::getenv(name);
     if (!e || !*e)
         return defaultOn;
     return !(e[0] == '0' && e[1] == '\0');
 }
-/// Returns whether to run CSE in the M4 slot: only when `ECO_MLIR_CSE` is set
-/// to a non-empty value other than `0`.
-///
-/// CSE is off by default because it is unsound here. Elm can observe whether
-/// two values are one object: CSE may merge two identical constructs holding
-/// a NaN into one object, and the equality kernel answers True for the same
-/// object without comparing contents, where comparing the two separate
-/// objects answers False, since NaN is not equal to itself. The same holds
-/// for `eco.box` of a float and for `eco.cse_safe` kernel calls that return
-/// containers holding floats.
+// Returns whether to run CSE in the M4 slot: only when `ECO_MLIR_CSE` is set
+// to a non-empty value other than `0`.
+//
+// CSE is off by default because it is unsound here. Elm can observe whether
+// two values are one object: CSE may merge two identical constructs holding
+// a NaN into one object, and the equality kernel answers True for the same
+// object without comparing contents, where comparing the two separate
+// objects answers False, since NaN is not equal to itself. The same holds
+// for `eco.box` of a float and for `eco.cse_safe` kernel calls that return
+// containers holding floats.
 static bool ecoMlirCseEnabled() { return envSwitch("ECO_MLIR_CSE", false); }
-/// Returns whether to run `EcoFoldProject`; on unless `ECO_MLIR_FOLD` is `0`.
+// Returns whether to run `EcoFoldProject`; on unless `ECO_MLIR_FOLD` is `0`.
 static bool ecoFoldProjectEnabled() { return envSwitch("ECO_MLIR_FOLD", true); }
 
 void buildEcoToOptPipeline(PassManager &pm, const EcoPipelineOptions &opts) {

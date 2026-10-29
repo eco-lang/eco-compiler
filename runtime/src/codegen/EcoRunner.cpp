@@ -63,8 +63,8 @@ extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 #include "llvm/Analysis/TargetLibraryInfo.h"
 
 namespace eco { void linkEcoGCStrategy(); }
-/// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that the file registering Eco's GC strategy
-/// with LLVM is linked into any binary that contains this one, even from a static library.
+// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that the file registering Eco's GC strategy
+// with LLVM is linked into any binary that contains this one, even from a static library.
 static struct EcoGCStrategyLinker {
     EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLinker;
@@ -88,9 +88,9 @@ namespace eco {
 
 namespace {
 
-/// The calling thread's capture buffer, which is that thread's print destination while it captures.
+// The calling thread's capture buffer, which is that thread's print destination while it captures.
 thread_local std::ostringstream tl_capture_buffer;
-/// Whether the calling thread is between `startOutputCapture` and `stopOutputCapture`.
+// Whether the calling thread is between `startOutputCapture` and `stopOutputCapture`.
 thread_local bool tl_capturing = false;
 
 } // namespace
@@ -119,11 +119,13 @@ bool isCapturingOutput() {
 // EcoRunner Implementation
 //===----------------------------------------------------------------------===//
 
-/// The work of an `EcoRunner`, kept out of the header so that it need not include MLIR or LLVM. It holds no state of
-/// its own; each run takes the runner's options as an argument.
+/**
+ * The work of an `EcoRunner`, kept out of the header so that it need not include MLIR or LLVM. It holds no state of
+ * its own; each run takes the runner's options as an argument.
+ */
 class EcoRunner::Impl {
 public:
-    /// Initializes LLVM's native target if nothing has, and outside Windows sets `SIGPIPE` to be ignored.
+    // Initializes LLVM's native target if nothing has, and outside Windows sets `SIGPIPE` to be ignored.
     Impl() {
         initializeLLVM();
 #if !defined(_WIN32)
@@ -134,7 +136,7 @@ public:
 
     ~Impl() = default;
 
-    /// Does `EcoRunner::run` for `source` with `options`.
+    // Does `EcoRunner::run` for `source` with `options`.
     RunResult run(const std::string& source, const Options& options) {
         RunResult result;
 
@@ -159,7 +161,7 @@ public:
         return executeJIT(*module, options);
     }
 
-    /// Does `EcoRunner::runFile` for `filePath` with `options`.
+    // Does `EcoRunner::runFile` for `filePath` with `options`.
     RunResult runFile(const std::string& filePath, const Options& options) {
         auto fileOrErr = llvm::MemoryBuffer::getFile(filePath);
         if (!fileOrErr) {
@@ -172,10 +174,10 @@ public:
     }
 
 private:
-    /// Set once LLVM's native target has been initialized in this process.
+    // Set once LLVM's native target has been initialized in this process.
     static std::once_flag llvmInitFlag_;
 
-    /// Initializes LLVM's native target and its assembly printer, once per process.
+    // Initializes LLVM's native target and its assembly printer, once per process.
     static void initializeLLVM() {
         std::call_once(llvmInitFlag_, []() {
             llvm::InitializeNativeTarget();
@@ -183,8 +185,8 @@ private:
         });
     }
 
-    /// Parses and verifies `source` as a module in `context`, and returns it, or null if it is not a valid module.
-    /// Parse errors are reported through `context`'s diagnostic handler.
+    // Parses and verifies `source` as a module in `context`, and returns it, or null if it is not a valid module.
+    // Parse errors are reported through `context`'s diagnostic handler.
     OwningOpRef<ModuleOp> parseMLIR(MLIRContext& context, const std::string& source) {
         llvm::SourceMgr sourceMgr;
         auto memBuffer = llvm::MemoryBuffer::getMemBuffer(source, "eco_runner_input");
@@ -192,8 +194,8 @@ private:
         return parseSourceFile<ModuleOp>(sourceMgr, &context);
     }
 
-    /// Lowers `module` in place to the LLVM dialect, and returns whether every pass succeeded. `options` does not
-    /// affect the lowering.
+    // Lowers `module` in place to the LLVM dialect, and returns whether every pass succeeded. `options` does not
+    // affect the lowering.
     bool runPipeline(ModuleOp module, const Options& options) {
         (void)options;
         PassManager pm(module->getName());
@@ -205,7 +207,7 @@ private:
         return succeeded(pm.run(module));
     }
 
-    /// Compiles the lowered `module`, prepares the runtime, and calls `main`, as `EcoRunner::run` describes.
+    // Compiles the lowered `module`, prepares the runtime, and calls `main`, as `EcoRunner::run` describes.
     RunResult executeJIT(ModuleOp module, const Options& options) {
         RunResult result;
 

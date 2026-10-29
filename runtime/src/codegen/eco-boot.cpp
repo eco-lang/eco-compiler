@@ -117,13 +117,13 @@
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
 
-/// Does nothing; calling it keeps the "eco-gc" GC strategy registration from
-/// being dropped when it comes from a static library.
+// Does nothing; calling it keeps the "eco-gc" GC strategy registration from
+// being dropped when it comes from a static library.
 namespace eco { void linkEcoGCStrategy(); }
-/// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that
-/// the object file holding the "eco-gc" strategy registration is linked in.
+// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that
+// the object file holding the "eco-gc" strategy registration is linked in.
 static struct EcoGCStrategyLinker {
-    /// Calls `eco::linkEcoGCStrategy`.
+    // Calls `eco::linkEcoGCStrategy`.
     EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLinker;
 
@@ -160,7 +160,9 @@ static cl::opt<std::string> outputFilename(
     cl::init(""));
 
 namespace {
-/// The kind of output `--emit` asks for.
+/**
+ * The kind of output `--emit` asks for.
+ */
 enum Action {
     EmitExe,
     EmitObj,
@@ -169,9 +171,9 @@ enum Action {
 };
 } // namespace
 
-/// The kind of output. Its `exe` help says ELF, but the executable format is
-/// the host's. An output path ending in `.o` makes `exe` produce an object,
-/// and one ending in `.so` or `.node` makes it produce a shared library.
+// The kind of output. Its `exe` help says ELF, but the executable format is
+// the host's. An output path ending in `.o` makes `exe` produce an object,
+// and one ending in `.so` or `.node` makes it produce a shared library.
 static cl::opt<enum Action> emitAction(
     "emit",
     cl::desc("Select the kind of output desired"),
@@ -211,9 +213,9 @@ static cl::opt<bool> gcSections(
              "sections. Binary-size only; opt-in until broadly validated"),
     cl::init(false));
 
-/// The requested number of parallel emission partitions, as
-/// `eco::EcoBackendJob::splitCodegen` defines it. Despite its help, the split
-/// may be made in MLIR before optimization; see `eco::mlirSplitPartitionCount`.
+// The requested number of parallel emission partitions, as
+// `eco::EcoBackendJob::splitCodegen` defines it. Despite its help, the split
+// may be made in MLIR before optimization; see `eco::mlirSplitPartitionCount`.
 static cl::opt<unsigned> splitCodegen(
     "split-codegen",
     cl::desc("Parallel object emission: split the optimized module into N "
@@ -221,7 +223,7 @@ static cl::opt<unsigned> splitCodegen(
              "0 = auto (cores), 1 = off"),
     cl::init(0));
 
-/// The parallel-optimization tier, as `eco::ParallelOpt` defines it.
+// The parallel-optimization tier, as `eco::ParallelOpt` defines it.
 static cl::opt<eco::ParallelOpt> parallelOpt(
     "parallel-opt",
     cl::desc("Parallelize the LLVM optimization stage across partitions "
@@ -288,26 +290,26 @@ static cl::opt<bool> printStats(
 // Frontend Invocation
 //===----------------------------------------------------------------------===//
 
-/// Returns whether `path` names an Elm source file, by its extension.
+// Returns whether `path` names an Elm source file, by its extension.
 static bool isElmFile(llvm::StringRef path) {
     return path.ends_with(".elm");
 }
 
-/// Returns whether `path` names an MLIR file, by its extension.
+// Returns whether `path` names an MLIR file, by its extension.
 static bool isMlirFile(llvm::StringRef path) {
     return path.ends_with(".mlir");
 }
 
-/// Returns whether `path` names an object file, by its extension.
+// Returns whether `path` names an object file, by its extension.
 static bool isObjectFile(llvm::StringRef path) {
     return path.ends_with(".o");
 }
 
-/// Returns the nearest directory containing `elm.json` among the directories
-/// named in `startPath`, searching upwards from its directory part, or an empty
-/// string if there is none.
-///
-/// Only directories written in `startPath` are searched.
+// Returns the nearest directory containing `elm.json` among the directories
+// named in `startPath`, searching upwards from its directory part, or an empty
+// string if there is none.
+//
+// Only directories written in `startPath` are searched.
 static std::string findElmProjectRoot(const std::string &startPath) {
     llvm::SmallString<256> dir(startPath);
     llvm::sys::path::remove_filename(dir); // start from file's parent
@@ -328,16 +330,16 @@ static std::string findElmProjectRoot(const std::string &startPath) {
     return "";
 }
 
-/// Runs the Elm frontend to compile `elmFile` into MLIR written to
-/// `mlirOutput`, and returns 0 on success or 1 on failure, with the reason on
-/// stderr.
-///
-/// The frontend runs as `node <--frontend> make --output=<mlirOutput>
-/// <elmFile>`, with both paths made absolute, in the Elm project directory:
-/// `--workdir` if given, or else the one `findElmProjectRoot` finds. The call
-/// changes the process's working directory for the duration of the child and
-/// then changes it back. It returns 1 if `--frontend` is unset or `node` is
-/// not on the path.
+// Runs the Elm frontend to compile `elmFile` into MLIR written to
+// `mlirOutput`, and returns 0 on success or 1 on failure, with the reason on
+// stderr.
+//
+// The frontend runs as `node <--frontend> make --output=<mlirOutput>
+// <elmFile>`, with both paths made absolute, in the Elm project directory:
+// `--workdir` if given, or else the one `findElmProjectRoot` finds. The call
+// changes the process's working directory for the duration of the child and
+// then changes it back. It returns 1 if `--frontend` is unset or `node` is
+// not on the path.
 static int compileElmToMlir(const std::string &elmFile,
                              const std::string &mlirOutput) {
     if (frontendRunner.empty()) {
@@ -414,8 +416,8 @@ static int compileElmToMlir(const std::string &elmFile,
 // MLIR Loading and Pipeline
 //===----------------------------------------------------------------------===//
 
-/// Parses the buffer in `sourceMgr` as an MLIR module in `context`, and
-/// returns it, or null after a message on stderr if parsing fails.
+// Parses the buffer in `sourceMgr` as an MLIR module in `context`, and
+// returns it, or null after a message on stderr if parsing fails.
 static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
                                        llvm::SourceMgr &sourceMgr) {
     auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
@@ -424,13 +426,13 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
     return module;
 }
 
-/// Lowers `module` in place from the Eco dialect to the LLVM dialect with the
-/// pipeline `eco::buildEcoToLLVMPipeline` builds from `pipeOpts`, and returns
-/// 0 on success or 1 on failure.
-///
-/// The MLIR pass-manager command-line options apply, and each pass is timed
-/// into `stats`. Unless the build defines `ECO_LOWERING_VALIDATION`, the
-/// module is not verified after each pass.
+// Lowers `module` in place from the Eco dialect to the LLVM dialect with the
+// pipeline `eco::buildEcoToLLVMPipeline` builds from `pipeOpts`, and returns
+// 0 on success or 1 on failure.
+//
+// The MLIR pass-manager command-line options apply, and each pass is timed
+// into `stats`. Unless the build defines `ECO_LOWERING_VALIDATION`, the
+// module is not verified after each pass.
 static int runPipeline(ModuleOp module, eco::LoweringStats &stats,
                        const eco::EcoPipelineOptions &pipeOpts) {
     PassManager pm(module->getName());
@@ -460,12 +462,12 @@ static int runPipeline(ModuleOp module, eco::LoweringStats &stats,
 // LLVM IR Translation
 //===----------------------------------------------------------------------===//
 
-/// Translates the LLVM-dialect `module` into an LLVM module in `llvmContext`,
-/// with the function `main` renamed `eco_main`, and returns it, or null after
-/// a message on stderr if translation fails.
-///
-/// The result does not refer to `module` or its context. Unless the build
-/// defines `ECO_LOWERING_VALIDATION`, the result is not verified.
+// Translates the LLVM-dialect `module` into an LLVM module in `llvmContext`,
+// with the function `main` renamed `eco_main`, and returns it, or null after
+// a message on stderr if translation fails.
+//
+// The result does not refer to `module` or its context. Unless the build
+// defines `ECO_LOWERING_VALIDATION`, the result is not verified.
 static std::unique_ptr<llvm::Module> translateToLLVMIR(
     ModuleOp module, llvm::LLVMContext &llvmContext) {
     registerBuiltinDialectTranslation(*module->getContext());
@@ -497,8 +499,8 @@ static std::unique_ptr<llvm::Module> translateToLLVMIR(
 
 #include "EcoNativeDriver.h"
 
-/// Returns whether `outputPath` asks for a shared library, which it does by
-/// ending in `.so` or `.node`.
+// Returns whether `outputPath` asks for a shared library, which it does by
+// ending in `.so` or `.node`.
 static bool outputIsSharedLib(const std::string &outputPath) {
     auto endsWith = [&](const char *suffix) {
         size_t n = std::strlen(suffix);
@@ -514,16 +516,16 @@ static bool outputIsSharedLib(const std::string &outputPath) {
 // in the MLIR-split branch (`objOnly`, `isExe`) and after translation
 // (`emitObjOnly`, `isExecutable`); all must agree.
 
-/// Returns whether the output is a single object file: `--emit=obj`, or
-/// `output` ending in `.o`.
+// Returns whether the output is a single object file: `--emit=obj`, or
+// `output` ending in `.o`.
 static bool capOutputObjOnly(const std::string &output) {
     return emitAction == EmitObj ||
            (output.size() >= 2 &&
             output.compare(output.size() - 2, 2, ".o") == 0);
 }
-/// Returns whether the output for `output` is closed-world: an executable, or
-/// an object with a non-empty `--internalize-keep`. Shared libraries,
-/// `--emit=llvm` and `--emit=mlir` are not.
+// Returns whether the output for `output` is closed-world: an executable, or
+// an object with a non-empty `--internalize-keep`. Shared libraries,
+// `--emit=llvm` and `--emit=mlir` are not.
 static bool capClosedWorld(const std::string &output) {
     if (emitAction != EmitExe && emitAction != EmitObj)
         return false; // --emit=llvm / mlir: no internalization
@@ -532,11 +534,11 @@ static bool capClosedWorld(const std::string &output) {
         return !outputIsSharedLib(output); // executable
     return !internalizeKeep.empty();
 }
-/// Returns the MLIR pipeline options for `output`. For closed-world output
-/// they turn on reachability, with the roots `main` and `__eco_init_globals`
-/// for an executable, or the `--internalize-keep` names for an object, where
-/// `eco_main` is given as `main`, its name in MLIR. Otherwise they are the
-/// defaults.
+// Returns the MLIR pipeline options for `output`. For closed-world output
+// they turn on reachability, with the roots `main` and `__eco_init_globals`
+// for an executable, or the `--internalize-keep` names for an object, where
+// `eco_main` is given as `main`, its name in MLIR. Otherwise they are the
+// defaults.
 static eco::EcoPipelineOptions capPipelineOptions(const std::string &output) {
     eco::EcoPipelineOptions o;
     o.capClosedWorld = capClosedWorld(output);
@@ -556,9 +558,9 @@ static eco::EcoPipelineOptions capPipelineOptions(const std::string &output) {
     return o;
 }
 
-/// Links `objectFile` into `outputPath` with `eco::linkExecutable`, as a
-/// shared library when `outputIsSharedLib` says so, under `--verbose` and
-/// `--gc-sections`. Returns 0 on success and 1 on failure.
+// Links `objectFile` into `outputPath` with `eco::linkExecutable`, as a
+// shared library when `outputIsSharedLib` says so, under `--verbose` and
+// `--gc-sections`. Returns 0 on success and 1 on failure.
 static int linkExecutable(const std::string &objectFile,
                           const std::string &outputPath) {
     eco::EcoNativeOptions opts;
@@ -568,7 +570,7 @@ static int linkExecutable(const std::string &objectFile,
                                outputIsSharedLib(outputPath));
 }
 
-/// Links `objectFiles` into `outputPath`, as the single-object overload does.
+// Links `objectFiles` into `outputPath`, as the single-object overload does.
 static int linkExecutable(const std::vector<std::string> &objectFiles,
                           const std::string &outputPath) {
     eco::EcoNativeOptions opts;
@@ -582,9 +584,9 @@ static int linkExecutable(const std::vector<std::string> &objectFiles,
 // Output Path Logic
 //===----------------------------------------------------------------------===//
 
-/// Returns the output path: `-o` if given, and otherwise `a.out` for
-/// `--emit=exe`, the input with its extension replaced by `.o` or `.ll` for
-/// `--emit=obj` or `--emit=llvm`, and `-`, meaning stdout, for `--emit=mlir`.
+// Returns the output path: `-o` if given, and otherwise `a.out` for
+// `--emit=exe`, the input with its extension replaced by `.o` or `.ll` for
+// `--emit=obj` or `--emit=llvm`, and `-`, meaning stdout, for `--emit=mlir`.
 static std::string getOutputPath() {
     if (!outputFilename.empty())
         return outputFilename;
@@ -612,29 +614,29 @@ static std::string getOutputPath() {
 // Main
 //===----------------------------------------------------------------------===//
 
-/// Whether partition objects can be joined into the one requested object with
-/// a relocatable link (`systemLinker -r`). COFF linkers have no `-r`, so on
-/// Windows object output is not split-eligible; executables still are, since
-/// the final link takes every partition object.
+// Whether partition objects can be joined into the one requested object with
+// a relocatable link (`systemLinker -r`). COFF linkers have no `-r`, so on
+// Windows object output is not split-eligible; executables still are, since
+// the final link takes every partition object.
 #if defined(_WIN32)
 static constexpr bool kCanRelinkObjects = false;
 #else
 static constexpr bool kCanRelinkObjects = true;
 #endif
 
-/// Flushes the output streams and, unless LLVM's timing or statistics reports
-/// are on (POSIX only), ends the process with exit status `rc` without running
-/// static destructors or freeing what is still allocated.
-///
-/// On Windows it never returns: it calls `TerminateProcess`, which skips the
-/// DLL detach and static-destructor sweep that can stall when a process
-/// linked with all of LLVM and MLIR exits normally. On POSIX it calls `_exit`,
-/// skipping the destruction of the LLVM module and the rest, unless
-/// `-time-passes` or LLVM statistics are on, whose reports are printed by
-/// static destructors; then it returns and the caller exits normally.
-///
-/// Every output must be written and every temporary file removed before the
-/// call.
+// Flushes the output streams and, unless LLVM's timing or statistics reports
+// are on (POSIX only), ends the process with exit status `rc` without running
+// static destructors or freeing what is still allocated.
+//
+// On Windows it never returns: it calls `TerminateProcess`, which skips the
+// DLL detach and static-destructor sweep that can stall when a process
+// linked with all of LLVM and MLIR exits normally. On POSIX it calls `_exit`,
+// skipping the destruction of the LLVM module and the rest, unless
+// `-time-passes` or LLVM statistics are on, whose reports are printed by
+// static destructors; then it returns and the caller exits normally.
+//
+// Every output must be written and every temporary file removed before the
+// call.
 static void ecoBootFinalExit(int rc) {
 #if defined(_WIN32)
     llvm::outs().flush();
@@ -653,18 +655,18 @@ static void ecoBootFinalExit(int rc) {
 #endif
 }
 
-/// Compiles the input named on the command line into the output `--emit` and
-/// the output path ask for, as the file comment describes, and returns the
-/// process exit status: 0 on success, and nonzero on failure, with the reason
-/// on stderr.
-///
-/// Once the backend has written objects for an executable, a shared library
-/// or an object file, the run ends through `ecoBootFinalExit`. Temporary MLIR
-/// and object files are removed on success and on most failures.
-///
-/// `--emit=mlir` stops after the frontend only for `.elm` input. For `.mlir`
-/// input it runs the whole pipeline and writes to the output path, which
-/// defaults to `-`.
+// Compiles the input named on the command line into the output `--emit` and
+// the output path ask for, as the file comment describes, and returns the
+// process exit status: 0 on success, and nonzero on failure, with the reason
+// on stderr.
+//
+// Once the backend has written objects for an executable, a shared library
+// or an object file, the run ends through `ecoBootFinalExit`. Temporary MLIR
+// and object files are removed on success and on most failures.
+//
+// `--emit=mlir` stops after the frontend only for `.elm` input. For `.mlir`
+// input it runs the whole pipeline and writes to the output path, which
+// defaults to `-`.
 int main(int argc, char **argv) {
 #if defined(__GLIBC__)
     // glibc malloc settings, for this process only, to reduce contention on

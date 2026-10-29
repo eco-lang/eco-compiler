@@ -31,24 +31,26 @@ using namespace mlir;
 
 namespace {
 
-/// Returns whether the environment variable `n` is set to a value other than
-/// the empty string and "0".
+// Returns whether the environment variable `n` is set to a value other than
+// the empty string and "0".
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// The closed-world reachability pass, holding the names of its roots.
+/**
+ * The closed-world reachability pass, holding the names of its roots.
+ */
 struct EcoReachabilityPass
     : public PassWrapper<EcoReachabilityPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoReachabilityPass)
 
-    /// Creates a pass with no roots, which changes nothing.
+    // Creates a pass with no roots, which changes nothing.
     EcoReachabilityPass() = default;
-    /// Creates a pass whose roots are the symbols named in `roots`.
+    // Creates a pass whose roots are the symbols named in `roots`.
     explicit EcoReachabilityPass(std::vector<std::string> roots)
         : roots(std::move(roots)) {}
-    /// Creates a copy with the same roots, as MLIR does when it clones a pass.
+    // Creates a copy with the same roots, as MLIR does when it clones a pass.
     EcoReachabilityPass(const EcoReachabilityPass &o)
         : PassWrapper(o), roots(o.roots) {}
 
@@ -57,13 +59,13 @@ struct EcoReachabilityPass
         return "Closed-world reachability + internalization (CGEN_081)";
     }
 
-    /// Names of the root symbols, by their MLIR names. A name with no
-    /// top-level symbol is ignored.
+    // Names of the root symbols, by their MLIR names. A name with no
+    // top-level symbol is ignored.
     std::vector<std::string> roots;
 
-    /// Fails, after emitting an error, if a reached LLVM function or global
-    /// definition has a linkage other than External, Internal or Private, or a
-    /// non-default visibility; nothing has been changed at that point.
+    // Fails, after emitting an error, if a reached LLVM function or global
+    // definition has a linkage other than External, Internal or Private, or a
+    // non-default visibility; nothing has been changed at that point.
     void runOnOperation() override;
 };
 

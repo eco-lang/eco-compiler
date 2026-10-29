@@ -34,19 +34,23 @@ namespace BytesOps {
 // Endianness
 // ============================================================================
 
-/// The order in which the bytes of a multi-byte number are laid out. A one-byte number has only one order, and
-/// its encoders and decoders ignore this.
+/**
+ * The order in which the bytes of a multi-byte number are laid out. A one-byte number has only one order, and
+ * its encoders and decoders ignore this.
+ */
 enum class Endianness {
-    LE,  ///< Least significant byte first.
-    BE   ///< Most significant byte first.
+    LE,  // Least significant byte first.
+    BE   // Most significant byte first.
 };
 
 // ============================================================================
 // Width for integer encoding
 // ============================================================================
 
-/// How many bytes an encoded integer occupies. Each enumerator's value is that number of bytes, and the integer
-/// codecs use it as a byte count.
+/**
+ * How many bytes an encoded integer occupies. Each enumerator's value is that number of bytes, and the integer
+ * codecs use it as a byte count.
+ */
 enum class Width {
     W8   = 1,
     W16  = 2,
@@ -57,42 +61,42 @@ enum class Width {
 // Creation
 // ============================================================================
 
-/// Returns the empty Bytes, the Empty constant. Does not allocate.
+// Returns the empty Bytes, the Empty constant. Does not allocate.
 inline HPointer empty() {
     return alloc::allocByteBuffer(nullptr, 0);
 }
 
-/// Returns a Bytes value holding one byte per element of the Elm list `list`, in order. Each byte is the low 8
-/// bits of the element's slot read as an Int, so a value outside 0 to 255 wraps. An empty list gives the empty
-/// Bytes.
+// Returns a Bytes value holding one byte per element of the Elm list `list`, in order. Each byte is the low 8
+// bits of the element's slot read as an Int, so a value outside 0 to 255 wraps. An empty list gives the empty
+// Bytes.
 HPointer fromList(HPointer list);
 
-/// Returns a Bytes value holding a copy of the `length` bytes at `data`, or the empty Bytes when `length` is 0.
-///
-/// The bytes are copied after any collection the allocation runs, so `data` must not point into the collected
-/// heap, as `alloc::allocByteBuffer` requires.
+// Returns a Bytes value holding a copy of the `length` bytes at `data`, or the empty Bytes when `length` is 0.
+//
+// The bytes are copied after any collection the allocation runs, so `data` must not point into the collected
+// heap, as `alloc::allocByteBuffer` requires.
 inline HPointer fromData(const u8* data, size_t length) {
     return alloc::allocByteBuffer(data, length);
 }
 
-/// Returns a Bytes value holding a copy of the bytes of `vec`, or the empty Bytes when it is empty.
+// Returns a Bytes value holding a copy of the bytes of `vec`, or the empty Bytes when it is empty.
 inline HPointer fromVector(const std::vector<u8>& vec) {
     return alloc::allocByteBuffer(vec.data(), vec.size());
 }
 
-/// Returns the UTF-8 encoding of the String `str`, exactly as `encodeUtf8` does.
+// Returns the UTF-8 encoding of the String `str`, exactly as `encodeUtf8` does.
 HPointer fromString(void* str);
 
 // ============================================================================
 // Access
 // ============================================================================
 
-/// Returns the number of bytes in `buf`.
+// Returns the number of bytes in `buf`.
 inline i64 length(void* buf) {
     return static_cast<i64>(alloc::byteBufferLength(buf));
 }
 
-/// Returns the byte of `buf` at `index`, from 0 to 255, or -1 when `index` is negative or not below its length.
+// Returns the byte of `buf` at `index`, from 0 to 255, or -1 when `index` is negative or not below its length.
 inline i64 getAt(void* buf, i64 index) {
     auto v = alloc::byteBufferView(buf);
     if (index < 0 || static_cast<size_t>(index) >= v.length) {
@@ -101,13 +105,13 @@ inline i64 getAt(void* buf, i64 index) {
     return static_cast<i64>(v.data[index]);
 }
 
-/// Returns the bytes of `buf` from `start` up to but not including `end`.
-///
-/// Each bound is first clamped to between 0 and the length of `buf`; a negative bound means 0, not a count from
-/// the end. When `start` is not below `end` the result is the empty Bytes. Otherwise it is what
-/// `alloc::makeByteBufferSlice` gives: a copy for a range shorter than `MAKE_BYTEBUFFER_SLICE_MIN_LEN` bytes, and
-/// otherwise a slice that refers to the bytes of `buf` (or of its base, when `buf` is a slice) without copying
-/// them.
+// Returns the bytes of `buf` from `start` up to but not including `end`.
+//
+// Each bound is first clamped to between 0 and the length of `buf`; a negative bound means 0, not a count from
+// the end. When `start` is not below `end` the result is the empty Bytes. Otherwise it is what
+// `alloc::makeByteBufferSlice` gives: a copy for a range shorter than `MAKE_BYTEBUFFER_SLICE_MIN_LEN` bytes, and
+// otherwise a slice that refers to the bytes of `buf` (or of its base, when `buf` is a slice) without copying
+// them.
 inline HPointer slice(void* buf, i64 start, i64 end) {
     auto& allocator = Allocator::instance();
     size_t buf_len = alloc::byteBufferLength(buf);
@@ -126,8 +130,8 @@ inline HPointer slice(void* buf, i64 start, i64 end) {
 // Encoding - Integers
 // ============================================================================
 
-/// Returns a Bytes value of `width` bytes holding the low `width` bytes of `value`, in the order `endian`
-/// gives. Higher bytes of `value` are dropped.
+// Returns a Bytes value of `width` bytes holding the low `width` bytes of `value`, in the order `endian`
+// gives. Higher bytes of `value` are dropped.
 inline HPointer encodeUnsignedInt(u64 value, Width width, Endianness endian) {
     size_t w = static_cast<size_t>(width);
     u8 bytes[4];
@@ -156,15 +160,15 @@ inline HPointer encodeUnsignedInt(u64 value, Width width, Endianness endian) {
     return alloc::allocByteBuffer(bytes, w);
 }
 
-/// Returns a Bytes value of `width` bytes holding the low `width` bytes of the two's complement form of
-/// `value`, in the order `endian` gives, as `encodeUnsignedInt` does.
+// Returns a Bytes value of `width` bytes holding the low `width` bytes of the two's complement form of
+// `value`, in the order `endian` gives, as `encodeUnsignedInt` does.
 inline HPointer encodeSignedInt(i64 value, Width width, Endianness endian) {
     return encodeUnsignedInt(static_cast<u64>(value), width, endian);
 }
 
-/// Returns `Just` the unsigned integer in the `width` bytes of `buf` starting at `offset`, read in the order
-/// `endian` gives, or `Nothing` when `offset` is negative or fewer than `width` bytes follow it. The `Just`
-/// holds an unboxed Int.
+// Returns `Just` the unsigned integer in the `width` bytes of `buf` starting at `offset`, read in the order
+// `endian` gives, or `Nothing` when `offset` is negative or fewer than `width` bytes follow it. The `Just`
+// holds an unboxed Int.
 inline HPointer decodeUnsignedInt(void* buf, i64 offset, Width width, Endianness endian) {
     auto v = alloc::byteBufferView(buf);
     size_t w = static_cast<size_t>(width);
@@ -199,9 +203,9 @@ inline HPointer decodeUnsignedInt(void* buf, i64 offset, Width width, Endianness
     return alloc::just(alloc::unboxedInt(static_cast<i64>(value)), false);
 }
 
-/// Returns `Just` the two's complement integer in the `width` bytes of `buf` starting at `offset`, read in the
-/// order `endian` gives and sign-extended, or `Nothing` as `decodeUnsignedInt` does. The `Just` holds an
-/// unboxed Int.
+// Returns `Just` the two's complement integer in the `width` bytes of `buf` starting at `offset`, read in the
+// order `endian` gives and sign-extended, or `Nothing` as `decodeUnsignedInt` does. The `Just` holds an
+// unboxed Int.
 inline HPointer decodeSignedInt(void* buf, i64 offset, Width width, Endianness endian) {
     auto v = alloc::byteBufferView(buf);
     size_t w = static_cast<size_t>(width);
@@ -239,8 +243,8 @@ inline HPointer decodeSignedInt(void* buf, i64 offset, Width width, Endianness e
 // Encoding - Floats
 // ============================================================================
 
-/// Returns a Bytes value of 4 bytes holding `value`, converted to a 32-bit IEEE 754 float, in the order
-/// `endian` gives.
+// Returns a Bytes value of 4 bytes holding `value`, converted to a 32-bit IEEE 754 float, in the order
+// `endian` gives.
 inline HPointer encodeFloat32(f64 value, Endianness endian) {
     float f = static_cast<float>(value);
     u32 bits;
@@ -251,7 +255,7 @@ inline HPointer encodeFloat32(f64 value, Endianness endian) {
     return alloc::allocByteBuffer(bytes, 4);
 }
 
-/// Returns a Bytes value of 8 bytes holding `value` as a 64-bit IEEE 754 float, in the order `endian` gives.
+// Returns a Bytes value of 8 bytes holding `value` as a 64-bit IEEE 754 float, in the order `endian` gives.
 inline HPointer encodeFloat64(f64 value, Endianness endian) {
     u64 bits;
     std::memcpy(&bits, &value, 8);
@@ -261,12 +265,12 @@ inline HPointer encodeFloat64(f64 value, Endianness endian) {
     return alloc::allocByteBuffer(bytes, 8);
 }
 
-/// Returns `Just` the 32-bit IEEE 754 float in the 4 bytes of `buf` starting at `offset`, read in the order
-/// `endian` gives and widened to 64 bits, or `Nothing` when `offset` is negative or fewer than 4 bytes follow
-/// it.
-///
-/// The `Just` is built by `alloc::just` with `is_boxed` false, so its slot is marked with the Int kind although
-/// it holds a Float's bits.
+// Returns `Just` the 32-bit IEEE 754 float in the 4 bytes of `buf` starting at `offset`, read in the order
+// `endian` gives and widened to 64 bits, or `Nothing` when `offset` is negative or fewer than 4 bytes follow
+// it.
+//
+// The `Just` is built by `alloc::just` with `is_boxed` false, so its slot is marked with the Int kind although
+// it holds a Float's bits.
 inline HPointer decodeFloat32(void* buf, i64 offset, Endianness endian) {
     auto v = alloc::byteBufferView(buf);
     size_t off = static_cast<size_t>(offset);
@@ -284,10 +288,10 @@ inline HPointer decodeFloat32(void* buf, i64 offset, Endianness endian) {
     return alloc::just(alloc::unboxedFloat(static_cast<f64>(f)), false);
 }
 
-/// Returns `Just` the 64-bit IEEE 754 float in the 8 bytes of `buf` starting at `offset`, read in the order
-/// `endian` gives, or `Nothing` when `offset` is negative or fewer than 8 bytes follow it.
-///
-/// As in `decodeFloat32`, the `Just`'s slot is marked with the Int kind although it holds a Float's bits.
+// Returns `Just` the 64-bit IEEE 754 float in the 8 bytes of `buf` starting at `offset`, read in the order
+// `endian` gives, or `Nothing` when `offset` is negative or fewer than 8 bytes follow it.
+//
+// As in `decodeFloat32`, the `Just`'s slot is marked with the Int kind although it holds a Float's bits.
 inline HPointer decodeFloat64(void* buf, i64 offset, Endianness endian) {
     auto v = alloc::byteBufferView(buf);
     size_t off = static_cast<size_t>(offset);
@@ -309,38 +313,38 @@ inline HPointer decodeFloat64(void* buf, i64 offset, Endianness endian) {
 // String Conversion
 // ============================================================================
 
-/// Returns `Just` the String whose UTF-8 encoding is the bytes of `buf`, or `Nothing` when they are not well
-/// formed. A non-empty String is a UTF-16 String, never one of the UTF-8
-/// forms, and empty input gives `Just` the empty String.
-///
-/// The check is only of the shape of each sequence: a lead byte of the form 0xxxxxxx, 110xxxxx, 1110xxxx or
-/// 11110xxx followed by that many continuation bytes of the form 10xxxxxx, all before the end. Overlong forms,
-/// encoded surrogates and lead bytes 0xF5 to 0xF7 pass it. A decoded value above 0xFFFF is written as a
-/// surrogate pair; one above 0x10FFFF gives two units that are not a valid pair.
+// Returns `Just` the String whose UTF-8 encoding is the bytes of `buf`, or `Nothing` when they are not well
+// formed. A non-empty String is a UTF-16 String, never one of the UTF-8
+// forms, and empty input gives `Just` the empty String.
+//
+// The check is only of the shape of each sequence: a lead byte of the form 0xxxxxxx, 110xxxxx, 1110xxxx or
+// 11110xxx followed by that many continuation bytes of the form 10xxxxxx, all before the end. Overlong forms,
+// encoded surrogates and lead bytes 0xF5 to 0xF7 pass it. A decoded value above 0xFFFF is written as a
+// surrogate pair; one above 0x10FFFF gives two units that are not a valid pair.
 HPointer decodeUtf8(void* buf);
 
-/// Returns a Bytes value holding the UTF-8 encoding of the String `str`, or the empty Bytes for an empty or null
-/// `str`.
-///
-/// A high surrogate followed by a low one is encoded as the code point the pair stands for. Any other surrogate
-/// unit is encoded on its own as a three-byte sequence, which is not well-formed UTF-8.
+// Returns a Bytes value holding the UTF-8 encoding of the String `str`, or the empty Bytes for an empty or null
+// `str`.
+//
+// A high surrogate followed by a low one is encoded as the code point the pair stands for. Any other surrogate
+// unit is encoded on its own as a three-byte sequence, which is not well-formed UTF-8.
 HPointer encodeUtf8(void* str);
 
 // ============================================================================
 // List Conversion
 // ============================================================================
 
-/// Returns an Elm list of the bytes of `buf`, in order, each an unboxed Int from 0 to 255.
+// Returns an Elm list of the bytes of `buf`, in order, each an unboxed Int from 0 to 255.
 HPointer toList(void* buf);
 
 // ============================================================================
 // Concatenation
 // ============================================================================
 
-/// Returns the bytes of `a` followed by those of `b`.
-///
-/// When either is empty the result is the other one itself, not a copy, and when both are empty it is the empty
-/// Bytes. Otherwise the result is a new buffer holding a copy of both, never a slice.
+// Returns the bytes of `a` followed by those of `b`.
+//
+// When either is empty the result is the other one itself, not a copy, and when both are empty it is the empty
+// Bytes. Otherwise the result is a new buffer holding a copy of both, never a slice.
 inline HPointer append(void* a, void* b) {
     auto& allocator = Allocator::instance();
     size_t len_a = alloc::byteBufferLength(a);
@@ -372,23 +376,23 @@ inline HPointer append(void* a, void* b) {
     return dst.hp;
 }
 
-/// Returns the bytes of every Bytes value in the Elm list `bufferList`, joined in order, as a new buffer, or the
-/// empty Bytes when they hold no bytes between them. Each element must be a Bytes value; an element that is the
-/// Empty constant contributes nothing.
+// Returns the bytes of every Bytes value in the Elm list `bufferList`, joined in order, as a new buffer, or the
+// empty Bytes when they hold no bytes between them. Each element must be a Bytes value; an element that is the
+// Empty constant contributes nothing.
 HPointer concat(HPointer bufferList);
 
 // ============================================================================
 // Utilities
 // ============================================================================
 
-/// Returns a copy of the bytes of `buf`.
+// Returns a copy of the bytes of `buf`.
 inline std::vector<u8> toVector(void* buf) {
     auto v = alloc::byteBufferView(buf);
     return std::vector<u8>(v.data, v.data + v.length);
 }
 
-/// Returns whether `a` and `b` hold the same bytes, whatever their forms. Null equals any Bytes value of length
-/// 0.
+// Returns whether `a` and `b` hold the same bytes, whatever their forms. Null equals any Bytes value of length
+// 0.
 inline bool equal(void* a, void* b) {
     auto va = alloc::byteBufferView(a);
     auto vb = alloc::byteBufferView(b);
@@ -396,8 +400,8 @@ inline bool equal(void* a, void* b) {
     return std::memcmp(va.data, vb.data, va.length) == 0;
 }
 
-/// Returns a 32-bit hash of the bytes of `buf`: starting from 0, each byte in turn is added to the running value
-/// multiplied by 31, modulo 2^32. Bytes values that hold the same bytes hash alike whatever their forms.
+// Returns a 32-bit hash of the bytes of `buf`: starting from 0, each byte in turn is added to the running value
+// multiplied by 31, modulo 2^32. Bytes values that hold the same bytes hash alike whatever their forms.
 inline u32 hash(void* buf) {
     auto v = alloc::byteBufferView(buf);
     u32 h = 0;
@@ -411,30 +415,30 @@ inline u32 hash(void* buf) {
 // Base64 Encoding
 // ============================================================================
 
-/// Returns the bytes of `buf` as a String in Base64, with the alphabet `A`-`Z`, `a`-`z`, `0`-`9`, `+`, `/` and
-/// `=` padding, or the empty String when `buf` is empty. A non-empty result is a UTF-16 String.
+// Returns the bytes of `buf` as a String in Base64, with the alphabet `A`-`Z`, `a`-`z`, `0`-`9`, `+`, `/` and
+// `=` padding, or the empty String when `buf` is empty. A non-empty result is a UTF-16 String.
 HPointer toBase64(void* buf);
 
-/// Returns `Just` the bytes that the Base64 String `str` encodes, or `Nothing` when it is not Base64. A null or
-/// empty `str` gives `Just` the empty Bytes.
-///
-/// `str` must have a multiple of 4 units, each from the alphabet `toBase64` uses, and the first two of each group
-/// of 4 must not be `=`. The check goes no further: `=` is accepted in the last two places of any group, not only
-/// the last, and bits left over by padding need not be zero. A group whose third unit is `=` and whose fourth is
-/// not gives two bytes, the second built from the fourth unit alone.
+// Returns `Just` the bytes that the Base64 String `str` encodes, or `Nothing` when it is not Base64. A null or
+// empty `str` gives `Just` the empty Bytes.
+//
+// `str` must have a multiple of 4 units, each from the alphabet `toBase64` uses, and the first two of each group
+// of 4 must not be `=`. The check goes no further: `=` is accepted in the last two places of any group, not only
+// the last, and bits left over by padding need not be zero. A group whose third unit is `=` and whose fourth is
+// not gives two bytes, the second built from the fourth unit alone.
 HPointer fromBase64(void* str);
 
 // ============================================================================
 // Hex Encoding
 // ============================================================================
 
-/// Returns the bytes of `buf` as a String of lowercase hexadecimal digits, two per byte, high digit first, or the
-/// empty String when `buf` is empty. A non-empty result is a UTF-16 String.
+// Returns the bytes of `buf` as a String of lowercase hexadecimal digits, two per byte, high digit first, or the
+// empty String when `buf` is empty. A non-empty result is a UTF-16 String.
 HPointer toHex(void* buf);
 
-/// Returns `Just` the bytes that the hexadecimal String `str` encodes, two digits per byte with the high digit
-/// first, or `Nothing` when it has an odd number of units or a unit that is not a hexadecimal digit. Digits may
-/// be upper or lower case. A null or empty `str` gives `Just` the empty Bytes.
+// Returns `Just` the bytes that the hexadecimal String `str` encodes, two digits per byte with the high digit
+// first, or `Nothing` when it has an odd number of units or a unit that is not a hexadecimal digit. Digits may
+// be upper or lower case. A null or empty `str` gives `Just` the empty Bytes.
 HPointer fromHex(void* str);
 
 } // namespace BytesOps

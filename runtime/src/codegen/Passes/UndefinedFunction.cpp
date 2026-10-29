@@ -35,8 +35,10 @@ using namespace ::eco;
 
 namespace {
 
-/// The module pass that reports direct `eco.call` callees missing from the
-/// module.
+/**
+ * The module pass that reports direct `eco.call` callees missing from the
+ * module.
+ */
 struct UndefinedFunctionPass
     : public PassWrapper<UndefinedFunctionPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(UndefinedFunctionPass)
@@ -47,9 +49,9 @@ struct UndefinedFunctionPass
         return "Validate all called functions are defined or declared (CGEN_011)";
     }
 
-    /// Emits one error per callee name that is not a top-level `func.func`,
-    /// at the first call to it, and fails the pass if there was any. The module
-    /// is not changed.
+    // Emits one error per callee name that is not a top-level `func.func`,
+    // at the first call to it, and fails the pass if there was any. The module
+    // is not changed.
     void runOnOperation() override {
         ModuleOp module = getOperation();
 

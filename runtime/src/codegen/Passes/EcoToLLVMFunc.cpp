@@ -30,23 +30,25 @@ namespace {
 // Kernel func.func -> llvm.func external declaration
 //===----------------------------------------------------------------------===//
 
-/// A conversion of a kernel `func.func` into an external `llvm.func`
-/// declaration of the same name.
-///
-/// `!eco.value` parameters and results become `ptr addrspace(1)`; every other
-/// type is kept as it is, without the type converter. No result gives `void`,
-/// one gives that type, and several give a literal LLVM struct. The declaration
-/// is marked gc-leaf when the function carries `eco.gc_leaf` and
-/// `kernelGcLeafEnabled()` is true. If `runtime`'s symbol cache already has an
-/// `llvm.func` of the same name, the `func.func` is erased instead, and that
-/// function is marked gc-leaf under the same condition; its type is not
-/// compared. A new declaration is added to the cache.
+/**
+ * A conversion of a kernel `func.func` into an external `llvm.func`
+ * declaration of the same name.
+ *
+ * `!eco.value` parameters and results become `ptr addrspace(1)`; every other
+ * type is kept as it is, without the type converter. No result gives `void`,
+ * one gives that type, and several give a literal LLVM struct. The declaration
+ * is marked gc-leaf when the function carries `eco.gc_leaf` and
+ * `kernelGcLeafEnabled()` is true. If `runtime`'s symbol cache already has an
+ * `llvm.func` of the same name, the `func.func` is erased instead, and that
+ * function is marked gc-leaf under the same condition; its type is not
+ * compared. A new declaration is added to the cache.
+ */
 struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
-    /// The declaration cache that duplicates are looked up in and new
-    /// declarations added to. It must outlive the pattern.
+    // The declaration cache that duplicates are looked up in and new
+    // declarations added to. It must outlive the pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern with `benefit`, keeping a reference to `runtime`.
+    // Creates the pattern with `benefit`, keeping a reference to `runtime`.
     KernelFuncOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                          const EcoRuntime &runtime, PatternBenefit benefit)
         : OpConversionPattern(typeConverter, ctx, benefit), runtime(runtime) {}
@@ -121,19 +123,21 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 // sret workers: multi-result func.func -> (slot ptr, args...) -> void
 //===----------------------------------------------------------------------===//
 
-/// A conversion of a non-kernel `func.func` with two or more results into an
-/// `llvm.func` that returns `void` and takes, ahead of its converted
-/// parameters, a pointer in address space 0 to the slot its results go to.
-///
-/// The body is moved into the new function and its block argument types are
-/// converted, the slot becoming a new leading entry-block argument. The
-/// results are not written here: the lowerings of `eco.return` and `eco.call`
-/// store them into the slot and load them back. Linkage is External for a
-/// public function and Internal otherwise. Every attribute except the symbol
-/// name, the function type and `sym_visibility` is copied unchanged. The
-/// pattern fails if a parameter type does not convert.
+/**
+ * A conversion of a non-kernel `func.func` with two or more results into an
+ * `llvm.func` that returns `void` and takes, ahead of its converted
+ * parameters, a pointer in address space 0 to the slot its results go to.
+ *
+ * The body is moved into the new function and its block argument types are
+ * converted, the slot becoming a new leading entry-block argument. The
+ * results are not written here: the lowerings of `eco.return` and `eco.call`
+ * store them into the slot and load them back. Linkage is External for a
+ * public function and Internal otherwise. Every attribute except the symbol
+ * name, the function type and `sym_visibility` is copied unchanged. The
+ * pattern fails if a parameter type does not convert.
+ */
 struct SretFuncOpLowering : public OpConversionPattern<func::FuncOp> {
-    /// Creates the pattern with `benefit`.
+    // Creates the pattern with `benefit`.
     SretFuncOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                        PatternBenefit benefit)
         : OpConversionPattern(typeConverter, ctx, benefit) {}

@@ -3,8 +3,7 @@ module TestLogic.Monomorphize.KernelLicenseTest exposing (suite)
 {-| Tests for the kernel license table in `Compiler.MonoSolver.KernelSetFacts`,
 where a wrong entry can miscompile a program. They check that a licensed call to
 `List.cons` can leave a function-typed position with a single known function,
-that the table refuses the kernels it must refuse, that every row carries its
-evidence, and that `licenseApplies` refuses an occurrence whose type the license
+that the table refuses the kernels it must refuse, and that `licenseApplies` refuses an occurrence whose type the license
 does not fit.
 
 The solver's lambda-set specialization (LSS) records, for each function-typed
@@ -28,8 +27,8 @@ types the result's registry records for the specializations of globals named
 the test pipeline defines as an alias of the `List.cons` kernel. The other
 tests read the table directly, or call `licenseApplies` on canonical types
 built in this module. Except in test 11, which uses `Json.addEntry`'s own
-license, the licenses are made here with a placeholder file and empty evidence,
-and the scalar test is `noScalars` unless a test says otherwise.
+license, the licenses are made here, and the scalar test is `noScalars` unless
+a test says otherwise.
 
 What the tests establish:
 
@@ -40,15 +39,6 @@ What the tests establish:
   - Test 2: the same, for `List.cons inc []`.
   - Test 3: no kernel in `neverLicensable` has a row.
   - Test 4: `factFor` gives `Nothing` for a prefix, home and name that no kernel has.
-  - Test 5: every `TypeFaithful` row has a non-empty `files`.
-  - Test 6: every `TypeFaithful` row's evidence contains each of `class:`,
-    `entry:`, `type:`, `B1:`, `B2:`, `B3:` and `audited:`, and every
-    `Positional` row's contains `entry:`. Only the markers' presence is
-    checked.
-  - Test 7: a `TypeFaithful` row's scope is `Inert` exactly when its evidence
-    contains `class: vacuous`.
-  - Test 8: `licensedFiles` is non-empty and sorted, has no duplicates, and
-    every path in it contains a `/` and does not start with one.
   - Test 9: an `Inert` license is accepted for `String -> Int` and for
     `String -> Task Never ()`, and refused when an argument or the final result
     is or contains a type variable (`String -> a`, `String -> Task x ()`) or an
@@ -79,16 +69,20 @@ What the tests establish:
     and refuses `p -> q`.
   - Test 15: the kernel prefix is part of the key (SD-16,
     plans/kernel-table-prefix-keys.md). `File.size` has one row for elm/file and
-    one for eco/kernel, each citing only its own kernel's files, and
-    `Elm.Kernel.File.open`, which only eco/kernel has, has no row.
-  - Test 16: no licensed row cites the other kernel's C++: an `Elm` row's files
-    are not in eco-kernel-cpp or system-kernel-cpp, and an `Eco` row's are not
-    in elm-kernel-cpp.
+    one for eco/kernel, and `Elm.Kernel.File.open`, which only eco/kernel has,
+    has no row.
+
+The audit records and file pins kept beside the table
+(`kernel-license-audit.csv`, `kernel-license-files.csv`) are checked by
+`test/scripts/check-kernel-license-manifest.sh`, since Elm tests cannot read
+files: tests 5 to 8 and 16 moved there. It checks that every license pins at least one C++ file, only from its own
+kernel's tree; that every row has an audit carrying the required markers; and
+that a license is `Inert` exactly when its audit class is `vacuous`.
 
 Among what is not tested: the transport of a kernel with no
 license, since the test pipeline builds alias nodes only for `List.cons` and
 `List.map2`, and both are licensed; a `Transports` license, which
-`licenseApplies` accepts at any occurrence; whether any row's evidence is true;
+`licenseApplies` accepts at any occurrence; whether any row's audit is true;
 and a `TransportsAs` row whose kernel has no intrinsic annotation, which test
 13 skips.
 
@@ -196,123 +190,6 @@ suite =
         , Test.test "4. containment: an unaudited kernel has no row (LSS_004 full poison is the default)" <|
             \() ->
                 Expect.equal Nothing (KernelSetFacts.factFor "Elm" "NoSuchHome" "noSuchKernel")
-        , Test.test "5. discipline: every TypeFaithful row pins at least one C++ file" <|
-            \() ->
-                let
-                    unpinned =
-                        List.filterMap
-                            (\( key, fact ) ->
-                                case fact of
-                                    KernelSetFacts.TypeFaithful license ->
-                                        if List.isEmpty license.files then
-                                            Just (keyName key)
-
-                                        else
-                                            Nothing
-
-                                    KernelSetFacts.Positional _ ->
-                                        Nothing
-                            )
-                            KernelSetFacts.rows
-                in
-                if List.isEmpty unpinned then
-                    Expect.pass
-
-                else
-                    Expect.fail
-                        ("licensed rows with an empty `files` list (unguarded by the rot manifest): "
-                            ++ String.join ", " unpinned
-                        )
-        , Test.test "6. discipline: every row's evidence carries the §2.6 markers" <|
-            \() ->
-                let
-                    bad =
-                        List.filterMap
-                            (\( key, fact ) ->
-                                let
-                                    ( evidence, required ) =
-                                        case fact of
-                                            KernelSetFacts.TypeFaithful license ->
-                                                ( license.evidence, [ "class:", "entry:", "type:", "B1:", "B2:", "B3:", "audited:" ] )
-
-                                            KernelSetFacts.Positional plan ->
-                                                ( plan.evidence, [ "entry:" ] )
-
-                                    missing =
-                                        List.filter (\marker -> not (String.contains marker evidence)) required
-                                in
-                                if List.isEmpty missing then
-                                    Nothing
-
-                                else
-                                    Just (keyName key ++ " (missing " ++ String.join " " missing ++ ")")
-                            )
-                            KernelSetFacts.rows
-                in
-                if List.isEmpty bad then
-                    Expect.pass
-
-                else
-                    Expect.fail ("rows with malformed evidence: " ++ String.join "; " bad)
-        , Test.test "7. discipline: `scope` agrees with the evidence's class token" <|
-            \() ->
-                -- `Inert` is the scope for the audit class `vacuous`, and the
-                -- two are written separately in each row.
-                let
-                    disagreeing =
-                        List.filterMap
-                            (\( key, fact ) ->
-                                case fact of
-                                    KernelSetFacts.TypeFaithful license ->
-                                        let
-                                            saysVacuous =
-                                                String.contains "class: vacuous" license.evidence
-
-                                            isInert =
-                                                license.scope == KernelSetFacts.Inert
-                                        in
-                                        if saysVacuous == isInert then
-                                            Nothing
-
-                                        else
-                                            Just (keyName key)
-
-                                    KernelSetFacts.Positional _ ->
-                                        Nothing
-                            )
-                            KernelSetFacts.rows
-                in
-                if List.isEmpty disagreeing then
-                    Expect.pass
-
-                else
-                    Expect.fail
-                        ("rows whose `scope` contradicts their evidence class: "
-                            ++ String.join ", " disagreeing
-                        )
-        , Test.test "8. discipline: licensedFiles is non-empty, sorted and deduplicated" <|
-            \() ->
-                let
-                    files =
-                        KernelSetFacts.licensedFiles
-                in
-                Expect.all
-                    [ \() ->
-                        if List.isEmpty files then
-                            Expect.fail "licensedFiles is empty — no kernel is licensed, so the manifest guards nothing"
-
-                        else
-                            Expect.pass
-                    , \() -> Expect.equal (List.sort files) files
-                    , \() -> Expect.equal (List.length (dedupe (List.sort files))) (List.length files)
-                    , \() ->
-                        if List.all (\f -> not (String.startsWith "/" f) && String.contains "/" f) files then
-                            Expect.pass
-
-                        else
-                            Expect.fail ("licensedFiles must be repo-relative paths, got: " ++ String.join ", " files)
-                    ]
-                    ()
         , Test.test "9. verification: an Inert license is REFUSED at a function-capable occurrence" <|
             \() ->
                 -- An `Inert` row claims that the kernel's type has no position
@@ -520,59 +397,24 @@ suite =
         , Test.test "15. the kernel prefix is part of the key (SD-16): File.size has one row per kernel" <|
             \() ->
                 -- elm/file and eco/kernel both have a kernel `File.size`, with
-                -- different types and C++. Each prefix gets its own row, citing
-                -- only its own kernel's files, and a name only one kernel has is
-                -- not found under the other prefix.
+                -- different types and C++. Each prefix gets its own row, and a
+                -- name only one kernel has is not found under the other prefix.
                 Expect.equal
-                    ( licensedFilesOf "Elm" "File" "size", licensedFilesOf "Eco" "File" "size", KernelSetFacts.factFor "Elm" "File" "open" )
-                    ( Just [ "elm-kernel-cpp/src/file/FileExports.cpp" ]
-                    , Just [ "eco-kernel-cpp/src/eco-kernel/File.cpp", "eco-kernel-cpp/src/eco-kernel/FileExports.cpp" ]
-                    , Nothing
-                    )
-        , Test.test "16. discipline: a licensed row cites only its own kernel's C++" <|
-            \() ->
-                -- An `Elm` row's files are in elm-kernel-cpp; an `Eco` row's are in
-                -- eco-kernel-cpp or system-kernel-cpp. Other files, such as the
-                -- runtime's, may back either.
-                let
-                    foreign prefix file =
-                        if prefix == "Elm" then
-                            String.startsWith "eco-kernel-cpp/" file || String.startsWith "system-kernel-cpp/" file
-
-                        else
-                            String.startsWith "elm-kernel-cpp/" file
-
-                    bad =
-                        List.filterMap
-                            (\( ( prefix, home, name ), fact ) ->
-                                case fact of
-                                    KernelSetFacts.TypeFaithful license ->
-                                        if List.any (foreign prefix) license.files then
-                                            Just (keyName ( prefix, home, name ))
-
-                                        else
-                                            Nothing
-
-                                    KernelSetFacts.Positional _ ->
-                                        Nothing
-                            )
-                            KernelSetFacts.rows
-                in
-                Expect.equal [] bad
+                    ( isLicensed "Elm" "File" "size", isLicensed "Eco" "File" "size", KernelSetFacts.factFor "Elm" "File" "open" )
+                    ( True, True, Nothing )
         ]
 
 
-{-| Returns the `files` of the kernel's `TypeFaithful` row, or `Nothing` when it
-has no such row.
+{-| Tells whether the kernel has a `TypeFaithful` row.
 -}
-licensedFilesOf : String -> String -> String -> Maybe (List String)
-licensedFilesOf prefix home name =
+isLicensed : String -> String -> String -> Bool
+isLicensed prefix home name =
     case KernelSetFacts.factFor prefix home name of
-        Just (KernelSetFacts.TypeFaithful license) ->
-            Just license.files
+        Just (KernelSetFacts.TypeFaithful _) ->
+            True
 
         _ ->
-            Nothing
+            False
 
 
 {-| Returns the shape of the annotation that `Compiler.Type.KernelIntrinsics`
@@ -662,19 +504,18 @@ noScalars _ =
     False
 
 
-{-| An `Inert` license with a placeholder file and empty evidence.
+{-| An `Inert` license.
 -}
 inertLicense : KernelSetFacts.License
 inertLicense =
-    { scope = KernelSetFacts.Inert, files = [ "x.cpp" ], evidence = "" }
+    { scope = KernelSetFacts.Inert }
 
 
-{-| Builds a `TransportsAs` license for `shape`, with a placeholder file and
-empty evidence.
+{-| Builds a `TransportsAs` license for `shape`.
 -}
 shapeLicense : KernelSetFacts.TypeShape -> KernelSetFacts.License
 shapeLicense shape =
-    { scope = KernelSetFacts.TransportsAs shape, files = [ "x.cpp" ], evidence = "" }
+    { scope = KernelSetFacts.TransportsAs shape }
 
 
 
@@ -760,23 +601,6 @@ run srcModule =
 keyName : ( String, String, String ) -> String
 keyName ( prefix, home, name ) =
     prefix ++ ".Kernel." ++ home ++ "." ++ name
-
-
-{-| Returns `xs` with each run of equal adjacent elements cut to one, which
-removes every duplicate from a sorted list.
--}
-dedupe : List String -> List String
-dedupe xs =
-    case xs of
-        a :: b :: rest ->
-            if a == b then
-                dedupe (b :: rest)
-
-            else
-                a :: dedupe (b :: rest)
-
-        _ ->
-            xs
 
 
 {-| Returns the type of every specialization the graph's registry records for a

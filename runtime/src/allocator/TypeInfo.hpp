@@ -40,64 +40,76 @@ namespace Elm {
 // Type Kind Enumerations
 // ============================================================================
 
-/// The shape of an Elm type, which selects the member of `EcoTypeInfo::data` that describes it.
-///
-/// The emitter writes these values as numbers (`Primitive` is 0, `Polymorphic` is 6), so the order is fixed.
+/**
+ * The shape of an Elm type, which selects the member of `EcoTypeInfo::data` that describes it.
+ *
+ * The emitter writes these values as numbers (`Primitive` is 0, `Polymorphic` is 6), so the order is fixed.
+ */
 enum class EcoTypeKind : uint8_t {
-    Primitive,   ///< One of the types `EcoPrimKind` lists.
+    Primitive,   // One of the types `EcoPrimKind` lists.
     List,
-    Tuple,       ///< A pair or a triple.
+    Tuple,       // A pair or a triple.
     Record,
-    Custom,      ///< A custom type (algebraic data type), described by its constructors.
-    Function,    ///< Printed as `<function>`; its argument and result types are not read by the printer.
-    Polymorphic, ///< A type variable left after monomorphization. Printed by `print_value` without type info.
+    Custom,      // A custom type (algebraic data type), described by its constructors.
+    Function,    // Printed as `<function>`; its argument and result types are not read by the printer.
+    Polymorphic, // A type variable left after monomorphization. Printed by `print_value` without type info.
 };
 
-/// The constraint on a type variable that a `Polymorphic` type stands for.
-///
-/// The emitter writes these values as numbers (`Number` is 0, `EcoValue` is 1). The printer does not read them.
+/**
+ * The constraint on a type variable that a `Polymorphic` type stands for.
+ *
+ * The emitter writes these values as numbers (`Number` is 0, `EcoValue` is 1). The printer does not read them.
+ */
 enum class EcoConstraintKind : uint8_t {
-    Number,      ///< The `number` constraint: the value is an Int or a Float.
-    EcoValue,    ///< No constraint: the value may be of any type.
+    Number,      // The `number` constraint: the value is an Int or a Float.
+    EcoValue,    // No constraint: the value may be of any type.
 };
 
-/// Which primitive Elm type a `Primitive` type is.
-///
-/// The values are numbered as in the compiler's `Compiler.Generate.MLIR.TypeTable.primKindToTag`, so the order is
-/// fixed.
+/**
+ * Which primitive Elm type a `Primitive` type is.
+ *
+ * The values are numbered as in the compiler's `Compiler.Generate.MLIR.TypeTable.primKindToTag`, so the order is
+ * fixed.
+ */
 enum class EcoPrimKind : uint8_t {
     Int,
     Float,
     Char,
     Bool,
     String,
-    Unit,  ///< Elm `()`, whose value is an embedded constant rather than a heap object.
+    Unit,  // Elm `()`, whose value is an embedded constant rather than a heap object.
 };
 
 // ============================================================================
 // Type Graph Component Structures
 // ============================================================================
 
-/// One entry of `EcoTypeGraph::fields`: a field of a record, an element of a tuple, or a field of a constructor.
+/**
+ * One entry of `EcoTypeGraph::fields`: a field of a record, an element of a tuple, or a field of a constructor.
+ */
 struct EcoFieldInfo {
-    uint32_t name_index;  ///< Index of the field's name in `EcoTypeGraph::strings`. Read only for record fields.
+    uint32_t name_index;  // Index of the field's name in `EcoTypeGraph::strings`. Read only for record fields.
     uint32_t type_id;
 };
 static_assert(sizeof(EcoFieldInfo) == 8, "EcoFieldInfo must be 8 bytes");
 
-/// One entry of `EcoTypeGraph::ctors`: a constructor of a custom type, with its name and its fields.
+/**
+ * One entry of `EcoTypeGraph::ctors`: a constructor of a custom type, with its name and its fields.
+ */
 struct EcoCtorInfo {
-    uint32_t ctor_id;      ///< The constructor's tag, matched against `Custom::ctor` of a heap object.
-    uint32_t name_index;   ///< Index of the constructor's name in `EcoTypeGraph::strings`.
-    uint32_t first_field;  ///< Index of the constructor's first field in `EcoTypeGraph::fields`.
+    uint32_t ctor_id;      // The constructor's tag, matched against `Custom::ctor` of a heap object.
+    uint32_t name_index;   // Index of the constructor's name in `EcoTypeGraph::strings`.
+    uint32_t first_field;  // Index of the constructor's first field in `EcoTypeGraph::fields`.
     uint32_t field_count;
 };
 static_assert(sizeof(EcoCtorInfo) == 16, "EcoCtorInfo must be 16 bytes");
 
-/// One entry of `EcoTypeGraph::types`: a single monomorphic Elm type.
-///
-/// `kind` says which member of `data` is meaningful. The printer finds an entry by indexing `types` with a type
-/// id, so `type_id` is expected to equal the entry's own index; nothing checks this.
+/**
+ * One entry of `EcoTypeGraph::types`: a single monomorphic Elm type.
+ *
+ * `kind` says which member of `data` is meaningful. The printer finds an entry by indexing `types` with a type
+ * id, so `type_id` is expected to equal the entry's own index; nothing checks this.
+ */
 struct EcoTypeInfo {
     uint32_t type_id;
     EcoTypeKind kind;
@@ -156,10 +168,12 @@ static_assert(sizeof(EcoTypeInfo) == 20, "EcoTypeInfo must be 20 bytes");
 // Top-Level Type Graph Container
 // ============================================================================
 
-/// The root of a program's type graph: the five arrays and their lengths.
-///
-/// Each pointer refers to read-only data emitted with the program. A pointer may be null when its array is
-/// empty, and the matching count is then 0. Each count is the number of entries, not bytes.
+/**
+ * The root of a program's type graph: the five arrays and their lengths.
+ *
+ * Each pointer refers to read-only data emitted with the program. A pointer may be null when its array is
+ * empty, and the matching count is then 0. Each count is the number of entries, not bytes.
+ */
 struct EcoTypeGraph {
     const EcoTypeInfo* types;
     uint32_t type_count;

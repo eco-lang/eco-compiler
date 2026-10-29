@@ -35,17 +35,17 @@ namespace Elm::gc {
 // actions that each event stands for. A job's state is logged as `serial * 4 + state`, where serial numbers the
 // job's posts, so that no two writes of the state log the same value.
 #if ECO_TLA_TRACE_ENABLED
-/// Whether the M6 hooks log; set by an M6 trace harness.
+// Whether the M6 hooks log; set by an M6 trace harness.
 bool tla_m6 = false;
-/// A counter that orders the M6 events which carry it.
+// A counter that orders the M6 events which carry it.
 std::atomic<int64_t> tla_m6_tick{0};
-/// Logs a trace event, as `ECO_TLA_TRACE` does, while `tla_m6` is set. Expands to a statement.
+// Logs a trace event, as `ECO_TLA_TRACE` does, while `tla_m6` is set. Expands to a statement.
 #define M6_TRACE(...) do { if (::Elm::gc::tla_m6) ECO_TLA_TRACE(__VA_ARGS__); } while (0)
-/// Takes the next value of the M6 event counter.
+// Takes the next value of the M6 event counter.
 #define M6_TICK ::Elm::gc::tla_m6_tick.fetch_add(1)
-/// Builds the logged value of `job` in state `st`: the serial of its current post times 4, plus `st`.
+// Builds the logged value of `job` in state `st`: the serial of its current post times 4, plus `st`.
 #define M6_JV(job, st) (::Elm::tlatrace::bound(&(job), 6) * 4 + static_cast<int64_t>(st))
-/// Builds the trace key that names `job`'s state.
+// Builds the trace key that names `job`'s state.
 #define M6_JKEY(job) ::Elm::tlatrace::key("J", &(job))
 #else
 #define M6_TRACE(...) ((void)0)
@@ -53,21 +53,21 @@ std::atomic<int64_t> tla_m6_tick{0};
 
 namespace {
 
-/// Writes `msg` to stderr with the `[gc-helper]` prefix and aborts the process.
+// Writes `msg` to stderr with the `[gc-helper]` prefix and aborts the process.
 [[noreturn]] void poolAbort(const char* msg) {
     std::fprintf(stderr, "[gc-helper] %s\n", msg);
     std::fflush(stderr);
     std::abort();
 }
 
-/// Raises `a` to `v` if `v` is larger, with relaxed ordering.
+// Raises `a` to `v` if `v` is larger, with relaxed ordering.
 void fetchMax(std::atomic<uint64_t>& a, uint64_t v) {
     uint64_t cur = a.load(std::memory_order_relaxed);
     while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
     }
 }
 
-/// Advances the xorshift64 generator state `*s` and returns the new value. Used only for jitter delays.
+// Advances the xorshift64 generator state `*s` and returns the new value. Used only for jitter delays.
 uint64_t xorshift(uint64_t* s) {
     uint64_t x = *s;
     x ^= x << 13;
@@ -556,14 +556,14 @@ void GCMarkGang::atforkChild() {
 // ===========================================================================
 
 namespace {
-/// Returns the mutex that guards the registry of background gangs. Never destroyed, because
-/// the atexit and fork handlers use it.
+// Returns the mutex that guards the registry of background gangs. Never destroyed, because
+// the atexit and fork handlers use it.
 std::mutex& bgRegistryMutex() {
     static std::mutex* m = new std::mutex();    // leaky: used from atexit/atfork
     return *m;
 }
-/// Returns the registry: every background gang constructed and not yet destroyed. Guarded by
-/// bgRegistryMutex(). Never destroyed.
+// Returns the registry: every background gang constructed and not yet destroyed. Guarded by
+// bgRegistryMutex(). Never destroyed.
 std::vector<GCBackgroundGang*>& bgRegistry() {
     static auto* v = new std::vector<GCBackgroundGang*>();
     return *v;

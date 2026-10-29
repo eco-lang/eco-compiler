@@ -246,7 +246,7 @@ HPointer concat(HPointer bufferList) {
     return dst.hp;
 }
 
-/// The 64 Base64 digits, indexed by the 6-bit value each stands for.
+// The 64 Base64 digits, indexed by the 6-bit value each stands for.
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -283,7 +283,7 @@ HPointer toBase64(void* buf) {
     return alloc::allocString(result);
 }
 
-/// Returns the 6-bit value of the Base64 digit `c`, -1 for the padding `=`, or -2 for any other unit.
+// Returns the 6-bit value of the Base64 digit `c`, -1 for the padding `=`, or -2 for any other unit.
 static int base64_decode_char(char16_t c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -337,7 +337,7 @@ HPointer fromBase64(void* str) {
     return alloc::just(alloc::boxed(hpResult), true);
 }
 
-/// The 16 hexadecimal digits in lowercase, indexed by the 4-bit value each stands for.
+// The 16 hexadecimal digits in lowercase, indexed by the 4-bit value each stands for.
 static const char hex_chars[] = "0123456789abcdef";
 
 HPointer toHex(void* buf) {
@@ -358,7 +358,7 @@ HPointer toHex(void* buf) {
     return alloc::allocString(result);
 }
 
-/// Returns the 4-bit value of the hexadecimal digit `c`, in either case, or -1 for any other unit.
+// Returns the 4-bit value of the hexadecimal digit `c`, in either case, or -1 for any other unit.
 static int hex_decode_char(char16_t c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;

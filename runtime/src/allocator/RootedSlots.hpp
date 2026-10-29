@@ -33,17 +33,19 @@
 namespace Elm {
 namespace alloc {
 
-/// A growable sequence of `HPointer` slots that the collector treats as roots for as long as the
-/// object lives, rewriting them when it moves what they point to.
-///
-/// Construction pushes one range record onto the calling thread's range stack, and destruction pops
-/// the stack back to where it was before. The object must be used and destroyed on the thread that
-/// made it, and destroyed before that stack is restored to a point taken before construction. It
-/// is neither copyable nor movable.
+/**
+ * A growable sequence of `HPointer` slots that the collector treats as roots for as long as the
+ * object lives, rewriting them when it moves what they point to.
+ *
+ * Construction pushes one range record onto the calling thread's range stack, and destruction pops
+ * the stack back to where it was before. The object must be used and destroyed on the thread that
+ * made it, and destroyed before that stack is restored to a point taken before construction. It
+ * is neither copyable nor movable.
+ */
 class RootedSlots {
 public:
-    /// Creates an empty sequence with room for `reserve` slots before its buffer must move, and
-    /// pushes its record onto the calling thread's range stack.
+    // Creates an empty sequence with room for `reserve` slots before its buffer must move, and
+    // pushes its record onto the calling thread's range stack.
     explicit RootedSlots(size_t reserve = 0) {
         slots_.reserve(reserve);
         saved_ = ecoRootRangePoint();
@@ -56,10 +58,10 @@ public:
     RootedSlots(const RootedSlots&) = delete;
     RootedSlots& operator=(const RootedSlots&) = delete;
 
-    /// Appends `hp` as a new rooted slot.
-    ///
-    /// `hp` must be current: read since the last point at which a collection could have run. An
-    /// append may move the buffer, which invalidates every reference `operator[]` returned.
+    // Appends `hp` as a new rooted slot.
+    //
+    // `hp` must be current: read since the last point at which a collection could have run. An
+    // append may move the buffer, which invalidates every reference `operator[]` returned.
     void push(HPointer hp) {
         if (slots_.size() == slots_.capacity()) {
             slots_.push_back(hp);
@@ -70,16 +72,16 @@ public:
         rec_->count = slots_.size();
     }
 
-    /// Returns slot `i`, which must be less than `size()`.
-    ///
-    /// A collection rewrites the slot in place, so a value read from it is stale after any point
-    /// that may collect. The reference itself is valid until the next `push` or destruction.
+    // Returns slot `i`, which must be less than `size()`.
+    //
+    // A collection rewrites the slot in place, so a value read from it is stale after any point
+    // that may collect. The reference itself is valid until the next `push` or destruction.
     HPointer& operator[](size_t i) { return slots_[i]; }
-    /// Returns slot `i` for reading, as the non-const overload does.
+    // Returns slot `i` for reading, as the non-const overload does.
     const HPointer& operator[](size_t i) const { return slots_[i]; }
-    /// Returns the number of slots appended.
+    // Returns the number of slots appended.
     size_t size() const { return slots_.size(); }
-    /// Returns whether no slot has been appended.
+    // Returns whether no slot has been appended.
     bool empty() const { return slots_.empty(); }
 
 private:
@@ -91,16 +93,18 @@ private:
     size_t saved_;
 };
 
-/// A growable sequence of values, each boxed or unboxed, in which the boxed values are rooted.
-///
-/// Each element carries its slot kind: 0 for a boxed `HPointer`, 1 for an Int, 2 for a Float and 3
-/// for a Char. Only the boxed elements are visible to the collector, through a `RootedSlots` this
-/// object owns, so it has the same thread and nesting rules as `RootedSlots`. It is neither
-/// copyable nor movable.
+/**
+ * A growable sequence of values, each boxed or unboxed, in which the boxed values are rooted.
+ *
+ * Each element carries its slot kind: 0 for a boxed `HPointer`, 1 for an Int, 2 for a Float and 3
+ * for a Char. Only the boxed elements are visible to the collector, through a `RootedSlots` this
+ * object owns, so it has the same thread and nesting rules as `RootedSlots`. It is neither
+ * copyable nor movable.
+ */
 class RootedElems {
 public:
-    /// Creates an empty sequence with room for `reserve` elements, and pushes the record that roots
-    /// its boxed elements onto the calling thread's range stack.
+    // Creates an empty sequence with room for `reserve` elements, and pushes the record that roots
+    // its boxed elements onto the calling thread's range stack.
     explicit RootedElems(size_t reserve = 0) : boxed_(reserve) {
         vals_.reserve(reserve);
         kinds_.reserve(reserve);
@@ -109,10 +113,10 @@ public:
     RootedElems(const RootedElems&) = delete;
     RootedElems& operator=(const RootedElems&) = delete;
 
-    /// Appends `v` with slot kind `kind`, which says which member of `v` is live.
-    ///
-    /// For kind 0, `v.p` must be current, as for `RootedSlots::push`. Any other kind is stored as
-    /// `v`'s raw bits; nothing checks that `kind` is in the range 0 to 3.
+    // Appends `v` with slot kind `kind`, which says which member of `v` is live.
+    //
+    // For kind 0, `v.p` must be current, as for `RootedSlots::push`. Any other kind is stored as
+    // `v`'s raw bits; nothing checks that `kind` is in the range 0 to 3.
     void push(Unboxable v, u8 kind) {
         if (kind == 0) {
             vals_.push_back(boxed_.size());
@@ -125,10 +129,10 @@ public:
         kinds_.push_back(kind);
     }
 
-    /// Returns element `i`, which must be less than `size()`.
-    ///
-    /// A boxed element is read from its rooted slot, so it reflects any collection since it was
-    /// appended. An unboxed element is returned with the bits it was appended with.
+    // Returns element `i`, which must be less than `size()`.
+    //
+    // A boxed element is read from its rooted slot, so it reflects any collection since it was
+    // appended. An unboxed element is returned with the bits it was appended with.
     Unboxable get(size_t i) const {
         Unboxable u;
         if (kinds_[i] == 0) {
@@ -139,14 +143,14 @@ public:
         return u;
     }
 
-    /// Returns the slot kind element `i` was appended with.
+    // Returns the slot kind element `i` was appended with.
     u8 kind(size_t i) const { return kinds_[i]; }
-    /// Returns the number of elements appended.
+    // Returns the number of elements appended.
     size_t size() const { return kinds_.size(); }
-    /// Returns whether no element has been appended.
+    // Returns whether no element has been appended.
     bool empty() const { return kinds_.empty(); }
 
-    /// Returns whether every element has the same slot kind. An empty sequence is uniform.
+    // Returns whether every element has the same slot kind. An empty sequence is uniform.
     bool uniform() const {
         for (u8 k : kinds_)
             if (k != kinds_[0]) return false;

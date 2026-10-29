@@ -34,17 +34,17 @@ class EcoJIT;
 // Symbol Registration
 //===----------------------------------------------------------------------===//
 
-/// Defines in `engine` every name this component lists, each at the address of its function in this
-/// process.
-///
-/// Call it once per engine, before the code that calls these functions is compiled.
+// Defines in `engine` every name this component lists, each at the address of its function in this
+// process.
+//
+// Call it once per engine, before the code that calls these functions is compiled.
 void registerRuntimeSymbols(mlir::ExecutionEngine &engine);
 
-/// Defines the same names as the `mlir::ExecutionEngine` overload, in an `EcoJIT`.
-///
-/// Call it once per engine: a second call redefines the names, which aborts when assertions are on and
-/// is undefined behaviour otherwise. `EcoJIT` compiles code when a symbol in it is first
-/// looked up, so the call must come before that lookup.
+// Defines the same names as the `mlir::ExecutionEngine` overload, in an `EcoJIT`.
+//
+// Call it once per engine: a second call redefines the names, which aborts when assertions are on and
+// is undefined behaviour otherwise. `EcoJIT` compiles code when a symbol in it is first
+// looked up, so the call must come before that lookup.
 void registerRuntimeSymbols(eco::EcoJIT &engine);
 
 } // namespace eco

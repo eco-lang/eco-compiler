@@ -24,8 +24,8 @@ using namespace eco;
 // SymbolUserOpInterface: verifySymbolUses
 //===----------------------------------------------------------------------===//
 
-/// Checks that `sym` names a symbol visible from `op`, and reports an error on `op` naming the symbol as a `desc`
-/// if it does not. A null `sym` passes.
+// Checks that `sym` names a symbol visible from `op`, and reports an error on `op` naming the symbol as a `desc`
+// if it does not. A null `sym` passes.
 static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
                                   SymbolTableCollection &symbolTable,
                                   StringRef desc) {
@@ -35,9 +35,9 @@ static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
   return success();
 }
 
-/// Checks a direct call's callee: it must exist, and when it is a `func.func` the call's operand and result types
-/// must equal its signature exactly (CGEN_011). An indirect call passes. A callee already lowered to an `llvm.func`
-/// is not compared.
+// Checks a direct call's callee: it must exist, and when it is a `func.func` the call's operand and result types
+// must equal its signature exactly (CGEN_011). An indirect call passes. A callee already lowered to an `llvm.func`
+// is not compared.
 LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto callee = getCalleeAttr();
   if (!callee)
@@ -72,8 +72,8 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return success();
 }
 
-/// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
-/// declaration in the module (CGEN_057).
+// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
+// declaration in the module (CGEN_057).
 LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
     return failure();
@@ -87,35 +87,39 @@ LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
 }
 
 namespace {
-/// Where a closure value came from: the `eco.papCreate` that made it, and how many of its evaluator's parameters
-/// are already filled. `offset` counts the captures plus the arguments of every partial typed `eco.papExtend` between
-/// that creation and the value.
+/**
+ * Where a closure value came from: the `eco.papCreate` that made it, and how many of its evaluator's parameters
+ * are already filled. `offset` counts the captures plus the arguments of every partial typed `eco.papExtend` between
+ * that creation and the value.
+ */
 struct PapOrigin {
   FlatSymbolRefAttr function;
   int64_t arity = 0;
   size_t offset = 0;
 };
-/// The outcome of tracing a closure value back to its creation.
-///
-/// `Found` means the origin was filled in. `Cycle` means the value reaches only itself, through block arguments that
-/// add no arguments on the way, so it neither confirms nor contradicts an origin found by another path. `Unknown`
-/// means no single origin could be established.
+/**
+ * The outcome of tracing a closure value back to its creation.
+ *
+ * `Found` means the origin was filled in. `Cycle` means the value reaches only itself, through block arguments that
+ * add no arguments on the way, so it neither confirms nor contradicts an origin found by another path. `Unknown`
+ * means no single origin could be established.
+ */
 enum class TraceResult { Unknown, Found, Cycle };
 } // namespace
 
-/// Traces `clo` back through partial typed `eco.papExtend`s and through block arguments to the `eco.papCreate` that
-/// made it, and on `Found` writes that creation and the filled-parameter count to `origin`. A block argument is
-/// `Found` only when every incoming value that is not a cycle traces to the same function, arity and offset.
-/// `visiting` holds the block arguments already entered, and is how a cycle is recognised.
+// Traces `clo` back through partial typed `eco.papExtend`s and through block arguments to the `eco.papCreate` that
+// made it, and on `Found` writes that creation and the filled-parameter count to `origin`. A block argument is
+// `Found` only when every incoming value that is not a cycle traces to the same function, arity and offset.
+// `visiting` holds the block arguments already entered, and is how a cycle is recognised.
 static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
                                       llvm::SmallPtrSetImpl<Value> &visiting);
 
-/// Appends to `in` the values `arg` can receive: the matching operand of each `eco.jump` that targets its joinpoint,
-/// when `arg` is a parameter of a joinpoint body, and otherwise the matching operand of each predecessor's branch.
-///
-/// Returns false, with `in` possibly part filled, when any incoming value cannot be named or there is none. That
-/// includes an argument of an entry block outside a joinpoint, which is a function or region parameter, and any
-/// block of a joinpoint other than its body's entry block.
+// Appends to `in` the values `arg` can receive: the matching operand of each `eco.jump` that targets its joinpoint,
+// when `arg` is a parameter of a joinpoint body, and otherwise the matching operand of each predecessor's branch.
+//
+// Returns false, with `in` possibly part filled, when any incoming value cannot be named or there is none. That
+// includes an argument of an entry block outside a joinpoint, which is a function or region parameter, and any
+// block of a joinpoint other than its body's entry block.
 static bool collectIncoming(BlockArgument arg, SmallVectorImpl<Value> &in) {
   Block *block = arg.getOwner();
   unsigned idx = arg.getArgNumber();
@@ -204,18 +208,18 @@ static TraceResult traceClosureOrigin(Value clo, PapOrigin &origin,
   return found ? TraceResult::Found : TraceResult::Cycle;
 }
 
-/// Checks a `eco.papExtend` against the functions it names or reaches.
-///
-/// A `_fast_evaluator`, when present, must resolve. For a typed extend (one with `remaining_arity`), when the fast
-/// evaluator is a `func.func`:
-/// - the `_capture_abi` types must equal its leading parameter types (CGEN_CLOSURE_005);
-/// - on a saturated extend, the new arguments must equal the parameters after those, and the result type its result
-///   type when the arguments complete the signature (CGEN_003, CGEN_056).
-///
-/// Separately, when the closure traces to one `eco.papCreate` whose function is a `func.func` taking exactly `arity`
-/// parameters, the new arguments must equal that function's parameters at the traced offset, and the result type
-/// its result type when the extend is saturated and the arguments complete the signature. A generic extend, and a
-/// closure whose origin cannot be traced, are not compared.
+// Checks a `eco.papExtend` against the functions it names or reaches.
+//
+// A `_fast_evaluator`, when present, must resolve. For a typed extend (one with `remaining_arity`), when the fast
+// evaluator is a `func.func`:
+// - the `_capture_abi` types must equal its leading parameter types (CGEN_CLOSURE_005);
+// - on a saturated extend, the new arguments must equal the parameters after those, and the result type its result
+//   type when the arguments complete the signature (CGEN_003, CGEN_056).
+//
+// Separately, when the closure traces to one `eco.papCreate` whose function is a `func.func` taking exactly `arity`
+// parameters, the new arguments must equal that function's parameters at the traced offset, and the result type
+// its result type when the extend is saturated and the arguments complete the signature. A generic extend, and a
+// closure whose origin cannot be traced, are not compared.
 LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
     if (failed(verifySymRef(*this, fast, symbolTable, "fast evaluator")))
@@ -306,8 +310,8 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
                       saturated && origin.offset + newargs.size() == nInputs);
 }
 
-/// Checks that every entry of `functions` is a symbol reference to an existing symbol, and that one named
-/// `Elm_Kernel_*` has a `func.func` declaration (CGEN_057).
+// Checks that every entry of `functions` is a symbol reference to an existing symbol, and that one named
+// `Elm_Kernel_*` has a `func.func` declaration (CGEN_057).
 LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto funcs = getFunctions();
   for (Attribute a : funcs) {
@@ -327,13 +331,13 @@ LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTa
   return success();
 }
 
-/// Checks that the closure's function exists.
+// Checks that the closure's function exists.
 LogicalResult AllocateClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getFunctionAttr(), symbolTable, "function");
 }
 
-/// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
-/// declaration (CGEN_057).
+// Checks that the closure's function exists, and that a function named `Elm_Kernel_*` has a `func.func`
+// declaration (CGEN_057).
 LogicalResult MakeClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
     return failure();
@@ -346,19 +350,19 @@ LogicalResult MakeClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable
   return success();
 }
 
-/// Checks that the global's initializer, if it names one, exists.
+// Checks that the global's initializer, if it names one, exists.
 LogicalResult GlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (auto init = getInitializerAttr())
     return verifySymRef(*this, init, symbolTable, "initializer");
   return success();
 }
 
-/// Checks that the global being read exists.
+// Checks that the global being read exists.
 LogicalResult LoadGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
 }
 
-/// Checks that the global being written exists.
+// Checks that the global being written exists.
 LogicalResult StoreGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
 }
@@ -367,16 +371,16 @@ LogicalResult StoreGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable
 // Operation Verifiers
 //===----------------------------------------------------------------------===//
 
-/// Checks an `eco.case`.
-///
-/// There is one alternative per tag. `case_kind` is present and agrees with the scrutinee type: `ctor` or `str` for
-/// `!eco.value`, `bool` or `ctor` for `i1` (whose tags must be 0 or 1), `int` for `i64`, and `chr` for `i32`; no
-/// other scrutinee type is accepted. A `str` case has one string pattern per alternative except the last, which is
-/// the default. The case has at least one result (CGEN_010), and each alternative is one block ending in
-/// `eco.yield` whose operand types equal the result types (CGEN_028).
-///
-/// With the environment variable `ECO_LAX_CASE_VERIFY` set to any value, a yield type mismatch is a warning instead
-/// of an error, so that invalid IR can still be printed for diagnosis.
+// Checks an `eco.case`.
+//
+// There is one alternative per tag. `case_kind` is present and agrees with the scrutinee type: `ctor` or `str` for
+// `!eco.value`, `bool` or `ctor` for `i1` (whose tags must be 0 or 1), `int` for `i64`, and `chr` for `i32`; no
+// other scrutinee type is accepted. A `str` case has one string pattern per alternative except the last, which is
+// the default. The case has at least one result (CGEN_010), and each alternative is one block ending in
+// `eco.yield` whose operand types equal the result types (CGEN_028).
+//
+// With the environment variable `ECO_LAX_CASE_VERIFY` set to any value, a yield type mismatch is a warning instead
+// of an error, so that invalid IR can still be printed for diagnosis.
 LogicalResult CaseOp::verify() {
   if (getTags().size() != getAlternatives().size()) {
     return emitOpError("number of tags (")
@@ -516,8 +520,8 @@ LogicalResult CaseOp::verify() {
   return success();
 }
 
-/// Checks that an `eco.yield` is inside an `eco.case` (CGEN_053) and that its operand types equal that case's result
-/// types. `ECO_LAX_CASE_VERIFY` turns a type mismatch into a warning, as for `CaseOp::verify`.
+// Checks that an `eco.yield` is inside an `eco.case` (CGEN_053) and that its operand types equal that case's result
+// types. `ECO_LAX_CASE_VERIFY` turns a type mismatch into a warning, as for `CaseOp::verify`.
 LogicalResult YieldOp::verify() {
   // The `HasParent` trait in `Ops.td` already requires the direct parent to be an `eco.case`.
   auto parentCaseOp = (*this)->getParentOfType<CaseOp>();
@@ -553,7 +557,7 @@ LogicalResult YieldOp::verify() {
 }
 
 
-/// Checks that a joinpoint's body region is not empty. Uniqueness of joinpoint ids (CGEN_031) is not checked here.
+// Checks that a joinpoint's body region is not empty. Uniqueness of joinpoint ids (CGEN_031) is not checked here.
 LogicalResult JoinpointOp::verify() {
   if (getBody().empty()) {
     return emitOpError("body region must not be empty");
@@ -561,8 +565,8 @@ LogicalResult JoinpointOp::verify() {
   return success();
 }
 
-/// Checks that a null-cons constant's tag fits the 10-bit constructor index of a null-cons word, 0 to
-/// `NULL_CONS_MAX` (HEAP_044).
+// Checks that a null-cons constant's tag fits the 10-bit constructor index of a null-cons word, 0 to
+// `NULL_CONS_MAX` (HEAP_044).
 LogicalResult ConstantNullConsOp::verify() {
   if (getTag() < 0 || getTag() > static_cast<int64_t>(NULL_CONS_MAX)) {
     return emitOpError("null-cons tag ")
@@ -576,9 +580,9 @@ LogicalResult ConstantNullConsOp::verify() {
 // Custom/Record slot kinds
 //===----------------------------------------------------------------------===//
 
-/// Rejects `op` if it carries `unboxed_bitmap`, `newargs_unboxed_bitmap` or `unboxed_bitmaps`. It is called only
-/// on ops that do not declare these attributes, where MLIR would otherwise keep one as an unregistered attribute
-/// that nothing reads; on those ops `slot_kinds` carries the layout instead.
+// Rejects `op` if it carries `unboxed_bitmap`, `newargs_unboxed_bitmap` or `unboxed_bitmaps`. It is called only
+// on ops that do not declare these attributes, where MLIR would otherwise keep one as an unregistered attribute
+// that nothing reads; on those ops `slot_kinds` carries the layout instead.
 static LogicalResult rejectStaleBitmapAttr(Operation *op) {
   for (StringRef n : {"unboxed_bitmap", "newargs_unboxed_bitmap", "unboxed_bitmaps"})
     if (op->hasAttr(n))
@@ -588,8 +592,8 @@ static LogicalResult rejectStaleBitmapAttr(Operation *op) {
   return success();
 }
 
-/// Returns the slot kind of a field of type `t`: 1 for `i64`, 2 for `f64`, 3 for `i32`, and 0 (boxed) for any other
-/// type, including `i1`, which callers reject separately.
+// Returns the slot kind of a field of type `t`: 1 for `i64`, 2 for `f64`, 3 for `i32`, and 0 (boxed) for any other
+// type, including `i1`, which callers reject separately.
 static uint8_t fieldKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
@@ -598,11 +602,11 @@ static uint8_t fieldKind(Type t) {
 }
 
 
-/// Checks that `kinds` has one entry per type in `slots`, each the slot kind of that type (REP_BOUNDARY_002).
-///
-/// A field of type `i1` is rejected: Bool must be boxed first. A boxed field must be `!eco.value` or a value-level
-/// aggregate (tuple, record, custom or cons), which the construct lowering boxes. `what` names a field in
-/// diagnostics.
+// Checks that `kinds` has one entry per type in `slots`, each the slot kind of that type (REP_BOUNDARY_002).
+//
+// A field of type `i1` is rejected: Bool must be boxed first. A boxed field must be `!eco.value` or a value-level
+// aggregate (tuple, record, custom or cons), which the construct lowering boxes. `what` names a field in
+// diagnostics.
 static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
                                      ArrayRef<int8_t> kinds, StringRef what) {
   if (kinds.size() != slots.size())
@@ -629,11 +633,11 @@ static LogicalResult verifySlotKinds(Operation *op, TypeRange slots,
   return success();
 }
 
-/// Checks a custom-type construction: no stale bitmap attribute, at least one field (CGEN_079), one operand per
-/// field, at most `CUSTOM_MAX_FIELDS` fields (HEAP_019), and slot kinds that match the operand types.
-///
-/// A nullary constructor is an embedded null-cons constant, `eco.constant.null_cons`. A zero-field construct would
-/// give the same value a second, heap, representation, which comparison by word equality would treat as different.
+// Checks a custom-type construction: no stale bitmap attribute, at least one field (CGEN_079), one operand per
+// field, at most `CUSTOM_MAX_FIELDS` fields (HEAP_019), and slot kinds that match the operand types.
+//
+// A nullary constructor is an embedded null-cons constant, `eco.constant.null_cons`. A zero-field construct would
+// give the same value a second, heap, representation, which comparison by word equality would treat as different.
 LogicalResult CustomConstructOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -661,9 +665,9 @@ LogicalResult CustomConstructOp::verify() {
                          getSlotKinds(), "field");
 }
 
-/// Checks a record construction: no stale bitmap attribute, one operand per field, at most `RECORD_MAX_FIELDS`
-/// fields (HEAP_019), and slot kinds that match the operand types. `slot_kinds` is only checked; the lowering takes
-/// the kinds from the operand types.
+// Checks a record construction: no stale bitmap attribute, one operand per field, at most `RECORD_MAX_FIELDS`
+// fields (HEAP_019), and slot kinds that match the operand types. `slot_kinds` is only checked; the lowering takes
+// the kinds from the operand types.
 LogicalResult RecordConstructOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -688,11 +692,11 @@ LogicalResult RecordConstructOp::verify() {
 // Tuple / Cons header kinds (CGEN_026)
 //===----------------------------------------------------------------------===//
 
-/// Returns the slot kind of a tuple field or cons head of type `t`, or reports an error on `op` and fails when `t` is
-/// `i1` or a boxed type other than `!eco.value` or a value-level aggregate. `what` names the operand in diagnostics.
-///
-/// The tuple and cons lowerings copy `unboxed_bitmap` or `head_kind` into the heap header but store each field by its
-/// SSA type, so the two must agree, or the collector would trace a raw number as a pointer or skip a real one.
+// Returns the slot kind of a tuple field or cons head of type `t`, or reports an error on `op` and fails when `t` is
+// `i1` or a boxed type other than `!eco.value` or a value-level aggregate. `what` names the operand in diagnostics.
+//
+// The tuple and cons lowerings copy `unboxed_bitmap` or `head_kind` into the heap header but store each field by its
+// SSA type, so the two must agree, or the collector would trace a raw number as a pointer or skip a real one.
 static FailureOr<uint8_t> heapOperandKind(Operation *op, Type t,
                                           StringRef what) {
   if (t.isInteger(1)) {
@@ -709,8 +713,8 @@ static FailureOr<uint8_t> heapOperandKind(Operation *op, Type t,
   return k;
 }
 
-/// Checks that a tuple's `bitmap` equals the slot kinds of `slots`, slot `i` in bits `2i` and `2i+1`, with no bit set
-/// beyond the last slot (CGEN_026).
+// Checks that a tuple's `bitmap` equals the slot kinds of `slots`, slot `i` in bits `2i` and `2i+1`, with no bit set
+// beyond the last slot (CGEN_026).
 static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
                                        int64_t bitmap) {
   int64_t want = 0;
@@ -728,20 +732,20 @@ static LogicalResult verifyTupleBitmap(Operation *op, TypeRange slots,
   return success();
 }
 
-/// Checks that the pair's `unboxed_bitmap` matches its operand types.
+// Checks that the pair's `unboxed_bitmap` matches its operand types.
 LogicalResult Tuple2ConstructOp::verify() {
   Type slots[2] = {getA().getType(), getB().getType()};
   return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
 }
 
-/// Checks that the triple's `unboxed_bitmap` matches its operand types.
+// Checks that the triple's `unboxed_bitmap` matches its operand types.
 LogicalResult Tuple3ConstructOp::verify() {
   Type slots[3] = {getA().getType(), getB().getType(), getC().getType()};
   return verifyTupleBitmap(getOperation(), slots, getUnboxedBitmap());
 }
 
-/// Checks that a cons cell's `head_kind` is the slot kind of its head's type, and that `head_unboxed` is true
-/// exactly when that kind is not boxed.
+// Checks that a cons cell's `head_kind` is the slot kind of its head's type, and that `head_unboxed` is true
+// exactly when that kind is not boxed.
 LogicalResult ListConstructOp::verify() {
   FailureOr<uint8_t> k =
       heapOperandKind(getOperation(), getHead().getType(), "head");
@@ -761,7 +765,7 @@ LogicalResult ListConstructOp::verify() {
 // Closure slot kinds
 //===----------------------------------------------------------------------===//
 
-/// Returns the slot kind of a closure operand of type `t`. The mapping is the same as `fieldKind`'s.
+// Returns the slot kind of a closure operand of type `t`. The mapping is the same as `fieldKind`'s.
 static uint8_t operandKind(Type t) {
   if (t.isInteger(64)) return 1;
   if (t.isF64()) return 2;
@@ -769,10 +773,10 @@ static uint8_t operandKind(Type t) {
   return 0;
 }
 
-/// Checks that every operand stored in a closure is `!eco.value`, `i64`, `f64` or `i32`, and that `kinds` has one
-/// entry per operand equal to its slot kind (CGEN_003). An `i1` operand is rejected because Bool must be boxed
-/// (REP_CLOSURE_001); aggregates are rejected as boxed but not `!eco.value`. `what` names an operand in
-/// diagnostics.
+// Checks that every operand stored in a closure is `!eco.value`, `i64`, `f64` or `i32`, and that `kinds` has one
+// entry per operand equal to its slot kind (CGEN_003). An `i1` operand is rejected because Bool must be boxed
+// (REP_CLOSURE_001); aggregates are rejected as boxed but not `!eco.value`. `what` names an operand in
+// diagnostics.
 static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
                                         ArrayRef<int8_t> kinds, const char *what) {
   for (auto [i, v] : llvm::enumerate(operands)) {
@@ -798,15 +802,15 @@ static LogicalResult verifyClosureKinds(Operation *op, ValueRange operands,
   return success();
 }
 
-/// The largest arity a closure may have, set by the width of the closure header's arity field (HEAP_078).
+// The largest arity a closure may have, set by the width of the closure header's arity field (HEAP_078).
 static constexpr int64_t kClosureMaxArity = Elm::CLOSURE_MAX_ARITY;
-/// The largest number of values a closure may capture: one less than the largest arity, because a partial
-/// application always has at least one parameter left.
+// The largest number of values a closure may capture: one less than the largest arity, because a partial
+// application always has at least one parameter left.
 static constexpr int64_t kClosureMaxCaptures = Elm::CLOSURE_MAX_ARITY - 1;
 
-/// Checks a closure creation: no stale bitmap attribute, a `_fast_evaluator` equal to `function` when present, one
-/// operand per `num_captured`, fewer captures than `arity`, both within the closure limits, and slot kinds that match
-/// the captured operands. The kernel declaration check is in `verifySymbolUses`.
+// Checks a closure creation: no stale bitmap attribute, a `_fast_evaluator` equal to `function` when present, one
+// operand per `num_captured`, fewer captures than `arity`, both within the closure limits, and slot kinds that match
+// the captured operands. The kernel declaration check is in `verifySymbolUses`.
 LogicalResult PapCreateOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -851,13 +855,13 @@ LogicalResult PapCreateOp::verify() {
   return success();
 }
 
-/// Checks a closure application on its own, without looking at where the closure came from.
-///
-/// There must be no stale bitmap attribute, no more new arguments than the closure arity limit, and slot kinds that
-/// match them. Without `remaining_arity` (generic mode), whether the application is saturated is decided at run time
-/// from the closure header, so the result may be `!eco.value` or a primitive (`i64`, `f64` or `i32`). With it (typed
-/// mode), a partial application must yield `!eco.value`, the new closure, and a saturated one `!eco.value` or a
-/// primitive, never `i1`. The comparison with the evaluator's signature is in `verifySymbolUses`.
+// Checks a closure application on its own, without looking at where the closure came from.
+//
+// There must be no stale bitmap attribute, no more new arguments than the closure arity limit, and slot kinds that
+// match them. Without `remaining_arity` (generic mode), whether the application is saturated is decided at run time
+// from the closure header, so the result may be `!eco.value` or a primitive (`i64`, `f64` or `i32`). With it (typed
+// mode), a partial application must yield `!eco.value`, the new closure, and a saturated one `!eco.value` or a
+// primitive, never `i1`. The comparison with the evaluator's signature is in `verifySymbolUses`.
 LogicalResult PapExtendOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -906,21 +910,21 @@ LogicalResult PapExtendOp::verify() {
   return success();
 }
 
-/// Checks a group of sibling closures created together, which may capture one another.
-///
-/// A cross edge is a triple (producer, consumer, slot): sibling `consumer` captures sibling `producer` in capture slot
-/// `slot`. In each sibling, the captures that are not siblings come first, `capture_counts[i]` of them, and are the
-/// op's operands, sibling by sibling in order; the sibling captures fill the slots after them.
-///
-/// The checks are: at least two siblings; every per-sibling array of that length; `functions` equal to
-/// `fast_evaluators`; each sibling's `slot_kinds` a `DenseI8ArrayAttr` of length `num_captured`; `cross_edges` a
-/// multiple of three long, with producer and consumer in range and the slot within the consumer's captures and boxed;
-/// `num_captured` equal to `capture_counts` plus the sibling's incoming cross edges; captures and arity within the
-/// closure limits and fewer captures than arity; and kinds that match the operand captures, with every sibling slot
-/// boxed.
-///
-/// The entries of `cross_edges`, `num_captured`, `capture_counts` and `arities` are assumed to be integer attributes
-/// and are not checked to be.
+// Checks a group of sibling closures created together, which may capture one another.
+//
+// A cross edge is a triple (producer, consumer, slot): sibling `consumer` captures sibling `producer` in capture slot
+// `slot`. In each sibling, the captures that are not siblings come first, `capture_counts[i]` of them, and are the
+// op's operands, sibling by sibling in order; the sibling captures fill the slots after them.
+//
+// The checks are: at least two siblings; every per-sibling array of that length; `functions` equal to
+// `fast_evaluators`; each sibling's `slot_kinds` a `DenseI8ArrayAttr` of length `num_captured`; `cross_edges` a
+// multiple of three long, with producer and consumer in range and the slot within the consumer's captures and boxed;
+// `num_captured` equal to `capture_counts` plus the sibling's incoming cross edges; captures and arity within the
+// closure limits and fewer captures than arity; and kinds that match the operand captures, with every sibling slot
+// boxed.
+//
+// The entries of `cross_edges`, `num_captured`, `capture_counts` and `arities` are assumed to be integer attributes
+// and are not checked to be.
 LogicalResult PapCreateGroupOp::verify() {
   if (failed(rejectStaleBitmapAttr(getOperation())))
     return failure();
@@ -1041,9 +1045,9 @@ LogicalResult PapCreateGroupOp::verify() {
   return success();
 }
 
-/// Checks a read of a closure's capture: the index is not negative, and when the operand is a `!eco.closure_env` the
-/// index is within its captures and the result type is the capture's type. A `!eco.value` operand's index is not
-/// bounds-checked.
+// Checks a read of a closure's capture: the index is not negative, and when the operand is a `!eco.closure_env` the
+// index is within its captures and the result type is the capture's type. A `!eco.value` operand's index is not
+// bounds-checked.
 LogicalResult ProjectClosureOp::verify() {
   int64_t index = getIndex();
   if (index < 0) {
@@ -1070,12 +1074,12 @@ LogicalResult ProjectClosureOp::verify() {
   return success();
 }
 
-/// Checks a call's attributes against its form.
-///
-/// `eco.cse_safe` is accepted only on a direct call that is not `musttail`. A direct call (with `callee`) must not
-/// have `remaining_arity`; its signature is checked in `verifySymbolUses`. An indirect call applies its first operand,
-/// which must be `!eco.value`, to the rest, and its `remaining_arity` must be present, positive and equal to the
-/// number of those other operands.
+// Checks a call's attributes against its form.
+//
+// `eco.cse_safe` is accepted only on a direct call that is not `musttail`. A direct call (with `callee`) must not
+// have `remaining_arity`; its signature is checked in `verifySymbolUses`. An indirect call applies its first operand,
+// which must be `!eco.value`, to the rest, and its `remaining_arity` must be present, positive and equal to the
+// number of those other operands.
 LogicalResult CallOp::verify() {
   auto operands = getOperands();
   auto calleeAttr = getCalleeAttr();
@@ -1130,13 +1134,13 @@ LogicalResult CallOp::verify() {
 // MemoryEffectOpInterface: CallOp
 //===----------------------------------------------------------------------===//
 
-/// Appends a call's memory effects to `effects`: none when it carries `eco.cse_safe`, and otherwise a read and a
-/// write of the default resource.
-///
-/// Reporting no effects lets MLIR merge identical calls and erase unused ones. It does not let a call be hoisted or
-/// executed speculatively, because `CallOp` does not implement `ConditionallySpeculatable`. A call without the
-/// attribute must report effects explicitly: an op that implements this interface and reports nothing is treated as
-/// having no effects, so every call would become erasable.
+// Appends a call's memory effects to `effects`: none when it carries `eco.cse_safe`, and otherwise a read and a
+// write of the default resource.
+//
+// Reporting no effects lets MLIR merge identical calls and erase unused ones. It does not let a call be hoisted or
+// executed speculatively, because `CallOp` does not implement `ConditionallySpeculatable`. A call without the
+// attribute must report effects explicitly: an op that implements this interface and reports nothing is treated as
+// having no effects, so every call would become erasable.
 void CallOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
     if ((*this)->hasAttr(kCseSafeAttrName))
@@ -1162,8 +1166,8 @@ void CallOp::getEffects(
 // operand that the construct lowering boxes with `eco.to_heap`, and then the projection yields an `!eco.value` that
 // is not the operand, so no fold is made.
 
-/// Returns `fields[index]` when `index` is within `declaredCount`, `fields` has at least that many entries, and the
-/// field's type is `resultTy`, and otherwise a null value, meaning no fold.
+// Returns `fields[index]` when `index` is within `declaredCount`, `fields` has at least that many entries, and the
+// field's type is `resultTy`, and otherwise a null value, meaning no fold.
 static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
                                   int64_t index, Type resultTy) {
     if (index < 0 || index >= declaredCount)
@@ -1176,7 +1180,7 @@ static Value foldConstructedField(ValueRange fields, int64_t declaredCount,
     return f;
 }
 
-/// Folds a projection whose operand is defined directly by an `eco.construct.custom` to the projected field operand.
+// Folds a projection whose operand is defined directly by an `eco.construct.custom` to the projected field operand.
 OpFoldResult CustomProjectOp::fold(FoldAdaptor) {
     auto ctor = getContainer().getDefiningOp<eco::CustomConstructOp>();
     if (!ctor)
@@ -1188,7 +1192,7 @@ OpFoldResult CustomProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
-/// Folds a projection whose operand is defined directly by an `eco.construct.record` to the projected field operand.
+// Folds a projection whose operand is defined directly by an `eco.construct.record` to the projected field operand.
 OpFoldResult RecordProjectOp::fold(FoldAdaptor) {
     auto ctor = getRecord().getDefiningOp<eco::RecordConstructOp>();
     if (!ctor)
@@ -1199,7 +1203,7 @@ OpFoldResult RecordProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
-/// Folds a pair projection whose operand is defined directly by its construct op to the projected field operand.
+// Folds a pair projection whose operand is defined directly by its construct op to the projected field operand.
 OpFoldResult Tuple2ProjectOp::fold(FoldAdaptor) {
     auto ctor = getTuple().getDefiningOp<eco::Tuple2ConstructOp>();
     if (!ctor)
@@ -1209,7 +1213,7 @@ OpFoldResult Tuple2ProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
-/// Folds a triple projection whose operand is defined directly by its construct op to the projected field operand.
+// Folds a triple projection whose operand is defined directly by its construct op to the projected field operand.
 OpFoldResult Tuple3ProjectOp::fold(FoldAdaptor) {
     auto ctor = getTuple().getDefiningOp<eco::Tuple3ConstructOp>();
     if (!ctor)
@@ -1219,11 +1223,11 @@ OpFoldResult Tuple3ProjectOp::fold(FoldAdaptor) {
                                 getResult().getType());
 }
 
-/// Returns whether the list head and tail folds are on: true when `ECO_MLIR_FOLD_LIST` is set to a non-empty value
-/// other than `0`. The variable is read once per process.
-///
-/// They are off by default because folding a list projection changes the loop shapes that the EcoListCursor pass
-/// matches.
+// Returns whether the list head and tail folds are on: true when `ECO_MLIR_FOLD_LIST` is set to a non-empty value
+// other than `0`. The variable is read once per process.
+//
+// They are off by default because folding a list projection changes the loop shapes that the EcoListCursor pass
+// matches.
 static bool listFoldsEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_MLIR_FOLD_LIST");
@@ -1232,8 +1236,8 @@ static bool listFoldsEnabled() {
     return on;
 }
 
-/// Folds the head of a cons cell defined directly by `eco.construct.list` to its head operand, when list folds
-/// are on.
+// Folds the head of a cons cell defined directly by `eco.construct.list` to its head operand, when list folds
+// are on.
 OpFoldResult ListHeadOp::fold(FoldAdaptor) {
     if (!listFoldsEnabled())
         return {};
@@ -1245,8 +1249,8 @@ OpFoldResult ListHeadOp::fold(FoldAdaptor) {
     return foldConstructedField(f, 1, 0, getResult().getType());
 }
 
-/// Folds the tail of a cons cell defined directly by `eco.construct.list` to its tail operand, when list folds
-/// are on.
+// Folds the tail of a cons cell defined directly by `eco.construct.list` to its tail operand, when list folds
+// are on.
 OpFoldResult ListTailOp::fold(FoldAdaptor) {
     if (!listFoldsEnabled())
         return {};
@@ -1257,8 +1261,8 @@ OpFoldResult ListTailOp::fold(FoldAdaptor) {
     return foldConstructedField(f, 1, 0, getResult().getType());
 }
 
-/// Folds the tag of a custom value defined directly by an `eco.construct.custom` to that construct's `tag`,
-/// as an attribute that the fold driver turns into a constant.
+// Folds the tag of a custom value defined directly by an `eco.construct.custom` to that construct's `tag`,
+// as an attribute that the fold driver turns into a constant.
 OpFoldResult GetTagOp::fold(FoldAdaptor) {
     auto ctor = getValue().getDefiningOp<eco::CustomConstructOp>();
     if (!ctor)
@@ -1275,8 +1279,8 @@ OpFoldResult GetTagOp::fold(FoldAdaptor) {
 // A value-level aggregate (`!eco.tuple2`, `!eco.record`, `!eco.closure_env`, ...) is an SSA value whose type lists
 // the types of its elements, not yet an object on the heap.
 
-/// Checks that `actual` has the same length as `expected` and equal types in order. `label` names an element in
-/// diagnostics.
+// Checks that `actual` has the same length as `expected` and equal types in order. `label` names an element in
+// diagnostics.
 static LogicalResult verifyAggElements(Operation *op,
                                        ArrayRef<Type> actual,
                                        ArrayRef<Type> expected,
@@ -1296,7 +1300,7 @@ static LogicalResult verifyAggElements(Operation *op,
   return success();
 }
 
-/// Checks that the operand types equal the element types of the resulting pair type.
+// Checks that the operand types equal the element types of the resulting pair type.
 LogicalResult Tuple2MakeOp::verify() {
   auto resTy = cast<eco::Tuple2Type>(getResult().getType());
   Type expected[2] = { resTy.getFirst(), resTy.getSecond() };
@@ -1304,7 +1308,7 @@ LogicalResult Tuple2MakeOp::verify() {
   return verifyAggElements(getOperation(), actual, expected, "operand");
 }
 
-/// Checks that the operand types equal the element types of the resulting triple type.
+// Checks that the operand types equal the element types of the resulting triple type.
 LogicalResult Tuple3MakeOp::verify() {
   auto resTy = cast<eco::Tuple3Type>(getResult().getType());
   Type expected[3] = { resTy.getFirst(), resTy.getSecond(), resTy.getThird() };
@@ -1312,7 +1316,7 @@ LogicalResult Tuple3MakeOp::verify() {
   return verifyAggElements(getOperation(), actual, expected, "operand");
 }
 
-/// Checks that the field operand types equal the field types of the resulting record type.
+// Checks that the field operand types equal the field types of the resulting record type.
 LogicalResult RecordMakeOp::verify() {
   auto resTy = cast<eco::RecordType>(getResult().getType());
   SmallVector<Type, 8> actual;
@@ -1320,8 +1324,8 @@ LogicalResult RecordMakeOp::verify() {
   return verifyAggElements(getOperation(), actual, resTy.getFields(), "field");
 }
 
-/// Checks that the field operand types equal the field types of the resulting custom type, and that the tag is in
-/// 0 to 65535, the range of the 16-bit tag it will have on the heap.
+// Checks that the field operand types equal the field types of the resulting custom type, and that the tag is in
+// 0 to 65535, the range of the 16-bit tag it will have on the heap.
 LogicalResult CustomMakeOp::verify() {
   auto resTy = cast<eco::CustomType>(getResult().getType());
   SmallVector<Type, 8> actual;
@@ -1335,8 +1339,8 @@ LogicalResult CustomMakeOp::verify() {
   return success();
 }
 
-/// Checks that the head and tail types equal those of the resulting cons type, and that the tail type is
-/// `!eco.value`.
+// Checks that the head and tail types equal those of the resulting cons type, and that the tail type is
+// `!eco.value`.
 LogicalResult ConsMakeOp::verify() {
   auto resTy = cast<eco::ConsType>(getResult().getType());
   if (getHead().getType() != resTy.getHead()) {
@@ -1354,11 +1358,11 @@ LogicalResult ConsMakeOp::verify() {
   return success();
 }
 
-/// Checks an `eco.list.map`: `in_kind` and `out_kind` are slot kinds, 0 to 3 (REP_HEAP_002); captures appear only
-/// with a `callee`; and a named callee is a `func.func` whose parameters are the captures' types followed by one
-/// element. The element parameter's type is not compared.
-///
-/// The callee is looked up without a symbol table cache, once per op verified.
+// Checks an `eco.list.map`: `in_kind` and `out_kind` are slot kinds, 0 to 3 (REP_HEAP_002); captures appear only
+// with a `callee`; and a named callee is a `func.func` whose parameters are the captures' types followed by one
+// element. The element parameter's type is not compared.
+//
+// The callee is looked up without a symbol table cache, once per op verified.
 LogicalResult ListMapOp::verify() {
   for (auto [what, kind] :
        {std::make_pair("in_kind", getInKind()),
@@ -1402,7 +1406,7 @@ LogicalResult ListMapOp::verify() {
   return success();
 }
 
-/// Checks that the capture operand types equal the capture types of the resulting closure environment type.
+// Checks that the capture operand types equal the capture types of the resulting closure environment type.
 LogicalResult ClosureEnvMakeOp::verify() {
   auto resTy = cast<eco::ClosureEnvType>(getResult().getType());
   SmallVector<Type, 8> actual;
@@ -1410,13 +1414,13 @@ LogicalResult ClosureEnvMakeOp::verify() {
   return verifyAggElements(getOperation(), actual, resTy.getCaptures(), "capture");
 }
 
-/// Checks a move of a value-level aggregate to the heap.
-///
-/// A closure environment is rejected (CGEN_062): `eco.make.closure` builds closures. The operand must be a tuple,
-/// record, custom or cons value, with no stale bitmap attribute. A record or custom value must have no more fields
-/// than its heap limit (HEAP_019), and its field types must be storable; `slot_kinds`, if given, must match them, and
-/// is only checked, because the lowering takes the kinds from the field types. Other aggregates must not carry
-/// `slot_kinds`.
+// Checks a move of a value-level aggregate to the heap.
+//
+// A closure environment is rejected (CGEN_062): `eco.make.closure` builds closures. The operand must be a tuple,
+// record, custom or cons value, with no stale bitmap attribute. A record or custom value must have no more fields
+// than its heap limit (HEAP_019), and its field types must be storable; `slot_kinds`, if given, must match them, and
+// is only checked, because the lowering takes the kinds from the field types. Other aggregates must not carry
+// `slot_kinds`.
 LogicalResult ToHeapOp::verify() {
   Type valTy = getValue().getType();
   if (isa<eco::ClosureEnvType>(valTy)) {
@@ -1450,8 +1454,8 @@ LogicalResult ToHeapOp::verify() {
   return success();
 }
 
-/// Checks that a load of a heap object into a value-level aggregate produces a tuple, record, custom or cons value,
-/// and never a closure environment (CGEN_063).
+// Checks that a load of a heap object into a value-level aggregate produces a tuple, record, custom or cons value,
+// and never a closure environment (CGEN_063).
 LogicalResult FromHeapOp::verify() {
   Type resTy = getResult().getType();
   if (isa<eco::ClosureEnvType>(resTy)) {
@@ -1466,8 +1470,8 @@ LogicalResult FromHeapOp::verify() {
   return success();
 }
 
-/// Checks a closure built from a closure environment: fewer captures than `arity`, both within the closure limits,
-/// and no `i1` capture (REP_CLOSURE_001).
+// Checks a closure built from a closure environment: fewer captures than `arity`, both within the closure limits,
+// and no `i1` capture (REP_CLOSURE_001).
 LogicalResult MakeClosureOp::verify() {
   auto envTy = cast<eco::ClosureEnvType>(getEnv().getType());
   int64_t numCaptures = static_cast<int64_t>(envTy.getCaptures().size());
@@ -1499,9 +1503,9 @@ LogicalResult MakeClosureOp::verify() {
 // Custom Assembly Format: CaseOp
 //===----------------------------------------------------------------------===//
 
-/// Prints an `eco.case` as
-/// `eco.case %scrutinee : type [tag0, tag1, ...] -> (result_type0, ...) {attr-dict} {region0}, {region1}, ...`,
-/// with every attribute other than `tags` in the attribute dictionary.
+// Prints an `eco.case` as
+// `eco.case %scrutinee : type [tag0, tag1, ...] -> (result_type0, ...) {attr-dict} {region0}, {region1}, ...`,
+// with every attribute other than `tags` in the attribute dictionary.
 void CaseOp::print(OpAsmPrinter &p) {
   p << " " << getScrutinee() << " : " << getScrutinee().getType() << " [";
   llvm::interleaveComma(getTags(), p);
@@ -1522,8 +1526,8 @@ void CaseOp::print(OpAsmPrinter &p) {
   }
 }
 
-/// Parses the form `CaseOp::print` writes. At least one tag is required, and one region is read per tag. An empty
-/// result list `-> ()` parses, and is then rejected by the verifier.
+// Parses the form `CaseOp::print` writes. At least one tag is required, and one region is read per tag. An empty
+// result list `-> ()` parses, and is then rejected by the verifier.
 ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
   OpAsmParser::UnresolvedOperand scrutinee;
   Type scrutineeType;
@@ -1599,10 +1603,10 @@ ParseResult CaseOp::parse(OpAsmParser &parser, OperationState &result) {
 // Custom Assembly Format: JoinpointOp
 //===----------------------------------------------------------------------===//
 
-/// Prints a joinpoint as
-/// `eco.joinpoint id(%arg0: type0, ...) result_types [type0, ...] {body} continuation {cont} {attr-dict}`, where the
-/// argument list is the body's entry block arguments and is left out when there are none, and `result_types` is left
-/// out when absent. The body region must not be empty.
+// Prints a joinpoint as
+// `eco.joinpoint id(%arg0: type0, ...) result_types [type0, ...] {body} continuation {cont} {attr-dict}`, where the
+// argument list is the body's entry block arguments and is left out when there are none, and `result_types` is left
+// out when absent. The body region must not be empty.
 void JoinpointOp::print(OpAsmPrinter &p) {
   p << " " << getId();
 
@@ -1634,7 +1638,7 @@ void JoinpointOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs(), {"id", "jpResultTypes"});
 }
 
-/// Parses the form `JoinpointOp::print` writes. The arguments become the body's entry block arguments.
+// Parses the form `JoinpointOp::print` writes. The arguments become the body's entry block arguments.
 ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
   int64_t id;
   if (parser.parseInteger(id))

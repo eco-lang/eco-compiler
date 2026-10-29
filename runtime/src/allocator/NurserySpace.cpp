@@ -48,16 +48,16 @@ thread_local int g_scan_tag = -1;
 thread_local Elm::u32 g_scan_size = 0;
 #endif
 
-/// The word that a payload slot never written by its allocation site holds, once `ECO_NURSERY_POISON=1` has
-/// filled free to-space with the byte 0xD8 (validate builds).
-///
-/// The byte is chosen so that the word is taken for a heap pointer. 0xD8 has bit 2, the `ptr_ind` bit of an
-/// `HPointer`, clear, so `evacuate` follows the word and its check recognises it. A byte with bit 2 set, such as
-/// 0xDD, would make the word an embedded constant, which `evacuate` skips, and the check would never fire.
+// The word that a payload slot never written by its allocation site holds, once `ECO_NURSERY_POISON=1` has
+// filled free to-space with the byte 0xD8 (validate builds).
+//
+// The byte is chosen so that the word is taken for a heap pointer. 0xD8 has bit 2, the `ptr_ind` bit of an
+// `HPointer`, clear, so `evacuate` follows the word and its check recognises it. A byte with bit 2 set, such as
+// 0xDD, would make the word an embedded constant, which `evacuate` skips, and the check would never fire.
 static constexpr uint64_t ECO_POISON_WORD = 0xD8D8D8D8D8D8D8D8ull;
 
-/// Returns whether `ECO_NURSERY_POISON` is set to a value starting with `1`. The environment is read on the first
-/// call only.
+// Returns whether `ECO_NURSERY_POISON` is set to a value starting with `1`. The environment is read on the first
+// call only.
 bool nursery_poison_enabled() {
     static const bool on =
         []{ const char* e = std::getenv("ECO_NURSERY_POISON");
@@ -66,6 +66,10 @@ bool nursery_poison_enabled() {
 }
 
 namespace Elm {
+
+// ============================================================================
+// Setup
+// ============================================================================
 
 NurserySpace::NurserySpace() :
     config_(nullptr), allocator_(nullptr), from_is_low_(true),
@@ -182,6 +186,10 @@ void NurserySpace::reset(OldGenSpace &oldgen, const HeapConfig* new_config) {
 
     // The statistics are kept; `initializeFromConfig` refreshes only `nursery_size_bytes`.
 }
+
+// ============================================================================
+// Allocation
+// ============================================================================
 
 void NurserySpace::updateBounds() {
     low_end_  = low_base_  ? low_base_  + slice_.capacity : nullptr;
@@ -307,6 +315,10 @@ void* NurserySpace::copyToSpace(size_t size) {
 bool NurserySpace::scanHasMore() const {
     return scan_ptr_ < copy_ptr_;
 }
+
+// ============================================================================
+// The minor collection
+// ============================================================================
 
 void NurserySpace::checkAndGrow() {
     if (rg_) { regionCheckAndGrow(); return; }
@@ -1057,6 +1069,10 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     oldgen.validateEveryNthMinor();
 #endif
 }
+
+// ============================================================================
+// Evacuation and scanning
+// ============================================================================
 
 #if ECO_HEAP_VALIDATE
 // Asserts that `dst`, a minor's copy of an object whose header was `src`, kept every header field a copy must not
@@ -2196,15 +2212,17 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
 
 namespace {
 
-/// The census's process-wide counts and its table of changes by kind. Every field is guarded by `mu`.
+/**
+ * The census's process-wide counts and its table of changes by kind. Every field is guarded by `mu`.
+ */
 struct SurvivorWriteCensus {
     std::mutex mu;
     uint64_t checked = 0;
     uint64_t mismatched = 0;
     uint64_t skipped_builder = 0;
-    uint64_t base_mismatch = 0;     ///< Checks skipped because from-space had moved since the record.
+    uint64_t base_mismatch = 0;     // Checks skipped because from-space had moved since the record.
     uint64_t minors = 0;
-    uint64_t ylos_checked = 0;      ///< Of `checked`, the young large objects.
+    uint64_t ylos_checked = 0;      // Of `checked`, the young large objects.
     uint64_t ylos_mismatched = 0;
     std::unordered_map<uint64_t, uint64_t> hits;          // packed key -> count
     std::unordered_map<uintptr_t, uint32_t> eval_id;      // EvaluatorDesc* -> id
@@ -2212,29 +2230,29 @@ struct SurvivorWriteCensus {
     bool report_registered = false;
 };
 
-/// Returns the process's census, created on first use and never destroyed, so that it still exists for the exit
-/// report.
+// Returns the process's census, created on first use and never destroyed, so that it still exists for the exit
+// report.
 SurvivorWriteCensus& survivorCensus() {
     static SurvivorWriteCensus* g = new SurvivorWriteCensus;
     return *g;
 }
 
-/// Packs `tag`, `sub` and `word` into one key of `hits`.
+// Packs `tag`, `sub` and `word` into one key of `hits`.
 inline uint64_t censusKey(int tag, uint32_t sub, uint16_t word) {
     return (static_cast<uint64_t>(tag & 0xFF) << 48) |
            (static_cast<uint64_t>(sub) << 16) | word;
 }
 
-/// Returns the census hash of the object at `obj`: `p1::hashObject`, which ignores the header's colour, age and
-/// builder bits.
+// Returns the census hash of the object at `obj`: `p1::hashObject`, which ignores the header's colour, age and
+// builder bits.
 inline uint64_t censusHash(const char* obj, size_t size) {
     return p1::hashObject(obj, size);
 }
 
-/// Prints the census's counts and its 50 most frequent changes to stderr. `g.mu` must be held.
+// Prints the census's counts and its 50 most frequent changes to stderr. `g.mu` must be held.
 void survivorCensusReportLocked(SurvivorWriteCensus& g);
 
-/// Prints the census report, taking the lock. Registered with `atexit`.
+// Prints the census report, taking the lock. Registered with `atexit`.
 void survivorCensusReport() {
     SurvivorWriteCensus& g = survivorCensus();
     std::lock_guard<std::mutex> lock(g.mu);

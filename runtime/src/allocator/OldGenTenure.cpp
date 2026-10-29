@@ -18,9 +18,9 @@ namespace Elm {
 
 namespace {
 
-/// Writes a free-cell header over the slack after an object of `requested_size` bytes at `obj` in a
-/// `cell_size`-byte cell, as OldGenSpace.cpp's padCellSlack does, so that the block still parses by
-/// object size if it is later demoted to mixed.
+// Writes a free-cell header over the slack after an object of `requested_size` bytes at `obj` in a
+// `cell_size`-byte cell, as OldGenSpace.cpp's padCellSlack does, so that the block still parses by
+// object size if it is later demoted to mixed.
 inline void padSlack(void* obj, size_t requested_size, size_t cell_size) {
     requested_size = (requested_size + 7) & ~static_cast<size_t>(7);
     if (cell_size <= requested_size) return;
@@ -33,8 +33,8 @@ inline void padSlack(void* obj, size_t requested_size, size_t cell_size) {
     trailing->color = static_cast<u32>(Color::White);
 }
 
-/// Prints a fatal tenure-grant error naming `what`, class `cls` and the two numbers `a` and `b`, and
-/// aborts.
+// Prints a fatal tenure-grant error naming `what`, class `cls` and the two numbers `a` and `b`, and
+// aborts.
 [[noreturn]] void grantFatal(const char* what, size_t cls, uint64_t a, uint64_t b) {
     std::fprintf(stderr, "[gc] FATAL: tenure grant: %s (class %zu, %llu / %llu)\n", what, cls,
                  (unsigned long long)a, (unsigned long long)b);

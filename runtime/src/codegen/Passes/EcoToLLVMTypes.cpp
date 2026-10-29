@@ -36,9 +36,11 @@ namespace {
 // eco.constant -> inttoptr of the embedded-constant word
 //===----------------------------------------------------------------------===//
 
-/// The pattern that lowers `eco.constant` to its embedded-constant word as a `ptr addrspace(1)`.
-///
-/// The op's kind is passed to `encodeConstant` unchecked.
+/**
+ * The pattern that lowers `eco.constant` to its embedded-constant word as a `ptr addrspace(1)`.
+ *
+ * The op's kind is passed to `encodeConstant` unchecked.
+ */
 struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -64,10 +66,12 @@ struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
 // eco.constant.null_cons -> inttoptr of the null-cons word (HEAP_044)
 //===----------------------------------------------------------------------===//
 
-/// The pattern that lowers `eco.constant.null_cons` to the null-cons word of its declaration index, as a
-/// `ptr addrspace(1)`.
-///
-/// An index below 0 or above `value_enc::NullConsMax` aborts the compiler with `report_fatal_error`.
+/**
+ * The pattern that lowers `eco.constant.null_cons` to the null-cons word of its declaration index, as a
+ * `ptr addrspace(1)`.
+ *
+ * An index below 0 or above `value_enc::NullConsMax` aborts the compiler with `report_fatal_error`.
+ */
 struct ConstantNullConsOpLowering
     : public OpConversionPattern<ConstantNullConsOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -101,29 +105,31 @@ struct ConstantNullConsOpLowering
 // eco.string_literal -> call eco_alloc_string_literal[_utf8]
 //===----------------------------------------------------------------------===//
 
-/// Returns whether every byte of `s` is below 0x80, which decides whether a literal's global holds bytes or
-/// UTF-16 code units.
-///
-/// `isAsciiCasePattern` in EcoToLLVMControlFlow.cpp is a separate copy of the same test for string-case
-/// patterns. Nothing ties the two together.
+// Returns whether every byte of `s` is below 0x80, which decides whether a literal's global holds bytes or
+// UTF-16 code units.
+//
+// `isAsciiCasePattern` in EcoToLLVMControlFlow.cpp is a separate copy of the same test for string-case
+// patterns. Nothing ties the two together.
 static bool isAsciiLiteral(llvm::StringRef s) {
     for (char c : s)
         if (static_cast<unsigned char>(c) & 0x80) return false;
     return true;
 }
 
-/// The pattern that lowers a non-empty `eco.string_literal` to a call that builds the String from its global
-/// `__eco_str_N`, and the empty literal to the Empty constant.
-///
-/// The global must already exist: `preMaterializeStringLiterals` must have run on this `EcoRuntime` for the
-/// literal's function. Otherwise an assertion fails in builds with assertions on, and with them off the
-/// lookup dereferences the map's end iterator.
+/**
+ * The pattern that lowers a non-empty `eco.string_literal` to a call that builds the String from its global
+ * `__eco_str_N`, and the empty literal to the Empty constant.
+ *
+ * The global must already exist: `preMaterializeStringLiterals` must have run on this `EcoRuntime` for the
+ * literal's function. Otherwise an assertion fails in builds with assertions on, and with them off the
+ * lookup dereferences the map's end iterator.
+ */
 struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
-    /// The runtime whose index map and runtime-function declarations the pattern uses. It must outlive the
-    /// pattern.
+    // The runtime whose index map and runtime-function declarations the pattern uses. It must outlive the
+    // pattern.
     const EcoRuntime &runtime;
 
-    /// Creates the pattern; `runtime` must outlive it.
+    // Creates the pattern; `runtime` must outlive it.
     StringLiteralOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}

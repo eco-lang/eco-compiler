@@ -45,85 +45,93 @@
 
 namespace Elm::Platform {
 
-/// The consumer a submitted wait belongs to. Each lane has its own ready queue,
-/// and a result is queued only on the lane its submit named. The enumerator's
-/// value indexes the per-lane queues, so the values must stay 0-based and
-/// dense, and adding a lane means raising `kLaneCount`.
+/**
+ * The consumer a submitted wait belongs to. Each lane has its own ready queue,
+ * and a result is queued only on the lane its submit named. The enumerator's
+ * value indexes the per-lane queues, so the values must stay 0-based and
+ * dense, and adding a lane means raising `kLaneCount`.
+ */
 enum class WaitLane { EcoKernel, EcoSystem };
 
-/// The process's one service for waiting on child processes.
-///
-/// There is exactly one, obtained with `instance`. It is created on first use,
-/// starts its worker thread then, and is never destroyed, so the reference
-/// `instance` returns stays valid for the rest of the process.
-///
-/// `submit`, `tryPopReady` and `hasReady` each take an internal mutex and may
-/// be called from any thread.
+/**
+ * The process's one service for waiting on child processes.
+ *
+ * There is exactly one, obtained with `instance`. It is created on first use,
+ * starts its worker thread then, and is never destroyed, so the reference
+ * `instance` returns stays valid for the rest of the process.
+ *
+ * `submit`, `tryPopReady` and `hasReady` each take an internal mutex and may
+ * be called from any thread.
+ */
 class WaitService {
 public:
-    /// Returns the service, creating it and starting its worker thread on the
-    /// first call.
+    // Returns the service, creating it and starting its worker thread on the
+    // first call.
     static WaitService& instance();
 
-    /// The result of one submitted wait: the child has exited.
-    ///
-    /// `exitCode` is `exitCodeFromStatus(rawStatus)`. On POSIX `rawStatus` is
-    /// the status `waitpid` reported, which a consumer can test with
-    /// `WIFSIGNALED` and `WTERMSIG` to tell a signal death from an exit. On
-    /// Windows both members hold the process's exit code, or 1 if the process
-    /// could not be opened or its exit code could not be read.
+    /**
+     * The result of one submitted wait: the child has exited.
+     *
+     * `exitCode` is `exitCodeFromStatus(rawStatus)`. On POSIX `rawStatus` is
+     * the status `waitpid` reported, which a consumer can test with
+     * `WIFSIGNALED` and `WTERMSIG` to tell a signal death from an exit. On
+     * Windows both members hold the process's exit code, or 1 if the process
+     * could not be opened or its exit code could not be read.
+     */
     struct Ready {
-        std::uint64_t  token; ///< The `resumeToken` given to `submit`.
+        std::uint64_t  token; // The `resumeToken` given to `submit`.
         int            exitCode;
         int            rawStatus;
     };
 
-    /// Asks for a `Ready` carrying `resumeToken` to be queued on `lane` when
-    /// the child `pid` exits.
-    ///
-    /// `pid` must be a child of this process that nothing else, including another submit, waits for. On
-    /// POSIX, if the child has already been reaped, its kept status is used
-    /// and the result is queued before `submit` returns. On Windows the wait
-    /// uses the handle `Elm::platform::takeProcessHandle` returns for `pid`,
-    /// and otherwise a handle opened by pid.
-    ///
-    /// On POSIX, a pid that is not a child, or one already reaped by other
-    /// code, leaves a wait that is not answered unless a later child gets that
-    /// pid. While any wait is pending, every child of the process is reaped
-    /// here, so nothing else in the process may wait for any child.
+    // Asks for a `Ready` carrying `resumeToken` to be queued on `lane` when
+    // the child `pid` exits.
+    //
+    // `pid` must be a child of this process that nothing else, including another submit, waits for. On
+    // POSIX, if the child has already been reaped, its kept status is used
+    // and the result is queued before `submit` returns. On Windows the wait
+    // uses the handle `Elm::platform::takeProcessHandle` returns for `pid`,
+    // and otherwise a handle opened by pid.
+    //
+    // On POSIX, a pid that is not a child, or one already reaped by other
+    // code, leaves a wait that is not answered unless a later child gets that
+    // pid. While any wait is pending, every child of the process is reaped
+    // here, so nothing else in the process may wait for any child.
     void submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane);
 
-    /// Removes the oldest result queued on `lane` and writes it to `out`.
-    /// Returns false, leaving `out` unchanged, if `lane` has none.
+    // Removes the oldest result queued on `lane` and writes it to `out`.
+    // Returns false, leaving `out` unchanged, if `lane` has none.
     bool tryPopReady(WaitLane lane, Ready& out);
-    /// Returns whether `lane` has a result queued. It does not wait for one.
+    // Returns whether `lane` has a result queued. It does not wait for one.
     bool hasReady(WaitLane lane) const;
 
-    /// Returns the exit code a raw status stands for.
-    ///
-    /// On POSIX that is the exit status for a child that exited, 128 plus the
-    /// signal number for one killed by a signal, and 1 for any other status.
-    /// On Windows it returns `rawStatus` unchanged.
+    // Returns the exit code a raw status stands for.
+    //
+    // On POSIX that is the exit status for a child that exited, 128 plus the
+    // signal number for one killed by a signal, and 1 for any other status.
+    // On Windows it returns `rawStatus` unchanged.
     static int exitCodeFromStatus(int rawStatus);
 
 private:
-    /// Starts the detached worker thread, which runs `workerLoop`.
+    // Starts the detached worker thread, which runs `workerLoop`.
     WaitService();
     ~WaitService() = default;
 
-    /// Runs the worker thread, waiting for submitted children and queueing
-    /// their results. It never returns.
+    // Runs the worker thread, waiting for submitted children and queueing
+    // their results. It never returns.
     void workerLoop();
-    /// Queues `r` on `lane` and wakes the scheduler's event loop.
+    // Queues `r` on `lane` and wakes the scheduler's event loop.
     void pushReady(WaitLane lane, const Ready& r);
 
-    /// The number of ready queues. Must equal the number of `WaitLane` values;
-    /// nothing checks this.
+    // The number of ready queues. Must equal the number of `WaitLane` values;
+    // nothing checks this.
     static constexpr int kLaneCount = 2;
-    /// Returns the index of `lane`'s ready queue.
+    // Returns the index of `lane`'s ready queue.
     static int laneIndex(WaitLane lane) { return static_cast<int>(lane); }
 
-    /// A submitted wait: the child it is for and where its result goes.
+    /**
+     * A submitted wait: the child it is for and where its result goes.
+     */
     struct Pending {
         int64_t        pid;
         std::uint64_t  token;

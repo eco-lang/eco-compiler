@@ -50,29 +50,29 @@ namespace eco {
 
 namespace {
 
-/// Returns whether environment variable `n` is exactly `0`.
+// Returns whether environment variable `n` is exactly `0`.
 bool envZero(const char *n) {
     const char *e = ::getenv(n);
     return e && e[0] == '0' && e[1] == '\0';
 }
-/// Returns whether environment variable `n` is set, not empty and not `0`.
+// Returns whether environment variable `n` is set, not empty and not `0`.
 bool envOn(const char *n) {
     const char *e = ::getenv(n);
     return e && *e && !(e[0] == '0' && e[1] == '\0');
 }
 
-/// Returns the `$cap` prepass's instruction threshold, from
-/// `ECO_CAP_INLINE_MAX_INSTS` or 64 by default. At 0 no import copies are made.
-/// It repeats `runCapInlinePrepass`'s reading of the variable; the two must
-/// change together.
+// Returns the `$cap` prepass's instruction threshold, from
+// `ECO_CAP_INLINE_MAX_INSTS` or 64 by default. At 0 no import copies are made.
+// It repeats `runCapInlinePrepass`'s reading of the variable; the two must
+// change together.
 unsigned capInlineMaxInsts() {
     if (const char *e = ::getenv("ECO_CAP_INLINE_MAX_INSTS"))
         return (unsigned)strtoul(e, nullptr, 10);
     return 64;
 }
 
-/// Returns the `eco-cap-*` entries of `op`'s `passthrough` attribute as one
-/// string, sorted, so that two ops' facts can be compared for equality.
+// Returns the `eco-cap-*` entries of `op`'s `passthrough` attribute as one
+// string, sorted, so that two ops' facts can be compared for equality.
 std::string capFacts(Operation *op) {
     std::vector<std::string> facts;
     if (auto pt = op->getAttrOfType<ArrayAttr>("passthrough"))
@@ -96,7 +96,7 @@ std::string capFacts(Operation *op) {
     return out;
 }
 
-/// Removes every valueless entry `key` from `op`'s `passthrough` attribute.
+// Removes every valueless entry `key` from `op`'s `passthrough` attribute.
 void dropPassthrough(Operation *op, StringRef key) {
     auto pt = op->getAttrOfType<ArrayAttr>("passthrough");
     if (!pt)
@@ -108,29 +108,31 @@ void dropPassthrough(Operation *op, StringRef key) {
     op->setAttr("passthrough", ArrayAttr::get(op->getContext(), keep));
 }
 
-/// The clock the split's timings use.
+// The clock the split's timings use.
 using Clock = std::chrono::steady_clock;
-/// Returns the seconds elapsed since `t`.
+// Returns the seconds elapsed since `t`.
 double secs(Clock::time_point t) {
     return std::chrono::duration<double>(Clock::now() - t).count();
 }
 
-/// The partitions of a module, with what each must export; each vector has
-/// one entry per partition.
+/**
+ * The partitions of a module, with what each must export; each vector has
+ * one entry per partition.
+ */
 struct SplitPlan {
     std::vector<OwningOpRef<ModuleOp>> mods;
-    /// Owned functions another partition declares or copies, other than those
-    /// in `exportsLate`.
+    // Owned functions another partition declares or copies, other than those
+    // in `exportsLate`.
     std::vector<std::vector<std::string>> exports;
-    /// Owned functions to export only if they survive the owner's prepass.
+    // Owned functions to export only if they survive the owner's prepass.
     std::vector<std::vector<std::string>> exportsLate;
 };
 
-/// Builds `N` partitions of `src`, as `EcoSplit.h`'s file comment describes,
-/// making import copies only when `imports` is set. `N` must be at least 1.
-/// `src` is not changed. Returns an error if a declaration or copy fails the
-/// fact check. With `ECO_MLIR_SPLIT_STATS` set to a value other than empty or
-/// `0`, prints a summary of the split to stderr.
+// Builds `N` partitions of `src`, as `EcoSplit.h`'s file comment describes,
+// making import copies only when `imports` is set. `N` must be at least 1.
+// `src` is not changed. Returns an error if a declaration or copy fails the
+// fact check. With `ECO_MLIR_SPLIT_STATS` set to a value other than empty or
+// `0`, prints a summary of the split to stderr.
 llvm::Expected<SplitPlan> buildPartitions(ModuleOp src, unsigned N, bool imports) {
     auto T0 = Clock::now();
     MLIRContext *ctx = src.getContext();

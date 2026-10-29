@@ -45,13 +45,13 @@ using namespace eco;
 
 namespace {
 
-/// The largest number of values one closure op may carry, equal to `Elm::CLOSURE_MAX_ARITY` (HEAP_078).
-///
-/// A fused extend may have at most this many newargs, and a fused create at most one fewer captures.
+// The largest number of values one closure op may carry, equal to `Elm::CLOSURE_MAX_ARITY` (HEAP_078).
+//
+// A fused extend may have at most this many newargs, and a fused create at most one fewer captures.
 constexpr size_t kClosureMaxArity = 2047;
 
-/// Returns the `slot_kinds` entry for each of `vals`, from its SSA type: 1 for `i64` (Int), 2 for `f64` (Float),
-/// 3 for `i32` (Char), and 0 (boxed) for anything else, `i1` included.
+// Returns the `slot_kinds` entry for each of `vals`, from its SSA type: 1 for `i64` (Int), 2 for `f64` (Float),
+// 3 for `i32` (Char), and 0 (boxed) for anything else, `i1` included.
 static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
     SmallVector<int8_t> kinds;
     kinds.reserve(vals.size());
@@ -62,10 +62,10 @@ static SmallVector<int8_t> slotKindsOf(ValueRange vals) {
     return kinds;
 }
 
-/// Returns whether `funcOp` is an `llvm.func` taking one pointer and returning `i64` or a pointer.
-///
-/// Such a function takes its arguments as one array, so the patterns that make direct calls leave a closure whose
-/// evaluator looks like this alone. A `func.func` never matches.
+// Returns whether `funcOp` is an `llvm.func` taking one pointer and returning `i64` or a pointer.
+//
+// Such a function takes its arguments as one array, so the patterns that make direct calls leave a closure whose
+// evaluator looks like this alone. A `func.func` never matches.
 static bool usesArgsArrayConvention(Operation *funcOp) {
     if (auto llvmFunc = dyn_cast<LLVM::LLVMFuncOp>(funcOp)) {
         auto funcType = llvmFunc.getFunctionType();
@@ -81,23 +81,25 @@ static bool usesArgsArrayConvention(Operation *funcOp) {
     return false;
 }
 
-/// A rewrite of a saturated typed extend of a single-use create into a direct call.
-///
-///   %c = eco.papCreate @f(%captured...)
-///   %r = eco.papExtend %c(%newargs...) { remaining_arity = K }   // K == |newargs|
-/// becomes
-///   %r = eco.call @f(%captured..., %newargs...)
-///
-/// The call's result type is the extend's, which CGEN_056 makes equal to the evaluator's return type. It does not
-/// fire for a self-capturing create, an evaluator missing from `symTable`, or an args-array evaluator. The create,
-/// left unused, is removed by the driver.
+/**
+ * A rewrite of a saturated typed extend of a single-use create into a direct call.
+ *
+ *   %c = eco.papCreate @f(%captured...)
+ *   %r = eco.papExtend %c(%newargs...) { remaining_arity = K }   // K == |newargs|
+ * becomes
+ *   %r = eco.call @f(%captured..., %newargs...)
+ *
+ * The call's result type is the extend's, which CGEN_056 makes equal to the evaluator's return type. It does not
+ * fire for a self-capturing create, an evaluator missing from `symTable`, or an args-array evaluator. The create,
+ * left unused, is removed by the driver.
+ */
 struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
-    const mlir::SymbolTable &symTable; ///< The module's symbol table, which must outlive the pattern.
-    /// Creates the pattern, which keeps a reference to `symTable`.
+    const mlir::SymbolTable &symTable; // The module's symbol table, which must outlive the pattern.
+    // Creates the pattern, which keeps a reference to `symTable`.
     SaturatedPapToCallPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
         : OpRewritePattern(ctx), symTable(symTable) {}
 
-    /// Rewrites `extendOp` into a call when it matches, and fails otherwise.
+    // Rewrites `extendOp` into a call when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         auto remainingArityAttr = extendOp.getRemainingArityAttr();
@@ -149,21 +151,23 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
     }
 };
 
-/// A rewrite of a create with several uses, every one of them as the closure of a saturated typed extend, into one
-/// direct call per use.
-///
-/// Each extend is rewritten as `SaturatedPapToCallPattern` rewrites one, and the create is erased. A create with
-/// zero or one use is left to the driver and to `SaturatedPapToCallPattern`. Any other use (the create passed as a
-/// newarg, captured, or given to a call) means the closure escapes, and nothing is rewritten. The same exclusions as
-/// `SaturatedPapToCallPattern` apply.
+/**
+ * A rewrite of a create with several uses, every one of them as the closure of a saturated typed extend, into one
+ * direct call per use.
+ *
+ * Each extend is rewritten as `SaturatedPapToCallPattern` rewrites one, and the create is erased. A create with
+ * zero or one use is left to the driver and to `SaturatedPapToCallPattern`. Any other use (the create passed as a
+ * newarg, captured, or given to a call) means the closure escapes, and nothing is rewritten. The same exclusions as
+ * `SaturatedPapToCallPattern` apply.
+ */
 struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
-    const mlir::SymbolTable &symTable; ///< The module's symbol table, which must outlive the pattern.
-    /// Creates the pattern, which keeps a reference to `symTable`.
+    const mlir::SymbolTable &symTable; // The module's symbol table, which must outlive the pattern.
+    // Creates the pattern, which keeps a reference to `symTable`.
     MultiUsePapElisionPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
         : OpRewritePattern(ctx), symTable(symTable) {}
 
-    /// Rewrites every use of `createOp` into a call and erases it when it matches, and fails, changing nothing,
-    /// otherwise.
+    // Rewrites every use of `createOp` into a call and erases it when it matches, and fails, changing nothing,
+    // otherwise.
     LogicalResult matchAndRewrite(PapCreateOp createOp,
                                   PatternRewriter &rewriter) const override {
         Value pap = createOp.getResult();
@@ -225,25 +229,27 @@ struct MultiUsePapElisionPattern : public OpRewritePattern<PapCreateOp> {
     }
 };
 
-/// A rewrite of an extend whose closure is a single-use extend into one extend with both sets of newargs.
-///
-///   %c1 = eco.papExtend %c0(%a...)
-///   %c2 = eco.papExtend %c1(%b...)
-/// becomes
-///   %c2 = eco.papExtend %c0(%a..., %b...)
-///
-/// When both extends are typed, the fused extend is typed, with the first one's `remaining_arity`,
-/// `_fast_evaluator` and `_call_kind`; it does not fire if the first one saturates. When either is generic, the fused
-/// extend is generic, with no `remaining_arity` or `_fast_evaluator`, `_call_kind` `segmentation_unknown`, and the
-/// second extend's `_result_kind`. That rests on the runtime's generic apply continuing through saturation: it calls
-/// the closure once it has enough arguments and applies the rest to the result, so one extend with `%a ++ %b`
-/// behaves as the two in sequence. `_gencall_reason` is taken from the second extend, else the first, else set to
-/// 10 for a generic fusion. It does not fire when the fused newargs would exceed `kClosureMaxArity`.
+/**
+ * A rewrite of an extend whose closure is a single-use extend into one extend with both sets of newargs.
+ *
+ *   %c1 = eco.papExtend %c0(%a...)
+ *   %c2 = eco.papExtend %c1(%b...)
+ * becomes
+ *   %c2 = eco.papExtend %c0(%a..., %b...)
+ *
+ * When both extends are typed, the fused extend is typed, with the first one's `remaining_arity`,
+ * `_fast_evaluator` and `_call_kind`; it does not fire if the first one saturates. When either is generic, the fused
+ * extend is generic, with no `remaining_arity` or `_fast_evaluator`, `_call_kind` `segmentation_unknown`, and the
+ * second extend's `_result_kind`. That rests on the runtime's generic apply continuing through saturation: it calls
+ * the closure once it has enough arguments and applies the rest to the result, so one extend with `%a ++ %b`
+ * behaves as the two in sequence. `_gencall_reason` is taken from the second extend, else the first, else set to
+ * 10 for a generic fusion. It does not fire when the fused newargs would exceed `kClosureMaxArity`.
+ */
 struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
-    /// Replaces `extendOp` and the extend that produced its closure with one fused extend when it matches, and fails
-    /// otherwise.
+    // Replaces `extendOp` and the extend that produced its closure with one fused extend when it matches, and fails
+    // otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         auto prevExtend = extendOp.getClosure().getDefiningOp<PapExtendOp>();
@@ -312,22 +318,24 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
     }
 };
 
-/// A rewrite of a non-saturating typed extend of a single-use create into one create that captures the newargs too.
-///
-///   %c = eco.papCreate @f(%caps...) { arity = A, num_captured = C }
-///   %r = eco.papExtend %c(%args...) { remaining_arity = R }   // 0 < |args| < R
-/// becomes
-///   %r = eco.papCreate @f(%caps..., %args...) { arity = A, num_captured = C + |args| }
-///
-/// This assumes that the runtime treats a closure's captured values and its applied arguments alike, so the two
-/// forms build the same closure, the second with one allocation. The new create is a clone of the old one, keeping
-/// its other attributes, with new operands, `num_captured` and `slot_kinds`. It does not fire for a generic extend,
-/// a self-capturing create, a result that is not `!eco.value`, or when the fused captures would reach `arity` or
-/// exceed `kClosureMaxArity - 1`.
+/**
+ * A rewrite of a non-saturating typed extend of a single-use create into one create that captures the newargs too.
+ *
+ *   %c = eco.papCreate @f(%caps...) { arity = A, num_captured = C }
+ *   %r = eco.papExtend %c(%args...) { remaining_arity = R }   // 0 < |args| < R
+ * becomes
+ *   %r = eco.papCreate @f(%caps..., %args...) { arity = A, num_captured = C + |args| }
+ *
+ * This assumes that the runtime treats a closure's captured values and its applied arguments alike, so the two
+ * forms build the same closure, the second with one allocation. The new create is a clone of the old one, keeping
+ * its other attributes, with new operands, `num_captured` and `slot_kinds`. It does not fire for a generic extend,
+ * a self-capturing create, a result that is not `!eco.value`, or when the fused captures would reach `arity` or
+ * exceed `kClosureMaxArity - 1`.
+ */
 struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
-    /// Replaces `extendOp` and its create with one create when it matches, and fails otherwise.
+    // Replaces `extendOp` and its create with one create when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         auto remainingArityAttr = extendOp.getRemainingArityAttr();
@@ -379,14 +387,16 @@ struct FuseCreateIntoExtendPattern : public OpRewritePattern<PapExtendOp> {
     }
 };
 
-/// A rewrite that erases a typed extend whose result is unused and which does not saturate.
-///
-/// Such an extend only allocates a closure, but `papExtend` is not `Pure`, so the driver does not remove it. A
-/// generic extend, or one that saturates, may call code and is kept.
+/**
+ * A rewrite that erases a typed extend whose result is unused and which does not saturate.
+ *
+ * Such an extend only allocates a closure, but `papExtend` is not `Pure`, so the driver does not remove it. A
+ * generic extend, or one that saturates, may call code and is kept.
+ */
 struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
     using OpRewritePattern::OpRewritePattern;
 
-    /// Erases `extendOp` when it matches, and fails otherwise.
+    // Erases `extendOp` when it matches, and fails otherwise.
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
         if (!extendOp.getResult().use_empty())
@@ -405,7 +415,9 @@ struct DeadPapExtendPattern : public OpRewritePattern<PapExtendOp> {
     }
 };
 
-/// The module pass `eco-pap-simplify`, which applies the five patterns above greedily.
+/**
+ * The module pass `eco-pap-simplify`, which applies the five patterns above greedily.
+ */
 struct EcoPAPSimplifyPass
     : public PassWrapper<EcoPAPSimplifyPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoPAPSimplifyPass)
@@ -416,8 +428,8 @@ struct EcoPAPSimplifyPass
         return "Optimize PAP patterns: saturated->call, chain fusion";
     }
 
-    /// Rewrites the module's closure ops with the five patterns, and signals failure if the greedy driver does not
-    /// converge.
+    // Rewrites the module's closure ops with the five patterns, and signals failure if the greedy driver does not
+    // converge.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         MLIRContext *ctx = &getContext();

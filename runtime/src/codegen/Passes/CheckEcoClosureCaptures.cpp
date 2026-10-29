@@ -35,7 +35,9 @@ using namespace eco;
 
 namespace {
 
-/// The closure-capture check, as a module pass named `eco-check-closure-captures`.
+/**
+ * The closure-capture check, as a module pass named `eco-check-closure-captures`.
+ */
 struct CheckEcoClosureCapturesPass
     : public PassWrapper<CheckEcoClosureCapturesPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CheckEcoClosureCapturesPass)
@@ -49,14 +51,14 @@ struct CheckEcoClosureCapturesPass
                "no cross-function SSA references (CGEN_CLOSURE_003)";
     }
 
-    /// Returns whether captures of types `capturedTypes`, with a count of `numCaptured`, fit the leading
-    /// parameters of the function `funcSym` names in `module`.
-    ///
-    /// They fit when `numCaptured` is at most the parameter count and `capturedTypes[i]` equals parameter `i`'s
-    /// type for every `i`. On a mismatch it emits one error on `op`, naming `context` as the kind of op, and
-    /// returns false. It returns true without checking when `module` has no `func.func` of that name. The two
-    /// counts are not compared with each other: `capturedTypes` must be no longer than the parameter list,
-    /// which holds when its size equals `numCaptured`.
+    // Returns whether captures of types `capturedTypes`, with a count of `numCaptured`, fit the leading
+    // parameters of the function `funcSym` names in `module`.
+    //
+    // They fit when `numCaptured` is at most the parameter count and `capturedTypes[i]` equals parameter `i`'s
+    // type for every `i`. On a mismatch it emits one error on `op`, naming `context` as the kind of op, and
+    // returns false. It returns true without checking when `module` has no `func.func` of that name. The two
+    // counts are not compared with each other: `capturedTypes` must be no longer than the parameter list,
+    // which holds when its size equals `numCaptured`.
     static bool checkCalleeShape(
             Operation *op,
             ModuleOp module,
@@ -95,8 +97,8 @@ struct CheckEcoClosureCapturesPass
         return true;
     }
 
-    /// Checks every closure op and every lambda function in the module, reporting each violation as an error
-    /// and failing the pass if there was any. Does nothing unless `ECO_LOWERING_VALIDATION` is defined.
+    // Checks every closure op and every lambda function in the module, reporting each violation as an error
+    // and failing the pass if there was any. Does nothing unless `ECO_LOWERING_VALIDATION` is defined.
     void runOnOperation() override {
 #ifndef ECO_LOWERING_VALIDATION
         return;

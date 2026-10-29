@@ -17,18 +17,18 @@
 
 namespace Elm {
 
-/// Calls `f(HPointer&)` once for each child slot of the object at `obj`, in slot order.
-///
-/// Per tag: a tuple's fields, a Cons head, a Custom's or Record's values, and a Task's `value`
-/// are visited only when their kind is boxed. A Closure's slots are visited below `n_values` only,
-/// and then only the boxed ones. A ListBacking's elements `[hd, header.size)` and an Array's
-/// `[0, length)` are visited only when the uniform kind in `header.unboxed` bits 1:0 is boxed.
-/// Every DynRecord value and its `fieldgroup` are visited; its kind bitmap is not read.
-/// The other pointer fields (Cons tail, ConsChunk, Task, Process, slice, view and rope links)
-/// are always visited. Any other tag, including large String and Bytes headers, visits nothing.
-///
-/// A visited slot may hold null, an embedded constant or a pointer outside the nursery, so `f`
-/// must filter those itself. `f` gets a reference into the object and may rewrite the slot.
+// Calls `f(HPointer&)` once for each child slot of the object at `obj`, in slot order.
+//
+// Per tag: a tuple's fields, a Cons head, a Custom's or Record's values, and a Task's `value`
+// are visited only when their kind is boxed. A Closure's slots are visited below `n_values` only,
+// and then only the boxed ones. A ListBacking's elements `[hd, header.size)` and an Array's
+// `[0, length)` are visited only when the uniform kind in `header.unboxed` bits 1:0 is boxed.
+// Every DynRecord value and its `fieldgroup` are visited; its kind bitmap is not read.
+// The other pointer fields (Cons tail, ConsChunk, Task, Process, slice, view and rope links)
+// are always visited. Any other tag, including large String and Bytes headers, visits nothing.
+//
+// A visited slot may hold null, an embedded constant or a pointer outside the nursery, so `f`
+// must filter those itself. `f` gets a reference into the object and may rewrite the slot.
 template <typename F>
 inline void forEachChildSlot(void* obj, F&& f) {
     Header* hdr = getHeader(obj);
@@ -130,9 +130,9 @@ inline void forEachChildSlot(void* obj, F&& f) {
     }
 }
 
-/// Returns whether an object with tag `tag` can have a child slot, that is, whether
-/// `forEachChildSlot` has a case for it. An object of such a tag may still visit nothing, for
-/// example an Array of unboxed Ints.
+// Returns whether an object with tag `tag` can have a child slot, that is, whether
+// `forEachChildSlot` has a case for it. An object of such a tag may still visit nothing, for
+// example an Array of unboxed Ints.
 inline bool nurseryTagHasChildren(uint32_t tag) {
     switch (tag) {
         case Tag_Tuple2: case Tag_Tuple3: case Tag_Custom: case Tag_Record:

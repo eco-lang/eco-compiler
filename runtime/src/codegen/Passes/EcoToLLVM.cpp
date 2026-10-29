@@ -72,8 +72,10 @@ using namespace eco::detail;
 
 namespace {
 
-/// A pattern that rebuilds an `arith.select` with its result type converted, for selects whose types still
-/// contain `!eco.value`.
+/**
+ * A pattern that rebuilds an `arith.select` with its result type converted, for selects whose types still
+ * contain `!eco.value`.
+ */
 struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -91,8 +93,10 @@ struct SelectOpTypeConversion : public OpConversionPattern<arith::SelectOp> {
     }
 };
 
-/// A pattern that rebuilds an `scf.index_switch` with converted result types, moving its case and default
-/// regions into the new op. It does not match a switch whose result types are already converted.
+/**
+ * A pattern that rebuilds an `scf.index_switch` with converted result types, moving its case and default
+ * regions into the new op. It does not match a switch whose result types are already converted.
+ */
 struct IndexSwitchOpTypeConversion : public OpConversionPattern<scf::IndexSwitchOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -124,8 +128,10 @@ struct IndexSwitchOpTypeConversion : public OpConversionPattern<scf::IndexSwitch
     }
 };
 
-/// A pattern that rebuilds an `scf.yield` nested in an `scf.index_switch` with its converted operands. It does not
-/// match a yield with no enclosing index_switch.
+/**
+ * A pattern that rebuilds an `scf.yield` nested in an `scf.index_switch` with its converted operands. It does not
+ * match a yield with no enclosing index_switch.
+ */
 struct YieldOpTypeConversion : public OpConversionPattern<scf::YieldOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -171,26 +177,28 @@ void eco::detail::collectPreMatDemand(MLIRContext *ctx,
 
 namespace {
 
-/// The `eco-to-llvm` module pass, whose stages the file comment describes. It is created by
-/// `eco::createEcoToLLVMPass` and registered by `eco::registerEcoPasses`.
+/**
+ * The `eco-to-llvm` module pass, whose stages the file comment describes. It is created by
+ * `eco::createEcoToLLVMPass` and registered by `eco::registerEcoPasses`.
+ */
 struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoToLLVMPass)
 
-    /// Returns the pass's command-line name, `eco-to-llvm`.
+    // Returns the pass's command-line name, `eco-to-llvm`.
     StringRef getArgument() const override { return "eco-to-llvm"; }
 
-    /// Returns the one-line description shown in pass listings.
+    // Returns the one-line description shown in pass listings.
     StringRef getDescription() const override {
         return "Lower Eco dialect to LLVM dialect";
     }
 
-    /// Adds the LLVM and func dialects, which the pass creates ops in, to `registry`.
+    // Adds the LLVM and func dialects, which the pass creates ops in, to `registry`.
     void getDependentDialects(DialectRegistry &registry) const override {
         registry.insert<LLVM::LLVMDialect, func::FuncDialect>();
     }
 
-    /// Lowers the module in the stages the file comment lists. On the first stage that fails it signals pass
-    /// failure and returns, leaving the module partly converted.
+    // Lowers the module in the stages the file comment lists. On the first stage that fails it signals pass
+    // failure and returns, leaving the module partly converted.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = &getContext();

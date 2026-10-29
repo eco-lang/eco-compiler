@@ -1,4 +1,4 @@
-module Compiler.Type.KernelIntrinsics exposing (Row, lookup, rows, auditedFiles)
+module Compiler.Type.KernelIntrinsics exposing (Row, lookup, rows)
 
 {-| Gives a few kernel functions a type, so that each use of one is checked
 against a type, instead of being bounded only by its context.
@@ -37,11 +37,12 @@ list that `Elm.Kernel.String.split` returns. The JavaScript type would say that
 value is an `Array` when at run time it is a list, so the row for `fromArray`,
 like the row for `toArray`, is `List a -> List a`.
 
-So each row's `evidence` cites the C++ that shows what values the kernel takes
-and returns, and its `files` names the C++ source files that evidence rests on.
-The repository's `test/scripts/check-kernel-license-manifest.sh`, outside this
-source tree, reads `files` from this module and pins each named file by its
-sha256 in `src/Compiler/MonoSolver/kernel-license-manifest.txt`.
+So each row has an audit citing the C++ that shows what values the kernel takes
+and returns. It is kept outside this module, beside the kernel license table:
+`src/Compiler/MonoSolver/kernel-license-audit.csv` holds the audit, and
+`kernel-license-files.csv` there pins each C++ file it rests on by its sha256,
+both under the key `Prefix.Kernel.Home.name`. The repository's
+`test/scripts/check-kernel-license-manifest.sh` checks them.
 
 
 ## A wrong annotation is a type error
@@ -93,7 +94,7 @@ one annotation cannot fit both. `Compiler.MonoSolver.KernelSetFacts` and
   - Any kernel whose C++ body has not been read. Leaving a kernel out never
     causes a type error.
 
-@docs Row, lookup, rows, auditedFiles
+@docs Row, lookup, rows
 
 -}
 
@@ -106,19 +107,14 @@ import Dict exposing (Dict)
 {-| One row of the table: the annotation given to a kernel, with the record of
 the checks that justify it.
 
-`useSites` and `evidence` are prose kept as data, not comments on the code.
-`useSites` lists every occurrence of the kernel in the installed packages and
-why each is an instance of `annotation`. `evidence` cites the C++ lines that
-show what values the kernel takes and returns, and the date of that reading.
-`files` are paths relative to the repository root, which holds this compiler's
-directory and the C++ runtime beside it, not relative to the compiler.
+`useSites` is prose kept as data, not a comment on the code: it lists every
+occurrence of the kernel in the installed packages and why each is an instance
+of `annotation`. The C++ audit is kept outside this module, as described above.
 
 -}
 type alias Row =
     { annotation : Can.Annotation Name
     , useSites : String
-    , evidence : String
-    , files : List String
     }
 
 
@@ -138,34 +134,6 @@ rows =
     Dict.toList intrinsics
 
 
-{-| Every path named in any row's `files`, sorted and without duplicates.
--}
-auditedFiles : List String
-auditedFiles =
-    intrinsics
-        |> Dict.values
-        |> List.concatMap .files
-        |> List.sort
-        |> dedupeSorted
-
-
-{-| Removes each element equal to the one before it, so a sorted list comes back
-without duplicates.
--}
-dedupeSorted : List String -> List String
-dedupeSorted xs =
-    case xs of
-        a :: b :: rest ->
-            if a == b then
-                dedupeSorted (b :: rest)
-
-            else
-                a :: dedupeSorted (b :: rest)
-
-        _ ->
-            xs
-
-
 
 -- ====== THE TABLE ======
 
@@ -183,8 +151,6 @@ intrinsics =
                         (Can.tLambda (tVar "a") (Can.tLambda tValue tValue))
                     )
             , useSites = "elm/json 1.1.3+1.1.4 Json/Encode.elm:162 (list), :170 (array), :178 (set) -- all `List/Array/Set.foldl (addEntry func) (emptyArray ()) entries` with func : a -> Value from the enclosing annotation; b unifies to Value, which emptyArray/wrap absorb (both CTrue). No other reference in any installed package."
-            , evidence = "JsonExports.cpp:Elm_Kernel_Json_addEntry:1886-1925 applies func to entry via eco_apply_closure :1897 and conses the RETURN onto the accumulator's list :1908, rebuilding an ENC_ARRAY Custom :1911-1922; the accumulator IS the Value representation (emptyArray :1862-1872 allocates ctor=ENC_ARRAY). audited: 2026-08-20 | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 1 (32-bit Char) - JsonExports.cpp: the Tag_Char arms of decodedSlot (runDecoder's DEC_LIST/DEC_KEYVALUEPAIRS slot choice) and rewrapEscapingResult now write the code point through alloc::unboxedChar (was a 16-bit field store), and Json_wrap_Char (wrap is unlicensed) takes uint64_t + a 32-bit mask; Char-slot representation only - a closure still falls to decodedSlot's default arm and is stored boxed verbatim; Elm_Kernel_Json_addEntry and the emptyArray accumulator constructor are unchanged, so the Value representation this annotation describes is unchanged; no application, retention, fabrication or type change; B1-B3 unchanged; file:line cites re-derived against the current file (they were already ~40-130 lines off before this change) | audited: 2026-10-28"
-            , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
             }
           )
         , ( ( "Elm", "Json", "addField" )
@@ -195,8 +161,6 @@ intrinsics =
                         (Can.tLambda tValue (Can.tLambda tValue tValue))
                     )
             , useSites = "elm/json 1.1.3+1.1.4 Json/Encode.elm:202 (object), :224 (dict) -- both `foldl (\\k v obj -> addField k v obj) (emptyObject ()) ...` where k is String (object destructures List (String, Value); dict applies toKey : k -> String) and v is Value (the pair's second, or toValue : v -> Value). The accumulator unifies to Value, which emptyObject/wrap absorb (both CTrue). No other reference in any installed package."
-            , evidence = "JsonExports.cpp:Elm_Kernel_Json_addField:1927-1975 builds a (key, value) Tuple2 :1939-1949 and conses it onto the object's field list, rebuilding an ENC_OBJECT Custom; key is a String, value is an already-encoded Value, and the accumulator/result are the ENC_OBJECT representation of Value (emptyObject :1874-1884 allocates ctor=ENC_OBJECT). audited: 2026-08-20 | re-audit 2026-09-26: threaded-gc-04b GC-safety fixes only - DEC_ARRAY now builds a proper Elm Array tree (buildElmArrayFromElements: fresh JsArray/Custom nodes over the decoded Ok payloads, returned by THIS call) and runDecoder's recursive calls re-encode the rooted jvalHP instead of the unrooted parameter copy; JSON arrays over jsonArrayChunkSize() elements are stored chunked (CTOR_JSON_ARRAY_CHUNKED: fresh chunk ElmArrays + an index, built and returned by the same jsonToHeap call) and every reader goes through the allocation-free jsonArrayLength/jsonArrayAt accessors; no apply, no retention, no closure mint; B1/B2/B3 unchanged | re-audit 2026-10-08: plans/elm-html-native-kernel.md §14 I2 - Elm_Kernel_Json_run maps the embedded ENC_NULL constant (Json.Encode.null) to the embedded CTOR_JSON_NULL constant before decoding (constant-to-constant word swap: no allocation, no apply, no retention, no closure mint), so Decode.null/nullable match Json.Encode.null; B1/B2/B3 unchanged | re-audit 2026-10-16: plans/benchmark-suite-expansion.md (finding 9) - runDecoder's DEC_LIST and DEC_KEYVALUE take each list head's / tuple value's slot kind from the decoded value itself (decodedSlot: a Tag_Int/Tag_Float/Tag_Char payload is stored unboxed, anything else, closures included, is stored boxed verbatim) instead of from the element decoder's top constructor, which left Ints decoded by field/map/oneOf boxed where compiled code reads them unboxed; representation only: no apply, no retention, no closure mint, no type change; B1/B2/B3 unchanged | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 1 (32-bit Char) - JsonExports.cpp: the Tag_Char arms of decodedSlot (runDecoder's DEC_LIST/DEC_KEYVALUEPAIRS slot choice) and rewrapEscapingResult now write the code point through alloc::unboxedChar (was a 16-bit field store), and Json_wrap_Char (wrap is unlicensed) takes uint64_t + a 32-bit mask; Char-slot representation only - a closure still falls to decodedSlot's default arm and is stored boxed verbatim; Elm_Kernel_Json_addField and the emptyObject accumulator constructor are unchanged, so the Value representation this annotation describes is unchanged; no application, retention, fabrication or type change; B1-B3 unchanged; file:line cites re-derived against the current file (they were already ~40-130 lines off before this change) | audited: 2026-10-28"
-            , files = [ "elm-kernel-cpp/src/json/JsonExports.cpp" ]
             }
           )
         , ( ( "Elm", "List", "fromArray" )
@@ -204,8 +168,6 @@ intrinsics =
                 -- List a -> List a, not the JavaScript kernel's Array a -> List a
                 forall [ "a" ] (Can.tLambda (tList (tVar "a")) (tList (tVar "a")))
             , useSites = "elm/core 1.0.5 String.elm:191 (split) only -- `fromArray (Elm.Kernel.String.split sep string)` at a = String. No other reference in any installed package."
-            , evidence = "ListExports.cpp:Elm_Kernel_List_fromArray:307-355 is a PASS-THROUGH in eco: embedded constants :310-314 and Tag_Cons/Tag_ConsChunk :328-330 return the ARGUMENT by identity, and its own comment :323-327 records that Elm_Kernel_String_split already returns a proper list -- StringOps::split builds alloc::cons chains (StringOps.cpp:839-853). The JS type Array a -> List a would be a layout lie here. audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 1 (32-bit Char) - ListExports.cpp: appendClosureResult's Char arm reads a 32-bit code point from the eval result slot and stores it via alloc::unboxedChar, kernelListMapN's ResultSlot.c is uint32_t, and List_cons_Char takes uint64_t + a 32-bit mask; Elm_Kernel_List_fromArray is unchanged (still a pass-through returning a Nil/Cons argument by identity), so the annotation is unchanged; no application, retention, fabrication or type change; B1-B3 unchanged; line ranges updated | audited: 2026-10-28"
-            , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
             }
           )
         , ( ( "Elm", "List", "toArray" )
@@ -213,8 +175,6 @@ intrinsics =
                 -- List a -> List a, not the JavaScript kernel's List a -> Array a
                 forall [ "a" ] (Can.tLambda (tList (tVar "a")) (tList (tVar "a")))
             , useSites = "elm/core 1.0.5 String.elm:202 (join) only -- `Elm.Kernel.String.join sep (toArray chunks)` at a = String. No other reference in any installed package."
-            , evidence = "ListExports.cpp:Elm_Kernel_List_toArray:357-413 is a PASS-THROUGH in eco: embedded constants :363-367 and Tag_Cons/Tag_ConsChunk :368-375 return the ARGUMENT by identity, and the consumer StringOps::join takes a cons list (StringOps.cpp:659). audited: 2026-10-05 (re-audit, plans/wide-object-tail-kind-words-phase-2.md 2.3/2.6: the only C++ changes are the EvalParamLayout encoding (hand-written byte arrays replaced by makeEvalParamLayout values with the same kinds; u16 num_params) and, in ListExports, closure kinds read from a ClosureKinds snapshot; no application, retention, fabrication or type change) | re-audit 2026-10-28: plans/review-bug-triage-fixes.md Part 1 (32-bit Char) - ListExports.cpp: appendClosureResult's Char arm reads a 32-bit code point from the eval result slot and stores it via alloc::unboxedChar, kernelListMapN's ResultSlot.c is uint32_t, and List_cons_Char takes uint64_t + a 32-bit mask; Elm_Kernel_List_toArray is unchanged (still a pass-through returning a Nil/Cons argument by identity), so the annotation is unchanged; no application, retention, fabrication or type change; B1-B3 unchanged; line ranges updated | audited: 2026-10-28"
-            , files = [ "elm-kernel-cpp/src/core/ListExports.cpp" ]
             }
           )
         ]

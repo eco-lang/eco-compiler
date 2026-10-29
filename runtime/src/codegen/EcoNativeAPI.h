@@ -25,24 +25,24 @@
 extern "C" {
 #endif
 
-/// Lowers the MLIR in the file at `mlirPath` and links it into a native
-/// binary at `outputPath`. Returns 0 on success and nonzero on failure.
-///
-/// The file may hold MLIR text or bytecode. The kind of binary follows from
-/// the extension of `outputPath`: `.o` gives an object file, `.so` or `.node`
-/// a shared library, and anything else an executable. `rootModule`, which may
-/// be null or empty, is the name of the program's root Elm module; when it is
-/// non-empty and the output is a shared library, the name is stored in the
-/// binary as the symbol `__eco_root_module`, and otherwise it is ignored. The
-/// driver's errors are written to standard error. The stub definition returns
-/// -1 without doing anything.
+// Lowers the MLIR in the file at `mlirPath` and links it into a native
+// binary at `outputPath`. Returns 0 on success and nonzero on failure.
+//
+// The file may hold MLIR text or bytecode. The kind of binary follows from
+// the extension of `outputPath`: `.o` gives an object file, `.so` or `.node`
+// a shared library, and anything else an executable. `rootModule`, which may
+// be null or empty, is the name of the program's root Elm module; when it is
+// non-empty and the output is a shared library, the name is stored in the
+// binary as the symbol `__eco_root_module`, and otherwise it is ignored. The
+// driver's errors are written to standard error. The stub definition returns
+// -1 without doing anything.
 int eco_native_lower_and_link(const char *mlirPath, const char *outputPath,
                               const char *rootModule);
 
-/// Lowers the `mlirLen` bytes of MLIR at `mlirBytes` and links them into a
-/// native binary at `outputPath`, as `eco_native_lower_and_link` does for a
-/// file, except that no root module name can be given. The bytes are read
-/// only during the call.
+// Lowers the `mlirLen` bytes of MLIR at `mlirBytes` and links them into a
+// native binary at `outputPath`, as `eco_native_lower_and_link` does for a
+// file, except that no root module name can be given. The bytes are read
+// only during the call.
 int eco_native_lower_and_link_bytes(const char *mlirBytes, size_t mlirLen,
                                     const char *outputPath);
 

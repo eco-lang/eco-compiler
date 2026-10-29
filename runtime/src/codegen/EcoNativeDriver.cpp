@@ -79,17 +79,19 @@ void linkEcoGCStrategy();
 
 namespace {
 
-/// A static object whose constructor calls `linkEcoGCStrategy`, so that a
-/// binary linking this library also links the translation unit that defines
-/// the Eco GC strategy.
+/**
+ * A static object whose constructor calls `linkEcoGCStrategy`, so that a
+ * binary linking this library also links the translation unit that defines
+ * the Eco GC strategy.
+ */
 struct EcoGCStrategyLibLinker {
     EcoGCStrategyLibLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLibLinker;
 
 using namespace mlir;
 
-/// Parses the buffer in `sourceMgr` as an MLIR module in `context`, or prints
-/// an error and returns null.
+// Parses the buffer in `sourceMgr` as an MLIR module in `context`, or prints
+// an error and returns null.
 OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
                                              llvm::SourceMgr &sourceMgr) {
     auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
@@ -98,10 +100,10 @@ OwningOpRef<ModuleOp> loadMLIRFromSourceMgr(MLIRContext &context,
     return module;
 }
 
-/// Runs the Eco-to-LLVM-dialect pass pipeline on `module` in place, and
-/// returns 0 on success or 1 on failure. `capClosedWorld` makes the pipeline
-/// treat the module as a closed world rooted at `main` and
-/// `__eco_init_globals`, and asks for MLIR reachability.
+// Runs the Eco-to-LLVM-dialect pass pipeline on `module` in place, and
+// returns 0 on success or 1 on failure. `capClosedWorld` makes the pipeline
+// treat the module as a closed world rooted at `main` and
+// `__eco_init_globals`, and asks for MLIR reachability.
 int runPipeline(ModuleOp module, eco::LoweringStats *stats,
                 bool capClosedWorld) {
     PassManager pm(module->getName());
@@ -134,8 +136,8 @@ int runPipeline(ModuleOp module, eco::LoweringStats *stats,
     return 0;
 }
 
-/// Translates `module` to an LLVM module in `llvmContext` and renames its
-/// `main` to `eco_main`, or prints an error and returns null.
+// Translates `module` to an LLVM module in `llvmContext` and renames its
+// `main` to `eco_main`, or prints an error and returns null.
 std::unique_ptr<llvm::Module>
 translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
     registerBuiltinDialectTranslation(*module->getContext());
@@ -164,18 +166,18 @@ translateToLLVMIR(ModuleOp module, llvm::LLVMContext &llvmContext) {
     return llvmModule;
 }
 
-/// Returns whether `path` ends with `suffix`, compared case-sensitively. The
-/// output kind is chosen with it: `.o`, `.so` and `.node`.
+// Returns whether `path` ends with `suffix`, compared case-sensitively. The
+// output kind is chosen with it: `.o`, `.so` and `.node`.
 bool pathEndsWith(const std::string &path, const char *suffix) {
     size_t n = std::strlen(suffix);
     return path.size() >= n &&
            path.compare(path.size() - n, n, suffix) == 0;
 }
 
-/// Lowers the parsed `module` and links it at `outputPath`, as
-/// `compileMlirFileToExecutable` describes, and returns 0 or 1. Takes
-/// ownership of `module` and frees it before returning; its MLIRContext must
-/// outlive the call.
+// Lowers the parsed `module` and links it at `outputPath`, as
+// `compileMlirFileToExecutable` describes, and returns 0 or 1. Takes
+// ownership of `module` and frees it before returning; its MLIRContext must
+// outlive the call.
 int pipelineFromMlirModule(OwningOpRef<ModuleOp> module,
                            const std::string &outputPath,
                            const eco::EcoNativeOptions &opts) {
@@ -519,10 +521,10 @@ int compileMlirBytesToExecutable(const char *mlirBytes, size_t mlirLen,
 }
 
 #if defined(__APPLE__)
-/// Runs `/usr/bin/xcrun` with `xcrunArgs` and returns its standard output with
-/// trailing whitespace trimmed, or "" if it fails. Its standard error is
-/// discarded. /usr/bin/xcrun ships with macOS itself; it fails when neither
-/// Xcode nor the Command Line Tools is installed.
+// Runs `/usr/bin/xcrun` with `xcrunArgs` and returns its standard output with
+// trailing whitespace trimmed, or "" if it fails. Its standard error is
+// discarded. /usr/bin/xcrun ships with macOS itself; it fails when neither
+// Xcode nor the Command Line Tools is installed.
 static std::string runXcrun(llvm::ArrayRef<llvm::StringRef> xcrunArgs) {
     llvm::SmallString<128> outPath;
     if (llvm::sys::fs::createTemporaryFile("eco-xcrun", "txt", outPath))
@@ -546,17 +548,19 @@ static std::string runXcrun(llvm::ArrayRef<llvm::StringRef> xcrunArgs) {
     return (*buf)->getBuffer().rtrim().str();
 }
 
-/// The Apple link driver and SDK path, found at link time rather than at
-/// configure time, so that an installed bundle works with whatever Xcode or
-/// Command Line Tools the machine has. An empty field means it was not found.
+/**
+ * The Apple link driver and SDK path, found at link time rather than at
+ * configure time, so that an installed bundle works with whatever Xcode or
+ * Command Line Tools the machine has. An empty field means it was not found.
+ */
 struct DarwinToolchain {
     std::string clang;
     std::string sdkRoot;
 };
 
-/// Returns the Darwin toolchain, looked up through xcrun on the first call
-/// and reused for the life of the process. A non-empty `$SDKROOT` overrides
-/// the SDK path, as it does for Apple's own tools.
+// Returns the Darwin toolchain, looked up through xcrun on the first call
+// and reused for the life of the process. A non-empty `$SDKROOT` overrides
+// the SDK path, as it does for Apple's own tools.
 static const DarwinToolchain &darwinToolchain() {
     static const DarwinToolchain tc = [] {
         DarwinToolchain t;
@@ -571,8 +575,8 @@ static const DarwinToolchain &darwinToolchain() {
     return tc;
 }
 
-/// Links `objectFiles` into a Mach-O executable at `outputPath` with clang as
-/// the link driver, and returns 0 or 1. A shared library is refused.
+// Links `objectFiles` into a Mach-O executable at `outputPath` with clang as
+// the link driver, and returns 0 or 1. A shared library is refused.
 //
 // clang is used because it knows the crt and SDK details. ld64 is much more
 // integrated than ld.bfd/lld for Mach-O — Apple ships no crt objects (the
@@ -708,10 +712,10 @@ static int linkExecutableDarwin(const std::vector<std::string> &objectFiles,
 #endif // __APPLE__
 
 #if defined(_WIN32)
-/// Links `objectFiles` into a PE executable at `outputPath` with clang-cl
-/// driving lld-link, and returns 0 or 1. A shared library is refused. The
-/// linker's output is captured in a temporary file and then copied to
-/// standard error.
+// Links `objectFiles` into a PE executable at `outputPath` with clang-cl
+// driving lld-link, and returns 0 or 1. A shared library is refused. The
+// linker's output is captured in a temporary file and then copied to
+// standard error.
 //
 // clang-cl is used so that it finds the VS Build Tools and the Windows SDK.
 // The library set: the static MSVC CRT (/MT), the project libraries, the
@@ -918,15 +922,17 @@ int linkExecutable(const std::vector<std::string> &objectFiles,
     // then the build tree, so a build-tree and an installed binary link alike.
     using eco::config::resolveFile;
 
-    /// The set of link inputs and flags for one output, chosen from the
-    /// output kind and whether this build is the static-musl bundle, so that
-    /// the musl bundle can produce both fully static executables and
-    /// glibc-ABI shared libraries.
+    /**
+     * The set of link inputs and flags for one output, chosen from the
+     * output kind and whether this build is the static-musl bundle, so that
+     * the musl bundle can produce both fully static executables and
+     * glibc-ABI shared libraries.
+     */
     enum class LinkProfile {
-        MuslStaticExe,     ///< -static against the bundle's musl, libc++ and compiler-rt.
-        HostExe,           ///< -pie against the host's glibc.
-        HostShared,        ///< -shared with the host linker and libraries.
-        GlibcBundleShared, ///< -shared against the bundle's glibc/ tree.
+        MuslStaticExe,     // -static against the bundle's musl, libc++ and compiler-rt.
+        HostExe,           // -pie against the host's glibc.
+        HostShared,        // -shared with the host linker and libraries.
+        GlibcBundleShared, // -shared against the bundle's glibc/ tree.
     };
     LinkProfile profile;
     if (sharedLib) {

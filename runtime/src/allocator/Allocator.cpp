@@ -45,16 +45,16 @@ namespace {
 namespace Elm {
 ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })   // GCHelperPool.cpp: M6 probes fire while set
 
-/// The start of the heap reservation: null until the first `Allocator::initialize` sets it, and never changed
-/// after. `OldGenSpace` passes it to the forward-word codec in `Heap.hpp`, which does not use it.
+// The start of the heap reservation: null until the first `Allocator::initialize` sets it, and never changed
+// after. `OldGenSpace` passes it to the forward-word codec in `Heap.hpp`, which does not use it.
 char* g_heap_base = nullptr;
 
 namespace {
 
-/// The step in the old-generation bump, in bytes, at which a heap trace reports growth: a fresh block is
-/// traced only when the bump crosses a multiple of it, since one line per block would be too many.
+// The step in the old-generation bump, in bytes, at which a heap trace reports growth: a fresh block is
+// traced only when the bump crosses a multiple of it, since one line per block would be too many.
 constexpr size_t HEAP_TRACE_OLDGEN_INTERVAL   = 32 * 1024 * 1024;  // 32 MB.
-/// The matching step for nursery growth, in bytes. Nothing uses it.
+// The matching step for nursery growth, in bytes. Nothing uses it.
 constexpr size_t HEAP_TRACE_NURSERY_INTERVAL  = 16 * 1024 * 1024;  // 16 MB.
 
 }  // namespace
@@ -134,14 +134,14 @@ void Allocator::dumpHeapState([[maybe_unused]] const char* label,
 
 constinit thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
 
-/// The address of the calling thread's nursery bump state, the same address `Allocator::bumpState` returns,
-/// or null when the thread has no heap.
-///
-/// Compiled code reads it with one thread-local load where it would otherwise call for the address, and
-/// refers to it by this unmangled name. The address stays the same while the heap lives, because the bump
-/// state is held by value inside the heap; only its contents change. `Allocator::setThreadHeap` is the only
-/// writer, and a value that disagrees with the thread's heap makes compiled code allocate from the wrong
-/// nursery.
+// The address of the calling thread's nursery bump state, the same address `Allocator::bumpState` returns,
+// or null when the thread has no heap.
+//
+// Compiled code reads it with one thread-local load where it would otherwise call for the address, and
+// refers to it by this unmangled name. The address stays the same while the heap lives, because the bump
+// state is held by value inside the heap; only its contents change. `Allocator::setThreadHeap` is the only
+// writer, and a value that disagrees with the thread's heap makes compiled code allocate from the wrong
+// nursery.
 extern "C" constinit thread_local void* eco_tl_bump_state
     __attribute__((tls_model("initial-exec"))) = nullptr;
 
@@ -1190,25 +1190,25 @@ void (*Allocator::commit_observer_for_testing)(char* p, size_t n) = nullptr;
 
 namespace {
 
-/// Discards the `n` bytes of pages at `p` for the page work, returning whether that succeeded.
+// Discards the `n` bytes of pages at `p` for the page work, returning whether that succeeded.
 bool pageOpDiscard(void*, char* p, size_t n) {
     return Elm::platform::discardPages(p, n);
 }
-/// Populates the `n` bytes of committed pages at `p` for writing, for the page work, returning whether that
-/// succeeded.
+// Populates the `n` bytes of committed pages at `p` for writing, for the page work, returning whether that
+// succeeded.
 bool pageOpPopulate(void*, char* p, size_t n) {
     return Elm::platform::populatePagesWrite(p, n);
 }
-/// Commits the `n` bytes at `p` for the page work, after showing them to `commit_observer_for_testing`,
-/// returning whether the commit succeeded.
+// Commits the `n` bytes at `p` for the page work, after showing them to `commit_observer_for_testing`,
+// returning whether the commit succeeded.
 bool pageOpCommit(void*, char* p, size_t n) {
     if (Allocator::commit_observer_for_testing) Allocator::commit_observer_for_testing(p, n);
     return Elm::platform::commitAt(p, n) != nullptr;
 }
 
-/// Records a wait on a helper job of `dur_ns` nanoseconds starting at `start_ns` on the steady clock: in
-/// the GC event log, when it is on, and, in phase-timer builds, in the calling thread's stall list when the
-/// wait was outside a pause. Does nothing without GC statistics.
+// Records a wait on a helper job of `dur_ns` nanoseconds starting at `start_ns` on the steady clock: in
+// the GC event log, when it is on, and, in phase-timer builds, in the calling thread's stall list when the
+// wait was outside a pause. Does nothing without GC statistics.
 void pageHookStall(void*, uint64_t start_ns, uint64_t dur_ns, gc::HelperClient client,
                    bool in_pause) {
 #if ENABLE_GC_STATS
@@ -1227,7 +1227,7 @@ void pageHookStall(void*, uint64_t start_ns, uint64_t dur_ns, gc::HelperClient c
 #endif
 }
 
-/// Records a finished helper job in the GC event log, when GC statistics are built and the log is on.
+// Records a finished helper job in the GC event log, when GC statistics are built and the log is on.
 void pageHookJobReaped(void*, const gc::HelperJob& job) {
 #if ENABLE_GC_STATS
     if (!gcEventLogEnabled()) return;
@@ -1327,13 +1327,13 @@ void Allocator::drainHelperWork() {
 // ========== Explicit collections (HEAP_076) ==========
 
 namespace {
-/// Returns the steady clock's reading in nanoseconds.
+// Returns the steady clock's reading in nanoseconds.
 uint64_t explicitNowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-/// Prints `what` as a fatal explicit-collection error and aborts.
+// Prints `what` as a fatal explicit-collection error and aborts.
 [[noreturn]] void explicitFatal(const char* what) {
     std::fprintf(stderr, "[gc] FATAL: %s (HEAP_076)\n", what);
     std::fflush(stderr);

@@ -34,26 +34,26 @@
 using namespace mlir;
 
 namespace {
-/// The path of the `.mlir` file to read; `-` reads standard input.
+// The path of the `.mlir` file to read; `-` reads standard input.
 static llvm::cl::opt<std::string> inputFilename(
     llvm::cl::Positional,
     llvm::cl::desc("<input .mlir file>"),
     llvm::cl::Required);
 
-/// The path the module is printed to (`-o`); `-`, the default, is standard output.
+// The path the module is printed to (`-o`); `-`, the default, is standard output.
 static llvm::cl::opt<std::string> outputFilename(
     "o",
     llvm::cl::desc("Output filename (default: stdout)"),
     llvm::cl::value_desc("filename"),
     llvm::cl::init("-"));
 
-/// Whether to stop after verification without printing the module (`--verify-only`).
+// Whether to stop after verification without printing the module (`--verify-only`).
 static llvm::cl::opt<bool> verifyOnly(
     "verify-only",
     llvm::cl::desc("Only verify the input, don't print output"),
     llvm::cl::init(false));
 
-/// Whether the printed module carries its source locations (`--mlir-print-debuginfo`).
+// Whether the printed module carries its source locations (`--mlir-print-debuginfo`).
 static llvm::cl::opt<bool> printDebugInfo(
     "mlir-print-debuginfo",
     llvm::cl::desc("Print debug info in MLIR output"),
@@ -61,9 +61,9 @@ static llvm::cl::opt<bool> printDebugInfo(
 
 } // namespace
 
-/// Parses the buffers in `sourceMgr` as a module in `context`, and returns it, or a
-/// null `OwningOpRef` after writing an error line to standard error if parsing fails.
-/// The module does not outlive `context`.
+// Parses the buffers in `sourceMgr` as a module in `context`, and returns it, or a
+// null `OwningOpRef` after writing an error line to standard error if parsing fails.
+// The module does not outlive `context`.
 static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
                                        llvm::SourceMgr &sourceMgr) {
   auto module = parseSourceFile<ModuleOp>(sourceMgr, &context);
@@ -74,10 +74,10 @@ static OwningOpRef<ModuleOp> loadMLIR(MLIRContext &context,
   return module;
 }
 
-/// Reads, verifies and prints the module named on the command line, as the file
-/// comment describes. "Verification successful!" is written to standard output
-/// before the module is printed, so with the default `-o -` it precedes the module
-/// in the same stream.
+// Reads, verifies and prints the module named on the command line, as the file
+// comment describes. "Verification successful!" is written to standard output
+// before the module is printed, so with the default `-o -` it precedes the module
+// in the same stream.
 int main(int argc, char **argv) {
   llvm::InitLLVM initLLVM(argc, argv);
 

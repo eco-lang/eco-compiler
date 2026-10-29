@@ -53,7 +53,7 @@ using region::TenureJob;
 
 namespace {
 
-/// Prints `what` with two addresses and two numbers that identify the failure to stderr, and aborts.
+// Prints `what` with two addresses and two numbers that identify the failure to stderr, and aborts.
 [[noreturn]] void tenureFatal(const char* what, const void* a = nullptr, const void* b = nullptr,
                               uint64_t x = 0, uint64_t y = 0) {
     std::fprintf(stderr, "[gc] FATAL: tenure: %s (%p %p %llu %llu)\n", what, a, b,
@@ -62,7 +62,7 @@ namespace {
     std::abort();
 }
 
-/// Returns the steady clock's time in nanoseconds.
+// Returns the steady clock's time in nanoseconds.
 inline uint64_t nowNs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -71,16 +71,16 @@ inline uint64_t nowNs() {
 }  // namespace
 
 // TLA-REGION(NT.TenureHeapEnv) begin
-/// The heap side of the exact engine: the `Env` that `tenurework::SerialEngine` requires, over the job `J` and the
-/// old generation `og`.
-///
-/// Each member function is the operation of the same name that `SerialEngine` describes; only what is particular
-/// here is commented. The ranges it tests are the job's own copies, taken at launch. It allocates only from the
-/// job's grant. Both references must outlive the Env.
+// The heap side of the exact engine: the `Env` that `tenurework::SerialEngine` requires, over the job `J` and the
+// old generation `og`.
+//
+// Each member function is the operation of the same name that `SerialEngine` describes; only what is particular
+// here is commented. The ranges it tests are the job's own copies, taken at launch. It allocates only from the
+// job's grant. Both references must outlive the Env.
 struct NurserySpace::TenureHeapEnv {
     TenureJob& J;
     OldGenSpace& og;
-    std::vector<uintptr_t>* layout;   ///< If not null, receives the address of every copy, for tests.
+    std::vector<uintptr_t>* layout;   // If not null, receives the address of every copy, for tests.
 
     void* target(uint64_t w) const {
         HPointer hp;
@@ -182,12 +182,12 @@ struct NurserySpace::TenureHeapEnv {
 // and heal slots and reached hand-over YLOS objects go to per-worker lists that are appended in worker order. The
 // marked set and the heal set are those of the exact engine, as sets: the heal list's order may differ.
 namespace {
-/// The entry kind of a marked object whose children are still to be marked.
+// The entry kind of a marked object whose children are still to be marked.
 constexpr uint32_t kAgeScan = 0;
-/// The entry kind of a source recorded by the pause, not yet marked.
+// The entry kind of a source recorded by the pause, not yet marked.
 constexpr uint32_t kAgeStart = 1;
-/// One worker's results from the parallel ageing mark: the heal slots it found, the indices of the hand-over YLOS
-/// objects it reached first, and its counts.
+// One worker's results from the parallel ageing mark: the heal slots it found, the indices of the hand-over YLOS
+// objects it reached first, and its counts.
 struct AgeOut {
     std::vector<uint64_t*> heal;
     std::vector<uint32_t> ylos;
@@ -196,10 +196,10 @@ struct AgeOut {
 }  // namespace
 
 // TLA-REGION(NT.AgeParEnv) begin
-/// The `Env` of `markwork::runMarkerLoop` for the parallel ageing mark, over the worker slots `ws[0, n)`.
-///
-/// The functions the marker loop requires are as `runMarkerLoop` describes. `out` holds one `AgeOut` per slot.
-/// The nursery, the job, the slots and `out` must outlive the run.
+// The `Env` of `markwork::runMarkerLoop` for the parallel ageing mark, over the worker slots `ws[0, n)`.
+//
+// The functions the marker loop requires are as `runMarkerLoop` describes. `out` holds one `AgeOut` per slot.
+// The nursery, the job, the slots and `out` must outlive the run.
 struct NurserySpace::AgeParEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
@@ -229,14 +229,14 @@ struct NurserySpace::AgeParEnv {
     void prefetch(uint64_t) {}
     void publishAll(unsigned self) { ns.publishAllP(W(self)); }
 
-    /// Returns the index of the ageing extent holding `p`, or -1 if none does.
+    // Returns the index of the ageing extent holding `p`, or -1 if none does.
     int ageIndex(const void* p) const {
         const char* q = static_cast<const char*>(p);
         for (int i = 0; i < J.n_age; ++i)
             if (q >= J.age[i].base && q < J.age[i].top) return i;
         return -1;
     }
-    /// Sets the mark bit of `o` in ageing extent `i`, and returns whether this call set it.
+    // Sets the mark bit of `o` in ageing extent `i`, and returns whether this call set it.
     bool markBit(int i, const void* o) const {
         const size_t g = static_cast<size_t>(static_cast<const char*>(o) - J.age[i].base) >> 3;
         std::atomic_ref<uint64_t> w(J.age[i].bits[g >> 6]);
@@ -244,12 +244,12 @@ struct NurserySpace::AgeParEnv {
         if (w.load(std::memory_order_relaxed) & m) return false;
         return (w.fetch_or(m, std::memory_order_acq_rel) & m) == 0;
     }
-    /// Handles a reference to `t`, from slot `s` of `parent`, or from the pause when `parent` is null.
-    ///
-    /// An ageing object or ageing-generation YLOS object marked here for the first time is queued for scanning. A
-    /// slot into the Tenuring extent becomes a heal slot, and a hand-over YLOS object reached here first from a
-    /// parent is recorded in `o`. Aborts for a pause source that is neither in the ageing extents nor an
-    /// ageing-generation YLOS object, and for a child elsewhere in the nursery's extent slots.
+    // Handles a reference to `t`, from slot `s` of `parent`, or from the pause when `parent` is null.
+    //
+    // An ageing object or ageing-generation YLOS object marked here for the first time is queued for scanning. A
+    // slot into the Tenuring extent becomes a heal slot, and a hand-over YLOS object reached here first from a
+    // parent is recorded in `o`. Aborts for a pause source that is neither in the ageing extents nor an
+    // ageing-generation YLOS object, and for a child elsewhere in the nursery's extent slots.
     void mark(MinorWorker& w, AgeOut& o, void* t, void* parent, uint64_t* s) {
         tw::SerialState& st = J.st;
         const char* q = static_cast<const char*>(t);
@@ -1016,29 +1016,29 @@ void NurserySpace::tenureTeardown(OldGenSpace& oldgen) {
 // The two parallel engines. Both run `markwork::runMarkerLoop` over `TenureParEnv`; they differ only in how a copy
 // is allocated.
 namespace {
-/// The entry kind of a copy whose slots are still to be followed.
+// The entry kind of a copy whose slots are still to be followed.
 constexpr uint32_t kEntScan = 0;
-/// The entry kind of a tenuring object to copy: a start, or the target of a heal slot.
+// The entry kind of a tenuring object to copy: a start, or the target of a heal slot.
 constexpr uint32_t kEntTenure = 2;
-/// The entry kind of a hand-over YLOS object whose slots are to be followed without being written.
+// The entry kind of a hand-over YLOS object whose slots are to be followed without being written.
 constexpr uint32_t kEntYlos = 3;
 }  // namespace
 
 // TLA-REGION(NT.TenureParEnv) begin
-/// The `Env` of `markwork::runMarkerLoop` for the parallel tenure engines, over the worker slots `ws[0, n)`.
-///
-/// The functions the marker loop requires are as `runMarkerLoop` describes. Objects are claimed through the
-/// shadow, so each is copied once whichever worker reaches it first. Each worker counts its copies in its own slot,
-/// for `tenureParCollect`. Everything the Env refers to must outlive the run.
+// The `Env` of `markwork::runMarkerLoop` for the parallel tenure engines, over the worker slots `ws[0, n)`.
+//
+// The functions the marker loop requires are as `runMarkerLoop` describes. Objects are claimed through the
+// shadow, so each is copied once whichever worker reaches it first. Each worker counts its copies in its own slot,
+// for `tenureParCollect`. Everything the Env refers to must outlive the run.
 struct NurserySpace::TenureParEnv {
     static constexpr bool kParallel = true;
     NurserySpace& ns;
     TenureJob& J;
     OldGenSpace& og;
-    OldGenSpace::PromoCtx* ctx;                   ///< The pause engine's promotion context; else null.
-    OldGenSpace::TenureMemberCursor* mcs;         ///< The concurrent engine's grant cursors, one per slot.
-    std::unique_ptr<MinorWorker>* ws;             ///< The worker slots.
-    unsigned n;                                   ///< The number of slots, all of which may be stolen from.
+    OldGenSpace::PromoCtx* ctx;                   // The pause engine's promotion context; else null.
+    OldGenSpace::TenureMemberCursor* mcs;         // The concurrent engine's grant cursors, one per slot.
+    std::unique_ptr<MinorWorker>* ws;             // The worker slots.
+    unsigned n;                                   // The number of slots, all of which may be stolen from.
 
     MinorWorker& W(unsigned i) { return *ws[i]; }
     mk::MarkerCounters& counters(unsigned i) { return W(i).ctr; }
@@ -1061,18 +1061,18 @@ struct NurserySpace::TenureParEnv {
     void prefetch(uint64_t) {}
     void publishAll(unsigned self) { ns.publishAllP(W(self)); }
 
-    /// Returns whether `p` is in the tenuring extent's survivor part.
+    // Returns whether `p` is in the tenuring extent's survivor part.
     bool inT(const void* p) const {
         const char* q = static_cast<const char*>(p);
         return q >= J.base && q < J.surv_top;
     }
-    /// Returns the shadow entry of `obj`, an object of the tenuring extent.
+    // Returns the shadow entry of `obj`, an object of the tenuring extent.
     uint64_t* sw(const void* obj) const {
         return J.shadow + (static_cast<size_t>(static_cast<const char*>(obj) - J.base) >> J.shadow_shift);
     }
-    /// Returns the copy of `obj`, a tenuring object, making it if no other worker has: claims the shadow entry,
-    /// copies, and publishes the copy's address. Waits while another worker holds the claim. A new copy with
-    /// children is queued for scanning if `push`. Aborts if the old generation cannot allocate the copy.
+    // Returns the copy of `obj`, a tenuring object, making it if no other worker has: claims the shadow entry,
+    // copies, and publishes the copy's address. Waits while another worker holds the claim. A new copy with
+    // children is queued for scanning if `push`. Aborts if the old generation cannot allocate the copy.
     char* tenure(MinorWorker& w, void* obj, bool push) {
         uint64_t* s = sw(obj);
         uint64_t e = tw::ref(s).load(std::memory_order_acquire);
@@ -1110,8 +1110,8 @@ struct NurserySpace::TenureParEnv {
         if (push && nurseryTagHasChildren(h->tag)) ns.pushGreyP(w, mk::objEntry(dst, kEntScan));
         return dst;
     }
-    /// Marks `t` reached if it is a hand-over YLOS object not reached before, and then queues it for a read-only
-    /// scan.
+    // Marks `t` reached if it is a hand-over YLOS object not reached before, and then queues it for a read-only
+    // scan.
     void reachYlos(MinorWorker& w, const void* t) {
         const long k = tw::ylosFind(J.st.ylos, t);
         if (k < 0) return;
@@ -1120,8 +1120,8 @@ struct NurserySpace::TenureParEnv {
         ++w.ylos_scans;
         ns.pushGreyP(w, mk::objEntry(J.st.ylos[static_cast<size_t>(k)].obj, kEntYlos));
     }
-    /// Handles slot `hp` of `parent`, a copy: a reference into the tenuring extent is rewritten to the target's
-    /// copy, and a hand-over YLOS target is reached. Aborts for a target elsewhere in the nursery's extent slots.
+    // Handles slot `hp` of `parent`, a copy: a reference into the tenuring extent is rewritten to the target's
+    // copy, and a hand-over YLOS target is reached. Aborts for a target elsewhere in the nursery's extent slots.
     void childOfCopy(MinorWorker& w, void* parent, HPointer& hp) {
         if (hp.ptr_ind != 0 || hp.ptr == 0) return;
         void* t = Allocator::fromPointerRaw(hp);
@@ -1131,11 +1131,11 @@ struct NurserySpace::TenureParEnv {
         if (q >= J.slot_lo && q < J.slot_hi)
             tenureFatal("TV6: a promoted object has a young child outside the tenuring extent", parent, t);
     }
-    /// Copies the tail chain of the copied cons cell `prev`, up to `tw::kSpineRun` cells, rewriting each tail to
-    /// its copy, and then handles the heads of the cells copied.
-    ///
-    /// The run ends at a tail that is not a tenuring cons cell, at a cell already claimed by any worker, or at the
-    /// limit. At the limit the last copied cell is queued for scanning, and its head is left to that scan.
+    // Copies the tail chain of the copied cons cell `prev`, up to `tw::kSpineRun` cells, rewriting each tail to
+    // its copy, and then handles the heads of the cells copied.
+    //
+    // The run ends at a tail that is not a tenuring cons cell, at a cell already claimed by any worker, or at the
+    // limit. At the limit the last copied cell is queued for scanning, and its head is left to that scan.
     void spineRun(MinorWorker& w, Cons* prev) {
         Cons* run[tw::kSpineRun];
         size_t k = 0;

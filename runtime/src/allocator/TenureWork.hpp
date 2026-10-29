@@ -59,69 +59,69 @@
 namespace Elm::tenurework {
 
 #if ECO_TLA_TRACE_ENABLED
-/// Whether the engine calls `tlatrace::probe` at its pause points (an item taken, a copy made but not yet
-/// published, a copy popped but not yet scanned). Trace builds only; a harness sets it.
+// Whether the engine calls `tlatrace::probe` at its pause points (an item taken, a copy made but not yet
+// published, a copy popped but not yet scanned). Trace builds only; a harness sets it.
 inline bool tla_probes = false;
 #endif
 
 // ---------------------------------------------------------------------------
 // Shadow entries
 // ---------------------------------------------------------------------------
-/// The bits of a shadow entry that hold its state.
+// The bits of a shadow entry that hold its state.
 constexpr uint64_t kStateMask  = 7;
-/// The state of an entry whose object a copier has claimed and not yet published.
+// The state of an entry whose object a copier has claimed and not yet published.
 constexpr uint64_t kStateBusy  = 1;
-/// The state of an entry whose object has been copied; the address bits name the copy.
+// The state of an entry whose object has been copied; the address bits name the copy.
 constexpr uint64_t kStateFwd   = 2;
-/// The position of the gen in a shadow entry.
+// The position of the gen in a shadow entry.
 constexpr unsigned kGenShift   = 43;
-/// The gen bits, after shifting down: a gen is kept modulo 2^21.
+// The gen bits, after shifting down: a gen is kept modulo 2^21.
 constexpr uint32_t kGenMask    = (1u << 21) - 1;
-/// The bits of a shadow entry that hold the copy's address (bits 3..42).
+// The bits of a shadow entry that hold the copy's address (bits 3..42).
 constexpr uint64_t kAddrMask   = ((uint64_t{1} << kGenShift) - 1) & ~kStateMask;
 
-/// Returns the shadow entry with state `state`, gen `gen` and address `dst`. Bits of `dst` outside bits 3..42 are
-/// dropped.
+// Returns the shadow entry with state `state`, gen `gen` and address `dst`. Bits of `dst` outside bits 3..42 are
+// dropped.
 inline uint64_t make(const void* dst, uint64_t state, uint32_t gen) {
     return (reinterpret_cast<uintptr_t>(dst) & kAddrMask) | state |
            (static_cast<uint64_t>(gen & kGenMask) << kGenShift);
 }
-/// Returns the gen of entry `e`.
+// Returns the gen of entry `e`.
 inline uint32_t genOf(uint64_t e) { return static_cast<uint32_t>(e >> kGenShift); }
-/// Returns the state of entry `e`, ignoring its gen.
+// Returns the state of entry `e`, ignoring its gen.
 inline uint64_t stateOf(uint64_t e) { return e & kStateMask; }
-/// Returns the address bits of entry `e`, ignoring its state and gen.
+// Returns the address bits of entry `e`, ignoring its state and gen.
 inline char* addrOf(uint64_t e) { return reinterpret_cast<char*>(static_cast<uintptr_t>(e & kAddrMask)); }
 
-/// Returns an atomic view of the shadow entry at `w`, valid while `w` is.
+// Returns an atomic view of the shadow entry at `w`, valid while `w` is.
 inline std::atomic_ref<uint64_t> ref(uint64_t* w) { return std::atomic_ref<uint64_t>(*w); }
 
-/// Returns the copy's address when `e` is FWD in generation `gen`, else nullptr.
+// Returns the copy's address when `e` is FWD in generation `gen`, else nullptr.
 inline char* fwdOf(uint64_t e, uint32_t gen) {
     return (genOf(e) == (gen & kGenMask) && stateOf(e) == kStateFwd) ? addrOf(e) : nullptr;
 }
-/// Returns the copy's address if the entry at `w` is FWD in generation `gen`, else nullptr. The load is an acquire,
-/// so a non-null result may be read as a complete copy.
+// Returns the copy's address if the entry at `w` is FWD in generation `gen`, else nullptr. The load is an acquire,
+// so a non-null result may be read as a complete copy.
 inline char* lookup(uint64_t* w, uint32_t gen) {
     return fwdOf(ref(w).load(std::memory_order_acquire), gen);
 }
-/// Tries to change the entry at `w` from `observed` to BUSY in generation `gen`, and returns whether it did. On
-/// failure `observed` holds the entry's current value.
-///
-/// `observed` must be the value the caller loaded, not zero: an entry from the extent's earlier use is unvisited
-/// but nonzero, and can only be claimed by comparing against it.
+// Tries to change the entry at `w` from `observed` to BUSY in generation `gen`, and returns whether it did. On
+// failure `observed` holds the entry's current value.
+//
+// `observed` must be the value the caller loaded, not zero: an entry from the extent's earlier use is unvisited
+// but nonzero, and can only be claimed by comparing against it.
 inline bool claim(uint64_t* w, uint64_t& observed, uint32_t gen) {
     return ref(w).compare_exchange_strong(observed, make(nullptr, kStateBusy, gen),
                                           std::memory_order_acq_rel, std::memory_order_acquire);
 }
-/// Sets the entry at `w` to FWD at `dst` in generation `gen`. The store is a release, so a reader that sees it with
-/// an acquire load also sees the copy written before the call.
+// Sets the entry at `w` to FWD at `dst` in generation `gen`. The store is a release, so a reader that sees it with
+// an acquire load also sees the copy written before the call.
 inline void publish(uint64_t* w, const void* dst, uint32_t gen) {
     ref(w).store(make(dst, kStateFwd, gen), std::memory_order_release);
 }
-/// Waits until the entry at `w` is not BUSY in generation `gen`, calling `pause(round)` between loads, and returns
-/// the entry last loaded. The result may be FWD, or an unvisited or stale entry. It never returns while the entry
-/// stays BUSY.
+// Waits until the entry at `w` is not BUSY in generation `gen`, calling `pause(round)` between loads, and returns
+// the entry last loaded. The result may be FWD, or an unvisited or stale entry. It never returns while the entry
+// stays BUSY.
 template <class Pause>
 inline uint64_t waitPublished(uint64_t* w, uint32_t gen, Pause&& pause) {
     for (unsigned round = 0;; ++round) {
@@ -134,60 +134,66 @@ inline uint64_t waitPublished(uint64_t* w, uint32_t gen, Pause&& pause) {
 // ---------------------------------------------------------------------------
 // The serial engine's state
 // ---------------------------------------------------------------------------
-/// One young large object (YLOS object) in a snapshot: it occupies [`obj`, `end`).
+/**
+ * One young large object (YLOS object) in a snapshot: it occupies [`obj`, `end`).
+ */
 struct YlosEntry {
     const char* obj;
     const char* end;
 };
 
-/// A run of dead memory in an ageing extent, which the merge covers with one filler object of `bytes` bytes at `p`.
+/**
+ * A run of dead memory in an ageing extent, which the merge covers with one filler object of `bytes` bytes at `p`.
+ */
 struct Span {
     char* p;
     size_t bytes;
 };
 
-/// Everything a tenure job knows, so that a stopped job can be resumed by a fresh `SerialEngine` on any thread.
-///
-/// The inputs are filled in by the hand-over pause; the rest is the engine's progress and counters. Nothing here
-/// synchronises access: whoever runs the job must hand it between threads with some synchronisation of its own.
+/**
+ * Everything a tenure job knows, so that a stopped job can be resumed by a fresh `SerialEngine` on any thread.
+ *
+ * The inputs are filled in by the hand-over pause; the rest is the engine's progress and counters. Nothing here
+ * synchronises access: whoever runs the job must hand it between threads with some synchronisation of its own.
+ */
 struct SerialState {
     // Inputs, filled in the hand-over pause (the job appends to `heal` and sets `reached`).
-    std::vector<void*>     starts;      ///< Objects of the tenuring extent to tenure first.
-    /// Slots outside the tenuring extent whose value may point into it. Read here, rewritten by the merge. The mark
-    /// phase appends to it.
+    std::vector<void*>     starts;      // Objects of the tenuring extent to tenure first.
+    // Slots outside the tenuring extent whose value may point into it. Read here, rewritten by the merge. The mark
+    // phase appends to it.
     std::vector<uint64_t*> heal;
-    std::vector<YlosEntry> ylos;        ///< The tenuring generation's YLOS objects, sorted by `obj`.
-    std::vector<uint8_t>   reached;     ///< Per `ylos` entry: nonzero once the pause or the job has reached it.
+    std::vector<YlosEntry> ylos;        // The tenuring generation's YLOS objects, sorted by `obj`.
+    std::vector<uint8_t>   reached;     // Per `ylos` entry: nonzero once the pause or the job has reached it.
     // Resumable progress.
     size_t next_start = 0;
     size_t next_heal = 0;
-    /// Copies still to be scanned. Taken from the back, or from `stack_head` forwards when `fifo` is set.
+    // Copies still to be scanned. Taken from the back, or from `stack_head` forwards when `fifo` is set.
     std::vector<void*>  stack;
-    size_t stack_head = 0;              ///< In FIFO order: entries before this index are already taken.
-    bool fifo = false;                  ///< Scan copies breadth first instead of depth first.
-    std::vector<uint32_t> ylos_pending; ///< Indices into `ylos` of reached objects, in the order they were reached.
+    size_t stack_head = 0;              // In FIFO order: entries before this index are already taken.
+    bool fifo = false;                  // Scan copies breadth first instead of depth first.
+    std::vector<uint32_t> ylos_pending; // Indices into `ylos` of reached objects, in the order they were reached.
     size_t ylos_next = 0;
     // The mark and sweep phases over the ageing extents.
-    std::vector<void*>     age_starts;     ///< The pause's mark sources: ageing objects and ageing YLOS objects.
-    std::vector<YlosEntry> age_ylos;       ///< The ageing generations' YLOS objects, sorted by `obj`.
-    std::vector<uint8_t>   age_ylos_marked;   ///< Per `age_ylos` entry: nonzero once marked.
-    unsigned n_age = 0;                    ///< The number of ageing extents to sweep.
+    std::vector<void*>     age_starts;     // The pause's mark sources: ageing objects and ageing YLOS objects.
+    std::vector<YlosEntry> age_ylos;       // The ageing generations' YLOS objects, sorted by `obj`.
+    std::vector<uint8_t>   age_ylos_marked;   // Per `age_ylos` entry: nonzero once marked.
+    unsigned n_age = 0;                    // The number of ageing extents to sweep.
     size_t next_age_start = 0;
-    std::vector<void*> age_stack;          ///< Marked objects still to be scanned.
-    unsigned sweep_x = 0;                  ///< The ageing extent being swept.
-    size_t sweep_w = 0;                    ///< The next word of that extent's mark bitmap.
-    char* sweep_gap = nullptr;             ///< Start of the current dead run; nullptr between extents.
-    std::vector<Span> zap;                 ///< The dead runs found, for the merge to fill.
+    std::vector<void*> age_stack;          // Marked objects still to be scanned.
+    unsigned sweep_x = 0;                  // The ageing extent being swept.
+    size_t sweep_w = 0;                    // The next word of that extent's mark bitmap.
+    char* sweep_gap = nullptr;             // Start of the current dead run; nullptr between extents.
+    std::vector<Span> zap;                 // The dead runs found, for the merge to fill.
     uint64_t age_marked = 0, age_marked_bytes = 0, age_heal = 0, zapped = 0, zapped_bytes = 0;
     // Counters.
     uint64_t tenured = 0, tenured_bytes = 0, items = 0, spine_runs = 0, ylos_reached = 0;
     // Test hooks, to be set only while no job runs.
-    uint64_t test_skip_start_every = 0;   ///< When k is nonzero, skips every k-th start, so a test can see it missed.
-    uint64_t test_stop_after = 0;         ///< When nonzero, `run` stops once, after this many items, and clears it.
-    uint64_t test_sleep_us_per_item = 0;  ///< When nonzero, sleeps this many microseconds after each item.
+    uint64_t test_skip_start_every = 0;   // When k is nonzero, skips every k-th start, so a test can see it missed.
+    uint64_t test_stop_after = 0;         // When nonzero, `run` stops once, after this many items, and clears it.
+    uint64_t test_sleep_us_per_item = 0;  // When nonzero, sleeps this many microseconds after each item.
 
-    /// Resets the progress and counters to the start of a job, keeping the inputs (`starts`, `heal`, `ylos`,
-    /// `reached`, the `age_*` inputs, `n_age`) and the test hooks.
+    // Resets the progress and counters to the start of a job, keeping the inputs (`starts`, `heal`, `ylos`,
+    // `reached`, the `age_*` inputs, `n_age`) and the test hooks.
     void clearProgress() {
         next_start = next_heal = 0;
         stack.clear();
@@ -203,27 +209,29 @@ struct SerialState {
         zap.clear();
         age_marked = age_marked_bytes = age_heal = zapped = zapped_bytes = 0;
     }
-    /// Returns whether the mark and sweep phases have nothing left to do.
+    // Returns whether the mark and sweep phases have nothing left to do.
     bool markPhasesDone() const {
         return age_stack.empty() && next_age_start >= age_starts.size() && sweep_x >= n_age;
     }
-    /// Returns whether the job has nothing left to do in any phase.
+    // Returns whether the job has nothing left to do in any phase.
     bool done() const {
         return markPhasesDone() && stack.size() == stack_head && next_start >= starts.size() &&
                next_heal >= heal.size() && ylos_next >= ylos_pending.size();
     }
 };
 
-/// How a run of the engine ended: `Done` when no work is left, `Stopped` when a stop was requested, in which case
-/// the state is between items and the job can be resumed.
+/**
+ * How a run of the engine ended: `Done` when no work is left, `Stopped` when a stop was requested, in which case
+ * the state is between items and the job can be resumed.
+ */
 enum class DrainResult { Done, Stopped };
 
-/// The most list cells one spine run tenures before the rest of the list is left for a later item. It has the same
-/// value as `MINOR_SPINE_RUN`, the minor collector's bound; nothing checks that the two agree.
+// The most list cells one spine run tenures before the rest of the list is left for a later item. It has the same
+// value as `MINOR_SPINE_RUN`, the minor collector's bound; nothing checks that the two agree.
 constexpr size_t kSpineRun = 512;
 
-/// Returns the index of the entry in `ys` whose object starts exactly at `p`, or -1 if there is none. `ys` must be
-/// sorted by `obj`. A binary search.
+// Returns the index of the entry in `ys` whose object starts exactly at `p`, or -1 if there is none. `ys` must be
+// sorted by `obj`. A binary search.
 inline long ylosFind(const std::vector<YlosEntry>& ys, const void* p) {
     size_t lo = 0, hi = ys.size();
     const char* q = static_cast<const char*>(p);
@@ -238,43 +246,43 @@ inline long ylosFind(const std::vector<YlosEntry>& ys, const void* p) {
 // ---------------------------------------------------------------------------
 // The serial engine
 // ---------------------------------------------------------------------------
-/// The exact, resumable engine of one tenure job, over the state in a `SerialState` and the heap behind an `Env`.
-///
-/// An engine holds references to both and owns nothing; each must outlive it. Engines are cheap, and a stopped job
-/// is resumed by building a new one over the same state. The engine copies without claiming shadow entries, so no
-/// other copier may work on the same extent while it runs; it aborts the process if it finds a BUSY entry.
-///
-/// `Env` must provide the following, all over data that is private to the job or does not change while it runs:
-///   void*     target(uint64_t word)           the heap object a slot word names, or nullptr
-///   uint64_t  word(const void* obj)           the slot word that names obj
-///   bool      inTenuring(const void* p)       whether p is in the tenuring extent's survivor part
-///   bool      ylosMaybe(const void* p)        a cheap filter: false only if p is not in the YLOS snapshot
-///   bool      youngElsewhere(const void* p)   whether p is in the nursery but outside the tenuring extent
-///   uint64_t* shadow(const void* obj)         obj's shadow entry
-///   uint32_t  gen()                           the job's gen
-///   size_t    sizeOf(const void* obj)         obj's size in bytes, read from its header
-///   void*     copy(const void* obj, size_t)   allocates in memory given to the job, copies obj there, and
-///                                             returns the copy
-///   template<F> void forEachChildSlot(void* obj, F f)   calls f(uint64_t* slot) for each boxed slot of obj
-///   uint64_t* consTail(void* obj)             the tail slot if obj is a list cell, else nullptr
-///   uint64_t* consHead(void* obj)             the boxed head slot of a list cell, else nullptr
-///   [[noreturn]] void abortYoungChild(const void* parent, const void* child)
-///                                             reports a nursery child outside the tenuring extent; does not return
-/// and, for the mark and sweep phases:
-///   int       ageIndex(const void* p)          the ageing extent whose survivor part holds p, or -1
-///   bool      markAge(int i, const void* obj)  sets obj's mark bit in extent i; true if it was not already set
-///   char*     ageBase(unsigned i), ageTop(unsigned i)   the bounds of extent i's survivor part
-///   bool      ageYlosMaybe(const void* p)     a cheap filter for the ageing YLOS snapshot
-///   const uint64_t* ageBits(unsigned i)       extent i's mark bitmap, one bit per 8-byte granule
+// The exact, resumable engine of one tenure job, over the state in a `SerialState` and the heap behind an `Env`.
+//
+// An engine holds references to both and owns nothing; each must outlive it. Engines are cheap, and a stopped job
+// is resumed by building a new one over the same state. The engine copies without claiming shadow entries, so no
+// other copier may work on the same extent while it runs; it aborts the process if it finds a BUSY entry.
+//
+// `Env` must provide the following, all over data that is private to the job or does not change while it runs:
+//   void*     target(uint64_t word)           the heap object a slot word names, or nullptr
+//   uint64_t  word(const void* obj)           the slot word that names obj
+//   bool      inTenuring(const void* p)       whether p is in the tenuring extent's survivor part
+//   bool      ylosMaybe(const void* p)        a cheap filter: false only if p is not in the YLOS snapshot
+//   bool      youngElsewhere(const void* p)   whether p is in the nursery but outside the tenuring extent
+//   uint64_t* shadow(const void* obj)         obj's shadow entry
+//   uint32_t  gen()                           the job's gen
+//   size_t    sizeOf(const void* obj)         obj's size in bytes, read from its header
+//   void*     copy(const void* obj, size_t)   allocates in memory given to the job, copies obj there, and
+//                                             returns the copy
+//   template<F> void forEachChildSlot(void* obj, F f)   calls f(uint64_t* slot) for each boxed slot of obj
+//   uint64_t* consTail(void* obj)             the tail slot if obj is a list cell, else nullptr
+//   uint64_t* consHead(void* obj)             the boxed head slot of a list cell, else nullptr
+//   [[noreturn]] void abortYoungChild(const void* parent, const void* child)
+//                                             reports a nursery child outside the tenuring extent; does not return
+// and, for the mark and sweep phases:
+//   int       ageIndex(const void* p)          the ageing extent whose survivor part holds p, or -1
+//   bool      markAge(int i, const void* obj)  sets obj's mark bit in extent i; true if it was not already set
+//   char*     ageBase(unsigned i), ageTop(unsigned i)   the bounds of extent i's survivor part
+//   bool      ageYlosMaybe(const void* p)     a cheap filter for the ageing YLOS snapshot
+//   const uint64_t* ageBits(unsigned i)       extent i's mark bitmap, one bit per 8-byte granule
 template <class Env>
 class SerialEngine {
 public:
-    /// Creates an engine over `st` and `env`, keeping references to both.
+    // Creates an engine over `st` and `env`, keeping references to both.
     SerialEngine(SerialState& st, Env& env) : st_(st), env_(env) {}
 
-    /// Does items until the job is done or `stop` (if not null) is set, and says which. `stop` is read with a
-    /// relaxed load before each item, so the item in progress always finishes. The state's one-shot
-    /// `test_stop_after` also stops the run.
+    // Does items until the job is done or `stop` (if not null) is set, and says which. `stop` is read with a
+    // relaxed load before each item, so the item in progress always finishes. The state's one-shot
+    // `test_stop_after` also stops the run.
     DrainResult run(const std::atomic<bool>* stop) {
         for (;;) {
             if (stop != nullptr && stop->load(std::memory_order_relaxed)) {
@@ -294,15 +302,15 @@ public:
         }
     }
 
-    /// Finishes the mark and sweep phases, leaving the tenuring itself undone. Takes no stop request.
+    // Finishes the mark and sweep phases, leaving the tenuring itself undone. Takes no stop request.
     void runMarkPhases() {
         while (!st_.markPhasesDone()) {
             markOrSweepStep();
             ++st_.items;
         }
     }
-    /// Finishes sweeping the ageing extent a stopped run was partway through, if any, so that the remaining sweep
-    /// starts at an extent boundary.
+    // Finishes sweeping the ageing extent a stopped run was partway through, if any, so that the remaining sweep
+    // starts at an extent boundary.
     void finishSweepExtent() {
         while (st_.sweep_x < st_.n_age && st_.sweep_gap != nullptr) {
             sweepStep();
@@ -310,8 +318,8 @@ public:
         }
     }
 
-    /// Returns the copy of `obj`, which must be in the tenuring extent, copying it first if it has not been. A new
-    /// copy is published in its shadow entry and, when `push` is set, queued to have its slots scanned.
+    // Returns the copy of `obj`, which must be in the tenuring extent, copying it first if it has not been. A new
+    // copy is published in its shadow entry and, when `push` is set, queued to have its slots scanned.
     char* tenure(void* obj, bool push = true) {
         uint64_t* w = env_.shadow(obj);
         const uint32_t g = env_.gen();
@@ -338,14 +346,14 @@ public:
     }
 
 private:
-    SerialState& st_;   ///< The job's state; the caller's, which must outlive the engine.
-    Env& env_;          ///< The heap side; the caller's, which must outlive the engine.
+    SerialState& st_;   // The job's state; the caller's, which must outlive the engine.
+    Env& env_;          // The heap side; the caller's, which must outlive the engine.
 
-    /// Sleeps the calling thread for `us` microseconds.
+    // Sleeps the calling thread for `us` microseconds.
     static void sleepUs(uint64_t us);
 
-    /// Does one item and returns true, or returns false if there is nothing left. Work is taken in this order: the
-    /// mark and sweep phases, then queued copies, then starts, then heal slots, then reached YLOS objects.
+    // Does one item and returns true, or returns false if there is nothing left. Work is taken in this order: the
+    // mark and sweep phases, then queued copies, then starts, then heal slots, then reached YLOS objects.
     bool step() {
         if (!st_.markPhasesDone()) {
             markOrSweepStep();
@@ -398,8 +406,8 @@ private:
 
     // ---- The mark and sweep phases over the ageing extents ----
 
-    /// Does one item of the mark and sweep phases: scans a marked object, else marks from the next pause source,
-    /// else sweeps one bitmap word.
+    // Does one item of the mark and sweep phases: scans a marked object, else marks from the next pause source,
+    // else sweeps one bitmap word.
     void markOrSweepStep() {
         if (!st_.age_stack.empty()) {
             void* o = st_.age_stack.back();
@@ -416,8 +424,8 @@ private:
         sweepStep();
     }
 
-    /// Marks `t` and queues it for scanning if it is an unmarked object of the ageing YLOS snapshot. Returns whether
-    /// `t` is in that snapshot.
+    // Marks `t` and queues it for scanning if it is an unmarked object of the ageing YLOS snapshot. Returns whether
+    // `t` is in that snapshot.
     bool markAgeYlos(void* t) {
         const long k = ylosFind(st_.age_ylos, t);
         if (k < 0) return false;
@@ -429,11 +437,11 @@ private:
         return true;
     }
 
-    /// Handles a reference to `t` found by the mark phase: from a pause source when `parent` is null, else from slot
-    /// `s` of the marked object `parent`. An ageing object or ageing YLOS object is marked and queued. A child in
-    /// the tenuring extent makes `s` a heal slot, and a child in the tenuring generation's YLOS snapshot is reached.
-    /// A pause source that is not an ageing object or ageing YLOS object aborts the process, and so does a child
-    /// that is young elsewhere.
+    // Handles a reference to `t` found by the mark phase: from a pause source when `parent` is null, else from slot
+    // `s` of the marked object `parent`. An ageing object or ageing YLOS object is marked and queued. A child in
+    // the tenuring extent makes `s` a heal slot, and a child in the tenuring generation's YLOS snapshot is reached.
+    // A pause source that is not an ageing object or ageing YLOS object aborts the process, and so does a child
+    // that is young elsewhere.
     void markTarget(void* t, void* parent, uint64_t* s) {
         const int i = env_.ageIndex(t);
         if (i >= 0) {
@@ -461,7 +469,7 @@ private:
         if (env_.youngElsewhere(t)) env_.abortYoungChild(parent, t);   // checked in every build
     }
 
-    /// Passes each non-null boxed child of the marked object `o` to `markTarget`.
+    // Passes each non-null boxed child of the marked object `o` to `markTarget`.
     void scanAge(void* o) {
         env_.forEachChildSlot(o, [&](uint64_t* s) {
             void* t = env_.target(*s);
@@ -469,16 +477,16 @@ private:
         });
     }
 
-    /// Records [`p`, `p` + `bytes`) as a zap span.
+    // Records [`p`, `p` + `bytes`) as a zap span.
     void emitGap(char* p, size_t bytes) {
         st_.zap.push_back(Span{p, bytes});
         ++st_.zapped;
         st_.zapped_bytes += bytes;
     }
 
-    /// Sweeps one word of the current ageing extent's mark bitmap, recording the dead run before each marked
-    /// object it covers. At the end of the extent, records the dead run up to the extent's top and moves to the
-    /// next extent.
+    // Sweeps one word of the current ageing extent's mark bitmap, recording the dead run before each marked
+    // object it covers. At the end of the extent, records the dead run up to the extent's top and moves to the
+    // next extent.
     void sweepStep() {
         const unsigned x = st_.sweep_x;
         char* base = env_.ageBase(x);
@@ -506,8 +514,8 @@ private:
         ++st_.sweep_w;
     }
 
-    /// Marks the tenuring generation's YLOS object at `t` as reached and queues it for scanning, if it is in the
-    /// snapshot and not already reached. An object outside the snapshot is ignored here.
+    // Marks the tenuring generation's YLOS object at `t` as reached and queues it for scanning, if it is in the
+    // snapshot and not already reached. An object outside the snapshot is ignored here.
     void reachYlos(const void* t) {
         const long k = ylosFind(st_.ylos, t);
         if (k < 0) return;
@@ -518,8 +526,8 @@ private:
         st_.ylos_pending.push_back(static_cast<uint32_t>(k));
     }
 
-    /// Handles slot `s` of `parent`, one of the job's own copies. A child in the tenuring extent is tenured and `s`
-    /// is rewritten to name its copy; a YLOS child is reached; a child that is young elsewhere aborts the process.
+    // Handles slot `s` of `parent`, one of the job's own copies. A child in the tenuring extent is tenured and `s`
+    // is rewritten to name its copy; a YLOS child is reached; a child that is young elsewhere aborts the process.
     void childOfCopy(void* parent, uint64_t* s) {
         void* t = env_.target(*s);
         ECO_TLA_TRACE("tchild", "par", ::Elm::tlatrace::obj(parent), "off",
@@ -537,14 +545,14 @@ private:
         if (env_.youngElsewhere(t)) env_.abortYoungChild(parent, t);   // checked in every build
     }
 
-    /// Prefetches `t`'s shadow entry and header. It changes no decision, so the engine stays exact.
+    // Prefetches `t`'s shadow entry and header. It changes no decision, so the engine stays exact.
     void prefetchTarget(void* t) {
         __builtin_prefetch(env_.shadow(t), 0, 3);
         __builtin_prefetch(t, 0, 3);
     }
 
-    /// Scans the copy `c`, handling each of its child slots. For a list cell, the head is handled and the tail is
-    /// followed as a spine run instead of being queued.
+    // Scans the copy `c`, handling each of its child slots. For a list cell, the head is handled and the tail is
+    // followed as a spine run instead of being queued.
     void scanCopy(void* c) {
         uint64_t* tail = env_.consTail(c);
         if (tail == nullptr) {
@@ -567,11 +575,11 @@ private:
         spineRun(c);
     }
 
-    /// Tenures the list spine after the copied cell `first_parent`, cell by cell, rewriting each tail slot, until
-    /// it reaches a cell that is not in the tenuring extent, already copied, or not a list cell. Then handles the
-    /// heads of the cells copied. A run stops after `kSpineRun` cells; the last cell is then queued and its own scan
-    /// continues the spine and handles its head. Cells copied here are never queued otherwise, so a long list
-    /// does not fill the queue.
+    // Tenures the list spine after the copied cell `first_parent`, cell by cell, rewriting each tail slot, until
+    // it reaches a cell that is not in the tenuring extent, already copied, or not a list cell. Then handles the
+    // heads of the cells copied. A run stops after `kSpineRun` cells; the last cell is then queued and its own scan
+    // continues the spine and handles its head. Cells copied here are never queued otherwise, so a long list
+    // does not fill the queue.
     void spineRun(void* first_parent) {
         void* prev = first_parent;
         void* run[kSpineRun];
@@ -601,8 +609,8 @@ private:
         }
     }
 
-    /// Scans the reached YLOS object at index `k` of the snapshot: its children in the tenuring extent are tenured
-    /// and its YLOS children are reached. The object itself is not written; the merge rewrites its slots.
+    // Scans the reached YLOS object at index `k` of the snapshot: its children in the tenuring extent are tenured
+    // and its YLOS children are reached. The object itself is not written; the merge rewrites its slots.
     void scanYlos(uint32_t k) {
         void* y = const_cast<char*>(st_.ylos[k].obj);
         env_.forEachChildSlot(y, [&](uint64_t* s) {
@@ -622,21 +630,21 @@ void SerialEngine<Env>::sleepUs(uint64_t us) {
     std::this_thread::sleep_for(std::chrono::microseconds(us));
 }
 
-/// Runs the job in `st` over `env` until it is done or `stop` is set, as `SerialEngine::run` does.
+// Runs the job in `st` over `env` until it is done or `stop` is set, as `SerialEngine::run` does.
 template <class Env>
 inline DrainResult tenureDrainSerial(SerialState& st, Env& env, const std::atomic<bool>* stop) {
     SerialEngine<Env> e(st, env);
     return e.run(stop);
 }
 
-/// Finishes the mark and sweep phases of the job in `st`, as `SerialEngine::runMarkPhases` does.
+// Finishes the mark and sweep phases of the job in `st`, as `SerialEngine::runMarkPhases` does.
 template <class Env>
 inline void finishMarkPhases(SerialState& st, Env& env) {
     SerialEngine<Env> e(st, env);
     e.runMarkPhases();
 }
 
-/// Finishes sweeping the ageing extent the job in `st` is partway through, as `SerialEngine::finishSweepExtent` does.
+// Finishes sweeping the ageing extent the job in `st` is partway through, as `SerialEngine::finishSweepExtent` does.
 template <class Env>
 inline void finishSweepExtent(SerialState& st, Env& env) {
     SerialEngine<Env> e(st, env);

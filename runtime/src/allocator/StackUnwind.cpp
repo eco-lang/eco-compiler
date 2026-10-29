@@ -18,8 +18,8 @@ namespace StackUnwind {
 // Win64 implementation. A cursor holds its own copy of the `CONTEXT`, which `RtlVirtualUnwind` rewrites
 // in place to the caller's registers at each step.
 
-/// Returns the field of `c` that holds the register with AMD64 DWARF number `r`, or null for a number
-/// outside 0..16. The pointer is into `c`.
+// Returns the field of `c` that holds the register with AMD64 DWARF number `r`, or null for a number
+// outside 0..16. The pointer is into `c`.
 static const DWORD64* dwarfRegInContext(const CONTEXT* c, uint16_t r) {
     switch (r) {
     case 0:  return &c->Rax;
@@ -43,7 +43,9 @@ static const DWORD64* dwarfRegInContext(const CONTEXT* c, uint16_t r) {
     }
 }
 
-/// The registers captured by `RtlCaptureContext`.
+/**
+ * The registers captured by `RtlCaptureContext`.
+ */
 struct Context::Impl { CONTEXT ctx; };
 
 Context::Context() : impl_(std::make_unique<Impl>()) {
@@ -51,7 +53,9 @@ Context::Context() : impl_(std::make_unique<Impl>()) {
 }
 Context::~Context() = default;
 
-/// The registers of the current frame, a copy taken from the `Context` and then unwound.
+/**
+ * The registers of the current frame, a copy taken from the `Context` and then unwound.
+ */
 struct Cursor::Impl { CONTEXT ctx; };
 
 Cursor::Cursor(Context& ctx) : impl_(std::make_unique<Impl>()) {
@@ -94,13 +98,15 @@ bool Cursor::getRegister(uint16_t dwarfRegNum, uintptr_t& outValue) const {
 
 #else  // POSIX libunwind backend
 
-/// Returns the libunwind register number for DWARF register `dwarfRegNum`. The mapping is the identity
-/// on every architecture. On x86-64, DWARF 0..15 coincide with `UNW_X86_64_RAX`..`UNW_X86_64_R15`.
+// Returns the libunwind register number for DWARF register `dwarfRegNum`. The mapping is the identity
+// on every architecture. On x86-64, DWARF 0..15 coincide with `UNW_X86_64_RAX`..`UNW_X86_64_R15`.
 static int mapDwarfToUnwindReg(uint16_t dwarfRegNum) {
     return static_cast<int>(dwarfRegNum);
 }
 
-/// The registers captured by `unw_getcontext`.
+/**
+ * The registers captured by `unw_getcontext`.
+ */
 struct Context::Impl {
     unw_context_t uctx;
 };
@@ -111,7 +117,9 @@ Context::Context() : impl_(std::make_unique<Impl>()) {
 
 Context::~Context() = default;
 
-/// The libunwind cursor, initialised from the `Context`'s `unw_context_t`.
+/**
+ * The libunwind cursor, initialised from the `Context`'s `unw_context_t`.
+ */
 struct Cursor::Impl {
     unw_cursor_t cursor;
 };

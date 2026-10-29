@@ -51,19 +51,19 @@
 #include <unistd.h>
 #endif
 
-/// The stack size, in bytes (64 MiB), of the thread that runs the Elm program.
-///
-/// Compiled Elm code recurses deeply; the Elm compiler compiling itself can
-/// exhaust a typical 8 MiB default stack.
+// The stack size, in bytes (64 MiB), of the thread that runs the Elm program.
+//
+// Compiled Elm code recurses deeply; the Elm compiler compiling itself can
+// exhaust a typical 8 MiB default stack.
 static constexpr size_t ECO_DEFAULT_STACK_SIZE = 64ULL * 1024 * 1024;
 
-/// Fills `Elm::globalStackMap()` from the stack map section of this
-/// executable, which the collector needs to find roots in Elm frames.
-///
-/// The section is found by `eco::platform::findStackMapSection`. Its addresses
-/// are already the ones the code runs at, so it is parsed with a load base of 0.
-/// A missing section, or one that fails to parse, is not reported except in
-/// `ECO_GC_DEBUG` builds; the map is then left as it was or emptied.
+// Fills `Elm::globalStackMap()` from the stack map section of this
+// executable, which the collector needs to find roots in Elm frames.
+//
+// The section is found by `eco::platform::findStackMapSection`. Its addresses
+// are already the ones the code runs at, so it is parsed with a load base of 0.
+// A missing section, or one that fails to parse, is not reported except in
+// `ECO_GC_DEBUG` builds; the map is then left as it was or emptied.
 static void initStackMapFromSelf() {
     auto sec = eco::platform::findStackMapSection(/*addr=*/nullptr);
 
@@ -85,57 +85,59 @@ static void initStackMapFromSelf() {
 
 extern "C" {
 
-/// Registers the program's module-level globals as GC roots. It is generated
-/// code, and a program with no globals and no type graph has none.
-///
-/// Outside Windows the declaration is weak, so the address is null when no
-/// definition is linked. On Windows it is an ordinary declaration, which the
-/// link must resolve.
+// Registers the program's module-level globals as GC roots. It is generated
+// code, and a program with no globals and no type graph has none.
+//
+// Outside Windows the declaration is weak, so the address is null when no
+// definition is linked. On Windows it is an ordinary declaration, which the
+// link must resolve.
 #if defined(_WIN32)
 void __eco_init_globals();
 #else
 __attribute__((weak)) void __eco_init_globals();
 #endif
 
-/// Runs the Elm program: the generated module's `main` function, renamed
-/// `eco_main` by the code generator.
-///
-/// It returns the Elm `main` value as an `!eco.value` word, not an exit
-/// status. A program that exits through the kernel's process exit calls
-/// `exit` and never returns.
+// Runs the Elm program: the generated module's `main` function, renamed
+// `eco_main` by the code generator.
+//
+// It returns the Elm `main` value as an `!eco.value` word, not an exit
+// status. A program that exits through the kernel's process exit calls
+// `exit` and never returns.
 int64_t eco_main();
 
-/// Registers the program's effect managers with the scheduler.
+// Registers the program's effect managers with the scheduler.
 void eco_register_all_effect_managers();
 
-/// Registers the Eco kernel's own GC roots.
+// Registers the Eco kernel's own GC roots.
 void Eco_Kernel_register_all_gc_roots();
 
 } // extern "C"
 
-/// What `main` hands to the Elm thread, and what the thread hands back:
-/// the command-line arguments and, in `result`, the process exit code.
+/**
+ * What `main` hands to the Elm thread, and what the thread hands back:
+ * the command-line arguments and, in `result`, the process exit code.
+ */
 struct MainArgs {
     int argc;
     char **argv;
     int result;
 };
 
-/// Runs the Elm program on the calling thread, making it the mutator, and
-/// stores the exit code in `arg`'s `result`.
-///
-/// `arg` must point to a `MainArgs`. Returns null, so that it fits the thread
-/// entry shape. The steps run in this order: the allocator and the thread's
-/// heap; the kernel's GC roots, before any Elm code can collect; the stack
-/// map; the module globals, if any; the arguments for
-/// `Eco::Kernel::Env::init`; the effect managers; and then `eco_main`. The
-/// exit code is `eco_get_exit_code()`, read after the heap is destroyed. A
-/// program that calls `exit` leaves before any step after `eco_main`.
-///
-/// With `ECO_GC_EXIT_MAJOR` starting with `1`, it runs one major collection
-/// after `eco_main` returns, before the heap is destroyed. That changes what
-/// the exit statistics (one more major collection, with its pause and the
-/// residency it leaves), and nothing the program computes.
+// Runs the Elm program on the calling thread, making it the mutator, and
+// stores the exit code in `arg`'s `result`.
+//
+// `arg` must point to a `MainArgs`. Returns null, so that it fits the thread
+// entry shape. The steps run in this order: the allocator and the thread's
+// heap; the kernel's GC roots, before any Elm code can collect; the stack
+// map; the module globals, if any; the arguments for
+// `Eco::Kernel::Env::init`; the effect managers; and then `eco_main`. The
+// exit code is `eco_get_exit_code()`, read after the heap is destroyed. A
+// program that calls `exit` leaves before any step after `eco_main`.
+//
+// With `ECO_GC_EXIT_MAJOR` starting with `1`, it runs one major collection
+// after `eco_main` returns, before the heap is destroyed. That changes what
+// the exit statistics (one more major collection, with its pause and the
+// residency it leaves), and nothing the program computes.
 static void *eco_main_thread(void *arg) {
     auto *args = static_cast<MainArgs *>(arg);
 
@@ -179,16 +181,16 @@ static void *eco_main_thread(void *arg) {
 // raised while the interrupted thread holds that mutex or is inside the stream
 // can deadlock or crash in the handler.
 #if ENABLE_GC_STATS
-/// Whether the statistics have been printed, or are being printed, already.
+// Whether the statistics have been printed, or are being printed, already.
 static std::atomic<bool> g_stats_printed{false};
 
-/// Prints the combined GC statistics to stdout, headed by a line on stderr that
-/// names `reason`, unless they have already been printed in this process.
-///
-/// The stderr line is written with a single `write` call, so it appears even if
-/// the process dies while the statistics are printed. The C++ and C stream
-/// buffers are flushed afterwards, since a caller may terminate the process
-/// next.
+// Prints the combined GC statistics to stdout, headed by a line on stderr that
+// names `reason`, unless they have already been printed in this process.
+//
+// The stderr line is written with a single `write` call, so it appears even if
+// the process dies while the statistics are printed. The C++ and C stream
+// buffers are flushed afterwards, since a caller may terminate the process
+// next.
 static void printGCStatsOnce(const char *reason) {
     if (g_stats_printed.exchange(true)) return;
     {
@@ -212,16 +214,16 @@ static void printGCStatsOnce(const char *reason) {
     std::fflush(stderr);
 }
 
-/// Prints the GC statistics at a normal process exit, after making the
-/// figures final.
-///
-/// It runs on the thread that called `exit`, or that returned from `main`.
-/// When that thread still has a heap (a program that called `exit` from Elm
-/// code) and `ECO_GC_EXIT_MAJOR` starts with `1`, it first runs a major
-/// collection, as `eco_main_thread` does when `eco_main` returns. It then
-/// finishes the calling thread's last tenure job and waits for posted GC
-/// helper jobs, so that their work is counted. The signal handler does none of
-/// this.
+// Prints the GC statistics at a normal process exit, after making the
+// figures final.
+//
+// It runs on the thread that called `exit`, or that returned from `main`.
+// When that thread still has a heap (a program that called `exit` from Elm
+// code) and `ECO_GC_EXIT_MAJOR` starts with `1`, it first runs a major
+// collection, as `eco_main_thread` does when `eco_main` returns. It then
+// finishes the calling thread's last tenure job and waits for posted GC
+// helper jobs, so that their work is counted. The signal handler does none of
+// this.
 static void atexitPrintStats() {
     if (const char *exit_major = std::getenv("ECO_GC_EXIT_MAJOR");
         exit_major && exit_major[0] == '1' &&
@@ -233,11 +235,11 @@ static void atexitPrintStats() {
     printGCStatsOnce("normal exit");
 }
 
-/// Prints the GC statistics, and in census builds the P1 census report, then
-/// restores the default action for `sig` and raises it again, so that the
-/// process ends as it would have without this handler.
-///
-/// It is not async-signal-safe; see the section comment above.
+// Prints the GC statistics, and in census builds the P1 census report, then
+// restores the default action for `sig` and raises it again, so that the
+// process ends as it would have without this handler.
+//
+// It is not async-signal-safe; see the section comment above.
 static void signalPrintStats(int sig) {
     std::signal(sig, SIG_DFL);
     const char *name = "signal";
@@ -262,9 +264,9 @@ static void signalPrintStats(int sig) {
 }
 
 #if defined(_WIN32)
-/// Prints the GC statistics for a console control event (Ctrl+C, Ctrl+Break,
-/// console close, logoff or shutdown), naming the event, and returns `FALSE`
-/// so that the next handler in the chain decides what happens next.
+// Prints the GC statistics for a console control event (Ctrl+C, Ctrl+Break,
+// console close, logoff or shutdown), naming the event, and returns `FALSE`
+// so that the next handler in the chain decides what happens next.
 static BOOL WINAPI consoleCtrlHandler(DWORD ctrlType) {
     const char* name = "console-ctrl";
     switch (ctrlType) {
@@ -279,10 +281,10 @@ static BOOL WINAPI consoleCtrlHandler(DWORD ctrlType) {
 }
 #endif
 
-/// Installs the handlers that print the GC statistics: `atexitPrintStats` for a
-/// normal exit, and `signalPrintStats` for SIGABRT, SIGSEGV, SIGFPE, SIGILL,
-/// SIGINT and SIGTERM, plus SIGBUS and SIGQUIT outside Windows. On Windows it
-/// also installs `consoleCtrlHandler`. Does nothing without `ENABLE_GC_STATS`.
+// Installs the handlers that print the GC statistics: `atexitPrintStats` for a
+// normal exit, and `signalPrintStats` for SIGABRT, SIGSEGV, SIGFPE, SIGILL,
+// SIGINT and SIGTERM, plus SIGBUS and SIGQUIT outside Windows. On Windows it
+// also installs `consoleCtrlHandler`. Does nothing without `ENABLE_GC_STATS`.
 static void installStatsHandlers() {
     std::atexit(atexitPrintStats);
 
@@ -309,29 +311,29 @@ static void installStatsHandlers() {
 #endif
 }
 #else
-/// Does nothing: this build has no GC statistics to print.
+// Does nothing: this build has no GC statistics to print.
 static void installStatsHandlers() {}
 #endif
 
-/// Sets SIGPIPE to be ignored, outside Windows, so that a write to a pipe whose
-/// reader has gone fails with `EPIPE`, which the kernel's IO functions report
-/// as an error to the program, instead of killing the process. Windows has no
-/// SIGPIPE, so there it does nothing.
+// Sets SIGPIPE to be ignored, outside Windows, so that a write to a pipe whose
+// reader has gone fails with `EPIPE`, which the kernel's IO functions report
+// as an error to the program, instead of killing the process. Windows has no
+// SIGPIPE, so there it does nothing.
 static void installSigpipeIgnore() {
 #if !defined(_WIN32)
     std::signal(SIGPIPE, SIG_IGN);
 #endif
 }
 
-/// Runs the Elm program on a new thread with a stack of
-/// `ECO_DEFAULT_STACK_SIZE`, and returns its exit code.
-///
-/// Before starting the thread it makes `stdout` and `stderr` unbuffered,
-/// ignores SIGPIPE, installs the statistics handlers and, outside Windows,
-/// records this thread with `eco_set_process_main_thread`. If the thread cannot
-/// be created, the program runs on this thread, with this thread's stack. On
-/// Windows the process is ended with `TerminateProcess` instead of by
-/// returning.
+// Runs the Elm program on a new thread with a stack of
+// `ECO_DEFAULT_STACK_SIZE`, and returns its exit code.
+//
+// Before starting the thread it makes `stdout` and `stderr` unbuffered,
+// ignores SIGPIPE, installs the statistics handlers and, outside Windows,
+// records this thread with `eco_set_process_main_thread`. If the thread cannot
+// be created, the program runs on this thread, with this thread's stack. On
+// Windows the process is ended with `TerminateProcess` instead of by
+// returning.
 int main(int argc, char **argv) {
     // Unbuffered, so output written before the process is killed, including
     // statistics printed by a signal handler, is not lost.
@@ -349,10 +351,12 @@ int main(int argc, char **argv) {
     MainArgs args{argc, argv, 0};
 
 #if defined(_WIN32)
-    /// Adapts `eco_main_thread` to the thread entry type `_beginthreadex` takes.
+    /**
+     * Adapts `eco_main_thread` to the thread entry type `_beginthreadex` takes.
+     */
     struct WinAdapter {
-        /// Runs `eco_main_thread(a)` with the entry signature
-        /// `_beginthreadex` requires.
+        // Runs `eco_main_thread(a)` with the entry signature
+        // `_beginthreadex` requires.
         static unsigned __stdcall run(void* a) {
             eco_main_thread(a);
             return 0;

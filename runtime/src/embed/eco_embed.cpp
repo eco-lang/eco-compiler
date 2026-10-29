@@ -48,38 +48,38 @@
 
 #include "../platform/StackMapSection.hpp"
 
-/// The stack size of the eco thread in bytes, 64 MiB, the same as `eco_entry.cpp` gives its program thread:
-/// deeply recursive Elm code, such as a JSON decoder, overflows a typical default thread stack.
+// The stack size of the eco thread in bytes, 64 MiB, the same as `eco_entry.cpp` gives its program thread:
+// deeply recursive Elm code, such as a JSON decoder, overflows a typical default thread stack.
 static constexpr size_t ECO_EMBED_STACK_SIZE = 64ULL * 1024 * 1024;
 
-/// The Host hold that keeps the event loop from returning while the program waits for the host, or
-/// `kNoHold` when none is held. The eco thread stores it before running the program; `eco_app_stop` takes it,
-/// on whatever thread calls it, and releases it.
+// The Host hold that keeps the event loop from returning while the program waits for the host, or
+// `kNoHold` when none is held. The eco thread stores it before running the program; `eco_app_stop` takes it,
+// on whatever thread calls it, and releases it.
 static std::atomic<Elm::Platform::HoldToken> g_lifetime{Elm::Platform::kNoHold};
 
 extern "C" {
-/// Initializes the program's global values. Generated with the program only when it needs it, so it is
-/// declared weak and is null when absent.
+// Initializes the program's global values. Generated with the program only when it needs it, so it is
+// declared weak and is null when absent.
 __attribute__((weak)) void __eco_init_globals();
-/// Runs the compiled program's `main` and returns the Elm value it produces, not an exit status.
+// Runs the compiled program's `main` and returns the Elm value it produces, not an exit status.
 int64_t eco_main();
-/// Registers every effect manager linked into the program with `PlatformRuntime`.
+// Registers every effect manager linked into the program with `PlatformRuntime`.
 void eco_register_all_effect_managers();
-/// Registers the GC roots kept by the Eco kernel libraries.
+// Registers the GC roots kept by the Eco kernel libraries.
 void Eco_Kernel_register_all_gc_roots();
 }  // extern "C"
 
 namespace Eco::Kernel::Env {
-/// Records `argc` and `argv` as the program's command line. `argv` is kept and read later, while the program
-/// runs.
+// Records `argc` and `argv` as the program's command line. `argv` is kept and read later, while the program
+// runs.
 void init(int argc, char** argv);
 }
 
 namespace {
 
-/// Parses the stack map section of the loaded module, executable or shared object, whose image contains
-/// `addr` into the global stack map. If that section is not found, prints a warning to `stderr` and parses
-/// nothing, and the collector will then find no stack roots in that code.
+// Parses the stack map section of the loaded module, executable or shared object, whose image contains
+// `addr` into the global stack map. If that section is not found, prints a warning to `stderr` and parses
+// nothing, and the collector will then find no stack roots in that code.
 void initStackMapForModuleContaining(void* addr) {
     auto sec = eco::platform::findStackMapSection(addr);
 
@@ -94,13 +94,15 @@ void initStackMapForModuleContaining(void* addr) {
     }
 }
 
-/// The state of the one embedded program a process may run, shared by the host-thread functions and the eco
-/// thread.
-///
-/// `started` and `stopped` each change once, from false to true, and are never reset. `exitCode` is meaningful
-/// once the eco thread has finished. `argc`, `argv` and the flags are written by `eco_app_start` before it
-/// creates the thread. The idle hook must be set before `eco_app_start` and not changed after, since the eco
-/// thread reads it on every activity change.
+/**
+ * The state of the one embedded program a process may run, shared by the host-thread functions and the eco
+ * thread.
+ *
+ * `started` and `stopped` each change once, from false to true, and are never reset. `exitCode` is meaningful
+ * once the eco thread has finished. `argc`, `argv` and the flags are written by `eco_app_start` before it
+ * creates the thread. The idle hook must be set before `eco_app_start` and not changed after, since the eco
+ * thread reads it on every activity change.
+ */
 struct EmbedState {
     std::atomic<bool> started{false};
 #if defined(_WIN32)
@@ -109,7 +111,7 @@ struct EmbedState {
 #else
     pthread_t thread{};
 #endif
-    /// Whether `thread` names a thread that has been created and not yet waited for.
+    // Whether `thread` names a thread that has been created and not yet waited for.
     std::atomic<bool> threadValid{false};
     std::atomic<int> exitCode{0};
     std::atomic<bool> stopped{false};
@@ -127,28 +129,28 @@ struct EmbedState {
     char** argv = nullptr;
 
     std::string flagsJson;
-    bool hasFlags = false;  ///< Whether the host gave flags; `flagsJson` is empty and unused otherwise.
+    bool hasFlags = false;  // Whether the host gave flags; `flagsJson` is empty and unused otherwise.
 
-    /// The hook set by `eco_set_idle_hook`, or null for none.
+    // The hook set by `eco_set_idle_hook`, or null for none.
     void (*idleHook)(int busy, void* user) = nullptr;
     void* idleHookUser = nullptr;
 };
 
-/// Returns the process's one `EmbedState`, constructed on first use.
+// Returns the process's one `EmbedState`, constructed on first use.
 EmbedState& state() {
     static EmbedState s;
     return s;
 }
 
-/// Passes the scheduler's report of whether the program is busy on to the host's idle hook, as 1 or 0. It is
-/// installed as the `Scheduler::ActivityHook` only when the host set an idle hook before start.
+// Passes the scheduler's report of whether the program is busy on to the host's idle hook, as 1 or 0. It is
+// installed as the `Scheduler::ActivityHook` only when the host set an idle hook before start.
 void schedActivityTrampoline(bool busy, void* /*user*/) {
     auto& s = state();
     if (s.idleHook)
         s.idleHook(busy ? 1 : 0, s.idleHookUser);
 }
 
-/// Completes the start handshake, releasing an `eco_app_start` waiting for it. Later calls change nothing.
+// Completes the start handshake, releasing an `eco_app_start` waiting for it. Later calls change nothing.
 void postReady() {
     auto& s = state();
     {
@@ -158,18 +160,18 @@ void postReady() {
     s.readyCV.notify_all();
 }
 
-/// Completes the start handshake; the program's `PlatformRuntime::ReadyHook`.
+// Completes the start handshake; the program's `PlatformRuntime::ReadyHook`.
 void readyHookTrampoline(void* /*user*/) { postReady(); }
 
-/// Stops the program and waits for the eco thread to finish, when the process exits while it may still be
-/// running, for example because the host called `exit` without calling `eco_app_stop`. Does not wait when
-/// called on the eco thread itself.
-///
-/// The eco thread registers it with `atexit` before it first uses the runtime's lazily constructed statics.
-/// Exit handlers and static destructors run in the reverse order of registration and construction, so this
-/// runs before the destructors of statics constructed earlier, and the thread is not left running on memory
-/// they free. Statics constructed later are destroyed before it runs; `Scheduler`, `PlatformRuntime` and
-/// `PortRuntime` are allocated with `new` and never destroyed, so they are never torn down under it.
+// Stops the program and waits for the eco thread to finish, when the process exits while it may still be
+// running, for example because the host called `exit` without calling `eco_app_stop`. Does not wait when
+// called on the eco thread itself.
+//
+// The eco thread registers it with `atexit` before it first uses the runtime's lazily constructed statics.
+// Exit handlers and static destructors run in the reverse order of registration and construction, so this
+// runs before the destructors of statics constructed earlier, and the thread is not left running on memory
+// they free. Statics constructed later are destroyed before it runs; `Scheduler`, `PlatformRuntime` and
+// `PortRuntime` are allocated with `new` and never destroyed, so they are never torn down under it.
 void atexitStopEcoThread() {
     eco_app_stop();
     // `exit` may have been called from the eco thread, by the program itself, and a thread cannot wait for
@@ -185,9 +187,9 @@ void atexitStopEcoThread() {
     eco_app_join();
 }
 
-/// Runs the program on the eco thread: initializes the runtime for this thread, applies what the host
-/// recorded before start, takes the Host hold, runs `eco_main`, and records the exit code. Completes the start
-/// handshake as it finishes, in case the ready hook never did.
+// Runs the program on the eco thread: initializes the runtime for this thread, applies what the host
+// recorded before start, takes the Host hold, runs `eco_main`, and records the exit code. Completes the start
+// handshake as it finishes, in case the ready hook never did.
 void* ecoEmbedThread(void* /*arg*/) {
     auto& s = state();
 
@@ -254,7 +256,7 @@ int eco_app_start(int argc, char** argv, const char* flags_json) {
 
 #if defined(_WIN32)
     struct WinAdapter {
-        /// Runs `ecoEmbedThread` with the signature `_beginthreadex` expects.
+        // Runs `ecoEmbedThread` with the signature `_beginthreadex` expects.
         static unsigned __stdcall run(void* a) {
             ecoEmbedThread(a);
             return 0;

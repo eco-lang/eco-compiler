@@ -39,23 +39,25 @@ using namespace mlir;
 
 namespace {
 
-/// The module pass that stamps `eco.callee_gc_leaf` on direct calls of gc-leaf
-/// kernel declarations, registered as `eco-mark-gc-leaf-calls`.
+/**
+ * The module pass that stamps `eco.callee_gc_leaf` on direct calls of gc-leaf
+ * kernel declarations, registered as `eco-mark-gc-leaf-calls`.
+ */
 struct EcoMarkGCLeafCallsPass
     : public PassWrapper<EcoMarkGCLeafCallsPass, OperationPass<ModuleOp>> {
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(EcoMarkGCLeafCallsPass)
 
-    /// Returns the pass's command-line name.
+    // Returns the pass's command-line name.
     StringRef getArgument() const override { return "eco-mark-gc-leaf-calls"; }
-    /// Returns the pass's one-line description.
+    // Returns the pass's one-line description.
     StringRef getDescription() const override {
         return "Stamp eco.callee_gc_leaf on eco.calls whose callee decl is eco.gc_leaf";
     }
 
-    /// Stamps every direct, non-musttail `eco.call` in the module whose callee
-    /// is a top-level func.func carrying both `is_kernel` and `eco.gc_leaf`.
-    /// Does nothing if `ECO_KERNEL_GCLEAF=0` or `ECO_GCLEAF_MARK=0` is set, or
-    /// if no such declaration exists.
+    // Stamps every direct, non-musttail `eco.call` in the module whose callee
+    // is a top-level func.func carrying both `is_kernel` and `eco.gc_leaf`.
+    // Does nothing if `ECO_KERNEL_GCLEAF=0` or `ECO_GCLEAF_MARK=0` is set, or
+    // if no such declaration exists.
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = module.getContext();

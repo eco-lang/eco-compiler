@@ -54,8 +54,10 @@ namespace {
 // eco.global -> LLVM global variable declaration
 //===----------------------------------------------------------------------===//
 
-/// The pattern that replaces `eco.global` with an internal i64 global of the
-/// same name, initialised to 0, the unset word.
+/**
+ * The pattern that replaces `eco.global` with an internal i64 global of the
+ * same name, initialised to 0, the unset word.
+ */
 struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -83,8 +85,10 @@ struct GlobalOpLowering : public OpConversionPattern<GlobalOp> {
 // eco.load_global -> LLVM load from global address
 //===----------------------------------------------------------------------===//
 
-/// The pattern that replaces `eco.load_global` with an i64 load from the global,
-/// converted to `ptr addrspace(1)` by `globalLoadI64ToValue`.
+/**
+ * The pattern that replaces `eco.load_global` with an i64 load from the global,
+ * converted to `ptr addrspace(1)` by `globalLoadI64ToValue`.
+ */
 struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -111,8 +115,10 @@ struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
 // eco.store_global -> LLVM store to global address
 //===----------------------------------------------------------------------===//
 
-/// The pattern that replaces `eco.store_global` with a store of the value,
-/// converted to i64 by `globalStoreValueToI64`, into the global.
+/**
+ * The pattern that replaces `eco.store_global` with a store of the value,
+ * converted to i64 by `globalStoreValueToI64`, into the global.
+ */
 struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -138,13 +144,15 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
 // eco.type_table -> LLVM globals for type graph
 //===----------------------------------------------------------------------===//
 
-/// The pattern that replaces `eco.type_table` with `__eco_type_graph` and the
-/// private arrays it points to.
-///
-/// If the module already has `__eco_type_graph`, the op is erased and nothing
-/// is emitted. An absent or empty array becomes a null pointer and a count of
-/// 0. An entry of the wrong shape becomes zero bytes, and an attribute that is
-/// not an integer is written as 0.
+/**
+ * The pattern that replaces `eco.type_table` with `__eco_type_graph` and the
+ * private arrays it points to.
+ *
+ * If the module already has `__eco_type_graph`, the op is erased and nothing
+ * is emitted. An absent or empty array becomes a null pointer and a count of
+ * 0. An entry of the wrong shape becomes zero bytes, and an attribute that is
+ * not an integer is written as 0.
+ */
 struct TypeTableOpLowering : public OpConversionPattern<TypeTableOp> {
     using OpConversionPattern::OpConversionPattern;
 
@@ -732,8 +740,8 @@ void eco::detail::rewriteCafCallSitesFast(
 // evaluation of it then takes the call.
 //===----------------------------------------------------------------------===//
 
-/// Returns whether the string-literal cache is on: true unless
-/// `ECO_STRLIT_CACHE` is exactly `0`. The variable is read once per process.
+// Returns whether the string-literal cache is on: true unless
+// `ECO_STRLIT_CACHE` is exactly `0`. The variable is read once per process.
 static bool strLitCacheEnabled() {
     static const bool on = [] {
         const char *e = ::getenv("ECO_STRLIT_CACHE");
@@ -742,8 +750,8 @@ static bool strLitCacheEnabled() {
     return on;
 }
 
-/// Returns whether `callee` names one of the two runtime functions that
-/// allocate a string literal.
+// Returns whether `callee` names one of the two runtime functions that
+// allocate a string literal.
 static bool isStringLiteralAllocCallee(llvm::StringRef callee) {
     return callee == "eco_alloc_string_literal_utf8" ||
            callee == "eco_alloc_string_literal";

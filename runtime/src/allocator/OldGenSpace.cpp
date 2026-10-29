@@ -19,9 +19,9 @@
 #include <cstring>
 
 namespace {
-/// Whether the `ECO_OLDGEN_DEBUG` environment variable was set at start-up, which turns on extra
-/// checks in the sweep. It is read once, during static initialisation, so a test of it is a plain
-/// load rather than the guarded load of a function-local static.
+// Whether the `ECO_OLDGEN_DEBUG` environment variable was set at start-up, which turns on extra
+// checks in the sweep. It is read once, during static initialisation, so a test of it is a plain
+// load rather than the guarded load of a function-local static.
 const bool g_oldgen_debug = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
 }
 #include <functional>
@@ -43,7 +43,7 @@ ECO_TLA_TRACE_ONLY(namespace gc { extern bool tla_m6; })
 // logged under `promo_mu_` and is written only under it. `tla_m4_flip` is the block id of the
 // calling thread's last empty-block flip, or -1.
 ECO_TLA_TRACE_ONLY(bool tla_m4 = false; int64_t tla_m4_tick = 0; thread_local int64_t tla_m4_flip = -1;)
-/// Logs a trace event, as `ECO_TLA_TRACE` does, while `tla_m4` is set.
+// Logs a trace event, as `ECO_TLA_TRACE` does, while `tla_m4` is set.
 #define ECO_M4_TRACE(...) ECO_TLA_TRACE_ONLY(if (::Elm::tla_m4)) ECO_TLA_TRACE(__VA_ARGS__)
 // The two halves of the name the M4 trace gives a cell `p` of this old generation: its block id and
 // the index of its first mark bit in that block. Both expand to member calls, so they can be used
@@ -66,17 +66,19 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
 // twice can be reported with both sites. Each site names itself with a string literal. Both
 // variables are thread_local (HEAP_053): they describe what the calling thread is pushing.
 
-/// The name of the call site now pushing onto the free lists; "unknown" outside a
-/// `PushOriginScope`.
+// The name of the call site now pushing onto the free lists; "unknown" outside a
+// `PushOriginScope`.
 thread_local const char* g_push_origin = "unknown";
-/// The site that first pushed each cell, as recorded on this thread.
+// The site that first pushed each cell, as recorded on this thread.
 thread_local std::unordered_map<void*, const char*> g_first_push_origin;
 
-/// Names the call site, as `g_push_origin`, for the lifetime of the scope, and restores the previous
-/// name when it ends. The name must be a string that outlives the scope, such as a literal.
+/**
+ * Names the call site, as `g_push_origin`, for the lifetime of the scope, and restores the previous
+ * name when it ends. The name must be a string that outlives the scope, such as a literal.
+ */
 struct PushOriginScope {
-    const char* prev;   ///< The name to restore.
-    /// Makes `name` the current site.
+    const char* prev;   // The name to restore.
+    // Makes `name` the current site.
     explicit PushOriginScope(const char* name) : prev(g_push_origin) {
         g_push_origin = name;
     }
@@ -90,28 +92,28 @@ struct PushOriginScope {
 // neither, so callers check the size first.
 // ====================================================================
 
-/// Returns whether free cell `cell` has the `FreeCellMid` layout, which its size decides.
+// Returns whether free cell `cell` has the `FreeCellMid` layout, which its size decides.
 inline bool isTierM(const FreeCell* cell) {
     return cell->header.size >= MIN_TIER_M_SIZE;
 }
-/// Returns whether a free cell of `bytes` bytes has the `FreeCellMid` layout.
+// Returns whether a free cell of `bytes` bytes has the `FreeCellMid` layout.
 inline bool isTierMSize(size_t bytes) { return bytes >= MIN_TIER_M_SIZE; }
 
-/// Returns `c` as a `FreeCellMid`. `c` must have that layout.
+// Returns `c` as a `FreeCellMid`. `c` must have that layout.
 inline FreeCellMid* asTierM(FreeCell* c) {
     return reinterpret_cast<FreeCellMid*>(c);
 }
 
-/// Returns the free cell at `off` 8-byte units from `blk.start`, or null when `off` is
-/// `FREE_CELLS_EMPTY`.
+// Returns the free cell at `off` 8-byte units from `blk.start`, or null when `off` is
+// `FREE_CELLS_EMPTY`.
 inline FreeCell* resolveOff(const BlockInfo& blk, uint16_t off) {
     return (off == FREE_CELLS_EMPTY)
         ? nullptr
         : reinterpret_cast<FreeCell*>(blk.start + size_t(off) * 8);
 }
 
-/// Returns `c`'s offset from `blk.start` in 8-byte units, or `FREE_CELLS_EMPTY` when `c` is null.
-/// A non-null `c` must lie in `blk`.
+// Returns `c`'s offset from `blk.start` in 8-byte units, or `FREE_CELLS_EMPTY` when `c` is null.
+// A non-null `c` must lie in `blk`.
 inline uint16_t encodeOff(const BlockInfo& blk, const FreeCell* c) {
     if (c == nullptr) return FREE_CELLS_EMPTY;
     const size_t bytes =
@@ -119,7 +121,7 @@ inline uint16_t encodeOff(const BlockInfo& blk, const FreeCell* c) {
     return static_cast<uint16_t>(bytes / 8);
 }
 
-/// Links the `FreeCellMid` cell `c` at the head of the list of `blk`'s free cells.
+// Links the `FreeCellMid` cell `c` at the head of the list of `blk`'s free cells.
 inline void blockThreadPushHead(BlockInfo& blk, FreeCell* c) {
     FreeCellMid* m = asTierM(c);
     const uint16_t old_head = blk.free_cells_in_block;
@@ -131,8 +133,8 @@ inline void blockThreadPushHead(BlockInfo& blk, FreeCell* c) {
     blk.free_cells_in_block = encodeOff(blk, c);
 }
 
-/// Unlinks the `FreeCellMid` cell `c` from the list of `blk`'s free cells, in constant time. `c`'s
-/// own links are left as they were.
+// Unlinks the `FreeCellMid` cell `c` from the list of `blk`'s free cells, in constant time. `c`'s
+// own links are left as they were.
 inline void blockThreadUnlink(BlockInfo& blk, FreeCell* c) {
     FreeCellMid* m = asTierM(c);
     if (m->prev_in_block == FREE_CELLS_EMPTY) {
@@ -147,9 +149,9 @@ inline void blockThreadUnlink(BlockInfo& blk, FreeCell* c) {
     }
 }
 
-/// Unlinks the `FreeCellMid` cell `c` from the class list `free_lists[cls]`, in constant time
-/// through its predecessor link. `c` must be on that list. The list of its block's free cells is
-/// left alone.
+// Unlinks the `FreeCellMid` cell `c` from the class list `free_lists[cls]`, in constant time
+// through its predecessor link. `c` must be on that list. The list of its block's free cells is
+// left alone.
 inline void classListUnlinkTierM(FreeCell** free_lists, FreeCell* c,
                                  size_t cls) {
     FreeCellMid* m = asTierM(c);
@@ -173,15 +175,15 @@ void* readBarrier(HPointer& ptr) {
     return hpToAddr(ptr);
 }
 
-/// A `size_t` block index that means no block. Nothing in this file uses it.
+// A `size_t` block index that means no block. Nothing in this file uses it.
 static constexpr size_t NO_BLOCK = std::numeric_limits<size_t>::max();
 
-/// Returns how far a walk over `block` moves past an object of `obj_size` bytes: the class's cell
-/// size in a uniform block, and `obj_size` in any other.
-///
-/// An object in a uniform block owns its whole cell, including any slack after its own size, and a
-/// walk that stepped by the object's size could land inside the cell and read a free-list link as
-/// a header.
+// Returns how far a walk over `block` moves past an object of `obj_size` bytes: the class's cell
+// size in a uniform block, and `obj_size` in any other.
+//
+// An object in a uniform block owns its whole cell, including any slack after its own size, and a
+// walk that stepped by the object's size could land inside the cell and read a free-list link as
+// a header.
 static inline size_t walkStepFor(const BlockInfo& block, size_t obj_size) {
     if (block.size_class < NUM_SIZE_CLASSES) {
         return OldGenSpaceTestAccess::classToSize(block.size_class);
@@ -276,10 +278,10 @@ void OldGenSpace::reserveMetadata() {
 #endif
 }
 
-/// Returns the number of size classes in use for `large_object_threshold`: every small class, and
-/// the medium classes, powers of two from `MEDIUM_CLASS_BASE`, whose cell size does not exceed the
-/// threshold. A request above the largest class in use, but below a page, is cut from a larger free
-/// cell or a page instead.
+// Returns the number of size classes in use for `large_object_threshold`: every small class, and
+// the medium classes, powers of two from `MEDIUM_CLASS_BASE`, whose cell size does not exceed the
+// threshold. A request above the largest class in use, but below a page, is cut from a larger free
+// cell or a page instead.
 static size_t computeNumSizeClasses(size_t large_object_threshold) {
     size_t count = NUM_SMALL_CLASSES;
     size_t cell = MEDIUM_CLASS_BASE;
@@ -976,7 +978,7 @@ void OldGenSpace::freeUniformCell(BlockId id, char* cell) {
 // ---------------------------------------------------------------------------
 
 #if ECO_HEAP_VALIDATE
-/// Prints a mark-cycle validation failure, `what` and the address `p`, to stderr and aborts.
+// Prints a mark-cycle validation failure, `what` and the address `p`, to stderr and aborts.
 [[noreturn]] static void cycleValidateFail(const char* what, const void* p);   // defined below
 #endif
 
@@ -2035,14 +2037,14 @@ void *OldGenSpace::allocate(size_t size) {
 // Slack after an object in its cell.
 // ---------------------------------------------------------------------------
 
-/// Writes a free-cell header over the slack between the end of an object of `requested_size`
-/// bytes, rounded up to 8, at `obj` and the end of its `cell_size`-byte cell, when the slack can
-/// hold a header. The header is linked into no free list and has age 0, so a later sweep may merge
-/// it.
-///
-/// A walk over a mixed block steps by each object's own size, so without the header it would land
-/// in the slack and read whatever is there as an object. A walk over a uniform block steps by the
-/// cell size and never reads it, but the block may later be demoted to mixed.
+// Writes a free-cell header over the slack between the end of an object of `requested_size`
+// bytes, rounded up to 8, at `obj` and the end of its `cell_size`-byte cell, when the slack can
+// hold a header. The header is linked into no free list and has age 0, so a later sweep may merge
+// it.
+//
+// A walk over a mixed block steps by each object's own size, so without the header it would land
+// in the slack and read whatever is there as an object. A walk over a uniform block steps by the
+// cell size and never reads it, but the block may later be demoted to mixed.
 static inline void padCellSlack(void* obj, size_t requested_size,
                                 size_t cell_size) {
     requested_size = (requested_size + 7) & ~static_cast<size_t>(7);
@@ -3466,8 +3468,10 @@ void OldGenSpace::scanEntry(MarkWorker& w, uint64_t e) {
 }
 // TLA-REGION(OGS.scanEntry) end
 
-/// The environment markwork::runMarkerLoop runs the serial mark in: slot 0's
-/// stack, with nothing to steal and nothing to publish.
+/**
+ * The environment markwork::runMarkerLoop runs the serial mark in: slot 0's
+ * stack, with nothing to steal and nothing to publish.
+ */
 struct OldGenSpace::SerialEnv {
     static constexpr bool kParallel = false;
     OldGenSpace& og;
@@ -3487,9 +3491,9 @@ struct OldGenSpace::SerialEnv {
 };
 
 // TLA-REGION(OGS.ParallelEnv) begin
-/// The environment markwork::runMarkerLoop runs the parallel mark in. A member
-/// takes from its slot's private stack first, then from its deque, and steals
-/// from any slot's deque.
+// The environment markwork::runMarkerLoop runs the parallel mark in. A member
+// takes from its slot's private stack first, then from its deque, and steals
+// from any slot's deque.
 struct OldGenSpace::ParallelEnv {
     static constexpr bool kParallel = true;
     OldGenSpace& og;
@@ -3526,9 +3530,11 @@ struct OldGenSpace::ParallelEnv {
 // TLA-REGION(OGS.ParallelEnv) end
 
 namespace {
-/// What markerEntry receives through the gang's context pointer. `og` is the
-/// space; this struct and `c` live in runMarkers's frame and are valid for
-/// its gang.run call.
+/**
+ * What markerEntry receives through the gang's context pointer. `og` is the
+ * space; this struct and `c` live in runMarkers's frame and are valid for
+ * its gang.run call.
+ */
 struct MarkRunArgs {
     OldGenSpace* og;
     markwork::SliceControl* c;
@@ -3645,8 +3651,8 @@ uint64_t OldGenSpace::runMarkers(int64_t budget) {
 // old-generation closure of the t0 grey set, computed independently with
 // visitHeapChildren. IM12: the entries scanned equal the tickets used.
 // ---------------------------------------------------------------------------
-/// The entries scanned so far in this cycle, in 64 mutex-guarded shards so
-/// that markers rarely contend.
+// The entries scanned so far in this cycle, in 64 mutex-guarded shards so
+// that markers rarely contend.
 struct OldGenSpace::Im10State {
     struct Shard {
         std::mutex m;
@@ -4412,10 +4418,12 @@ uint64_t OldGenSpace::bgConsumedApprox() const {
 }
 
 namespace {
-/// The context of an assist or closing member: the space, the running
-/// episode's control, and the assist's unit pool (null for a closing join,
-/// whose members draw on the episode's own budget). og and c are non-null.
-/// It lives on the caller's stack and is valid only during that gang run.
+/**
+ * The context of an assist or closing member: the space, the running
+ * episode's control, and the assist's unit pool (null for a closing join,
+ * whose members draw on the episode's own budget). og and c are non-null.
+ * It lives on the caller's stack and is valid only during that gang run.
+ */
 struct ConcArgs {
     OldGenSpace* og;
     markwork::SliceControl* c;
@@ -7529,7 +7537,7 @@ void OldGenSpace::freeLargeBodyCell(LargeBodyMeta& m) {
 // Metadata validators (ECO_HEAP_VALIDATE only).
 // ===========================================================================
 #if ECO_HEAP_VALIDATE
-/// Prints `what` for check site `where` to stderr and aborts.
+// Prints `what` for check site `where` to stderr and aborts.
 [[noreturn]] static void metaValidateFail(const char* where, const char* what) {
     std::fprintf(stderr, "[heap-validate] %s: %s\n", where, what);
     std::fflush(stderr);
