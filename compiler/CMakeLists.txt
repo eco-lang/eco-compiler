@@ -597,7 +597,7 @@ endif()
 if(WIN32)
     # TEMPORARY: diagnose the Windows-only Stage 7a hang (dump stacks after 25 min).
     set(_stage7a_time_prefix pwsh -NoProfile -ExecutionPolicy Bypass
-        -File ${CMAKE_SOURCE_DIR}/cmake/diag-hang-dump.ps1 25)
+        -File ${CMAKE_SOURCE_DIR}/cmake/diag-hang-dump.ps1 12)
 endif()
 add_custom_command(
     OUTPUT ${ECO_COMPILER_BOOT_MLIR}

@@ -25,6 +25,14 @@ if ($hung) {
         $script = Join-Path $env:TEMP "diag-cdb.txt"
         Set-Content -Path $script -Value @(".sympath+ $symdir", ".reload /f", "lm", "!runaway 7", "~*kn 400", "qd")
         $full = & $cdb -p $p.Id -cf $script 2>&1
+        # Later samples of the busy thread: a moving stack means slow progress, not a spin.
+        $script2 = Join-Path $env:TEMP "diag-cdb2.txt"
+        Set-Content -Path $script2 -Value @(".sympath+ $symdir", "!runaway 1", "~1kn 400", "~1r", "qd")
+        foreach ($i in 1..3) {
+            Start-Sleep 20
+            $full += "=== SAMPLE $i ==="
+            $full += & $cdb -p $p.Id -cf $script2 2>&1
+        }
         $full | Select-Object -Last 600 | ForEach-Object { Write-Host $_ }
         # Saved where the workflow's artifact upload already looks.
         if ($env:RUNNER_TEMP) {
