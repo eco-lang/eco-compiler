@@ -704,25 +704,27 @@ checkNames exports names =
         docs =
             List.foldl addName Dict.empty names
 
-        loneExport : Name -> A.Located Can.Export -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
+        -- One check per name, collected in a list and run by `traverse`, which
+        -- runs each once. Chaining them with `apply` instead nests one
+        -- computation per name, and the native build re-runs those nested
+        -- steps, so large modules took exponential time.
+        loneExport : Name -> A.Located Can.Export -> List (ReportingResult.RResult i w E.NameProblem A.Region) -> List (ReportingResult.RResult i w E.NameProblem A.Region)
         loneExport name export_ acc =
-            keepBoth acc (onlyInExports name export_)
+            onlyInExports name export_ :: acc
 
-        checkBoth : Name -> A.Located Can.Export -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
+        checkBoth : Name -> A.Located Can.Export -> OneOrMore.OneOrMore A.Region -> List (ReportingResult.RResult i w E.NameProblem A.Region) -> List (ReportingResult.RResult i w E.NameProblem A.Region)
         checkBoth n _ r acc =
-            keepBoth acc (isUnique n r)
+            isUnique n r :: acc
 
-        loneDoc : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
+        loneDoc : Name -> OneOrMore.OneOrMore A.Region -> List (ReportingResult.RResult i w E.NameProblem A.Region) -> List (ReportingResult.RResult i w E.NameProblem A.Region)
         loneDoc name regions acc =
-            keepBoth acc (onlyInDocs name regions)
+            onlyInDocs name regions :: acc
 
-        keepBoth : ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
-        keepBoth acc next =
-            ReportingResult.ok (\_ r -> r)
-                |> ReportingResult.apply acc
-                |> ReportingResult.apply next
+        checks : List (ReportingResult.RResult () (List ()) E.NameProblem A.Region)
+        checks =
+            List.reverse (Dict.merge loneExport checkBoth loneDoc exports docs [])
     in
-    case ReportingResult.run (Dict.merge loneExport checkBoth loneDoc exports docs (ReportingResult.ok A.zero)) of
+    case ReportingResult.run (ReportingResult.traverse identity checks) of
         ( _, Ok _ ) ->
             Ok ()
 
