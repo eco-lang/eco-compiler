@@ -22,7 +22,9 @@ if ($hung) {
     $cdb = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
     if (Test-Path $cdb) {
         $symdir = Split-Path $Exe
-        & $cdb -p $p.Id -c ".sympath+ $symdir;.reload /f;~*kn 80;q" 2>&1 | Select-Object -Last 3000 | ForEach-Object { Write-Host $_ }
+        $script = Join-Path $env:TEMP "diag-cdb.txt"
+        Set-Content -Path $script -Value @(".sympath+ $symdir", ".reload /f", "lm", "!runaway 7", "~*kn 80", "qd")
+        & $cdb -p $p.Id -cf $script 2>&1 | Select-Object -Last 4000 | ForEach-Object { Write-Host $_ }
     } else {
         Write-Host "cdb not found at $cdb"
     }
