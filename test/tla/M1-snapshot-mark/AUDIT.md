@@ -722,3 +722,25 @@ in-place promotions. The region unit tests found the gap. It is the same mutator
 pause, and the same census lock as step (2)'s existing call, taken after step (4)'s child-slot
 resolution and before the heal. No atomic step, GC lock, shared heap location or memory order
 changed; in release builds the region compiles to the same code. **Verdict: no model change needed.**
+
+## 2026-10-29 — evacuateJitPtr delegates to evacuate (cpp-review-bugs.md, "evacuateJitPtr promotion skips promoteLargeHeader")
+
+Change: `NurserySpace::evacuateJitPtr`, the serial semi-space minor's JIT-root (raw-address) copier, kept its own
+copy of `evacuate`, whose promotion branch skipped `OldGenSpace::promoteLargeHeader` and the colour reset. A large
+String/Bytes header reached only from a JIT root was promoted with its body still nursery-owned, and the next minor
+freed the body (reproduced: GcSafetyRepro unit test). The function now filters constants, null and out-of-heap
+addresses, wraps the address in an `HPointer` and calls `evacuate`, as the parallel (`evacuateRawP`) and region
+(`NurseryRegion.cpp` root loop) minors already did.
+
+Pin fired: grep `H8` (**9be75da1f771**): the private copy's `oldgen.mayBeYoungLarge(obj)` line is gone; `evacuate`'s
+own test, which the JIT-root path now reaches, is unchanged. Serial, mutator-only, inside the STW pause; no atomic
+step, lock, shared location or memory order changed, and the MarkView/YLOS-at-t0 abstraction is unaffected.
+**Verdict: no model change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/ReservedArray.hpp` (**d191396a3ab5**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**); census `runtime/src/allocator/RootSet.hpp` (**e3b0c44298fc**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. The `RootSet.hpp` census is now empty (its hash is that of no lines): the one line it held was a comment that mentioned a mutex, and the file has no concurrency code. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.

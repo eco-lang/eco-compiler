@@ -8,7 +8,7 @@
 // chunk with `__eco_list_tail_inline` makes a new view for every element (through `eco_list_tail_hybrid`). This
 // pass rewrites an `scf.while` loop that walks a list so that it carries a cursor instead: a pair (node, idx) of
 // the spine node and an i64 index into it. The loop's list argument becomes the node, and one i64 loop argument is
-// added for each walked list, starting at 0.
+// added for each walked list, starting at 0, and one for each escape slot (below).
 //
 // - An element read (`__eco_list_head_inline` or `eco_cons_head_{i64,f64,char}`) on the walked argument becomes the
 //   matching `__eco_list_cur*_inline(node, idx)` marker.
@@ -18,7 +18,13 @@
 //   emptiness rests on the markers keeping positions normalized, as `expandListCursorMarker` in EcoBackend.cpp
 //   states: idx is non-zero only inside a chunk, before the end of its run.
 // - Where the loop's result for a walked list is used, one `eco_list_pos_view(node, idx)` call after the loop
-//   turns the final position back into a list value. That function allocates a view only when idx is non-zero.
+//   turns the final position back into a list value. That function allocates a view only when idx is non-zero,
+//   so it can collect: it is not gc-leaf, and the gc-free and capacity-hoisting planners treat it as a GC point.
+// - A walked argument may also be yielded into an escape slot: another pointer argument that only carries a
+//   value out of the loop. This is how the front end returns the rest of a list (`dropWhile`), since its
+//   tail-call loops return through a separate result argument. The escape slot carries an index too: the
+//   walked argument yields its own index, any other value yields 0, and the slot's result, if used, gets an
+//   `eco_list_pos_view` after the loop. A walk the slot ends at therefore costs one view, not one per element.
 //
 // The markers are not functions. EcoBackend's `expandListCursorMarkers` expands them before RS4GC into loads and
 // gc-leaf helper calls, so stepping allocates nothing and adds no statepoint.
@@ -29,9 +35,16 @@
 // argument itself (no step on that path) or a `__eco_list_tail_inline` call on it whose result has one use, and its
 // interior nodes are results of `scf.if` / `scf.index_switch`, each with one use, whose every region yields a valid
 // subtree at the same result index. Every other use of the argument, in either region, must be an element read, a
-// tag test, the condition operand, or a leaf of the tree. A loop in which two walks share a step-tree operation is
-// left unchanged, because rebuilding that operation once per walk would leave the first walk's index value
-// dangling.
+// tag test, the condition operand, a leaf of the tree, or a leaf of an escape tree.
+//
+// An escape slot is a pointer argument that is not a walk, whose before-region argument is used only by the
+// condition at its own position, and whose after-region argument is used only as a leaf of its escape tree. Its
+// escape tree is the expression the yield passes at its position, read through `scf.if` / `scf.index_switch` results
+// with one use in the after region whose regions are single blocks ending in `scf.yield`; anything else is a leaf.
+// A slot is rewritten only when an accepted walk is one of its leaves.
+//
+// Step trees and escape trees may run through the same `scf.if` / `scf.index_switch`, through different results.
+// The rewrite rebuilds each such operation once, with one added i64 result for each of its results that a tree uses.
 //
 // It runs after the pass from `createEcoToLLVMPass`, whose output it reads as marker calls, and before the one
 // from `createEcoTailConversionsPass`, which lowers `scf`. It does nothing unless the module declares
@@ -53,6 +66,7 @@
 #include "EcoParallel.h"
 
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <string>
 
@@ -99,14 +113,23 @@ struct WalkArg {
     // The yield operands at which the step tree's leaf is the argument itself.
     SmallPtrSet<OpOperand *, 8> identSlots;
     // Every operation on the step tree: tail calls and interior `scf.if` / `scf.index_switch`.
-    //
-    // The one-use test in `walkStep` is per result, so one `scf.if` can feed two walks through two of its results
-    // and pass for both. `rebuildStep` would then rebuild it once per walk, and the second rebuild erases the op
-    // whose new index result the first walk has already recorded as a plain `Value`, which no replacement of uses
-    // repairs. `runOnOperation` compares these sets to skip such loops.
     SmallPtrSet<Operation *, 8> treeOps;
+    // The escape candidates (indices into `analyze`'s candidate list) that have this argument as a leaf.
+    SmallVector<unsigned, 2> escapeSlots;
     // Whether the step tree has at least one tail call. A walk with none never steps and is not rewritten.
     bool anyStep = false;
+};
+
+/**
+ * One escape slot of a loop, as the file comment defines it: a pointer argument that carries a value, possibly a
+ * walked position, out of the loop.
+ *
+ * The pointers refer into the loop being analysed and are used only until that loop has been rewritten.
+ */
+struct EscapeSlot {
+    unsigned pos;                              // Position of the argument among the loop's inits.
+    SmallPtrSet<OpOperand *, 8> leaves;        // The yield operands that are leaves of the escape tree.
+    SmallPtrSet<Operation *, 8> interior;      // The tree's interior `scf.if` / `scf.index_switch` operations.
 };
 
 /**
@@ -177,22 +200,10 @@ struct EcoListCursorPass
         for (scf::WhileOp w : loops) {
             whiles++;
             SmallVector<WalkArg, 2> walks;
-            analyze(w, walks);
-            // A loop whose walks share a step-tree op is left as it is; see `WalkArg::treeOps`.
-            bool shared = false;
-            for (unsigned i = 0; i + 1 < walks.size() && !shared; ++i)
-                for (unsigned j = i + 1; j < walks.size() && !shared; ++j)
-                    for (Operation *op : walks[i].treeOps)
-                        if (walks[j].treeOps.count(op)) {
-                            shared = true;
-                            break;
-                        }
-            if (shared) {
-                cSharedTree++;
-                continue;
-            }
+            SmallVector<EscapeSlot, 2> escapes;
+            analyze(w, walks, escapes);
             if (!walks.empty()) {
-                rewrite(m, w, walks);
+                rewrite(m, w, walks, escapes);
                 rewritten++;
             }
         }
@@ -202,6 +213,7 @@ struct EcoListCursorPass
                     "condFwd=%u badUse=%u noStep=%u treeFail=%u\n",
                     whiles, rewritten, cPtrArgs, cCondFwd, cBadUse, cNoStep,
                     cTreeFail);
+            fprintf(stderr, "[eco-list-cursor] escapes=%u posViews=%u\n", cEscapes, cPosViews);
             std::map<std::string, unsigned> hist;
             for (Operation *op : badUseOps)
                 hist[op->getName().getStringRef().str()]++;
@@ -216,7 +228,7 @@ struct EcoListCursorPass
     // rewrite, because each symbol lookup scans the module.
     bool declsMade = false;
     unsigned cPtrArgs = 0, cCondFwd = 0, cBadUse = 0, cNoStep = 0,
-             cTreeFail = 0, cSharedTree = 0;
+             cTreeFail = 0, cEscapes = 0, cPosViews = 0;
     SmallVector<Operation *, 16> badUseOps;   // Owners of rejected uses, recorded only when `dbg` is set.
     std::map<std::string, unsigned> badCallees;   // Never written or read.
 
@@ -264,12 +276,60 @@ struct EcoListCursorPass
         return false;
     }
 
-    // Appends to `walks` each list argument of `w` that can be walked with a cursor, in argument order, and
-    // adds to the debug counters.
-    void analyze(scf::WhileOp w, SmallVectorImpl<WalkArg> &walks) {
+    // Records in `es` the escape tree below `v`, the value passed at `slot`, as the file comment defines it: a
+    // result of an `scf.if` / `scf.index_switch` in `after` that has one use and whose regions are single blocks
+    // ending in an `scf.yield` is an interior node, and anything else is a leaf.
+    void walkEscape(Value v, OpOperand &slot, Region &after, EscapeSlot &es) {
+        Operation *def = v.getDefiningOp();
+        if (def && isa<scf::IfOp, scf::IndexSwitchOp>(def) && v.hasOneUse() &&
+            after.isAncestor(def->getParentRegion())) {
+            unsigned idx = cast<OpResult>(v).getResultNumber();
+            bool shaped = llvm::all_of(def->getRegions(), [&](Region &r) {
+                return r.hasOneBlock() && isa<scf::YieldOp>(r.front().getTerminator()) &&
+                       r.front().getTerminator()->getNumOperands() > idx;
+            });
+            if (shaped) {
+                es.interior.insert(def);
+                for (Region &r : def->getRegions()) {
+                    Operation *term = r.front().getTerminator();
+                    walkEscape(term->getOperand(idx), term->getOpOperand(idx), after, es);
+                }
+                return;
+            }
+        }
+        es.leaves.insert(&slot);
+    }
+
+    // Appends to `walks` each list argument of `w` that can be walked with a cursor, and to `escapes` each escape
+    // slot that one of them ends at, both in argument order, and adds to the debug counters.
+    void analyze(scf::WhileOp w, SmallVectorImpl<WalkArg> &walks, SmallVectorImpl<EscapeSlot> &escapes) {
         auto condOp = w.getConditionOp();
         auto yieldOp = w.getYieldOp();
         unsigned n = w.getInits().size();
+
+        // The escape candidates, and the candidate each of their leaves belongs to.
+        SmallVector<EscapeSlot, 2> cands;
+        DenseMap<OpOperand *, unsigned> escapeLeafOf;
+        for (unsigned q = 0; q < n; ++q) {
+            auto pt = dyn_cast<LLVM::LLVMPointerType>(w.getInits()[q].getType());
+            if (!pt || pt.getAddressSpace() != 1)
+                continue;
+            Value beforeArg = w.getBefore().getArgument(q);
+            Value afterArg = w.getAfterArguments()[q];
+            if (condOp.getArgs()[q] != beforeArg || !beforeArg.hasOneUse())
+                continue;
+            EscapeSlot es;
+            es.pos = q;
+            walkEscape(yieldOp->getOperand(q), yieldOp->getOpOperand(q), w.getAfter(), es);
+            bool onlyLeaves = llvm::all_of(afterArg.getUses(), [&](OpOperand &u) {
+                return es.leaves.count(&u) != 0;
+            });
+            if (!onlyLeaves)
+                continue;
+            for (OpOperand *leaf : es.leaves)
+                escapeLeafOf[leaf] = cands.size();
+            cands.push_back(std::move(es));
+        }
 
         for (unsigned p = 0; p < n; ++p) {
             Type t = w.getInits()[p].getType();
@@ -298,8 +358,8 @@ struct EcoListCursorPass
                 continue;
             }
 
-            // Every other use, in either region, must be the condition operand, a leaf of the step tree, a tag
-            // test or an element read.
+            // Every other use, in either region, must be the condition operand, a leaf of the step tree, a leaf of
+            // an escape tree, a tag test or an element read.
             bool ok = true;
             auto classify = [&](Value arg) {
                 for (OpOperand &u : arg.getUses()) {
@@ -313,6 +373,10 @@ struct EcoListCursorPass
                     }
                     if (wa.identSlots.count(&u))
                         continue;
+                    if (auto it = escapeLeafOf.find(&u); it != escapeLeafOf.end()) {
+                        wa.escapeSlots.push_back(it->second);
+                        continue;
+                    }
                     auto call = dyn_cast<LLVM::CallOp>(own);
                     if (call && llvm::is_contained(wa.tailCalls, call))
                         continue;
@@ -344,82 +408,24 @@ struct EcoListCursorPass
             }
             walks.push_back(wa);
         }
+
+        // The escape slots some accepted walk ends at, in argument order.
+        SmallVector<bool, 4> active(cands.size(), false);
+        for (const WalkArg &wa : walks)
+            for (unsigned c : wa.escapeSlots)
+                active[c] = true;
+        for (unsigned c = 0; c < cands.size(); ++c)
+            if (active[c]) {
+                escapes.push_back(std::move(cands[c]));
+                cEscapes++;
+            }
     }
 
-    // Rebuilds the step tree `v` of the walked argument `argP` at index `curIdx` so that it also yields the next
-    // index, and returns the new tree's node and index values.
-    //
-    // A tail call becomes a step-node and step-index pair, an identity leaf keeps `curIdx`, and each interior
-    // `scf.if` / `scf.index_switch` is replaced by a copy with one more i64 result, its old results' uses moved to
-    // the copy. `v` must be a tree `walkStep` accepted. `topB` is not used.
-    std::pair<Value, Value> rebuildStep(Value v, Value argP, Value curIdx,
-                                        OpBuilder &topB) {
-        MLIRContext *ctx = v.getContext();
-        auto as1 = LLVM::LLVMPointerType::get(ctx, 1);
-        Type i64 = IntegerType::get(ctx, 64);
-        if (v == argP)
-            return {argP, curIdx};
-        Operation *def = v.getDefiningOp();
-        if (auto call = dyn_cast<LLVM::CallOp>(def)) {
-            OpBuilder b(call);
-            auto sn = b.create<LLVM::CallOp>(
-                call.getLoc(), TypeRange{as1},
-                SymbolRefAttr::get(ctx, kStepNode), ValueRange{argP, curIdx});
-            auto si = b.create<LLVM::CallOp>(
-                call.getLoc(), TypeRange{i64},
-                SymbolRefAttr::get(ctx, kStepIdx), ValueRange{argP, curIdx});
-            // The enclosing yield still references the old call until its
-            // own rebuild; retarget uses before erasing.
-            call->getResult(0).replaceAllUsesWith(sn->getResult(0));
-            call->erase();
-            return {sn->getResult(0), si->getResult(0)};
-        }
-        // Interior scf.if / scf.index_switch: extend with an i64 result.
-        unsigned rIdx = cast<OpResult>(v).getResultNumber();
-        SmallVector<Type> newTys(def->getResultTypes().begin(),
-                                 def->getResultTypes().end());
-        newTys.push_back(i64);
-        OpBuilder b(def);
-        Operation *nd = nullptr;
-        if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
-            auto ni = b.create<scf::IfOp>(ifOp.getLoc(), newTys,
-                                          ifOp.getCondition(),
-                                          /*withElseRegion=*/true);
-            ni.getThenRegion().takeBody(ifOp.getThenRegion());
-            ni.getElseRegion().takeBody(ifOp.getElseRegion());
-            nd = ni;
-        } else {
-            auto sw = cast<scf::IndexSwitchOp>(def);
-            auto ns = b.create<scf::IndexSwitchOp>(
-                sw.getLoc(), newTys, sw.getArg(), sw.getCases(),
-                sw.getCases().size());
-            ns.getDefaultRegion().takeBody(sw.getDefaultRegion());
-            for (unsigned i = 0; i < sw.getCases().size(); ++i)
-                ns.getCaseRegions()[i].takeBody(sw.getCaseRegions()[i]);
-            nd = ns;
-        }
-        for (Region &r : nd->getRegions()) {
-            auto term = cast<scf::YieldOp>(r.front().getTerminator());
-            auto sub = rebuildStep(term->getOperand(rIdx), argP, curIdx,
-                                   topB);
-            SmallVector<Value> ops(term->getOperands().begin(),
-                                   term->getOperands().end());
-            ops[rIdx] = sub.first;
-            ops.push_back(sub.second);
-            OpBuilder yb(term);
-            yb.create<scf::YieldOp>(term.getLoc(), ops);
-            term.erase();
-        }
-        for (unsigned i = 0; i < def->getNumResults(); ++i)
-            def->getResult(i).replaceAllUsesWith(nd->getResult(i));
-        def->erase();
-        return {nd->getResult(rIdx), nd->getResult(newTys.size() - 1)};
-    }
-
-    // Replaces `w` with a loop that carries one i64 index per walk in `walks`, starting at 0, and rewrites each
-    // walk's element reads and step tree to use it. A used result of a walked argument is replaced by an
-    // `eco_list_pos_view` call after the loop. `w` is erased.
-    void rewrite(ModuleOp m, scf::WhileOp w, ArrayRef<WalkArg> walks) {
+    // Replaces `w` with a loop that carries one i64 index per walk in `walks` and per escape slot in `escapes`, all
+    // starting at 0, and rewrites each walk's element reads, step tree and escape-tree leaves to use them. A used
+    // result at a carried position is replaced by an `eco_list_pos_view` call after the loop. `w` is erased.
+    void rewrite(ModuleOp m, scf::WhileOp w, ArrayRef<WalkArg> walks,
+                 ArrayRef<EscapeSlot> escapes) {
         MLIRContext *ctx = m.getContext();
         Location loc = w.getLoc();
         OpBuilder b(w);
@@ -441,7 +447,13 @@ struct EcoListCursorPass
         }
 
         unsigned n = w.getInits().size();
-        unsigned k = walks.size();
+        // The carried positions, walks first: index argument i belongs to position carried[i].
+        SmallVector<unsigned, 4> carried;
+        for (const WalkArg &wa : walks)
+            carried.push_back(wa.pos);
+        for (const EscapeSlot &es : escapes)
+            carried.push_back(es.pos);
+        unsigned k = carried.size();
 
         Value c0 = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(0));
         SmallVector<Value> inits(w.getInits().begin(), w.getInits().end());
@@ -455,7 +467,7 @@ struct EcoListCursorPass
         auto nw = b.create<scf::WhileOp>(loc, resTys, inits);
         nw.getBefore().takeBody(w.getBefore());
         nw.getAfter().takeBody(w.getAfter());
-        SmallVector<Value, 2> beforeIdx, afterIdx;
+        SmallVector<Value, 4> beforeIdx, afterIdx;
         for (unsigned i = 0; i < k; ++i) {
             beforeIdx.push_back(
                 nw.getBefore().front().addArgument(i64, loc));
@@ -475,7 +487,7 @@ struct EcoListCursorPass
         }
 
         // Element reads first: they read the position before the step.
-        for (unsigned i = 0; i < k; ++i) {
+        for (unsigned i = 0; i < walks.size(); ++i) {
             const WalkArg &wa = walks[i];
             Value beforeArg = nw.getBefore().getArgument(wa.pos);
             Value afterArg = nw.getAfterArguments()[wa.pos];
@@ -495,22 +507,142 @@ struct EcoListCursorPass
             }
         }
 
-        // Rebuilding an interior op moves its other results' uses in the old yield, so the yield's operands are
-        // copied only after every tree is rebuilt.
-        auto yieldOp = nw.getYieldOp();
-        SmallVector<Value> idxYields;
-        for (unsigned i = 0; i < k; ++i) {
-            const WalkArg &wa = walks[i];
-            Value afterArg = nw.getAfterArguments()[wa.pos];
-            auto pr = rebuildStep(yieldOp->getOperand(wa.pos), afterArg,
-                                  afterIdx[i], b);
-            yieldOp->setOperand(wa.pos, pr.first);
-            idxYields.push_back(pr.second);
+        // The index of a carried position's after-region argument; the tail calls; the trees' interior ops.
+        DenseMap<Value, Value> argIdx;
+        for (unsigned i = 0; i < k; ++i)
+            argIdx[nw.getAfterArguments()[carried[i]]] = afterIdx[i];
+        SmallPtrSet<Operation *, 16> tails, interior;
+        for (const WalkArg &wa : walks) {
+            for (LLVM::CallOp tc : wa.tailCalls)
+                tails.insert(tc);
+            for (Operation *op : wa.treeOps)
+                if (!isa<LLVM::CallOp>(op))
+                    interior.insert(op);
         }
+        for (const EscapeSlot &es : escapes)
+            interior.insert(es.interior.begin(), es.interior.end());
+
+        // Which results of each interior op a tree runs through: each needs an index result beside it.
+        auto yieldOp = nw.getYieldOp();
+        DenseMap<Operation *, SmallVector<unsigned, 2>> needed;
+        std::function<void(Value)> collect = [&](Value v) {
+            Operation *def = v.getDefiningOp();
+            if (!def || !interior.count(def))
+                return;
+            unsigned r = cast<OpResult>(v).getResultNumber();
+            auto &rs = needed[def];
+            if (llvm::is_contained(rs, r))
+                return;
+            rs.push_back(r);
+            for (Region &reg : def->getRegions())
+                collect(reg.front().getTerminator()->getOperand(r));
+        };
+        for (unsigned pos : carried)
+            collect(yieldOp->getOperand(pos));
+
+        // Inner ops before the ops whose regions yield their results.
+        SmallVector<Operation *, 8> order;
+        SmallPtrSet<Operation *, 8> seen;
+        std::function<void(Operation *)> post = [&](Operation *op) {
+            if (!seen.insert(op).second)
+                return;
+            for (unsigned r : needed.find(op)->second)
+                for (Region &reg : op->getRegions()) {
+                    Operation *d = reg.front().getTerminator()->getOperand(r).getDefiningOp();
+                    if (d && needed.count(d))
+                        post(d);
+                }
+            order.push_back(op);
+        };
+        for (unsigned pos : carried)
+            if (Operation *d = yieldOp->getOperand(pos).getDefiningOp(); d && needed.count(d))
+                post(d);
+
+        // Returns the (node, index) that replace `o`, an operand of the terminator `term` on a tree: a carried
+        // argument gives its own index, a tail call becomes a step pair, a rebuilt op's result gives the index
+        // result beside it, and anything else is a list value at index 0.
+        DenseMap<std::pair<Operation *, unsigned>, Value> idxOf;
+        auto resolve = [&](Value o, Operation *term) -> std::pair<Value, Value> {
+            if (Value idx = argIdx.lookup(o))
+                return {o, idx};
+            Operation *def = o.getDefiningOp();
+            if (def && tails.count(def)) {
+                auto call = cast<LLVM::CallOp>(def);
+                Value node = call.getArgOperands()[0];
+                Value cur = argIdx.lookup(node);
+                OpBuilder cb(call);
+                auto sn = cb.create<LLVM::CallOp>(
+                    call.getLoc(), TypeRange{as1},
+                    SymbolRefAttr::get(ctx, kStepNode), ValueRange{node, cur});
+                auto si = cb.create<LLVM::CallOp>(
+                    call.getLoc(), TypeRange{i64},
+                    SymbolRefAttr::get(ctx, kStepIdx), ValueRange{node, cur});
+                call->getResult(0).replaceAllUsesWith(sn->getResult(0));
+                tails.erase(def);
+                call->erase();
+                return {sn->getResult(0), si->getResult(0)};
+            }
+            if (def)
+                if (auto it = idxOf.find({def, cast<OpResult>(o).getResultNumber()}); it != idxOf.end())
+                    return {o, it->second};
+            OpBuilder zb(term);
+            return {o, zb.create<arith::ConstantOp>(term->getLoc(), zb.getI64IntegerAttr(0))};
+        };
+
+        // Each interior op is replaced once, by a copy with one more i64 result per needed result.
+        for (Operation *def : order) {
+            SmallVector<unsigned, 2> rs = needed.find(def)->second;
+            llvm::sort(rs);
+            unsigned oldN = def->getNumResults();
+            SmallVector<Type> newTys(def->getResultTypes().begin(),
+                                     def->getResultTypes().end());
+            newTys.append(rs.size(), i64);
+            OpBuilder ob(def);
+            Operation *nd = nullptr;
+            if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+                auto ni = ob.create<scf::IfOp>(ifOp.getLoc(), newTys,
+                                               ifOp.getCondition(),
+                                               /*withElseRegion=*/true);
+                ni.getThenRegion().takeBody(ifOp.getThenRegion());
+                ni.getElseRegion().takeBody(ifOp.getElseRegion());
+                nd = ni;
+            } else {
+                auto sw = cast<scf::IndexSwitchOp>(def);
+                auto ns = ob.create<scf::IndexSwitchOp>(
+                    sw.getLoc(), newTys, sw.getArg(), sw.getCases(),
+                    sw.getCases().size());
+                ns.getDefaultRegion().takeBody(sw.getDefaultRegion());
+                for (unsigned i = 0; i < sw.getCases().size(); ++i)
+                    ns.getCaseRegions()[i].takeBody(sw.getCaseRegions()[i]);
+                nd = ns;
+            }
+            for (Region &r : nd->getRegions()) {
+                auto term = cast<scf::YieldOp>(r.front().getTerminator());
+                SmallVector<Value> ops(term->getOperands().begin(),
+                                       term->getOperands().end());
+                for (unsigned rr : rs) {
+                    auto pr = resolve(ops[rr], term);
+                    ops[rr] = pr.first;
+                    ops.push_back(pr.second);
+                }
+                OpBuilder yb(term);
+                yb.create<scf::YieldOp>(term.getLoc(), ops);
+                term.erase();
+            }
+            for (unsigned i = 0; i < oldN; ++i)
+                def->getResult(i).replaceAllUsesWith(nd->getResult(i));
+            for (unsigned j = 0; j < rs.size(); ++j)
+                idxOf[{nd, rs[j]}] = nd->getResult(oldN + j);
+            def->erase();
+        }
+
         SmallVector<Value> yields(yieldOp.getOperands().begin(),
                                   yieldOp.getOperands().end());
-        for (Value v : idxYields)
-            yields.push_back(v);
+        for (unsigned i = 0; i < k; ++i) {
+            auto pr = resolve(yields[carried[i]], yieldOp);
+            yields[carried[i]] = pr.first;
+            yields.push_back(pr.second);
+        }
         {
             OpBuilder yb(yieldOp);
             yb.create<scf::YieldOp>(yieldOp.getLoc(), yields);
@@ -522,15 +654,14 @@ struct EcoListCursorPass
         for (unsigned p = 0; p < n; ++p) {
             Value oldRes = w.getResult(p);
             Value newRes = nw.getResult(p);
-            int walkIdx = -1;
-            for (unsigned i = 0; i < k; ++i)
-                if (walks[i].pos == p)
-                    walkIdx = static_cast<int>(i);
-            if (walkIdx >= 0 && !oldRes.use_empty()) {
+            auto it = llvm::find(carried, p);
+            if (it != carried.end() && !oldRes.use_empty()) {
+                Value idx = nw.getResult(n + static_cast<unsigned>(it - carried.begin()));
                 auto pv = rb.create<LLVM::CallOp>(
                     loc, TypeRange{as1}, SymbolRefAttr::get(ctx, kPosView),
-                    ValueRange{newRes, nw.getResult(n + walkIdx)});
+                    ValueRange{newRes, idx});
                 oldRes.replaceAllUsesWith(pv->getResult(0));
+                cPosViews++;
             } else {
                 oldRes.replaceAllUsesWith(newRes);
             }

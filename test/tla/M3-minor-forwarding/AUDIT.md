@@ -527,3 +527,26 @@ Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct la
 Pins fired: regions `OGS.promoteYoungLarge` (**c9b5ac30eae3**), `OGS.registerLargeBody` (**b84bdbca9fc6**); greps `P6.M7` (**72090451cef4**), `P6.M9` (**0ec81764e070**).
 
 `promoteYoungLarge` (inside the `ylos_mu_` section of `Y_Lock`) now sets the entry's kind to 2 instead of erasing it and recycling the id; the owned-list removal and the `age` write are unchanged. `yPromoted[y]`'s observable effect is the same: `youngLargeMeta` accepts kind 1 only, so a promoted object is never reached again (`YlosOnce`). `registerLargeBody` gains an `owned` flag (false only for kind 2, registered by the mutator outside any minor). P6.M7/P6.M9: new mutator-only `allocated_bytes` adds and index walks (`losSweepAtMarkEnd`, `validateLosTracking`, compaction's LOS fix-up) outside the parallel minor. Ids are still never recycled inside the pause. **Verdict: no model change needed.**
+
+## 2026-10-29 — evacuateJitPtr delegates to evacuate; evacuateListSpine colour reset (cpp-review-bugs.md)
+
+Change: the serial semi-space minor's JIT-root copier `NurserySpace::evacuateJitPtr` no longer has its own copy of
+`evacuate` (whose promotion skipped `promoteLargeHeader` and the colour reset, so a JIT-rooted large header's body
+was freed by the next minor; reproduced by the GcSafetyRepro unit test). It now wraps the raw address in an
+`HPointer` and calls `evacuate`, as `evacuateRawP` (NP) and the region root loop (NR) already did.
+`evacuateListSpine` resets each copy's colour to white, as `evacuate` and `copyClaimed` do.
+
+Pins fired: greps `P6.M1` (**4e831e1d4955**): the private copy's `Tag_Forward` test and two `Forward *fwd` lines are
+gone; `P6.M4` (**a77e3410d177**): its `copyToSpace` call is gone (this prefix also covers a comment-only edit of the
+"Cheney scan" line from the earlier re-commenting pass). The modelled paths are the parallel and region copiers,
+which are unchanged; the removed code was the serial STW path, whose forward-word writes and to-space bumps now all
+go through `evacuate`. No atomic step, lock, shared location or memory order changed. **Verdict: no model change
+needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/MinorWork.hpp` (**e16cf056dff2**); file `runtime/src/allocator/NurseryRegions.hpp` (**75f1c3c6fb7e**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.

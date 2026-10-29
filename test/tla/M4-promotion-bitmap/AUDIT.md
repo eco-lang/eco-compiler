@@ -793,3 +793,11 @@ nursery. The route M4 models, parallel promotion workers allocating cells in blo
 sweep still owns, exists only on the legacy minor. The region tenure job promotes only into
 `kAllocTenure` grant blocks, which no sweep path may select (HEAP_070). The driver's heap, scenario,
 probes and trace output are unchanged, and no runtime code is touched. **Verdict: no model change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/MinorWork.hpp` (**e16cf056dff2**); file `runtime/src/allocator/BitmapScan.hpp` (**3c5e8cf1ea55**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**); grep `P6.M16` (**244208f68db1**); grep `F.gc_phase` (**40981d5ce1bd**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. `P6.M16` and `F.gc_phase` lost comment lines in `OldGenSpace.cpp` (`live_bytes` attribution and the `gc_phase_ == Sweeping` note); the code they audit is unchanged. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.

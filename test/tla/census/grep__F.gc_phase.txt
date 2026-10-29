@@ -2,7 +2,6 @@ runtime/src/allocator/NurseryParallel.cpp: if (oldgen.gc_phase_ == GCPhase::Swee
 runtime/src/allocator/NurseryRegion.cpp: if (oldgen.gc_phase_ == GCPhase::Sweeping) {
 runtime/src/allocator/OldGenSpace.cpp: "scheduleCompaction: sweep must be complete (gc_phase_ == Idle)");
 runtime/src/allocator/OldGenSpace.cpp: (gc_phase_ == GCPhase::Sweeping) &&
-runtime/src/allocator/OldGenSpace.cpp: * and start lazy sweep. Returns with `gc_phase_ == Sweeping` for any
 runtime/src/allocator/OldGenSpace.cpp: assert((gc_phase_ == GCPhase::Sweeping || gc_phase_ == GCPhase::Idle) &&
 runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;
 runtime/src/allocator/OldGenSpace.cpp: gc_phase_ = GCPhase::Idle;

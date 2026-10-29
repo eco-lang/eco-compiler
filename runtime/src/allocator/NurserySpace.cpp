@@ -1335,99 +1335,23 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
 
 void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
-    // Skip embedded constants (ptr_ind set); only real pointers are evacuated.
-    if (isConstantBits(ptr)) {
+    // Skip embedded constants (ptr_ind set) and null; only real pointers are evacuated.
+    if (isConstantBits(ptr) || ptr == 0) {
         return;
     }
-
-    void *obj = reinterpret_cast<void*>(ptr);
-    if (!obj)
-        return;
-
-#if ECO_HEAP_VALIDATE
-    if (contains(obj)) {
-        debugAssertValidNurseryPointer(obj);
-    }
-#endif
-
-    char *heap_base = heap_base_;
 
     // An address outside the heap is left as it is. Unlike `evacuate`, validate builds do not check it.
-    if (static_cast<char*>(obj) < heap_base ||
-        static_cast<char*>(obj) >= heap_base + heap_reserved_) {
+    char *p = reinterpret_cast<char*>(ptr);
+    if (p < heap_base_ || p >= heap_base_ + heap_reserved_) {
         return;
     }
 
-    Header *hdr = getHeader(obj);
-
-    // Check for forwarding pointer.
-    if (hdr->tag == Tag_Forward) {
-        Forward *fwd = static_cast<Forward *>(obj);
-        ptr = reinterpret_cast<uint64_t>(decodeForwardPtr(fwd->header.forward_ptr, heap_base));
-        return;
-    }
-
-    // Only a from-space object is copied; a young large object is reached in place.
-    if (!isInFromSpace(obj)) {
-        if (oldgen.mayBeYoungLarge(obj))
-            (void)reachYoungLarge(obj, oldgen, promoted_objects);
-        return;
-    }
-
-    size_t size = getObjectSize(obj);
-#if ECO_HEAP_VALIDATE
-    const Header srcHdr = *hdr;
-#endif
-    void *new_obj = nullptr;
-
-    // Promoted as `evacuate` promotes, except that this path neither resets the copy's colour nor transfers a large
-    // body (`promoteLargeHeader`).
-    if (shouldPromote(hdr)) {
-        new_obj = promoteAllocate(oldgen, size);
-        assert(new_obj && "Failed to allocate in old gen during promotion");
-
-        std::memcpy(new_obj, obj, size);
-
-        Header *new_hdr = getHeader(new_obj);
-        new_hdr->age = 0;
-#if ECO_HEAP_VALIDATE
-        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
-#endif
-
-        if (promoted_objects) {
-            promoted_objects->push_back(new_obj);
-        }
-
-        GC_STATS_MINOR_INC_PROMOTED(stats, new_hdr->tag, size, new_hdr->size);
-    }
-
-    // Copy to to_space if not promoted.
-    if (!new_obj) {
-        new_obj = copyToSpace(size);
-        assert(new_obj && "Failed to copy to to-space during evacuation!");
-
-        std::memcpy(new_obj, obj, size);
-
-        Header *new_hdr = getHeader(new_obj);
-        // HEAP_BUILDER_002: don't age builders.
-        if (!new_hdr->builder) {
-            new_hdr->age++;
-        }
-#if ECO_HEAP_VALIDATE
-        assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
-#endif
-
-        GC_STATS_MINOR_INC_SURVIVORS(stats, new_hdr->tag, size, new_hdr->size);
-    }
-
-    // Leave forwarding pointer.
-    Forward *fwd = static_cast<Forward *>(obj);
-    fwd->header.tag = Tag_Forward;
-    fwd->header.forward_ptr = encodeForwardPtr(new_obj, heap_base);
-    fwd->header.unused = 0;
-
-    // Update the root with the new raw pointer.
-    ptr = reinterpret_cast<uint64_t>(new_obj);
+    // Everything else is `evacuate`'s, through an `HPointer`, as the parallel and region minors do: a promotion
+    // then transfers a large String or Bytes body to the old generation (`promoteLargeHeader`, HEAP_026) and resets
+    // the copy's colour, which a copy of its own here once skipped.
+    HPointer hp = Allocator::toPointerRaw(p);
+    evacuate(hp, oldgen, promoted_objects);
+    ptr = reinterpret_cast<uint64_t>(Allocator::fromPointerRaw(hp));
 }
 
 void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
@@ -1942,6 +1866,8 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
 
             Header* new_hdr = getHeader(new_obj);
             new_hdr->age = 0;
+            // As in `evacuate`: the copy does not depend on the source being white.
+            new_hdr->color = static_cast<u32>(Color::White);
 #if ECO_HEAP_VALIDATE
             assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif
@@ -1960,6 +1886,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
             if (!new_hdr->builder) {
                 new_hdr->age++;
             }
+            new_hdr->color = static_cast<u32>(Color::White);
 #if ECO_HEAP_VALIDATE
             assertHeaderPreservedAcrossCopy(srcHdr, new_hdr);
 #endif

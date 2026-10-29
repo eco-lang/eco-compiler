@@ -6,11 +6,11 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 | verdict | high | medium | low | - | total |
 |---|---|---|---|---|---|
-| likely-bug | 4 | 5 | 15 | - | 24 |
+| likely-bug | 1 | 5 | 15 | - | 21 |
 | possible | 9 | 22 | 67 | - | 98 |
 | cleanup | - | - | - | 38 | 38 |
 | not-a-bug | - | - | - | 16 | 16 |
-| already-fixed | - | - | - | 1 | 1 |
+| already-fixed | 3 | - | - | 1 | 4 |
 
 ## High severity
 
@@ -18,9 +18,9 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### eco_list_pos_view classified as gc-leaf but allocates
 - where: `runtime/src/codegen/Passes/EcoMarkerFacts.h:62 (isCursorMarker)`; runtime side `runtime/src/allocator/RuntimeExports.cpp:4119 (eco_list_pos_view)`
-- verdict: likely-bug (checked in code; author and reviewer agree)
-- severity: high
-- `isCursorMarker` includes `eco_list_pos_view`, so capacity hoisting, gc-free propagation and BF mayCollect (BFToLLVM.cpp:318 leafCallee) all treat it as unable to collect. When idx > 0 it calls `alloc::consChunkView`, which allocates through `eco_alloc_with_roots` and can collect. A capacity-hoisted region with pre-reserved unchecked bumps, a gc-free-stamped caller, or a BF buffer that is live across the call is then wrong after a GC.
+- verdict: FIXED 2026-10-29 (reproduced first; latent, and it failed loudly rather than miscompiling)
+- severity: high (as logged); actual impact: compile failure, latent
+- `isCursorMarker` included `eco_list_pos_view`, so the MLIR gc-free and capacity planners treated it as unable to collect, but it allocates a chunk view when idx > 0. No front-end output reaches it today: across all 2,614 cached E2E programs (12,346 cursor-rewritten loops) it is never called, because tail-call loops return through a separate result slot. A hand-made loop that returns the walked position reproduced it: the planner stamped the function gc-leaf with `eco-cap-budget 0`, and the backend's re-check refused it ("plan verification failed for budget-0 function ...: non-transparent call"). The LLVM declaration was never gc-leaf, so RS4GC and `checkStampedBodies` would not have let a miscompile through. BF cannot see the call, because EcoListCursor runs after BFToLLVM. Fix: removed from `isCursorMarker`, so it is classified by its declaration. Pin: `test/codegen/gcfree_plan_list_pos_view.mlir`. Follow-up (2026-10-29): EcoListCursor now also rewrites the front end's drop-while shape, where the rest of the walked list leaves through the loop's separate result argument (an escape slot), so `eco_list_pos_view` is now reached by real programs (`test/codegen/list_cursor_escape_slot.mlir`, `test/elm/src/ListCursorEscapeTest.elm`).
 
 ### FoldExtractValue: UndefValue::get(nullptr) sentinel dereferences null
 - where: `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp:349 (FoldExtractValuePass::traceMatchingInsert)`
@@ -30,15 +30,15 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### String slice copies from a movable nursery string across an allocation
 - where: `runtime/src/allocator/StringOps.cpp:324,344 (slice -> tinyFromU16 -> alloc::allocString)`
-- verdict: likely-bug (the code now carries a "Known defect" comment)
+- verdict: FIXED 2026-10-29 (reproduced first)
 - severity: high
-- For a short slice of a Tag_String, or a StringSlice over a UTF-16 leaf, `p` points into the nursery object. If the range is non-ASCII, longer than 512 units, or UTF-8 is off, `allocString` allocates first, which can run a minor GC that moves the source, and then memcpys from the stale `p`. The result holds garbage, and the source `str` is not rooted either.
+- For a short non-ASCII slice of a Tag_String, or of a StringSlice over a UTF-16 leaf, the units were read after `allocString`'s allocation, whose minor GC moves the source. The large-String arm had a related gap: its header was not rooted, so a minor GC during the allocation could free the body. Repro: unit tests `GcSafetyRepro: String slice ...` (legacy and region nurseries). `requestMinor` makes the result's allocation collect, and a test scanner overwrites the source's old copy. Both failed before the fix. Fix: `tinyFromFlat` roots the owning String (the leaf, the large header or the slice's base) across `allocStringBlank` and copies from it re-resolved.
 
 ### evacuateJitPtr promotion skips promoteLargeHeader and the colour reset
 - where: `runtime/src/allocator/NurserySpace.cpp:1337 (NurserySpace::evacuateJitPtr)`
-- verdict: likely-bug (checked in code; reviewer re-emphasised it)
-- severity: high
-- When a JIT global root points at a from-space LargeStringHeader or LargeByteHeader at promotion age, the header is copied to old gen but its body stays nursery-owned, because only `evacuate` (cpp:1252-1258) calls `oldgen.promoteLargeHeader`. The minor sweep can then free a body that the promoted header still uses. The copy's colour is also not reset to white, and evacuateListSpine has the same colour gap.
+- verdict: FIXED 2026-10-29 (reproduced first)
+- severity: high, but only in the legacy semi-space serial minor: the region (production default) and parallel minors already funnel JIT roots through their own `evacuate`
+- A large String header reached only through a JIT root was promoted with its body still nursery-owned, and the next minor freed the body. Repro: unit test `GcSafetyRepro: JIT-rooted large String keeps its body after promotion (serial minor)`. It failed before the fix: the body was reused by later large Strings. Fix: `evacuateJitPtr` wraps the address in an HPointer and calls `evacuate`. `evacuateListSpine` now resets the copy's colour as well. The canary greps H8/P6.M1/P6.M4 fired and are audited in M1/M3 AUDIT.md (no model change).
 
 ### Possible
 

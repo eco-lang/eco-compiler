@@ -102,6 +102,7 @@ add_executable(test
         allocator/Utf8Test.cpp
         allocator/Utf8StringTest.cpp
         allocator/StringOpsTest.cpp
+        allocator/GcSafetyReproTest.cpp
         allocator/CaseMapTest.cpp
         allocator/StringFormsCompareTest.cpp
         allocator/ListOpsTest.cpp

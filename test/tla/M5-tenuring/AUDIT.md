@@ -1052,3 +1052,11 @@ in-place promotions. The region unit tests found the gap. It is the same mutator
 pause, and the same census lock as step (2)'s existing call, taken after step (4)'s child-slot
 resolution and before the heal. No atomic step, GC lock, shared heap location or memory order
 changed; in release builds the region compiles to the same code. **Verdict: no model change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/TenureWork.hpp` (**41f08ce196e3**); file `runtime/src/allocator/NurseryRegions.hpp` (**75f1c3c6fb7e**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.

@@ -56,8 +56,6 @@ runtime/src/allocator/OldGenSpace.cpp: "%zu: popcount %llu x %zu != live_bytes %
 runtime/src/allocator/OldGenSpace.cpp: (allocated_bytes >= post_sweep_live_bytes_)
 runtime/src/allocator/OldGenSpace.cpp: (allocated_bytes >= post_sweep_live_bytes_)
 runtime/src/allocator/OldGenSpace.cpp: (frag_stats_.live_bytes >= cell_size) ? frag_stats_.live_bytes - cell_size : 0;
-runtime/src/allocator/OldGenSpace.cpp: * mark-derived live_bytes (the post-mark shrink decision depends on it).
-runtime/src/allocator/OldGenSpace.cpp: * post-mark live_bytes attribution differs from the post-sweep value
 runtime/src/allocator/OldGenSpace.cpp: ? (allocated_bytes - post_sweep_live_bytes_) : 0;
 runtime/src/allocator/OldGenSpace.cpp: ? (allocated_bytes - post_sweep_live_bytes_) : 0;
 runtime/src/allocator/OldGenSpace.cpp: ? allocated_bytes - post_sweep_live_bytes_ : 0;

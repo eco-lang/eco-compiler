@@ -255,16 +255,18 @@ HPointer ensureFlat(HPointer s) {
 // Slicing
 // ============================================================================
 
-// Returns a new String holding the `n` UTF-16 units at `p`, or the Empty constant when `n` is 0.
-// The result is a UTF-8 leaf when the units are all ASCII, `n` is at most 512 (the stack buffer)
-// and UTF-8 Strings are enabled, so that an ASCII run cut from a UTF-16 String does not make the
-// operations it later enters widen; otherwise it is a UTF-16 String. The UTF-8 path copies the
-// units to the stack before it allocates; the UTF-16 path passes `p` to alloc::allocString, which
-// copies them after its allocation, so `p` must not point into the collected heap unless it is
-// into a large body. A GC point.
-static HPointer tinyFromU16(const u16* p, size_t n) {
+// Returns a new String holding the `n` UTF-16 units from unit `off` of `owner`, a UTF-16 leaf or a
+// large String. `n` must be positive. The result is a UTF-8 leaf when the units are all ASCII, `n`
+// is at most 512 (the stack buffer) and UTF-8 Strings are enabled, so that an ASCII run cut from a
+// UTF-16 String does not make the operations it later enters widen; otherwise it is a UTF-16
+// String. The UTF-8 path copies the units to the stack before it allocates. The UTF-16 path roots
+// `owner` across its allocation and reads the units afterwards from `owner` re-resolved, so a
+// collection there neither moves the source under the copy nor, for a large String, frees its
+// body. A GC point.
+static HPointer tinyFromFlat(HPointer owner, size_t off, size_t n) {
     auto& allocator = Allocator::instance();
-    if (n > 0 && n <= 512 && allocator.getConfig().utf8_strings_enabled) {
+    if (n <= 512 && allocator.getConfig().utf8_strings_enabled) {
+        const u16* p = flatStringChars(Allocator::resolveFast(owner)) + off;
         u16 acc = 0;
         for (size_t i = 0; i < n; ++i) acc |= p[i];
         if (acc < 0x80) {
@@ -273,7 +275,13 @@ static HPointer tinyFromU16(const u16* p, size_t n) {
             return makeUtf8LeafFromBytes(buf, static_cast<u32>(n));
         }
     }
-    return alloc::allocString(p, n);
+    alloc::BlankString out;
+    {
+        Elm::StackRootGuard guard(&owner);
+        out = alloc::allocStringBlank(n);
+    }
+    std::memcpy(out.chars, flatStringChars(Allocator::resolveFast(owner)) + off, n * sizeof(u16));
+    return out.hp;
 }
 
 HPointer slice(void* str, i64 start, i64 end) {
@@ -318,16 +326,8 @@ HPointer slice(void* str, i64 start, i64 end) {
 
     // A short range is copied: a slice object would cost about as much as the copy.
     if (slice_len <= allocator.getConfig().string_tiny_slice_limit) {
-        if (hdr->tag == Tag_String) {
-            ElmString* s = static_cast<ElmString*>(str);
-            // Known defect: breaks tinyFromU16's requirement on `p`; see `slice` in StringOps.hpp.
-            return tinyFromU16(s->chars + start, slice_len);
-        }
-        if (hdr->tag == Tag_LargeStringHeader) {
-            // The body is pinned: its chars stay put across tinyFromU16's allocation.
-            LargeStringHeader* h = static_cast<LargeStringHeader*>(str);
-            return tinyFromU16(largeStringChars(h) + start, slice_len);
-        }
+        if (hdr->tag == Tag_String || hdr->tag == Tag_LargeStringHeader)
+            return tinyFromFlat(allocator.wrap(str), static_cast<size_t>(start), slice_len);
         if (hdr->tag == Tag_StringSlice) {
             ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
             u32 baseOffset = slc->offset;
@@ -340,8 +340,8 @@ HPointer slice(void* str, i64 start, i64 end) {
                        static_cast<u64>(slice_len) <=
                    static_cast<u64>(static_cast<Header*>(baseObj)->size) &&
                    "slice range exceeds underlying leaf");
-            // Known defect when the base is a UTF-16 leaf: breaks tinyFromU16's requirement on `p`.
-            return tinyFromU16(flatStringChars(baseObj) + baseOffset + start, slice_len);
+            return tinyFromFlat(slc->base, static_cast<size_t>(baseOffset) + static_cast<size_t>(start),
+                                slice_len);
         }
         // A rope: skip `start` units of its segments and copy the next `slice_len`.
         HPointer srcHp = allocator.wrap(str);

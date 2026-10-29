@@ -638,3 +638,11 @@ loads the block-start header before the index lookup (a raw body is always track
 released differently, no release or PageWork call is added or reordered, and the sweep's slices under
 `promo_mu_` are unchanged (LOS blocks are never unswept, so they never enter it). **Verdict: no model
 change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/GCHelperPool.hpp` (**0a2658df8c77**); file `runtime/src/allocator/GCHelperPool.cpp` (**a55d63ce68aa**); file `runtime/src/allocator/GCFork.cpp` (**41c038ecc462**); file `runtime/src/allocator/PageWork.hpp` (**c36eade801c2**); file `runtime/src/allocator/PageWork.cpp` (**3e78830e5205**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29, after the two standalone harness projects were given `ECO_CHAR_CASE_EXPANSION` (their builds had failed since the flag landed on 2026-10-28): 141 rows as expected. The 9 `M6:TraceGangs` baseline rows are rejected at the first gang event: the fork harness now also runs a tenure gang (`eco-tenure0`, region mode default since 2026-10-09), which `TraceGangs` does not model. That is independent of this change, which alters comments only; see M6's entry.

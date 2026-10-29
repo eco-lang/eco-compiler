@@ -629,3 +629,42 @@ Change (plans/large-object-space.md, HEAP_080/HEAP_081): every old-gen-direct la
 Pins fired: regions `OGS.reset` (**08e1c6a83562**), `AL.acquireOldGenBlock` (**c06879029f66**); census `OldGenSpace.cpp` (**714b07d48107**).
 
 `reset` re-initializes the mutator-only `LargeObjectSpace` (`los_.init`): no lock, thread or fork state. `acquireOldGenBlock`'s O7 tail release is an ordinary `releaseOldGenBlock` under the already-held recursive `thread_mutex_` (same lock, same layer, HEAP_075 unchanged). **Verdict: no model change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `runtime/src/allocator/GCHelperPool.hpp` (**0a2658df8c77**); file `runtime/src/allocator/GCHelperPool.cpp` (**a55d63ce68aa**); file `runtime/src/allocator/GCFork.cpp` (**41c038ecc462**); file `runtime/src/allocator/TlaTrace.hpp` (**e351c414173c**).
+
+Change: comments and whitespace only, from the C++ re-commenting pass. No atomic step, lock, shared location or memory order changed. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. `tla-trace` was re-run after the change (see the entry's last line). **Verdict: no model change needed.**
+
+`tla-trace` 2026-10-29: 141 rows as expected; **9 `M6:TraceGangs` baseline rows FAIL (reject)**. In each the model accepts `minor` and then rejects the mutator's `gang.stop` of a gang whose member is `eco-tenure0`: the harness (`test/gc-heap-tsan`, gc-fork-trace) now runs the region nursery's tenure gang, which `TraceGangs` does not model. This is harness/model drift from the region-everywhere default (2026-10-09), unseen because `tla-trace` could not build from 2026-10-28 to 2026-10-29 and was not run before that; it is not caused by this comments-only change. Open: either pin the gangs harness to the legacy nursery or model the tenure gang. The `TracePool` rows all pass.
+
+## 2026-10-29 — Gangs: the 7c collector in every region minor, either registration order (TraceGangs on region-mode logs)
+
+Finding: the 9 `M6:TraceGangs` baseline rows rejected (entry above). The gangs harness runs the region
+nursery, so the log has the 7c tenure collector, which `TraceGangs.cfg` (`TwoGangs = FALSE`) did not
+model. With `TwoGangs` on, two real mismatches between `Gangs.tla` and the code remained:
+
+1. Every region minor starts with `tenureJoin` and ends with `tenureLaunch` (`ThreadLocalHeap::minorGC`:
+   `tenureJoin` before the copy, `tenureLaunch` from a scope guard on every return path, after the
+   cycle's step). The model did this only for the ordinary minors. It now also has: the job launched by
+   the minor before the cycle (`U_Pre`) and the t0 pause's join of it (`U_T0Join`); the closing pause's
+   launch (`U_CloseLaunch`); and the scheduled handoff's own pause, which runs at the next minor's
+   `stepMarkCycle` (`HandoffDue`), with its join and launch (`U_HandoffJoin`, `U_HandoffLaunch`). The
+   join is the procedure `TenureJoin` (`T_Join`, `T_Finish`), the old inline `U_Tenure`/`U_TFinish`.
+   No fork is modelled between the closing and the handoff pause (the harness never forks there).
+2. The registry order was fixed `[tn, cm]`. `bgRegistry()` is in construction order: the collector is
+   built by the first `tenureLaunch`, at the END of a region minor, the 5c gang by the first concurrent
+   t0, so when the first region minor also starts the cycle the 5c gang registers first. The gangs
+   harness does exactly that (its warm-up forces a cycle at the first minor), and its forks stopped the
+   5c gang before the collector. The order is now a variable `reg1`, either gang when `TwoGangs`,
+   chosen at `Init` (`R1`, `R2` derived from it), so every two-gang configuration checks both orders.
+
+`TraceGangs.tla`: `TwoGangs` comes from the log (a gang key that is neither `bgkey` nor `fgkey` is the
+collector's); `eco-tenure*` threads map to `tb1` / `ctb1`; `gang.launch` / `gang.refuse` / `gang.stop` /
+`gang.join` are matched for the gang they name; the first collector launch (before the log) is hidden,
+and so may be its member's start and exit when they predate the log.
+
+Results: `tla-check` M6 quick 48/48 and deep 18/18 as expected (every mutant still violates its
+invariant; `two_gangs_window`, `deep_two_gangs`, `deep_two_gangs_mut`, `deep_1cpu_two_gangs` pass in
+both registration orders); `tla-trace` M6 29/29 (every baseline accepted, every corruption rejected).
+No code defect: the code's behaviour was correct, the model was incomplete. **Verdict: model updated.**

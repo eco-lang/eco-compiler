@@ -41,6 +41,7 @@
 #include "allocator/Utf8Test.hpp"
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
+#include "allocator/GcSafetyReproTest.hpp"
 #include "allocator/CaseMapTest.hpp"
 #include "allocator/StringFormsCompareTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -1145,6 +1146,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite stringOpsTests("StringOps");
     registerStringOpsTests(stringOpsTests);
 
+    // GC-safety regressions from the runtime review, each forcing a collection at its one bad point
+    Testing::TestSuite gcSafetyReproTests("GcSafetyRepro");
+    registerGcSafetyReproTests(gcSafetyReproTests);
+
     // Char case-mapping tables and the Char value encoding (KERN_008)
     Testing::TestSuite caseMapTests("CaseMap");
     registerCaseMapTests(caseMapTests);
@@ -1355,6 +1360,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8Tests));
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
+    suite.add(std::move(gcSafetyReproTests));
     suite.add(std::move(caseMapTests));
     suite.add(std::move(stringFormsCompareTests));
     suite.add(std::move(listOpsTests));

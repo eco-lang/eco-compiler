@@ -44,10 +44,6 @@ CM == "cm"                              \* the 5c marker gang (eco-cmark)
 TN == "tn"                              \* the 7c tenure collector (eco-tenure)
 AllGangs  == {CM, TN}
 LiveGangs == IF TwoGangs THEN {CM, TN} ELSE {CM}
-\* bgRegistry() in construction order: the tenure collector is built at the
-\* first region minor, the 5c gang at the first concurrent t0.
-R1 == IF TwoGangs THEN TN ELSE CM
-R2 == CM
 ForkerId == IF Forker = "mut" THEN "mut" ELSE "host"
 BgIds  == IF B = 1 THEN {"bg1"} ELSE {"bg1", "bg2"}       \* 5c members (parent)
 CBgIds == IF B = 1 THEN {"cbg1"} ELSE {"cbg1", "cbg2"}    \* ... restarted by a mutator's child
@@ -78,9 +74,17 @@ variables
     fgGo      = FALSE,         \* the closing run started member 1, which has not finished
     hold      = [g \in AllGangs |-> FALSE],     \* fork_hold_ (CR-013/004: launch refuses)
     refused   = 0,             \* ghost: launches refused by a fork hold
-    fstop     = 0;             \* ghost: the 5c generation a pending foreign stop stopped (0: none)
+    fstop     = 0,             \* ghost: the 5c generation a pending foreign stop stopped (0: none)
+    \* bgRegistry() is in construction order. The tenure collector is built by the
+    \* first tenureLaunch, at the end of a region minor; the 5c gang by the first
+    \* concurrent t0. When the first region minor also starts the cycle, its t0
+    \* (stepMarkCycle/startMarkCycle) comes before the pause's tenureLaunch, so the
+    \* 5c gang registers first; otherwise the collector does. Both orders occur.
+    reg1      \in IF TwoGangs THEN {TN, CM} ELSE {CM};
 
 define
+    R1 == reg1                                   \* the gang registered first
+    R2 == IF TwoGangs /\ reg1 = TN THEN CM ELSE TN  \* ... and second (TwoGangs only)
     Parts(g) == IF g = CM
                 THEN IF world = "parent" THEN {"mut", "fg1"} \cup BgIds ELSE {"mut", "cfg1"} \cup CBgIds
                 ELSE IF world = "parent" THEN TnIds ELSE CTnIds
@@ -248,6 +252,26 @@ begin
     return;
 end procedure;
 
+\* NurserySpace::tenureJoin at a minor's start (tenure_help = 1), on the
+\* mutator: if the job is running, join it when its member has finished
+\* (finishedApprox), else stop it (late); if it is not running (a refused
+\* launch, or a fork hook stopped it: the orphan path, trap 25) there is
+\* nothing to join. Then finish the job in the pause if it is not done.
+procedure TenureJoin()
+begin
+  T_Join:
+    await Alive(self);
+    if running[TN] then
+        if finished[TN] >= NM(TN) then call Join(TN);
+        else call StopAndJoin(TN);
+        end if;
+    end if;
+  T_Finish:
+    await Alive(self);
+    if ~ctl[TN].done then work[TN] := 0; end if;
+    return;
+end procedure;
+
 \* The prepare handlers in reverse registration order (PrepareOrder; the
 \* pool's runs last and is M6a), fork, then the parent or the child branch.
 procedure ForkGangs()
@@ -336,12 +360,22 @@ end procedure;
 
 \* The heap's mutator: the t0 launch, Steps ordinary minor ends, then the
 \* closing step (its own reap / relaunch, then closingFinish), then the
-\* handoff. Each minor end: tenureJoin (7c), runCycleStepConcurrent's reap
-\* and relaunch (5c), tenureLaunch (7c). Between pauses it may fork
-\* (Forker = "mut") or call exit(), which does not return.
+\* handoff. With the 7c collector (TwoGangs) every one of these pauses is a
+\* region minor, which starts with tenureJoin and ends with tenureLaunch
+\* (ThreadLocalHeap::minorGC): the t0 pause joins the job the minor before
+\* the cycle launched, and the scheduled handoff runs in the minor after
+\* the closing one (CycleFinish::Schedule). Each ordinary minor: tenureJoin,
+\* runCycleStepConcurrent's reap and relaunch (5c), tenureLaunch. Between
+\* pauses it may fork (Forker = "mut") or call exit(), which does not return.
 fair process Mutator = "mut"
 variables k = 0, forked = FALSE;
 begin
+  U_Pre:                               \* 7c: the minor before the cycle ended with tenureLaunch
+    await Alive("mut");
+    if TwoGangs then call Launch(TN); end if;
+  U_T0Join:                            \* the t0 pause is a minor: tenureJoin first
+    await Alive("mut");
+    if TwoGangs then call TenureJoin(); end if;
   U_Launch:                            \* t0 pause: afterSnapshot -> launchBackground
     call Launch(CM);
   U_Launch2:                           \* ... and at the pause's end, tenureLaunch
@@ -362,14 +396,8 @@ begin
   U_Tenure:                            \* minor start: tenureJoin (tenure_help = 1)
     await Alive("mut");
     if exited then goto U_Exit;        \* exit() never returns to the program
-    elsif ~TwoGangs then goto U_Reap;
-    elsif ~running[TN] then goto U_TFinish;   \* orphan: a fork hook stopped it (trap 25)
-    elsif finished[TN] >= NM(TN) then call Join(TN);
-    else call StopAndJoin(TN);         \* late: the mutator's own stop
+    elsif TwoGangs then call TenureJoin();
     end if;
-  U_TFinish:                           \* finish the job here if it is not done, then merge
-    await Alive("mut");
-    if ~ctl[TN].done then work[TN] := 0; end if;
   U_Reap:                              \* minor end: runCycleStepConcurrent's reapBackground(false)
     call Reap(FALSE);
   U_Relaunch:                          \* stopped -> relaunch; the work is already in the deques
@@ -417,9 +445,18 @@ begin
   U_Drain:                             \* a stopped episode left work: runMarkers drains it
     await Alive("mut");
     if work[CM] > 0 then work[CM] := 0; end if;
+  U_CloseLaunch:                       \* 7c: the closing pause ends with tenureLaunch
+    await Alive("mut");
+    if TwoGangs then call Launch(TN); end if;
+  U_HandoffJoin:                       \* the handoff's pause is the next minor: tenureJoin
+    await Alive("mut");
+    if TwoGangs then call TenureJoin(); end if;
   U_Handoff:                           \* invariant HandoffClean is evaluated here
     await Alive("mut");
     skip;
+  U_HandoffLaunch:                     \* 7c: ... and it ends with tenureLaunch
+    await Alive("mut");
+    if TwoGangs then call Launch(TN); end if;
   U_Exit:
     await Alive("mut");
     skip;
@@ -505,9 +542,11 @@ end algorithm; *)
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
 VARIABLES pc, world, exited, reg, runM, bm, running, gen, joinedGen, finished, 
-          ctl, work, held, bgEp, fgGo, hold, refused, fstop, stack
+          ctl, work, held, bgEp, fgGo, hold, refused, fstop, reg1, stack
 
 (* define statement *)
+R1 == reg1
+R2 == IF TwoGangs /\ reg1 = TN THEN CM ELSE TN
 Parts(g) == IF g = CM
             THEN IF world = "parent" THEN {"mut", "fg1"} \cup BgIds ELSE {"mut", "cfg1"} \cup CBgIds
             ELSE IF world = "parent" THEN TnIds ELSE CTnIds
@@ -548,8 +587,8 @@ ChildHeldTenure == world = "child" => \A p \in TnIds : held[p] = 0
 VARIABLES mg, lg, jg, sg, sgen, wait, k, forked, seen, cseen
 
 vars == << pc, world, exited, reg, runM, bm, running, gen, joinedGen, 
-           finished, ctl, work, held, bgEp, fgGo, hold, refused, fstop, stack, 
-           mg, lg, jg, sg, sgen, wait, k, forked, seen, cseen >>
+           finished, ctl, work, held, bgEp, fgGo, hold, refused, fstop, reg1, 
+           stack, mg, lg, jg, sg, sgen, wait, k, forked, seen, cseen >>
 
 ProcSet == {"mut"} \cup (BgIds \cup TnIds) \cup {"fg1"} \cup (CBgIds \cup CTnIds) \cup {"cfg1"} \cup {"host"}
 
@@ -571,6 +610,7 @@ Init == (* Global variables *)
         /\ hold = [g \in AllGangs |-> FALSE]
         /\ refused = 0
         /\ fstop = 0
+        /\ reg1 \in IF TwoGangs THEN {TN, CM} ELSE {CM}
         (* Procedure Mark *)
         /\ mg = [ self \in ProcSet |-> defaultInitValue]
         (* Procedure Launch *)
@@ -590,7 +630,7 @@ Init == (* Global variables *)
         (* Process CBgMember *)
         /\ cseen = [self \in CBgIds \cup CTnIds |-> 0]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> CASE self = "mut" -> "U_Launch"
+        /\ pc = [self \in ProcSet |-> CASE self = "mut" -> "U_Pre"
                                         [] self \in BgIds \cup TnIds -> "B_Wait"
                                         [] self = "fg1" -> "FG_Wait"
                                         [] self \in CBgIds \cup CTnIds -> "CB_Wait"
@@ -631,15 +671,16 @@ K_Step(self) == /\ pc[self] = "K_Step"
                                                  /\ UNCHANGED << work, held >>
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, finished, bgEp, fgGo, hold, refused, 
-                                fstop, lg, jg, sg, sgen, wait, k, forked, seen, 
-                                cseen >>
+                                fstop, reg1, lg, jg, sg, sgen, wait, k, forked, 
+                                seen, cseen >>
 
 K_Again(self) == /\ pc[self] = "K_Again"
                  /\ pc' = [pc EXCEPT ![self] = "K_Step"]
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                 sg, sgen, wait, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                 lg, jg, sg, sgen, wait, k, forked, seen, 
+                                 cseen >>
 
 Mark(self) == K_Step(self) \/ K_Again(self)
 
@@ -680,8 +721,8 @@ L_Lock(self) == /\ pc[self] = "L_Lock"
                                       /\ UNCHANGED << running, stack, lg >>
                            /\ UNCHANGED refused
                 /\ UNCHANGED << world, exited, reg, runM, bm, joinedGen, held, 
-                                fgGo, hold, fstop, mg, jg, sg, sgen, wait, k, 
-                                forked, seen, cseen >>
+                                fgGo, hold, fstop, reg1, mg, jg, sg, sgen, 
+                                wait, k, forked, seen, cseen >>
 
 L_Late(self) == /\ pc[self] = "L_Late"
                 /\ Alive(self)
@@ -691,8 +732,8 @@ L_Late(self) == /\ pc[self] = "L_Late"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << world, exited, reg, runM, bm, gen, joinedGen, 
                                 finished, ctl, work, held, bgEp, fgGo, hold, 
-                                refused, fstop, mg, jg, sg, sgen, wait, k, 
-                                forked, seen, cseen >>
+                                refused, fstop, reg1, mg, jg, sg, sgen, wait, 
+                                k, forked, seen, cseen >>
 
 Launch(self) == L_Lock(self) \/ L_Late(self)
 
@@ -714,8 +755,8 @@ J_Lock(self) == /\ pc[self] = "J_Lock"
                                                       stack, jg >>
                 /\ UNCHANGED << world, exited, reg, runM, bm, gen, finished, 
                                 ctl, work, held, bgEp, fgGo, hold, refused, 
-                                fstop, mg, lg, sg, sgen, wait, k, forked, seen, 
-                                cseen >>
+                                fstop, reg1, mg, lg, sg, sgen, wait, k, forked, 
+                                seen, cseen >>
 
 J_Wait(self) == /\ pc[self] = "J_Wait"
                 /\ Alive(self) /\ bm[jg[self]] = "none" /\ finished[jg[self]] >= NM(jg[self])
@@ -726,8 +767,8 @@ J_Wait(self) == /\ pc[self] = "J_Wait"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << world, exited, reg, runM, bm, gen, finished, 
                                 ctl, work, held, bgEp, fgGo, hold, refused, 
-                                fstop, mg, lg, sg, sgen, wait, k, forked, seen, 
-                                cseen >>
+                                fstop, reg1, mg, lg, sg, sgen, wait, k, forked, 
+                                seen, cseen >>
 
 Join(self) == J_Lock(self) \/ J_Wait(self)
 
@@ -749,8 +790,8 @@ SJ_Lock(self) == /\ pc[self] = "SJ_Lock"
                             /\ UNCHANGED << stack, sg >>
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, work, held, bgEp, fgGo, 
-                                 hold, refused, mg, lg, jg, wait, k, forked, 
-                                 seen, cseen >>
+                                 hold, refused, reg1, mg, lg, jg, wait, k, 
+                                 forked, seen, cseen >>
 
 SJ_Wait(self) == /\ pc[self] = "SJ_Wait"
                  /\ IF MUTANT = "join_no_wait"
@@ -780,7 +821,8 @@ SJ_Wait(self) == /\ pc[self] = "SJ_Wait"
                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                  /\ UNCHANGED << world, exited, reg, runM, bm, gen, finished, 
                                  ctl, work, held, bgEp, fgGo, hold, refused, 
-                                 mg, lg, jg, wait, k, forked, seen, cseen >>
+                                 reg1, mg, lg, jg, wait, k, forked, seen, 
+                                 cseen >>
 
 StopAndJoin(self) == SJ_Lock(self) \/ SJ_Wait(self)
 
@@ -794,8 +836,8 @@ RP_Check(self) == /\ pc[self] = "RP_Check"
                              /\ UNCHANGED << stack, wait >>
                   /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                   joinedGen, finished, ctl, work, held, bgEp, 
-                                  fgGo, hold, refused, fstop, mg, lg, jg, sg, 
-                                  sgen, k, forked, seen, cseen >>
+                                  fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                  sg, sgen, k, forked, seen, cseen >>
 
 RP_Hint(self) == /\ pc[self] = "RP_Hint"
                  /\ Alive(self)
@@ -807,8 +849,8 @@ RP_Hint(self) == /\ pc[self] = "RP_Hint"
                             /\ UNCHANGED << stack, wait >>
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, jg, sg, 
-                                 sgen, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 sg, sgen, k, forked, seen, cseen >>
 
 RP_Join(self) == /\ pc[self] = "RP_Join"
                  /\ /\ jg' = [jg EXCEPT ![self] = CM]
@@ -819,8 +861,8 @@ RP_Join(self) == /\ pc[self] = "RP_Join"
                  /\ pc' = [pc EXCEPT ![self] = "J_Lock"]
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, sg, sgen, 
-                                 wait, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, sg, 
+                                 sgen, wait, k, forked, seen, cseen >>
 
 RP_Set(self) == /\ pc[self] = "RP_Set"
                 /\ Alive(self)
@@ -830,11 +872,53 @@ RP_Set(self) == /\ pc[self] = "RP_Set"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, finished, ctl, work, held, fgGo, 
-                                hold, refused, fstop, mg, lg, jg, sg, sgen, k, 
-                                forked, seen, cseen >>
+                                hold, refused, fstop, reg1, mg, lg, jg, sg, 
+                                sgen, k, forked, seen, cseen >>
 
 Reap(self) == RP_Check(self) \/ RP_Hint(self) \/ RP_Join(self)
                  \/ RP_Set(self)
+
+T_Join(self) == /\ pc[self] = "T_Join"
+                /\ Alive(self)
+                /\ IF running[TN]
+                      THEN /\ IF finished[TN] >= NM(TN)
+                                 THEN /\ /\ jg' = [jg EXCEPT ![self] = TN]
+                                         /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "Join",
+                                                                                  pc        |->  "T_Finish",
+                                                                                  jg        |->  jg[self] ] >>
+                                                                              \o stack[self]]
+                                      /\ pc' = [pc EXCEPT ![self] = "J_Lock"]
+                                      /\ UNCHANGED << sg, sgen >>
+                                 ELSE /\ /\ sg' = [sg EXCEPT ![self] = TN]
+                                         /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "StopAndJoin",
+                                                                                  pc        |->  "T_Finish",
+                                                                                  sgen      |->  sgen[self],
+                                                                                  sg        |->  sg[self] ] >>
+                                                                              \o stack[self]]
+                                      /\ sgen' = [sgen EXCEPT ![self] = 0]
+                                      /\ pc' = [pc EXCEPT ![self] = "SJ_Lock"]
+                                      /\ jg' = jg
+                      ELSE /\ pc' = [pc EXCEPT ![self] = "T_Finish"]
+                           /\ UNCHANGED << stack, jg, sg, sgen >>
+                /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                                joinedGen, finished, ctl, work, held, bgEp, 
+                                fgGo, hold, refused, fstop, reg1, mg, lg, wait, 
+                                k, forked, seen, cseen >>
+
+T_Finish(self) == /\ pc[self] = "T_Finish"
+                  /\ Alive(self)
+                  /\ IF ~ctl[TN].done
+                        THEN /\ work' = [work EXCEPT ![TN] = 0]
+                        ELSE /\ TRUE
+                             /\ work' = work
+                  /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
+                  /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                                  joinedGen, finished, ctl, held, bgEp, fgGo, 
+                                  hold, refused, fstop, reg1, mg, lg, jg, sg, 
+                                  sgen, wait, k, forked, seen, cseen >>
+
+TenureJoin(self) == T_Join(self) \/ T_Finish(self)
 
 G_Mark1(self) == /\ pc[self] = "G_Mark1"
                  /\ Alive(self)
@@ -846,8 +930,9 @@ G_Mark1(self) == /\ pc[self] = "G_Mark1"
                  /\ pc' = [pc EXCEPT ![self] = "G_Reg"]
                  /\ UNCHANGED << world, exited, reg, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                 sg, sgen, wait, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                 lg, jg, sg, sgen, wait, k, forked, seen, 
+                                 cseen >>
 
 G_Reg(self) == /\ pc[self] = "G_Reg"
                /\ Alive(self) /\ reg = "none"
@@ -855,8 +940,8 @@ G_Reg(self) == /\ pc[self] = "G_Reg"
                /\ pc' = [pc EXCEPT ![self] = "G_Hold"]
                /\ UNCHANGED << world, exited, runM, bm, running, gen, 
                                joinedGen, finished, ctl, work, held, bgEp, 
-                               fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                               sg, sgen, wait, k, forked, seen, cseen >>
+                               fgGo, hold, refused, fstop, reg1, stack, mg, lg, 
+                               jg, sg, sgen, wait, k, forked, seen, cseen >>
 
 G_Hold(self) == /\ pc[self] = "G_Hold"
                 /\ Alive(self)
@@ -868,8 +953,8 @@ G_Hold(self) == /\ pc[self] = "G_Hold"
                 /\ pc' = [pc EXCEPT ![self] = "G_Stop1"]
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, finished, ctl, work, held, bgEp, 
-                                fgGo, refused, fstop, stack, mg, lg, jg, sg, 
-                                sgen, wait, k, forked, seen, cseen >>
+                                fgGo, refused, fstop, reg1, stack, mg, lg, jg, 
+                                sg, sgen, wait, k, forked, seen, cseen >>
 
 G_Stop1(self) == /\ pc[self] = "G_Stop1"
                  /\ Alive(self)
@@ -886,8 +971,8 @@ G_Stop1(self) == /\ pc[self] = "G_Stop1"
                             /\ UNCHANGED << stack, sg, sgen >>
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, jg, wait, 
-                                 k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 wait, k, forked, seen, cseen >>
 
 G_Stop2(self) == /\ pc[self] = "G_Stop2"
                  /\ Alive(self)
@@ -904,8 +989,8 @@ G_Stop2(self) == /\ pc[self] = "G_Stop2"
                             /\ UNCHANGED << stack, sg, sgen >>
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, jg, wait, 
-                                 k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 wait, k, forked, seen, cseen >>
 
 G_Hold2(self) == /\ pc[self] = "G_Hold2"
                  /\ Alive(self)
@@ -917,8 +1002,8 @@ G_Hold2(self) == /\ pc[self] = "G_Hold2"
                  /\ pc' = [pc EXCEPT ![self] = "G_Lock1"]
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, refused, fstop, stack, mg, lg, jg, sg, 
-                                 sgen, wait, k, forked, seen, cseen >>
+                                 fgGo, refused, fstop, reg1, stack, mg, lg, jg, 
+                                 sg, sgen, wait, k, forked, seen, cseen >>
 
 G_Lock1(self) == /\ pc[self] = "G_Lock1"
                  /\ Alive(self) /\ bm[R1] = "none"
@@ -926,8 +1011,9 @@ G_Lock1(self) == /\ pc[self] = "G_Lock1"
                  /\ pc' = [pc EXCEPT ![self] = "G_Lock2"]
                  /\ UNCHANGED << world, exited, reg, runM, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                 sg, sgen, wait, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                 lg, jg, sg, sgen, wait, k, forked, seen, 
+                                 cseen >>
 
 G_Lock2(self) == /\ pc[self] = "G_Lock2"
                  /\ Alive(self)
@@ -939,8 +1025,9 @@ G_Lock2(self) == /\ pc[self] = "G_Lock2"
                  /\ pc' = [pc EXCEPT ![self] = "G_RunM"]
                  /\ UNCHANGED << world, exited, reg, runM, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                 sg, sgen, wait, k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                 lg, jg, sg, sgen, wait, k, forked, seen, 
+                                 cseen >>
 
 G_RunM(self) == /\ pc[self] = "G_RunM"
                 /\ Alive(self)
@@ -952,8 +1039,8 @@ G_RunM(self) == /\ pc[self] = "G_RunM"
                 /\ pc' = [pc EXCEPT ![self] = "G_Fork"]
                 /\ UNCHANGED << world, exited, reg, bm, running, gen, 
                                 joinedGen, finished, ctl, work, held, bgEp, 
-                                fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                sg, sgen, wait, k, forked, seen, cseen >>
+                                fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                lg, jg, sg, sgen, wait, k, forked, seen, cseen >>
 
 G_Fork(self) == /\ pc[self] = "G_Fork"
                 /\ \/ /\ hold' = [g \in AllGangs |-> FALSE]
@@ -974,16 +1061,16 @@ G_Fork(self) == /\ pc[self] = "G_Fork"
                                  /\ UNCHANGED << reg, runM, bm >>
                 /\ pc' = [pc EXCEPT ![self] = "G_Ret"]
                 /\ UNCHANGED << exited, gen, joinedGen, ctl, work, held, bgEp, 
-                                refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                                wait, k, forked, seen, cseen >>
+                                refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                                sgen, wait, k, forked, seen, cseen >>
 
 G_Ret(self) == /\ pc[self] = "G_Ret"
                /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                joinedGen, finished, ctl, work, held, bgEp, 
-                               fgGo, hold, refused, fstop, mg, lg, jg, sg, 
-                               sgen, wait, k, forked, seen, cseen >>
+                               fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                               sg, sgen, wait, k, forked, seen, cseen >>
 
 ForkGangs(self) == G_Mark1(self) \/ G_Reg(self) \/ G_Hold(self)
                       \/ G_Stop1(self) \/ G_Stop2(self) \/ G_Hold2(self)
@@ -996,8 +1083,8 @@ X_Reg(self) == /\ pc[self] = "X_Reg"
                /\ pc' = [pc EXCEPT ![self] = "X_Stop1"]
                /\ UNCHANGED << world, exited, runM, bm, running, gen, 
                                joinedGen, finished, ctl, work, held, bgEp, 
-                               fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                               sg, sgen, wait, k, forked, seen, cseen >>
+                               fgGo, hold, refused, fstop, reg1, stack, mg, lg, 
+                               jg, sg, sgen, wait, k, forked, seen, cseen >>
 
 X_Stop1(self) == /\ pc[self] = "X_Stop1"
                  /\ /\ sg' = [sg EXCEPT ![self] = R1]
@@ -1010,8 +1097,8 @@ X_Stop1(self) == /\ pc[self] = "X_Stop1"
                  /\ pc' = [pc EXCEPT ![self] = "SJ_Lock"]
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, jg, wait, 
-                                 k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 wait, k, forked, seen, cseen >>
 
 X_Stop2(self) == /\ pc[self] = "X_Stop2"
                  /\ Alive(self)
@@ -1028,8 +1115,8 @@ X_Stop2(self) == /\ pc[self] = "X_Stop2"
                             /\ UNCHANGED << stack, sg, sgen >>
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, mg, lg, jg, wait, 
-                                 k, forked, seen, cseen >>
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 wait, k, forked, seen, cseen >>
 
 X_Done(self) == /\ pc[self] = "X_Done"
                 /\ Alive(self)
@@ -1039,11 +1126,41 @@ X_Done(self) == /\ pc[self] = "X_Done"
                 /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
                 /\ UNCHANGED << world, runM, bm, running, gen, joinedGen, 
                                 finished, ctl, work, held, bgEp, fgGo, hold, 
-                                refused, fstop, mg, lg, jg, sg, sgen, wait, k, 
-                                forked, seen, cseen >>
+                                refused, fstop, reg1, mg, lg, jg, sg, sgen, 
+                                wait, k, forked, seen, cseen >>
 
 ExitGangs(self) == X_Reg(self) \/ X_Stop1(self) \/ X_Stop2(self)
                       \/ X_Done(self)
+
+U_Pre == /\ pc["mut"] = "U_Pre"
+         /\ Alive("mut")
+         /\ IF TwoGangs
+               THEN /\ /\ lg' = [lg EXCEPT !["mut"] = TN]
+                       /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Launch",
+                                                                 pc        |->  "U_T0Join",
+                                                                 lg        |->  lg["mut"] ] >>
+                                                             \o stack["mut"]]
+                    /\ pc' = [pc EXCEPT !["mut"] = "L_Lock"]
+               ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_T0Join"]
+                    /\ UNCHANGED << stack, lg >>
+         /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, joinedGen, 
+                         finished, ctl, work, held, bgEp, fgGo, hold, refused, 
+                         fstop, reg1, mg, jg, sg, sgen, wait, k, forked, seen, 
+                         cseen >>
+
+U_T0Join == /\ pc["mut"] = "U_T0Join"
+            /\ Alive("mut")
+            /\ IF TwoGangs
+                  THEN /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "TenureJoin",
+                                                                 pc        |->  "U_Launch" ] >>
+                                                             \o stack["mut"]]
+                       /\ pc' = [pc EXCEPT !["mut"] = "T_Join"]
+                  ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_Launch"]
+                       /\ stack' = stack
+            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                            joinedGen, finished, ctl, work, held, bgEp, fgGo, 
+                            hold, refused, fstop, reg1, mg, lg, jg, sg, sgen, 
+                            wait, k, forked, seen, cseen >>
 
 U_Launch == /\ pc["mut"] = "U_Launch"
             /\ /\ lg' = [lg EXCEPT !["mut"] = CM]
@@ -1054,8 +1171,8 @@ U_Launch == /\ pc["mut"] = "U_Launch"
             /\ pc' = [pc EXCEPT !["mut"] = "L_Lock"]
             /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                             joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                            hold, refused, fstop, mg, jg, sg, sgen, wait, k, 
-                            forked, seen, cseen >>
+                            hold, refused, fstop, reg1, mg, jg, sg, sgen, wait, 
+                            k, forked, seen, cseen >>
 
 U_Launch2 == /\ pc["mut"] = "U_Launch2"
              /\ Alive("mut")
@@ -1070,8 +1187,8 @@ U_Launch2 == /\ pc["mut"] = "U_Launch2"
                         /\ UNCHANGED << stack, lg >>
              /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                              joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                             hold, refused, fstop, mg, jg, sg, sgen, wait, k, 
-                             forked, seen, cseen >>
+                             hold, refused, fstop, reg1, mg, jg, sg, sgen, 
+                             wait, k, forked, seen, cseen >>
 
 U_MaybeFork == /\ pc["mut"] = "U_MaybeFork"
                /\ Alive("mut")
@@ -1092,55 +1209,25 @@ U_MaybeFork == /\ pc["mut"] = "U_MaybeFork"
                      /\ UNCHANGED <<stack, forked>>
                /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                joinedGen, finished, ctl, work, held, bgEp, 
-                               fgGo, hold, refused, fstop, mg, lg, jg, sg, 
-                               sgen, wait, k, seen, cseen >>
+                               fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                               sg, sgen, wait, k, seen, cseen >>
 
 U_Tenure == /\ pc["mut"] = "U_Tenure"
             /\ Alive("mut")
             /\ IF exited
                   THEN /\ pc' = [pc EXCEPT !["mut"] = "U_Exit"]
-                       /\ UNCHANGED << stack, jg, sg, sgen >>
-                  ELSE /\ IF ~TwoGangs
-                             THEN /\ pc' = [pc EXCEPT !["mut"] = "U_Reap"]
-                                  /\ UNCHANGED << stack, jg, sg, sgen >>
-                             ELSE /\ IF ~running[TN]
-                                        THEN /\ pc' = [pc EXCEPT !["mut"] = "U_TFinish"]
-                                             /\ UNCHANGED << stack, jg, sg, 
-                                                             sgen >>
-                                        ELSE /\ IF finished[TN] >= NM(TN)
-                                                   THEN /\ /\ jg' = [jg EXCEPT !["mut"] = TN]
-                                                           /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Join",
-                                                                                                     pc        |->  "U_TFinish",
-                                                                                                     jg        |->  jg["mut"] ] >>
-                                                                                                 \o stack["mut"]]
-                                                        /\ pc' = [pc EXCEPT !["mut"] = "J_Lock"]
-                                                        /\ UNCHANGED << sg, 
-                                                                        sgen >>
-                                                   ELSE /\ /\ sg' = [sg EXCEPT !["mut"] = TN]
-                                                           /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "StopAndJoin",
-                                                                                                     pc        |->  "U_TFinish",
-                                                                                                     sgen      |->  sgen["mut"],
-                                                                                                     sg        |->  sg["mut"] ] >>
-                                                                                                 \o stack["mut"]]
-                                                        /\ sgen' = [sgen EXCEPT !["mut"] = 0]
-                                                        /\ pc' = [pc EXCEPT !["mut"] = "SJ_Lock"]
-                                                        /\ jg' = jg
+                       /\ stack' = stack
+                  ELSE /\ IF TwoGangs
+                             THEN /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "TenureJoin",
+                                                                            pc        |->  "U_Reap" ] >>
+                                                                        \o stack["mut"]]
+                                  /\ pc' = [pc EXCEPT !["mut"] = "T_Join"]
+                             ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_Reap"]
+                                  /\ stack' = stack
             /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                             joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                            hold, refused, fstop, mg, lg, wait, k, forked, 
-                            seen, cseen >>
-
-U_TFinish == /\ pc["mut"] = "U_TFinish"
-             /\ Alive("mut")
-             /\ IF ~ctl[TN].done
-                   THEN /\ work' = [work EXCEPT ![TN] = 0]
-                   ELSE /\ TRUE
-                        /\ work' = work
-             /\ pc' = [pc EXCEPT !["mut"] = "U_Reap"]
-             /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
-                             joinedGen, finished, ctl, held, bgEp, fgGo, hold, 
-                             refused, fstop, stack, mg, lg, jg, sg, sgen, wait, 
-                             k, forked, seen, cseen >>
+                            hold, refused, fstop, reg1, mg, lg, jg, sg, sgen, 
+                            wait, k, forked, seen, cseen >>
 
 U_Reap == /\ pc["mut"] = "U_Reap"
           /\ /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Reap",
@@ -1151,7 +1238,7 @@ U_Reap == /\ pc["mut"] = "U_Reap"
           /\ pc' = [pc EXCEPT !["mut"] = "RP_Check"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, mg, lg, jg, sg, sgen, k, 
+                          hold, refused, fstop, reg1, mg, lg, jg, sg, sgen, k, 
                           forked, seen, cseen >>
 
 U_Relaunch == /\ pc["mut"] = "U_Relaunch"
@@ -1172,7 +1259,7 @@ U_Relaunch == /\ pc["mut"] = "U_Relaunch"
                          /\ UNCHANGED << stack, lg >>
               /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                               joinedGen, finished, ctl, work, held, fgGo, hold, 
-                              refused, fstop, mg, jg, sg, sgen, wait, k, 
+                              refused, fstop, reg1, mg, jg, sg, sgen, wait, k, 
                               forked, seen, cseen >>
 
 U_Next == /\ pc["mut"] = "U_Next"
@@ -1193,8 +1280,8 @@ U_Next == /\ pc["mut"] = "U_Next"
                                 /\ UNCHANGED << stack, lg >>
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, mg, jg, sg, sgen, wait, forked, 
-                          seen, cseen >>
+                          hold, refused, fstop, reg1, mg, jg, sg, sgen, wait, 
+                          forked, seen, cseen >>
 
 U_Close == /\ pc["mut"] = "U_Close"
            /\ /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Reap",
@@ -1205,7 +1292,7 @@ U_Close == /\ pc["mut"] = "U_Close"
            /\ pc' = [pc EXCEPT !["mut"] = "RP_Check"]
            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                            joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                           hold, refused, fstop, mg, lg, jg, sg, sgen, k, 
+                           hold, refused, fstop, reg1, mg, lg, jg, sg, sgen, k, 
                            forked, seen, cseen >>
 
 U_CloseRun == /\ pc["mut"] = "U_CloseRun"
@@ -1215,8 +1302,8 @@ U_CloseRun == /\ pc["mut"] = "U_CloseRun"
                     ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_Drain"]
               /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                               joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                              hold, refused, fstop, stack, mg, lg, jg, sg, 
-                              sgen, wait, k, forked, seen, cseen >>
+                              hold, refused, fstop, reg1, stack, mg, lg, jg, 
+                              sg, sgen, wait, k, forked, seen, cseen >>
 
 U_RunLock == /\ pc["mut"] = "U_RunLock"
              /\ Alive("mut")
@@ -1229,7 +1316,7 @@ U_RunLock == /\ pc["mut"] = "U_RunLock"
              /\ pc' = [pc EXCEPT !["mut"] = "U_Mark"]
              /\ UNCHANGED << world, exited, reg, bm, running, gen, joinedGen, 
                              finished, ctl, work, held, bgEp, hold, refused, 
-                             fstop, stack, mg, lg, jg, sg, sgen, wait, k, 
+                             fstop, reg1, stack, mg, lg, jg, sg, sgen, wait, k, 
                              forked, seen, cseen >>
 
 U_Mark == /\ pc["mut"] = "U_Mark"
@@ -1241,8 +1328,8 @@ U_Mark == /\ pc["mut"] = "U_Mark"
           /\ pc' = [pc EXCEPT !["mut"] = "K_Step"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, lg, jg, sg, sgen, wait, k, 
-                          forked, seen, cseen >>
+                          hold, refused, fstop, reg1, lg, jg, sg, sgen, wait, 
+                          k, forked, seen, cseen >>
 
 U_FgWait == /\ pc["mut"] = "U_FgWait"
             /\ Alive("mut") /\ (~fgGo \/ MUTANT = "run_no_wait")
@@ -1253,8 +1340,8 @@ U_FgWait == /\ pc["mut"] = "U_FgWait"
             /\ pc' = [pc EXCEPT !["mut"] = "U_Reap2"]
             /\ UNCHANGED << world, exited, reg, bm, running, gen, joinedGen, 
                             finished, ctl, work, held, bgEp, fgGo, hold, 
-                            refused, fstop, stack, mg, lg, jg, sg, sgen, wait, 
-                            k, forked, seen, cseen >>
+                            refused, fstop, reg1, stack, mg, lg, jg, sg, sgen, 
+                            wait, k, forked, seen, cseen >>
 
 U_Reap2 == /\ pc["mut"] = "U_Reap2"
            /\ /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Reap",
@@ -1265,7 +1352,7 @@ U_Reap2 == /\ pc["mut"] = "U_Reap2"
            /\ pc' = [pc EXCEPT !["mut"] = "RP_Check"]
            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                            joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                           hold, refused, fstop, mg, lg, jg, sg, sgen, k, 
+                           hold, refused, fstop, reg1, mg, lg, jg, sg, sgen, k, 
                            forked, seen, cseen >>
 
 U_Assert == /\ pc["mut"] = "U_Assert"
@@ -1277,8 +1364,8 @@ U_Assert == /\ pc["mut"] = "U_Assert"
             /\ pc' = [pc EXCEPT !["mut"] = "U_Drain"]
             /\ UNCHANGED << world, exited, reg, bm, running, gen, joinedGen, 
                             finished, ctl, work, held, bgEp, fgGo, hold, 
-                            refused, fstop, stack, mg, lg, jg, sg, sgen, wait, 
-                            k, forked, seen, cseen >>
+                            refused, fstop, reg1, stack, mg, lg, jg, sg, sgen, 
+                            wait, k, forked, seen, cseen >>
 
 U_Drain == /\ pc["mut"] = "U_Drain"
            /\ Alive("mut")
@@ -1286,20 +1373,66 @@ U_Drain == /\ pc["mut"] = "U_Drain"
                  THEN /\ work' = [work EXCEPT ![CM] = 0]
                  ELSE /\ TRUE
                       /\ work' = work
-           /\ pc' = [pc EXCEPT !["mut"] = "U_Handoff"]
+           /\ pc' = [pc EXCEPT !["mut"] = "U_CloseLaunch"]
            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                            joinedGen, finished, ctl, held, bgEp, fgGo, hold, 
-                           refused, fstop, stack, mg, lg, jg, sg, sgen, wait, 
-                           k, forked, seen, cseen >>
+                           refused, fstop, reg1, stack, mg, lg, jg, sg, sgen, 
+                           wait, k, forked, seen, cseen >>
+
+U_CloseLaunch == /\ pc["mut"] = "U_CloseLaunch"
+                 /\ Alive("mut")
+                 /\ IF TwoGangs
+                       THEN /\ /\ lg' = [lg EXCEPT !["mut"] = TN]
+                               /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Launch",
+                                                                         pc        |->  "U_HandoffJoin",
+                                                                         lg        |->  lg["mut"] ] >>
+                                                                     \o stack["mut"]]
+                            /\ pc' = [pc EXCEPT !["mut"] = "L_Lock"]
+                       ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_HandoffJoin"]
+                            /\ UNCHANGED << stack, lg >>
+                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                                 joinedGen, finished, ctl, work, held, bgEp, 
+                                 fgGo, hold, refused, fstop, reg1, mg, jg, sg, 
+                                 sgen, wait, k, forked, seen, cseen >>
+
+U_HandoffJoin == /\ pc["mut"] = "U_HandoffJoin"
+                 /\ Alive("mut")
+                 /\ IF TwoGangs
+                       THEN /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "TenureJoin",
+                                                                      pc        |->  "U_Handoff" ] >>
+                                                                  \o stack["mut"]]
+                            /\ pc' = [pc EXCEPT !["mut"] = "T_Join"]
+                       ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_Handoff"]
+                            /\ stack' = stack
+                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                                 joinedGen, finished, ctl, work, held, bgEp, 
+                                 fgGo, hold, refused, fstop, reg1, mg, lg, jg, 
+                                 sg, sgen, wait, k, forked, seen, cseen >>
 
 U_Handoff == /\ pc["mut"] = "U_Handoff"
              /\ Alive("mut")
              /\ TRUE
-             /\ pc' = [pc EXCEPT !["mut"] = "U_Exit"]
+             /\ pc' = [pc EXCEPT !["mut"] = "U_HandoffLaunch"]
              /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                              joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                             hold, refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                             wait, k, forked, seen, cseen >>
+                             hold, refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                             sgen, wait, k, forked, seen, cseen >>
+
+U_HandoffLaunch == /\ pc["mut"] = "U_HandoffLaunch"
+                   /\ Alive("mut")
+                   /\ IF TwoGangs
+                         THEN /\ /\ lg' = [lg EXCEPT !["mut"] = TN]
+                                 /\ stack' = [stack EXCEPT !["mut"] = << [ procedure |->  "Launch",
+                                                                           pc        |->  "U_Exit",
+                                                                           lg        |->  lg["mut"] ] >>
+                                                                       \o stack["mut"]]
+                              /\ pc' = [pc EXCEPT !["mut"] = "L_Lock"]
+                         ELSE /\ pc' = [pc EXCEPT !["mut"] = "U_Exit"]
+                              /\ UNCHANGED << stack, lg >>
+                   /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
+                                   joinedGen, finished, ctl, work, held, bgEp, 
+                                   fgGo, hold, refused, fstop, reg1, mg, jg, 
+                                   sg, sgen, wait, k, forked, seen, cseen >>
 
 U_Exit == /\ pc["mut"] = "U_Exit"
           /\ Alive("mut")
@@ -1307,13 +1440,14 @@ U_Exit == /\ pc["mut"] = "U_Exit"
           /\ pc' = [pc EXCEPT !["mut"] = "Done"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                          wait, k, forked, seen, cseen >>
+                          hold, refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                          sgen, wait, k, forked, seen, cseen >>
 
-Mutator == U_Launch \/ U_Launch2 \/ U_MaybeFork \/ U_Tenure \/ U_TFinish
-              \/ U_Reap \/ U_Relaunch \/ U_Next \/ U_Close \/ U_CloseRun
-              \/ U_RunLock \/ U_Mark \/ U_FgWait \/ U_Reap2 \/ U_Assert
-              \/ U_Drain \/ U_Handoff \/ U_Exit
+Mutator == U_Pre \/ U_T0Join \/ U_Launch \/ U_Launch2 \/ U_MaybeFork
+              \/ U_Tenure \/ U_Reap \/ U_Relaunch \/ U_Next \/ U_Close
+              \/ U_CloseRun \/ U_RunLock \/ U_Mark \/ U_FgWait \/ U_Reap2
+              \/ U_Assert \/ U_Drain \/ U_CloseLaunch \/ U_HandoffJoin
+              \/ U_Handoff \/ U_HandoffLaunch \/ U_Exit
 
 B_Wait(self) == /\ pc[self] = "B_Wait"
                 /\ Alive(self) /\ bm[GangOf(self)] = "none" /\ gen[GangOf(self)] # seen[self]
@@ -1321,8 +1455,8 @@ B_Wait(self) == /\ pc[self] = "B_Wait"
                 /\ pc' = [pc EXCEPT ![self] = "B_Run"]
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, finished, ctl, work, held, bgEp, 
-                                fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                sg, sgen, wait, k, forked, cseen >>
+                                fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                lg, jg, sg, sgen, wait, k, forked, cseen >>
 
 B_Run(self) == /\ pc[self] = "B_Run"
                /\ /\ mg' = [mg EXCEPT ![self] = GangOf(self)]
@@ -1333,8 +1467,8 @@ B_Run(self) == /\ pc[self] = "B_Run"
                /\ pc' = [pc EXCEPT ![self] = "K_Step"]
                /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                joinedGen, finished, ctl, work, held, bgEp, 
-                               fgGo, hold, refused, fstop, lg, jg, sg, sgen, 
-                               wait, k, forked, seen, cseen >>
+                               fgGo, hold, refused, fstop, reg1, lg, jg, sg, 
+                               sgen, wait, k, forked, seen, cseen >>
 
 B_Fin(self) == /\ pc[self] = "B_Fin"
                /\ Alive(self) /\ bm[GangOf(self)] = "none"
@@ -1343,8 +1477,8 @@ B_Fin(self) == /\ pc[self] = "B_Fin"
                /\ pc' = [pc EXCEPT ![self] = "B_Wait"]
                /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                joinedGen, ctl, work, held, bgEp, fgGo, hold, 
-                               refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                               wait, k, forked, seen, cseen >>
+                               refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                               sgen, wait, k, forked, seen, cseen >>
 
 BgMember(self) == B_Wait(self) \/ B_Run(self) \/ B_Fin(self)
 
@@ -1353,8 +1487,8 @@ FG_Wait == /\ pc["fg1"] = "FG_Wait"
            /\ pc' = [pc EXCEPT !["fg1"] = "FG_Run"]
            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                            joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                           hold, refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                           wait, k, forked, seen, cseen >>
+                           hold, refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                           sgen, wait, k, forked, seen, cseen >>
 
 FG_Run == /\ pc["fg1"] = "FG_Run"
           /\ /\ mg' = [mg EXCEPT !["fg1"] = CM]
@@ -1365,8 +1499,8 @@ FG_Run == /\ pc["fg1"] = "FG_Run"
           /\ pc' = [pc EXCEPT !["fg1"] = "K_Step"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, lg, jg, sg, sgen, wait, k, 
-                          forked, seen, cseen >>
+                          hold, refused, fstop, reg1, lg, jg, sg, sgen, wait, 
+                          k, forked, seen, cseen >>
 
 FG_Fin == /\ pc["fg1"] = "FG_Fin"
           /\ Alive("fg1")
@@ -1374,8 +1508,8 @@ FG_Fin == /\ pc["fg1"] = "FG_Fin"
           /\ pc' = [pc EXCEPT !["fg1"] = "FG_Wait"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, hold, 
-                          refused, fstop, stack, mg, lg, jg, sg, sgen, wait, k, 
-                          forked, seen, cseen >>
+                          refused, fstop, reg1, stack, mg, lg, jg, sg, sgen, 
+                          wait, k, forked, seen, cseen >>
 
 FgMember == FG_Wait \/ FG_Run \/ FG_Fin
 
@@ -1386,8 +1520,8 @@ CB_Wait(self) == /\ pc[self] = "CB_Wait"
                  /\ pc' = [pc EXCEPT ![self] = "CB_Run"]
                  /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                  joinedGen, finished, ctl, work, held, bgEp, 
-                                 fgGo, hold, refused, fstop, stack, mg, lg, jg, 
-                                 sg, sgen, wait, k, forked, seen >>
+                                 fgGo, hold, refused, fstop, reg1, stack, mg, 
+                                 lg, jg, sg, sgen, wait, k, forked, seen >>
 
 CB_Run(self) == /\ pc[self] = "CB_Run"
                 /\ /\ mg' = [mg EXCEPT ![self] = GangOf(self)]
@@ -1398,8 +1532,8 @@ CB_Run(self) == /\ pc[self] = "CB_Run"
                 /\ pc' = [pc EXCEPT ![self] = "K_Step"]
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, finished, ctl, work, held, bgEp, 
-                                fgGo, hold, refused, fstop, lg, jg, sg, sgen, 
-                                wait, k, forked, seen, cseen >>
+                                fgGo, hold, refused, fstop, reg1, lg, jg, sg, 
+                                sgen, wait, k, forked, seen, cseen >>
 
 CB_Fin(self) == /\ pc[self] = "CB_Fin"
                 /\ Alive(self) /\ bm[GangOf(self)] = "none"
@@ -1407,8 +1541,8 @@ CB_Fin(self) == /\ pc[self] = "CB_Fin"
                 /\ pc' = [pc EXCEPT ![self] = "CB_Wait"]
                 /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                                 joinedGen, ctl, work, held, bgEp, fgGo, hold, 
-                                refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                                wait, k, forked, seen, cseen >>
+                                refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                                sgen, wait, k, forked, seen, cseen >>
 
 CBgMember(self) == CB_Wait(self) \/ CB_Run(self) \/ CB_Fin(self)
 
@@ -1417,8 +1551,8 @@ CF_Wait == /\ pc["cfg1"] = "CF_Wait"
            /\ pc' = [pc EXCEPT !["cfg1"] = "CF_Run"]
            /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                            joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                           hold, refused, fstop, stack, mg, lg, jg, sg, sgen, 
-                           wait, k, forked, seen, cseen >>
+                           hold, refused, fstop, reg1, stack, mg, lg, jg, sg, 
+                           sgen, wait, k, forked, seen, cseen >>
 
 CF_Run == /\ pc["cfg1"] = "CF_Run"
           /\ /\ mg' = [mg EXCEPT !["cfg1"] = CM]
@@ -1429,8 +1563,8 @@ CF_Run == /\ pc["cfg1"] = "CF_Run"
           /\ pc' = [pc EXCEPT !["cfg1"] = "K_Step"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, fgGo, 
-                          hold, refused, fstop, lg, jg, sg, sgen, wait, k, 
-                          forked, seen, cseen >>
+                          hold, refused, fstop, reg1, lg, jg, sg, sgen, wait, 
+                          k, forked, seen, cseen >>
 
 CF_Fin == /\ pc["cfg1"] = "CF_Fin"
           /\ Alive("cfg1")
@@ -1438,8 +1572,8 @@ CF_Fin == /\ pc["cfg1"] = "CF_Fin"
           /\ pc' = [pc EXCEPT !["cfg1"] = "CF_Wait"]
           /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, 
                           joinedGen, finished, ctl, work, held, bgEp, hold, 
-                          refused, fstop, stack, mg, lg, jg, sg, sgen, wait, k, 
-                          forked, seen, cseen >>
+                          refused, fstop, reg1, stack, mg, lg, jg, sg, sgen, 
+                          wait, k, forked, seen, cseen >>
 
 CFgMember == CF_Wait \/ CF_Run \/ CF_Fin
 
@@ -1465,7 +1599,7 @@ H_Act == /\ pc["host"] = "H_Act"
                /\ UNCHANGED <<stack, sg, sgen>>
          /\ UNCHANGED << world, exited, reg, runM, bm, running, gen, joinedGen, 
                          finished, ctl, work, held, bgEp, fgGo, hold, refused, 
-                         fstop, mg, lg, jg, wait, k, forked, seen, cseen >>
+                         fstop, reg1, mg, lg, jg, wait, k, forked, seen, cseen >>
 
 Host == H_Act
 
@@ -1476,7 +1610,8 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
 Next == Mutator \/ FgMember \/ CFgMember \/ Host
            \/ (\E self \in ProcSet:  \/ Mark(self) \/ Launch(self) \/ Join(self)
                                      \/ StopAndJoin(self) \/ Reap(self)
-                                     \/ ForkGangs(self) \/ ExitGangs(self))
+                                     \/ TenureJoin(self) \/ ForkGangs(self)
+                                     \/ ExitGangs(self))
            \/ (\E self \in BgIds \cup TnIds: BgMember(self))
            \/ (\E self \in CBgIds \cup CTnIds: CBgMember(self))
            \/ Terminating
@@ -1484,12 +1619,13 @@ Next == Mutator \/ FgMember \/ CFgMember \/ Host
 Spec == /\ Init /\ [][Next]_vars
         /\ /\ WF_vars(Mutator)
            /\ WF_vars(Launch("mut"))
+           /\ WF_vars(TenureJoin("mut"))
            /\ WF_vars(ForkGangs("mut"))
            /\ WF_vars(ExitGangs("mut"))
-           /\ WF_vars(Join("mut"))
-           /\ WF_vars(StopAndJoin("mut"))
            /\ WF_vars(Reap("mut"))
            /\ WF_vars(Mark("mut"))
+           /\ WF_vars(Join("mut"))
+           /\ WF_vars(StopAndJoin("mut"))
         /\ \A self \in BgIds \cup TnIds : WF_vars(BgMember(self)) /\ WF_vars(Mark(self))
         /\ WF_vars(FgMember) /\ WF_vars(Mark("fg1"))
         /\ \A self \in CBgIds \cup CTnIds : WF_vars(CBgMember(self)) /\ WF_vars(Mark(self))

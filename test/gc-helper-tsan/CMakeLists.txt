@@ -10,6 +10,14 @@ cmake_minimum_required(VERSION 3.20)
 project(gc_helper_tsan CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The allocator's headers require ECO_CHAR_CASE_EXPANSION (CharValue.hpp); a standalone project does not
+# inherit the root CMakeLists.txt's definition, so it repeats its option with the same default.
+option(ECO_CHAR_CASE_EXPANSION "Elm-exact multi-code-point Char case mapping" ON)
+if(ECO_CHAR_CASE_EXPANSION)
+    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=1)
+else()
+    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=0)
+endif()
 set(ECO_ALLOC ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/src/allocator)
 add_executable(gc-helper-tsan
     harness.cpp

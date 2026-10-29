@@ -7,13 +7,19 @@
 (* against Gangs' Next in any order the log allows (TraceAnyOrder).        *)
 (*                                                                         *)
 (* Threads: "mut" (the heap's mutator), "host", the background member      *)
-(* (eco-cmark0: bg1) and the mark gang's member 1 (eco-mark1: fg1); in a   *)
-(* mutator's child, the members the child starts (cbg1, cfg1: threads     *)
-(* whose first event follows the fork's child handler). Events and the     *)
-(* model step each one is:                                                 *)
+(* (eco-cmark0: bg1), the 7c tenure collector's member (eco-tenure0: tb1)  *)
+(* and the mark gang's member 1 (eco-mark1: fg1); in a mutator's child,   *)
+(* the members the child starts (cbg1, ctb1, cfg1: threads whose first     *)
+(* event follows the fork's child handler). The harness runs the region   *)
+(* nursery, so the log has a tenure gang (TwoGangs): its key is the gang   *)
+(* key that is neither the header's bgkey nor its fgkey. The t0 pause      *)
+(* joins a tenure job launched before the log starts (U_Pre: its launch is *)
+(* hidden, and its member's events may predate the log, so they may be     *)
+(* hidden too). Events and the model step each one is:                    *)
 (*   minor, t0, t0end  a pause starts; the t0 snapshot (checks only)       *)
 (*   launch            launchBackground: U_Launch at t0, else a check      *)
-(*   gang.launch       GCBackgroundGang::launch's m_ section: L_Lock       *)
+(*   gang.launch       GCBackgroundGang::launch's m_ section: L_Lock, for   *)
+(*                     the gang the event names (5c, or 7c tenureLaunch)   *)
 (*   gang.refuse       launch refused under a fork hold: L_Lock's refusal  *)
 (*                     (register-fixes §7.2 step 4; the M1 projection then  *)
 (*                     logs the step as "running" with refused = TRUE and  *)
@@ -28,7 +34,8 @@
 (*   handoff           the handoff: U_Handoff                              *)
 (*   gang.start/exit   memberLoop around fn: B_Wait / B_Fin (FG_Wait /     *)
 (*                     FG_Fin for the closing run; checks for the drain's) *)
-(*   gang.stop         stopAndJoin's stop under m_: SJ_Lock                *)
+(*   gang.stop         stopAndJoin's stop under m_: SJ_Lock (either gang;  *)
+(*                     the mutator's tenureJoin stops a late 7c job)       *)
 (*   gang.join stop    joinLocked after its wait: SJ_Wait or J_Wait; a     *)
 (*                     stopAndJoin whose generation was joined and         *)
 (*                     relaunched by the owner returns with no gang.join   *)
@@ -53,6 +60,10 @@ TG_Forker == IF TraceHdr.forker = "host" THEN "host" ELSE "mut"
 TG_ForkAllowed == TraceHdr.forker # "none"
 TG_Order == TraceHdr.order
 TG_MarkThreads == TraceHdr.mark_threads
+\* The 7c tenure collector's gang key: any gang key but the 5c gang's and the mark gang's.
+IsTnKey(key) == key # TraceHdr.bgkey /\ key # TraceHdr.fgkey
+GangKey(key) == IF IsTnKey(key) THEN TN ELSE CM
+TG_TwoGangs == \E i \in 1..TraceLen : "gang" \in DOMAIN TraceLog[i] /\ IsTnKey(TraceLog[i].gang)
 \* A "step" ends every minor of the cycle, the closing one included.
 TG_Steps == TraceCount("step") - 1
 
@@ -63,11 +74,16 @@ TG_ChildAt == IF TraceCount("fork.mchild") + TraceCount("fork.bchild") = 0 THEN 
 StartsGang(u, key) == \E x \in 1..Len(TraceHdr.tev[u]) :
                         LET e == TraceLog[TraceHdr.tev[u][x]]
                         IN e.ev = "gang.start" /\ e.gang = key
+StartsTn(u) == \E x \in 1..Len(TraceHdr.tev[u]) :
+                 LET e == TraceLog[TraceHdr.tev[u][x]]
+                 IN e.ev = "gang.start" /\ IsTnKey(e.gang)
 \* The model's process for each thread of the log.
 TG_P == [u \in TraceThreads |->
             IF u \in {"mut", "host"} THEN u
             ELSE IF StartsGang(u, TraceHdr.bgkey)
                  THEN IF TraceHdr.tev[u][1] > TG_ChildAt THEN "cbg1" ELSE "bg1"
+            ELSE IF StartsTn(u)
+                 THEN IF TraceHdr.tev[u][1] > TG_ChildAt THEN "ctb1" ELSE "tb1"
                  ELSE IF TraceHdr.tev[u][1] > TG_ChildAt THEN "cfg1" ELSE "fg1"]
 
 EpName(x) == CASE x = "Running" -> "running" [] x = "Finished" -> "finished" [] OTHER -> "none"
@@ -75,11 +91,12 @@ EpName(x) == CASE x = "Running" -> "running" [] x = "Finished" -> "finished" [] 
 \* ---- matched steps ---------------------------------------------------------
 Matched(u, e) ==
   LET p == TG_P[u] IN
-  CASE e.ev = "minor" -> p = "mut" /\ pc["mut"] \in {"U_Launch", "U_Tenure", "U_Handoff"} /\ UNCHANGED vars
+  CASE e.ev = "minor" -> p = "mut" /\ pc["mut"] \in {"U_T0Join", "U_Launch", "U_Tenure", "U_HandoffJoin", "U_Handoff"}
+                         /\ UNCHANGED vars
     [] e.ev \in {"t0", "t0end"} -> pc["mut"] = "U_Launch" /\ UNCHANGED vars
     [] e.ev = "launch" -> IF pc["mut"] = "U_Launch" THEN U_Launch ELSE pc["mut"] = "L_Lock" /\ UNCHANGED vars
-    [] e.ev = "gang.launch" -> p = "mut" /\ lg["mut"] = CM /\ ~hold[CM] /\ L_Lock("mut")
-    [] e.ev = "gang.refuse" -> p = "mut" /\ lg["mut"] = CM /\ hold[CM] /\ L_Lock("mut")
+    [] e.ev = "gang.launch" -> p = "mut" /\ lg["mut"] = GangKey(e.gang) /\ ~hold[lg["mut"]] /\ L_Lock("mut")
+    [] e.ev = "gang.refuse" -> p = "mut" /\ lg["mut"] = GangKey(e.gang) /\ hold[lg["mut"]] /\ L_Lock("mut")
     [] e.ev = "relaunch" -> U_Relaunch /\ pc'["mut"] = "L_Lock"
     [] e.ev = "reap" -> ctl[CM].done = e.done /\ wait["mut"] = e.wait /\ RP_Set("mut")
     [] e.ev = "step" -> (IF e.refused THEN bgEp = "None" ELSE EpName(bgEp) = e.ep) /\ U_Next
@@ -89,20 +106,21 @@ Matched(u, e) ==
                                ELSE pc["mut"] = "U_Drain" /\ UNCHANGED vars
     [] e.ev = "closing" -> U_Drain
     [] e.ev = "handoff" -> U_Handoff
-    [] e.ev = "gang.start" /\ e.gang = TraceHdr.bgkey ->
-            IF p = "bg1" THEN B_Wait(p) ELSE p = "cbg1" /\ CB_Wait(p)
+    [] e.ev = "gang.start" /\ e.gang # TraceHdr.fgkey ->    \* a background member, 5c or 7c
+            IF p \in {"bg1", "tb1"} THEN B_Wait(p) ELSE p \in {"cbg1", "ctb1"} /\ CB_Wait(p)
     [] e.ev = "gang.start" ->                               \* the mark gang's member 1
             IF fgGo /\ pc[p] \in {"FG_Wait", "CF_Wait"}
             THEN IF p = "fg1" THEN FG_Wait ELSE CF_Wait
             ELSE pc["mut"] = "U_Drain" /\ UNCHANGED vars      \* the drain's run
-    [] e.ev = "gang.exit" /\ e.gang = TraceHdr.bgkey ->
-            IF p = "bg1" THEN B_Fin(p) ELSE p = "cbg1" /\ CB_Fin(p)
+    [] e.ev = "gang.exit" /\ e.gang # TraceHdr.fgkey ->
+            IF p \in {"bg1", "tb1"} THEN B_Fin(p) ELSE p \in {"cbg1", "ctb1"} /\ CB_Fin(p)
     [] e.ev = "gang.exit" ->
             IF pc[p] \in {"FG_Fin", "CF_Fin"}
             THEN IF p = "fg1" THEN FG_Fin ELSE CF_Fin
             ELSE pc["mut"] = "U_Drain" /\ UNCHANGED vars
-    [] e.ev = "gang.stop" -> SJ_Lock(p) /\ pc'[p] = "SJ_Wait"
-    [] e.ev = "gang.join" -> IF e.stop THEN SJ_Wait(p) ELSE J_Wait(p)
+    [] e.ev = "gang.stop" -> sg[p] = GangKey(e.gang) /\ SJ_Lock(p) /\ pc'[p] = "SJ_Wait"
+    [] e.ev = "gang.join" -> IF e.stop THEN sg[p] = GangKey(e.gang) /\ SJ_Wait(p)
+                             ELSE jg[p] = GangKey(e.gang) /\ J_Wait(p)
     [] e.ev = "stop" -> UNCHANGED vars
     [] e.ev = "fork.mprep" -> IF PrepareOrder = "mark_first" THEN G_Mark1(p) ELSE G_RunM(p)
     [] e.ev = "fork.bgreg" -> G_Reg(p)
@@ -116,7 +134,13 @@ Matched(u, e) ==
 
 \* ---- hidden steps: model steps the code does not log ----------------------
 Hidden ==
-    \/ U_Launch2 \/ U_MaybeFork \/ U_Tenure \/ U_TFinish \/ U_Reap
+    \/ U_Pre \/ U_T0Join \/ U_Launch2 \/ U_MaybeFork \/ U_Tenure \/ U_Reap
+    \/ U_CloseLaunch \/ U_HandoffJoin \/ U_HandoffLaunch
+    \/ T_Join("mut") \/ T_Finish("mut")                         \* tenureJoin's decision and finish
+    \* The tenure job launched before the log (U_Pre, the first 7c launch), and its
+    \* member's start and exit when they predate the log.
+    \/ gen[TN] = 0 /\ lg["mut"] = TN /\ L_Lock("mut")
+    \/ \E p \in TnIds : gen[TN] = 1 /\ (B_Wait(p) \/ B_Fin(p))
     \/ U_Relaunch /\ pc'["mut"] # "L_Lock"
     \/ U_Close \/ U_CloseRun \/ U_Mark \/ U_Reap2 \/ U_Assert \/ U_Exit
     \/ MarkThreads = 1 /\ (U_RunLock \/ U_FgWait)             \* run(n = 1) logs no gang.run
@@ -130,8 +154,8 @@ Hidden ==
           \/ PrepareOrder = "mark_first" /\ G_RunM(p)
           \/ G_Stop1(p) \/ G_Stop2(p) \/ G_Lock2(p) \/ G_Ret(p)
     \/ \E p \in ParentParts \cup ChildParts : K_Step(p) \/ K_Again(p)
-    \/ \E p \in BgIds : B_Run(p)
-    \/ \E p \in CBgIds : CB_Run(p)
+    \/ \E p \in BgIds \cup TnIds : B_Run(p)
+    \/ \E p \in CBgIds \cup CTnIds : CB_Run(p)
     \/ FG_Run \/ CF_Run
     \/ H_Act
 

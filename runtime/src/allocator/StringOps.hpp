@@ -37,8 +37,7 @@
 // allocation. Most such functions also accept null and treat it as the empty String; those that do
 // not say so. A function that allocates keeps the operands it still needs alive across its own
 // allocations, so the caller need not root them for its sake, except where its comment says
-// otherwise; the caller must root any other HPointer it holds across the call. `slice` has a known
-// defect on one path, where it reads its source after allocating (see its comment). A raw pointer
+// otherwise; the caller must root any other HPointer it holds across the call. A raw pointer
 // into a String's payload that this file hands out is valid until the next allocation, except that
 // one into a large String's or large Bytes' body stays valid while that object is live.
 
@@ -581,11 +580,6 @@ HPointer join(void* sep, HPointer stringList);
 // source: it is a UTF-8 view of a UTF-8 form, a slice of a flat form or of a slice's base, and,
 // for a rope, the slice of the child that holds the range, or a new rope joining the slices of
 // both children when the range spans them. A GC point.
-//
-// Known defect: a tiny range that becomes a UTF-16 String (non-ASCII, over 512 units, or UTF-8
-// Strings disabled), taken from a UTF-16 leaf or a slice of one, is read from the source after the
-// new String's allocation; if that allocation collects, the result may hold stale units. Rooting
-// `str` does not prevent this.
 HPointer slice(void* str, i64 start, i64 end);
 
 // Returns the first `n` units of `str`, or the Empty constant when `n` is not positive. Formed as

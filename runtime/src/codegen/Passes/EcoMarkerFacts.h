@@ -53,16 +53,18 @@ namespace eco::markers {
  */
 enum class Hoist { FromDecl, Leaf, NotLeaf };
 
-// Returns whether `c` is one of the list-cursor functions that
+// Returns whether `c` is one of the list-cursor markers that
 // `EcoListCursor` emits, all of which both views treat as leaf.
 //
 // The `__eco_list_cur*` and `__eco_list_step_*_inline` markers are declared
-// without gc-leaf and expand into loads. `eco_list_pos_view` is a runtime
-// function, not a marker, and is in the set as well.
+// without gc-leaf and expand into loads. `eco_list_pos_view`, the runtime
+// function the pass also emits, is not in the set: it allocates a chunk view
+// when idx > 0 and so can collect, and it is classified by its declaration,
+// which is not gc-leaf.
 inline bool isCursorMarker(llvm::StringRef c) {
     return c.starts_with("__eco_list_cur") ||
            c == "__eco_list_step_node_inline" ||
-           c == "__eco_list_step_idx_inline" || c == "eco_list_pos_view";
+           c == "__eco_list_step_idx_inline";
 }
 
 // Returns whether `c` is one of the list scratch-stack runtime calls that

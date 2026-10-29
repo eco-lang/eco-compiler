@@ -1,1 +1,0 @@
-* Each thread has its own RootSet in its NurserySpace, so no mutex is needed.

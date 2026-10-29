@@ -554,3 +554,9 @@ Also pinned for W3: region `OGS.lazySweep` (**f2052ad635f1**). Only the legacy i
 block (`kLosRaw`) skips the header load before its index lookup. The mark-byte reads and clears W3
 reduces (`testAndClearMarkBitInBlock`, the gap sweep's relaxed word loads) are untouched, and LOS blocks
 are never unswept, so the sweep never walks them. **Verdict: no driver change needed.**
+
+## 2026-10-29 — comments-only re-commenting pass over runtime/src (test/tla/README.md "The canary")
+
+Pins fired: file `MarkWork.hpp` (**954ac6c39d76**, W1 W2); `MinorWork.hpp` (**e16cf056dff2**, W3 W5); `BitmapScan.hpp` (**3c5e8cf1ea55**, W3 W4); `ReservedArray.hpp` (**d191396a3ab5**, W4); `TenureWork.hpp` (**41f08ce196e3**, W5 w_running_chain); `GCHelperPool.hpp` (**0a2658df8c77**) and `GCHelperPool.cpp` (**a55d63ce68aa**) (w_pool_done w_running_chain); `PageWork.cpp` (**3e78830e5205**, w_pool_done).
+
+Change: comments and whitespace only. Method: the snapshot `snapshots/pre-repro-fixes-2026-10-28.tgz` reproduces every one of these pins' recorded hashes, so it is the audited baseline. Each file was compared with it after stripping comments (`gcc -fpreprocessed -dD -E -P`) and collapsing whitespace: the code is identical. Grep pins that fired matched comment lines only. MAPPING.md cites the tree of 2026-09-28/29 by line number and names functions because lines drift; no function or variable named here was renamed. The code the drivers reduce is byte-identical once comments are removed. GenMC is not installed here; audited by that comparison. **Verdict: no driver change needed.**
