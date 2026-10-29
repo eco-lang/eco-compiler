@@ -1,8 +1,4 @@
 //===- EcoRunner.cpp - In-process execution engine for Eco MLIR -----------===//
-//
-// Implementation of the EcoRunner API for running Eco dialect MLIR code
-// directly within a test process.
-//
 //===----------------------------------------------------------------------===//
 
 #include "EcoRunner.hpp"
@@ -42,10 +38,13 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/MemoryBuffer.h"
 
-// On Windows clang-cl's __attribute__((weak)) on a function declaration
-// emits a COMDAT weak external; /WHOLEARCHIVE then surfaces duplicates
-// across every TU that has the decl. Plain externs + the /alternatename
-// fallback in eco_order_weak_stub_win32.cpp keep both symbols resolvable.
+// The kernels' GC-root registration hooks, which a run calls if they are defined. Outside Windows they are weak, so
+// a binary without the kernel that defines one links, and the address tested before the call is null.
+//
+// On Windows clang-cl turns a weak function declaration into a COMDAT weak external, and /WHOLEARCHIVE then reports
+// a duplicate for every translation unit that declares it, so these are plain declarations there. Only
+// `Eco_Kernel_Order_register_gc_roots` has a fallback, the /alternatename default in eco_order_weak_stub_win32.cpp;
+// `Eco_Kernel_register_all_gc_roots` must be defined by something linked in.
 #if defined(_WIN32)
 extern "C" void Eco_Kernel_register_all_gc_roots();
 extern "C" void Eco_Kernel_Order_register_gc_roots();
@@ -64,6 +63,8 @@ extern "C" __attribute__((weak)) void Eco_Kernel_Order_register_gc_roots();
 #include "llvm/Analysis/TargetLibraryInfo.h"
 
 namespace eco { void linkEcoGCStrategy(); }
+/// A static object whose constructor calls `eco::linkEcoGCStrategy`, so that the file registering Eco's GC strategy
+/// with LLVM is linked into any binary that contains this one, even from a static library.
 static struct EcoGCStrategyLinker {
     EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
 } ecoGCStrategyLinker;
@@ -87,8 +88,9 @@ namespace eco {
 
 namespace {
 
-/// Thread-local capture buffer.
+/// The calling thread's capture buffer, which is that thread's print destination while it captures.
 thread_local std::ostringstream tl_capture_buffer;
+/// Whether the calling thread is between `startOutputCapture` and `stopOutputCapture`.
 thread_local bool tl_capturing = false;
 
 } // namespace
@@ -117,24 +119,25 @@ bool isCapturingOutput() {
 // EcoRunner Implementation
 //===----------------------------------------------------------------------===//
 
+/// The work of an `EcoRunner`, kept out of the header so that it need not include MLIR or LLVM. It holds no state of
+/// its own; each run takes the runner's options as an argument.
 class EcoRunner::Impl {
 public:
+    /// Initializes LLVM's native target if nothing has, and outside Windows sets `SIGPIPE` to be ignored.
     Impl() {
         initializeLLVM();
 #if !defined(_WIN32)
-        // Like eco_entry.cpp: a write to a closed pipe must return EPIPE to the
-        // kernel write path, not kill the process (plans/eco-system-library.md
-        // Phase 1 step 8g, review R1.15).
+        // A write to a closed pipe must fail with EPIPE in the kernel's write path, not kill the process.
         std::signal(SIGPIPE, SIG_IGN);
 #endif
     }
 
     ~Impl() = default;
 
+    /// Does `EcoRunner::run` for `source` with `options`.
     RunResult run(const std::string& source, const Options& options) {
         RunResult result;
 
-        // Create MLIR context for this run
         DialectRegistry registry;
         eco::registerRequiredDialects(registry);
 
@@ -142,25 +145,22 @@ public:
         eco::loadRequiredDialects(context);
         context.allowUnregisteredDialects();
 
-        // Parse and verify MLIR source
         auto module = parseMLIR(context, source);
         if (!module) {
             result.errorMessage = "Failed to parse or verify MLIR source";
             return result;
         }
 
-        // Run the lowering pipeline
         if (!runPipeline(*module, options)) {
             result.errorMessage = "Lowering pipeline failed";
             return result;
         }
 
-        // JIT execute
         return executeJIT(*module, options);
     }
 
+    /// Does `EcoRunner::runFile` for `filePath` with `options`.
     RunResult runFile(const std::string& filePath, const Options& options) {
-        // Read file contents
         auto fileOrErr = llvm::MemoryBuffer::getFile(filePath);
         if (!fileOrErr) {
             RunResult result;
@@ -172,8 +172,10 @@ public:
     }
 
 private:
+    /// Set once LLVM's native target has been initialized in this process.
     static std::once_flag llvmInitFlag_;
 
+    /// Initializes LLVM's native target and its assembly printer, once per process.
     static void initializeLLVM() {
         std::call_once(llvmInitFlag_, []() {
             llvm::InitializeNativeTarget();
@@ -181,6 +183,8 @@ private:
         });
     }
 
+    /// Parses and verifies `source` as a module in `context`, and returns it, or null if it is not a valid module.
+    /// Parse errors are reported through `context`'s diagnostic handler.
     OwningOpRef<ModuleOp> parseMLIR(MLIRContext& context, const std::string& source) {
         llvm::SourceMgr sourceMgr;
         auto memBuffer = llvm::MemoryBuffer::getMemBuffer(source, "eco_runner_input");
@@ -188,27 +192,28 @@ private:
         return parseSourceFile<ModuleOp>(sourceMgr, &context);
     }
 
+    /// Lowers `module` in place to the LLVM dialect, and returns whether every pass succeeded. `options` does not
+    /// affect the lowering.
     bool runPipeline(ModuleOp module, const Options& options) {
         (void)options;
         PassManager pm(module->getName());
 
-        // Use the shared pipeline from EcoPipeline.cpp
+        // Default pipeline options: open world, so no reachability pass and no closed-world capacity planning.
         eco::EcoPipelineOptions pipeOpts;
         eco::buildEcoToLLVMPipeline(pm, pipeOpts);
 
         return succeeded(pm.run(module));
     }
 
+    /// Compiles the lowered `module`, prepares the runtime, and calls `main`, as `EcoRunner::run` describes.
     RunResult executeJIT(ModuleOp module, const Options& options) {
         RunResult result;
 
-        // Register translations
         registerBuiltinDialectTranslation(*module->getContext());
         registerLLVMDialectTranslation(*module->getContext());
 
-        // Set up EcoJIT with statepoint conversion + optional optimization.
-        // The transformer routes through runEcoBackend(JITInvokePacked) so JIT
-        // and AOT share one entry point for RS4GC + FP + opt.
+        // The transformer runs the module through `runEcoBackend` as a JIT job, with frame-pointer attributes. It
+        // must own what it captures, because `create` calls it after this statement ends.
         eco::EcoJITOptions jitOptions;
         bool enableOpt = options.enableOpt;
         jitOptions.transformer = [enableOpt](llvm::Module *m) -> llvm::Error {
@@ -230,25 +235,21 @@ private:
 
         auto& engine = maybeEngine.get();
 
-        // Register runtime symbols
         eco::registerRuntimeSymbols(*engine);
 
-        // Initialize runtime
         Elm::Allocator::instance().initialize();
         Elm::Allocator::instance().initThread();
 
-        // Register Eco kernel GC roots (MVar, Runtime saved-state).
-        // Weak symbol: only present when the Eco kernel is linked in.
+        // Always true on Windows, where the declaration is not weak.
         if (Eco_Kernel_register_all_gc_roots)
             Eco_Kernel_register_all_gc_roots();
 
-        // Register Order singleton roots independently of the Eco aggregator —
-        // Order lives in ElmKernel which IS linked into the JIT, so this hook
-        // fires even when EcoKernel isn't linked (weak just for safety).
+        // A separate hook, so that these roots are registered even when the hook above is absent. When both are
+        // linked, the hook above has already called this one, so it runs twice.
         if (Eco_Kernel_Order_register_gc_roots)
             Eco_Kernel_Order_register_gc_roots();
 
-        // Initialize globals if present
+        // A raw lookup, so this runs before the module's initializers, which `invokePacked` runs first.
         auto initGlobalsSymbol = engine->lookup("__eco_init_globals");
         if (initGlobalsSymbol) {
             auto initGlobalsFn = reinterpret_cast<void(*)()>(initGlobalsSymbol.get());
@@ -257,10 +258,9 @@ private:
             llvm::consumeError(initGlobalsSymbol.takeError());
         }
 
-        // Register effect managers
         eco_register_all_effect_managers();
 
-        // Parse stack maps from JIT'd code for GC root discovery.
+        // Looking up `main` compiles the module, so its stack maps can be read after it.
         {
             auto mainLookup = engine->lookup("main");
             if (mainLookup) {
@@ -273,26 +273,20 @@ private:
             }
         }
 
-        // Start output capture if requested
         if (options.captureOutput) {
             startOutputCapture();
         }
 
-        // Each run starts with exit code 0 (Phase 2 step 2): a previous run in
-        // this process must not leak its setExitCode into the next.
         eco_set_exit_code(0);
 
-        // Invoke main
         int64_t returnValue = 0;
         void* args[] = { &returnValue };
         auto error = engine->invokePacked("main", args);
 
-        // Stop output capture
         if (options.captureOutput) {
             result.output = stopOutputCapture();
         }
 
-        // Cleanup
         Elm::Allocator::instance().cleanupThread();
 
         if (error) {
@@ -324,11 +318,7 @@ EcoRunner::EcoRunner(EcoRunner&&) noexcept = default;
 EcoRunner& EcoRunner::operator=(EcoRunner&&) noexcept = default;
 
 void EcoRunner::reset() {
-    // Reset the allocator to a clean heap running the PRODUCTION configuration
-    // (plans/region-nursery-everywhere.md Phase 2). Without a config, reset()
-    // keeps config_, and an E2E child forked from the test process inherits
-    // whatever the last in-process unit test installed (it was the legacy
-    // nursery for every E2E program until 2026-10-09).
+    // Pass a configuration: without one the allocator keeps the current one. The helper jitter is not used here.
     uint32_t jitter = 0;
     const Elm::HeapConfig cfg = Elm::Allocator::environmentConfig(Elm::HeapConfig(), jitter);
     Elm::AllocatorTestAccess::reset(Elm::Allocator::instance(), &cfg);

@@ -1,18 +1,23 @@
 //===- TaskBinding.hpp - Generic Task_Binding helper -----------------------===//
 //
-// `makeBinding<Body>(captured)` packages a synchronous body function as an
-// Elm Task_Binding so the syscall / blocking work happens INSIDE the body —
-// when the scheduler steps the binding — rather than at the kernel call
-// site. Mandated for all Task-returning IO kernels by KERNEL_TASK_IO_001
-// (see design_docs/invariants.csv) and the plan
-// `plans/defer-eager-kernel-tasks-via-binding.md`.
+// A kernel function that returns an Elm Task must not do its IO when it is
+// called, only when the Task is run, because a Task is a value that may be
+// built once and run many times, or never (invariant KERNEL_TASK_IO_001). This
+// header lets a kernel meet that rule by writing its IO as a body function and
+// wrapping it in a Binding Task (a Task whose step is a callback closure),
+// which the scheduler calls each time it steps the Task.
 //
-// USAGE
+// A body comes in one of two shapes. A synchronous body (`BindingBody`) does
+// its work when called and returns the Task to continue with; `makeBinding`
+// wraps it. An async-park body (`AsyncBindingBody`) starts work that finishes
+// later, keeps the resume closure so the result can be delivered then, and
+// returns at once; `makeAsyncBinding` wraps it.
 //
-//   // Body: receives the captured payload HPointer (built by the kernel
-//   // function before calling makeBinding) and returns the Task to deliver
-//   // to the scheduler-supplied `resume` continuation. The body may
-//   // allocate freely; `captured` and `resume` are rooted across the call.
+// Every body receives one captured payload, an HPointer the kernel builds before
+// wrapping: a single value, a tuple or record of several (built with the
+// HeapHelpers `tuple2`, `tuple3` or `record`), or `unit()` when there is
+// nothing to capture. The body unpacks it with `Allocator::instance().resolve`.
+//
 //   static HPointer myBody(HPointer captured) {
 //       ... do IO ...
 //       return Scheduler::instance().taskSucceed(...);
@@ -23,18 +28,6 @@
 //       return HPtr::fromBits(encode(
 //           Elm::Platform::makeBinding<myBody>(argHP)));
 //   }
-//
-// SHAPE CHOICE
-//
-// The helper takes a SINGLE `HPointer captured` "payload" rather than a
-// type-inferred variadic capture list. For multi-arg kernels, the caller
-// packs the args into an Elm Tuple2 / Tuple3 / Record using the existing
-// HeapHelpers (`tuple2`, `tuple3`, `record`); the body unpacks them via the
-// usual `Allocator::instance().resolve(captured)` cast.
-//
-// Rationale: the Elm/native heap boundary stays explicit (every captured
-// value is an HPointer, no raw int/float aliasing), the existing GC bitmap
-// and rooting rules apply unchanged, and the helper signature is trivial.
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,54 +41,41 @@
 
 namespace Elm::Platform {
 
-// Two binding shapes exist in the codebase. Both are supported here so the
-// helper can replace every hand-rolled evaluator in scope:
-//
-//   * SYNCHRONOUS-IN-BINDING (`BindingBody`): the body runs the IO inline,
-//     returns a Task HPointer (via `Scheduler::taskSucceed*` / `taskFail*`),
-//     and the trampoline immediately delivers it via `callClosure1(resume,
-//     task)`. Use this for filesystem/Console/Env/Time-here/etc. — anything
-//     where the work completes synchronously at scheduler-step time.
-//
-//   * ASYNC-PARK (`AsyncBindingBody`): the body registers `resume` into the
-//     scheduler's `pendingResumes_` registry, hands the work off to a worker
-//     pool / TimerService / WaitService / HttpService, and returns the kill
-//     handle (typically `unit()`). The Task is delivered LATER, when the
-//     async source's drain calls `callClosure1(resume, …)`. Use this for
-//     sleep / HTTP / wait / MVar-block — anything where the work cannot
-//     complete on the scheduler thread.
-//
-// In both cases `captured` is whatever the kernel packed (an HPointer, a
-// `tuple2`/`tuple3`/`record`, or `unit()` for no-capture).
+/// A synchronous body: does the work for `captured` and returns the Task to
+/// continue with, normally one built by `Scheduler::taskSucceed` or `taskFail`.
+/// It may allocate, but the trampoline roots only its own copy of `captured`:
+/// the body's parameter is an unrooted copy that a moving GC will not update.
+/// A body that allocates must root `captured` (and, for an async body,
+/// `resume`) itself, or unpack them before its first allocation.
 using BindingBody      = HPointer (*)(HPointer captured);
+/// An async-park body: like `BindingBody`, but it is also given the resume
+/// closure, and returns the binding's kill handle (see `makeAsyncBinding`).
 using AsyncBindingBody = HPointer (*)(HPointer captured, HPointer resume);
 
 namespace detail {
 
-// Bit-for-bit conversion between `HPointer` and `uint64_t`. Used so the
-// trampoline never depends on Eco-layer Export helpers (this header is in
-// runtime/ and must compile against the elm-kernel-cpp layer too).
+/// Returns the 64 bits of `h` as an integer, unchanged.
 inline uint64_t encodeBits(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+/// Returns the HPointer whose 64 bits are `v`; the inverse of `encodeBits`.
 inline HPointer decodeBits(uint64_t v) {
     union { HPointer hp; uint64_t val; } u;
     u.val = v;
     return u.hp;
 }
 
-// Per-body trampoline. The closure header's `evaluator` field has type
-// `void* (*)(void* args[])`, so we adapt the typed body through this
-// template-instantiated thunk. Because `Body` is a non-type template
-// parameter, each distinct body has its own unique trampoline address —
-// suitable for closure identity / GC scanning.
-//
-// Capture slot 0 (PK_Boxed) holds the payload; the scheduler supplies the
-// resume closure HPointer as slot 1 when stepping the binding. Both are
-// re-rooted on entry because `Body` may allocate freely.
+/// The closure evaluator for a binding made by `makeBinding<Body>`. One is
+/// instantiated per `Body`.
+///
+/// `rawArgs[0]` is the captured payload and `rawArgs[1]` the resume closure the
+/// scheduler supplies. Calls `Body(captured)`, passes the Task it returns to the
+/// resume closure with `Scheduler::callClosure1`, and returns `unit()` as the
+/// kill handle, encoded as a pointer. Cancelling in-flight work is not
+/// modelled.
 template <BindingBody Body>
 inline void* bindingTrampoline(void* rawArgs[]) {
     uint64_t capturedEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
@@ -105,22 +85,28 @@ inline void* bindingTrampoline(void* rawArgs[]) {
 
     HPointer task = alloc::unit();
     {
-        // Root BEFORE running the body so any allocation inside `Body`
-        // transparently relocates `captured` / `resume`. `task` is also
-        // rooted so `callClosure1` sees the post-GC location.
+        // Rooted before `Body` runs, since it and the resume call may allocate
+        // and move all three.
         Elm::StackRootGuard guard(&captured, &resume, &task);
         task = Body(captured);
         Scheduler::callClosure1(resume, task);
     }
 
-    // Kill handle: status-quo Unit placeholder. Cancellation of in-flight
-    // kernel work is not modelled here (matches sleepBindingEvaluator).
     return reinterpret_cast<void*>(encodeBits(alloc::unit()));
 }
 
-// Async-park trampoline. The body is given direct access to `resume` and is
-// expected to register it as a pending resume; the trampoline does NOT call
-// `callClosure1`. The Task is delivered later via the worker drain.
+/// The closure evaluator for a binding made by `makeAsyncBinding<Body>`. One is
+/// instantiated per `Body`.
+///
+/// Calls `Body(captured, resume)` with the two arguments as in
+/// `bindingTrampoline`, and returns what the body returns, encoded as a
+/// pointer, as the kill handle. It never calls the resume closure itself.
+///
+/// When `Scheduler::holdCensusEnabled()`, it checks that the body either
+/// enqueued something or acquired a hold (holds are defined in Liveness.hpp),
+/// by comparing `enqueueSerial` and `acquireSerial` before and after. A body
+/// that did neither is reported to `Scheduler::noteHoldlessPark` under this
+/// function's name. In builds without the census, no check is made.
 template <AsyncBindingBody Body>
 inline void* asyncBindingTrampoline(void* rawArgs[]) {
     uint64_t capturedEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
@@ -129,10 +115,6 @@ inline void* asyncBindingTrampoline(void* rawArgs[]) {
     HPointer resume   = decodeBits(resumeEnc);
 
     HPointer killHandle = alloc::unit();
-    // §6.1 hold-before-wait check (plans/program-liveness-rule.md): the body
-    // must either resume synchronously (an enqueue) or acquire a hold before
-    // returning to the scheduler. Census builds only; a failure is recorded
-    // (Scheduler::noteHoldlessPark, aborts under ECO_LIVENESS_STRICT=1).
     auto& sched = Scheduler::instance();
     const bool check = sched.holdCensusEnabled();
     const u64 acq0 = check ? sched.acquireSerial() : 0;
@@ -149,17 +131,18 @@ inline void* asyncBindingTrampoline(void* rawArgs[]) {
 
 } // namespace detail
 
-// Wrap `Body` + `captured` as a Task_Binding HPointer. The kernel function
-// returns this through its usual encoded path; the scheduler invokes `Body`
-// later, at which point the IO happens.
+/// Returns a new Binding Task that, each time the scheduler steps it, calls
+/// `Body(captured)` and continues with the Task the body returns.
+///
+/// `captured` is stored boxed in the binding's closure and stays reachable for
+/// as long as the Task does; if `resolve(cb)` returns null the capture is
+/// skipped and the closure holds no payload. Making the Task does no IO. Allocates.
 template <BindingBody Body>
 inline HPointer makeBinding(HPointer captured) {
     Elm::StackRootGuard capRoot(&captured);
 
-    // arity=2: slot 0 = captured payload (PK_Boxed), slot 1 = resume closure
-    // (PK_Boxed, supplied by the scheduler at step time). The closure's
-    // `result_kind` is PK_Boxed because `bindingTrampoline` returns a boxed
-    // HPointer (the kill handle).
+    // Two slots: the payload, captured here, and the resume closure, which the
+    // scheduler supplies when it steps the binding.
     HPointer cb = alloc::allocClosureK(
         reinterpret_cast<EvalFunction>(&detail::bindingTrampoline<Body>),
         /*max_values=*/2, PK_Boxed);
@@ -172,11 +155,18 @@ inline HPointer makeBinding(HPointer captured) {
     return Scheduler::instance().taskBinding(cb);
 }
 
-// Async-park variant. The body MUST either resume synchronously or park
-// `resume` with a hold (`Scheduler::parkResume`, or registerPendingResume
-// plus a hold the kernel owns) before returning; otherwise
-// the Task is dropped silently (checked in census builds, §6.1). The body's return value is treated as the kill handle (usually
-// `unit()`; in future cancellable kernels it could be a token closure).
+/// Returns a new Binding Task that, each time the scheduler steps it, calls
+/// `Body(captured, resume)` with the resume closure of that run.
+///
+/// The body must, before returning, either resume synchronously (call
+/// `resume`, which enqueues the process) or keep `resume` under a hold:
+/// `Scheduler::parkResume`, or `Scheduler::registerPendingResume` plus a hold
+/// the kernel owns. Otherwise nothing keeps the event loop running until the
+/// result arrives, so the Task can be dropped silently; only census builds
+/// report it (see `asyncBindingTrampoline`). The body's return value becomes
+/// the kill handle; `unit()` when there is nothing to cancel.
+///
+/// `captured` is stored as in `makeBinding`, with the same null-`resolve` skip. Allocates.
 template <AsyncBindingBody Body>
 inline HPointer makeAsyncBinding(HPointer captured) {
     Elm::StackRootGuard capRoot(&captured);

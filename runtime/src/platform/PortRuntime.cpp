@@ -1,12 +1,10 @@
 //===- PortRuntime.cpp - Native Elm ports runtime ---------------------------===//
 //
-// Implements ports as pseudo effect managers (JS _Platform_incomingPort /
-// _Platform_outgoingPort parity). See plans/native-ports-and-embedding.md.
-//
-// Value shapes (PORT_002):
+// The effect managers here depend on the values generated code puts in a
+// port's effect leaves:
 //   outgoing `port foo : payload -> Cmd msg`:
-//     foo p  ==>  Fx_Leaf{home="foo", value = encoder(p)}   (encoded at the
-//     call site by generated code; the manager only stringifies + delivers)
+//     foo p  ==>  Fx_Leaf{home="foo", value = encoder(p)}
+//     The payload is already a Json value; the manager only stringifies it.
 //   incoming `port bar : (payload -> msg) -> Sub msg`:
 //     bar tagger  ==>  Fx_Leaf{home="bar", value = tagger}
 //
@@ -31,9 +29,9 @@
 using namespace Elm;
 using namespace Elm::alloc;
 
-// Json kernel entry points (elm-kernel-cpp). Declared locally to keep the
-// runtime → kernel dependency at the linker level only; both archives are
-// linked into every program (--start-group) and into the JIT symbol map.
+// Json kernel functions, defined outside the runtime and resolved at link
+// time. Declared here rather than included so that the runtime has no
+// compile-time dependency on the kernel.
 extern "C" HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString);
 extern "C" HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value);
 
@@ -41,23 +39,28 @@ namespace Elm::Platform {
 
 namespace {
 
+// Returns the 64-bit word that stores `h`.
 inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+// Returns the HPointer stored in the word `val`; the inverse of encodeHP.
 inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
+// Returns the address of the heap object `h`, or null if `h` is an embedded
+// constant.
 inline void* resolveHP(HPointer h) {
     if (h.ptr_ind != 0) return nullptr;
     return Allocator::instance().resolve(h);
 }
 
+// Returns a copy of the Elm string `s`; empty if `s` is an embedded constant.
 std::string elmStringToStd(HPointer s) {
     void* ptr = resolveHP(s);
     if (!ptr) return std::string();
@@ -68,23 +71,26 @@ std::string elmStringToStd(HPointer s) {
 // Port effect-manager evaluator closures
 // ---------------------------------------------------------------------------
 
-// init thunk: 0-arg closure producing the manager's init Task.
-// Port managers keep no Elm-side state; Nil throughout.
+// Evaluates a port manager's init: returns a task that succeeds with the Empty
+// constant, the state of every port manager.
 void* portInitEvaluator(void* args[]) {
     (void)args;
     HPointer task = Scheduler::instance().taskSucceed(listNil());
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// onSelfMsg : Router -> selfMsg -> State -> Task Never State.
-// Ports never use self messages; return the state unchanged.
+// Evaluates a port manager's onSelfMsg (router, selfMsg, state): returns a
+// task that succeeds with the state unchanged. Ports send no self messages.
 void* portOnSelfMsgEvaluator(void* args[]) {
     uint64_t stateEnc = reinterpret_cast<uint64_t>(args[2]);
     HPointer task = Scheduler::instance().taskSucceed(decodeHP(stateEnc));
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// Outgoing onEffects. Slot layout (1 capture + 4 call args):
+// Evaluates an outgoing port manager's onEffects: encodes each command's Json
+// value as JSON text and passes it to deliverOutgoing, in list order, then
+// returns a task that succeeds with the state unchanged.
+// Slot layout (1 capture + 4 call args):
 //   args[0] = port name (captured ElmString)
 //   args[1] = router (unused)
 //   args[2] = cmdList — each element is an already-encoded Json value
@@ -97,8 +103,8 @@ void* portOutgoingOnEffectsEvaluator(void* args[]) {
 
     std::string name = elmStringToStd(nameHP);
 
-    // Hybrid spines: RootedListCursor keeps the spine rooted across the
-    // Json_encode GC points and re-resolves per element.
+    // Json_encode allocates. The cursor keeps the rest of the list rooted
+    // across it.
     Elm::StackRootGuard loopGuard(&state);
     Elm::alloc::RootedListCursor cursor(cmdList);
     Elm::Unboxable cmdHead;
@@ -119,7 +125,10 @@ void* portOutgoingOnEffectsEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// Incoming onEffects. Slot layout (1 capture + 4 call args):
+// Evaluates an incoming port manager's onEffects: makes subList the port's
+// subscriptions with setIncomingSubs, then returns a task that succeeds with
+// the state unchanged.
+// Slot layout (1 capture + 4 call args):
 //   args[0] = port name (captured ElmString)
 //   args[1] = router (unused)
 //   args[2] = cmdList (unused; incoming ports have no commands)
@@ -137,15 +146,14 @@ void* portIncomingOnEffectsEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(task));
 }
 
-// Outgoing cmdMap: \taggers value -> value. Port commands carry no msg, so
-// Cmd.map over them is identity on the payload (JS _Platform_outgoingPortMap).
+// Evaluates an outgoing port's cmdMap (taggers, value): returns `value`. A
+// port command produces no message, so mapping it changes nothing.
 void* outgoingPortMapEvaluator(void* args[]) {
     return args[1];
 }
 
-// Composed tagger body: args[0] = f (capture), args[1] = g (capture),
-// args[2] = v  ==>  f (g v). Mirrors TimeEffectManager's
-// composedTaggerEvaluator rooting discipline.
+// Evaluates a composed tagger: with captures f and g and argument v
+// (args[0], args[1], args[2]), returns f (g v).
 void* portComposedTaggerEvaluator(void* args[]) {
     uint64_t fEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t gEnc = reinterpret_cast<uint64_t>(args[1]);
@@ -166,7 +174,8 @@ void* portComposedTaggerEvaluator(void* args[]) {
     return reinterpret_cast<void*>(resultEnc);
 }
 
-// Incoming subMap: \f g -> (\v -> f (g v))  (JS _Platform_incomingPortMap).
+// Evaluates an incoming port's subMap (f, g): returns a new closure that
+// computes f (g v) for its argument v.
 void* incomingPortMapEvaluator(void* args[]) {
     HPointer f = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer g = decodeHP(reinterpret_cast<uint64_t>(args[1]));
@@ -183,16 +192,18 @@ void* incomingPortMapEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(composed));
 }
 
-// Result customs produced by the Json kernel: ctor 0 = Ok, 1 = Err
-// (see JsonExports.cpp makeErr/isOk).
+// Returns whether `result`, a Result from the Json kernel, is Ok. The Json
+// kernel builds Ok with constructor 0 and Err with constructor 1.
 bool resultIsOk(HPointer result) {
     void* ptr = resolveHP(result);
     if (!ptr) return false;
     return static_cast<Custom*>(ptr)->ctor == 0;
 }
 
-// Build the ManagerInfo for one port. Allocates several closures; every
-// intermediate HPointer is rooted so any of the allocations may GC.
+// Builds the effect-manager closures for the port `name`, incoming or
+// outgoing. The map a port kind does not use (cmdMap for an incoming port,
+// subMap for an outgoing one) is the Empty constant. Allocates, so it may
+// collect.
 PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
                                               bool incoming) {
     HPointer nameStr = listNil();
@@ -228,6 +239,7 @@ PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
     return info;
 }
 
+// Prints `message` to stderr and aborts the process.
 [[noreturn]] void portCrash(const std::string& message) {
     std::fprintf(stderr, "eco ports: %s\n", message.c_str());
     std::fflush(stderr);
@@ -241,7 +253,8 @@ PlatformRuntime::ManagerInfo buildPortManager(const std::string& name,
 // ---------------------------------------------------------------------------
 
 PortRuntime& PortRuntime::instance() {
-    // Intentionally leaked — see Scheduler::instance().
+    // Leaked on purpose, so that it outlives any static destructor or thread
+    // that might still use it at exit.
     static PortRuntime* runtime = new PortRuntime();
     return *runtime;
 }
@@ -249,14 +262,11 @@ PortRuntime& PortRuntime::instance() {
 PortRuntime::PortRuntime() = default;
 
 void PortRuntime::ensureRuntimeHooks() {
-    // Called on the eco thread during registration (before Platform.worker
-    // starts the event loop), so plain-bool idempotence is sufficient.
+    // Called only from registration, on the eco thread, so a plain bool
+    // suffices.
     if (hooksInstalled_) return;
     hooksInstalled_ = true;
 
-    // GC root scanner for the decoder/subs handles (PORT_004). Takes
-    // portsMutex_, so the eco thread must never hold that mutex across a
-    // GC allocation.
     Allocator::instance().getRootSetSlow().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             std::lock_guard<std::mutex> lock(portsMutex_);
@@ -267,8 +277,6 @@ void PortRuntime::ensureRuntimeHooks() {
             }
         }, "port-runtime");
 
-    // Incoming sends are drained on the eco thread via the scheduler's
-    // asyncSource mechanism (same pattern as the HTTP worker).
     Scheduler::instance().registerAsyncSource(
         []() { PortRuntime::instance().drainPendingSends(); },
         []() { return PortRuntime::instance().hasPendingSends(); });
@@ -278,8 +286,9 @@ void PortRuntime::registerIncoming(const std::string& name,
                                    HPointer decoder) {
     ensureRuntimeHooks();
 
-    // PORT_001: the bare port name is the effect-manager registry key; a
-    // port shadowing a real manager (e.g. "Time") would clobber it.
+    // The port name is the effect-manager registry key, so a port named like
+    // another manager would replace it. This check also catches a second
+    // registration of the same port, whose manager is already registered.
     if (PlatformRuntime::instance().hasManager(name)) {
         portCrash("port name '" + name +
                   "' collides with an existing effect manager");
@@ -348,21 +357,17 @@ void PortRuntime::deliverOutgoing(const std::string& name,
         if (it == ports_.end()) return;
         if (it->second.sinks.empty()) {
             if (!it->second.everSubscribed) {
-                // Buffer-until-FIRST-subscribe (plan Q4): hosts that
-                // attach after startup still see init-time messages, in
-                // order. Once a subscriber has existed, zero-sink
-                // delivery drops the message (JS parity; no unbounded
-                // growth after unsubscribe).
+                // Buffering stops after the first subscriber, so a port
+                // whose subscribers have all left does not grow without
+                // bound.
                 it->second.buffered.push_back(json);
             }
             return;
         }
         sinksCopy = it->second.sinks;
     }
-    // Invoke outside the lock: callbacks may re-enter via eco_port_send
-    // or (from another thread) subscribe. A callback racing a concurrent
-    // unsubscribe on another thread may still be invoked once after
-    // unsubscribe returns (documented host contract).
+    // Called outside the lock, because a callback may call back into this
+    // registry.
     for (auto& [cb, user] : sinksCopy) {
         cb(json.c_str(), user);
     }
@@ -387,8 +392,6 @@ void PortRuntime::drainPendingSends() {
             pendingSends_.pop_front();
         }
 
-        // Each queued send holds one Port hold (taken in sendIncoming);
-        // release it once this item is processed, whatever the outcome.
         HoldRelease release(hold);
 
         uint64_t decoderEnc = 0;
@@ -406,8 +409,6 @@ void PortRuntime::drainPendingSends() {
         HPointer payload = listNil();
         Elm::StackRootGuard guard({ &decoder, &subs, &payload });
 
-        // Parse + decode on the eco thread. Decode failure is a hard crash
-        // naming the port (JS Debug.crash 4 parity, plan Q5).
         HPointer jsonStr = allocStringFromUTF8(json);
         Elm::StackRootGuard strGuard(&jsonStr);
         HPtr result = Elm_Kernel_Json_runOnString(
@@ -419,18 +420,14 @@ void PortRuntime::drainPendingSends() {
                       name + "': " + json);
         }
         {
-            // The Json kernel rewraps the escaping Ok so a primitive payload
-            // sits UNBOXED in the slot (MONO_013 rewrap at Json_runOnString);
-            // the taggers are applied via boxed closure calls, so re-box per
-            // the slot's 2-bit kind.
+            // The Ok's field may hold an unboxed Int, Float or Char, as its
+            // slot kind says. Taggers take boxed arguments, so box it.
             void* okPtr = resolveHP(resultHP);
             Custom* ok = static_cast<Custom*>(okPtr);
             const u32 payloadKind = ok->unboxed & 0x3;
             payload = Elm::alloc::boxElement(ok->values[0], payloadKind);
         }
 
-        // Apply each subscribed (composed) tagger to the decoded payload
-        // and push the message through the app's update cycle.
         Elm::alloc::RootedListCursor cursor(subs);
         Elm::Unboxable subHead;
         u8 subKind;
@@ -458,9 +455,8 @@ bool PortRuntime::sendIncoming(const char* name, const char* json) {
             return false;
         }
     }
-    // Hold one Port hold per queued item BEFORE publishing it, so the
-    // event loop cannot observe an empty queue + zero refs and exit while
-    // a send is in flight.
+    // Acquired before the item is queued, so the event loop never sees an
+    // empty queue and no hold while a send is in flight.
     HoldToken hold = Scheduler::instance().acquireHold(HoldKind::Port, "port.in");
     {
         std::lock_guard<std::mutex> lock(pendingMutex_);
@@ -473,17 +469,15 @@ bool PortRuntime::sendIncoming(const char* name, const char* json) {
 bool PortRuntime::subscribeOutgoing(const char* name, EcoPortCallback cb,
                                     void* user) {
     if (name == nullptr || cb == nullptr) return false;
-    // First-subscriber flush: drain the pre-subscribe buffer COMPLETELY
-    // before installing the sink. Concurrent deliveries keep appending to
-    // the buffer while we drain (sinks is still empty), so the subscriber
-    // observes strict FIFO order and is never invoked from two threads at
-    // once during the handover.
+    // The subscription is installed only when the buffer is found empty.
+    // Until then deliveries on the eco thread keep appending to the buffer,
+    // so this loop hands them over too, in order, and the eco thread does not
+    // call cb while the flush runs.
     while (true) {
         std::vector<std::string> batch;
         {
             std::lock_guard<std::mutex> lock(portsMutex_);
-            // Creates a placeholder entry for not-yet-registered ports so
-            // hosts may subscribe before the program starts.
+            // Creates an unregistered entry for a port not registered yet.
             PortInfo& info = ports_[name];
             if (info.everSubscribed || info.buffered.empty()) {
                 info.sinks.emplace_back(cb, user);
@@ -524,9 +518,8 @@ const char* PortRuntime::portName(int i) {
     if (i < 0 || i >= static_cast<int>(registrationOrder_.size())) {
         return nullptr;
     }
-    // deque elements have stable addresses; the runtime never erases
-    // registrations, so the returned pointer stays valid for the process
-    // lifetime.
+    // Valid for the rest of the process: registrations are never removed and
+    // the deque does not move its elements as it grows.
     return registrationOrder_[static_cast<size_t>(i)].c_str();
 }
 
@@ -544,18 +537,15 @@ int PortRuntime::isIncoming(const char* name) {
 // C ABI
 // ---------------------------------------------------------------------------
 //
-// These host-facing wrappers are defined here (so ecoc / EcoRunner / the test
-// harness, which compile this file directly, resolve them) AND as strong
-// definitions in embed/eco_embed.cpp. The duplication is deliberate: eco_port_*
-// otherwise live only in EcoRuntimeStatic, which the Stage-D shared link hides
-// from .dynsym via --exclude-libs, so a C host linking a produced .so/.node
-// cannot resolve them (eco_app_* avoid this by living in the whole-archived,
-// non-excluded EcoEmbedStatic). The embed-lib copies are the exported ones; we
-// mark THESE weak so the strong embed definitions win wherever both archives
-// are linked (the .so/.node link; eco-boot-native, which links both) with no
-// duplicate-symbol error, while a lone weak definition still serves the
-// compile-this-file-directly consumers. Not weak on Windows (no .so/.node
-// there, so the two never coexist, and COFF weak support is limited).
+// These wrappers are defined here for programs that link this file without
+// embed/eco_embed.cpp, and again, as strong definitions, in
+// embed/eco_embed.cpp. A shared-library link hides EcoRuntimeStatic's symbols
+// from the dynamic symbol table with --exclude-libs, so only the copies in
+// EcoEmbedStatic can be exported to a C host. Marking these weak lets those
+// strong copies win wherever both are linked, with no duplicate-symbol error.
+// On Windows they are not weak: eco_embed.cpp defines no copies there.
+
+// The attribute that makes the C ABI definitions below weak, or nothing.
 #if defined(_WIN32)
 #  define ECO_PORT_ABI_WEAK
 #else

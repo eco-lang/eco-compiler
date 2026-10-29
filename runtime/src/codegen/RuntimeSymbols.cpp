@@ -1,9 +1,4 @@
 //===- RuntimeSymbols.cpp - JIT Symbol Registration for Eco Runtime -------===//
-//
-// Implementation of the shared symbol registration API used by both ecoc
-// and EcoRunner.
-//
-//===----------------------------------------------------------------------===//
 
 #include "RuntimeSymbols.h"
 
@@ -12,21 +7,22 @@
 
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 
-// Include runtime exports for JIT symbol registration.
 #include "../allocator/RuntimeExports.h"
 #include "../allocator/PermanentSpace.hpp"
 
-// Include byte fusion runtime exports for fused Bytes.Encode/Decode operations.
 #include "../allocator/ElmBytesRuntime.h"
 
-// Include kernel exports for JIT symbol registration.
 #include "KernelExports.h"
 
 using namespace mlir;
 
 namespace eco {
 
-/// Build the runtime symbol map (shared between both engine types).
+/// Returns the map from each name listed below, mangled by `interner`, to the
+/// address of that function in this process, as an exported absolute symbol.
+///
+/// Exactly one of `eco_char_case_expansion_on` and `eco_char_case_expansion_off` is in the map: the one this
+/// runtime is built to define.
 static llvm::orc::SymbolMap buildRuntimeSymbolMap(
     llvm::orc::MangleAndInterner interner) {
     llvm::orc::SymbolMap symbolMap;
@@ -108,11 +104,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_allocate),
                 llvm::JITSymbolFlags::Exported);
 
-        // Inline nursery allocation (plans/inline-nursery-allocation.md,
-        // HEAP_034): bump-state accessor + uninitialized-storage slow path.
-        // The `__eco_alloc_inline` marker itself never survives to execution
-        // (expanded pre-RS4GC by expandInlineAllocs), so it is deliberately
-        // NOT mapped — a surviving marker fails the JIT link loudly.
+        // Inline nursery allocation: the bump-state accessor and the slow path. The
+        // `__eco_alloc_inline` marker is deliberately not mapped; `RuntimeSymbols.h` says why.
         symbolMap[interner("eco_bump_state")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_bump_state),
@@ -122,14 +115,13 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_inline_slow),
                 llvm::JITSymbolFlags::Exported);
 
-        // Capacity-check hoisting (plans/capacity-check-hoisting.md,
-        // HEAP_041): cold edge of an ensure diamond.
+        // Slow path of a hoisted nursery capacity check.
         symbolMap[interner("eco_ensure_nursery_slow")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_ensure_nursery_slow),
                 llvm::JITSymbolFlags::Exported);
 
-        // Fast allocation functions (bump-pointer only, no GC, return 0 on failure).
+        // Fast allocation functions, which never collect and return 0 when the nursery has no room.
         symbolMap[interner("eco_alloc_custom_fast")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_custom_fast),
@@ -171,7 +163,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_char_fast),
                 llvm::JITSymbolFlags::Exported);
 
-        // Slow allocation functions (may GC — used behind statepoint).
+        // Slow allocation functions, which may collect.
         symbolMap[interner("eco_alloc_custom_slow")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_custom_slow),
@@ -217,7 +209,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_char_slow),
                 llvm::JITSymbolFlags::Exported);
 
-        // Region allocation (fast returns nullptr, slow may GC).
+        // Region allocation: the fast form returns null when the nursery has no room, the slow one
+        // may collect.
         symbolMap[interner("eco_gc_alloc_region_fast")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_alloc_region_fast),
@@ -301,8 +294,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_store_record_field_f64),
                 llvm::JITSymbolFlags::Exported);
 
-        // Uninit allocators + field stores (forward ABI; not yet exercised
-        // by lowering — see plans/wrapper-fca-fix.md).
+        // Allocators whose fields are filled afterwards, and the stores that fill them.
         symbolMap[interner("eco_alloc_tuple2_uninit")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple2_uninit),
@@ -349,12 +341,13 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure),
                 llvm::JITSymbolFlags::Exported);
-        // Phase D: typed-args entry point for generic apply.
+        // Typed-args entry point for generic apply.
         symbolMap[interner("eco_apply_closure_typed")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_typed),
                 llvm::JITSymbolFlags::Exported);
-        // Typed-result entry point: caller-supplied result_slot + desired_kind.
+        // Typed-result entry point: the result is written to a caller-supplied slot, converted to
+        // the kind the caller asks for.
         symbolMap[interner("eco_apply_closure_eval")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_apply_closure_eval),
@@ -367,9 +360,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_closure_call_saturated),
                 llvm::JITSymbolFlags::Exported);
-        // Typed-result sibling: caller-supplied result_slot + desired_kind,
-        // so saturated calls whose result type is primitive don't pay for
-        // the boxed-result hardcode in eco_closure_call_saturated.
+        // Typed-result form of eco_closure_call_saturated.
         symbolMap[interner("eco_closure_call_saturated_eval")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_closure_call_saturated_eval),
@@ -422,8 +413,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_add_root),
                 llvm::JITSymbolFlags::Exported);
-        // CAF memo guard (CGEN_068): publishes a caf_memo thunk's result
-        // and roots its slot when the value stays heap-resident.
+        // CAF memo guard, called on a caf_memo thunk's result.
         symbolMap[interner("eco_caf_promote")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_caf_promote),
@@ -482,18 +472,16 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_resolve_hptr),
                 llvm::JITSymbolFlags::Exported);
 
-        // Inline-deref (plan P2) cold slow path. Generated code calls this on
-        // the rare forwarding branch of the ExpandInlineDeref diamond, so the
-        // JIT must be able to resolve it by name.
+        // Slow path of an inlined dereference, taken when the object has a forward header.
         symbolMap[interner("eco_follow_forward")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_follow_forward),
                 llvm::JITSymbolFlags::Exported);
 
-        // Stale-pointer barrier injected by EcoBoxedStoreVerify in front of
-        // direct heap stores from compiled Elm. Always registered so the JIT
-        // can resolve the symbol; the call is only emitted when the pass
-        // runs (ECO_LOWERING_VALIDATION=ON).
+        // Stale-pointer check in front of direct heap stores. Mapped in every build, although
+        // calls to it are emitted only when the code generator is built with
+        // ECO_LOWERING_VALIDATION, and it checks anything only in a runtime built with
+        // ECO_HEAP_VALIDATE.
         symbolMap[interner("eco_validate_nursery_hptr_bits")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_validate_nursery_hptr_bits),
@@ -519,13 +507,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_char),
                 llvm::JITSymbolFlags::Exported);
 
-        // Typed Custom-field access — emitted by EcoToLLVMRuntime when
-        // lowering `eco.project.custom %v[N] : !eco.value -> {i64,f64,i32}`.
-        // Static link picks these up from libEcoRuntimeStatic, but the JIT
-        // linker needs explicit absolute-symbol entries. Missing these
-        // causes the orc-jit lookup to fail with "Symbols not found:
-        // eco_custom_get_i64" the moment a test exercises a typed-field
-        // custom projection (Just-of-Int, Tuple2 element, etc.).
+        // Typed Custom-field getters, called by the lowering of `eco.project.custom` to an i64,
+        // f64 or i32 result.
         symbolMap[interner("eco_custom_get_i64")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_custom_get_i64),
@@ -609,7 +592,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         // Elm Kernel Function Symbols
         // =================================================================
 
-        // Helper macro for registering kernel symbols.
+        // Maps the function `name` under its own name. Expands to a statement that uses the
+        // enclosing `symbolMap` and `interner`.
         #define KERNEL_SYM(name) \
             symbolMap[interner(#name)] = \
                 llvm::orc::ExecutorSymbolDef( \
@@ -628,11 +612,8 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Basics_log)
         KERNEL_SYM(Elm_Kernel_Basics_e)
         KERNEL_SYM(Elm_Kernel_Basics_pi)
-        // Phase E.2 / Phase F: per-instance Int / Float variants for the
-        // arithmetic operators are the fast paths; the boxed
-        // polymorphic fallbacks below are reached only when
-        // `kernelInstanceSymbol` can't resolve a numeric op (e.g. an
-        // `MVar n`-typed arg slot in a polymorphic helper).
+        // add, sub, mul and pow have `_Int` and `_Float` per-instance variants beside their boxed
+        // polymorphic form.
         KERNEL_SYM(Elm_Kernel_Basics_add_Int)
         KERNEL_SYM(Elm_Kernel_Basics_add_Float)
         KERNEL_SYM(Elm_Kernel_Basics_add)
@@ -702,7 +683,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_String_toInt)
         KERNEL_SYM(Elm_Kernel_String_toFloat)
         KERNEL_SYM(Elm_Kernel_String_fromNumber)
-        // Phase C per-instance variants.
+        // Per-instance variants.
         KERNEL_SYM(Elm_Kernel_String_fromNumber_Int)
         KERNEL_SYM(Elm_Kernel_String_fromNumber_Float)
         KERNEL_SYM(Elm_Kernel_String_map)
@@ -717,7 +698,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
 
         // List module
         KERNEL_SYM(Elm_Kernel_List_cons)
-        // Phase C per-instance variants.
+        // Per-instance variants.
         KERNEL_SYM(Elm_Kernel_List_cons_Int)
         KERNEL_SYM(Elm_Kernel_List_cons_Float)
         KERNEL_SYM(Elm_Kernel_List_cons_Char)
@@ -739,11 +720,11 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Utils_gt)
         KERNEL_SYM(Elm_Kernel_Utils_ge)
         KERNEL_SYM(Elm_Kernel_Utils_append)
-        // Phase B per-instance variants for Utils.compare.
+        // Per-instance variants of Utils.compare.
         KERNEL_SYM(Elm_Kernel_Utils_compare_Int)
         KERNEL_SYM(Elm_Kernel_Utils_compare_Float)
         KERNEL_SYM(Elm_Kernel_Utils_compare_Char)
-        // Phase C per-instance variants for Utils equality / ordering.
+        // Per-instance variants of the equality and ordering functions.
         KERNEL_SYM(Elm_Kernel_Utils_equal_Int)
         KERNEL_SYM(Elm_Kernel_Utils_equal_Float)
         KERNEL_SYM(Elm_Kernel_Utils_equal_Char)
@@ -771,9 +752,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(eco_string_cmp_order)
         KERNEL_SYM(eco_order_from_sign)
         KERNEL_SYM(eco_string_cmp3)
-        // kernel-opt-05: eco.string.append / eco.list.append lowering
+        // eco.string.append / eco.list.append lowering.
         KERNEL_SYM(eco_string_append)
         KERNEL_SYM(eco_list_append)
+        // Utils.cmp3.
         KERNEL_SYM(Elm_Kernel_Utils_cmp3)
 
         // JsArray module
@@ -803,7 +785,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(elm_array_push_box)
         KERNEL_SYM(elm_array_slice)
         KERNEL_SYM(elm_array_append_n)
-        // Phase C per-instance JsArray variants.
+        // Per-instance JsArray variants.
         KERNEL_SYM(Elm_Kernel_JsArray_singleton_Int)
         KERNEL_SYM(Elm_Kernel_JsArray_singleton_Float)
         KERNEL_SYM(Elm_Kernel_JsArray_singleton_Char)
@@ -938,7 +920,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Json_runOnString)
         KERNEL_SYM(Elm_Kernel_Json_encode)
         KERNEL_SYM(Elm_Kernel_Json_wrap)
-        // Phase C per-instance variants.
+        // Per-instance variants.
         KERNEL_SYM(Elm_Kernel_Json_wrap_Int)
         KERNEL_SYM(Elm_Kernel_Json_wrap_Float)
         KERNEL_SYM(Elm_Kernel_Json_wrap_Char)
@@ -968,7 +950,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Http_toDataView)
         KERNEL_SYM(Elm_Kernel_Http_toFormData)
 
-        // Bytes module (stubs)
+        // Bytes module
         KERNEL_SYM(Elm_Kernel_Bytes_width)
         KERNEL_SYM(Elm_Kernel_Bytes_getHostEndianness)
         KERNEL_SYM(Elm_Kernel_Bytes_getStringWidth)
@@ -996,7 +978,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Bytes_write_bytes)
         KERNEL_SYM(Elm_Kernel_Bytes_write_string)
 
-        // File module (stubs)
+        // File module
         KERNEL_SYM(Elm_Kernel_File_decoder)
         KERNEL_SYM(Elm_Kernel_File_name)
         KERNEL_SYM(Elm_Kernel_File_mime)
@@ -1011,7 +993,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_File_uploadOneOrMore)
         KERNEL_SYM(Elm_Kernel_File_makeBytesSafeForInternetExplorer)
 
-        // Parser module (stubs)
+        // Parser module
         KERNEL_SYM(Elm_Kernel_Parser_isSubChar)
         KERNEL_SYM(Elm_Kernel_Parser_isSubString)
         KERNEL_SYM(Elm_Kernel_Parser_findSubString)
@@ -1020,7 +1002,7 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         KERNEL_SYM(Elm_Kernel_Parser_consumeBase16)
         KERNEL_SYM(Elm_Kernel_Parser_isAsciiCode)
 
-        // Regex module (stubs)
+        // Regex module
         KERNEL_SYM(Elm_Kernel_Regex_never)
         KERNEL_SYM(Elm_Kernel_Regex_infinity)
         KERNEL_SYM(Elm_Kernel_Regex_fromStringWith)

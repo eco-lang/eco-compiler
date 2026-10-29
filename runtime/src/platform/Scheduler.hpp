@@ -1,3 +1,31 @@
+// The scheduler runs Elm's Tasks and processes, in the model elm/core defines, on the one thread that runs Elm
+// code (the eco thread), and keeps the program alive while something it waits for is still to come.
+//
+// A Task is an immutable heap value describing work: `Succeed` or `Fail` with a value, `AndThen` or `OnError`
+// with a callback and an inner Task, `Binding` (a callback given a resume closure, through which external work
+// reports back), and `Receive` (a callback for the next mailbox message). A process runs one root Task. It is a
+// heap `Process` value holding a 64-bit id, the root Task, a stack of pending `AndThen`/`OnError` frames and a
+// mailbox. Stepping a process rewrites its root until it reaches a `Binding` (the process parks), a `Receive`
+// with an empty mailbox (it blocks), or a `Succeed`/`Fail` that no frame handles (it finishes).
+//
+// Two facts shape the rest.
+//
+// The first is that a `Process` value is never changed. Every step allocates a new one (`procWith*`), so an
+// HPointer to a process goes stale as soon as the process is stepped. The id does not: ids are never reused,
+// and a registry maps each live process's id to its latest value. `latestProcessById` is how a holder finds
+// the current version, and a process leaves the registry when it finishes.
+//
+// The second is that only the eco thread may touch the heap. The run queue, the process registry, the
+// finished-process hand-over and the table of parked resume closures hold encoded HPointers, and one external
+// root scanner (`RootSet::addExternalRootScanner`) keeps them alive and moving with the collector. The scanner
+// reads the first three without `mutex_`, so they may change only on the eco thread. Other threads deal in
+// plain data: a resume token, a hold, a wake-up.
+//
+// The event loop (`runEventLoop`) drains the run queue, then runs the ready async work, then either sleeps on a
+// condition variable or exits, on a stop or when nothing can wake it. One thing that keeps it running is
+// the hold, one unit of the pending-async count, whose rules `Liveness.hpp` states. Hosts that embed the
+// runtime observe the loop through three hooks: quiescence listeners, stop hooks and an activity hook.
+
 #ifndef ECO_PLATFORM_SCHEDULER_HPP
 #define ECO_PLATFORM_SCHEDULER_HPP
 
@@ -18,313 +46,360 @@
 
 namespace Elm::Platform {
 
+/// The singleton that steps Elm processes and runs the event loop.
+///
+/// It is obtained only from `instance`, and is never destroyed. Unless a function says otherwise, it must be
+/// called on the eco thread, and every function that builds a Task or a Process allocates and may collect.
 class Scheduler {
 public:
+    /// Returns the scheduler, creating it on first use.
+    ///
+    /// Creating it registers its root scanner with the `RootSet` of the calling thread's heap, initialising that
+    /// heap if the thread has none, so the first call must be made on the eco thread.
     static Scheduler& instance();
 
-    // Task constructors - allocate heap Task objects
+    // Task constructors. Each allocates a new Task.
+
+    /// Returns a Task that succeeds with `value`.
     HPointer taskSucceed(HPointer value);
-    // Variant carrying an unboxed primitive payload (kind 1=Int, 2=Float, 3=Char).
+    /// Returns a Task that succeeds with an unboxed `value` of slot kind `kind` (1 Int, 2 Float, 3 Char; only the
+    /// low two bits are read). With kind 0, `value.p` is stored as a boxed HPointer, as `taskSucceed` does.
     HPointer taskSucceedKind(Unboxable value, u8 kind);
+    /// Returns a Task that fails with `error`.
     HPointer taskFail(HPointer error);
+    /// Returns a Binding Task. When stepped, `callback` is called with a resume closure, and its result is
+    /// kept as the kill handle `killTask` calls. Calling the resume closure with a Task makes that Task the
+    /// process's root and enqueues the process.
     HPointer taskBinding(HPointer callback);
+    /// Returns a Task that runs `task` and, if it succeeds, the Task that `callback` returns for its value.
     HPointer taskAndThen(HPointer callback, HPointer task);
+    /// Returns a Task that runs `task` and, if it fails, the Task that `callback` returns for its error.
     HPointer taskOnError(HPointer callback, HPointer task);
+    /// Returns a Task that waits for the process's next mailbox message and continues with the Task `callback`
+    /// returns for it.
     HPointer taskReceive(HPointer callback);
 
-    // Process API
+    // Processes
+
+    /// Creates a process with a fresh id that runs `rootTask`, enqueues it, and returns its first value. The
+    /// returned HPointer is stale once the process has been stepped; look it up again by id.
     HPointer rawSpawn(HPointer rootTask);
+    /// Returns a Task that, each time it is stepped, spawns a process running `rootTask` (as `rawSpawn`) and
+    /// succeeds with that process's first value. Creating the Task spawns nothing.
     HPointer spawnTask(HPointer rootTask);
+    /// Puts `msg` in the mailbox of `proc` and enqueues the result. Does nothing if `proc` is not a heap object.
+    ///
+    /// The new value is built from `proc` as given, not from the latest version registered for its id, and is
+    /// then registered as the latest version for that id.
     void rawSend(HPointer proc, HPointer msg);
+    /// Returns a Task that, each time it is stepped, tries to kill `proc` and succeeds with unit.
+    ///
+    /// The target is found by id through the process registry, so a stale `proc` names the latest version. If
+    /// that version's root is a Binding whose kill handle is a heap object, the handle is called with unit.
+    /// Nothing else happens to the target: it is not dequeued and keeps its mailbox. A finished target is left
+    /// alone.
     HPointer killTask(HPointer proc);
 
-    // Run queue management
+    // The run queue
+
+    /// Appends `proc` to the run queue and wakes the event loop.
     void enqueue(HPointer proc);
+    /// Steps queued processes until the run queue is empty, including any enqueued meanwhile. It may be called
+    /// from inside a step, in which case the inner call empties the queue.
     void drain();
 
-    // Event loop for single-threaded Elm execution
+    /// Runs the program until it stops or can make no further progress, and returns.
+    ///
+    /// Each pass drains the run queue, returns if a stop was requested, runs `processReadyAsync`, and then
+    /// sleeps until there is work, a stop, a ready async source, a ready timer token, or no holds left. When
+    /// the run queue is empty, no hold is live and no async source is ready, the loop is quiescent. Outside
+    /// embed mode it then asks the quiescence listeners, and continues if one delivered; otherwise it returns.
+    /// On a stop it runs the stop hooks before returning.
     void runEventLoop();
 
-    // ---- Hold API (plans/program-liveness-rule.md §5.1) ----
-    // Registers `resume` (as registerPendingResume does) and acquires a hold
-    // whose token is the returned resume token. Eco thread only.
+    // Holds. A hold is defined, and the rules for owning one are stated, in `Liveness.hpp`.
+
+    /// Parks `resume` as `registerPendingResume` does, acquires a hold of kind `kind` keyed by the returned
+    /// resume token, and returns the token. `site` names the caller in census reports; census builds may read
+    /// the pointer after the hold is released, so it should stay valid for the rest of the run.
     u64 parkResume(HPointer resume, HoldKind kind, const char* site);
-    // Acquires a free-standing hold (bit 63 set). Any thread.
+    /// Acquires a free-standing hold of kind `kind` and returns its token. `site` is kept as for `parkResume`.
+    /// May be called from any thread.
     HoldToken acquireHold(HoldKind kind, const char* site);
-    // Releases hold `t` (a resume token from parkResume, or a token from
-    // acquireHold): decrements pendingAsync_, then notifies eventCV_ under
-    // mutex_. Any thread. Census builds abort on kNoHold, an unknown token or
-    // a second release, naming the acquiring site.
+    /// Releases hold `t`, a token from `parkResume` or `acquireHold`, and wakes the event loop. May be called
+    /// from any thread, but not while holding the scheduler's lock: not from an async source's `ready`
+    /// predicate or from the activity hook.
+    ///
+    /// Census builds abort, naming the acquiring site where it is known, when `t` is `kNoHold`, a token never
+    /// acquired, or one already released. Other builds check nothing.
     void releaseHold(HoldToken t);
-    // Census (ECO_LIVENESS_REPORT=1 at exit / on a 10 s idle wait): prints
-    // live holds by kind and site to stderr. Prints "census off" in builds
-    // that keep no census.
+    /// Writes the live holds, counted by kind and site, and any holdless parks to stderr, headed by `why`.
+    /// In builds without a census it writes only the pending-async count.
+    ///
+    /// When the `ECO_LIVENESS_REPORT` environment variable is set to anything but empty or `0`, the event loop
+    /// calls it after every 10 s of idle waiting and when it returns.
     void reportHolds(const char* why);
-    // True iff this build keeps the per-hold census (!NDEBUG || ECO_HEAP_VALIDATE
-    // as compiled into Scheduler.cpp).
+    /// Returns whether this build keeps the hold census: builds without `NDEBUG`, or with `ECO_HEAP_VALIDATE`,
+    /// as Scheduler.cpp was compiled.
     bool holdCensusEnabled() const;
-    // Census queries (0 / false when the census is off).
+    /// Returns the number of live holds in the census, or 0 when there is no census.
     size_t liveHoldCount();
+    /// Returns whether `t` names a live hold in the census, or false when there is no census.
     bool holdIsLive(HoldToken t);
-    // Monotonic count of hold acquires and of
-    // enqueues. Used by the §6.1 binding check in TaskBinding.hpp.
+    /// Returns how many holds have been acquired, in either way, so far.
     u64 acquireSerial() const { return acquireSerial_.load(std::memory_order_relaxed); }
+    /// Returns how many times `enqueue` has been called so far.
     u64 enqueueSerial() const { return enqueueSerial_.load(std::memory_order_relaxed); }
-    // §6.1 check failure: an async-park binding returned without resuming
-    // and without acquiring a hold. Recorded in the census report; aborts
-    // only when ECO_LIVENESS_STRICT=1 (parks that legitimately hold nothing
-    // exist: in-memory streams, X9, and Detached children, X4).
+    /// Records that the async binding `binding` returned having neither enqueued anything nor acquired a hold.
+    ///
+    /// With `ECO_LIVENESS_STRICT` set to anything but empty or `0`, it aborts, in every build. Otherwise census
+    /// builds count the park against `binding`, compared by pointer, for `reportHolds`, so `binding` must stay
+    /// valid for the rest of the run; other builds do nothing.
     void noteHoldlessPark(const char* binding);
-    // Current pendingAsync_ (tests and census).
+    /// Returns the number of live holds.
     int pendingAsync() const { return pendingAsync_.load(); }
-    // Nesting depth of drain() on the eco thread (LIVE_004 test, PS9).
+    /// Returns how many calls to `drain` are in progress.
     int drainDepth() const { return drainDepth_; }
 
-    // Cooperative shutdown for embedded hosts (eco_app_stop): sets a stop
-    // flag and wakes the event loop, which exits after finishing the
-    // current drain. Safe to call from any thread. Sticky for the process
-    // lifetime (one app per process).
+    /// Asks the event loop to return, and wakes it. The loop returns once the drain in progress, if any, has
+    /// finished. The request is never withdrawn. May be called from any thread.
     void requestStop();
+    /// Returns whether `requestStop` has been called.
     bool stopRequested() const { return stopRequested_.load(); }
 
-    // Embed mode (eco_embed.cpp): the host owns process-level concerns, so
-    // the loop never exits on quiescence, signal handlers and std::exit are
-    // off limits to kernels (plans/eco-system-library.md §3.4, §3.7).
-    // Set once before the loop starts; read from any thread.
+    /// Turns embed mode on or off. In embed mode the event loop does not call quiescence listeners, and so returns
+    /// at the first quiescent point.
     void setEmbedMode(bool on) { embedMode_.store(on); }
+    /// Returns whether embed mode is on.
     bool embedMode() const { return embedMode_.load(); }
 
-    // Quiescence hook (Node `beforeExit` semantics; plans/eco-system-library.md
-    // §3.7, plans/program-liveness-rule.md §7, LIVE_005). Listeners are called
-    // at every quiescent point (run queue empty, pendingAsync_ == 0, no ready
-    // async source, no stop requested; never in embed mode), with mutex_
-    // released, on the eco thread, in registration order; the loop continues
-    // iff some listener returned true (it delivered something), and exits
-    // otherwise. The Scheduler keeps no armed bit: whether a listener is due
-    // is the listener's own state (SystemManager's emptyLoopArmed), so a
-    // listener that has nothing to deliver must return false or the loop
-    // spins. Listeners may sendToApp/drain/allocate (mutex_ is not held) but
-    // must run on, and are only called from, the eco thread. Registration
-    // must happen on the eco thread.
-    using QuiescenceListener = bool (*)(void* ctx);  // true iff it delivered
+    /// A function the event loop calls at a quiescent point, with the `ctx` it was registered with. It returns
+    /// whether it delivered anything; if any listener did, the loop runs on, and otherwise it returns.
+    ///
+    /// It is called on the eco thread without the scheduler's lock held, so it may enqueue, drain, allocate and
+    /// start async work. The scheduler keeps no record of whether a listener is due, so a listener with nothing
+    /// to deliver must return false, or the loop never returns.
+    using QuiescenceListener = bool (*)(void* ctx);
+    /// Registers `fn` to be called with `ctx` at every quiescent point. All listeners are called, in
+    /// registration order; one registered during a round is first called in the next.
     void addQuiescenceListener(QuiescenceListener fn, void* ctx);
-    // Removes every registration of (fn, ctx). Eco thread. Used by unit tests.
+    /// Removes every registration of `fn` with `ctx`.
     void removeQuiescenceListener(QuiescenceListener fn, void* ctx);
 
-    // Stop hooks (embed teardown, plans/eco-system-sockets.md §3.3.9): run
-    // on the eco thread, in registration order, when runEventLoop exits
-    // because a stop was requested (eco_app_stop, or an embed-mode exit).
-    // They release process-level resources a library holds for the program
-    // (eco/system closes its sockets so they do not stay bound in the host
-    // process). A hook must not call Elm or touch the heap; it may block
-    // briefly. Registration is permanent and idempotent per function, and
-    // must happen on the eco thread.
+    /// A function the event loop calls, on the eco thread, when it returns because a stop was requested, to
+    /// release what a library holds for the program outside the heap. It must not call Elm code or touch the
+    /// heap.
     using StopHook = void (*)();
+    /// Registers `fn` as a stop hook, for the rest of the run. Hooks run in registration order, and registering
+    /// the same function again does nothing.
     void addStopHook(StopHook fn);
 
-    // Called by helper threads (e.g. TimerService worker) to wake the main
-    // event loop when new async work is ready. Must not allocate or touch GC.
+    /// Wakes the event loop so that it rechecks its ready async sources and timer tokens. May be called from any
+    /// thread; it neither allocates nor touches the heap.
     void notifyWorkAvailableFromAsync();
 
-    // Activity hook: notifies an embedder (e.g. the N-API addon) when the
-    // worker transitions between "has real work in flight" and "idle,
-    // waiting for external input", so a host event loop (Node) can keep
-    // itself alive exactly while the Elm program is busy — matching the JS
-    // target, where pending Elm work pins the loop but an idle worker does
-    // not. Fired on the scheduler (eco) thread, only on a state change. The
-    // hook must be quick, non-blocking, and must not re-enter the scheduler.
-    // "Real work" = a non-empty run queue OR a hold that is not a Host hold
-    // (pendingAsync_ - hostHolds_ > 0: the embed layer's lifetime hold is
-    // not work, plans/program-liveness-rule.md §8, L11). Null by default
-    // (the standalone executable runtime registers none).
+    /// A function an embedding host registers to learn whether the program is busy, called with `busy` and
+    /// the `user` pointer it was registered with.
+    ///
+    /// Before it sleeps, the event loop reports busy when the live holds outnumber the Host holds, where a Host
+    /// hold from `acquireHold` is counted until it is released and one from `parkResume` is counted for the rest
+    /// of the run, even after release; after every wake it reports true. The hook is called on the eco thread,
+    /// only when the answer changes, and with false when the loop returns. It may be called with the
+    /// scheduler's lock held, so it must not call back into the scheduler.
     using ActivityHook = void (*)(bool busy, void* user);
+    /// Registers `hook`, replacing any previous one, to be called with `user`; a null `hook` registers none.
+    /// `user` is kept and must stay valid while the hook may be called. Set it before the event loop starts.
     void setActivityHook(ActivityHook hook, void* user) {
         activityHook_ = hook;
         activityUser_ = user;
     }
 
-    // Closure calling helper: calls a 1-arg Elm closure, returns result
+    // Closure calls. Each runs Elm code, which may allocate and collect, so HPointers the caller holds across
+    // the call must be rooted.
+
+    /// Applies the closure `closurePtr` to `arg` and returns the result.
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
-    // Calls a 2-arg Elm closure
+    /// Applies the closure `closurePtr` to `arg1` and `arg2` and returns the result.
     static HPointer callClosure2(HPointer closurePtr, HPointer arg1, HPointer arg2);
-    // Calls a 3-arg Elm closure (for onSelfMsg: router, selfMsg, state)
+    /// Applies the closure `closurePtr` to `arg1`, `arg2` and `arg3` and returns the result.
     static HPointer callClosure3(HPointer closurePtr, HPointer arg1, HPointer arg2,
                                  HPointer arg3);
-    // Calls a 4-arg Elm closure (for onEffects: router, cmds, subs, state)
+    /// Applies the closure `closurePtr` to `arg1` through `arg4` and returns the result.
     static HPointer callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
                                  HPointer arg3, HPointer arg4);
 
-    // Process ids are full 64-bit words and never reused (SD-1), so an id
-    // names at most one process for the life of the program.
+    /// Returns a new process id. Ids count up from 0 and are never handed out twice, so an id names at most one
+    /// process for the life of the program. May be called from any thread.
     u64 nextProcessId() { return nextProcId_.fetch_add(1); }
 
-    // Register a resume-closure HPointer as a GC root while an async
-    // operation (e.g. sleep timer, HTTP callback) is pending. Returns an
-    // opaque token; use `takePendingResume` to retrieve the (post-GC,
-    // possibly-evacuated) HPointer and remove the root when the async op
-    // completes. Safe to call from any thread.
+    /// Keeps the closure `resume` alive, and moving with the collector, until `takePendingResume` is called with
+    /// the returned token. Tokens count up from 1 and have bit 63 clear. Acquires no hold; `parkResume` does
+    /// both. The token is plain data and may be passed to another thread and back, but both calls must be made
+    /// on the eco thread.
     u64 registerPendingResume(HPointer resume);
+    /// Removes the closure parked under `token` and returns its current HPointer, or `listNil()` if the token
+    /// is unknown or was already taken.
     HPointer takePendingResume(u64 token);
 
-    // Register an external async completion source (e.g. the HTTP worker).
-    // `drain` is invoked on the main scheduler thread during processReadyAsync
-    // and must do all HPointer/GC work there; `ready` is a non-blocking
-    // predicate folded into the event loop's wait condition so a completion
-    // posted from a worker thread reliably wakes the loop. Both are stored for
-    // the lifetime of the process. Safe to call once at kernel init.
+    /// Registers an async source: work that other threads complete and the eco thread finishes, for the rest of
+    /// the run.
+    ///
+    /// `drain` is called on the eco thread on every pass of the event loop, ready or not, and is where all heap
+    /// work for the source is done; it must release the holds of the work it finishes. `ready` must not block.
+    /// It is called with the scheduler's lock held, while the loop decides whether to sleep, and its returning
+    /// true wakes or keeps the loop running. A source registered during a drain is drained in the same pass.
     void registerAsyncSource(std::function<void()> drain, std::function<bool()> ready);
 
-    // Process is logically immutable: every mutation is implemented by
-    // allocating a new Process with replaced fields. `procWith*` are the
-    // only way to produce a Process value with updated state. The caller
-    // must replace its own HPointer (runQueue entry, rooted stack slot,
-    // etc.) with the returned value; the old Process is then garbage.
+    // Process values. Each `procWith*` returns a new Process with the id and fields of `srcHP` except the one
+    // it names, and registers it as the latest version for its id. The caller must use the returned value in
+    // place of `srcHP`. Each returns `listNil()` if `srcHP` is not a heap object.
+
+    /// Returns a copy of process `srcHP` whose root Task is `newRoot`.
     static HPointer procWithRoot(HPointer srcHP, HPointer newRoot);
+    /// Returns a copy of process `srcHP` whose stack is `newStack`.
     static HPointer procWithStack(HPointer srcHP, HPointer newStack);
+    /// Returns a copy of process `srcHP` whose mailbox is `newMailbox`.
     static HPointer procWithMailbox(HPointer srcHP, HPointer newMailbox);
 
-    // Look up the current (post-drain) HPointer for a process, using either
-    // a still-valid original HPointer or the logical id. Since Process is
-    // immutable, external holders of an HPointer become stale as soon as
-    // the scheduler steps the process; this registry is how they find the
-    // current version. Returns listNil() if the process is not live: a
-    // process leaves the registry when it finishes (its root Task is Succeed
-    // or Fail with no handler left on its stack), so a finished process is
-    // not rooted by the scheduler and its id resolves to nothing.
+    /// Returns the latest version of the process `originalHP` is a version of, or `listNil()` if the process
+    /// has finished or `originalHP` is not a heap object. `originalHP` must still point at a Process, so it
+    /// must have been kept rooted.
     HPointer latestProcessByHPtr(HPointer originalHP);
+    /// Returns the latest version of the process with id `id`, or `listNil()` if there is no live process
+    /// with that id.
     HPointer latestProcessById(u64 id);
 
-    // Hand-over of a finished process's final value (PlatformRuntime reads
-    // an effect-manager state process's result after drain). After
-    // keepResultOnFinish(id), the process's last Process value moves, when it
-    // finishes, from the registry to a rooted slot that takeFinishedProcess(id)
-    // empties. takeFinishedProcess returns listNil() if the process has not
-    // finished; either way it ends the hand-over, so nothing stays rooted.
+    /// Asks that process `id`'s final value be kept when it finishes, for `takeFinishedProcess` to collect.
     void keepResultOnFinish(u64 id);
+    /// Returns the final value of process `id` kept by `keepResultOnFinish`, or `listNil()` if it has not
+    /// finished. Either way the request ends: a later finish is not kept, and nothing stays rooted.
     HPointer takeFinishedProcess(u64 id);
 
-    // Registry updater — scheduler internals call this every time they
-    // produce a new Process value. Exposed publicly (instead of `private`)
-    // so the resume closure evaluator can also update it.
+    /// Records `proc` as the latest version of the process with its id. Does nothing if `proc` is not a heap
+    /// object.
     void registerLatestProcess(HPointer proc);
 
-    // Mark a process id as an effect-manager self-process. When such a
-    // process receives a mailbox message, the step loop runs `handler(msg)`
-    // (which performs onSelfMsg(router,msg,state) + state write-back) instead
-    // of the generic 1-arg callback dispatch, then auto re-arms the
-    // Task_Receive loop so the process blocks for the next message (Q-H).
-    // Keyed by the stable logical process id (the Process *value* changes on
-    // every step since Process is immutable, but the id is stable).
+    /// Makes `handler` the self-message handler of process `procId`, replacing any previous one.
+    ///
+    /// When that process, blocked on a Receive, takes a message from its mailbox, `handler` is called with the
+    /// message in place of the Receive's callback, and the process stays on the same Receive for the next
+    /// message. The registration ends when the process finishes. `handler` must hold no HPointers: it is not
+    /// scanned by the collector.
     void registerSelfProcess(u64 procId, std::function<void(HPointer msg)> handler);
 
 private:
+    /// Creates the scheduler and registers its root scanner.
     Scheduler();
 
+    /// Steps the process whose encoded HPointer is `procEncoded` until it parks, blocks or finishes.
     void stepProcess(uint64_t procEncoded);
 
-    // Called by stepProcess when `proc` has finished: drops its registry entry
-    // and self-message handler, or moves it to finishedProc_ (keepResultOnFinish).
+    /// Ends the registration of finished process `proc`: removes its registry entry and self-message handler,
+    /// and, if `keepResultOnFinish` asked for it, puts it in the finished hand-over.
     void processFinished(HPointer proc);
 
-    // Drain TimerService's ready-token queue: for each token, resolve the
-    // corresponding resume closure from pendingResumes_, allocate
-    // Task.succeed(unit), invoke callClosure1, and decrement pendingAsync_.
-    // Runs only on the main scheduler thread.
+    /// Runs the async work that is ready: for each fired timer token, calls its parked resume closure with
+    /// `Task.succeed ()` and releases the token's hold (also when the resume was already withdrawn); then calls
+    /// every async source's `drain`.
     void processReadyAsync();
 
-    // Mailbox helpers (Elm List as queue).
-    // These allocate a new Process with the updated mailbox and return its
-    // HPointer. Callers must replace their own reference to the Process.
+    /// Returns a copy of process `procHP` with `msg` added to its mailbox, registered as the latest version for
+    /// its id, or `procHP` itself if it is not a heap object.
+    ///
+    /// A mailbox is an Elm list with the newest message first.
     static HPointer mailboxPushBack(HPointer procHP, HPointer msg);
 
+    /// The result of taking the oldest message from a mailbox.
     struct MailboxPopResult {
         bool hasMessage;
-        HPointer newProcHP;  // new Process HPointer after popping (only valid if hasMessage).
-        HPointer msg;
+        HPointer newProcHP;  ///< The process with the message removed; `procHP` unchanged when there was none.
+        HPointer msg;        ///< `listNil()` when there was no message.
     };
+    /// Takes the oldest message from the mailbox of process `procHP`. The whole mailbox is copied, so the cost is
+    /// linear in its length.
     static MailboxPopResult mailboxPopFront(HPointer procHP);
 
-    // Stack helpers (Elm List of StackFrame Custom objects).
-    // pushStack allocates a new Process with the updated stack and returns its HPointer.
+    /// Returns a copy of process `procHP` with a frame on top of its stack that handles a Task whose
+    /// constructor is `expectedTag` (`Task_Succeed` or `Task_Fail`) by calling `callback`. Returns `procHP`
+    /// itself if it is not a heap object.
     static HPointer pushStack(HPointer procHP, u64 expectedTag, HPointer callback);
 
+    /// The result of popping stack frames up to the first that handles a given constructor.
     struct PopStackResult {
         bool matched;
-        HPointer newProcHP;  // new Process HPointer after popping.
-        HPointer callback;
+        HPointer newProcHP;  ///< The process with the frames popped.
+        HPointer callback;   ///< The matching frame's callback; `listNil()` when none matched.
     };
+    /// Pops frames from the stack of process `procHP` until one with tag `tag` has been popped, and returns that
+    /// frame's callback. With no match, the stack is emptied. `newProcHP` is `procHP` itself only when `procHP` is
+    /// not a heap object.
     static PopStackResult popStackMatching(HPointer procHP, u64 tag);
 
+    /// A run-queue entry: a Process HPointer, encoded as a word the root scanner can update in place.
     struct RootedProc {
-        uint64_t encoded;  // HPointer encoded as uint64_t for GC root registration
+        uint64_t encoded;
     };
 
-    std::deque<RootedProc> runQueue_;
-    // Maps a logical Process id to the encoded HPointer of its current (latest)
-    // immutable Process value. Updated by every scheduler helper that produces
-    // a new Process; scanned by the external GC root scanner (values are
-    // evacuated like any other HPointer).
+    // The heap roots. `runQueue_`, `latestProc_`, `finishedProc_` and `pendingResumes_` hold encoded HPointers
+    // and are walked by the root scanner; the other members here are not. Only `pendingResumes_` is guarded, by
+    // `resumeMutex_`; the other three change on the eco thread only.
+    std::deque<RootedProc> runQueue_;  // Changed under `mutex_` as well, for the event loop's wait.
+    // Live process id to its latest Process value.
     std::unordered_map<u64, uint64_t> latestProc_;
-    // keepResultOnFinish: ids whose final Process value is handed over, and
-    // the finished values awaiting takeFinishedProcess (scanned as roots).
+    // Ids whose final value is to be kept, and the kept values awaiting `takeFinishedProcess`.
     std::unordered_set<u64> keepResult_;
     std::unordered_map<u64, uint64_t> finishedProc_;
-    // Pending-resume registry: tokens → encoded HPointers of resume
-    // closures held alive while the owning async op is in flight. The
-    // external root scanner walks this map so closures survive GC until
-    // the async op fires or is cancelled.
+    // Resume token to parked resume closure.
     std::unordered_map<u64, uint64_t> pendingResumes_;
     std::atomic<u64> nextResumeToken_{1};
     std::mutex resumeMutex_;
-    // Effect-manager self-processes: logical process id → message handler.
-    // The handler captures no HPointers (it reads manager state from
-    // PlatformRuntime by home), so this map needs no GC scanning. Populated
-    // once per manager during setupEffects.
+    // Process id to self-message handler. Not scanned; handlers hold no HPointers.
     std::unordered_map<u64, std::function<void(HPointer)>> selfMsgHandlers_;
-    // External async completion sources (HTTP, etc). Drained on the main
-    // thread in processReadyAsync; their `ready` predicates feed the wait
-    // condition. Registered on the main thread, possibly lazily from inside a
-    // drain (a binding stepped by a drain may register a new source), so the
-    // loops over this container iterate by index with the size re-read each
-    // step, and it is a deque: push_back never moves existing elements, so a
-    // drain that registers a source does not destroy the std::function that
-    // is running.
+    // Registered async sources as (drain, ready). Loops over it go by index and re-read the size on every step,
+    // because a drain may register another source; a deque, because `push_back` does not move the elements, so
+    // the `std::function` that is running survives a registration.
     std::deque<std::pair<std::function<void()>, std::function<bool()>>> asyncSources_;
-    bool working_ = false;
+    bool working_ = false;  // Set while `drain` runs; nothing reads it.
+    // Guards the run queue against the event loop's wait, and the quiescence listeners. Taken briefly before
+    // every notification of `eventCV_`, so that a wake-up cannot fall between the loop's check and its wait.
     std::mutex mutex_;
     std::condition_variable eventCV_;
+    // The number of live holds.
     std::atomic<int> pendingAsync_{0};
-    // The raw liveness counter (LIVE_006): private; called only by the hold
-    // API (noteAcquire / releaseHold), so every change of pendingAsync_ is a
-    // hold with a token and, in census builds, a census entry.
+    /// Adds one live hold. Called only by `noteAcquire`, so that every hold has a token.
     void incrementPendingAsync();
+    /// Removes one live hold and wakes the event loop. Called only by `releaseHold`.
     void decrementPendingAsync();
-    // Hold census (plans/program-liveness-rule.md §5.1). Always declared (the
-    // class layout must not depend on NDEBUG: TUs differ); populated only when
-    // holdCensusEnabled(). holdsMutex_ is a leaf lock: never taken while
-    // holding mutex_, never held while calling out.
+    // The hold census, declared in every build so that the class layout does not depend on `NDEBUG`, and filled
+    // only when `holdCensusEnabled()`. `holdsMutex_` guards `holds_` and `holdlessParks_`. It is a leaf lock:
+    // nothing else is taken while it is held, and it is never taken under `mutex_`.
     std::mutex holdsMutex_;
-    std::unordered_map<HoldToken, std::pair<HoldKind, const char*>> holds_;
-    std::vector<std::pair<const char*, u64>> holdlessParks_;
+    std::unordered_map<HoldToken, std::pair<HoldKind, const char*>> holds_;  // Token to (kind, site).
+    std::vector<std::pair<const char*, u64>> holdlessParks_;                // Binding name to count.
     std::atomic<u64> nextHoldId_{1};
+    // Free-standing Host holds, which do not count as busy. Also counts resume-keyed Host holds, which are
+    // never subtracted.
     std::atomic<int> hostHolds_{0};
     std::atomic<u64> acquireSerial_{0};
     std::atomic<u64> enqueueSerial_{0};
     int drainDepth_ = 0;
+    /// Counts the acquisition of hold `t` of kind `kind` from `site`: in the census, in the Host count, and in
+    /// the number of live holds. Census builds abort if `t` is already live.
     void noteAcquire(HoldToken t, HoldKind kind, const char* site);
-    // Host-liveness activity hook (see setActivityHook). activityHook_ may be
-    // read/written across threads but is only set once before the loop runs;
-    // lastActivityBusy_ is touched only on the eco thread in runEventLoop.
+    // The activity hook. Plain members, so they must be set before the loop runs. `activityUser_` is the
+    // embedder's, may be null, and is passed through unread. `lastActivityBusy_` is the last state reported,
+    // touched only by the eco thread; it starts true, so the first report is an idle one.
     ActivityHook activityHook_ = nullptr;
     void* activityUser_ = nullptr;
-    bool lastActivityBusy_ = true;  // assume busy until the loop first idles
+    bool lastActivityBusy_ = true;
+    /// Calls the activity hook with `busy` if it differs from the last state reported.
     void fireActivity(bool busy);
     std::atomic<u64> nextProcId_{0};
     std::atomic<bool> stopRequested_{false};
     std::atomic<bool> embedMode_{false};
-    // Quiescence hook listeners (see addQuiescenceListener), guarded by mutex_.
+    // Guarded by `mutex_`.
     std::vector<std::pair<QuiescenceListener, void*>> quiescenceListeners_;
-    // Stop hooks (see addStopHook); eco thread only.
+    // Eco thread only.
     std::vector<StopHook> stopHooks_;
 };
 

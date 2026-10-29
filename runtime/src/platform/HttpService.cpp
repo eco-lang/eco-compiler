@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Writes one line tagged `tag` to stderr, formatted as by `printf`, in builds that define `ECO_KERNEL_DEBUG`.
+// Otherwise it expands to an expression that does nothing, and the arguments are not evaluated. `tag` must be a
+// string literal, because it is pasted into the format.
 #ifdef ECO_KERNEL_DEBUG
 #define ECO_KLOG(tag, fmt, ...) \
     std::fprintf(stderr, "[eco-kernel:" tag "] " fmt "\n", ##__VA_ARGS__)
@@ -15,8 +18,9 @@
 
 namespace Elm::Platform {
 
-// Leaky heap singleton, mirroring TimerService: `new`'d on first access and
-// never destroyed; the detached worker thread runs until process exit.
+// The service, once `instance` has created it. It is allocated with `new` and never deleted, because the
+// detached worker thread uses it until the process exits. Nothing outside `instance` reads this variable;
+// `instance` keeps its own copy.
 static HttpService* s_instance = nullptr;
 
 HttpService& HttpService::instance() {
@@ -88,58 +92,64 @@ bool HttpService::hasProgress() const {
 
 namespace {
 
+// Appends the `size * nmemb` bytes at `contents` to the `std::string` that `userp` points to, and returns that
+// count. It is libcurl's write callback, receiving the response body.
 size_t writeCb(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t n = size * nmemb;
     static_cast<std::string*>(userp)->append(static_cast<char*>(contents), n);
     return n;
 }
 
+// The response headers collected by `headerCb` during one transfer.
 struct HeaderAccum {
     std::vector<std::pair<std::string, std::string>> headers;
 };
 
-// Context handed to the libcurl XFERINFO callback. Lives on the worker
-// thread's stack for the duration of curl_easy_perform. Tracks the last-posted
-// byte counts so unchanged ticks are not re-posted (curl fires the callback on
-// a timer, often with identical values between actual transfers).
+// What `xferInfoCb` needs to know about one transfer: where to post ticks, the request's abort control, and
+// the byte counts last posted in each direction, so that a callback with unchanged counts posts nothing. It
+// lives on the worker thread's stack for the duration of `perform`.
 struct ProgressCtx {
+    // The service ticks are posted to. Null means no ticks are posted.
     Elm::Platform::HttpService* service = nullptr;
-    const Elm::Platform::HttpService::RequestControl* control = nullptr;   // may be null
+    // The request's abort control, owned by the `Request` being performed. Null when the request has none.
+    const Elm::Platform::HttpService::RequestControl* control = nullptr;
     std::uint64_t token = 0;
     curl_off_t lastDl = -1;
     curl_off_t lastUl = -1;
-    // pushProgress is private; ProgressCtx is befriended via a thin shim.
+    // Posts a tick for this transfer's token, with negative counts clamped to zero. `service` must not be null.
     void post(bool isUpload, curl_off_t now, curl_off_t total);
 };
 
+// Receives a transfer's progress, as libcurl's XFERINFO callback. It returns non-zero, which makes libcurl
+// stop the transfer with `CURLE_ABORTED_BY_CALLBACK`, when the request's control is in `AbortRequested`.
+// Otherwise it posts a tick for each direction whose count has changed since its last tick, provided that the
+// count or the expected total is non-zero, and returns zero. `clientp` points to a `ProgressCtx`.
 int xferInfoCb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
                curl_off_t ultotal, curl_off_t ulnow) {
     auto* ctx = static_cast<ProgressCtx*>(clientp);
     if (!ctx) return 0;
-    // Abort (Http.cancel, kill, plans/program-liveness-rule.md §5.3): a
-    // non-zero return stops the transfer with CURLE_ABORTED_BY_CALLBACK.
-    // libcurl calls this at least about once a second, also while waiting
-    // for a response.
+    // libcurl calls this periodically, also while waiting for a response, so an abort is seen even when no
+    // bytes are moving.
     if (ctx->control &&
         ctx->control->state.load() == HttpService::RequestControl::AbortRequested) {
         return 1;
     }
     if (!ctx->service) return 0;
-    // Upload progress (POST/PUT bodies): emit a Sending tick when ulnow moves.
     if ((ultotal > 0 || ulnow > 0) && ulnow != ctx->lastUl) {
         ctx->lastUl = ulnow;
         ctx->post(/*isUpload=*/true, ulnow, ultotal);
     }
-    // Download progress: emit a Receiving tick when dlnow moves. total==0 for
-    // chunked / unknown-length responses (drives the Receiving.size=Nothing
-    // branch on the main thread).
     if ((dltotal > 0 || dlnow > 0) && dlnow != ctx->lastDl) {
         ctx->lastDl = dlnow;
         ctx->post(/*isUpload=*/false, dlnow, dltotal);
     }
-    return 0;  // 0 = continue
+    return 0;
 }
 
+// Adds one response header line to the `HeaderAccum` that `userdata` points to, and returns its length. It is
+// libcurl's header callback. Status lines and the blank line ending a header block are skipped, and so is any
+// line with no colon. The name is lower-cased and the value has leading blanks and the line ending removed.
+// Nothing resets the list between responses, so with redirects it holds the headers of every response.
 size_t headerCb(char* buffer, size_t size, size_t nitems, void* userdata) {
     size_t n = size * nitems;
     auto* acc = static_cast<HeaderAccum*>(userdata);
@@ -210,19 +220,13 @@ HttpService::Result HttpService::perform(const Request& req) {
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headerAcc);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    // Enable transparent compression. Passing "" advertises every encoding
-    // libcurl was built with (gzip, deflate, br on most builds) and auto-
-    // decompresses the response body before WRITEFUNCTION sees it. Without
-    // this, a caller-supplied `Accept-Encoding: gzip` header travels but
-    // libcurl returns the raw compressed bytes — the package registry
-    // gzips elm.json responses unconditionally, so the JSON parser then
-    // sees binary gunk ("corrupted information from …/elm.json").
+    // "" advertises every encoding this libcurl supports and has it decode the body before `writeCb` sees it.
+    // Without it, a server that compresses the response, for example because the request carries its own
+    // `Accept-Encoding` header, would hand back compressed bytes.
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 
-    // Progress reporting (Http.track): the XFERINFO callback posts PODs to the
-    // progress queue on the worker thread; the main thread turns them into Elm
-    // Progress values. Always enabled — the main thread only routes ticks for
-    // tracked tokens, so untracked requests just discard them cheaply.
+    // Progress is on for every request, because the same callback is what notices an abort. A consumer that
+    // does not want a request's ticks has to discard them.
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferInfoCb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progressCtx);
@@ -232,9 +236,7 @@ HttpService::Result HttpService::perform(const Request& req) {
 
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, req.verifyPeer ? 1L : 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, req.verifyPeer ? 2L : 0L);
-    // CA bundle: explicit request override, else honor the conventional
-    // CURL_CA_BUNDLE env var. (libcurl, unlike the curl CLI, does not read that
-    // env itself, so we apply it here.)
+    // libcurl does not read `CURL_CA_BUNDLE` itself (the curl command-line tool does), so it is applied here.
     std::string caInfo = req.caInfo;
     if (caInfo.empty()) {
         if (const char* env = getenv("CURL_CA_BUNDLE")) caInfo = env;
@@ -243,10 +245,9 @@ HttpService::Result HttpService::perform(const Request& req) {
         curl_easy_setopt(curl, CURLOPT_CAINFO, caInfo.c_str());
     }
 
-    // Method + body. We always set CUSTOMREQUEST for the verb and supply body
-    // via COPYPOSTFIELDS so libcurl owns a copy (the Request is freed after
-    // submit returns on the main thread, but the worker keeps `req` alive for
-    // the duration of perform()).
+    // A body is given with `CURLOPT_COPYPOSTFIELDS`, which makes libcurl use `POST` unless a custom method is
+    // set, and a custom method is set unless the method is empty or `GET`. So a `GET` or empty-method request
+    // with a body goes out as a `POST`.
     if (!req.method.empty() && req.method != "GET") {
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, req.method.c_str());
     }
@@ -254,14 +255,9 @@ HttpService::Result HttpService::perform(const Request& req) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(req.body.size()));
         curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, req.body.data());
     } else if (req.method == "POST" || req.method == "PUT" || req.method == "PATCH") {
-        // Empty-body POST/PUT/PATCH must still carry Content-Length: 0.
-        // CURLOPT_CUSTOMREQUEST alone leaves libcurl in GET-shape (no
-        // request body, no Content-Length); the elm.org package registry
-        // rejects those with 411. POSTFIELDSIZE=0 tells libcurl the body
-        // length is exactly 0; COPYPOSTFIELDS must be set to engage the
-        // request-body machinery, but the buffer is never read because the
-        // size is 0. The size MUST be set first or libcurl strlens the
-        // data string.
+        // With only `CURLOPT_CUSTOMREQUEST`, libcurl sends no body and no `Content-Length`. Setting a body of
+        // size zero makes it send `Content-Length: 0`. The size must be set before the data, or libcurl takes
+        // the length of the data string instead.
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
         curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, "");
     }
@@ -325,8 +321,8 @@ void HttpService::workerLoop() {
             requests_.pop();
         }
         if (req.control) {
-            // Claimed while queued (RequestControl::abort): the eco thread has
-            // released its hold already, and nothing may be posted for it.
+            // Aborted while queued: `RequestControl::abort` returned true, so the submitter expects nothing to
+            // be posted for this request.
             std::uint8_t q = RequestControl::Queued;
             if (!req.control->state.compare_exchange_strong(q, RequestControl::Running)) {
                 continue;

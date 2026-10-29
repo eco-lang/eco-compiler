@@ -17,7 +17,7 @@
 
 namespace Elm::Platform {
 
-// Leaky heap singleton + detached worker thread. Mirrors TimerService.
+// The service, once instance() has created it. Nothing reads it.
 static WaitService* s_instance = nullptr;
 
 WaitService& WaitService::instance() {
@@ -57,8 +57,7 @@ void WaitService::submit(int64_t pid, std::uint64_t resumeToken, WaitLane lane) 
         std::lock_guard<std::mutex> lk(pendingMutex_);
         auto it = unclaimed_.find(pid);
         if (it != unclaimed_.end()) {
-            // Reap-before-submit race: the worker already collected this
-            // child while waiting for another one.
+            // The worker reaped this child while waiting for another one.
             rawStatus = it->second;
             unclaimed_.erase(it);
             alreadyReaped = true;
@@ -88,11 +87,10 @@ bool WaitService::hasReady(WaitLane lane) const {
 }
 
 #if defined(_WIN32)
-// Windows (plans/spawn-not-fork.md Phase 1): no SIGCHLD / waitpid. Each
-// submitted child gets a waiter thread that blocks on its process handle (the
-// one platform::spawnChild kept, or one opened by pid), reads the exit code
-// and routes it to the submit's lane, as the POSIX worker does. The exit
-// code is the raw status (exitCodeFromStatus is the identity here).
+// Windows has no waitpid. The worker takes each batch of submits and starts a
+// detached waiter thread per child, which owns the process handle from then on,
+// blocks on it, and closes it. A child whose handle cannot be had is answered
+// at once with exit code 1.
 void WaitService::workerLoop() {
     while (true) {
         std::vector<Pending> batch;
@@ -123,9 +121,9 @@ void WaitService::workerLoop() {
 #else
 void WaitService::workerLoop() {
     while (true) {
-        // Wait until at least one pending registration exists. Without
-        // this, `waitpid(-1, …, 0)` would return ECHILD immediately and we
-        // would burn CPU spinning.
+        // Reap only while a wait is pending: with no submit outstanding, a
+        // child reaped here might never be claimed, and with no children at
+        // all waitpid would return ECHILD at once and the loop would spin.
         {
             std::unique_lock<std::mutex> lk(pendingMutex_);
             pendingCV_.wait(lk, [this] { return !pending_.empty(); });
@@ -135,17 +133,16 @@ void WaitService::workerLoop() {
         pid_t pid = ::waitpid(-1, &status, 0);
         if (pid < 0) {
             if (errno == EINTR) continue;
-            // ECHILD: pending is non-empty but this process has no children
-            // left (a registered pid was reaped elsewhere, or was never our
-            // child). Back off instead of spinning; a later spawn makes
-            // waitpid block again.
+            // Any error other than EINTR, in practice ECHILD: a wait is
+            // pending but the process has no children, because the pid was
+            // reaped elsewhere or was never a child. Back off instead of
+            // spinning; a later spawn makes waitpid block again.
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        // Match against the pending registry. A child nobody has submitted
-        // yet is parked in unclaimed_ so a later submit finds it (reap-
-        // before-submit race, review R1.5).
+        // A child nobody has submitted yet is kept in unclaimed_ for a
+        // later submit to find.
         Pending match{};
         bool found = false;
         {

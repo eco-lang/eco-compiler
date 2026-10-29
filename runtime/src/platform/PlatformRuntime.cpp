@@ -12,55 +12,57 @@
 using namespace Elm;
 using namespace Elm::alloc;
 
-// Json kernel entry point (elm-kernel-cpp). Declared locally to keep the
-// runtime -> kernel dependency at the linker level only (same pattern as
-// PortRuntime.cpp).
+// Json kernel entry point (elm-kernel-cpp). Declared here rather than
+// included, so the runtime depends on the kernel only at link time.
 extern "C" HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString);
 
 namespace Elm::Platform {
 
-// Encode/decode helpers
+// Returns the 64-bit word of `h`, the form every heap value is stored in here.
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+// Returns the HPointer whose word is `val`.
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
+// Returns whether `h` is an embedded constant (its `ptr_ind` bit is set).
 static inline bool hpIsConstant(HPointer h) {
     return h.ptr_ind != 0;
 }
 
+// Returns the address of the object `h` refers to, or null for an embedded
+// constant.
 static inline void* resolveHP(HPointer h) {
     if (hpIsConstant(h)) return nullptr;
     return Allocator::instance().resolve(h);
 }
 
-// Convert any String form (leaf or slice) to a UTF-8 std::string by
-// delegating to Elm::StringOps::toStdString, the canonical interop path.
+// Returns the String at `ptr`, in any of its forms, as UTF-8.
 static std::string elmStringToStd(void* ptr) {
     return Elm::StringOps::toStdString(ptr);
 }
 
 // ============================================================================
-// applyTaggers-as-closure support (PORT_005 / JS _Platform_toEffect parity)
+// applyTaggers-as-closure support
 // ============================================================================
 //
-// gatherEffects hands the accumulated Fx_Map tagger chain to the owning
-// manager's cmdMap/subMap as a callable closure, mirroring the JS kernel:
+// gatherEffects hands the Fx_Map functions collected above a leaf to the
+// owning manager's cmdMap/subMap as one closure:
 //
 //     effect = A2(map, applyTaggers, value)
 //
-// The map function decides how the tagger chain applies to the leaf value
-// (Time/Task rebuild their payload customs with a composed tagger; outgoing
-// ports drop it; incoming ports compose it over the subscription tagger).
+// The map closure decides how the functions apply to the leaf value; a
+// manager may apply them, keep them inside its value, or drop them.
 
-// 2-slot closure: args[0] = captured taggers list, args[1] = value.
+// Evaluates an applyTaggers closure: args[0] is the captured taggers list
+// and args[1] the value; returns `applyTaggers(taggers, value)`, encoded.
 static void* applyTaggersEvaluator(void* args[]) {
     HPointer taggers = decodeHP(reinterpret_cast<uint64_t>(args[0]));
     HPointer value = decodeHP(reinterpret_cast<uint64_t>(args[1]));
@@ -69,12 +71,9 @@ static void* applyTaggersEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(result));
 }
 
-// Build a 1-arg closure that applies `taggers` innermost-first to its
-// argument. Callers must not pass an empty chain (gatherEffects routes
-// leaf values with no taggers straight through, both as a fast path and
-// to keep unmapped effects byte-identical to the pre-ports behaviour).
-// The result is a fresh allocation; callers must root it before any
-// further allocation.
+// Returns a new closure of one argument that applies `taggers`, innermost
+// first, to it. gatherEffects calls this only for a non-empty list. The
+// result is unrooted; the caller must root it before allocating again.
 static HPointer makeApplyTaggersClosure(HPointer taggers) {
     Elm::StackRootGuard guard(&taggers);
     HPointer cl = allocClosure(applyTaggersEvaluator, 2);
@@ -89,7 +88,6 @@ static HPointer makeApplyTaggersClosure(HPointer taggers) {
 // ============================================================================
 
 PlatformRuntime& PlatformRuntime::instance() {
-    // Intentionally leaked — see Scheduler::instance().
     static PlatformRuntime* runtime = new PlatformRuntime();
     return *runtime;
 }
@@ -104,11 +102,11 @@ PlatformRuntime::PlatformRuntime() {
             if (sendToAppClosure_ != 0)
                 evacuate(sendToAppClosure_);
 
-            // Flags decoder (registered by the startup preamble)
+            // Flags decoder
             if (flagsDecoder_ != 0)
                 evacuate(flagsDecoder_);
 
-            // Model storage (also registered as JIT root, but double-evacuating is safe)
+            // Model storage (also a value root, but double-evacuating is safe)
             if (modelStorage_ != 0)
                 evacuate(modelStorage_);
 
@@ -180,19 +178,17 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
             sched.taskReceive(recvCallback));
         Elm::StackRootGuard self_guard(&selfProc);
 
-        // The self-process id is stable across re-arms (Process is immutable;
+        // The self-process id is stable across steps (Process is immutable;
         // each step allocates a new value with the same id). sendToSelf and the
         // dedicated self-process step both resolve the live version by this id.
         u64 selfProcId = static_cast<Process*>(resolveHP(selfProc))->id;
 
         // Create router: Custom with ctor=CTOR_Router.
         // field[0] = sendToApp closure (boxed, kind 00)
-        // field[1] = self-process id  (unboxed Int, kind 01) — Q-I Option 2:
-        //   store the *id* not a Process snapshot, so sendToSelf can resolve the
-        //   live (immutable, advancing) self-process via latestProcessById and
-        //   never delivers to a stale snapshot. Router is kernel-internal: only
-        //   sendToApp (field 0) and sendToSelf (field 1) read it; Elm never
-        //   introspects it. Slot 1 kind 01 lives in bits [2,3] → mask 0b0100.
+        // field[1] = self-process id  (unboxed Int, kind 01), so that
+        //   sendToSelf finds the latest version through latestProcessById.
+        //   In this file only sendToApp (field 0) and sendToSelf (field 1)
+        //   read it. Slot 1 kind 01 lives in bits [2,3] → mask 0b0100.
         std::vector<Unboxable> routerFields(2);
         routerFields[0] = boxed(sendToAppClosure);
         routerFields[1] = unboxedInt(static_cast<i64>(selfProcId));
@@ -202,7 +198,7 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         // of this iteration (mirrors self_guard for selfProc).
         Elm::StackRootGuard router_guard(&router);
 
-        // Register the self-process message handler (Q-H). When this process
+        // Register the self-process message handler. When this process
         // receives a mailbox message, the scheduler's dedicated step invokes
         // this handler with the message, which runs onSelfMsg + threads state.
         std::string homeCopy = home;
@@ -211,27 +207,19 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
 
         // Run the init task to get initial manager state.
         //
-        // Effect-manager kernels (e.g. eco_register_task_effect_manager in
-        // elm-kernel-cpp/src/core/TaskEffectManager.cpp) register `init` as a
-        // 0-arg closure that *produces* the init Task when applied — not as
-        // an already-evaluated Task value. Detect that case and apply the
-        // closure first to obtain the actual Task; otherwise we'd hand a
-        // Closure to rawSpawn and the scheduler would treat its bytes as a
-        // Task header, silently dropping the init effect.
+        // A manager may register `init` as a 0-arg closure that *produces*
+        // the init Task, not as a Task. Detect that case and call the
+        // closure first; handed to rawSpawn, a Closure would be read as a
+        // Task and the init effect silently dropped.
         HPointer initTask = decodeHP(info.init);
         HPointer initialState = listNil();  // fallback
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
             void* initPtr = resolveHP(initTask);
             if (initPtr && static_cast<Header*>(initPtr)->tag == Tag_Closure) {
-                // The kernel registers `init` as a 0-arity thunk closure
-                // (allocClosure(...InitEvaluator, 0)) that *produces* the
-                // init Task when forced. eco_apply_closure(_, nullptr, 0)
-                // is a no-op (num_args==0 returns the closure unchanged,
-                // see RuntimeExports.cpp eco_apply_closure_eval), so it must
-                // NOT be used to force a thunk. eco_closure_call_saturated
-                // has no 0-arg short-circuit and dispatches straight to the
-                // evaluator, which is exactly the "force a saturated thunk"
-                // operation needed here.
+                // eco_apply_closure with no arguments returns the closure
+                // unchanged, so it cannot force a 0-arity thunk.
+                // eco_closure_call_saturated calls the evaluator even with
+                // no arguments.
                 HPtr closureHPtr = HPtr::fromBits(encodeHP(initTask));
                 HPtr result = eco_closure_call_saturated(closureHPtr, nullptr,
                                                          0, nullptr);
@@ -266,8 +254,8 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
                     assert(rootTask->header.tag == Tag_Task
                            && "effect-manager init process root must be a Task");
                     if (rootTask->ctor == Task_Succeed) {
-                        // Effect-manager init state is structural — never a
-                        // primitive — so the value is always a boxed HPointer.
+                        // Effect-manager init state must be a boxed HPointer
+                        // (asserted).
                         assert((rootTask->header.unboxed & 0x3) == 0
                                && "effect-manager init state must be boxed");
                         initialState = rootTask->value.p;
@@ -283,9 +271,8 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         managerStates_[home] = ms;
     }
 
-    // Return an empty record. Ports need nothing here: each port is registered
-    // as an effect manager (PortRuntime.cpp, PORT_001) and was set up by the
-    // loop above like any other manager.
+    // Ports need nothing here: each port is registered as an effect manager
+    // and was set up by the loop above like any other manager.
     return emptyRecord();
 }
 
@@ -318,10 +305,9 @@ void PlatformRuntime::enqueueEffects(HPointer cmdBag, HPointer subBag) {
     effectsActive_ = false;
 }
 
-// Decode a vector of encoded HPointers and build an Elm list via the
-// GC-safe listFromPointers helper. The caller's uint64_t vector remains
-// reachable through the external root scanner, so if GC fires inside
-// listFromPointers both copies are evacuated consistently.
+// Returns the Elm list of the encoded HPointers in `encoded`, in order. A GC
+// point. listFromPointers roots its own copy; `encoded` is expected to be
+// scanned too (effectsScratch_ during a dispatch), so both stay current.
 static HPointer listFromEncoded(const std::vector<uint64_t>& encoded) {
     std::vector<HPointer> decoded;
     decoded.reserve(encoded.size());
@@ -333,7 +319,7 @@ void PlatformRuntime::dispatchEffects() {
     if (managers_.empty()) return;
 
     // Each bag is decoded right before its gather: gathering the cmd bag
-    // calls the managers' cmdMap closures (PORT_005), which may GC, so a
+    // calls the managers' cmdMap closures, which may GC, so a
     // subBag decoded up front would be stale by the second gather.
     // activeBatch_ (scanned while dispatchActive_) holds the current words.
 
@@ -341,7 +327,7 @@ void PlatformRuntime::dispatchEffects() {
     // can find the slot for any home it encounters.
     effectsScratch_.clear();
     for (auto& [home, _] : managers_) {
-        effectsScratch_[home];  // default-construct PerManagerEffects
+        effectsScratch_[home];
     }
 
     HPointer nilTaggers = listNil();
@@ -358,9 +344,6 @@ void PlatformRuntime::dispatchEffects() {
         HPointer onEffectsFn = decodeHP(miIt->second.onEffects);
         if (alloc::isNil(onEffectsFn) || hpIsConstant(onEffectsFn)) continue;
 
-        // Build cmd/sub Elm lists via the GC-safe helper. Replaces the
-        // old manual cons() loop whose accumulator + un-consumed HPointers
-        // were unrooted across each cons allocation.
         HPointer cmdList = listFromEncoded(per.cmdHPs);
         // Root cmdList across the subList build: listFromEncoded conses (a
         // GC point) and cmdList's fresh spine is reachable only from this
@@ -443,17 +426,14 @@ void PlatformRuntime::gatherEffects(
 
         HPointer effect;
         if (alloc::isNil(taggers)) {
-            // No Fx_Map wrappers: the value passes through unchanged.
-            // (`map(applyTaggers, value)` with an empty chain is identity
-            // for every well-formed manager; skipping the call keeps
-            // unmapped effects on the exact pre-ports path.)
+            // No Fx_Map above the leaf: the value passes through unchanged,
+            // without calling the manager's map closure.
             effect = value;
         } else {
-            // JS parity (_Platform_toEffect): hand the tagger chain to the
-            // manager's cmdMap/subMap as a callable and let the map decide
-            // how it applies to the leaf value (PORT_005). Managers without
-            // a map function (registered as Nil) get the legacy direct
-            // application.
+            // Hand the tagger chain to the manager's cmdMap/subMap as a
+            // closure and let the map decide how it applies. A manager
+            // whose map is Empty gets the functions applied to the value
+            // directly.
             HPointer mapFn = listNil();
             {
                 auto miIt = managers_.find(home);
@@ -464,7 +444,6 @@ void PlatformRuntime::gatherEffects(
             }
 
             if (alloc::isNil(mapFn) || hpIsConstant(mapFn)) {
-                // Legacy fallback: apply taggers directly to the leaf value.
                 effect = applyTaggers(taggers, value);
             } else {
                 // Root value + mapFn + the taggers chain across the closure
@@ -509,10 +488,9 @@ void PlatformRuntime::gatherEffects(
     }
     else if (ctor == Fx_Map) {
         // Map: values[0] = tagger function, values[1] = inner bag.
-        // Root innerBag across the cons allocation (it would otherwise go
-        // stale before the recursive call), and newTaggers across the
-        // recursion is the callee's responsibility via its parameter...
-        // which is a C++ local — so root it here too for the duration.
+        // Root both across the cons allocation, and the new chain across
+        // the recursion, which takes it by value and cannot update this
+        // frame's copy.
         HPointer tagger = custom->values[0].p;
         HPointer innerBag = custom->values[1].p;
         Elm::StackRootGuard guard(&tagger, &innerBag);
@@ -524,9 +502,8 @@ void PlatformRuntime::gatherEffects(
 
 HPointer PlatformRuntime::applyTaggers(HPointer taggers, HPointer value) {
     HPointer result = value;
-    // taggers is a list of functions to apply (innermost first).
-    // Walk the list and apply each. result, current and the next-tail must
-    // survive each callClosure1 (which runs Elm code that may GC).
+    // result, and the cursor over the list, must survive each callClosure1,
+    // which runs Elm code that may GC.
     Elm::StackRootGuard guard(&result);
     Elm::alloc::RootedListCursor cursor(taggers);
     Elm::Unboxable tagHead;
@@ -561,10 +538,8 @@ void PlatformRuntime::deliverToApp(HPointer msg) {
 }
 
 HPointer PlatformRuntime::sendToSelf(HPointer router, HPointer msg) {
-    // Extract the self-process id from router field 1 (unboxed Int, Q-I) and
-    // resolve the live (latest) Process version. The Router only holds the id
-    // because Process is immutable — a stored snapshot would go stale on the
-    // first step of the self-process.
+    // Router field 1 is the self-process id (unboxed Int); the process is
+    // looked up by it because every step makes a new Process version.
     void* routerPtr = resolveHP(router);
     if (!routerPtr) return Scheduler::instance().taskSucceed(unit());
 
@@ -630,9 +605,8 @@ void PlatformRuntime::handleSelfMsg(const std::string& home, HPointer msg) {
                 // Only write back if onSelfMsg actually changed the state.
                 // sendToApp inside onSelfMsg runs the app's update cycle
                 // synchronously, which can re-enter onEffects and update
-                // managerStates_[home].state already; writing back an unchanged
-                // onSelfMsg result (it returns the same `state` it received —
-                // the common case, e.g. Http only sends) would clobber that.
+                // managerStates_[home].state already; writing back an onSelfMsg
+                // result equal to the `state` it was given would clobber that.
                 // `state` is rooted by call_guard, so its bits are GC-current.
                 if (encodeHP(newState) != encodeHP(state)) {
                     auto writeIt = managerStates_.find(home);
@@ -649,19 +623,13 @@ void PlatformRuntime::handleSelfMsg(const std::string& home, HPointer msg) {
 // Platform.worker Initialization
 // ============================================================================
 
-// sendToApp evaluator for Platform.worker
-// Captured values: args[0] = impl (record), args[1] = model storage pointer (as uint64_t)
-// Argument: args[2] = msg
+// Evaluates the worker's sendToApp closure, which runs one update cycle:
+// `update msg model` gives the new model and a command, the model is stored,
+// and the command is enqueued with `subscriptions newModel`. rawArgs[0] is
+// the captured impl record and rawArgs[1] the message, both encoded. Returns
+// `()`, encoded; if impl or update's result is not a heap object it returns
+// at once, with the model unchanged.
 static void* workerSendToAppEvaluator(void* rawArgs[]) {
-    // This is the update cycle:
-    // 1. pair = update(msg, model)
-    // 2. model = pair.a
-    // 3. newCmd = pair.b
-    // 4. subs = subscriptions(model)
-    // 5. enqueueEffects(newCmd, subs)
-
-    // Captured: args[0] = impl (boxed HPointer)
-    // Argument: args[1] = msg (boxed HPointer)
     uint64_t implEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
     uint64_t msgEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
 
@@ -669,7 +637,6 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     HPointer msg = decodeHP(msgEnc);
 
     // Access model storage via the PlatformRuntime singleton
-    // (Can't pass raw pointer through closure because buildEvaluatorArgs boxes unboxed captures)
     auto& runtime = PlatformRuntime::instance();
     HPointer currentModel = decodeHP(runtime.getModelStorage());
 
@@ -724,11 +691,7 @@ void PlatformRuntime::setFlagsDecoder(HPointer decoder) {
     flagsDecoder_ = encodeHP(decoder);
 }
 
-// Decode the host-supplied flags JSON with the program's registered flags
-// decoder. Mirrors PortRuntime::drainPendingSends' decode discipline: every
-// HPointer local is rooted across the parse/decode allocations, and a
-// decode failure is a hard crash naming the problem (the native analogue
-// of JS Debug.crash 2, "Problem with the flags given to your Elm program").
+// Every HPointer local is rooted across the parse and decode allocations.
 HPointer PlatformRuntime::decodeFlags(const std::string& json) {
     HPointer decoder = decodeHP(flagsDecoder_);
     HPointer flags = listNil();
@@ -752,9 +715,8 @@ HPointer PlatformRuntime::decodeFlags(const std::string& json) {
         std::abort();
     }
     // The Json kernel rewraps the escaping Ok so a primitive payload sits
-    // UNBOXED in the slot (MONO_013 rewrap at Json_runOnString); the flags
-    // value continues to `init` through a boxed closure call, so re-box per
-    // the slot's 2-bit kind.
+    // UNBOXED in the slot; the flags value continues to `init` through a
+    // boxed closure call, so re-box per the slot's 2-bit kind.
     {
         Custom* ok = static_cast<Custom*>(ptr);
         const u32 flagsKind = ok->unboxed & 0x3;
@@ -764,29 +726,18 @@ HPointer PlatformRuntime::decodeFlags(const std::string& json) {
 }
 
 HPointer PlatformRuntime::initWorker(HPointer impl) {
-    // Phase 1: Decode flags through the program's registered flags decoder
-    // (compiled from the root main's `Program flags model msg` type and
-    // registered by the generated @__eco_register_ports preamble). The
-    // host-supplied JSON comes from setPendingFlagsJson (eco_app_start /
-    // the test harness); absent flags decode as `null`, matching the JS
-    // kernel running the flags decoder on `undefined`. This path has no
-    // special cases: every flags source — embedding hosts, the Node glue,
-    // the stress harness — is arbitrary JSON through the same decoder.
+    // With a decoder, absent flags decode as `null`; without one, init gets
+    // `()`.
     HPointer flags = unit();
-    // Root `impl` across the decode: decodeFlags allocates (the JSON heap
-    // string, the parse tree, every decoder intermediate), and a GC during
-    // any of that would move the impl record out from under this frame's
-    // by-value copy (the caller's statepoint relocation does not update
-    // callee copies). The guard rewrites `impl` in place on GC.
+    // Root `impl` across the decode, which allocates. The caller's
+    // statepoint relocation does not update this frame's by-value copy.
     Elm::StackRootGuard implGuard(&impl);
     if (flagsDecoder_ != 0) {
         flags = decodeFlags(hasPendingFlagsJson_ ? pendingFlagsJson_
                                                  : std::string("null"));
     } else if (hasPendingFlagsJson_ && pendingFlagsJson_ != "null") {
-        // The host passed real flags but the program registered no decoder
-        // (an artifact compiled before flags support). Fail loudly rather
-        // than silently handing init a Unit. Bare `null` is tolerated —
-        // `flags: null` is the universal host idiom for flagless programs.
+        // Flags were given but the program registered no decoder. Fail
+        // rather than hand init `()`. A bare `null` is accepted as no flags.
         std::fprintf(stderr,
                      "eco: flags were provided but this program has no "
                      "flags decoder (recompile it with a current eco)\n");
@@ -794,11 +745,9 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         std::abort();
     }
 
-    // Phase 2: Call init
-    // Root `impl` (and `flags`) across callClosure1: the closure body may
-    // trigger minor/major GC, which moves heap objects. Without rooting,
-    // the local HPointer encoding in our register/stack frame would point
-    // at the previous from-space (now to-space) of the nursery.
+    // Root `impl` and `flags` across callClosure1: the closure body may
+    // collect, which moves heap objects, and an unrooted local would keep
+    // the old address.
     uint64_t impl_bits = encodeHP(impl);
     uint64_t flags_bits = encodeHP(flags);
     Elm::EcoRootMark saved_range = Elm::ecoRootMark();
@@ -833,16 +782,13 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     // The model slot may be UNBOXED. `( Int, Cmd msg )` stores a raw i64 in
     // slot a and says so in `header.unboxed` (2 bits per slot, 00=boxed HPointer,
     // 01=Int, 10=Float, 11=Char). Reading `.p` unconditionally reinterprets
-    // that scalar as a pointer: for `init _ = ( 0, … )` the word is literally
-    // 0, and the first thing that resolves it — `callClosure1(subscriptionsFn,
-    // model)` → spliceArgsForSaturatedCall → Allocator::resolve — dereferences
-    // it and SIGSEGVs. Record and embedded-constant models hid this for years
-    // because they really are pointers.
+    // that scalar as a pointer: for `init _ = ( 0, … )` the word is 0, and
+    // the first resolve of it dereferences null.
     //
     // Box it: the platform boundary is all-boxed both ways — `callClosure1/2`
-    // hand the model back to Elm through the all-boxed arg layout, and
-    // HEAP_035 forbids a slot holding a raw scalar from ever entering the root
-    // set, which `modelStorage_` does two lines below.
+    // hand the model back to Elm through the all-boxed arg layout, and a
+    // root slot must not hold a raw scalar, which `modelStorage_` becomes
+    // below.
     //
     // `boxElement` ALLOCATES for an unboxed kind, which can move `initTuple`,
     // so `initPair` is re-resolved before slot b is read.
@@ -857,7 +803,6 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     initTuple = static_cast<Tuple2*>(pairPtr);
     HPointer cmd0 = Elm::alloc::boxElement(initTuple->b, initCmdKind);
 
-    // Phase 3: Set up model storage as a GC root
     modelStorage_ = encodeHP(model);
     if (!modelRooted_) {
         eco_gc_add_value_root(&modelStorage_);
@@ -868,7 +813,6 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     HPointer sendToAppCl = listNil();
     Elm::StackRootGuard live_guard(&impl, &cmd0, &sendToAppCl);
 
-    // Phase 4: Build sendToApp closure
     // Create a closure that captures impl; model is accessed via PlatformRuntime singleton
     sendToAppCl = allocClosure(
         reinterpret_cast<EvalFunction>(workerSendToAppEvaluator), 2);
@@ -877,10 +821,8 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         closureCapture(clPtr, boxed(impl), true);  // captured[0] = impl
     }
 
-    // Phase 5: Setup effect managers
     HPointer ports = setupEffects(sendToAppCl);
 
-    // Phase 6: Get initial subscriptions and enqueue initial effects
     // Re-resolve impl from the rooted slot
     implPtr = resolveHP(impl);
     if (implPtr) {
@@ -897,7 +839,7 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         readyHook_(readyHookUser_);
     }
 
-    // Phase 7: Run the event loop (blocks until program is idle)
+    // Returns on stop or quiescence.
     Scheduler::instance().runEventLoop();
 
     return ports;

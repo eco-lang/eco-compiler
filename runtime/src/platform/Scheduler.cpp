@@ -15,23 +15,26 @@ using namespace Elm::alloc;
 
 namespace Elm::Platform {
 
-// Encode/decode helpers (same as ExportHelpers but without kernel dependency)
+// Returns the 64-bit word of `h`, the form in which this file keeps HPointers in containers and roots.
 static inline uint64_t encodeHP(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
     u.hp = h;
     return u.val;
 }
 
+// Returns the HPointer whose word is `val`; the inverse of `encodeHP`.
 static inline HPointer decodeHP(uint64_t val) {
     union { HPointer hp; uint64_t val; } u;
     u.val = val;
     return u.hp;
 }
 
+// Returns whether `h` is an embedded constant rather than a heap object.
 static inline bool isConstant(HPointer h) {
     return h.ptr_ind != 0;
 }
 
+// Returns the address of the heap object `h` points to, or null if `h` is an embedded constant.
 static inline void* resolveHP(HPointer h) {
     if (isConstant(h)) return nullptr;
     return Allocator::instance().resolve(h);
@@ -42,20 +45,15 @@ static inline void* resolveHP(HPointer h) {
 // ============================================================================
 
 Scheduler& Scheduler::instance() {
-    // Intentionally leaked: the eco thread may still be running when the
-    // process exits (embedded hosts calling process.exit/exit()), and a
-    // static destructor freeing scheduler state under a live thread is a
-    // use-after-free. Same pattern as TimerService/HttpService.
+    // Leaked on purpose: the eco thread may still be running when the process
+    // exits (a host calling exit()), and a static destructor freeing scheduler
+    // state under a live thread would be a use-after-free.
     static Scheduler* sched = new Scheduler();
     return *sched;
 }
 
 Scheduler::Scheduler() {
-    // Register external root scanner so the GC can trace processes in the run
-    // queue AND the latest-process registry. Both hold encoded HPointers to
-    // live Process values that must survive minor GC. The slow form is used
-    // because the constructor may run before the calling thread has been
-    // registered with `initThread()`.
+    // The slow form initialises the calling thread's heap if it has none yet.
     Allocator::instance().getRootSetSlow().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             for (auto& rp : runQueue_) {
@@ -67,8 +65,7 @@ Scheduler::Scheduler() {
             for (auto& [id, enc] : finishedProc_) {
                 evacuate(enc);
             }
-            // Resume closures held by in-flight async ops. The lock
-            // guards against concurrent register/take from other threads.
+            // Only the resume table can change on another thread.
             std::lock_guard<std::mutex> lock(resumeMutex_);
             for (auto& [token, enc] : pendingResumes_) {
                 evacuate(enc);
@@ -241,12 +238,8 @@ HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer ar
 // Process value constructors (immutable replacement)
 // ============================================================================
 
-// `procWith*` allocate a new Process with all fields copied from `src`
-// except the specified one. The Process heap object is logically immutable;
-// every "mutation" is implemented as "allocate a new value, discard the old".
-// This eliminates the old→young pointer that would otherwise arise when an
-// old-gen Process has its stack/root/mailbox field overwritten with a fresh
-// nursery HPointer — see the detailed report in test-fails.md.
+// A Process is replaced, never written, so no old-generation Process is ever
+// made to point at a young object; there is no write barrier to catch that.
 
 HPointer Scheduler::procWithRoot(HPointer srcHP, HPointer newRoot) {
     void* srcPtr = resolveHP(srcHP);
@@ -295,24 +288,18 @@ HPointer Scheduler::procWithMailbox(HPointer srcHP, HPointer newMailbox) {
 // Mailbox Helpers (Elm List as FIFO queue)
 // ============================================================================
 
-// Push message to back of mailbox. Returns a new Process HPointer with the
-// updated mailbox; the old Process becomes garbage.
 HPointer Scheduler::mailboxPushBack(HPointer procHP, HPointer msg) {
     void* procPtr = resolveHP(procHP);
     if (!procPtr) return procHP;
     HPointer oldMailbox = static_cast<Process*>(procPtr)->mailbox;
-    // cons() allocates — may GC. Root the by-value procHP local: it is
-    // reused by procWithMailbox below, and a caller-side guard on the
-    // caller's own local cannot update this independent copy (mirrors
-    // procWithRoot/procWithStack/pushStack). msg and oldMailbox are rooted
-    // by cons itself as direct args.
+    // cons() may collect. procHP is reused below, so it is rooted here; a
+    // guard in the caller roots only the caller's own copy. cons roots its
+    // own arguments.
     Elm::StackRootGuard guard(&procHP);
     HPointer newCell = cons(boxed(msg), oldMailbox, true);
-    // Build new Process with new mailbox.
     return procWithMailbox(procHP, newCell);
 }
 
-// Pop oldest message from mailbox. Returns { hasMessage, newProcHP, msg }.
 Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
     void* procPtr = resolveHP(procHP);
     if (!procPtr) return {false, procHP, listNil()};
@@ -320,15 +307,11 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
     HPointer mailbox = proc->mailbox;
     if (alloc::isNil(mailbox)) return {false, procHP, listNil()};
 
-    // Reverse the list to get FIFO order, then take the head.
-    // procHP, mailbox, reversed, current AND the per-iteration `next` tail
-    // snapshot (the loop's advance value) all need to survive each cons() —
-    // any of them can be moved by GC inside cons.
+    // The mailbox is newest first: reverse it, take the head, and reverse the
+    // rest back. Every local below crosses a cons(), which may collect.
     //
-    // NB (chunked lists, plans/chunked-list-representation.md): mailboxes are
-    // runtime-INTERNAL lists built exclusively by this file's cons() calls,
-    // so they are cell-only by construction and these raw Cons walks stay
-    // valid without chunk-view handling.
+    // Mailboxes are built only by this file's cons() calls, so they are plain
+    // Cons cells and the raw walks below need no chunked-list handling.
     HPointer reversed = listNil();
     HPointer current = mailbox;
     HPointer next = listNil();
@@ -381,13 +364,9 @@ Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
 // ============================================================================
 
 HPointer Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
-    // stackFrame() and procWithStack() both allocate and may trigger GC.
-    // Even though `procHP`'s *target* (the Process object) is reachable
-    // via the external scanner / runQueue, the by-value local copy of
-    // `procHP` is NOT — it lives in this frame and the GC has no way to
-    // find it. After the alloc, the local would still hold the
-    // pre-evacuation address. Same for `callback`, which is held by-value
-    // across stackFrame's GC point.
+    // stackFrame() and procWithStack() may collect. The Process may be
+    // reachable from the scanner, but these by-value locals are not, so they
+    // are rooted to be updated if their objects move.
     Elm::StackRootGuard guard(&procHP, &callback);
 
     void* procPtr = resolveHP(procHP);
@@ -398,9 +377,9 @@ HPointer Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callbac
 }
 
 Scheduler::PopStackResult Scheduler::popStackMatching(HPointer procHP, u64 tag) {
-    // Walk the stack looking for a frame whose expectedTag matches.
-    // Pop non-matching frames as we go (like the JS version). This pure-read
-    // walk does not allocate, so `procHP` stays valid throughout.
+    // Non-matching frames are dropped, as in elm/core's JavaScript scheduler:
+    // a Succeed skips OnError frames and a Fail skips AndThen frames. The
+    // walk allocates nothing until a result is built.
     void* procPtr = resolveHP(procHP);
     if (!procPtr) return {false, procHP, listNil()};
     HPointer curStack = static_cast<Process*>(procPtr)->stack;
@@ -408,8 +387,8 @@ Scheduler::PopStackResult Scheduler::popStackMatching(HPointer procHP, u64 tag) 
     while (!alloc::isNil(curStack)) {
         void* ptr = resolveHP(curStack);
         if (!ptr) {
-            // Walked off the stack list without a match — produce new Process
-            // with empty stack so the caller's next attempt starts clean.
+            // A stack that ends in something other than Nil: treat it as
+            // exhausted.
             HPointer nil = listNil();
             HPointer newProc = procWithStack(procHP, nil);
             return {false, newProc, listNil()};
@@ -427,20 +406,14 @@ Scheduler::PopStackResult Scheduler::popStackMatching(HPointer procHP, u64 tag) 
         curStack = rest;
 
         if (frameTag == tag) {
-            // procWithStack may GC; `rest` is still reachable from the source
-            // Process's stack slot (unchanged), and `frameCallback` was read
-            // out as a local HPointer value, but the Process object survives
-            // via procHP so its stack chain (including our `rest` pointee)
-            // is traced through. Since `rest` and `frameCallback` are local
-            // HPointers, we root them explicitly around procWithStack.
+            // procWithStack may collect; these locals must follow their
+            // objects if they move.
             StackRootGuard g(&rest, &frameCallback);
             HPointer newProc = procWithStack(procHP, rest);
             return {true, newProc, frameCallback};
         }
         // Non-matching frame: continue with the rest.
     }
-    // Empty stack — still produce a new Process with nil stack so callers see
-    // a consistent "post-pop" Process even on the miss path.
     HPointer nil2 = listNil();
     HPointer newProc = procWithStack(procHP, nil2);
     return {false, newProc, listNil()};
@@ -455,19 +428,15 @@ HPointer Scheduler::rawSpawn(HPointer rootTask) {
     HPointer nil = listNil();
     HPointer proc = allocProcess(id, rootTask, nil, nil);
 
-    // Register as the current-latest Process for this id so external holders
-    // of the returned HPointer can find subsequent versions after drain.
     registerLatestProcess(proc);
     enqueue(proc);
     return proc;
 }
 
-// C function used as the evaluator for "resume" closures
-// Captured value: args[0] = process HPointer (encoded)
-// Argument: args[1] = new task HPointer (encoded)
-//
-// Produces a *new* Process with the given root and enqueues it. The old
-// Process (captured when the resume closure was built) becomes garbage.
+// The evaluator of a resume closure. `args[0]` is the captured Process, as it
+// was when it parked; `args[1]` is the Task to continue with. Enqueues a copy
+// of that Process with the Task as its root, and returns unit. A captured
+// value that is not a heap object resumes nothing.
 static void* resumeEvaluator(void* args[]) {
     uint64_t procEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t taskEnc = reinterpret_cast<uint64_t>(args[1]);
@@ -484,12 +453,11 @@ static void* resumeEvaluator(void* args[]) {
     return reinterpret_cast<void*>(encodeHP(unit()));
 }
 
-// Binding body for spawnTask (Task purity,
-// plans/task-purity-and-caf-guard-removal.md F2): the child process is
-// allocated and enqueued when the binding is STEPPED, matching elm/core's
-// `spawn = binding (\cb -> cb (succeed (rawSpawn task)))`. The old eager
-// shape ran rawSpawn at task CREATION, so a shared/memoized spawn task
-// spawned once instead of once per fulfilment.
+// Spawns a process running `capturedTask` and returns a Task succeeding with
+// it. As the body of spawnTask's binding it runs each time the binding is
+// stepped, as elm/core's `spawn = binding (\cb -> cb (succeed (rawSpawn task)))`
+// does, so a Task value shared between several fulfilments spawns once per
+// fulfilment.
 static HPointer spawnBindingBody(HPointer capturedTask) {
     auto& sched = Scheduler::instance();
     HPointer proc = sched.rawSpawn(capturedTask);
@@ -503,25 +471,17 @@ HPointer Scheduler::spawnTask(HPointer rootTask) {
 void Scheduler::rawSend(HPointer procHP, HPointer msg) {
     void* ptr = resolveHP(procHP);
     if (!ptr) return;
-    // mailboxPushBack returns a new Process HPointer; we enqueue THAT (not
-    // the stale procHP). The old Process becomes garbage once the run queue
-    // stops referring to it.
     HPointer newProcHP = mailboxPushBack(procHP, msg);
     enqueue(newProcHP);
 }
 
-// Binding body for killTask (Task purity, F2): the kill ATTEMPT happens when
-// the binding is stepped, once per fulfilment. The attempt itself is
-// unchanged: best-effort — call the target root Task_Binding's kill handle
-// (if any) without mutating the target Process (the target is not removed
-// from the run queue and its mailbox is not dropped).
+// Makes the kill attempt killTask describes on `targetProcHP`, and returns a
+// Task succeeding with unit. As the body of killTask's binding it runs each
+// time the binding is stepped.
 //
-// The target is resolved through the latest-process registry by its logical
-// id (plans/eco-system-library.md F13, Phase 2 step 4): Process values are
-// immutable snapshots, so the HPointer `spawn` returned is usually stale by
-// the time Elm kills it — its root is the pre-step task, not the parked
-// Task_Binding that carries the kill handle. An id with no registry entry
-// names a finished process (ids are never reused, SD-1): the kill is a no-op.
+// The lookup by id matters: the HPointer spawn returned is usually stale by
+// the time it is killed, and its root is the Task the process started with,
+// not the parked Binding that carries the kill handle.
 static HPointer killBindingBody(HPointer targetProcHP) {
     void* ptr = resolveHP(targetProcHP);
     if (ptr) {
@@ -562,26 +522,25 @@ void Scheduler::enqueue(HPointer proc) {
         runQueue_.push_back(rp);
     }
     eventCV_.notify_one();
-
-    // If we're already inside drain() on the main thread, the newly enqueued
-    // process will be picked up by drain's loop. Otherwise, the event loop
-    // (runEventLoop) will wake up and call drain().
 }
 
 // ============================================================================
-// Liveness holds (plans/program-liveness-rule.md §5.1; LIVE_003)
+// Liveness holds
 // ============================================================================
 
+// Whether this build keeps the hold census: every live hold's kind and site,
+// recently released tokens, and holdless parks.
 #if !defined(NDEBUG) || defined(ECO_HEAP_VALIDATE)
 static constexpr bool kHoldCensus = true;
 #else
 static constexpr bool kHoldCensus = false;
 #endif
 
-// Free-standing token layout: bit 63 set, bits 56-62 = HoldKind (so release
-// knows a Host hold without a census), bits 0-55 = serial. Resume tokens come
-// from nextResumeToken_ and never set bit 63.
+// The position of the HoldKind in a free-standing token. Such a token is
+// bit 63 set, the kind in bits 56-62, so that a release can tell a Host hold
+// without the census, and a serial in bits 0-55.
 static constexpr int kHoldKindShift = 56;
+// Returns the kind carried by free-standing token `t`.
 static inline HoldKind freeHoldKind(HoldToken t) {
     return static_cast<HoldKind>((t >> kHoldKindShift) & 0x7f);
 }
@@ -597,24 +556,32 @@ const char* holdKindName(HoldKind k) noexcept {
     return "?";
 }
 
+// Returns whether environment variable `name` is set to anything but empty
+// or "0". Reads the environment on every call.
 static bool envFlag(const char* name) {
     const char* v = std::getenv(name);
     return v && *v && std::strcmp(v, "0") != 0;
 }
 
+// Returns whether ECO_LIVENESS_REPORT is on, read once on the first call.
 static bool livenessReportEnabled() {
     static const bool on = envFlag("ECO_LIVENESS_REPORT");
     return on;
 }
 
-// Recently released holds (census builds), so a second release can name the
-// site that acquired it. Guarded by holdsMutex_.
+// The most recently released holds with their acquiring sites, so that a
+// second release can name the site. Census builds only; guarded by
+// holdsMutex_. A second release older than the last N releases is reported
+// as a release of an unknown hold.
 namespace {
 struct ReleasedRing {
+    // The number of releases remembered.
     static constexpr size_t N = 1024;
     std::pair<HoldToken, const char*> e[N] = {};
     size_t next = 0;
+    // Records the release of `t`, overwriting the oldest entry.
     void push(HoldToken t, const char* site) { e[next] = {t, site}; next = (next + 1) % N; }
+    // Returns the site recorded for `t`, or null if it is not remembered.
     const char* find(HoldToken t) const {
         for (size_t i = 0; i < N; ++i) if (e[i].first == t && t != kNoHold) return e[i].second;
         return nullptr;
@@ -623,6 +590,8 @@ struct ReleasedRing {
 ReleasedRing g_releasedHolds;
 } // namespace
 
+// Writes a liveness error naming `what`, the token and, if known, the
+// acquiring site to stderr, and aborts.
 [[noreturn]] static void holdFatal(const char* what, HoldToken t, const char* site) {
     std::fprintf(stderr, "eco: liveness: %s (token 0x%llx%s%s)\n", what,
                  static_cast<unsigned long long>(t), site ? ", acquired at " : "",
@@ -652,27 +621,21 @@ void Scheduler::drain() {
 
 void Scheduler::runEventLoop() {
     while (true) {
-        drain();               // run all queued work on main thread
+        drain();
 
-        // Cooperative shutdown (eco_app_stop): exit after finishing the
-        // current drain so no in-flight process step is abandoned.
+        // Checked only between drains, so no process step is abandoned.
         if (stopRequested_.load()) break;
 
-        processReadyAsync();   // resolve any fired timers; may enqueue procs
+        processReadyAsync();
 
-        // If processReadyAsync produced new work, drain it before sleeping;
-        // otherwise the predicate below would trivially pass and we'd take
-        // an extra lap through wait+drain for no reason.
         if (!runQueue_.empty()) continue;
 
         std::unique_lock<std::mutex> lock(mutex_);
         if (stopRequested_.load()) break;
         if (runQueue_.empty() && pendingAsync_.load() == 0) {
-            // An async source may have work that holds no pendingAsync (a
-            // received signal, plans/eco-system-library.md §3.4 keep-alive
-            // rule): run it before deciding the loop is quiescent, or it is
-            // lost (§10, 2026-10-08). ready() is called with mutex_ held, as
-            // in the wait predicate below.
+            // A source may have work that holds no hold, such as a received
+            // signal. Run it before deciding the loop is quiescent, or it is
+            // lost.
             bool sourceReady = false;
             for (size_t i = 0; i < asyncSources_.size() && !sourceReady; ++i) {
                 sourceReady = asyncSources_[i].second();
@@ -681,12 +644,8 @@ void Scheduler::runEventLoop() {
                 lock.unlock();
                 continue;   // drain + processReadyAsync at the top
             }
-            // Quiescent. Every quiescence listener is asked once, with
-            // mutex_ released (they may enqueue, send to the app, drain and
-            // start async work); the loop re-checks everything iff one of
-            // them delivered. Whether a listener is due is its own state
-            // (L-REARM, LIVE_005: SystemManager's armed bit), so new async
-            // work never re-arms anything here. Never in embed mode.
+            // Quiescent. Listeners run with mutex_ released, because they may
+            // enqueue, drain and start async work.
             if (!embedMode_.load() && !quiescenceListeners_.empty()) {
                 // Copy: a listener may register another listener.
                 auto listeners = quiescenceListeners_;
@@ -700,16 +659,12 @@ void Scheduler::runEventLoop() {
             }
             break;
         }
-        // About to block: the worker has real work in flight only if the run
-        // queue is non-empty or pendingAsync_ - hostHolds_ > 0 (a pending
-        // timer/HTTP/task; Host holds are not work). Otherwise we are idle, waiting
-        // for external input — release the host loop. (runQueue_ is empty here,
-        // but check both for clarity.)
+        // About to sleep. runQueue_ is empty here; it is tested only so the
+        // expression matches the definition of busy.
         fireActivity(!runQueue_.empty() ||
                      pendingAsync_.load() - hostHolds_.load() > 0);
-        // Also wake if the timer worker pushed a token after our last
-        // processReadyAsync but before we took the lock — closes the
-        // missed-wakeup window.
+        // A timer token pushed after processReadyAsync but before the lock
+        // was taken is caught here rather than missed.
         auto ready = [this] {
             if (stopRequested_.load()
                 || !runQueue_.empty()
@@ -723,8 +678,8 @@ void Scheduler::runEventLoop() {
             return false;
         };
         if (livenessReportEnabled()) {
-            // ECO_LIVENESS_REPORT: report what keeps an idle program alive
-            // every 10 s (holdsMutex_ is never taken under mutex_).
+            // reportHolds takes holdsMutex_, never under mutex_, so the lock
+            // is dropped around it.
             while (!eventCV_.wait_for(lock, std::chrono::seconds(10), ready)) {
                 lock.unlock();
                 reportHolds("idle 10 s");
@@ -733,18 +688,16 @@ void Scheduler::runEventLoop() {
         } else {
             eventCV_.wait(lock, ready);
         }
-        // Woke with work (or a stop): mark busy so the host loop stays alive
-        // across the upcoming drain. fireActivity is a no-op if unchanged.
+        // Reported busy even on a stop or an empty wake, so the host stays
+        // alive across the coming drain.
         fireActivity(true);
     }
-    // Stopped (not quiescent): release what libraries hold for the program
-    // (stop hooks, eco thread). Copy: a hook may register another hook.
+    // Copied: a hook may register another hook.
     if (stopRequested_.load()) {
         auto hooks = stopHooks_;
         for (StopHook h : hooks) h();
     }
     if (livenessReportEnabled()) reportHolds("exit");
-    // Loop exiting (stop / quiescence): let the host loop go.
     fireActivity(false);
 }
 
@@ -763,7 +716,6 @@ void Scheduler::fireActivity(bool busy) {
         activityHook_(busy, activityUser_);
 }
 
-// Private (LIVE_006): only noteAcquire calls it.
 void Scheduler::incrementPendingAsync() {
     pendingAsync_.fetch_add(1);
 }
@@ -781,28 +733,26 @@ void Scheduler::removeQuiescenceListener(QuiescenceListener fn, void* ctx) {
                   });
 }
 
-// Private (LIVE_006): only releaseHold calls it.
 void Scheduler::decrementPendingAsync() {
     pendingAsync_.fetch_sub(1);
-    // Acquire mutex_ around the notify (as notifyWorkAvailableFromAsync /
-    // requestStop do) to close the missed-wakeup window: a decrement landing
-    // between the event loop's predicate check and its wait() must not be lost.
+    // Taking mutex_ orders the decrement against the event loop's predicate
+    // check, so the loop cannot test the old count and then sleep through the
+    // notify.
     { std::lock_guard<std::mutex> lk(mutex_); }
     eventCV_.notify_one();
 }
 
 void Scheduler::requestStop() {
     stopRequested_.store(true);
-    // Take the mutex briefly so a loop thread between its predicate check
-    // and wait() cannot miss the notify.
+    // As in decrementPendingAsync, the brief lock closes the missed-wakeup
+    // window.
     { std::lock_guard<std::mutex> lk(mutex_); }
     eventCV_.notify_all();
 }
 
 void Scheduler::notifyWorkAvailableFromAsync() {
-    // Taking mutex_ is cheap and mirrors the enqueue/decrementPendingAsync
-    // pattern; it closes the missed-wakeup window where the predicate could
-    // observe empty state just before a worker's ready-queue push.
+    // Notifying under mutex_ closes the missed-wakeup window, as in
+    // decrementPendingAsync.
     std::lock_guard<std::mutex> lk(mutex_);
     eventCV_.notify_one();
 }
@@ -815,22 +765,17 @@ void Scheduler::processReadyAsync() {
             releaseHold(token);
             continue;
         }
-        // Root resumeClosure and succeedTask across taskSucceed +
-        // callClosure1, both of which may trigger GC inside the callee.
         HPointer succeedTask = listNil();
         {
             StackRootGuard guard(&resumeClosure, &succeedTask);
             succeedTask = taskSucceed(unit());
             callClosure1(resumeClosure, succeedTask);
         }
-        releaseHold(token);   // after the resume is published (§6.2)
+        releaseHold(token);   // after the resume, so the hold outlasts the publication of the result
     }
 
-    // Drain external async sources (HTTP, etc). Each does its own HPointer/GC
-    // work on this (main) thread and is responsible for releasing its holds.
-    // By index, re-reading the size: a drain can step a binding that
-    // registers a new source (registerAsyncSource appends to this deque; a
-    // range-for would be UB). A source added here is drained in this pass.
+    // By index, re-reading the size: a drain can register a new source, and
+    // a range-for over a deque that grows is undefined.
     for (size_t i = 0; i < asyncSources_.size(); ++i) {
         asyncSources_[i].first();
     }
@@ -842,11 +787,10 @@ void Scheduler::processReadyAsync() {
 
 namespace {
 
-// One-arg `EvalParamLayout`s used by the typed Task-dispatch path. Each
-// row describes a closure callback whose first stage takes a single
-// primitive arg of kind k (0=Boxed unused here, 1=Int, 2=Float, 3=Char)
-// and returns a boxed Task. `EvalParamLayoutN<1>` is layout-compatible with
-// `EvalParamLayout`, so `asLayout(&one_arg_layouts[k])` passes it through.
+// The call layouts for applying a continuation to an unboxed Task value,
+// indexed by slot kind (1 Int, 2 Float, 3 Char; entry 0 is not used, since
+// boxed values go through callClosure1). Each describes one argument of that
+// kind and a boxed result.
 static constexpr EvalParamLayoutN<1> one_arg_layouts[4] = {
     makeEvalParamLayout<1>(0, {0}),  // PK_Boxed (unused — boxed-value dispatch keeps callClosure1)
     makeEvalParamLayout<1>(0, {1}),  // PK_Int
@@ -854,6 +798,10 @@ static constexpr EvalParamLayoutN<1> one_arg_layouts[4] = {
     makeEvalParamLayout<1>(0, {3}),  // PK_Char
 };
 
+// A scope guard that roots one encoded HPointer on the shadow range stack,
+// so the collector updates the word in place, and restores the stack when the
+// scope ends. It must be destroyed in LIFO order with other shadow-stack
+// guards.
 struct EncodedStackRootGuard {
     size_t saved_;
     EncodedStackRootGuard(uint64_t* slot) {
@@ -870,14 +818,11 @@ struct EncodedStackRootGuard {
 } // namespace
 
 void Scheduler::stepProcess(uint64_t procEncoded) {
-    // Root procEncoded as an encoded HPointer stack value so GC updates it
-    // in place when the Process is evacuated out of the nursery.
+    // procEncoded always holds this step's current Process and is rooted.
+    // After any allocation or closure call, every raw pointer and HPointer
+    // read from the heap may be stale, so everything is re-read from it.
     EncodedStackRootGuard root_guard(&procEncoded);
 
-    // Helper lambdas to re-resolve proc from the GC-rooted procEncoded.
-    // After any GC point (allocation, closure call), all raw pointers and
-    // HPointers read from heap objects are potentially stale. Re-read
-    // everything from the rooted procEncoded.
     auto currentProcHP = [&]() -> HPointer { return decodeHP(procEncoded); };
     auto resolveProc = [&]() -> Process* {
         HPointer hp = currentProcHP();
@@ -892,11 +837,8 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         return ptr ? static_cast<Task*>(ptr) : nullptr;
     };
 
-    // Replace the stepped Process with a new one that has the given root.
-    // The OLD Process becomes garbage immediately after this returns; any
-    // captured/rooted references outside this function (e.g. runQueue
-    // entries queued by earlier resumeEvaluator calls) see their *own*
-    // Process version, not this one.
+    // Makes the current Process a copy with root `newRoot`. Other holders of
+    // older versions, such as run-queue entries, keep those versions.
     auto setRoot = [&](HPointer newRoot) {
         HPointer newHP = Scheduler::procWithRoot(currentProcHP(), newRoot);
         procEncoded = encodeHP(newHP);
@@ -919,9 +861,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         if (ctor == Task_Succeed || ctor == Task_Fail) {
             u64 searchTag = (ctor == Task_Succeed) ? Task_Succeed : Task_Fail;
 
-            // popStackMatching returns a new Process with the popped stack;
-            // update procEncoded so every subsequent resolveProc sees the
-            // post-pop Process, not the pre-pop one.
             PopStackResult popRes = popStackMatching(currentProcHP(), searchTag);
             procEncoded = encodeHP(popRes.newProcHP);
 
@@ -933,22 +872,13 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 u8 valKind = static_cast<u8>(task->header.unboxed & 0x3);
                 HPointer newTask;
                 if (valKind == 0) {
-                    // Boxed Task.value: HPointer flows through the legacy
-                    // closure-call entry unchanged.
                     HPointer taskValue = task->value.p;
                     newTask = callClosure1(popRes.callback, taskValue);
                 } else {
-                    // Primitive Task.value (Int / Float / Char). Hand the
-                    // raw bits to `eco_apply_closure_eval` along with a
-                    // 1-arg layout describing the kind. When the callback's
-                    // first stage was monomorphised to accept the primitive
-                    // natively (closure->unboxed[0] == valKind), the
-                    // splice's primitive-passthrough path delivers it
-                    // straight to the wrapper with no allocation. When the
-                    // callback expects a boxed arg, the runtime's splice
-                    // boxes once at the same boundary the old code did —
-                    // no regression. result_kind=0 because the callback
-                    // returns a Task (HPtr).
+                    // An unboxed value is passed as raw bits with its kind,
+                    // so a continuation that takes the primitive unboxed gets
+                    // it without boxing; eco_apply_closure_eval boxes it for
+                    // one that does not.
                     Unboxable v = task->value;
                     int64_t typed_arg;
                     switch (valKind) {
@@ -976,8 +906,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 setRoot(newTask);
                 continue;
             } else {
-                // No matching handler — process finished (Task_Succeed) or
-                // failed unhandled (Task_Fail).
                 if (ctor == Task_Fail) {
                     std::fprintf(stderr,
                         "[eco-runtime] unhandled top-level Task.fail "
@@ -989,20 +917,12 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             }
         }
         else if (ctor == Task_AndThen) {
-            // Snapshot the callback and the inner task BEFORE any allocation,
-            // since pushStack / procWith* may trigger GC and move `task`.
-            // Both locals must be rooted across pushStack: innerTask so the
-            // GC patches it before setRoot reads it, callback because the
-            // by-value parameter pushStack carries is only rooted *inside*
-            // pushStack's frame — if a different evacuation order leaves
-            // the caller's local out of sync, the encoded bits we pass on
-            // the next iteration are stale.
+            // Read before pushStack, which may collect and move `task`, and
+            // rooted so that both still name their objects afterwards.
             HPointer callback = task->callback;
             HPointer innerTask = task->task;
             Elm::StackRootGuard guard(&innerTask, &callback);
 
-            // Push the Task_Succeed continuation, then replace the root
-            // with the inner task. Two steps, each producing a new Process.
             HPointer afterPush = pushStack(currentProcHP(), Task_Succeed, callback);
             procEncoded = encodeHP(afterPush);
             setRoot(innerTask);
@@ -1019,8 +939,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             continue;
         }
         else if (ctor == Task_Binding) {
-            // allocClosure can trigger GC — snapshot the bind callback first
-            // and root it across allocClosure.
             HPointer bindCallback = task->callback;
             Elm::StackRootGuard guard(&bindCallback);
 
@@ -1028,29 +946,23 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 reinterpret_cast<EvalFunction>(resumeEvaluator), 2);
             void* clPtr = resolveHP(resumeClosure);
             if (clPtr) {
-                // The resume closure captures *this snapshot* of the Process
-                // HPointer. Once user code invokes the resume closure, a new
-                // Process will be built from that snapshot via
-                // procWithRoot — any updates we made here between now and
-                // the resume running are ignored (but for a fresh binding
-                // we've made no updates, so this is equivalent).
+                // The resume closure captures this version of the Process,
+                // and resuming builds from it. Later versions, including the
+                // one with the kill handle below and any whose mailbox grew
+                // while parked, are not what it resumes.
                 closureCapture(clPtr, boxed(currentProcHP()), true);
             }
 
             HPointer killHandle = callClosure1(bindCallback, resumeClosure);
 
-            // Re-resolve; the user's bind callback may have enqueued tasks
-            // of its own (which walk through their own setRoot sequence).
+            // The callback may have collected.
             proc = resolveProc();
             if (!proc) break;
 
-            // Install killHandle WITHOUT mutating the Task node. Tasks are
-            // immutable shared values (they may be aliased across fibers or
-            // cached in memoized CAF slots and fulfilled many times —
-            // plans/task-purity-and-caf-guard-removal.md F3), so instead of
-            // writing into the root, build a per-execution Task_Binding COPY
-            // carrying the kill handle and swap it in as this Process's
-            // root. killTask's reader (proc->root->kill) sees the copy.
+            // The kill handle goes on a copy of the Binding made for this
+            // process, never into the Task itself: a Task is an immutable
+            // value that may be shared and fulfilled many times. killTask
+            // reads the handle from the copy.
             void* newRootPtr = resolveHP(proc->root);
             if (newRootPtr) {
                 Task* currentTask = static_cast<Task*>(newRootPtr);
@@ -1064,8 +976,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 }
             }
 
-            // Process suspends here; it will be re-enqueued (with a fresh
-            // Process value) by resumeEvaluator when the async op completes.
             break;
         }
         else if (ctor == Task_Receive) {
@@ -1075,13 +985,9 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 proc = resolveProc();
                 if (!proc) break;
 
-                // Effect-manager self-process (Q-H): dedicated protocol that
-                // runs onSelfMsg(router,msg,state), threads the returned state
-                // back into the manager, and auto re-arms the Task_Receive
-                // loop. mailboxPopFront already produced a Process whose root
-                // is still Task_Receive, so after the handler runs we just
-                // `continue` to pop the next message or block. procEncoded is
-                // rooted, so any GC inside the handler is tracked here.
+                // A self-message handler replaces the Receive callback. The
+                // root is still the Receive, so continuing waits for the next
+                // message.
                 u64 procId = proc->id;
                 auto selfIt = selfMsgHandlers_.find(procId);
                 if (selfIt != selfMsgHandlers_.end()) {
@@ -1095,18 +1001,13 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 task = resolveRoot(proc);
                 if (!task) break;
                 HPointer recvCallback = task->callback;
-                // callClosure1 runs Elm code that may GC. recvCallback was
-                // just read from task->callback, popRes.msg from the mailbox
-                // pop — neither is otherwise rooted across the call. Mirrors
-                // the discipline in the timer-resume site at line 551 and
-                // the kernel-side JsArray closure-root fix (2026-05-02).
+                // Neither local is otherwise rooted across the Elm call.
                 Elm::StackRootGuard guard(&recvCallback, &popRes.msg);
 
                 HPointer newTask = callClosure1(recvCallback, popRes.msg);
                 setRoot(newTask);
                 continue;
             } else {
-                // No messages - block
                 break;
             }
         }
@@ -1164,8 +1065,6 @@ void Scheduler::releaseHold(HoldToken t) {
         }
     }
     if ((t & kFreeHoldBit) && freeHoldKind(t) == HoldKind::Host) hostHolds_.fetch_sub(1);
-    // Decrements, then notifies under mutex_ (closes the missed-wakeup
-    // window, §6.2).
     decrementPendingAsync();
 }
 

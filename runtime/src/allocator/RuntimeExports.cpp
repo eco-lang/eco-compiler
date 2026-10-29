@@ -4,7 +4,7 @@
 // describe. A few more C-linkage entry points, used only by generated code or by measurement scripts, are
 // defined here with no declaration in the header. Several measurement censuses (cons sites, closure
 // allocations, closure dispatches, generic-call reasons, call kinds) count into tables that environment
-// variables switch on and that are printed to stderr at exit. And about a third of the file is the value
+// variables switch on and that are printed to stderr at exit. And over 1,000 lines are the value
 // printer behind the `eco_dbg_print*`, `eco_print_*` and `eco_value_to_string*` functions.
 //
 //===----------------------------------------------------------------------===//
@@ -599,38 +599,27 @@ extern "C" HPtr eco_alloc_string(uint32_t length) {
 }
 
 // -----------------------------------------------------------------------------
-// String-literal interning.
+// Interning of string literals and zero-capture closures.
 //
-// Each `eco.string_literal` / string-`case` pattern lowers to a call to one of
-// the eco_alloc_string_literal* functions, passing the address of its unique,
-// stable rodata global (`__eco_str_N` / `__eco_str_case_*`). Historically each
-// call allocated a fresh permanent old-gen object *every time the op executed*
-// — repeated allocation churn and old-gen pressure for literals in hot code.
-//
-// We intern by that global's address: the first call for a given global
-// allocates the permanent object and caches its HPointer in an addRoot'd slot;
-// subsequent calls return the cached value. The cache is THREAD-LOCAL because
-// permanent allocation and the RootSet are per-thread (ThreadLocalHeap): a
-// literal is interned at most once per thread, its object lives in that
-// thread's old gen, and the cached HPointer is registered as a long-lived root
-// in that thread's RootSet (for liveness across major GC and fixup across
-// compaction). No HPointer is ever shared across threads.
+// The key is an address that stays the same for the life of the process: a literal's constant data, or a
+// closure's evaluator descriptor. The cache is per thread. An interned object is allocated in
+// PermanentSpace, which is never collected, so its cached word needs no root; only when PermanentSpace
+// cannot take it is it an old-generation object, and then the cache slot is registered as a root of the
+// thread's heap so that the object stays alive and the word follows it.
 // -----------------------------------------------------------------------------
 namespace {
 
+/// One thread's interning cache: the word interned for each key address, in slots whose addresses never
+/// change, so that a slot can be registered as a root.
 struct LiteralTable {
-    uint64_t generation = 0;  // heap epoch this cache was built under
+    uint64_t generation = 0;  ///< The `Allocator::heapGeneration` the cache was built under.
     std::unordered_map<const void*, Elm::HPointer*> byGlobal;
-    // Stable storage for the root slots: a deque of fixed chunks so slot
-    // addresses never move as the table grows (addRoot holds these pointers).
+    // The slots, in fixed-size chunks so that growing the table moves none of them.
     std::deque<std::array<Elm::HPointer, 64>> chunks;
-    size_t nextSlot = 64;  // forces a fresh chunk on first use
+    size_t nextSlot = 64;  ///< Next free index in the last chunk; 64 means a new chunk is needed.
 
-    // Drops the whole cache if the heap was reset since it was built: reset()
-    // destroys all thread heaps and RootSets, so every cached HPointer (and
-    // every addRoot registration) is stale. The next miss rebuilds against the
-    // fresh heap. Never fires in the AOT runtime (one heap epoch for the whole
-    // process); only the test harness resets.
+    /// Empties the cache if the heap has been reset since it was built (`gen` differs from `generation`):
+    /// a reset destroys every heap and root set, so every cached word and root registration is stale.
     void syncEpoch(uint64_t gen) {
         if (gen != generation) {
             byGlobal.clear();
@@ -640,35 +629,33 @@ struct LiteralTable {
         }
     }
 
+    /// Returns a new slot holding 0. The slot is not registered as a root.
     Elm::HPointer* newSlot() {
         if (nextSlot == 64) {
             chunks.emplace_back();
             nextSlot = 0;
         }
         Elm::HPointer* slot = &chunks.back()[nextSlot++];
-        *slot = Elm::HPointer{};  // null until filled by the caller
-        // NOT rooted here: interned objects are born in the PermanentSpace
-        // (GC-invisible, immortal — HEAP_036), so the cached HPointer never
-        // needs GC fixup or liveness. internLiteral roots the slot only on
-        // the old-gen fallback path (PermanentSpace exhaustion).
+        *slot = Elm::HPointer{};
         return slot;
     }
 };
 
+/// Returns the calling thread's interning cache.
 LiteralTable& literalTable() {
     static thread_local LiteralTable table;
     return table;
 }
 
-// Allocates an intern object as a TRUE permanent (Elm::PermanentSpace —
-// GC-invisible, never rooted, HEAP_036); falls back to rooted old-gen
-// allocation only if the permanent reservation is exhausted. Interned
-// string literals are pointer-free and interned closure0s have zeroed
-// value slots, so both are CLOSED subgraphs by construction — no copier
-// involved.
+/// Allocates `size` bytes (rounded up to 8) for an interned object with tag `tag`, writes its header with
+/// `initHeaderForTag`, and returns its address.
+///
+/// The object is in PermanentSpace (HEAP_036), counted in its statistics. When PermanentSpace has no room,
+/// or the environment variable ECO_CAF_PERMANENT (read once) starts with `0`, it is allocated in the old
+/// generation by `Allocator::allocatePermanent` instead, where it lives only while something roots it.
+/// An object may go to PermanentSpace only if it refers to nothing outside it: interned Strings refer to
+/// nothing, and interned closures capture nothing.
 inline void* allocInternObject(Elm::Tag tag, size_t size) {
-    // ECO_CAF_PERMANENT=0 reverts interning to rooted old-gen allocation
-    // too, so the escape hatch restores the entire pre-HEAP_036 behavior.
     static const bool permanent_enabled = [] {
         const char* e = std::getenv("ECO_CAF_PERMANENT");
         return e == nullptr || e[0] != '0';
@@ -686,11 +673,10 @@ inline void* allocInternObject(Elm::Tag tag, size_t size) {
     return Allocator::instance().allocatePermanent(size, tag);
 }
 
-// Shared interning body: `alloc` allocates + fills the permanent object on a
-// cache miss and returns its HPointer word. The cached slot is GC-rooted
-// only when the object did NOT land in the PermanentSpace (old-gen
-// fallback) — permanent objects never move and never die, so their cached
-// pointers need no GC attention.
+/// Returns the word interned on the calling thread for `key`, calling `alloc` to build it on a miss.
+///
+/// `alloc` must return the new object's HPointer word. A result that is neither an embedded constant nor
+/// in PermanentSpace has its cache slot registered as a root (`RootSet::addRoot`).
 template <class AllocFn>
 inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
     LiteralTable& table = literalTable();
@@ -716,7 +702,6 @@ inline HPtr internLiteral(const void* key, AllocFn&& alloc) {
 
 extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
     return internLiteral(chars, [&]() -> HPtr {
-        // Allocate directly in old gen (permanent). Size: Header + UTF-16 payload.
         size_t size = sizeof(Header) + length * sizeof(u16);
         size = (size + 7) & ~7;
         void* obj = allocInternObject(Tag_String, size);
@@ -728,12 +713,6 @@ extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length)
     });
 }
 
-// ASCII string literal: the compiler emits an [N x i8] global and calls this
-// for literals whose bytes are all < 0x80. Interned (like the UTF-16 form) and
-// allocated as a permanent inline Tag_StringUtf8Leaf — half the memory of the
-// UTF-16 form and no transcode. `byteLen` == the logical UTF-16 unit count
-// (1 ASCII byte per unit). When UTF-8 strings are disabled it widens to a
-// permanent UTF-16 leaf so the master switch fully rolls back.
 extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
                                               uint32_t byteLen) {
     return internLiteral(bytes, [&]() -> HPtr {
@@ -760,26 +739,12 @@ extern "C" HPtr eco_alloc_string_literal_utf8(const uint8_t* bytes,
     });
 }
 
-// -----------------------------------------------------------------------------
-// Slot-filling twins of the two interning entry points (LSS loop step 18b).
-//
-// Generated code caches the interned HPointer word in a zero-initialised i64
-// global (`__eco_strlit$__eco_str_N`) next to the literal's bytes, and only
-// calls in here when that slot still reads 0. The word is published ONLY when
-// the interned object landed in the PermanentSpace (HEAP_036: immortal,
-// GC-invisible, never moves, shared by every thread), so the slot needs no GC
-// root and no fixup — which is exactly why createGlobalRootInitFunction skips
-// the `__eco_strlit$` prefix. On the old-gen fallback (permanent reservation
-// exhausted) the slot stays 0 and every evaluation keeps calling through, where
-// internLiteral roots the cached HPointer as it always did.
-//
-// Cross-thread: LiteralTable is thread_local but permanent objects are
-// process-wide, so a word published by one thread denotes a valid immortal
-// object for every thread; two threads racing publish either the same object or
-// two equivalent immortal ones, both correct String values. Relaxed atomics keep
-// it formally race-free. `Allocator::reset` (test harness only) does not free
-// the PermanentSpace, so a surviving slot still denotes a live object.
-// -----------------------------------------------------------------------------
+/// Stores the word `r` in `*slot` with a relaxed atomic store, if it is a nonzero heap word in PermanentSpace;
+/// otherwise leaves `*slot` alone.
+///
+/// Only a PermanentSpace object may be published, because nothing roots the slot. Two threads may each
+/// intern the same literal and store different but equal Strings; either is correct. A heap reset does
+/// not free PermanentSpace, so a published word stays valid across it.
 static inline void publishLiteralSlot(HPtr r, uint64_t* slot) {
     uint64_t raw = r.toBits();
     if (raw == 0 || Elm::isConstantBits(raw)) return;
@@ -803,41 +768,51 @@ extern "C" HPtr eco_string_literal_utf8_fill(const uint8_t* bytes,
 }
 
 //===----------------------------------------------------------------------===//
-// Closure allocation census (ECO_CLOSURE_STATS=1)
+// Closure allocation census (ECO_CLOSURE_STATS)
 //
-// Counts every closure allocation, keyed by evaluator function pointer, so
-// the top allocation sites can be ranked (HOF-elimination plan H0.1,
-// plans/hof-elimination-closure-alloc-reduction.md). `creates` counts fresh
-// closures (papCreate paths incl. group allocation); `extends` counts the
-// copy-allocations eco_pap_extend_l performs.
+// When the environment variable ECO_CLOSURE_STATS is set to anything but empty or `0`, closure allocations
+// made by this file's functions are counted per evaluator pointer: `creates` for new closures (including
+// interned and group-allocated ones) and `extends` for the copies `eco_pap_extend_l` makes. Closures that
+// compiled code allocates inline are not counted. The counts are printed to stderr at exit, after an
+// `anchor=` line giving the address of `eco_alloc_closure`, from which a reader can undo address-space
+// randomisation when matching the pointers to symbols.
 //
-// The table is a fixed-size open-addressed array claimed with CAS so worker
-// threads (scheduler/timers) can record safely. Zero overhead when the env
-// var is unset beyond one cached-bool branch per allocation. The dump runs
-// via atexit and prints an `anchor=` line (runtime address of
-// eco_alloc_closure) so benchmarks/closure-census.sh can compute the ASLR slide
-// against `nm` output when symbolizing.
+// The table is a fixed-size open-addressed array whose slots are claimed with a compare-and-swap, so any
+// thread may count. A pointer that finds no slot within `kClosureStatsMaxProbe` probes is counted in the
+// totals and in `g_closure_stats_overflow`, with no row of its own.
 //===----------------------------------------------------------------------===//
 
 extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
 
 namespace {
 
+/// One evaluator's counts in the closure census. `fp` is 0 while the slot is free, and once claimed it does
+/// not change.
 struct ClosureStatsEntry {
     std::atomic<uint64_t> fp{0};
     std::atomic<uint64_t> creates{0};
     std::atomic<uint64_t> extends{0};
 };
 
-constexpr size_t kClosureStatsSlots = 1 << 16; // 64Ki slots, power of two
+/// The number of slots in the closure census table; a power of two, so an index is masked.
+constexpr size_t kClosureStatsSlots = 1 << 16;
+/// The number of consecutive slots tried for one evaluator before it is counted as overflow.
 constexpr size_t kClosureStatsMaxProbe = 128;
 
+/// The closure census table, or null while the census is off.
 ClosureStatsEntry* g_closure_stats_table = nullptr;
+/// The number of counts that found no slot.
 std::atomic<uint64_t> g_closure_stats_overflow{0};
+/// The total of `creates` over all evaluators, overflow included.
 std::atomic<uint64_t> g_closure_creates_total{0};
+/// The total of `extends` over all evaluators, overflow included.
 std::atomic<uint64_t> g_closure_extends_total{0};
+/// Whether the closure census has been printed, so that it is printed once.
 std::atomic<bool> g_closure_stats_dumped{false};
 
+/// Prints the closure census to stderr, rows ordered by `creates + extends`, on its first call; later
+/// calls, and any call while the census is off, print nothing. Counts made concurrently may or may not be
+/// included.
 void closureStatsDumpImpl() {
     if (g_closure_stats_dumped.exchange(true)) return;
     if (!g_closure_stats_table) return;
@@ -880,25 +855,30 @@ void closureStatsDumpImpl() {
     std::fflush(stderr);
 }
 
+/// Turns the closure census on if ECO_CLOSURE_STATS asks for it: allocates the table and registers the exit
+/// dump. Returns whether the census is on; it stays off if the table cannot be allocated.
 bool closureStatsInit() {
     const char* e = std::getenv("ECO_CLOSURE_STATS");
     if (!e || !*e || std::strcmp(e, "0") == 0) return false;
-    // Value-initialize so the atomics start at zero.
     g_closure_stats_table = new (std::nothrow) ClosureStatsEntry[kClosureStatsSlots]();
     if (!g_closure_stats_table) return false;
     std::atexit(closureStatsDumpImpl);
     return true;
 }
 
+/// Returns whether the closure census is on, deciding it on the first call.
 inline bool closureStatsEnabled() {
     static const bool enabled = closureStatsInit();
     return enabled;
 }
 
+/// Counts one closure allocation for the evaluator `func_ptr` in the closure census, as an extend when
+/// `isExtend` and a create otherwise. Does nothing while the census is off. A null `func_ptr` is counted
+/// as 1, since 0 marks a free slot.
 void closureStatsRecord(const void* func_ptr, bool isExtend) {
     if (!closureStatsEnabled()) return;
     uint64_t fp = reinterpret_cast<uint64_t>(func_ptr);
-    if (fp == 0) fp = 1; // 0 marks an empty slot
+    if (fp == 0) fp = 1;
     if (isExtend) {
         g_closure_extends_total.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -913,7 +893,7 @@ void closureStatsRecord(const void* func_ptr, bool isExtend) {
             uint64_t expected = 0;
             if (!entry.fp.compare_exchange_strong(expected, fp,
                                                   std::memory_order_relaxed)) {
-                if (expected != fp) continue; // lost race to a different fp
+                if (expected != fp) continue; // another evaluator claimed the slot first
             }
             cur = fp;
         }
@@ -928,86 +908,67 @@ void closureStatsRecord(const void* func_ptr, bool isExtend) {
 
 } // anonymous namespace
 
-// Manual/embedder hook: dump the census now (idempotent). The atexit path
-// covers normal AOT exits; embed hosts that never exit can call this.
+/// Prints the closure census now, as the exit dump would, if the census is on and has not been printed. Not
+/// declared in a header: a host that does not exit normally can call it by name.
 extern "C" void eco_closure_stats_dump(void) { closureStatsDumpImpl(); }
 
 //===----------------------------------------------------------------------===//
-// Closure-dispatch census (ECO_DISPATCH_STATS=1)
+// Closure dispatch census (ECO_DISPATCH_STATS)
 //
-// Counts every DYNAMIC dispatch — an indirect call through a closure's
-// evaluator function pointer — keyed by that evaluator, so the hottest
-// dynamically-dispatched call sites can be ranked (LSS dispatch-value plan E0,
-// plans/lss-dispatch-value-extraction.md). Statically-resolved calls (a direct
-// call to a $cap fast clone) never make an indirect evaluator call and so are
-// NOT counted here (their coverage is tracked separately as `fast`, below).
+// When the environment variable ECO_DISPATCH_STATS is set to anything but empty or `0`, calls made through
+// a closure's evaluator pointer are counted per evaluator, in a table of the same shape as the closure
+// census, and printed to stderr at exit with the same `anchor=` line. Three counts are kept:
 //
-// WHERE the indirect call actually happens (verified): there are exactly two
-// leaf primitives that invoke `closure->evaluator`:
-//   1. invokeSaturatedTyped()            — the K-switch; reached from
-//      eco_apply_closure_eval's exact branch, eco_closure_call_saturated_eval,
-//      and eco_closure_call_saturated's K!=0 branch.
-//   2. eco_closure_call_saturated()'s K==0 boxed-result direct call.
-// Recording `sat` at those two points counts every saturated indirect call
-// EXACTLY ONCE regardless of how the site was lowered — the generic/unknown-
-// saturation funnel (eco_apply_closure_eval),
-// the typed statically-known-saturation path (emitInlineClosureCall ->
-// eco_closure_call_saturated{,_eval}), C++ kernel callers, and thunk force.
+//   sat  : calls of an evaluator with exactly its remaining arguments. There are two places in this file
+//          that make such a call, `invokeSaturatedTyped` and the boxed-result path of
+//          `eco_closure_call_saturated`, and each counts its call there, so every such call is counted
+//          once however it was reached.
+//   gen  : those of the `sat` calls that `eco_apply_closure_eval` reached (one per stage of an
+//          over-application), so `gen` is at most `sat`, and the dump also prints `sat - gen` as `typed`.
+//   fast : calls that compiled code made directly instead, reported by `eco_dispatch_stats_fast`.
 //
-// Counter semantics:
-//   sat  : a saturated indirect evaluator call — THE dynamic-dispatch total,
-//          and the population LSS singleton/small-set stamping would convert to
-//          direct calls. Recorded at the two leaf primitives above.
-//   gen  : the SUBSET of `sat` that flowed through the generic/unknown-
-//          saturation funnel (recorded at eco_apply_closure_eval's exact + over
-//          branches, which each lead to exactly one `sat` for that stage). So
-//          `gen` <= `sat`, and `typed = sat - gen` is the statically-known-
-//          arity dispatch (the emitInlineClosureCall path). An over-saturated
-//          apply records one `gen` per stage, matching its per-stage `sat`.
-//   fast : statically-stamped fast-dispatch executions (a direct $cap call,
-//          no indirect evaluator call), emitted by eco_dispatch_stats_fast at
-//          the call site under the ECO_LSS_DISPATCH_SITE_COUNTERS lowering env.
-//          Kept for LSS coverage = fast / (sat + fast).
-//
-// NB under-saturated applies (num_args < remaining) do NOT call the evaluator —
-// they grow a PAP via eco_pap_extend_l, an allocation already counted by the
-// closure census (ECO_CLOSURE_STATS `extends`). They are intentionally NOT in
-// this dispatch census.
-//
-// Same fixed 64Ki open-addressed CAS table as the closure census; zero cost
-// (one cached-bool branch) when ECO_DISPATCH_STATS is unset. Dumps at exit with
-// an `anchor=eco_alloc_closure:0x...` line (shared with the closure census) so
-// benchmarks/dispatch-census.sh can slide-correct fp values against `nm`.
+// An application with too few arguments calls no evaluator and is not counted here. The dump also prints
+// the generic-call reason counts kept by `eco_gencall_stats`.
 //===----------------------------------------------------------------------===//
 
 namespace {
 
+/// Which count of the dispatch census an event adds to.
 enum class DispatchKind { Sat, Generic, Fast };
 
+/// One evaluator's counts in the dispatch census. `fp` is 0 while the slot is free.
 struct DispatchStatsEntry {
     std::atomic<uint64_t> fp{0};
-    std::atomic<uint64_t> sat{0};   // saturated indirect evaluator calls (dispatch total)
-    std::atomic<uint64_t> gen{0};   // subset of sat reached via the generic funnel
-    std::atomic<uint64_t> fast{0};  // stamped direct $cap calls (coverage; E0.4)
+    std::atomic<uint64_t> sat{0};
+    std::atomic<uint64_t> gen{0};
+    std::atomic<uint64_t> fast{0};
 };
 
-constexpr size_t kDispatchStatsSlots = 1 << 16; // 64Ki slots, power of two
+/// The number of slots in the dispatch census table; a power of two, so an index is masked.
+constexpr size_t kDispatchStatsSlots = 1 << 16;
+/// The number of consecutive slots tried for one evaluator before it is counted as overflow.
 constexpr size_t kDispatchStatsMaxProbe = 128;
 
+/// The dispatch census table, or null while the census is off.
 DispatchStatsEntry* g_dispatch_stats_table = nullptr;
+/// The number of counts that found no slot.
 std::atomic<uint64_t> g_dispatch_stats_overflow{0};
+/// The total of `sat` over all evaluators, overflow included.
 std::atomic<uint64_t> g_dispatch_sat_total{0};
+/// The total of `gen` over all evaluators, overflow included.
 std::atomic<uint64_t> g_dispatch_gen_total{0};
+/// The total of `fast` over all evaluators, overflow included.
 std::atomic<uint64_t> g_dispatch_fast_total{0};
+/// Whether the dispatch census has been printed, so that it is printed once.
 std::atomic<bool> g_dispatch_stats_dumped{false};
 
-// Generic-call reason census (plans/staging-honesty-and-production-test-pipeline.md
-// P0.4): one counter per `_gencall_reason` tag the compiler puts on a
-// segmentation_unknown / generic_apply papExtend under the census flag, bumped
-// by eco_gencall_stats when the lowering ran with ECO_GENCALL_COUNTERS.
+/// The number of generic-call reason counters. A reason is reduced modulo this value.
 constexpr int kGencallReasons = 16;
+/// The number of `eco_gencall_stats` calls per reason.
 std::atomic<uint64_t> g_gencall_counts[kGencallReasons] = {};
 
+/// Prints the dispatch census and the generic-call reason counts to stderr, rows ordered by `sat`, on its
+/// first call, as `closureStatsDumpImpl` prints the closure census.
 void dispatchStatsDumpImpl() {
     if (g_dispatch_stats_dumped.exchange(true)) return;
     if (!g_dispatch_stats_table) return;
@@ -1025,7 +986,7 @@ void dispatchStatsDumpImpl() {
                         g_dispatch_stats_table[i].fast.load(std::memory_order_relaxed)});
     }
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
-        return a.sat > b.sat; // rank by dynamic-dispatch weight
+        return a.sat > b.sat;
     });
 
     uint64_t sat_total = g_dispatch_sat_total.load(std::memory_order_relaxed);
@@ -1059,28 +1020,32 @@ void dispatchStatsDumpImpl() {
     std::fflush(stderr);
 }
 
+/// Turns the dispatch census on if ECO_DISPATCH_STATS asks for it, as `closureStatsInit` does for the
+/// closure census. Returns whether the census is on.
 bool dispatchStatsInit() {
     const char* e = std::getenv("ECO_DISPATCH_STATS");
     if (!e || !*e || std::strcmp(e, "0") == 0) return false;
-    // Value-initialize so the atomics start at zero.
     g_dispatch_stats_table = new (std::nothrow) DispatchStatsEntry[kDispatchStatsSlots]();
     if (!g_dispatch_stats_table) return false;
     std::atexit(dispatchStatsDumpImpl);
     return true;
 }
 
+/// Returns whether the dispatch census is on, deciding it on the first call.
 inline bool dispatchStatsEnabled() {
     static const bool enabled = dispatchStatsInit();
     return enabled;
 }
 
-// Record one dispatch event. Allocation-free and heap-free (reads only the
-// evaluator code pointer), so it is safe to call anywhere in the apply path,
-// including between GC stack-range pushes.
+/// Counts one event of kind `kind` for the evaluator `evaluator_fp` in the dispatch census, as
+/// `closureStatsRecord` counts an allocation. Does nothing while the census is off.
+///
+/// It reads no Elm heap object and never allocates from the Elm heap, so it is safe anywhere in the apply
+/// path; the first call may allocate the table with `new`.
 void dispatchStatsRecord(const void* evaluator_fp, DispatchKind kind) {
     if (!dispatchStatsEnabled()) return;
     uint64_t fp = reinterpret_cast<uint64_t>(evaluator_fp);
-    if (fp == 0) fp = 1; // 0 marks an empty slot
+    if (fp == 0) fp = 1;
     switch (kind) {
         case DispatchKind::Sat:     g_dispatch_sat_total.fetch_add(1, std::memory_order_relaxed); break;
         case DispatchKind::Generic: g_dispatch_gen_total.fetch_add(1, std::memory_order_relaxed); break;
@@ -1095,7 +1060,7 @@ void dispatchStatsRecord(const void* evaluator_fp, DispatchKind kind) {
             uint64_t expected = 0;
             if (!entry.fp.compare_exchange_strong(expected, fp,
                                                   std::memory_order_relaxed)) {
-                if (expected != fp) continue; // lost race to a different fp
+                if (expected != fp) continue; // another evaluator claimed the slot first
             }
             cur = fp;
         }
@@ -1113,44 +1078,41 @@ void dispatchStatsRecord(const void* evaluator_fp, DispatchKind kind) {
 
 } // anonymous namespace
 
-// Manual/embedder hook: dump the dispatch census now (idempotent).
+/// Prints the dispatch census now, as the exit dump would, if the census is on and has not been printed. Not
+/// declared in a header.
 extern "C" void eco_dispatch_stats_dump(void) { dispatchStatsDumpImpl(); }
 
-// Lowering-time hook (LSS plan E0.4): the MLIR lowering emits a call to this
-// immediately before a stamped fast-dispatch `$cap` call when
-// ECO_LSS_DISPATCH_SITE_COUNTERS is set at lowering time, passing the closure's
-// live evaluator pointer so the fast row keys to the same fp the sat rows use.
-// Allocation-free / GC-leaf.
+/// Counts, in the dispatch census, one direct call standing in for a call through the evaluator
+/// `evaluator_fp`. Does nothing while the census is off; never allocates from the Elm heap. Not declared in
+/// a header: generated code calls it by name.
 extern "C" void eco_dispatch_stats_fast(void* evaluator_fp) {
     dispatchStatsRecord(evaluator_fp, DispatchKind::Fast);
 }
 
-// Lowering-time hook (plans/staging-honesty-and-production-test-pipeline.md
-// P0.4): emitted before a generic papExtend that carries `_gencall_reason`
-// when ECO_GENCALL_COUNTERS is set at lowering time. Counts under
-// ECO_DISPATCH_STATS only. Allocation-free / GC-leaf.
+/// Counts one generic call with the reason code `reason` (taken modulo 16), if the dispatch census is on.
+/// Never allocates from the Elm heap. Not declared in a header: generated code calls it by name.
 extern "C" void eco_gencall_stats(int32_t reason) {
     if (!dispatchStatsEnabled()) return;
     g_gencall_counts[static_cast<uint32_t>(reason) & (kGencallReasons - 1)].fetch_add(
         1, std::memory_order_relaxed);
 }
 
-// ---- Call-kind survivor census (plans/call-survivor-census.md) -------------
+// ---- Call census ----------------------------------------------------------
 //
-// The backend's instrumentCallCensus (EcoBackend.cpp, under ECO_CALL_CENSUS at
-// lowering time) gives every SURVIVING call instruction in generated code a
-// per-site i64 slot plus name/kind tables, and registers each partition's
-// tables here from a llvm.global_ctors constructor. Counters increment
-// unconditionally in an instrumented binary; only the exit dump is gated (on
-// ECO_DISPATCH_STATS, the census workflow's runtime knob).
-//
-// Kind enum MIRRORED from the backend's CallCensusKind — keep in sync.
+// Instrumented generated code keeps one counter per call site, with a table of callee names and call
+// kinds, and registers each table with `eco_call_census_register`. The counters are the generated code's;
+// this file only prints them at exit, and only when ECO_DISPATCH_STATS is set to anything but empty or `0`.
 namespace {
 
+/// The number of call kinds. A kind code at or above it is left out of the per-kind totals.
 constexpr int kCallCensusKinds = 7;
+/// The name of each call kind, indexed by its code. The codes are the generated code's, and must match the
+/// order the code generator numbers them in (its `CallCensusKind`); nothing checks it.
 const char* const kCallCensusKindNames[kCallCensusKinds] = {
     "elm", "kernel", "cap", "helper", "runtime", "extern", "indirect"};
 
+/// One registered call census table: `n` sites, each with a count, a callee name and a kind code. The arrays
+/// belong to the code that registered them and must stay valid until the dump.
 struct CallCensusTable {
     const uint64_t* counts;
     const char* const* names;
@@ -1158,14 +1120,19 @@ struct CallCensusTable {
     uint64_t n;
 };
 
-// Function-local static: constructors run pre-main, serial — no SIOF, no lock.
+/// Returns the registered call census tables. Unguarded: registration must happen on one thread at a time.
+/// Being a function-local static, it exists before any static constructor registers a table.
 std::vector<CallCensusTable>& callCensusTables() {
     static std::vector<CallCensusTable> tables;
     return tables;
 }
 
+/// Whether the call census has been printed, so that it is printed once.
 std::atomic<bool> g_call_census_dumped{false};
 
+/// Prints the call census to stderr on its first call, if ECO_DISPATCH_STATS is on and a table is
+/// registered: the totals per kind, then one row per callee name, its counts summed over every table, in
+/// descending count order with ties by name. Later calls print nothing.
 void callCensusDumpImpl() {
     if (g_call_census_dumped.exchange(true)) return;
     const char* e = std::getenv("ECO_DISPATCH_STATS");
@@ -1175,8 +1142,8 @@ void callCensusDumpImpl() {
 
     uint64_t perKind[kCallCensusKinds] = {};
     uint64_t sites = 0;
-    // Merge rows by callee name — cross-partition callees appear in several
-    // tables, and inlining duplicates sites within one.
+    // One callee can have sites in several tables, and several sites in one; the row takes the kind of
+    // the last site seen.
     std::map<std::string, std::pair<uint8_t, uint64_t>> rows;
     for (const CallCensusTable& t : tables) {
         sites += t.n;
@@ -1197,8 +1164,6 @@ void callCensusDumpImpl() {
     std::fprintf(stderr, " sites=%llu tables=%zu\n",
                  static_cast<unsigned long long>(sites), tables.size());
 
-    // Every row (grep/awk is the consumer), sorted count-desc, name-asc for
-    // determinism.
     std::vector<const std::pair<const std::string, std::pair<uint8_t, uint64_t>>*>
         sorted;
     sorted.reserve(rows.size());
@@ -1218,8 +1183,12 @@ void callCensusDumpImpl() {
 
 } // anonymous namespace
 
-// Called from each instrumented partition's llvm.global_ctors constructor,
-// pre-main, serial.
+/// Registers a call census table of `n` sites: `counts` (`uint64_t[n]`), `names` (`const char*[n]`) and
+/// `kinds` (`uint8_t[n]`), and the exit dump with the first table. Not declared in a header: instrumented
+/// generated code calls it by name.
+///
+/// The arrays are kept, not copied, and must stay valid until the process exits. Not synchronised: calls
+/// must not overlap one another or the dump.
 extern "C" void eco_call_census_register(const void* counts, const void* names,
                                          const void* kinds, uint64_t n) {
     auto& tables = callCensusTables();
@@ -1229,44 +1198,41 @@ extern "C" void eco_call_census_register(const void* counts, const void* names,
                       static_cast<const uint8_t*>(kinds), n});
 }
 
-// Manual/embedder hook: dump the call census now (idempotent).
+/// Prints the call census now, as the exit dump would, if it has not been printed. Not declared in a header.
 extern "C" void eco_call_census_dump(void) { callCensusDumpImpl(); }
 
 //===----------------------------------------------------------------------===//
-// Kernel evaluator descriptors (plans/gc-root-registration-cost.md Phase 2, R6)
+// Kernel evaluator descriptors
 //
-// Compiled code carries an `EvaluatorDesc` global beside every closure wrapper.
-// A C++ kernel building a closure has only a function pointer, so one descriptor
-// per (fn, stage_arity, result_kind) is interned here for the life of the
-// process — never freed, never GC-visible (it is static data by construction,
-// exactly like the emitted globals).
-//
-// `kinds` is 0 (all PK_Boxed): kernel evaluators take the `void*[]` convention.
-// Every `sat[]` slot is null, so such a closure fails the arity fast-path guard
-// closed and takes the same route it takes today. `sat` is sized
-// `stage_arity + 1` so that a `sat[N]` load behind the `rem == N` guard is
-// always in bounds.
+// The descriptors `ecoDescForKernelEvaluator` interns are `calloc`ed and never freed, and the collector
+// never sees them.
 //===----------------------------------------------------------------------===//
 
 namespace {
 
+/// The interning key of a kernel descriptor: the evaluator, its stage arity and its result kind.
 struct KernelDescKey {
     Elm::EvalFunction fn;
     unsigned arity;
     unsigned char rk;
+    /// Returns whether all three members are equal.
     bool operator==(const KernelDescKey& o) const {
         return fn == o.fn && arity == o.arity && rk == o.rk;
     }
 };
 
+/// The hash of a `KernelDescKey`.
 struct KernelDescKeyHash {
+    /// Returns a hash of `k` combining all three of its members.
     size_t operator()(const KernelDescKey& k) const {
         return std::hash<const void*>()(reinterpret_cast<const void*>(k.fn)) * 31
              + k.arity * 7 + k.rk;
     }
 };
 
+/// Guards `g_kernel_descs`.
 std::mutex g_kernel_desc_mutex;
+/// The interned kernel descriptors.
 std::unordered_map<KernelDescKey, Elm::EvaluatorDesc*, KernelDescKeyHash>
     g_kernel_descs;
 
@@ -1283,9 +1249,9 @@ const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
     if (it != g_kernel_descs.end())
         return it->second;
 
-    // sat[] has stage_arity + 1 slots only when the sat fast path can serve
-    // this evaluator (stage_arity <= SAT_MAX_ARITY); otherwise it is empty
-    // (the EcoBackend guard max_values <= SAT_MAX_ARITY makes it unreadable).
+    // sat[] gets stage_arity + 1 entries, so that an entry indexed by any remaining count is in bounds, but
+    // only when stage_arity <= SAT_MAX_ARITY; above that it has none, on the premise that generated code
+    // reads sat[] only for a closure of at most SAT_MAX_ARITY.
     size_t bytes = sizeof(EvaluatorDesc)
                  + (stage_arity <= SAT_MAX_ARITY
                         ? (static_cast<size_t>(stage_arity) + 1) * sizeof(void*)
@@ -1300,19 +1266,19 @@ const EvaluatorDesc* ecoDescForKernelEvaluator(EvalFunction fn,
     desc->kinds = 0;
     desc->stage_arity = static_cast<unsigned short>(stage_arity);
     desc->result_kind = static_cast<unsigned char>(result_kind & 3);
-    // calloc already nulled every sat[] slot.
     g_kernel_descs.emplace(key, desc);
     return desc;
 }
 
 }  // namespace Elm
 
-// Closure layout v2 (HEAP_078/HEAP_077): capacity `max` value slots followed by
-// K = extWords(max, CLOSURE_HDR_SLOTS) extension kind words; header.size = max + K.
+/// Returns the byte size of a closure with `slots` value slots followed by the extension kind words a
+/// capacity of `max` needs, `extWords(max, CLOSURE_HDR_SLOTS)` (HEAP_078).
 static inline size_t closureBytesFor(uint32_t slots, uint32_t max) {
     return sizeof(Closure)
          + (static_cast<size_t>(slots) + extWords(max, CLOSURE_HDR_SLOTS)) * sizeof(Unboxable);
 }
+/// Prints a message naming `who` and aborts if `max` exceeds `CLOSURE_MAX_ARITY`.
 static inline void closureArityCheck(uint32_t max, const char* who) {
     if (max > CLOSURE_MAX_ARITY) {
         std::fprintf(stderr, "[eco] FATAL: %s: closure arity %u exceeds %u\n",
@@ -1320,8 +1286,9 @@ static inline void closureArityCheck(uint32_t max, const char* who) {
         std::abort();
     }
 }
-// Writes the K ext kind words (zeros included) at the object's tail: every
-// allocation writes all K words (HEAP_077; zeroNewObject clears only the header).
+/// Writes the extension kind words of the closure `c`, whose capacity is `max`, after its first `slots` value
+/// slots: copied from `ext`, or zeros when `ext` is null. Every one must be written, since a fresh object's
+/// payload is not zeroed (HEAP_077).
 static inline void writeClosureExtWords(Closure* c, uint32_t slots, uint32_t max,
                                         const uint64_t* ext) {
     const uint32_t K = extWords(max, CLOSURE_HDR_SLOTS);
@@ -1334,12 +1301,9 @@ extern "C" HPtr eco_alloc_closure_k(void* func_ptr, uint32_t num_captures,
     assert(result_kind <= 3 && "eco_alloc_closure_k: result_kind out of range");
     closureArityCheck(num_captures, "eco_alloc_closure_k");
     closureStatsRecord(func_ptr, /*isExtend=*/false);
-    // Size: Header + packed word + evaluator ptr + capacity slots + K ext words.
-    // eco_alloc_with_roots derives header.size from the bytes (= n + K).
+    // initHeaderForTag derives header.size from the bytes: n + K.
     size_t size = closureBytesFor(num_captures, num_captures);
 
-    // No HPointer args to root (func_ptr is a code pointer, not a heap pointer;
-    // captures are filled by the caller via closureCapture afterwards).
     void* obj = eco_alloc_with_roots(Tag_Closure, size, nullptr, 0, 0);
     if (!obj) return HPtr::fromBits(0);
 
@@ -1357,12 +1321,6 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     return eco_alloc_closure_k(func_ptr, num_captures, /*result_kind=*/0);
 }
 
-// Same allocation, but `fn` is a raw EVALUATOR FUNCTION pointer rather than an
-// `EvaluatorDesc*` (plans/gc-root-registration-cost.md Phase 2). Compiled code
-// always has a descriptor emitted beside its wrapper and uses the entries
-// above; C++ that mints a closure from a plain function pointer — kernels via
-// `alloc::allocClosureK`, and the allocator unit tests — goes through the
-// interning registry instead.
 extern "C" HPtr eco_alloc_closure_fn(void* fn, uint32_t num_captures,
                                      uint8_t result_kind) {
     const EvaluatorDesc* desc = ecoDescForKernelEvaluator(
@@ -1371,26 +1329,10 @@ extern "C" HPtr eco_alloc_closure_fn(void* fn, uint32_t num_captures,
                                result_kind);
 }
 
-// Zero-capture closure interning (HOF-elimination plan H4.2, HEAP_033).
-//
-// A zero-capture closure is immutable after construction: capture writes
-// only happen for num_captured > 0 creates, self-capturing creates are
-// excluded by the caller, and eco_pap_extend_l COPIES instead of mutating.
-// So one permanent object per evaluator can serve every papCreate
-// execution of that site. Reuses the string-literal interning machinery
-// (thread-local table, heap-generation epoch sync for harness resets,
-// rooted slots).
-//
-// `packed` is the header word the papCreate lowering computes
-// (n_values | max_values<<11 | result_kind<<22 | unboxed<<24, HEAP_078, stored
-// at byte offset 8 — must match EcoToLLVMClosures.cpp and Heap.hpp exactly);
-// it is a per-site compile-time constant and a pure function of the
-// wrapper `func_ptr`, so cache hits always agree with it. `arity` sizes
-// the value-slot area identically to eco_alloc_closure_k's capacity.
+// One closure can serve every evaluation because a closure that captures nothing is never written:
+// `eco_pap_extend_l` copies rather than extending in place (HEAP_033).
 extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
                                     uint64_t packed) {
-    // HEAP_033: only closures whose kinds are all inline are interned (the
-    // codegen never interns wider), so K = 0 and the size is unchanged.
     assert(arity <= CLOSURE_HDR_SLOTS && "eco_intern_closure0: arity > CLOSURE_HDR_SLOTS");
     return internLiteral(func_ptr, [&]() -> HPtr {
         closureStatsRecord(func_ptr, /*isExtend=*/false);
@@ -1399,16 +1341,12 @@ extern "C" HPtr eco_intern_closure0(void* func_ptr, uint32_t arity,
         void* obj = allocInternObject(Tag_Closure, size);
         if (!obj) return HPtr::fromBits(0);
         Closure* closure = static_cast<Closure*>(obj);
+        // The packed word sits at byte offset 8, after the header.
         std::memcpy(reinterpret_cast<char*>(obj) + 8, &packed,
                     sizeof(uint64_t));
         closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(func_ptr);
-        // `packed` sets max_values == arity, but the closure scans
-        // (OldGenSpace::scanChildren / NurserySpace::scanObject, Tag_Closure)
-        // iterate `n_values` slots (0 here): this interned singleton never
-        // writes its value slots (it is immutable; eco_pap_extend_l COPIES for
-        // application). allocatePermanent does NOT zero the old-gen body; the
-        // memset keeps the body defined for debug walkers and permanent-space
-        // copies.
+        // The collector reads only the first n_values slots, none here, but the allocation does not zero
+        // the payload; zeroing it keeps every word of the object defined for anything that walks it whole.
         std::memset(closure->values, 0,
                     static_cast<size_t>(arity) * sizeof(Unboxable));
         return ptrToHPointer(obj);
@@ -1437,23 +1375,15 @@ extern "C" HPtr eco_alloc_char(uint32_t value) {
 }
 
 extern "C" HPtr eco_allocate(uint64_t size, uint32_t tag) {
-    // Generic allocation with specified size and tag. Used by the JIT for
-    // sizes/tags not covered by the per-type entry points; rare.
     void* obj = eco_alloc_with_roots(tag, size, nullptr, 0, 0);
     return ptrToHPointer(obj);
 }
 
 //===----------------------------------------------------------------------===//
 // Fast/Slow Allocation Split
-//
-// Fast variants: bump-pointer only, no GC trigger, return 0/nullptr on failure.
-// Slow variants: may trigger GC, always succeed or abort.
 //===----------------------------------------------------------------------===//
 
 extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count) {
-    // Single-representation backstop (HEAP_044): nullary customs are embedded
-    // null-cons constants; post-CGEN_079 the compiler never emits a 0-field
-    // allocation, so reaching here with one is a codegen bug.
     assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom_fast", field_count);
@@ -1461,7 +1391,6 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count) {
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
 
-    // Init header (size = n, unboxed = K, ext words zeroed) + ctor
     initWideHeader(getHeader(obj), Tag_Custom, field_count);
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -1471,7 +1400,6 @@ extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count) {
 }
 
 extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count) {
-    // Single-representation backstop (HEAP_044) — see eco_alloc_custom_fast.
     assert(field_count > 0 &&
            "0-field custom allocation forbidden (HEAP_044): embed a null-cons constant");
     if (field_count > CUSTOM_MAX_FIELDS) ecoFatalWideObject("eco_alloc_custom_slow", field_count);
@@ -1510,11 +1438,8 @@ extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_kind
 extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
 
-    // Root head/tail across allocateSlow. Caller's RS4GC statepoint covers
-    // these args at the call site, but our by-value parameter copies are
-    // local to this frame and the caller's stackmap doesn't see them, so
-    // a GC during allocateSlow would leave them pointing at the pre-swap
-    // location. Mask bit i set iff slot i is an HPointer.
+    // The caller's statepoint relocates the caller's copies of head and tail, not these by-value
+    // parameters, so they are rooted here for the allocation.
     uint64_t roots[2] = { head, tail.toBits() };
     uint64_t mask = (head_kind != 0) ? 0x2 : 0x3;
 
@@ -1529,7 +1454,6 @@ extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_kind
 
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
-    // Read post-GC values back from roots[].
     cons->head.i = static_cast<i64>(roots[0]);
     HPointer tail_hp;
     memcpy(&tail_hp, &roots[1], sizeof(tail_hp));
@@ -1558,8 +1482,7 @@ extern "C" HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_m
 extern "C" HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
 
-    // Root HPointer slots across allocateSlow (see eco_alloc_cons_slow above
-    // for the full rationale).
+    // Rooted for the reason eco_alloc_cons_slow gives.
     uint64_t roots[2] = { a, b };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 2);
 
@@ -1601,8 +1524,7 @@ extern "C" HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32
 extern "C" HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
 
-    // Root HPointer slots across allocateSlow (see eco_alloc_cons_slow above
-    // for the full rationale).
+    // Rooted for the reason eco_alloc_cons_slow gives.
     uint64_t roots[3] = { a, b, c };
     uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 3);
 
@@ -1630,7 +1552,7 @@ extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bit
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
 
-    initWideHeader(getHeader(obj), Tag_Record, field_count);   // size = n, unboxed = K, ext zeroed
+    initWideHeader(getHeader(obj), Tag_Record, field_count);
     Record* rec = static_cast<Record*>(obj);
     rec->unboxed = unboxed_bitmap;
 
@@ -1810,10 +1732,7 @@ extern "C" void eco_alloc_closure_group_l(
     const uint64_t* crossEdges,        // (producer, consumer, slot) triples
     uint64_t numCrossEdges,
     uint64_t* outClosures) {
-    // Compute total size: sum of per-sibling closure sizes, all naturally
-    // 8-byte aligned. Closure capacity uses `arities[i]` (max_values) so the
-    // allocated storage has room for future PAP-extend slots too, followed by
-    // K_i = extWords(arities[i], CLOSURE_HDR_SLOTS) ext kind words (HEAP_078).
+    // Each sibling gets room for its full capacity, not only its captures.
     size_t totalBytes = 0;
     for (uint64_t i = 0; i < numSiblings; ++i) {
         closureArityCheck(arities[i], "eco_alloc_closure_group_l");
@@ -1822,19 +1741,13 @@ extern "C" void eco_alloc_closure_group_l(
         totalBytes += closureBytesFor(arities[i], arities[i]);
     }
 
-    // Reserve one contiguous region so every sibling lives in a single
-    // generation (nursery or pinned large-obj). Any GC triggered by the
-    // slow path happens BEFORE any sibling is written, so input
-    // `captures[]` raw HPointers passed in must have been kept alive by
-    // the caller's GC-root frame up to this call.
     void* region = eco_gc_alloc_region_fast(totalBytes);
     if (!region) {
         region = eco_gc_alloc_region_slow(totalBytes);
     }
 
-    // First pass: initialize each sibling's header and publish HPointer.
-    // Producers need each sibling's HPointer to be known before we wire
-    // up cross-edges in pass two.
+    // Every sibling's HPointer must be known before the edges between siblings can be written, so the
+    // objects are built first and the edges second.
     char* cursor = static_cast<char*>(region);
     for (uint64_t i = 0; i < numSiblings; ++i) {
         const uint32_t arity = arities[i];
@@ -1851,16 +1764,12 @@ extern "C" void eco_alloc_closure_group_l(
         Closure* closure = static_cast<Closure*>(obj);
         closure->n_values = nc;
         closure->max_values = arity;
-        // result_kind matches the wrapper's real C-ABI return type so the
-        // closure-invocation paths can cast `evaluator` correctly without
-        // per-call-site plumbing.
         closure->result_kind = resultKinds[i] & 0x3;
         closure->unboxed = hdrKinds[i];
         closure->evaluator = reinterpret_cast<const EvaluatorDesc*>(evaluators[i]);
         writeClosureExtWords(closure, arity, arity, extKinds + extOffsets[i]);
         closureStatsRecord(evaluators[i], /*isExtend=*/false);
 
-        // Non-sibling captures: pre-ordered into slots [0 .. capture_counts[i]).
         const uint32_t capStart = captureOffsets[i];
         const uint32_t capEnd = captureOffsets[i + 1];
         for (uint32_t k = capStart, slot = 0; k < capEnd; ++k, ++slot) {
@@ -1871,8 +1780,6 @@ extern "C" void eco_alloc_closure_group_l(
         cursor += perSibling;
     }
 
-    // Second pass: wire cross-edges. All siblings share a generation so a
-    // plain i64 store is correct — no write barrier needed.
     for (uint64_t e = 0; e < numCrossEdges; ++e) {
         const uint64_t producer = crossEdges[3 * e + 0];
         const uint64_t consumer = crossEdges[3 * e + 1];
@@ -1959,8 +1866,6 @@ extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c
     return ptrToHPointer(obj);
 }
 
-// Precondition (eco_init_*_at): the codegen group region reserved
-// wideByteSize(tag, field_count) bytes at obj (K = 0 while the verifier caps hold).
 extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
     initWideHeader(getHeader(obj), Tag_Record, field_count);
     Record* rec = static_cast<Record*>(obj);
@@ -1985,8 +1890,7 @@ extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
 }
 
 //===----------------------------------------------------------------------===//
-// Stale-pointer validator (called from the EcoBoxedStoreVerify-inserted
-// barrier in front of compiled-Elm direct heap stores)
+// Stale-pointer validator
 //===----------------------------------------------------------------------===//
 
 extern "C" void eco_validate_nursery_hptr_bits(uint64_t bits) {
@@ -1998,20 +1902,11 @@ extern "C" void eco_validate_nursery_hptr_bits(uint64_t bits) {
 //===----------------------------------------------------------------------===//
 
 extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
-    // Always-on per-write stale-pointer tripwire. Catches stale `value`
-    // writes at the moment they happen, producing a backtrace showing the
-    // compiled function. Skips null/zero and embedded constants. See
-    // HeapHelpers.hpp `validateNurseryHPtr` for the rationale.
     alloc::validateNurseryHPtrBits(value.toBits());
     void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
-    // Get the header to determine object type
     Header* header = static_cast<Header*>(obj);
-
-    // In JIT mode, pointers are full 64-bit addresses.
-    // Store the full value directly in the Unboxable union's i field.
-    // This preserves all 64 bits for proper pointer traversal.
 
     uint64_t value_bits = value.toBits();
     switch (header->tag) {
@@ -2037,33 +1932,21 @@ extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
             if (index == 0) {
                 cons->head.i = static_cast<i64>(value_bits);
             } else {
-                // Tail is HPointer, not Unboxable - store as raw bits
-                // Note: This may cause issues with 64-bit pointers in JIT mode
                 cons->tail = hpFromBits(value_bits);
             }
             break;
         }
         case Tag_Closure: {
-            // eco_store_field* is NOT a legal way to fill closure captures.
-            // The collector's closure scan bounds on n_values, and this path
-            // writes a value slot without touching it — so a capture stored
-            // here is never traced and is reclaimed. Raising n_values to
-            // index+1 does NOT fix it either: a store at index 3 with slots
-            // 0..2 unwritten would then have the scan trace three
-            // uninitialised slots.
-            //
-            // Use closureCapture (HeapHelpers.hpp), which appends at
-            // n_values and increments, making ascending order structural.
-            // There are no production callers of this arm: the compiler
-            // emits eco_store_field* only for CustomConstructOp, and no
-            // kernel calls it on a closure.
+            // The collector traces a closure's first n_values slots only, and this store does not change
+            // n_values, so the value it writes is never traced. Raising n_values to index + 1 would not
+            // help either: any unwritten slot below `index` would then be traced. closureCapture appends at
+            // n_values instead.
             assert(false && "eco_store_field on a Closure: use closureCapture");
             Closure* closure = static_cast<Closure*>(obj);
             closure->values[index].i = static_cast<i64>(value_bits);
             break;
         }
         default:
-            // Unknown object type
             fprintf(stderr, "eco_store_field: unknown object type %d\n", header->tag);
             break;
     }
@@ -2156,21 +2039,13 @@ extern "C" void eco_store_field_f64(HPtr obj_hptr, uint32_t index, double value)
 
 namespace {
 
-// Phase C shim support: all-`PK_Boxed`-args `EvalParamLayout`s indexed by
-// `(result_kind, num_params)`. The legacy `eco_apply_closure` entry — called
-// by C++ effect-manager kernels and the platform runtime with
-// HPointer-encoded args — looks up the right row from the closure header's
-// `result_kind` field, so it forwards through `eco_apply_closure_typed` with
-// a layout whose `result_kind` matches the closure's wrapper return ABI.
-// Without this, primitive-return wrappers would be mis-cast as
-// `void *(void *[])` on the dispatch path.
-//
-// n <= 64: a static table of `EvalParamLayoutN<64>` (4 kinds x 65 entries).
-// n > 64 (up to CLOSURE_MAX_ARITY): an interned, mutex-guarded on-demand cache
-// keyed (K << 16) | n of zeroed `4 + n`-byte layouts (B19: no clamp).
+/// The largest parameter count whose all-boxed layout `getAllBoxedLayout` takes from the static table.
 constexpr unsigned kStaticBoxedLayouts = 64;
-constexpr unsigned kNumResultKinds = 4;  // PK_Boxed, PK_Int, PK_Float, PK_Char
+/// The number of result kinds, `PK_Boxed` to `PK_Char`.
+constexpr unsigned kNumResultKinds = 4;
 
+/// Builds, at compile time, the all-boxed layouts for every result kind and every parameter count from 0
+/// to `kStaticBoxedLayouts`, indexed `[result kind][count]`.
 constexpr auto buildAllBoxedLayouts() {
     struct Holder {
         EvalParamLayoutN<kStaticBoxedLayouts> data[kNumResultKinds][kStaticBoxedLayouts + 1];
@@ -2185,17 +2060,18 @@ constexpr auto buildAllBoxedLayouts() {
     }
     return h;
 }
+/// The static table of all-boxed layouts that `buildAllBoxedLayouts` builds.
 constexpr auto kAllBoxedLayoutsHolder = buildAllBoxedLayouts();
 
+/// Guards `g_wide_boxed_layouts`.
 std::mutex g_wide_boxed_layout_mutex;
+/// The all-boxed layouts of more than `kStaticBoxedLayouts` parameters, keyed `(K << 16) | n`, each a zeroed
+/// `4 + n`-byte buffer. Entries are never removed, so a returned layout stays valid.
 std::unordered_map<uint32_t, std::unique_ptr<unsigned char[]>> g_wide_boxed_layouts;
 
 } // anonymous namespace
 
 namespace Elm {
-// Pick the layout whose `result_kind` byte matches `K`. The legacy entry
-// `eco_apply_closure` reads K off the closure header so primitive-return
-// wrappers are dispatched correctly even for callers that don't carry K.
 const EvalParamLayout* getAllBoxedLayout(unsigned n, uint8_t K) {
     assert(n <= CLOSURE_MAX_ARITY && "getAllBoxedLayout: n exceeds CLOSURE_MAX_ARITY");
     if (K >= kNumResultKinds) K = 0;
@@ -2214,15 +2090,6 @@ const EvalParamLayout* getAllBoxedLayout(unsigned n, uint8_t K) {
 }
 } // namespace Elm
 
-// Phase C: legacy boxed-args entry point. C++ callers that construct a
-// `uint64_t* args` of HPointer-encoded values (effect-manager workers,
-// `Scheduler::callClosureN`, `PlatformRuntime`) reach
-// `eco_apply_closure_typed` through here. The layout's `result_kind`
-// byte is filled from `closure->result_kind` so primitive-return
-// wrappers route via the correct `invokeSaturatedTyped` cast. Boxed-args
-// callers that target a primitive-result closure get a freshly boxed
-// `ElmInt`/`ElmFloat`/`ElmChar` back — semantics-preserving for legacy
-// callers that always expected an `HPtr`.
 extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t num_args) {
     void* closure_ptr = hpointerToPtr(closure_hptr.toBits());
     uint8_t K = closure_ptr ? static_cast<Closure*>(closure_ptr)->result_kind : 0;
@@ -2235,10 +2102,15 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
 
 namespace {
 
-// Forward declarations for helpers defined further down. `eco_apply_closure_eval`
-// needs to call `invokeSaturatedTyped`, which itself uses
-// `spliceArgsForSaturatedCall`; both are also reused by
-// `eco_closure_call_saturated`.
+/// Writes the arguments for calling the closure `closure_bits` with the `num_newargs` arguments in
+/// `new_args` into `combined_args`: its captured values, then the arguments converted from the kinds
+/// `layout` gives them (all boxed when null) to the kinds of their slots. Returns the closure's address.
+///
+/// The arguments must exactly fill the closure (asserted), and `combined_args` must hold `max_values`
+/// entries. Boxing an argument allocates and may collect, so the caller must root `closure_bits`,
+/// `combined_args` and the boxed entries of `new_args` first; the closure is resolved again after each
+/// boxing, so the returned address is current. `max_values_out` receives the capacity and `kinds_out` a
+/// copy of the closure's kinds.
 inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                                             uint64_t* new_args,
                                             uint32_t num_newargs,
@@ -2247,6 +2119,12 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                                             uint32_t& max_values_out,
                                             ClosureKinds& kinds_out);
 
+/// Calls the closure `closure_bits`, whose evaluator returns kind `K`, with its captured values and the
+/// `num_args` arguments in `typed_args` (kinds from `args_layout`), and writes the result, converted to
+/// `desired_kind`, to `result_slot` as `eco_apply_closure_eval` does. May collect.
+///
+/// The arguments must exactly fill the closure. This function roots its own copy of `closure_bits` and the
+/// argument array it builds; the caller must root the boxed entries of `typed_args`.
 void invokeSaturatedTyped(uint64_t closure_bits,
                           int64_t* typed_args,
                           uint32_t num_args,
@@ -2255,10 +2133,9 @@ void invokeSaturatedTyped(uint64_t closure_bits,
                           uint8_t desired_kind,
                           void* result_slot);
 
-// Extract a primitive payload from an HPointer-encoded boxed value (an
-// ElmInt / ElmFloat / ElmChar) and store it into `result_slot` per
-// `desired_kind`. Used by the boxed-evaluator path of
-// `eco_apply_closure_eval` when the caller wants a typed primitive.
+/// Writes the value of the boxed Int, Float or Char `boxed` to `result_slot` as the type `desired_kind`
+/// (1 to 3) names. `boxed` must be a heap object (asserted) of the kind `desired_kind` names; that is not
+/// checked, the value is read from the word after the header.
 void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_slot) {
     void* obj = hpointerToPtr(boxed.toBits());
     assert(obj && "deliverPrimitiveFromBoxed: cannot un-box null/embedded HPointer");
@@ -2290,29 +2167,6 @@ void deliverPrimitiveFromBoxed(HPtr boxed, uint8_t desired_kind, void* result_sl
 
 } // anonymous namespace
 
-// Phase E: canonical generic-apply entry point with typed result delivery.
-//
-// Args interpretation is fully typed per REP_ABI_001:
-//   - layout->kinds[i] == 0 (PK_Boxed)  → typed_args[i] is an HPointer.
-//   - layout->kinds[i] == 1 (PK_Int)    → typed_args[i] is a raw i64.
-//   - layout->kinds[i] == 2 (PK_Float)  → typed_args[i] is f64 bits in i64.
-//   - layout->kinds[i] == 3 (PK_Char)   → typed_args[i] is the i32 code point zext in i64.
-// `args_layout` may be null only when num_args == 0.
-//
-// `args_layout->result_kind` (`K`) is the closure evaluator's real C-ABI
-// return kind. The saturated branch reinterprets `closure->evaluator`
-// based on `K`. `desired_kind` is what the caller wants delivered into
-// `result_slot`; the helper boxes/unboxes across the K↔desired_kind
-// boundary as needed.
-//
-// Saturation cases:
-//   - num_args == 0        → no-op apply, return closure unchanged
-//                            (`desired_kind` must be PK_Boxed).
-//   - num_args <  remaining → eco_pap_extend_l (always returns a closure HPtr;
-//                              `desired_kind` must be PK_Boxed).
-//   - num_args == remaining → call evaluator (per K), then deliver result.
-//   - num_args >  remaining → saturate this stage, recurse with trailing args
-//                              and a PK_Boxed sub-layout.
 extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
                                        int64_t* typed_args,
                                        uint32_t num_args,
@@ -2324,8 +2178,6 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     uint64_t closure_bits = closure_hptr.toBits();
     void* closure_ptr = hpointerToPtr(closure_bits);
     if (!closure_ptr) {
-        // Null/embedded closure: deliver zero in the desired slot so the
-        // caller doesn't read uninitialised storage.
         switch (desired_kind) {
             case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
             case 1: *static_cast<int64_t*>(result_slot) = 0; break;
@@ -2341,32 +2193,18 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     assert(max_values <= CLOSURE_MAX_ARITY && "max_values exceeds the 11-bit field cap");
     uint32_t remaining = max_values - n_values;
 
-    // Phase C/D: K is read from the closure header, not the layout. The
-    // layout's `result_kind` byte (if present) is a redundant hint and
-    // is allowed to drift — the frontend can only derive layout K from
-    // the static call-site type, which loses precision for staged-curried
-    // closures (e.g. `Mono.stageReturnType` peels one MFunction layer,
-    // returning the inner MFunction for a flat single-stage closure
-    // whose actual return type lives one more level in). The closure
-    // header is the authoritative source of truth so C++-kernel callers
-    // (which don't see the layout) still get correct dispatch via
-    // `eco_apply_closure(legacy)` → `eco_apply_closure_typed` → here.
+    // The closure's own result kind, not the layout's: a layout's result kind comes from the call site's
+    // static type, which for a curried closure can name a later stage's result rather than this one's.
     uint8_t K = closure->result_kind;
     assert(K <= 3 && "eco_apply_closure_eval: closure result_kind out of range");
 
     if (num_args == 0) {
-        // No-op apply: closure is unchanged. By construction the caller
-        // wants a boxed result here (a no-op apply on a closure is itself
-        // a closure HPtr).
         assert(desired_kind == 0 &&
                "eco_apply_closure_eval: no-op apply requires PK_Boxed desired_kind");
         *static_cast<HPtr*>(result_slot) = closure_hptr;
         return;
     }
 
-    // Root `closure_bits` and the typed args buffer's HPointer slots
-    // across the inner runtime call. Mask comes from the layout's kinds
-    // so primitive slots are correctly skipped by the GC scan.
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     if (num_args > 0 && args_layout) {
@@ -2375,10 +2213,8 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     }
 
 #if ECO_HEAP_VALIDATE
-    // Stale-arg tripwire: every PK_Boxed slot must resolve to an allocated
-    // region. Catches callers that hold an HPointer by-value across an
-    // earlier `eco_alloc_*` GC point. Primitive slots carry raw bits, not
-    // HPointers, so they are skipped via `args_layout`.
+    // Resolving each boxed argument runs the resolve-time stale-pointer check, which catches a caller that
+    // held an argument unrooted across an allocation.
     for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
         uint8_t kind = args_layout ? args_layout->kinds[dbg_i] : 0;
         if (kind != 0) continue;
@@ -2392,10 +2228,6 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
 #endif
 
     if (num_args < remaining) {
-        // Under-saturated: extend with newargs. Always produces a closure
-        // HPtr regardless of `K`, so the caller must want PK_Boxed.
-        // (No dispatch here — this grows a PAP via eco_pap_extend_l, an
-        //  allocation the closure census counts as an `extend`.)
         assert(desired_kind == 0 &&
                "eco_apply_closure_eval: under-saturated apply requires PK_Boxed "
                "desired_kind (well-typed IR cannot have a primitive result on "
@@ -2409,30 +2241,20 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     }
 
     if (num_args == remaining) {
-        // Generic funnel reached a saturated call — tag the subset; the actual
-        // `sat` is recorded inside invokeSaturatedTyped below.
+        // Counted as `gen` here; invokeSaturatedTyped counts the `sat`.
         dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
                             DispatchKind::Generic);
-        // Exactly saturated. Dispatch on the evaluator's real C ABI (`K`).
-        // `invokeSaturatedTyped` casts `closure->evaluator` to the matching
-        // primitive-return signature and converts the result to
-        // `desired_kind` (boxing if the caller wants a boxed result).
         invokeSaturatedTyped(closure_bits, typed_args, num_args, args_layout,
                              K, desired_kind, result_slot);
         ecoRootRelease(saved_range);
         return;
     }
 
-    // Generic funnel reached an over-saturated call — tag this stage's subset;
-    // the actual `sat` is recorded inside eco_closure_call_saturated below, and
-    // the recursive trailing stage records its own gen/sat.
+    // Over-applied: this stage counts as `gen` here and as `sat` inside eco_closure_call_saturated, and the
+    // recursive call counts the later stages. The intermediate result is wanted boxed, since it must be a
+    // closure; only the last stage delivers `desired_kind`.
     dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
                         DispatchKind::Generic);
-    // Over-saturated: saturate this stage (always boxed result intermediate,
-    // since under-saturation produces a closure HPtr), then apply the
-    // remainder to the result closure with a PK_Boxed sub-layout. If the
-    // caller wants a primitive result, we recurse asking for that primitive
-    // on the final saturated apply.
     HPtr intermediate = eco_closure_call_saturated(
         HPtr::fromBits(closure_bits),
         reinterpret_cast<uint64_t*>(typed_args),
@@ -2449,9 +2271,7 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     }
     EvalParamLayout* sub = reinterpret_cast<EvalParamLayout*>(sub_buf);
     sub->num_params = static_cast<unsigned short>(trailing);
-    // Phase C: the recursive call reads K from `intermediate->result_kind`,
-    // not from the sub-layout. Mirror it on the layout so the
-    // layout-vs-closure cross-check assertion holds.
+    // Not read by the recursive call, which takes the result kind from the closure; set to match it.
     {
         void* inter_ptr = hpointerToPtr(intermediate.toBits());
         sub->result_kind = inter_ptr
@@ -2467,11 +2287,6 @@ extern "C" void eco_apply_closure_eval(HPtr closure_hptr,
     ecoRootRelease(saved_range);
 }
 
-// Phase E: legacy boxed-result entry point, now a thin shim around
-// `eco_apply_closure_eval` with `desired_kind = PK_Boxed`. Every existing
-// caller that wants an HPtr result reaches the canonical helper through
-// here. For primitive-result closures the inner helper allocates the
-// matching ElmInt/ElmFloat/ElmChar to satisfy the boxed return.
 extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
                                         int64_t* typed_args,
                                         uint32_t num_args,
@@ -2485,15 +2300,15 @@ extern "C" HPtr eco_apply_closure_typed(HPtr closure_hptr,
 
 namespace {
 
-// Converts one new arg from the CALLER's encoding (`callerKind`) to the
-// closure's SLOT encoding (`slotKind`) — "new args are converted by the
-// runtime to match the slot's declared kind", the Phase-D contract
-// (REP_CLOSURE_002). Matched kinds — every typed emission site — copy
-// through untouched. Boxing may GC: the caller roots everything it holds.
+/// Returns the argument word `raw`, held as kind `callerKind`, converted to the slot kind `slotKind`
+/// (REP_CLOSURE_002): unchanged when the kinds match, read from its ElmInt, ElmFloat or ElmChar when a boxed
+/// argument goes to a primitive slot, and boxed when a primitive goes to a boxed slot.
+///
+/// Boxing allocates and may collect, so the caller must root everything it holds. Two different primitive
+/// kinds are passed through unchanged.
 inline uint64_t convertArgToSlotKind(uint64_t raw, uint32_t callerKind, uint32_t slotKind) {
-    if (callerKind == slotKind) return raw;   // the universal case
+    if (callerKind == slotKind) return raw;
     if (callerKind == 0) {
-        // Boxed -> primitive: un-box (no allocation).
         void* hp_ptr = hpointerToPtr(raw);
         assert(hp_ptr && "eco_pap_extend_l: cannot un-box null/embedded HPointer");
         const char* base = reinterpret_cast<const char*>(hp_ptr) + sizeof(Header);
@@ -2505,7 +2320,6 @@ inline uint64_t convertArgToSlotKind(uint64_t raw, uint32_t callerKind, uint32_t
         }
     }
     if (slotKind == 0) {
-        // Primitive -> boxed: box via the matching allocator (may GC).
         switch (callerKind) {
             case 1: return eco_alloc_int(static_cast<int64_t>(raw)).toBits();
             case 2: { double f; memcpy(&f, &raw, sizeof(f)); return eco_alloc_float(f).toBits(); }
@@ -2513,26 +2327,21 @@ inline uint64_t convertArgToSlotKind(uint64_t raw, uint32_t callerKind, uint32_t
             default: assert(false && "unreachable callerKind"); __builtin_unreachable();
         }
     }
-    // Both primitive but distinct: a representation mismatch the compiler
-    // rules out. Pass through (old behaviour).
+    // Two different primitive kinds: no conversion is defined, and the compiler is relied on not to emit one.
     return raw;
 }
 
 } // anonymous namespace
 
-// Extends a PAP with `num_newargs` args whose CALLER kinds come from
-// `caller_layout` (null = all boxed). The new closure has n_values + num_newargs
-// value slots followed by the old closure's K = extWords(max_values, 20) ext
-// kind words, copied from a snapshot (closure layout v2, HEAP_078); each new
-// arg is converted to its slot kind before the allocation (boxing may GC, which
-// would move a partially-built, unrooted closure).
+// Each argument is converted before the closure is allocated: a boxing collection would otherwise move a
+// half-built closure that nothing roots.
 extern "C" HPtr eco_pap_extend_l(HPtr closure_hptr, uint64_t* args, uint32_t num_newargs,
                                  const EvalParamLayout* caller_layout) {
     uint64_t closure_bits = closure_hptr.toBits();
     Closure* old = static_cast<Closure*>(hpointerToPtr(closure_bits));
     if (!old) return HPtr::fromBits(0);
 
-    // Kinds survive the boxing GC in the snapshot (ext words are immutable).
+    // A copy of the kinds, which stays valid when a boxing collection moves the closure.
     ClosureKinds ks;
     snapshotClosureKinds(old, ks);
     const uint32_t old_n = old->n_values;
@@ -2540,11 +2349,10 @@ extern "C" HPtr eco_pap_extend_l(HPtr closure_hptr, uint64_t* args, uint32_t num
     const uint32_t new_n = old_n + num_newargs;
     const uint8_t rk = old->result_kind;
 #if ECO_HEAP_VALIDATE
-    // Premise of the empty-sat[] argument (2.6.8): max_values == stage_arity.
+    // ecoDescForKernelEvaluator sizes sat[] from stage_arity, which must therefore be the capacity.
     assert((!old->evaluator || old->evaluator->stage_arity == max) &&
            "eco_pap_extend_l: max_values != evaluator->stage_arity");
 #endif
-    // Saturated calls use eco_closure_call_saturated instead.
     if (new_n > max) {
         std::fprintf(stderr, "[eco] FATAL: eco_pap_extend_l: new_n_values (%u) exceeds max_values (%u)\n",
                      new_n, max);
@@ -2563,18 +2371,16 @@ extern "C" HPtr eco_pap_extend_l(HPtr closure_hptr, uint64_t* args, uint32_t num
     }
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
-    // Root the caller's args by CALLER kind, the conversion buffer by TARGET
-    // kind (zero-filled slots are null HPtrs, skipped by the scan).
+    // The caller's args are rooted by the caller's kinds, the converted ones by the slot kinds; a slot not
+    // yet converted is 0, which the scan skips.
     pushRootsByKinds(args, num_newargs, callerKind);
     pushRootsByKinds(conv, num_newargs,
                      [&](uint32_t i) { return closureKindAt(ks, old_n + i); });
     for (uint32_t i = 0; i < num_newargs; ++i)
         conv[i] = convertArgToSlotKind(args[i], callerKind(i), closureKindAt(ks, old_n + i));
 
-    // Allocate: new_n value slots + K ext words (header.size = new_n + K).
     const uint32_t K = ks.k;
     const size_t size = sizeof(Closure) + (static_cast<size_t>(new_n) + K) * sizeof(Unboxable);
-    // Fast path: bump-pointer with no rooting — allocateFast cannot GC.
     void* obj = Allocator::instance().allocateFast(size);
     if (obj) {
         Header* hdr = getHeader(obj);
@@ -2586,21 +2392,18 @@ extern "C" HPtr eco_pap_extend_l(HPtr closure_hptr, uint64_t* args, uint32_t num
         return HPtr::fromBits(0);
     }
 
-    // Re-resolve: allocateSlow (or the boxing above) may have moved it.
+    // A collection in the boxing or in allocateSlow may have moved the old closure.
     old = static_cast<Closure*>(hpointerToPtr(closure_bits));
     Closure* nc = static_cast<Closure*>(obj);
-    // `result_kind` propagates: the extended closure shares the evaluator.
     nc->n_values = new_n;
     nc->max_values = max;
     nc->result_kind = rk;
-    // Stored values were converted to the closure's slot encodings above, so
-    // the kinds are simply the closure's own kind map.
     nc->unboxed = ks.hdr;
     nc->evaluator = old->evaluator;
     for (uint32_t i = 0; i < old_n; i++) nc->values[i] = old->values[i];
     for (uint32_t i = 0; i < num_newargs; i++)
         nc->values[old_n + i].i = static_cast<i64>(conv[i]);
-    // The last K words: the ext kind words, zeros included (HEAP_077).
+    // Every ext word is written, zeros included, since the payload is not zeroed (HEAP_077).
     u64* ext = reinterpret_cast<u64*>(&nc->values[new_n]);
     for (uint32_t j = 0; j < K; ++j) ext[j] = ks.ext[j];
     closureStatsRecord(reinterpret_cast<const void*>(nc->evaluator), /*isExtend=*/true);
@@ -2611,18 +2414,6 @@ extern "C" HPtr eco_pap_extend_l(HPtr closure_hptr, uint64_t* args, uint32_t num
 
 namespace {
 
-// Splice captures + newargs into a single typed buffer matching the
-// closure's wrapper convention. Used by both `eco_closure_call_saturated`
-// (boxed-result path) and `eco_apply_closure_eval`'s K!=0 saturated path
-// (primitive-result path).
-//
-// On entry `closure_bits_inout` and the buffer must already be GC-rooted
-// by the caller. Returns the (possibly re-resolved) `Closure*` after any
-// boxing allocations, since `eco_alloc_*` calls inside this helper may
-// trigger GC.
-//
-// `closure_bits_inout` is updated to reflect the (re-)resolved closure
-// pointer, and `kinds_out` holds the closure's kinds snapshot.
 inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                                             uint64_t* new_args,
                                             uint32_t num_newargs,
@@ -2638,28 +2429,22 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
            && "spliceArgsForSaturatedCall: argument count mismatch");
     assert(max_values <= CLOSURE_MAX_ARITY && "max_values exceeds the 11-bit field cap");
 
-    // Kinds come from a snapshot (boxing below may move the closure): the
-    // inline kinds plus the copied ext words (closure layout v2).
+    // A copy of the kinds, which stays valid when a boxing collection moves the closure.
     ClosureKinds& ks = kinds_out;
     snapshotClosureKinds(closure, ks);
 
-    // Captures: stored raw per closure->unboxed; copy directly.
     for (uint32_t i = 0; i < n_values; ++i) {
         combined_args[i] = reinterpret_cast<void*>(closure->values[i].i);
     }
 
-    // Newargs: convert from caller's layout convention to closure's
-    // wrapper convention slot-by-slot.
+    // The conversions are convertArgToSlotKind's, written out here.
     for (uint32_t i = 0; i < num_newargs; ++i) {
         uint32_t slot = n_values + i;
         uint64_t closureKind = closureKindAt(ks, slot);
         uint64_t callerKind = layout ? (layout->kinds[i] & 0x3ULL) : 0ULL;
         uint64_t raw = new_args[i];
         if (closureKind == callerKind) {
-            // Already in the right encoding.
         } else if (callerKind == 0 && closureKind != 0) {
-            // Boxed → primitive: un-box. The HPointer points at an
-            // ElmInt/ElmFloat/ElmChar with the value at offset 8.
             void* hp_ptr = hpointerToPtr(raw);
             assert(hp_ptr && "spliceArgsForSaturatedCall: cannot un-box null/embedded HPointer");
             const char* base = reinterpret_cast<const char*>(hp_ptr) + sizeof(Header);
@@ -2687,9 +2472,6 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                     __builtin_unreachable();
             }
         } else if (callerKind != 0 && closureKind == 0) {
-            // Primitive → boxed: box via the matching allocator. (Rare —
-            // happens when a typed-args caller targets a closure whose
-            // wrapper expects an !eco.value at this slot.)
             switch (callerKind) {
                 case 1:
                     raw = eco_alloc_int(static_cast<int64_t>(raw)).toBits();
@@ -2707,24 +2489,18 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
                     assert(false && "unreachable callerKind");
                     __builtin_unreachable();
             }
-            // Re-resolve closure: eco_alloc_* may have GC'd.
+            // The boxing may have collected and moved the closure.
             closure = static_cast<Closure*>(hpointerToPtr(closure_bits_inout));
             snapshotClosureKinds(closure, ks);
         } else {
-            // Both kinds primitive but distinct (e.g. Int vs Float). This
-            // is a representation mismatch the compiler should have ruled
-            // out. Trust it and pass through.
+            // Two different primitive kinds: passed through, as convertArgToSlotKind does.
         }
         combined_args[slot] = reinterpret_cast<void*>(raw);
     }
 
 #if ECO_HEAP_VALIDATE
-    // Stale-arg tripwire: validate combined_args before the helper returns.
-    // Catches stale entries arising from caller bugs or missed re-resolves
-    // across the boxing/un-boxing GC points above. Primitive slots carry
-    // raw bits, not HPointers, so they are skipped via the kinds snapshot
-    // (closure->unboxed). Centralised here so both `eco_closure_call_saturated`
-    // (K==0) and `invokeSaturatedTyped` (K!=0) get the check.
+    // Resolving each boxed entry runs the resolve-time stale-pointer check, which catches an entry left
+    // stale by a collection during the boxing above.
     for (uint32_t dbg_i = 0; dbg_i < max_values; ++dbg_i) {
         uint64_t closureKind = closureKindAt(ks, dbg_i);
         if (closureKind != 0) continue;
@@ -2743,25 +2519,12 @@ inline Closure* spliceArgsForSaturatedCall(uint64_t& closure_bits_inout,
 
 } // anonymous namespace
 
-// Typed-result sibling of `eco_closure_call_saturated`. Caller asserts the
-// closure is saturated by `num_newargs` (n_values + num_newargs ==
-// max_values); the helper writes the result into `result_slot` cast to the
-// type implied by `desired_kind`. When the closure evaluator's K matches
-// `desired_kind`, no boxing/unboxing happens — the primitive flows directly
-// from the wrapper into the result slot. When K and desired_kind disagree,
-// `invokeSaturatedTyped` boxes or extracts as needed.
-//
-// This entry point exists so JIT-emitted call sites whose SSA result type
-// is primitive (i64/f64/i32 Char) can avoid `eco_closure_call_saturated`'s
-// hardcoded `desired_kind=0` boxing on the K!=0 path.
 extern "C" void eco_closure_call_saturated_eval(
     HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs,
     const EvalParamLayout* layout, void* result_slot, uint8_t desired_kind) {
     uint64_t closure_bits = closure_hptr.toBits();
     void* closure_ptr = hpointerToPtr(closure_bits);
     if (!closure_ptr) {
-        // Zero-init the result slot for a defined value on null-closure.
-        // (Same shape as `eco_apply_closure_eval`'s null guard.)
         switch (desired_kind) {
             case 0: *static_cast<HPtr*>(result_slot) = HPtr::fromBits(0); break;
             case 1: *static_cast<int64_t*>(result_slot) = 0; break;
@@ -2790,20 +2553,13 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     void* closure_ptr = hpointerToPtr(closure_bits);
     if (!closure_ptr) return HPtr::fromBits(0);
 
-    // Phase C: dispatch on the closure evaluator's real C-ABI return
-    // kind, read from `closure->result_kind` (set by papCreate /
-    // eco_alloc_closure_k from the wrapper's compiled return ABI).
-    // Reading from the closure header — rather than from the optional
-    // `layout` argument — lets C++ kernel callers (List, JsArray,
-    // String, Bytes) keep passing `layout=nullptr` and still dispatch
-    // primitive-return wrappers correctly.
+    // The result kind comes from the closure, so a caller with a null layout still calls a
+    // primitive-result evaluator correctly.
     Closure* hdr_closure = static_cast<Closure*>(closure_ptr);
     uint8_t K = hdr_closure->result_kind;
     if (K != 0) {
         EcoRootMark saved_range = ecoRootMark();
         ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
-        // Root the typed-args buffer's HPointer slots so GC inside the
-        // evaluator can update them in place.
         if (num_newargs > 0 && layout) {
             pushRootsByKinds(new_args, num_newargs,
                              [&](uint32_t i) { return layout->kinds[i]; });
@@ -2820,11 +2576,8 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t max_values = closure->max_values;
 
-    // Phase E: typed calling convention (REP_ABI_001). Splice captures +
-    // newargs into a single buffer matching the closure's wrapper
-    // convention via the shared helper.
+    // The argument array: on the stack up to 16 entries, alloca up to 256 (2 KiB), the heap above.
     void* stack_args[16];
-    // Up to 2047 slots: alloca up to 256 (2 KiB), heap above (open question 1).
     std::unique_ptr<void*[]> heap_args;
     void** combined_args = stack_args;
     if (max_values > 256) {
@@ -2834,12 +2587,9 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
         combined_args = static_cast<void**>(alloca(max_values * sizeof(void*)));
     }
 
+    // Zeroed so that the root scan, which reads every boxed entry, sees 0 in those not yet written.
     memset(combined_args, 0, max_values * sizeof(void*));
 
-    // Open a stack root range over closure_bits and the combined buffer.
-    // The boxed-slot kinds come from `closure->unboxed` (the full-params
-    // bitmap; slots past the inline kinds read boxed), so primitive slots
-    // are correctly skipped by GC.
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     {
@@ -2848,11 +2598,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
         pushRootsByKinds(reinterpret_cast<uint64_t*>(combined_args), max_values,
                          [&](uint32_t i) { return closureKindAt(ks, i); });
     }
-    // Also root the caller's new_args buffer's HPointer slots: when the
-    // layout declares a primitive but the wrapper expects a boxed value,
-    // spliceArgsForSaturatedCall allocates inside its Primitive→Boxed
-    // branch, and the GC could otherwise move HPointer values held in
-    // `new_args[i+1..]` between iterations of the splice loop.
+    // The splice may box an argument, and that collection must update the boxed arguments not yet copied.
     if (num_newargs > 0 && layout) {
         pushRootsByKinds(new_args, num_newargs,
                          [&](uint32_t i) { return layout->kinds[i]; });
@@ -2864,8 +2610,7 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
                                          layout, combined_args,
                                          out_max_values, out_kinds);
 
-    // Dispatch census (E0): the K==0 (boxed-result) direct evaluator call — the
-    // one indirect call that does NOT flow through invokeSaturatedTyped.
+    // The one evaluator call outside invokeSaturatedTyped, so it counts its own `sat`.
     dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
                         DispatchKind::Sat);
     void* result = closure->evaluator->generic(combined_args);
@@ -2876,14 +2621,6 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
 
 namespace {
 
-// Saturated dispatch for `eco_apply_closure_eval`. Builds the combined
-// captures+newargs buffer and invokes `closure->evaluator` with the C-ABI
-// signature matched to `K`. Stores the result into `result_slot`,
-// converting between the evaluator's actual return ABI (`K`) and the
-// caller's `desired_kind` as needed (boxing or extracting primitives).
-//
-// `closure_bits` is passed by value and rooted here; `typed_args`' boxed
-// slots must be GC-rooted by the caller across this call. `typed_args` holds newargs in the format described by `args_layout`.
 void invokeSaturatedTyped(uint64_t closure_bits,
                           int64_t* typed_args,
                           uint32_t num_args,
@@ -2893,19 +2630,13 @@ void invokeSaturatedTyped(uint64_t closure_bits,
                           void* result_slot) {
     Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
     assert(closure && "invokeSaturatedTyped: null closure");
-    // Dispatch census (E0): THE saturated indirect evaluator call. This is the
-    // single leaf primitive for every typed saturated dispatch — funnel-exact,
-    // eco_closure_call_saturated_eval, eco_closure_call_saturated (K!=0). The
-    // evaluator code pointer is invariant under GC relocation, so reading it
-    // pre-splice keys to the same fp that is actually called below.
+    // Counted before the splice: a collection moves the closure but not its evaluator.
     dispatchStatsRecord(reinterpret_cast<const void*>(closure->evaluator),
                         DispatchKind::Sat);
     uint32_t max_values = closure->max_values;
 
-    // Splice captures + newargs into combined_args. Re-uses the shared
-    // helper used by the boxed-result path.
+    // Sized as in eco_closure_call_saturated.
     void* stack_args[16];
-    // Up to 2047 slots: alloca up to 256 (2 KiB), heap above (open question 1).
     std::unique_ptr<void*[]> heap_args;
     void** combined_args = stack_args;
     if (max_values > 256) {
@@ -2916,9 +2647,7 @@ void invokeSaturatedTyped(uint64_t closure_bits,
     }
     memset(combined_args, 0, max_values * sizeof(void*));
 
-    // Root the combined buffer's boxed slots, and this function's own copy
-    // of closure_bits: it arrives by value, so the caller's root does not
-    // cover it, and the splice re-resolves it after a boxing allocation.
+    // closure_bits is this function's own copy, which the caller's root does not cover.
     EcoRootMark saved_range = ecoRootMark();
     ecoRoot1Push(reinterpret_cast<HPointer*>(&closure_bits));
     {
@@ -2936,9 +2665,7 @@ void invokeSaturatedTyped(uint64_t closure_bits,
                                          args_layout, combined_args,
                                          out_max_values, out_kinds);
 
-    // Cast the evaluator function pointer to its real C ABI (per K) and
-    // invoke. The wrapper was generated with this exact return ABI by
-    // `getOrCreateWrapper(.., resultKind=K)` in the JIT pass.
+    // The evaluator's return type is the one K names; calling it through any other type is undefined.
     void* eval = reinterpret_cast<void*>(closure->evaluator->generic);
     switch (K) {
         case 0: {  // PK_Boxed (HPtr)
@@ -2958,7 +2685,6 @@ void invokeSaturatedTyped(uint64_t closure_bits,
             if (desired_kind == 1) {
                 *static_cast<int64_t*>(result_slot) = r;
             } else if (desired_kind == 0) {
-                // Caller wants a boxed result: allocate ElmInt.
                 *static_cast<HPtr*>(result_slot) = eco_alloc_int(r);
             } else {
                 assert(false && "PK_Int evaluator with non-Int/Boxed desired_kind");
@@ -3007,14 +2733,10 @@ void invokeSaturatedTyped(uint64_t closure_bits,
 //===----------------------------------------------------------------------===//
 
 extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
-    // message_val is a String: a heap string (any form), or the embedded
-    // empty-string constant, which has no heap object (hpointerToPtr gives
-    // null). The prefix is printed either way.
     void* message = hpointerToPtr(message_val.toBits());
 
     fprintf(stderr, "Elm runtime error: ");
     if (message && alloc::isString(message)) {
-        // Read via charAt so this works for both flat leaves and slices.
         size_t len = static_cast<Header*>(message)->size;
         for (size_t i = 0; i < len; i++) {
             u16 cu = Elm::StringOps::charAt(message, static_cast<i64>(i));
@@ -3024,17 +2746,24 @@ extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
     }
     fputc('\n', stderr);
 
-    // Use exit(1) instead of abort() to avoid triggering LLVM's signal handlers
-    // which would print a misleading "PLEASE submit a bug report" message.
+    // exit, not abort: a SIGABRT handler, such as the one LLVM installs, would add its own report.
     std::exit(1);
 }
 
-// Forward declaration for recursive printing
+//===----------------------------------------------------------------------===//
+// The value printer
+//
+// Two printers render a value. The untyped one, `print_value`, works from the heap representation alone.
+// The typed one, `print_typed_value`, also reads the type graph registered by `eco_register_type_graph`,
+// which gives constructor and field names and the element types of containers. `depth` counts nesting, and
+// both print `...` instead of a value nested more than 50 deep.
+//===----------------------------------------------------------------------===//
+
+/// Prints the boxed value `val`, nested `depth` deep, with the untyped printer.
 static void print_value(uint64_t val, int depth);
 
-// Print string content (without quotes) - for Debug.log labels.
-// Accepts any string form (Tag_String / Tag_StringSlice) via tag-aware
-// Elm::StringOps::charAt.
+/// Prints the String at `str`, any String form, without quotes: units outside ASCII as `\uXXXX`, the rest
+/// as they are. A null `str` prints nothing.
 static void print_string_content(void* str) {
     if (!str) return;
     size_t len = static_cast<Header*>(str)->size;
@@ -3048,7 +2777,8 @@ static void print_string_content(void* str) {
     }
 }
 
-// Print a string value (with quotes). See print_string_content for tag handling.
+/// Prints the String at `str` in double quotes, with `"`, `\`, newline, carriage return and tab escaped, and
+/// every other unit outside printable ASCII as `\uXXXX`. A null `str` prints `""`.
 static void print_string(void* str) {
     output_char('"');
     if (str) {
@@ -3075,10 +2805,9 @@ static void print_string(void* str) {
     output_char('"');
 }
 
-// Print one code point of a Char's string. Like Elm's Debug.toString, a
-// printable non-ASCII code point is emitted as itself (UTF-8); control
-// characters and lone surrogates (not encodable in UTF-8) are escaped as
-// \uXXXX hex.
+/// Prints the code point `c` as it appears inside a Char literal: `'`, `\`, newline, carriage return and tab
+/// escaped; a control character, DEL, a surrogate or a value above 0x10FFFF as `\uXXXX`; anything else as
+/// itself, in UTF-8.
 static void print_char_cp(u32 c) {
     if (c == '\'') {
         output_text("\\'");
@@ -3116,10 +2845,8 @@ static void print_char_cp(u32 c) {
     }
 }
 
-// Print a Char value in Elm syntax: its code point, or an encoded case-mapping
-// result's whole expansion (KERN_008), between single quotes: 'SS' for
-// Char.toUpper 'ß', as Elm prints it. With ECO_CHAR_CASE_EXPANSION off the
-// expansion arm is compiled out.
+/// Prints the Char word `c` between single quotes: its code point, or every code point of an encoded
+/// case-mapping result (KERN_008), so that `Char.toUpper 'ß'` prints as `'SS'`.
 static void print_char(u32 c) {
     output_char('\'');
     if (Elm::CharValue::isEncoded(c)) {
@@ -3131,13 +2858,8 @@ static void print_char(u32 c) {
     output_char('\'');
 }
 
-// Print an unboxed primitive value from a container field.
-// ONLY called when: (1) unboxed bitmap indicates field is unboxed, AND
-//                   (2) type graph says field type is primitive.
-// NEVER called from eco_dbg_print_typed directly - that always receives
-// boxed HPointer values.
-/// Primitive kind of a nonzero 2-bit heap slot kind (1 Int, 2 Float, 3 Char),
-/// for an unboxed slot whose type-graph entry is not a Primitive.
+/// Returns the primitive kind a nonzero slot kind stands for (1 Int, 2 Float, 3 Char); any other value gives
+/// Int. For an unboxed slot whose type in the type graph is not a primitive.
 static Elm::EcoPrimKind primKindOfSlotKind(uint32_t slotKind) {
     switch (slotKind) {
     case 2: return Elm::EcoPrimKind::Float;
@@ -3146,6 +2868,9 @@ static Elm::EcoPrimKind primKindOfSlotKind(uint32_t slotKind) {
     }
 }
 
+/// Prints the raw slot word `bits` as a value of the primitive kind `kind`. A Bool is read from bit 0, which
+/// serves both an unboxed 0 or 1 and a boxed Bool constant. A String is never unboxed, so it is an
+/// assertion failure, and prints `<unboxed-string-bug>` in a build without assertions.
 static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
     switch (kind) {
     case Elm::EcoPrimKind::Int:
@@ -3161,40 +2886,28 @@ static void printPrimitive(uint64_t bits, Elm::EcoPrimKind kind) {
         print_char(static_cast<u32>(bits));
         break;
     case Elm::EcoPrimKind::Bool:
-        // Works for an unboxed i1 (0/1) and a boxed Bool word (False 0x4 / True
-        // 0x5): the i1 value is bit 0 in both.
         output_text((bits & 1) ? "True" : "False");
         break;
     case Elm::EcoPrimKind::String:
-        // String is NEVER unboxed - if we get here, it's a bug.
-        // Fall through to print as pointer (will likely show <null> or garbage).
         assert(false && "String cannot be unboxed");
         output_text("<unboxed-string-bug>");
         break;
     case Elm::EcoPrimKind::Unit:
-        // Unit is never unboxed (always the embedded empty constant), but handle
-        // it for switch-completeness.
         output_text("()");
         break;
     }
 }
 
-// MLIR ConstantKind enum (1-based, from Ops.td)
-// Type-erased fallback printer for the embedded constants. This path has NO type
-// information (unlike print_typed_value), and under the merged representation the
-// five empties share one bit pattern, so it can no longer name them individually
-// — it prints a generic "<empty>". Bool stays distinguishable via bit 0. The
-// real Debug.toString/log path is type-graph driven and names them correctly
-// (see print_typed_value); this is only reached without a type graph. Plan D3.
-// Returns true if `val` was a constant.
+/// Prints `val` and returns true if it is an embedded constant; otherwise prints nothing and returns false.
+///
+/// Without a type there is no telling which value the Empty constant stands for (Nil, Nothing, Unit, the
+/// empty record or String), so it prints `<empty>`; a nullary constructor prints as `<ctor n>` with its
+/// index, and a Bool as `True` or `False`.
 static bool print_if_constant(uint64_t val) {
     if (!isConstantBits(val)) {
-        return false;  // Regular pointer.
+        return false;
     }
     if (isNullConsBits(val)) {
-        // Nullary ctor embedded as a null-cons word (HEAP_044). No type info
-        // here, so print the ctor index; the type-graph-driven printer names
-        // it properly.
         output_format("<ctor %u>", nullConsTagBits(val));
     } else if (isEmptyBits(val)) {
         output_text("<empty>");
@@ -3204,33 +2917,34 @@ static bool print_if_constant(uint64_t val) {
     return true;
 }
 
-// Check if a value is the Nil / merged empty constant (list terminator).
+/// Returns whether `val` is the Empty constant, which ends a list. Unused.
 static bool is_nil(uint64_t val) {
     return isEmptyBits(val);
 }
 
-// Check if a Custom object is a list cons cell.
-// MLIR generates: List Nil with tag=0, size=0; List Cons with tag=1, size=2.
-// The tail (field 1) must be boxed (not unboxed) since it points to next cell or Nil.
+/// Returns whether the Custom `custom` has the shape of a list cell built as a Custom: constructor tag 1,
+/// two fields, the second boxed. Any Custom of that shape passes, whatever its type.
 static inline bool is_list_cons(const Custom* custom) {
-    // Field 1 (the tail) must be boxed: kind 0 at bits [2,3] → mask 0xC is zero.
     return custom->ctor == 1 &&
            custom->header.size == 2 &&
            fieldKind(custom->unboxed, 1) == 0;
 }
 
-// Print a list in Elm syntax: [1, 2, 3]
+/// Prints the list `val` as `[a, b, c]`, its nodes being cons cells, chunk views or list-shaped Customs, and
+/// `, ...` after 100 elements.
+///
+/// An unboxed Float element is printed with `%g`, not as `print_float` prints a Float. A node of another
+/// kind, or a constant other than Empty as a tail, is printed as a marker in angle brackets, which ends
+/// the list.
 static void print_list(uint64_t val, int depth) {
     output_char('[');
 
     bool first = true;
     uint64_t current = val;
     int count = 0;
-    const int MAX_LIST_ITEMS = 100;  // Prevent infinite loops
+    const int MAX_LIST_ITEMS = 100;
 
     while (count < MAX_LIST_ITEMS) {
-        // Any embedded constant terminates the list. The merged empty is Nil;
-        // a non-empty constant (a Bool) in a tail position is malformed.
         if (isConstantBits(current)) {
             if (!isEmptyBits(current)) {
                 if (!first) output_text(", ");
@@ -3239,7 +2953,6 @@ static void print_list(uint64_t val, int depth) {
             break;
         }
 
-        // Convert HPointer to raw pointer
         void* ptr = hpointerToPtr(current);
         if (!ptr) {
             if (!first) output_text(", ");
@@ -3249,12 +2962,8 @@ static void print_list(uint64_t val, int depth) {
 
         Header* header = static_cast<Header*>(ptr);
 
-        // eco.construct uses Tag_Custom with ctor=1 for list cons cells
-        // MLIR: List Nil has tag=0, size=0; List Cons has tag=1, size=2
-        // Native Cons type uses Tag_Cons
         if (header->tag == Tag_Custom) {
             Custom* custom = static_cast<Custom*>(ptr);
-            // Use is_list_cons helper to validate cons cell
             if (!is_list_cons(custom)) {
                 if (!first) output_text(", ");
                 output_text("<non_cons_custom>");
@@ -3266,7 +2975,6 @@ static void print_list(uint64_t val, int depth) {
             }
             first = false;
 
-            // Print the head element (field 0)
             switch (fieldKind(custom->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)custom->values[0].i); break;
                 case 2: output_format("%g", (double)custom->values[0].f); break;
@@ -3278,7 +2986,6 @@ static void print_list(uint64_t val, int depth) {
                 }
             }
 
-            // Move to tail (field 1) - read as full 64-bit value
             current = static_cast<uint64_t>(custom->values[1].i);
         } else if (header->tag == Tag_Cons) {
             Cons* cons = static_cast<Cons*>(ptr);
@@ -3288,7 +2995,6 @@ static void print_list(uint64_t val, int depth) {
             }
             first = false;
 
-            // Print the head element
             switch (tupleFieldKind(header->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)cons->head.i); break;
                 case 2: output_format("%g", (double)cons->head.f); break;
@@ -3300,11 +3006,9 @@ static void print_list(uint64_t val, int depth) {
                 }
             }
 
-            // Move to tail
             current = hpBits(cons->tail);
         } else if (header->tag == Tag_ConsChunk) {
-            // Chunk view (hybrid spines): print the dense run from the
-            // backing by uniform element kind, then continue with `next`.
+            // The view's whole run, then the node after it.
             ConsChunk* cv = static_cast<ConsChunk*>(ptr);
             ListBacking* lb = static_cast<ListBacking*>(hpointerToPtr(hpBits(cv->backing)));
             u32 cap = lb->header.size;
@@ -3323,7 +3027,7 @@ static void print_list(uint64_t val, int depth) {
                 }
             }
             current = hpBits(cv->next);
-            continue; // count already advanced per element
+            continue; // count has been advanced per element
         } else {
             if (!first) output_text(", ");
             output_format("<non_cons_tag_%d>", header->tag);
@@ -3340,7 +3044,8 @@ static void print_list(uint64_t val, int depth) {
     output_char(']');
 }
 
-// Print a single slot whose kind is encoded in `kind` (0=boxed, 1=Int, 2=Float, 3=Char).
+/// Prints the slot `v` of slot kind `kind`: an Int, a Float with `%g`, a Char, or for kind 0 the boxed value
+/// one level deeper than `depth`.
 static void print_unboxable_slot(const Unboxable& v, uint32_t kind, int depth) {
     switch (kind) {
         case 1: output_format("%lld", (long long)v.i); break;
@@ -3350,7 +3055,7 @@ static void print_unboxable_slot(const Unboxable& v, uint32_t kind, int depth) {
     }
 }
 
-// Print a tuple
+/// Prints the 2-tuple `tuple` as `(a, b)`.
 static void print_tuple2(Tuple2* tuple, int depth) {
     output_char('(');
     print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
@@ -3359,6 +3064,7 @@ static void print_tuple2(Tuple2* tuple, int depth) {
     output_char(')');
 }
 
+/// Prints the 3-tuple `tuple` as `(a, b, c)`.
 static void print_tuple3(Tuple3* tuple, int depth) {
     output_char('(');
     print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
@@ -3369,15 +3075,14 @@ static void print_tuple3(Tuple3* tuple, int depth) {
     output_char(')');
 }
 
-// Print a custom type constructor
+/// Prints the Custom `custom` as `Ctor<tag>` followed by its fields separated by spaces, a field that is a
+/// Custom with fields in parentheses, and a field word of 0 as `<null>`.
 static void print_custom(Custom* custom, int depth) {
     uint32_t ctor = custom->ctor;
     uint32_t size = custom->header.size;
 
-    // Print generic constructor name (1-indexed for readability)
     output_format("Ctor%u", ctor);
 
-    // Print fields if any
     if (size > 0) {
         output_char(' ');
         for (uint32_t i = 0; i < size; i++) {
@@ -3387,14 +3092,11 @@ static void print_custom(Custom* custom, int depth) {
             if (k != 0) {
                 print_unboxable_slot(custom->values[i], k, depth);
             } else {
-                // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
 
                 if (val == 0) {
-                    // Null pointer
                     output_text("<null>");
                 } else if (!print_if_constant(val)) {
-                    // Heap pointer - resolve HPointer
                     void* ptr = hpointerToPtr(val);
                     bool needs_parens = false;
                     if (ptr) {
@@ -3410,7 +3112,7 @@ static void print_custom(Custom* custom, int depth) {
     }
 }
 
-// Print a record
+/// Prints the Record `record` as `{ f0 = ..., f1 = ... }`; without a type there are no field names.
 static void print_record(Record* record, int depth) {
     uint32_t size = record->header.size;
 
@@ -3418,21 +3120,19 @@ static void print_record(Record* record, int depth) {
     for (uint32_t i = 0; i < size; i++) {
         if (i > 0) output_text(", ");
 
-        // We don't have field names, so use numeric indices
         output_format("f%u = ", i);
 
         uint32_t k = recordSlotKind(record, i);
         if (k != 0) {
             print_unboxable_slot(record->values[i], k, depth);
         } else {
-            // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(record->values[i].i), depth + 1);
         }
     }
     output_text(" }");
 }
 
-// Print a dynamic record
+/// Prints the DynRecord `dynrec` as `print_record` prints a Record, every field as boxed.
 static void print_dynrecord(DynRecord* dynrec, int depth) {
     uint32_t size = dynrec->header.size;
 
@@ -3440,17 +3140,15 @@ static void print_dynrecord(DynRecord* dynrec, int depth) {
     for (uint32_t i = 0; i < size; i++) {
         if (i > 0) output_text(", ");
 
-        // We don't have field names, so use numeric indices
         output_format("f%u = ", i);
 
-        // DynRecord values are HPointer, not Unboxable.
         uint64_t val = hpBits(dynrec->values[i]);
         print_value(val, depth + 1);
     }
     output_text(" }");
 }
 
-// Print an array
+/// Prints the Array `array` as `Array.fromList [...]`, its elements read by the array's uniform kind.
 static void print_array(ElmArray* array, int depth) {
     output_text("Array.fromList [");
     uint32_t kind = array->header.unboxed & 0x3;
@@ -3460,27 +3158,22 @@ static void print_array(ElmArray* array, int depth) {
         if (kind != 0) {
             print_unboxable_slot(array->elements[i], kind, depth);
         } else {
-            // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(array->elements[i].i), depth + 1);
         }
     }
     output_char(']');
 }
 
-// Main value printer
 static void print_value(uint64_t val, int depth) {
-    // Prevent infinite recursion
     if (depth > 50) {
         output_text("...");
         return;
     }
 
-    // Check for embedded constants first
     if (print_if_constant(val)) {
         return;
     }
 
-    // Convert HPointer to raw pointer via allocator
     void* ptr = hpointerToPtr(val);
     if (!ptr) {
         output_text("<null>");
@@ -3532,15 +3225,12 @@ static void print_value(uint64_t val, int depth) {
 
         case Tag_Cons:
         case Tag_ConsChunk: {
-            // Print as a list (either hybrid spine-node form)
             print_list(val, depth);
             break;
         }
 
         case Tag_Custom: {
             Custom* custom = static_cast<Custom*>(ptr);
-            // Check if this is a list cons cell using the is_list_cons helper.
-            // MLIR: List Cons has ctor=1, size=2 (NOT ctor=0 which is used for tuples).
             if (is_list_cons(custom)) {
                 print_list(val, depth);
             } else {
@@ -3585,9 +3275,7 @@ static void print_value(uint64_t val, int depth) {
         case Tag_ByteBuffer:
         case Tag_LargeByteHeader:
         case Tag_ByteBufferSlice: {
-            // All three forms carry the logical byte count in header.size;
-            // the slice/split-header forms reference their payload via an
-            // HPointer we don't need for the size-only debug rendering.
+            // All three forms keep the byte count in header.size.
             output_format("<bytes:%u>", header->size);
             break;
         }
@@ -3623,38 +3311,44 @@ extern "C" void eco_dbg_print(uint64_t* args, uint32_t num_args) {
     output_text("\n");
 }
 
-// Debug print for unboxed integer (i64)
 extern "C" void eco_dbg_print_int(int64_t value) {
     output_format("[eco.dbg] %lld\n", (long long)value);
 }
 
-// Debug print for unboxed float (f64)
 extern "C" void eco_dbg_print_float(double value) {
     output_text("[eco.dbg] ");
     print_float(value);
     output_text("\n");
 }
 
-// Debug print for unboxed char (i32 Unicode code point)
 extern "C" void eco_dbg_print_char(int32_t value) {
     output_text("[eco.dbg] ");
     print_char(static_cast<u32>(value));
     output_text("\n");
 }
 
-// Global type graph pointer - set by eco_register_type_graph from JITed code
+/// The type graph the typed printer reads, or null until `eco_register_type_graph` sets it. Shared by every
+/// thread, unguarded.
 static const Elm::EcoTypeGraph* g_type_graph = nullptr;
 
-// Register the type graph from JITed code
 extern "C" void eco_register_type_graph(const void* graph) {
     g_type_graph = static_cast<const Elm::EcoTypeGraph*>(graph);
 }
 
-// Forward declaration for recursive printing
+/// Prints the boxed value `value` of type `type_id`, nested `depth` deep, with the typed printer.
+///
+/// `type_id` must index the registered type graph (asserted); in a build without assertions an invalid one,
+/// or a missing graph, falls back to the untyped printer. Embedded constants are named from the type: the
+/// Bool, String and Unit constants of a primitive type, `{}` for a record type, and a nullary constructor
+/// of a custom type by its name, the Empty constant taking the type's first nullary constructor. A
+/// function prints as `<function>`, and a type variable through the untyped printer. A Custom whose
+/// constructor or field count the type does not list, or a non-Custom of a custom type, prints as
+/// `<internals>`, as do values of a custom type with no constructors. An unboxed field whose type is not a
+/// primitive is an assertion failure.
 static void print_typed_value(uint64_t value, uint32_t type_id, int depth);
 
-// Helper to print a label (string value without quotes).
-// Accepts any string form (leaf or slice) via Elm::alloc::isString.
+/// Prints the boxed value `value` as a `Debug.log` label: a String without quotes, anything else with the
+/// untyped printer, and an embedded constant as `<null>`.
 static void print_label(uint64_t value) {
     void* ptr = hpointerToPtr(value);
     if (ptr) {
@@ -3668,7 +3362,7 @@ static void print_label(uint64_t value) {
     }
 }
 
-// Helper: check if a type_id refers to a String primitive in the type graph.
+/// Returns whether a type graph is registered and `type_id` is a String type in it.
 static bool isStringType(uint32_t type_id) {
     if (!g_type_graph || !g_type_graph->types || type_id >= g_type_graph->type_count) {
         return false;
@@ -3678,11 +3372,7 @@ static bool isStringType(uint32_t type_id) {
            info->data.primitive.prim_kind == Elm::EcoPrimKind::String;
 }
 
-// Debug print with full type information using the global type graph.
-// When called with 2 args where type_ids[0] is a String type, this is a Debug.log call
-// and we format as "label: value\n"
 extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32_t num_args) {
-    // Special case for Debug.log: 2 args, first is a string label
     if (num_args == 2 && isStringType(type_ids[0])) {
         print_label(values[0]);
         output_text(": ");
@@ -3691,27 +3381,22 @@ extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32
         return;
     }
 
-    // General case: print each value on its own line
     for (uint32_t i = 0; i < num_args; ++i) {
         print_typed_value(values[i], type_ids[i], 0);
         output_text("\n");
     }
 }
 
-// Print a value using type information from the type graph
 static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
-    // Prevent infinite recursion
     if (depth > 50) {
         output_text("...");
         return;
     }
 
-    // Assert type graph is available and type_id is valid
     assert(g_type_graph && "Type graph not initialized");
     assert(g_type_graph->types && "Type graph has no types array");
     assert(type_id < g_type_graph->type_count && "Invalid type_id");
     if (!g_type_graph || !g_type_graph->types || type_id >= g_type_graph->type_count) {
-        // Safety fallback in release builds
         print_value(value, depth);
         return;
     }
@@ -3720,11 +3405,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
     switch (typeInfo->kind) {
     case Elm::EcoTypeKind::Primitive: {
-        // At the dbg boundary primitives are boxed (!eco.value): a heap object
-        // (ElmInt/Float/Char/String) or an embedded constant. The only primitive
-        // constants are Bool (True/False) and the empty String — name them from
-        // the known prim_kind so we do not depend on the constant's specific
-        // value (post-merge all empties share one bit pattern). See plan D3/D4.
+        // A boxed primitive is a heap object, or a constant: a Bool, or the Empty constant as "" or ().
         if (isConstantBits(value)) {
             Elm::EcoPrimKind pk = typeInfo->data.primitive.prim_kind;
             if (pk == Elm::EcoPrimKind::Bool) {
@@ -3743,10 +3424,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
     }
 
     case Elm::EcoTypeKind::List: {
-        // Get element type for typed recursive printing
         uint32_t elem_type_id = typeInfo->data.list.elem_type_id;
 
-        // Assert element type is in valid range
         assert(elem_type_id < g_type_graph->type_count && "Invalid elem_type_id in List type graph");
 
         output_char('[');
@@ -3756,9 +3435,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         const int MAX_LIST_ITEMS = 100;
 
         while (count < MAX_LIST_ITEMS) {
-            // Any embedded constant in a list tail is the end of the list. In a
-            // List-typed context the only constant that can appear is Nil, so we
-            // need not distinguish it from the other empties (plan D3).
+            // The only constant a list's tail can be is Empty, which is Nil here.
             if (isConstantBits(current)) {
                 break;
             }
@@ -3768,7 +3445,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
             Header* header = static_cast<Header*>(ptr);
 
-            // Handle both Tag_Cons and Tag_Custom (ctor=1) for list cons cells
             uint64_t head_val;
             uint64_t tail_val;
             // 2-bit slot kind of the head (0 boxed, 1 Int, 2 Float, 3 Char).
@@ -3780,12 +3456,8 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 head_kind = tupleFieldKind(cons->header.unboxed, 0);
                 tail_val = hpBits(cons->tail);
             } else if (header->tag == Tag_ConsChunk) {
-                // Chunk view (hybrid spines): head is the first live slot of
-                // the run; the logical tail is the rest of the run — which
-                // has no materialized node, so synthesize by walking the run
-                // inline here instead. Simplest correct handling for the
-                // bounded debug printer: print the whole run, continue at
-                // `next`.
+                // The rest of a view's run has no node of its own, so the whole run is printed here and
+                // the walk goes on at the node after it.
                 ConsChunk* cv = static_cast<ConsChunk*>(ptr);
                 ListBacking* lb =
                     static_cast<ListBacking*>(hpointerToPtr(hpBits(cv->backing)));
@@ -3826,24 +3498,18 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             if (!first) output_text(", ");
             first = false;
 
-            // Print head with type info
             if (head_kind != 0) {
-                // Value is unboxed - use printPrimitive based on element type
                 const Elm::EcoTypeInfo* elemType = &g_type_graph->types[elem_type_id];
                 if (elemType->kind == Elm::EcoTypeKind::Primitive) {
                     printPrimitive(head_val, elemType->data.primitive.prim_kind);
                 } else if (elemType->kind == Elm::EcoTypeKind::Polymorphic) {
-                    // A type variable that leaked through monomorphization
-                    // (either constraint, SD-25): the cell's own slot kind
-                    // says what the unboxed head is.
+                    // An element type left as a type variable: the cell's slot kind says what the head is.
                     printPrimitive(head_val, primKindOfSlotKind(head_kind));
                 } else {
-                    // Unboxed but type graph says non-primitive - type mismatch
                     assert(false && "List head is unboxed but element type is not primitive");
                     output_format("<unboxed-non-prim:0x%llx>", (unsigned long long)head_val);
                 }
             } else {
-                // Value is boxed (HPointer) - recurse with type info
                 print_typed_value(head_val, elem_type_id, depth + 1);
             }
 
@@ -3862,11 +3528,9 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint16_t arity = typeInfo->data.tuple.arity;
         uint32_t first_field = typeInfo->data.tuple.first_field;
 
-        // Assert fields array is valid
         assert(g_type_graph->fields && "Type graph has no fields array");
         assert(first_field + arity <= g_type_graph->field_count && "Tuple field indices out of bounds");
 
-        // Assert field types are in valid range
         for (uint16_t i = 0; i < arity; i++) {
             assert(g_type_graph->fields[first_field + i].type_id < g_type_graph->type_count &&
                    "Invalid field type_id in Tuple type graph");
@@ -3946,7 +3610,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             }
             output_char(')');
         } else {
-            // Tag doesn't match expected tuple type
             assert(false && "Tuple tag mismatch - value doesn't match type");
             output_text("<tuple-mismatch>");
         }
@@ -3957,7 +3620,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_field = typeInfo->data.record.first_field;
         uint32_t field_count = typeInfo->data.record.field_count;
 
-        // An embedded constant of a Record type is the empty record {} (plan D3).
+        // The only constant of a record type is the empty record.
         if (isConstantBits(value)) {
             output_text("{}");
             break;
@@ -3982,11 +3645,9 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         for (uint32_t i = 0; i < actual_size && i < field_count; i++) {
             if (i > 0) output_text(", ");
 
-            // Get field info from type graph
             if (g_type_graph->fields && first_field + i < g_type_graph->field_count) {
                 const Elm::EcoFieldInfo* field = &g_type_graph->fields[first_field + i];
 
-                // Print field name if available
                 if (g_type_graph->strings && field->name_index < g_type_graph->string_count) {
                     output_text(g_type_graph->strings[field->name_index]);
                 } else {
@@ -3994,7 +3655,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 }
                 output_text(" = ");
 
-                // Print field value - check unboxed bitmap from heap
                 uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
                 bool is_unboxed = recordSlotKind(record, i) != 0;
 
@@ -4007,7 +3667,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                     print_typed_value(field_val, field->type_id, depth + 1);
                 }
             } else {
-                // Fallback without type info
                 output_format("f%u = ", i);
                 uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
                 print_value(field_val, depth + 1);
@@ -4021,24 +3680,15 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t first_ctor = typeInfo->data.custom.first_ctor;
         uint32_t ctor_count = typeInfo->data.custom.ctor_count;
 
-        // Kernel-built values may not have the shape their declared type
-        // describes: VirtualDom.Node is declared `type Node msg = Node` but the
-        // kernel builds Http.Dom.Node values (plans/elm-html-native-kernel.md
-        // D19), Json.Value fields hold the Json kernel's encodings, and opaque
-        // placeholder types (Http.Dom.Tagger) hold closures. JS prints such
-        // values as `<internals>`; so does this printer on any shape mismatch,
-        // instead of asserting.
+        // A value built by kernel code need not have the shape its declared type describes, so a mismatch
+        // prints `<internals>` rather than asserting.
         if (ctor_count == 0) {
             output_text("<internals>");
             break;
         }
 
-        // An embedded constant of a Custom type is one of that type's nullary
-        // constructors. A null-cons word (HEAP_044) carries its declaration
-        // index — look the ctor up by id. The legacy merged empty (0x6, e.g.
-        // Maybe's Nothing) carries no index, so name the type's first nullary
-        // ctor as before (plan D3). Bool is a Primitive, not a Custom, so a
-        // Custom constant is never a Bool.
+        // A constant of a custom type is a nullary constructor. A null-cons word carries the constructor's
+        // id (HEAP_044); the Empty constant carries none, so it is named as the first nullary constructor.
         if (isConstantBits(value)) {
             assert(g_type_graph->ctors && "Type graph has no ctors array");
             if (isNullConsBits(value)) {
@@ -4073,7 +3723,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
         Header* header = static_cast<Header*>(ptr);
         if (header->tag != Tag_Custom) {
-            output_text("<internals>");   // D19: shape mismatch
+            output_text("<internals>");
             break;
         }
 
@@ -4081,11 +3731,9 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         uint32_t ctor_id = custom->ctor;
         uint32_t size = custom->header.size;
 
-        // Assert constructor info is available
         assert(g_type_graph->ctors && "Type graph has no ctors array");
 
-        // Runtime-recognised types (e.g. Dict) use reserved ctor_id values
-        // outside 0..ctor_count-1, so search linearly instead of indexing.
+        // A constructor id need not be its index among the type's constructors, so they are searched.
         const Elm::EcoCtorInfo* ctor_info = nullptr;
         for (uint32_t ci = 0; ci < ctor_count; ++ci) {
             if (g_type_graph->ctors[first_ctor + ci].ctor_id == ctor_id) {
@@ -4094,21 +3742,17 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             }
         }
         if (ctor_info == nullptr || ctor_info->field_count != size) {
-            output_text("<internals>");   // D19: shape mismatch
+            output_text("<internals>");
             break;
         }
 
-        // Assert constructor name is available
         assert(g_type_graph->strings && "Type graph has no strings array");
         assert(ctor_info->name_index < g_type_graph->string_count &&
                "Constructor name_index out of bounds");
 
-        // Print constructor name
         output_text(g_type_graph->strings[ctor_info->name_index]);
 
-        // Print fields if any
         if (size > 0) {
-            // Assert field info is available
             assert(g_type_graph->fields && "Type graph has no fields array");
             assert(ctor_info->first_field + size <= g_type_graph->field_count &&
                    "Field indices out of bounds");
@@ -4119,14 +3763,11 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
                 bool is_unboxed = customSlotKind(custom, i) != 0;
 
-                // Get field type from ctor info
                 uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;
 
-                // Assert field type is in valid range
                 assert(field_type_id < g_type_graph->type_count &&
                        "Invalid field type_id in Custom type graph");
 
-                // Check if nested custom needs parentheses (only for boxed values)
                 bool needs_parens = false;
                 if (!is_unboxed) {
                     void* field_ptr = hpointerToPtr(field_val);
@@ -4140,7 +3781,6 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 if (needs_parens) output_char('(');
 
                 if (is_unboxed) {
-                    // Unboxed value - use printPrimitive with type from type graph
                     const Elm::EcoTypeInfo* ft = &g_type_graph->types[field_type_id];
                     assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                            "Custom field is unboxed but type is not primitive");
@@ -4156,40 +3796,30 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
     }
 
     case Elm::EcoTypeKind::Function:
-        // Functions are printed as closures
         output_text("<function>");
         break;
 
     case Elm::EcoTypeKind::Polymorphic:
-        // Polymorphic type variable - value is always boxed (!eco.value).
-        // Just dispatch based on heap tag via print_value.
-        // For Number constraint, this will print Int or Float correctly.
-        // For EcoValue constraint, it handles any heap type.
+        // A value of a type variable is boxed, so its heap tag says what it is.
         print_value(value, depth);
         break;
     }
 }
 
-// Output text to the current output stream (for kernel functions)
 extern "C" void eco_output_text(const char* text) {
     output_text(text);
 }
 
-// Print an Elm value to the current output stream
 extern "C" void eco_print_value(HPtr value) {
     print_value(value.toBits(), 0);
 }
 
-// Print an Elm value, unwrapping the Ctor0 box wrapper used by Guida compiler.
-// This is used by Debug.log to show clean Elm values.
 extern "C" void eco_print_elm_value(HPtr value) {
     uint64_t value_bits = value.toBits();
-    // Check for embedded constants first
     if (print_if_constant(value_bits)) {
         return;
     }
 
-    // Convert HPointer to raw pointer via allocator
     void* ptr = hpointerToPtr(value_bits);
     if (!ptr) {
         output_text("<null>");
@@ -4198,21 +3828,17 @@ extern "C" void eco_print_elm_value(HPtr value) {
 
     Header* header = static_cast<Header*>(ptr);
 
-    // Check if this is a Ctor0 size=1 wrapper (Guida's box for polymorphic values)
     if (header->tag == Tag_Custom) {
         Custom* custom = static_cast<Custom*>(ptr);
         if (custom->ctor == 0 && custom->header.size == 1) {
-            // Unwrap: print the inner value directly
             uint32_t k = static_cast<uint32_t>(fieldKind(custom->unboxed, 0));
             if (k != 0) {
                 print_unboxable_slot(custom->values[0], k, 0);
             } else {
                 uint64_t inner = static_cast<uint64_t>(custom->values[0].i);
-                // Safety check for small integers
                 if (inner < 0x10000) {
                     output_format("%lld", (long long)inner);
                 } else if (!print_if_constant(inner)) {
-                    // Recursively print the inner value (also unwrapping if needed)
                     eco_print_elm_value(HPtr::fromBits(inner));
                 }
             }
@@ -4220,24 +3846,19 @@ extern "C" void eco_print_elm_value(HPtr value) {
         }
     }
 
-    // Not a wrapper, print normally
     print_value(value_bits, 0);
 }
 
-// Convert an Elm value to its string representation
 extern "C" HPtr eco_value_to_string(HPtr value) {
-    // Temporarily capture output to a string
     std::ostringstream capture;
     std::ostringstream* prev = tl_output_stream;
     tl_output_stream = &capture;
 
-    // Print the value
     print_value(value.toBits(), 0);
 
-    // Restore previous stream
     tl_output_stream = prev;
 
-    // Allocate and return an ElmString from the captured output
+    // Allocated only after printing, which reads `value`: the allocation may move it.
     std::string result = capture.str();
     HPointer strPtr = alloc::allocStringFromUTF8(result);
 
@@ -4246,12 +3867,10 @@ extern "C" HPtr eco_value_to_string(HPtr value) {
 
 extern "C" HPtr eco_value_to_string_typed(HPtr value, int64_t type_id) {
     uint64_t value_bits = value.toBits();
-    // Temporarily capture output to a string
     std::ostringstream capture;
     std::ostringstream* prev = tl_output_stream;
     tl_output_stream = &capture;
 
-    // Print the value using type information for constructor names
     if (type_id >= 0 && g_type_graph && g_type_graph->types &&
         static_cast<uint32_t>(type_id) < g_type_graph->type_count) {
         print_typed_value(value_bits, static_cast<uint32_t>(type_id), 0);
@@ -4259,10 +3878,8 @@ extern "C" HPtr eco_value_to_string_typed(HPtr value, int64_t type_id) {
         print_value(value_bits, 0);
     }
 
-    // Restore previous stream
     tl_output_stream = prev;
 
-    // Allocate and return an ElmString from the captured output
     std::string result = capture.str();
     HPointer strPtr = alloc::allocStringFromUTF8(result);
 
@@ -4274,8 +3891,6 @@ extern "C" HPtr eco_value_to_string_typed(HPtr value, int64_t type_id) {
 //===----------------------------------------------------------------------===//
 
 extern "C" void eco_safepoint() {
-    // No-op for now
-    // In the future, this will check if GC needs to run
 }
 
 extern "C" void __eco_safepoint_poll() {
@@ -4348,30 +3963,12 @@ extern "C" uint32_t eco_get_custom_ctor(HPtr obj_hptr) {
     return custom->ctor;
 }
 
-/// Get the constructor tag for a value, handling both heap objects and embedded constants.
-/// For heap Custom objects: returns the ctor field (16-bit constructor tag).
-/// For embedded constants: returns the appropriate ctor tag:
-///   - Nothing (kind=6) -> tag=1 (second constructor of Maybe)
-///   - Nil (kind=5) -> tag=0 (first constructor of List)
-///   - Other embedded constants -> tag=0
 extern "C" uint32_t eco_get_tag(HPtr val) {
-    // Null HPointer (bits == 0) is neither an embedded constant nor a valid
-    // heap allocation — offset 0 in the heap is never the address of a real
-    // object. Seeing this indicates an upstream bug (uninitialized field or
-    // stale reference after GC). Abort loudly rather than silently reading
-    // heap_base and returning a bogus tag, which can mask bugs as infinite
-    // recursion (see stage-7 Dict_foldl crash, 2026-04-24).
+    // A 0 word is an uninitialised field or a stale reference; reading it as an object would return a
+    // made-up tag.
     assert(val.bits != 0 && "eco_get_tag: null HPointer");
     HPointer hp = val.toHPointer();
-    // Embedded constant? Derive the ctor tag without needing its type (see D9):
-    //   - a null-cons constant (HEAP_044) -> its embedded declaration index,
-    //     verbatim. MUST be tested first: the fallthrough below reads any
-    //     non-Empty constant as a Bool and would misread a null-cons word.
-    //   - any "empty" constant (Nil/Nothing/Unit/EmptyRec/EmptyString) -> the
-    //     reserved CONSTANT_TAG; the compiler tags the matching branch the same.
-    //   - a Bool constant -> its i1 value (0 = False, 1 = True), matching the
-    //     IsBool tag convention (Bool normally dispatches via the i1 path; this
-    //     is defense-in-depth).
+    // The null-cons test must come first: the last line reads any other non-Empty constant as a Bool.
     if (isConstantBits(val.bits)) {
         if (isNullConsBits(val.bits)) {
             return nullConsTagBits(val.bits);
@@ -4382,20 +3979,14 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
         return static_cast<uint32_t>(boolValueBits(val.bits));
     }
 
-    // Heap object: resolve pointer and check header tag.
     void* obj = Allocator::instance().resolve(hp);
     if (!obj) return 0;
 
-    // Get the header to check the object type.
     Header* header = static_cast<Header*>(obj);
 
-    // Handle based on heap object type.
     switch (header->tag) {
         case Tag_Cons:
         case Tag_ConsChunk:
-            // Both hybrid spine-node forms are the list Cons constructor
-            // (ctor 1) for case dispatch; Nil is the Empty constant
-            // (CONSTANT_TAG) and never reaches here.
             return 1;
         case Tag_Custom:
             return static_cast<Custom*>(obj)->ctor;
@@ -4408,11 +3999,8 @@ extern "C" uint32_t eco_get_tag(HPtr val) {
 // List Element Access
 //===----------------------------------------------------------------------===//
 
-/// Gets the head of a Cons cell as an unboxed i64.
-/// Handles both boxed and unboxed heads.
-// First element of a hybrid list node — a Cons cell's head or a chunk
-// view's first run slot — with its 2-bit kind. Non-allocating.
-// (plans/chunked-list-representation.md §6 hybrid spines.)
+/// Writes the first element of the list node `obj` to `out` and its slot kind to `kind`, and returns true,
+/// if `obj` is a cons cell or chunk view; otherwise returns false and writes nothing. Never allocates.
 static inline bool listFirstElem(void* obj, Unboxable& out, uint32_t& kind) {
     Header* hdr = getHeader(obj);
     if (hdr->tag == Tag_Cons) {
@@ -4435,32 +4023,27 @@ static inline bool listFirstElem(void* obj, Unboxable& out, uint32_t& kind) {
 extern "C" int64_t eco_cons_head_i64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
-    // Resolve the list node (Cons cell or chunk view).
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;  // Should not happen for valid list node
+    if (!obj) return 0;
 
     Unboxable head;
     uint32_t kind;
     if (!listFirstElem(obj, head, kind)) return 0;
 
-    // Head is unboxed iff the element kind is non-zero (2-bit encoding).
     if (kind != 0) {
         return head.i;
     } else {
-        // Head is boxed: resolve the HPointer and load from ElmInt.
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0;  // Should not happen
+        if (!headObj) return 0;
         return static_cast<ElmInt*>(headObj)->value;
     }
 }
 
-/// Gets the head of a Cons cell as an unboxed f64.
-/// Handles both boxed and unboxed heads.
 extern "C" double eco_cons_head_f64(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0.0;  // Should not happen for valid list node
+    if (!obj) return 0.0;
 
     Unboxable head;
     uint32_t kind;
@@ -4470,18 +4053,16 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
         return head.f;
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0.0;  // Should not happen
+        if (!headObj) return 0.0;
         return static_cast<ElmFloat*>(headObj)->value;
     }
 }
 
-/// Gets the head of a Cons cell as an unboxed i32 code point (Elm Char).
-/// Handles both boxed and unboxed heads.
 extern "C" uint32_t eco_cons_head_char(HPtr cons) {
     HPointer hp = cons.toHPointer();
 
     void* obj = Allocator::instance().resolve(hp);
-    if (!obj) return 0;  // Should not happen for valid list node
+    if (!obj) return 0;
 
     Unboxable head;
     uint32_t kind;
@@ -4491,15 +4072,15 @@ extern "C" uint32_t eco_cons_head_char(HPtr cons) {
         return head.c;
     } else {
         void* headObj = Allocator::instance().resolve(head.p);
-        if (!headObj) return 0;  // Should not happen
+        if (!headObj) return 0;
         return static_cast<uint32_t>(static_cast<ElmChar*>(headObj)->value);
     }
 }
 
-/// Hybrid-spine head projection for !eco.value results: returns the raw
-/// 8-byte element slot bits (boxed HPointer or unboxed primitive — the
-/// caller's static typing decides, exactly like the inline
-/// ConsHeadOffset load it replaces). Non-allocating; gc-leaf.
+/// Returns the raw word of the first element of the list node `list`, a cons cell or chunk view: an
+/// HPointer or an unboxed value, which the caller must know from the element's type. Returns 0 for a node of
+/// another kind. Never allocates. `list` must not be an embedded constant. Not declared in a header:
+/// generated code calls it by name.
 extern "C" HPtr eco_list_head_hybrid(HPtr list) {
     void* obj = Allocator::instance().resolve(list.toHPointer());
     if (!obj) return HPtr::fromBits(0);
@@ -4509,19 +4090,14 @@ extern "C" HPtr eco_list_head_hybrid(HPtr list) {
     return HPtr::fromBits(static_cast<uint64_t>(head.i));
 }
 
-/// Hybrid-spine tail projection: a Cons cell's stored tail, or a chunk
-/// view's successor (MATERIALIZING a new view when the run has more than
-/// one element left — ALLOCATING, so this is statepointed, not gc-leaf).
+/// Returns the tail of the non-empty list `list`, as `alloc::listTailOf` does: for a chunk view whose run has
+/// more than one element left it allocates a new view, and may collect. Not declared in a header: generated
+/// code calls it by name.
 extern "C" HPtr eco_list_tail_hybrid(HPtr list) {
     HPointer tail = alloc::listTailOf(list.toHPointer());
     return HPtr::fromBits(hpBits(tail));
 }
 
-// Materializes the list VALUE for a mixed-spine cursor position (node, idx)
-// — the EcoListCursor while-rewrite keeps loop stepping allocation-free and
-// pays this single view allocation only when the remaining list escapes the
-// loop. idx > 0 implies the node is a chunk view (the inline step markers
-// normalize cell positions to idx == 0). NOT gc-leaf: allocates.
 extern "C" HPtr eco_list_pos_view(HPtr node, int64_t idx) {
     if (idx == 0) return node;
     auto& allocator = Allocator::instance();
@@ -4537,45 +4113,38 @@ extern "C" HPtr eco_list_pos_view(HPtr node, int64_t idx) {
 }
 
 //===----------------------------------------------------------------------===//
-// List scratch stack (chunked-list Tier-B templates, plan §6 L1.3).
+// List scratch stack
 //
-// The EcoListTemplate pass rewrites cons-accumulation loops to push each
-// element here instead of allocating a cell per iteration; after the loop a
-// single eco_scratch_finish builds the whole result as one dense chunk (or
-// cells when small / over-cap / chunks-off — semantics identical to the loop
-// it replaced). Entries are GC roots: an external root scanner evacuates and
-// updates boxed entries in place, so loop bodies may allocate freely between
-// pushes (this is what makes templates safe WITHOUT the §10 builder-pinning
-// machinery — the growing state lives outside the heap). Nested accumulating
-// loops interleave safely under mark/finish stack discipline: an inner loop
-// finishes (popping to its own mark) before the outer loop pushes again.
+// The stack lives outside the heap, so it can grow while the list it will become is not yet built; its
+// boxed entries are kept current by a root scanner rather than by being heap objects.
 //===----------------------------------------------------------------------===//
 
 namespace {
 
+/// One thread's list scratch stack: entry i is `bits[i]`, of slot kind `kinds[i]`.
 struct ListScratch {
     std::vector<uint64_t> bits;
-    std::vector<u8> kinds;  // 2-bit slot kind per entry (0 = boxed HPointer)
-    bool registered = false;
-    uint64_t generation = 0;  // Allocator::heapGeneration() at registration
+    std::vector<u8> kinds;
+    bool registered = false;  ///< Whether a root scanner has been registered for this stack.
+    uint64_t generation = 0;  ///< The `Allocator::heapGeneration` it was registered under.
 };
 
-// Registers the scratch stack's root scanner with the current thread heap's
-// RootSet. A heap reset (test harness only) destroys that RootSet and its
-// scanners while this thread_local survives, so the registration is keyed on
-// the heap generation: without that, entries pushed after a reset are never
-// evacuated and `eco_scratch_finish` builds cells from stale pointers.
+/// Returns the calling thread's scratch stack, first registering its root scanner with the calling thread's
+/// root set if none is registered under the current heap generation, and then emptying it.
+///
+/// A heap reset destroys the root set and its scanners but not this thread-local stack, so without the
+/// generation check entries pushed after a reset would never be kept current.
 ListScratch& listScratchRegistered() {
-    static thread_local ListScratch s;  // matches the per-thread RootSet
+    static thread_local ListScratch s;
     const uint64_t gen = Allocator::instance().heapGeneration();
     if (!s.registered || s.generation != gen) {
         s.registered = true;
         s.generation = gen;
-        s.bits.clear();   // entries from a previous heap are meaningless
+        s.bits.clear();
         s.kinds.clear();
         s.bits.reserve(1024);
         s.kinds.reserve(1024);
-        ListScratch* sp = &s;  // thread_local has no automatic storage
+        ListScratch* sp = &s;  // the lambda captures the address, valid for the thread's life
         Allocator::instance().getRootSet().addExternalRootScanner(
             [sp](RootSet::EvacuateFn evac) {
                 for (size_t i = 0; i < sp->bits.size(); ++i) {
@@ -4588,8 +4157,8 @@ ListScratch& listScratchRegistered() {
     return s;
 }
 
-// Every accumulation starts with eco_scratch_mark (which re-validates the
-// registration), so the per-element paths skip the generation check.
+/// Returns the calling thread's scratch stack without checking its registration, which `eco_scratch_mark`
+/// does at the start of every accumulation. The first call on a thread registers it.
 ListScratch& listScratch() {
     static thread_local ListScratch* s = &listScratchRegistered();
     return *s;
@@ -4613,8 +4182,6 @@ extern "C" void eco_scratch_push_scalar(uint64_t bits, int64_t kind) {
     s.kinds.push_back(static_cast<u8>(kind & 0x3));
 }
 
-// Discards entries above `mark` without building anything — early-failure
-// paths (e.g. a failing element decoder mid-list) must rebalance the stack.
 extern "C" void eco_scratch_abandon(int64_t mark) {
     ListScratch& s = listScratch();
     size_t m = static_cast<size_t>(mark);
@@ -4624,10 +4191,6 @@ extern "C" void eco_scratch_abandon(int64_t mark) {
     }
 }
 
-// Forward variant for unwind-cons recursion (cons around a self-call
-// result): pushes happen top-down in DESCENT order, so the logical result
-// is entry[mark] :: entry[mark+1] :: ... :: entry[top-1] :: rest. Pops the
-// entries back to `mark`.
 extern "C" HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest,
                                        int64_t kind) {
     ListScratch& s = listScratch();
@@ -4669,10 +4232,6 @@ extern "C" HPtr eco_scratch_finish_fwd(int64_t mark, HPtr rest,
     return HPtr::fromBits(hpBits(acc));
 }
 
-// Builds the list the replaced loop would have produced: entries [mark..top)
-// were pushed in cons order (each PREPENDED to the accumulator), so the
-// logical result is entry[top-1] :: ... :: entry[mark] :: next. Pops the
-// entries back to `mark`. `kind` is the loop's static element kind.
 extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
     ListScratch& s = listScratch();
     size_t m = static_cast<size_t>(mark);
@@ -4689,8 +4248,8 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
         StackRootGuard guard(&acc);
         u32 nn = static_cast<u32>(n);
         HPointer head = alloc::listChunkChain(nn, k, acc);
-        // The chain is fully allocated; the scanner kept the entries
-        // current, so read them fresh and fill without further allocation.
+        // The chain is allocated, and the scanner kept the entries current through that, so they are read
+        // only now.
         alloc::ListChainWriter w(head);
         for (u32 i = 0; i < nn; ++i) {
             Unboxable v;
@@ -4703,9 +4262,8 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
         return HPtr::fromBits(hpBits(head));
     }
 
-    // Small / mixed / chunks-off: exactly the cell loop the template
-    // replaced. cons() may GC per step; the scanner updates the remaining
-    // entries and `acc` is rooted, so each iteration reads fresh values.
+    // Each cons may collect; the scanner keeps the entries current and `acc` is rooted, so each entry is
+    // read after the previous collection.
     {
         StackRootGuard guard(&acc);
         for (size_t i = m; i < end; ++i) {
@@ -4721,17 +4279,6 @@ extern "C" HPtr eco_scratch_finish(int64_t mark, HPtr next, int64_t kind) {
 
 //===----------------------------------------------------------------------===//
 // Tuple / Record / Custom / Array unboxed-primitive field access.
-//
-// Pattern C fix: keeping resolve + slot read inside a single runtime call
-// prevents LLVM's RS4GC + later code motion from rematerialising heap
-// pointer arithmetic past a statepoint and reloading from a stale address.
-//
-// Unlike eco_cons_head_* these are single-path: tuple/record/custom slots
-// are stored in the kind matching the SSA type at construct time
-// (i64 → Unboxable.i, f64 → Unboxable.f, i32 Char → Unboxable.c), so no dual
-// boxed/unboxed dispatch is needed. Bool is always boxed at heap
-// boundaries, so an i1 result here is a frontend bug and the lowering
-// surfaces it via emitOpError rather than calling these helpers.
 //===----------------------------------------------------------------------===//
 
 extern "C" int64_t eco_tuple2_get0_i64(HPtr tup) {
@@ -4882,19 +4429,15 @@ extern "C" uint32_t eco_array_get_char(HPtr arr, int64_t index) {
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//
 
-// Integer exponentiation: base^exp
-// Returns 0 for negative exponents (caller handles this)
 extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
     if (exp < 0) {
-        // Negative exponent returns 0 (caller should prevent this,
-        // but handle defensively)
         return 0;
     }
     if (exp == 0) {
         return 1;
     }
 
-    // Binary exponentiation for efficiency
+    // Exponentiation by squaring.
     int64_t result = 1;
     while (exp > 0) {
         if (exp & 1) {
@@ -4918,17 +4461,6 @@ extern "C" void* eco_resolve_hptr(HPtr hptr) {
     return ptr;
 }
 
-// Cold slow path for the inline-deref lowering (plan D1/P2). Generated code
-// checks the object header tag inline; only when it is Tag_Forward — i.e. old-
-// gen compaction has moved the object and left a forwarding tombstone that the
-// fixup pass has not yet rewritten — does it call here to follow the forward
-// chain. Input and output are HPointer words (== raw addresses under HEAP_028),
-// typed `ptr addrspace(1)` on the codegen side so the result stays a GC-tracked
-// pointer. gc-leaf: no allocation, so RS4GC inserts no statepoint around it.
-//
-// NB the caller only reaches this on the cold branch, but the function is
-// correct for any heap HPointer (it re-checks the tag and returns the input
-// unchanged when there is no forward), so it is also a safe standalone resolve.
 extern "C" void* eco_follow_forward(HPtr hptr) {
     void* obj = Elm::hpToAddr(hptr.toHPointer());
     Elm::Header* hdr = static_cast<Elm::Header*>(obj);
@@ -4940,16 +4472,6 @@ extern "C" void* eco_follow_forward(HPtr hptr) {
     return obj;
 }
 
-// Update an ElmArray's `header.unboxed` to the kind of the value about
-// to be stored at one of its element slots. Called from the JIT lowering
-// of `eco.array.set` immediately after `eco_clone_array`, so the cloned
-// array's kind flag always matches what `elements[]` actually contains.
-//
-// Without this, an `Array.empty`-derived array (header.unboxed=0) that
-// receives a raw-i64 store via `eco.array.set` keeps `unboxed=0` while
-// the slot holds an int — the next minor GC then mis-traces that int
-// as an HPointer and aborts on the heap-bounds check in
-// NurserySpace::evacuate.
 extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) {
     HPointer hp;
     uint64_t bits = array_hptr.toBits();
@@ -4964,7 +4486,6 @@ extern "C" void eco_array_set_fix_kind(HPtr array_hptr, uint32_t intended_kind) 
 extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     uint64_t array_bits = array_hptr.toBits();
 
-    // Root source array across allocation so GC updates it
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(reinterpret_cast<HPointer*>(&array_bits), 1, 1);
@@ -4974,7 +4495,7 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     uint32_t len = src->length;
 
     HPointer resultHp = alloc::allocArray(len);
-    // Re-resolve source (GC may have updated array_bits through the root)
+    // The allocation may have moved the source; the root updated array_bits.
     srcPtr = hpointerToPtr(array_bits);
     src = static_cast<ElmArray*>(srcPtr);
 
@@ -4983,7 +4504,6 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     void* dstPtr = Allocator::instance().resolve(resultHp);
     ElmArray* dst = static_cast<ElmArray*>(dstPtr);
 
-    // Copy header flags (unboxed), length, and all elements
     dst->header.unboxed = src->header.unboxed;
     dst->length = len;
     for (uint32_t i = 0; i < len; i++) {
@@ -4991,10 +4511,7 @@ extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     }
 
 #if ECO_HEAP_VALIDATE
-    // Stale-pointer barrier — only when the array claims to be boxed.
-    // Unconditional validation false-positives on integer arrays whose
-    // values happen to bit-decode as in-nursery addresses (e.g. a BitSet
-    // chunk = 0x60082000), which is plenty common in compiler internals.
+    // Only a boxed array's elements are checked: an Int element can look like a nursery address.
     if ((dst->header.unboxed & 0x3) == 0) {
         for (uint32_t i = 0; i < len; i++)
             alloc::validateNurseryHPtr(dst->elements[i].p);

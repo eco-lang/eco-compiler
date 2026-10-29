@@ -3,11 +3,8 @@
 
 namespace Elm::Platform {
 
-// Leaky heap singleton: `new`'d on first access and never destroyed. The
-// detached worker thread runs until the process exits. This mirrors the
-// posture the old ProcessExports::sleepBindingEvaluator had (detached
-// std::thread, never joined) and eliminates any destruction-ordering
-// interaction with Scheduler::instance().
+/// The timer service, once `instance` has created it. It is never deleted, so the detached worker thread, which
+/// uses it, never outlives it, and no static destructor can run in the wrong order against the scheduler's.
 static TimerService* s_instance = nullptr;
 
 TimerService& TimerService::instance() {
@@ -18,6 +15,8 @@ TimerService& TimerService::instance() {
     return *inst;
 }
 
+// If the worker calls `instance()` before the initialiser in `instance`, which runs this constructor, has
+// returned, it blocks until it has, so it never sees a half-built object.
 TimerService::TimerService() {
     std::thread([]{ instance().workerLoop(); }).detach();
 }
@@ -50,13 +49,12 @@ bool TimerService::cancel(std::uint64_t token) {
 
 void withdrawParkedTimer(std::uint64_t token) {
     auto& s = Scheduler::instance();
-    // First: a token that has already fired (or fires from now on) finds Nil
-    // in processReadyAsync and only releases. The firing itself happens on
-    // the worker, but its delivery runs on this (eco) thread, so it cannot
-    // interleave with these lines.
+    // Take the resume first, so that a token that has fired, or fires from now on, finds no resume in
+    // processReadyAsync and only releases its hold. Firing happens on the worker, but delivery runs on this
+    // (eco) thread, so delivery cannot fall between these lines.
     (void)s.takePendingResume(token);
     if (TimerService::instance().cancel(token)) {
-        s.releaseHold(token);   // removed before firing: never delivered, we release
+        s.releaseHold(token);   // removed before firing: never delivered, so release here
     }
 }
 
@@ -87,6 +85,8 @@ void TimerService::workerLoop() {
             continue;
         }
         std::uint64_t token = first->second;
+        // Erase the index entry only if it points at this timer: a token scheduled twice has its index
+        // pointing at the later entry.
         auto idx = byToken_.find(token);
         if (idx != byToken_.end() && idx->second == first) byToken_.erase(idx);
         timers_.erase(first);

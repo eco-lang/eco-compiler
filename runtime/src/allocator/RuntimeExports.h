@@ -132,10 +132,10 @@ HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count);
 
 /// Allocates a cons cell holding `head` and `tail`, and returns it. May collect.
 ///
-/// `head_kind` is the head's slot kind; `head` is an HPointer when it is 0 and a raw Int, Float or Char
-/// word otherwise. Both HPointer arguments are kept current across the allocation. When the global
+/// The third argument is the head's slot kind; `head` is an HPointer when it is 0 and a raw Int, Float or
+/// Char word otherwise. Both HPointer arguments are kept current across the allocation. When the global
 /// `eco_g_cons_sites` is set, the call is counted against its return address.
-HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind);
+HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed);
 
 // List scratch stack.
 //
@@ -260,7 +260,7 @@ extern thread_local void* eco_tl_bump_state;
 ///
 /// The storage is not initialised, not even its header: the caller must write the whole header word and
 /// every field before its next safepoint (HEAP_034). `size` must be a multiple of 8 and at most 4096
-/// (asserted).
+/// (asserted). Without assertions, failure returns 0.
 HPtr eco_alloc_inline_slow(uint64_t size);
 
 /// Makes at least `n` bytes free in the calling thread's nursery bump range without allocating them,
@@ -432,11 +432,12 @@ HPtr eco_alloc_float_fast(double value);
 HPtr eco_alloc_char_fast(uint32_t value);
 
 //===----------------------------------------------------------------------===//
-// Slow Allocation Functions (may GC, always succeed — used behind statepoint)
+// Slow Allocation Functions (may GC)
 //===----------------------------------------------------------------------===//
 
 // Each `_slow` function allocates the same object as the plain function of the same name through
-// `Allocator::allocateSlow`, which may collect and returns an object or aborts.
+// `Allocator::allocateSlow`, which may collect. It aborts on failure when assertions are on; without them
+// it can return null.
 
 /// Allocates as `eco_alloc_custom` does. May collect.
 HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count);
@@ -662,9 +663,9 @@ void eco_dbg_print_char(int32_t value);
 /// graph, which names constructors and record fields.
 ///
 /// When there are two values and the first's type is String, it prints `label: value` on one line, as
-/// `Debug.log` does; otherwise it prints each value on its own line. A value whose shape does not match its
-/// type prints as `<internals>`. A type graph must be registered (asserted); without one, a build without
-/// assertions falls back to the untyped printer.
+/// `Debug.log` does; otherwise it prints each value on its own line. A Custom-typed value whose shape does
+/// not match its type prints as `<internals>`. A type graph must be registered (asserted); without one, a
+/// build without assertions falls back to the untyped printer.
 void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32_t num_args);
 
 /// Makes `graph`, an `Elm::EcoTypeGraph`, the type graph the typed printers use, for every thread.
