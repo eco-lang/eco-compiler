@@ -23,8 +23,17 @@ if ($hung) {
     if (Test-Path $cdb) {
         $symdir = Split-Path $Exe
         $script = Join-Path $env:TEMP "diag-cdb.txt"
-        Set-Content -Path $script -Value @(".sympath+ $symdir", ".reload /f", "lm", "!runaway 7", "~*kn 80", "qd")
-        & $cdb -p $p.Id -cf $script 2>&1 | Select-Object -Last 4000 | ForEach-Object { Write-Host $_ }
+        Set-Content -Path $script -Value @(".sympath+ $symdir", ".reload /f", "lm", "!runaway 7", "~*kn 400", "qd")
+        $full = & $cdb -p $p.Id -cf $script 2>&1
+        $full | Select-Object -Last 600 | ForEach-Object { Write-Host $_ }
+        # Saved where the workflow's artifact upload already looks.
+        if ($env:RUNNER_TEMP) {
+            $full | Set-Content (Join-Path $env:RUNNER_TEMP "help.txt.err")
+            $map = "$Exe.exe.map"
+            if (-not (Test-Path $map)) { $map = "$Exe.map" }
+            if (Test-Path $map) { Copy-Item $map (Join-Path $env:RUNNER_TEMP "help.txt") }
+            else { Write-Host "no link map next to $Exe" }
+        }
     } else {
         Write-Host "cdb not found at $cdb"
     }
