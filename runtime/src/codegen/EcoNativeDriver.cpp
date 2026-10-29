@@ -774,8 +774,6 @@ static int linkExecutableWindows(const std::vector<std::string>& objectFiles,
     // stackmap-driven GC root scan would mis-locate every frame.
     // See plans/build-on-windows.md E-W1 findings.
     args.push_back("/INCREMENTAL:NO");
-    // TEMPORARY: a link map to symbolize the Windows Stage 7a hang's stacks.
-    args.push_back(push(std::string("/MAP:") + outputPath + ".map"));
 
     // /WHOLEARCHIVE:<lib> is the MSVC-side equivalent of `-Wl,--whole-archive`
     // / `-Wl,-force_load,...` — pulls every member regardless of whether an
