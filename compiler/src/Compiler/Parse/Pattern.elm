@@ -72,8 +72,8 @@ variable, a constructor with no arguments, or a literal, with `start` as the
 start of the resulting pattern's region.
 
 A float literal is parsed and then rejected with a consumed `E.PFloat` error
-whose width is the length of `String.fromFloat` of its value, placed that many
-columns before the end of the literal.
+whose width is the length of its source text, placed that many columns before
+the end of the literal, so the report underlines the literal as written.
 
 -}
 termHelp : A.Position -> P.Parser E.Pattern Src.Pattern
@@ -113,14 +113,13 @@ termHelp start =
                                     Number.Int int src ->
                                         P.pure (A.at start end (Src.PInt int src))
 
-                                    Number.Float float _ ->
+                                    Number.Float _ src ->
                                         P.Parser <|
                                             \(P.State st) ->
                                                 let
                                                     width : Int
                                                     width =
-                                                        String.fromFloat float
-                                                            |> String.length
+                                                        String.length src
                                                 in
                                                 P.Cerr st.row (st.col - width) (E.PFloat width)
                             )

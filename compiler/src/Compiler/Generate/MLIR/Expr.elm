@@ -6650,8 +6650,9 @@ generateCase ctx decider jumps resultMonoType =
 {-| Generates a record from `fields`, which are already in layout order. A
 record with no fields is the embedded empty-record constant; any other is an
 `eco.construct.record`, with each field the layout stores boxed is boxed first.
-A field the layout stores unboxed is passed as it is. The record type is
-registered in the type table either way.
+A field the layout stores unboxed is coerced to its slot's ABI type, which
+unboxes a field expression that yields `!eco.value` (a `Debug.log` call, for
+one). The record type is registered in the type table either way.
 -}
 generateRecordCreate : Ctx.Context -> List Mono.MonoExpr -> Types.RecordLayout -> Mono.MonoType -> ExprResult
 generateRecordCreate ctx fields layout recordType =
@@ -6683,7 +6684,11 @@ generateRecordCreate ctx fields layout recordType =
                 List.foldl
                     (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
                         if fieldInfo.isUnboxed then
-                            ( opsAcc, var :: varsAcc, ctxAcc )
+                            let
+                                ( moreOps, slotVar, newCtx ) =
+                                    coerceResultToType ctxAcc var ssaType (Types.monoTypeToAbi fieldInfo.monoType)
+                            in
+                            ( List.reverse moreOps ++ opsAcc, slotVar :: varsAcc, newCtx )
 
                         else
                             let
@@ -6875,8 +6880,9 @@ generateRecordUpdate ctx record updates layout =
 
 {-| Generates a heap tuple, an `eco.construct.tuple2` or `eco.construct.tuple3`,
 with each element the layout stores boxed is boxed first; an element the
-layout stores unboxed is passed as it is. The tuple type is registered in the
-type table.
+layout stores unboxed is coerced to its slot's ABI type, which unboxes an
+element expression that yields `!eco.value` (a `Debug.log` call, for one). The
+tuple type is registered in the type table.
 -}
 generateTupleCreate : Ctx.Context -> List Mono.MonoExpr -> Types.TupleLayout -> Mono.MonoType -> ExprResult
 generateTupleCreate ctx elements layout tupleType =
@@ -6889,9 +6895,13 @@ generateTupleCreate ctx elements layout tupleType =
 
         ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
             List.foldl
-                (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+                (\( ( var, ssaType ), ( elemType, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if isUnboxed then
-                        ( opsAcc, var :: varsAcc, ctxAcc )
+                        let
+                            ( moreOps, slotVar, newCtx ) =
+                                coerceResultToType ctxAcc var ssaType (Types.monoTypeToAbi elemType)
+                        in
+                        ( List.reverse moreOps ++ opsAcc, slotVar :: varsAcc, newCtx )
 
                     else
                         let
@@ -7873,9 +7883,13 @@ generateTupleCreateValue ctx elements monoType =
 
         ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
             List.foldl
-                (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
+                (\( ( var, ssaType ), ( elemType, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if isUnboxed then
-                        ( opsAcc, var :: varsAcc, ctxAcc )
+                        let
+                            ( moreOps, slotVar, newCtx ) =
+                                coerceResultToType ctxAcc var ssaType (Types.monoTypeToAbi elemType)
+                        in
+                        ( List.reverse moreOps ++ opsAcc, slotVar :: varsAcc, newCtx )
 
                     else
                         let

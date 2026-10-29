@@ -612,24 +612,18 @@ unionToDoc localizer name (Docs.Union _ tvars ctors) =
         )
 
 
-{-| Renders a type alias declaration.
-
-`D.plus` puts its second argument first, so the nested calls here print the
-header words in reverse order: the alias's name and variables after `=`, then
-`alias`, then `type`.
-
+{-| Renders a type alias declaration: `type alias Name vars =`, then the aliased
+type, on the same line when it fits and indented four columns otherwise.
 -}
 aliasToDoc : L.Localizer -> Name.Name -> Docs.Alias -> D.Doc
 aliasToDoc localizer name (Docs.Alias _ tvars tipe) =
     let
         declaration : D.Doc
         declaration =
-            D.plus (D.fromChars "type")
-                (D.plus (D.fromChars "alias")
-                    (D.plus (D.hsep (List.map D.fromName (name :: tvars)))
-                        (D.fromChars "=")
-                    )
-                )
+            D.fromChars "type"
+                |> D.plus (D.fromChars "alias")
+                |> D.plus (D.hsep (List.map D.fromName (name :: tvars)))
+                |> D.plus (D.fromChars "=")
     in
     D.hang 4 (D.sep [ declaration, typeDoc localizer tipe ])
 
@@ -641,26 +635,19 @@ valueToDoc localizer name (Docs.Value _ tipe) =
     D.sep [ D.fromName name |> D.plus (D.fromChars ":"), typeDoc localizer tipe ] |> D.hang 4
 
 
-{-| Renders an operator with its type, associativity and precedence.
-
-`D.plus` puts its second argument first, so the nested calls here print their
-parts in reverse order: `)`, the precedence, `/`, the associativity, `(`, the
-type, `:`, `)`, the operator name and `(`.
-
+{-| Renders an operator with its type, associativity and precedence:
+`(+++) : Int -> Int -> Int    (left/7)`, the last part in black.
 -}
 binopToDoc : L.Localizer -> Name.Name -> Docs.Binop -> D.Doc
 binopToDoc localizer name (Docs.Binop data) =
     let
         details : D.Doc
         details =
-            D.plus (D.fromChars "    (")
-                (D.plus (D.fromName assoc)
-                    (D.plus (D.fromChars "/")
-                        (D.plus (D.fromInt data.precedence)
-                            (D.fromChars ")")
-                        )
-                    )
-                )
+            D.fromChars "    ("
+                |> D.a (D.fromName assoc)
+                |> D.a (D.fromChars "/")
+                |> D.a (D.fromInt data.precedence)
+                |> D.a (D.fromChars ")")
 
         assoc : String
         assoc =
@@ -674,16 +661,12 @@ binopToDoc localizer name (Docs.Binop data) =
                 Binop.Right ->
                     "right"
     in
-    D.plus (D.fromChars "(")
-        (D.plus (D.fromName name)
-            (D.plus (D.fromChars ")")
-                (D.plus (D.fromChars ":")
-                    (D.plus (typeDoc localizer data.tipe)
-                        (D.black details)
-                    )
-                )
-            )
-        )
+    D.fromChars "("
+        |> D.a (D.fromName name)
+        |> D.a (D.fromChars ")")
+        |> D.plus (D.fromChars ":")
+        |> D.plus (typeDoc localizer data.tipe)
+        |> D.a (D.black details)
 
 
 {-| Renders `tipe` under `localizer`, without parentheses at the top level.

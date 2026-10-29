@@ -199,8 +199,9 @@ init package =
         |> Task.andThen (initWithEnv package)
 
 
-{-| Solves the application defaults in the environment `eitherEnv`, or fails
-with the registry problem that kept it from being set up.
+{-| Solves the defaults of the project kind (`packageDefaults` for a package,
+`defaults` for an application) in the environment `eitherEnv`, or fails with
+the registry problem that kept it from being set up.
 -}
 initWithEnv : Bool -> Result Exit.RegistryProblem Solver.Env -> Task Never (Result Exit.Init ())
 initWithEnv package eitherEnv =
@@ -213,7 +214,7 @@ initWithEnv package eitherEnv =
                 env =
                     InitEnv solverEnv.cache solverEnv.connection solverEnv.registry
             in
-            verify env.cache env.connection env.registry defaults
+            verify env.cache env.connection env.registry (defaultsFor package)
                 |> Task.andThen (verifyTestDefaults env package)
 
 
@@ -227,10 +228,10 @@ verifyTestDefaults env package result =
             Task.succeed (Err (Exit.InitSolverProblem exit))
 
         Solver.NoSolution ->
-            Task.succeed (Err (Exit.InitNoSolution (Dict.keys defaults)))
+            Task.succeed (Err (Exit.InitNoSolution (Dict.keys (defaultsFor package))))
 
         Solver.NoOfflineSolution ->
-            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys defaults)))
+            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys (defaultsFor package))))
 
         Solver.SolverOk details ->
             verify env.cache env.connection env.registry testDefaults
@@ -400,12 +401,21 @@ verify cache connection registry constraints =
     Solver.verify cache connection registry constraints
 
 
+{-| The direct dependencies a new project's solution starts from: `packageDefaults`
+for a package, `defaults` for an application.
+-}
+defaultsFor : Bool -> Dict Pkg.Name Con.Constraint
+defaultsFor package =
+    if package then
+        packageDefaults
+
+    else
+        defaults
+
+
 {-| The direct dependencies of a new application, any version of each:
 `eco/system`, which the starter application module imports, and `elm/core`.
-
-These are also solved when creating a package, though a package outline names
-only `packageDefaults`. `eco/kernel` is not among them.
-
+`eco/kernel` is not among them.
 -}
 defaults : Dict Pkg.Name Con.Constraint
 defaults =

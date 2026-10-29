@@ -479,9 +479,8 @@ startsWithKeyword restOfLine keyword =
 whitespace, begins with `keyword` as a whole word, and `Nothing` otherwise or
 when there is no such line.
 
-The position's row is `row + 1`. Its column is one more than the length of the
-line without its leading whitespace, which is in general not the column the
-keyword starts at.
+The position's row is `row + 1`, and its column is the one the keyword starts
+at: one more than the length of the line's leading whitespace.
 
 -}
 nextLineStartsWithKeyword : String -> Source -> Row -> Maybe ( Row, Col )
@@ -490,7 +489,7 @@ nextLineStartsWithKeyword keyword sourceLines row =
         |> Maybe.andThen
             (\( _, line ) ->
                 if startsWithKeyword (String.trimLeft line) keyword then
-                    Just ( row + 1, 1 + String.length (String.trimLeft line) )
+                    Just ( row + 1, 1 + leadingWhitespace line )
 
                 else
                     Nothing
@@ -501,9 +500,8 @@ nextLineStartsWithKeyword keyword sourceLines row =
 whitespace, begins with `}`, and `Nothing` otherwise or when there is no such
 line.
 
-The position's row is `row + 1`. Its column is one more than the length of the
-line without its leading whitespace, which is in general not the column of
-the `}`.
+The position's row is `row + 1`, and its column is the column of the `}`: one
+more than the length of the line's leading whitespace.
 
 -}
 nextLineStartsWithCloseCurly : Source -> Row -> Maybe ( Row, Col )
@@ -513,8 +511,15 @@ nextLineStartsWithCloseCurly sourceLines row =
             (\( _, line ) ->
                 case String.trimLeft line |> String.toList of
                     '}' :: _ ->
-                        Just ( row + 1, 1 + String.length (String.trimLeft line) )
+                        Just ( row + 1, 1 + leadingWhitespace line )
 
                     _ ->
                         Nothing
             )
+
+
+{-| The number of characters of leading whitespace in `line`.
+-}
+leadingWhitespace : String -> Int
+leadingWhitespace line =
+    String.length line - String.length (String.trimLeft line)

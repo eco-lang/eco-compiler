@@ -2,7 +2,7 @@ module Text.PrettyPrint.ANSI.Leijen exposing
     ( Doc, SimpleDoc(..), Style, Color
     , text, empty
     , append, plus, a
-    , align, indent, hang, fill
+    , align, indent, hang
     , cat, hcat, vcat, sep, hsep, fillSep
     , plain, underline
     , red, green, blue, cyan, yellow, black
@@ -16,8 +16,6 @@ coloured, and this module is the pretty printer that does both.
 A _document_ (`Doc`) is a description of text that the renderer lays out later,
 once the page width is known. It is the `Pretty.Doc` of the
 `the-sett/elm-pretty-printer` package, so the layout rules are that package's.
-Do not read the names here as promises: `fill` indents and does not pad to a
-width.
 
 Most combinators come down to one idea, the _group_. A line break inside a
 group is either taken or, if the whole group fits on the remaining line,
@@ -60,7 +58,7 @@ escape sequences, and `displayIO` writes that string to a handle.
 
 # Layout Combinators
 
-@docs align, indent, hang, fill
+@docs align, indent, hang
 
 
 # List Combinators
@@ -410,13 +408,6 @@ cat =
 empty : Doc
 empty =
     P.empty
-
-
-{-| Does the same as `indent`. It does not pad a document to a width.
--}
-fill : Int -> Doc -> Doc
-fill =
-    P.indent
 
 
 {-| Joins the documents with breaks that are each a space if what follows fits

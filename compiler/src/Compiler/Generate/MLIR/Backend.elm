@@ -191,6 +191,7 @@ buildContext ecoConfig mode monoGraph0 =
         |> Ctx.withSretPromoted (buildSretPromoted ecoConfig nodes)
         |> Ctx.withPsplitPromoted (buildPsplitPromoted ecoConfig ctorShapes (buildCtorBySpec nodes) (buildSretPromoted ecoConfig nodes) nodes)
         |> Ctx.withMapTemplates (MapTemplate.derive ecoConfig monoGraph0)
+        |> Ctx.withEntryMain main
 
 
 {-| Returns the context with its function-local fields, `decoderExprs` and

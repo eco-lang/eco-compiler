@@ -933,12 +933,12 @@ viewRemove toChars (Widths nameWidth leftWidth _) name old =
         |> D.plus (pad leftWidth (toChars old))
 
 
-{-| Shows a package name indented by `width` plus three columns. `D.fill`
-indents rather than pads, so the name is not padded to a common width.
+{-| Shows a package name padded with spaces to `width` plus three columns, so the
+versions after it line up.
 -}
 viewName : Int -> Pkg.Name -> D.Doc
 viewName width name =
-    D.fill (width + 3) (D.fromPackage name)
+    D.fromChars (String.padRight (width + 3) ' ' (Pkg.toChars name))
 
 
 {-| Shows `string` right-aligned in a field of `width` columns, by putting

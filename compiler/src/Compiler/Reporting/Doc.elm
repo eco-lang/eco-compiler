@@ -1,7 +1,7 @@
 module Compiler.Reporting.Doc exposing
     ( Doc
     , plus, append, a
-    , align, cat, empty, fill, fillSep, hang
+    , align, cat, empty, fillSep, hang
     , hcat, hsep, indent, sep, vcat
     , Color
     , red, cyan, green, blue, black, yellow
@@ -38,10 +38,9 @@ conjunction, a paragraph that opens with an underlined `Note:` or `Hint:`, a
 link to a page of documentation on elm-lang.org, a count of arguments, an
 ordinal such as `2nd`, and a box diagram of a cycle of names.
 
-Three of the passed-through combinators do not do what their names suggest. `a`
+Two of the passed-through combinators do not do what their names suggest. `a`
 and `plus` take their arguments in pipeline order, so `x |> a y` is `x`
-immediately followed by `y` and `x |> plus y` puts a space between them. `fill`
-indents a document and does not pad it to a width.
+immediately followed by `y` and `x |> plus y` puts a space between them.
 
 
 # Document Type
@@ -52,7 +51,7 @@ indents a document and does not pad it to a width.
 # Combinators
 
 @docs plus, append, a
-@docs align, cat, empty, fill, fillSep, hang
+@docs align, cat, empty, fillSep, hang
 @docs hcat, hsep, indent, sep, vcat
 
 
@@ -790,14 +789,6 @@ cat =
 empty : Doc
 empty =
     P.empty
-
-
-{-| Does the same as `indent`. Despite its name, it does not pad a document to
-a width.
--}
-fill : Int -> Doc -> Doc
-fill =
-    P.fill
 
 
 {-| Joins the documents with breaks that are each a space if what follows fits

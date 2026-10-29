@@ -331,9 +331,9 @@ fromTypeVariable name index =
 {-| Returns the name for the type variable numbered `scheme`, counting from 0.
 
 The first 26 are the letters `a` to `z`. From 26 on, the letter is the one for
-`scheme` modulo 26, and the number after it is `scheme` less that remainder: 26
-gives `a26`, 27 gives `b26` and 52 gives `a52`. Different non-negative numbers
-give different names.
+`scheme` modulo 26, and the number after it is `scheme` divided by 26, as
+upstream Elm's `quotRem`: 26 gives `a1`, 27 gives `b1` and 52 gives `a2`.
+Different non-negative numbers give different names.
 
 -}
 fromTypeVariableScheme : Int -> Name
@@ -351,7 +351,7 @@ fromTypeVariableScheme scheme =
 
             extra : Int
             extra =
-                max 0 (scheme - letter)
+                scheme // 26
         in
         writeDigitsAtEnd
             ((0x61 + letter)

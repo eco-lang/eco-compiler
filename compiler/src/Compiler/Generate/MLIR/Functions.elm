@@ -450,11 +450,12 @@ listShuntCall kernelName params resultTy =
 Most nodes give one function. A promoted function gives a worker and a shim,
 and a memoised thunk gives its CAF slot and the thunk.
 
-Every global named `main`, in whichever module, has its CAF memoisation
+The program's entry `main` (`ctx.entryMainSpec`) has its CAF memoisation
 removed and its functions marked `eco.shadow_roots`, which asks lowering to
 keep the function's parameters in a shadow root frame across collections. A
 memoised thunk returns early once its value is computed, which would skip the
-balancing of that frame.
+balancing of that frame. A `main` of any other module is an ordinary top-level
+value and keeps its memoisation, so it is evaluated once.
 
 -}
 generateNode : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
@@ -471,12 +472,7 @@ generateNode ctx specId node =
                 (listChunksShunt ctx specId node)
 
         isMainEntry =
-            case Registry.lookupSpecKey specId ctx.registry of
-                Just ( Mono.Global _ name, _ ) ->
-                    name == "main"
-
-                _ ->
-                    False
+            ctx.entryMainSpec == Just specId
 
         finalOps =
             if isMainEntry then

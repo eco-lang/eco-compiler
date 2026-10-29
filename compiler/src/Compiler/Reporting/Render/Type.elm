@@ -135,22 +135,44 @@ apply context name args =
                     applyDoc
 
 
+{-| Returns `prefix`, a space, then `doc`: a separator glued to the front of the
+part it introduces, as upstream's `zipWith (<+>) ("{" : repeat ",")` does.
+-}
+prefixed : String -> D.Doc -> D.Doc
+prefixed prefix doc =
+    D.fromChars prefix |> D.plus doc
+
+
+{-| Returns `first` prefixed by `opening` and every later part prefixed by
+`separator`.
+-}
+prefixedParts : String -> String -> List D.Doc -> List D.Doc
+prefixedParts opening separator parts =
+    List.indexedMap
+        (\i doc ->
+            prefixed
+                (if i == 0 then
+                    opening
+
+                 else
+                    separator
+                )
+                doc
+        )
+        parts
+
+
 {-| Returns the tuple type `( a, b, ... )` from documents already printed for
 its elements. It is never parenthesised.
 
 When the tuple does not fit on the line, the closing parenthesis goes on a line
-of its own. If the rest still does not fit, the opening parenthesis, each
-element and each comma between elements are each put on a line of their own too.
+of its own. If the rest still does not fit, each element goes on a line of its
+own, the first starting with `(` and the others with `,`.
 
 -}
 tuple : D.Doc -> D.Doc -> List D.Doc -> D.Doc
 tuple a b cs =
-    let
-        entries : List D.Doc
-        entries =
-            List.interweave (D.fromChars "( " :: List.repeat (List.length (b :: cs)) (D.fromChars ", ")) (a :: b :: cs)
-    in
-    D.sep [ D.cat entries, D.fromChars ")" ] |> D.align
+    D.sep [ D.cat (prefixedParts "(" "," (a :: b :: cs)), D.fromChars ")" ] |> D.align
 
 
 {-| Returns a record type from documents already printed for each field's name
@@ -158,13 +180,12 @@ and type, extending `maybeExt` when it is given. With no fields and no extension
 it is `{}`.
 
 On one line, a closed record reads `{ x : Int, y : Int }`, and an extensible
-one `{  r |x : Int, y : Int }`, with two spaces after the brace and none after
-the bar. When the record does not fit on the line, the closing brace goes on a
-line of its own, and the fields and their separators stay together on one line
-while they fit; in an extensible record that line may be a line of their own
-after `{  r`, indented four columns. When they do not fit, each field and each
-separator is put on a line of its own, indented four columns in an extensible
-record.
+one `{ r | x : Int, y : Int }`. When the record does not fit on the line, the
+closing brace goes on a line of its own, and the fields stay together on one
+line while they fit; in an extensible record that line may be a line of its own
+after `{ r`, indented four columns. When they do not fit, each field goes on a
+line of its own, the first starting with `{` (or `|` after an extension) and the
+others with `,`.
 
 -}
 record : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
@@ -176,8 +197,7 @@ record entries maybeExt =
         ( fields, Nothing ) ->
             D.align <|
                 D.sep
-                    [ D.cat
-                        (List.interweave (D.fromChars "{ " :: List.repeat (List.length fields - 1) (D.fromChars ", ")) fields)
+                    [ D.cat (prefixedParts "{" "," fields)
                     , D.fromChars "}"
                     ]
 
@@ -186,9 +206,8 @@ record entries maybeExt =
                 D.sep
                     [ D.hang 4 <|
                         D.sep
-                            [ D.fromChars "{ " |> D.plus ext
-                            , D.cat
-                                (List.interweave (D.fromChars "|" :: List.repeat (List.length fields - 1) (D.fromChars ", ")) fields)
+                            [ prefixed "{" ext
+                            , D.cat (prefixedParts "|" "," fields)
                             ]
                     , D.fromChars "}"
                     ]
@@ -204,25 +223,19 @@ entryToDoc ( fieldName, fieldType ) =
 
 
 {-| Returns a record type showing only some of its fields: `entry` on the line
-of the opening brace, then each of `entries`, then `...` for the fields not
-shown, and the closing brace, each on a line of its own.
-
-Between each two of the lines for `entries` and `...` come three more lines: a
-single space, a comma, and a single space. No comma comes between `entry` and
-the first of `entries`.
-
+of the opening brace, then each of `entries` and `...` (for the fields not
+shown) on a line of its own starting with `,`, and the closing brace.
 -}
 vrecordSnippet : ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc ) -> D.Doc
 vrecordSnippet entry entries =
     let
         field : D.Doc
         field =
-            D.fromChars "{" |> D.plus (entryToDoc entry)
+            prefixed "{" (entryToDoc entry)
 
         fields : List D.Doc
         fields =
-            List.intersperse (D.fromChars ",") (List.map entryToDoc entries ++ [ D.fromChars "..." ])
-                |> List.intersperse (D.fromChars " ")
+            List.map (prefixed ",") (List.map entryToDoc entries ++ [ D.fromChars "..." ])
     in
     D.vcat (field :: fields ++ [ D.fromChars "}" ])
 
@@ -231,10 +244,10 @@ vrecordSnippet entry entries =
 printed for each field's name and type, extending `maybeExt` when it is given.
 With no fields and no extension it is `{}`.
 
-Without an extension, the opening brace, each field, each comma and a single
-space between each of these are each put on a line of their own, followed by the
-closing brace. With an extension `r`, the first line is `r {`, and the next,
-indented four columns, is `| x : Int , y : Int` when the fields fit on it.
+Without an extension, each field is on a line of its own, the first starting
+with `{` and the others with `,`, followed by the closing brace. With an
+extension `r`, the first line is `{ r`, and the next, indented four columns, is
+`| x : Int, y : Int` when the fields fit on it.
 
 -}
 vrecord : List ( D.Doc, D.Doc ) -> Maybe D.Doc -> D.Doc
@@ -244,21 +257,14 @@ vrecord entries maybeExt =
             D.fromChars "{}"
 
         ( fields, Nothing ) ->
-            D.vcat <|
-                (List.interweave (D.fromChars "{" :: List.repeat (List.length fields - 1) (D.fromChars ",")) fields
-                    |> List.intersperse (D.fromChars " ")
-                )
-                    ++ [ D.fromChars "}" ]
+            D.vcat (prefixedParts "{" "," fields ++ [ D.fromChars "}" ])
 
         ( fields, Just ext ) ->
             D.vcat
                 [ D.hang 4 <|
                     D.vcat
-                        [ D.plus (D.fromChars "{") ext
-                        , D.cat
-                            (List.interweave (D.fromChars "|" :: List.repeat (List.length fields - 1) (D.fromChars ",")) fields
-                                |> List.intersperse (D.fromChars " ")
-                            )
+                        [ prefixed "{" ext
+                        , D.cat (prefixedParts "|" "," fields)
                         ]
                 , D.fromChars "}"
                 ]
@@ -275,10 +281,8 @@ used, and a record's fields in source order. Comments within the type are not
 printed.
 
 Parentheses written in the source are not kept: each part is parenthesised as
-its context needs. The exception is a function type written in parentheses, with
-a comment directly after the `(` or before the `)`, as the result of another
-function type. It is not joined to the chain of arrows, so
-`a -> ({- c -} b -> c)` is printed as `a -> (b -> c)`.
+its context needs, so `a -> ({- c -} b -> c)` is printed as `a -> b -> c`, as
+upstream Elm (whose parser drops parentheses) prints it.
 
 -}
 srcToDoc : Context -> Src.Type -> D.Doc
@@ -323,8 +327,8 @@ srcFieldToDocs ( _, ( ( _, A.At _ fieldName ), ( _, fieldType ) ) ) =
 
 {-| Returns the parts of a function type's result: when `tipe` is itself a
 function type, its argument followed by the parts of its own result, and
-otherwise `tipe` alone. The last part is the final result. A function type
-inside a `Src.TParens` is not looked into.
+otherwise `tipe` alone. The last part is the final result. Source parentheses
+(`Src.TParens`, kept when a comment sits inside them) are looked through.
 -}
 collectSrcArgs : Src.Type -> ( Src.Type, List Src.Type )
 collectSrcArgs tipe =
@@ -335,6 +339,9 @@ collectSrcArgs tipe =
                     collectSrcArgs result
             in
             ( a, b :: cs )
+
+        A.At _ (Src.TParens ( _, inner )) ->
+            collectSrcArgs inner
 
         _ ->
             ( tipe, [] )

@@ -32,8 +32,7 @@ Because every step may change the state, the order in which an iterator visits
 elements is part of what it computes. It decides, for instance, which index each
 newly made point is given. `traverseList`, `mapM`, `foldM`, `foldMArray`,
 `traverseArrayMaybe` and `traverseMapWithKey` go from the first element to the
-last. `foldrM` also goes from the first to the last, despite its name. `mapM_`
-and `forM_` go from the last element to the first. Each iterator loops through
+last. `foldrM`, `mapM_` and `forM_` go from the last element to the first. Each iterator loops through
 a self-tail-recursive helper, which Elm compiles to a loop, so a long list does
 not deepen the stack.
 
@@ -301,16 +300,18 @@ andThen f ma s0 =
 {-| Returns an action that folds `f` over `xs`, starting from `z0`, where `f`
 takes an element and the value so far.
 
-Despite the name, the elements are visited from the head of the list to its end,
-as in `foldM`. The two differ only in the order of `f`'s arguments.
+As Haskell's `foldrM`, the elements are visited from the end of the list to its
+head. The order matters where `f` changes the state: `Compiler.Type.Type`'s
+`getVarNames` uses it, so which of two clashing variables keeps its name is the
+one upstream Elm picks.
 
 -}
 foldrM : (a -> b -> IO b) -> b -> List a -> IO b
 foldrM f z0 xs s0 =
-    foldrMGo f xs z0 s0
+    foldrMGo f (List.reverse xs) z0 s0
 
 
-{-| Folds `f` over `xs` from the head, starting from `acc` on the state `s0`.
+{-| Folds `f` over `xs` from its head, starting from `acc` on the state `s0`.
 -}
 foldrMGo : (a -> b -> IO b) -> List a -> b -> State -> ( State, b )
 foldrMGo f xs acc s0 =

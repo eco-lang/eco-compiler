@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
-    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates
+    , initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
@@ -56,7 +56,7 @@ type before the type itself.
 
 # Building a context
 
-@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates
+@docs initContext, withInlineBodies, withEcoConfig, withCtorBySpec, withMapTemplates, withEntryMain
 
 
 # Names and scope
@@ -265,6 +265,10 @@ An absent entry in `mapTemplates` means the `List.map` spec has no licence
 for the template; the table is empty when the `list.mapTemplate` setting is
 off.
 
+`entryMainSpec` is the SpecId of the program's `main` (`MonoGraph`'s
+`StaticMain`), the one global whose node is generated as the entry; a `main`
+of any other module is an ordinary top-level value.
+
 -}
 type alias Context =
     { nextVar : Int
@@ -296,6 +300,7 @@ type alias Context =
     , sretTailLayout : Maybe Types.TupleLayout
     , ecoConfig : Config.EcoConfig
     , mapTemplates : MapTemplate.Templates
+    , entryMainSpec : Maybe Mono.SpecId
     }
 
 
@@ -373,6 +378,7 @@ initContext mode registry signatures initialCtorShapes =
     , sretTailLayout = Nothing
     , ecoConfig = Config.default
     , mapTemplates = MapTemplate.empty
+    , entryMainSpec = Nothing
     }
 
 
@@ -429,6 +435,16 @@ withEcoConfig cfg ctx =
 withMapTemplates : MapTemplate.Templates -> Context -> Context
 withMapTemplates t ctx =
     { ctx | mapTemplates = t }
+
+
+{-| Returns the context knowing the SpecId of the program's `main`, if any.
+-}
+withEntryMain : Maybe Mono.MainInfo -> Context -> Context
+withEntryMain mainInfo ctx =
+    { ctx
+        | entryMainSpec =
+            Maybe.map (\(Mono.StaticMain specId) -> specId) mainInfo
+    }
 
 
 {-| The type graph with no types registered and TypeIds starting at 0.

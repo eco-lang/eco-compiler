@@ -1248,8 +1248,11 @@ inline HPointer toInt(void* str) {
 }
 
 /**
- * Parses a float from a string.
- * Returns Just(float) on success, Nothing on failure.
+ * Parses a float from a string as elm/core's _String_toFloat does: Nothing for
+ * an empty string or one holding whitespace or `x`, `b` or `o`; otherwise
+ * JavaScript's Number(s), Nothing only when that is NaN. So an out-of-range
+ * literal gives Just Infinity / Just -Infinity (overflow) or Just 0
+ * (underflow), and the text "Infinity" (with an optional sign) is accepted.
  */
 inline HPointer toFloat(void* str) {
     if (!str) return alloc::nothing();
@@ -1266,14 +1269,36 @@ inline HPointer toFloat(void* str) {
     }
     buf[narrowed_len] = '\0';
 
+    // Elm rejects whitespace and the x/b/o of hex, binary and octal literals.
+    for (size_t i = 0; i < narrowed_len; ++i) {
+        char c = buf[i];
+        if (c == 'x' || c == 'b' || c == 'o' || std::isspace(static_cast<unsigned char>(c))) {
+            return alloc::nothing();
+        }
+    }
+    // JavaScript's Number accepts exactly "Infinity", optionally signed.
+    const char* body = (buf[0] == '+' || buf[0] == '-') ? buf + 1 : buf;
+    if (std::strcmp(body, "Infinity") == 0) {
+        double inf = std::numeric_limits<double>::infinity();
+        return alloc::just(alloc::unboxedFloat(buf[0] == '-' ? -inf : inf), false);
+    }
+    // strtod also reads spellings Number does not: inf, nan, infinity in any
+    // case, and hexadecimal floats with a p exponent.
+    for (const char* q = body; *q; ++q) {
+        char c = *q;
+        if (c == 'i' || c == 'I' || c == 'n' || c == 'N' || c == 'p' || c == 'P') {
+            return alloc::nothing();
+        }
+    }
+
     // libstdc++ supports std::from_chars for floats from version 11 onwards,
-    // but strtod is universally reliable. Use strtod with the C locale.
+    // but strtod is universally reliable. Use strtod with the C locale. Its
+    // ERANGE results are what Number gives: +-HUGE_VAL (infinity) on
+    // overflow, and 0 or a subnormal on underflow.
     char* end;
-    errno = 0;
     double val = std::strtod(buf, &end);
     if (end != buf + narrowed_len) return alloc::nothing();
-    if (errno == ERANGE) return alloc::nothing();
-    if (std::isinf(val) || std::isnan(val)) return alloc::nothing();
+    if (std::isnan(val)) return alloc::nothing();
 
     return alloc::just(alloc::unboxedFloat(val), false);
 }

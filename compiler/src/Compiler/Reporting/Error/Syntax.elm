@@ -695,8 +695,7 @@ and `PIndentAlias` its `Indent` form.
 carries a name that starts with `_`, which no variable may, and
 `PWildcardReservedWord` carries a reserved word written after a `_`. The `Int`
 each of these three carries is the width in columns the report highlights. For
-`PFloat` it is the length of the float as `String.fromFloat` prints it, which
-can differ from the source text.
+`PFloat` it is the length of the float's source text.
 
 -}
 type Pattern

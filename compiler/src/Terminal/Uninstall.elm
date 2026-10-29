@@ -472,13 +472,12 @@ viewRemove toChars (Widths nameWidth leftWidth _) name old =
         |> D.plus (pad leftWidth (toChars old))
 
 
-{-| Renders the package name of a plan line. `D.fill` indents rather than pads,
-so the name is preceded by `width` plus three spaces and is not padded to a
-column.
+{-| Renders the package name of a plan line, padded with spaces to `width` plus
+three columns, so the versions after it line up.
 -}
 viewName : Int -> Pkg.Name -> D.Doc
 viewName width name =
-    D.fill (width + 3) (D.fromPackage name)
+    D.fromChars (String.padRight (width + 3) ' ' (Pkg.toChars name))
 
 
 {-| Renders `string` right-aligned to `width` by putting spaces before it. A

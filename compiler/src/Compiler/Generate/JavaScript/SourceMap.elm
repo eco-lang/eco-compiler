@@ -37,6 +37,7 @@ it as a comment holding a base64 `data:` URL, to be appended to the program.
 
 import Base64
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.Generate.JavaScript.Builder as JS
 import Compiler.Generate.JavaScript.Name as JSName
 import Data.Map as DataMap
@@ -377,9 +378,10 @@ orderedListBuilderToList (OrderedListBuilder _ values) =
 
 {-| Returns the source map document for a finished `Mappings`, at version 3.
 
-Each source is written as its bare module name, without its package, so two
-modules with the same name from different packages appear as two sources of
-the same name. Each `sourcesContent` entry is the module's text from
+Each source is named by `sourceName`: a package module as `author/project:Module`
+and an application module by its bare name, so two modules with the same name
+from different packages (or a package and the application) get different
+sources, which a consumer keying sources by name keeps apart. Each `sourcesContent` entry is the module's text from
 `moduleSources`, or `null` when it has none.
 
 -}
@@ -392,7 +394,7 @@ mappingsToJson moduleSources (Mappings props) =
     in
     Encode.object
         [ ( "version", Encode.int 3 )
-        , ( "sources", Encode.list (\(ModuleName.Canonical _ name) -> Encode.string name) moduleNames )
+        , ( "sources", Encode.list (sourceName >> Encode.string) moduleNames )
         , ( "sourcesContent"
           , Encode.list
                 (\moduleName ->
@@ -405,3 +407,15 @@ mappingsToJson moduleSources (Mappings props) =
         , ( "names", Encode.list (\jsName -> Encode.string jsName) (orderedListBuilderToList props.names) )
         , ( "mappings", Encode.string props.vlqs )
         ]
+
+
+{-| The source name of a module: `author/project:Module` for a package module,
+the bare module name for one of the application (`Pkg.dummyName`).
+-}
+sourceName : ModuleName.Canonical -> String
+sourceName (ModuleName.Canonical pkg name) =
+    if pkg == Pkg.dummyName then
+        name
+
+    else
+        Pkg.toChars pkg ++ ":" ++ name

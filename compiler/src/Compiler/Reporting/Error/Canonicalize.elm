@@ -1634,18 +1634,17 @@ aliasRecursionReport source region name args tipe others =
 {-| Builds a `type` declaration named `name` with one variant, also named `name`,
 whose argument is the alias body `tipe`.
 
-The header is meant to declare the parameters `args`, but `List.foldr` with the
-flipped `D.plus` puts them after the `=` and in reverse, so that parameters
-`a b` print as `type  Name = b a`, with two spaces after `type`.
+The header declares the parameters `args` in order before the `=`, so that
+parameters `a b` print as `type Name a b =`, as upstream Elm prints it.
 
 -}
 aliasToUnionDoc : Name -> List Name -> Src.Type -> D.Doc
 aliasToUnionDoc name args tipe =
     D.vcat
         [ D.dullyellow <|
-            (D.fromChars "type "
+            (D.fromChars "type"
                 |> D.plus (D.fromName name)
-                |> D.plus (List.foldr D.plus (D.fromChars "=") (List.map D.fromName args))
+                |> D.plus (List.foldr (\arg rest -> D.fromName arg |> D.plus rest) (D.fromChars "=") args)
             )
         , D.indent 4 (D.fromChars name) |> D.green
         , D.indent 8 (RT.srcToDoc RT.App tipe) |> D.dullyellow

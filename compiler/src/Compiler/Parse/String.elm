@@ -485,6 +485,10 @@ above `10FFFF`, or no digits at all (`\u{}`), is `BadUnicodeCode`. Fewer than
 four or more than six digits is `BadUnicodeLength`; the value is checked first,
 so too many digits with a value above `10FFFF` is `BadUnicodeCode`.
 
+As upstream Elm, each width counts from the backslash through the last digit
+(`BadUnicodeFormat`) or through the `}` (the other two), so the report
+underlines the whole written escape: `\u{12` and `\u{041}`.
+
 -}
 eatUnicode : String -> Int -> Int -> Row -> Col -> Escape
 eatUnicode src pos end row col =
@@ -505,13 +509,13 @@ eatUnicode src pos end row col =
                 newPos - digitPos
         in
         if newPos >= end || P.unsafeIndex src newPos /= '}' then
-            EscapeProblem row col (E.BadUnicodeFormat (2 + numDigits))
+            EscapeProblem row col (E.BadUnicodeFormat (3 + numDigits))
 
         else if code < 0 || code > 0x0010FFFF then
-            EscapeProblem row col (E.BadUnicodeCode (3 + numDigits))
+            EscapeProblem row col (E.BadUnicodeCode (4 + numDigits))
 
         else if numDigits < 4 || numDigits > 6 then
-            EscapeProblem row col (E.BadUnicodeLength (3 + numDigits) numDigits code)
+            EscapeProblem row col (E.BadUnicodeLength (4 + numDigits) numDigits code)
 
         else
             EscapeUnicode (numDigits + 4) code
