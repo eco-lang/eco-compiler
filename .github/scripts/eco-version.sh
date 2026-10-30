@@ -14,8 +14,10 @@
 # nightly assets before upload (~ -> - in the archives, ~ -> . in the .deb),
 # because GitHub would rewrite ~ in asset names itself.
 #
-# Tag builds (refs/tags/v<version>): the plain version, which must match
-# version.txt.
+# Tag builds: a release tag v<version> builds the plain version; a release
+# candidate tag v<version>-rc<N> builds <version>~rc<N>, which Debian sorts
+# after the ~b<N> nightlies and before the plain release. <version> must match
+# version.txt either way, so version.txt stays put through an RC series.
 #
 # Needs the full history (actions/checkout with fetch-depth: 0); a shallow clone
 # would count N as 1.
@@ -26,11 +28,15 @@ rev="${1:-HEAD}"
 base=$(git show "$rev:version.txt" | tr -d '[:space:]')
 
 if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
-    if [ "${GITHUB_REF_NAME:-}" != "v$base" ]; then
-        echo "::error::tag ${GITHUB_REF_NAME:-} does not match version.txt (v$base)" >&2
+    tag="${GITHUB_REF_NAME:-}"
+    if [ "$tag" = "v$base" ]; then
+        echo "$base"
+    elif [[ "$tag" =~ ^v${base//./\\.}-rc([1-9][0-9]*)$ ]]; then
+        echo "${base}~rc${BASH_REMATCH[1]}"
+    else
+        echo "::error::tag $tag does not match version.txt (v$base or v$base-rc<N>)" >&2
         exit 1
     fi
-    echo "$base"
     exit 0
 fi
 

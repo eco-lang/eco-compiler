@@ -1,12 +1,14 @@
 # Promote a built commit to a permanent, downloadable stable Release.
 #
-# Triggered by pushing a real version tag (v0.1.0). The same push starts
-# mac-aot, linux-aot and win-aot on the tag, which build the plain version
-# (no ~b<N>.g<hash> suffix; .github/scripts/eco-version.sh) and fail if the tag
-# does not match version.txt. This waits for those three runs and publishes
-# their bundles, failing if any is red — provenance matters for a stable
-# release. After fixing a red build, re-run it, then re-run this.
-# Published as a non-prerelease, so /releases/latest flips to it.
+# Triggered by pushing a real version tag (v0.1.0) or a release candidate tag
+# (v0.2.0-rc1). The same push starts mac-aot, linux-aot and win-aot on the tag,
+# which build the tag's version (no ~b<N>.g<hash> suffix; a candidate builds
+# <version>~rc<N>; .github/scripts/eco-version.sh) and fail if the tag does not
+# match version.txt. This waits for those three runs and publishes their
+# bundles, failing if any is red — provenance matters for a release. After
+# fixing a red build, re-run it, then re-run this.
+# A real version is published as a non-prerelease, so /releases/latest flips to
+# it; a release candidate is published as a prerelease and leaves it alone.
 #
 # The rolling nightly tag (v*-nightly) is excluded so moving it never cuts a
 # stable release (GITHUB_TOKEN-created tags also do not cascade-trigger, but the
@@ -29,6 +31,22 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+        with:
+          # eco-version.sh reads version.txt through git.
+          fetch-depth: 0
+
+      - name: Compute the release version
+        id: version
+        run: |
+          set -euo pipefail
+          v=$(.github/scripts/eco-version.sh)
+          case "$v" in
+            *~rc*) prerelease=true ;;
+            *)     prerelease=false ;;
+          esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Release $v (prerelease: $prerelease)"
 
       - name: Wait for the tag builds and download them
         env:
@@ -65,18 +83,29 @@ jobs:
 
       - name: Collect distributables + checksums
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           find stage -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) \
                -exec cp -n {} dist/ \;
           # Every asset must carry exactly the release version, not a
           # ~b<N>.g<hash> build version.
-          v="${VERSION#v}"
-          stray=$(ls dist | grep -vE "^eco[-_]${v//./\\.}[-_]" || true)
+          stray=$(ls dist | grep -vE "^eco[-_]${VERSION//./\\.}[-_]" || true)
           if [ -n "$stray" ]; then
-            echo "::error::assets not built as $v:"; echo "$stray"; exit 1
+            echo "::error::assets not built as $VERSION:"; echo "$stray"; exit 1
           fi
+          # GitHub rewrites ~ in asset names to '.', which would leave
+          # SHA256SUMS naming files that are not there. Rename first, as
+          # publish-nightly.yml does: the archives get '-' (0.2.0-rc1), the .deb
+          # gets '.', since '-' in a .deb name marks a Debian revision. The
+          # Version inside the .deb keeps its ~, which is what apt orders by.
+          for f in dist/*~*; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *.deb) mv "$f" "${f//\~/.}" ;;
+              *)     mv "$f" "${f//\~/-}" ;;
+            esac
+          done
           ( cd dist && sha256sum * | tee SHA256SUMS )
           echo "=== release asset set ==="
           ls -la dist/
@@ -85,10 +114,15 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           set -euo pipefail
           {
-            echo "Stable release \`$TAG\`."
+            if [ "$PRERELEASE" = true ]; then
+              echo "Release candidate \`$TAG\`: not yet a stable release."
+            else
+              echo "Stable release \`$TAG\`."
+            fi
             echo
             echo "- Commit: \`$SHA\`"
             echo "- Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -100,17 +134,24 @@ jobs:
           } > notes.md
           cat notes.md
 
-      - name: Publish stable release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           set -euo pipefail
-          # Non-prerelease -> becomes /releases/latest. The tag already exists
-          # (the push that triggered this), so target it as-is.
+          # Non-prerelease -> becomes /releases/latest; a release candidate is
+          # a prerelease and does not. The tag already exists (the push that
+          # triggered this), so target it as-is.
+          if [ "$PRERELEASE" = true ]; then
+            flags=(--prerelease --title "$TAG (release candidate)")
+          else
+            flags=(--title "$TAG")
+          fi
           gh release create "$TAG" \
             --target "$SHA" \
-            --title "$TAG" \
+            "${flags[@]}" \
             --notes-file notes.md \
             dist/*
