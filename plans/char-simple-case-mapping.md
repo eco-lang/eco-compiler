@@ -1,5 +1,5 @@
 ---
-status: not-started
+status: done
 updated: 2026-10-30
 ---
 
@@ -682,6 +682,37 @@ Run each gate once, with output to a file in the scratchpad:
 
 Then set this plan to `status: done`, with progress notes, and mark the case-mapping entries in
 `cpp-review-bugs.md`, if any, accordingly.
+
+## Progress notes (2026-10-30)
+
+Steps 1-6 are done, in one day. Step 6.5's row is "CharSimple" in benchmarks/fe-opt-loop.md:
+FLAT (67.29 s against 67.66 s for the previous candidate on the same source). Removing the rotl and
+the mask did not recover the earlier +2.9 s parse/check/build drift, which stays unattributed.
+
+- **Deviations.**
+  - `CharSimpleCaseTest`'s `str up deseret len` is 3, not 2. Elm's `String.length` counts
+    UTF-16 units, as JS `.length` does, and the input is already 3.
+  - `LICENSE.TXT` and `README.md` sit in `runtime/third_party/unicode/`, beside `update.sh`,
+    not in `17.0.0/`.
+  - `CaseMappingDivergenceTest` logs the 103 code points as one `expanding` row plus an
+    `expanding count` row.
+  - **Kernel license.** `check-kernel-license-manifest.sh` now takes UTC stamps
+    `YYYY-MM-DDTHH:MM:SS`; a plain date means midnight. The Utils pins dated 2026-10-30 were
+    therefore re-audited the same day, not on 2026-10-31. A re-audit must still be stamped
+    strictly after its pin, which negative controls showed. All 15 kernels have re-audit rows.
+  - **Build.** Deleting `CharValue.hpp` exposed a stale configure-time glob. `tla-canary.stamp`
+    kept depending on the deleted header ("no known rule to make it"). The glob now uses
+    `CONFIGURE_DEPENDS`.
+- **Split check.** The diverging rows found natively matched the plan's table exactly: 31 + 2 + 17.
+  The 136 old rows equal the trimmed tests' rows plus the moved rows, so no row was lost or
+  changed. In `CharCaseFullRangeTest`, the hashes for planes 1-16 are byte-identical to before
+  the rework.
+- **Gates.**
+  - `full`: native 2,575/0, eco-system JS 208/0 (5 skipped), elm-conformance JS 14/14, node-addon
+    and driver-cli pass, casemap tables up to date.
+  - Natively, the elm-conformance suite has 5 expected XFAILs: 3 Float records and 2 case records.
+  - elm-tests 14,572 + 918 / 0; stress 114/114; bootstrap passes.
+  - TLA canary green; `tla-trace` 150/150 as expected.
 
 ## Appendix A: the 103 code points where simple mapping differs from Elm-on-JS
 

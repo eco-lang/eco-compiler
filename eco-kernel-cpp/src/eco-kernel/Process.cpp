@@ -128,7 +128,8 @@ void waitServiceDrain() {
         std::uint64_t token = ready.token;
         // 128 + signal for a signal death; WaitService::kWaitFailedExitCode (-1) when the pid could not
         // be waited for (Eco.Process.wait's Task cannot fail, so the failure is reported as that code).
-        int exitCode = ready.exitCode;
+        // 64-bit, so a Windows NTSTATUS code such as 0xC0000005 stays positive (never -1).
+        std::int64_t exitCode = ready.exitCode;
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
             sched.releaseHold(token);
@@ -141,7 +142,7 @@ void waitServiceDrain() {
         {
             Elm::StackRootGuard guard(&resumeClosure, &succeedTask);
             succeedTask = sched.taskSucceedKind(
-                Elm::alloc::unboxedInt(static_cast<int64_t>(exitCode)), /*kind=*/1);
+                Elm::alloc::unboxedInt(exitCode), /*kind=*/1);
             Elm::Platform::Scheduler::callClosure1(resumeClosure, succeedTask);
         }
         sched.releaseHold(token);

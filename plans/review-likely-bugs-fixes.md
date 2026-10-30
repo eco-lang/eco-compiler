@@ -1,5 +1,5 @@
 ---
-status: not-started
+status: done
 updated: 2026-10-30
 ---
 
@@ -343,4 +343,11 @@ Then:
 
 ## Progress notes
 
-(none yet)
+- 2026-10-30: all phases implemented the same day. 5a and 5b (Windows) are code-complete but
+  unbuilt and unrun here; Windows is low priority (user), and PS8d pins 5b for a Windows build.
+- `Eco.Process.wait` (Process.cpp `waitServiceDrain`) first kept narrowing the exit code to `int`,
+  because Process.cpp had already been re-audited that day and the license checker only took
+  dates. It now takes UTC stamps (`check-kernel-license-manifest.sh`), so the widening landed the
+  same day, with stamped re-audit rows for the four `Eco.Process.*` kernels.
+- Gates: see plans/char-simple-case-mapping.md's progress notes (same tree): `full`, elm-tests,
+  stress, bootstrap green. Benchmark: benchmarks/fe-opt-loop.md row "CharSimple", FLAT.

@@ -995,6 +995,40 @@ Default leg (flag off):
 - **Gates (fresh, before the triple):** `full` 2,561/2,561 (3 XFAIL-NATIVE: the Float divergence records), JS
   219/219 (5 skips).
 
+### CharSimple: review-likely-bugs fixes + Unicode simple case mapping (KERN_008 rewritten, plans/char-simple-case-mapping.md, 2026-10-30): **regression check, no regression (FLAT vs the previous candidate on today's source)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 67.29 | 27.9 | 24.7 | 8.9 | 3.12 | 1392 | 8 | 6819 | 6502296 | 12209627 | same |
+| r2 | 68.19 | 28.0 | 25.3 | 9.0 | 3.11 | 1392 | 8 | 6819 | 6491908 | 12209627 | same |
+| r3 | 67.09 | 27.7 | 24.8 | 8.9 | 3.08 | 1392 | 8 | 6819 | 6491780 | 12209627 | same |
+| **median** | **67.29** | 27.9 | 24.8 | 8.9 | 3.11 | 1392 | 8 | 6819 | 6491908 | 12209627 | |
+| Δ vs FloatMinMax (2026-10-30) | −0.98 (spread 1.10) | 0.0 | −0.8 | 0.0 | +0.03 | 0 | 0 | −4 | −8,976 | 0 (byte-identical MLIR) | |
+| control `eco-optfloat-b` (FloatMinMax candidate) on today's source, median | 67.66 (67.98 / 67.66 / 67.39, spread 0.59) | 27.6 | 25.2 | 9.0 | 3.11 | 1392 | 8 | 6823 | 6496796 | 12209627 | n/a (older compiler) |
+
+- **What:** not a front-end step. The tree since the last row took the review-likely-bugs fixes
+  (plans/review-likely-bugs-fixes.md) and the switch from Elm-exact to Unicode simple case mapping:
+  a Char is one code point, so the Char compare lowering lost its `rotl32(v, 11)` sort key,
+  `eco.char.toInt` lost its `0x1FFFFF` mask, and the runtime lost the encoded-Char paths and
+  Final_Sigma. `eco-optfloat-b` compiled the tree to `ecochar.mlir`, lowered to `eco-optchar`; one
+  more turn gave `ecochar-b.mlir` and `eco-optchar-b`, the candidate. A == B, and both are
+  byte-identical to `ecofloat-b.mlir`: the compiler's MLIR does not change (the Char changes act
+  below MLIR, in lowering and the runtime). Cached `.o` files under `build-kernel/bin` were deleted
+  first (they called the removed link guard). Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0 on all six timed runs, each triple deterministic, the candidate reproduces
+  `ecochar-b.mlir` (fixed point). `.ecot` 8,535,210 B (unchanged).
+- **Verdict:** wall −0.98 s against the recorded row and −0.37 s against the control, inside both
+  bands: **FLAT**. Every counter equals the control's except promoted −4 MiB. parse/check/build is
+  27.9 s against the control's 27.6 s (ranges 27.7-28.0 vs 27.5-27.8, overlapping), so removing
+  the rotl and the mask does **not** recover the +2.9 s parse/check/build drift that the
+  FloatMinMax row measured against `eco-optfix`. The 2026-10-28 Char work was its first suspect;
+  the encoded-Char compare and mask are now cleared. Any cost left in the case-mapping table
+  lookups would not show here either, because the parser does not case-map. The drift stays
+  unattributed.
+- **Gates (fresh, before the triple):** `full` 2,575/0 (5 XFAIL-NATIVE: 3 Float and 2 case-mapping
+  divergence records), eco-system JS 208/0 (5 skips), elm-conformance JS 14/14, node-addon and
+  driver-cli pass; elm-tests 14,572 + 918 / 0; stress 114/114; bootstrap pass.
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
