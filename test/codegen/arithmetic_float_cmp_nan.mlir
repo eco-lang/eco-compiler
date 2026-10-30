@@ -1,8 +1,8 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test NaN comparison behavior with ordered comparisons.
-// eco.float.{lt,le,gt,ge,eq,ne} uses ordered comparisons (OLT, OEQ, ONE, etc.)
-// All ordered comparisons with NaN return false.
+// eco.float.{lt,le,gt,ge,eq} use ordered comparisons (OLT, OEQ, ...), false with NaN;
+// eco.float.ne is the unordered UNE, true when either operand is NaN, as IEEE 754 and Elm (JS !==) define not-equal.
 
 module {
   func.func @main() -> i64 {
@@ -53,18 +53,17 @@ module {
     eco.dbg %eq_nan_ext : i64
     // CHECK: 0
 
-    // NaN != x with ordered comparison (ONE) returns false
-    // (ordered comparisons return false when either operand is NaN)
+    // NaN != x is true (UNE)
     %ne = eco.float.ne %nan, %f1 : f64
     %ne_ext = arith.extui %ne : i1 to i64
     eco.dbg %ne_ext : i64
-    // CHECK: 0
+    // CHECK: 1
 
-    // NaN != NaN also returns false with ONE
+    // NaN != NaN is true (UNE)
     %ne_nan = eco.float.ne %nan, %nan : f64
     %ne_nan_ext = arith.extui %ne_nan : i1 to i64
     eco.dbg %ne_nan_ext : i64
-    // CHECK: 0
+    // CHECK: 1
 
     %zero = arith.constant 0 : i64
     return %zero : i64

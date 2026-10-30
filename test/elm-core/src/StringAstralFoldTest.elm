@@ -10,8 +10,8 @@ sees the same Chars in reverse order.
 -- CHECK: foldl_astral: 1
 -- CHECK: foldl_mixed: 3
 -- CHECK: foldr_mixed: 3
--- CHECK: foldl_codes: [98, 128512, 97]
--- CHECK: foldr_codes: [97, 128512, 98]
+-- CHECK: foldl_codes: [98,128512,97]
+-- CHECK: foldr_codes: [97,128512,98]
 
 import Html exposing (text)
 

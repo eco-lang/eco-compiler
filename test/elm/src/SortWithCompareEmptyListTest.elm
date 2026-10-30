@@ -6,7 +6,7 @@ HPointer; the comparator calls top-level `compare` on Lists, which
 takes the early-return path in `cmp` for nullptr-resolved constants.
 -}
 
--- CHECK: result: [[], [], [1], [2]]
+-- CHECK: result: [[],[],[1],[2]]
 
 import Html exposing (text)
 

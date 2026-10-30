@@ -1,6 +1,6 @@
 module TestIndexedMap2 exposing (main)
 
--- CHECK: map1: [20, 40, 60]
+-- CHECK: map1: [20,40,60]
 
 import Array
 import Html exposing (text)

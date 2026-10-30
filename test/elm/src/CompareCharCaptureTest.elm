@@ -3,8 +3,8 @@ module CompareCharCaptureTest exposing (main)
 {-| Closure-capture form of `compare` on `Char`.
 -}
 
--- CHECK: sorted: ['a', 'b', 'c', 'd', 'e']
--- CHECK: reverse_sorted: ['e', 'd', 'c', 'b', 'a']
+-- CHECK: sorted: ['a','b','c','d','e']
+-- CHECK: reverse_sorted: ['e','d','c','b','a']
 
 
 import Html exposing (text)

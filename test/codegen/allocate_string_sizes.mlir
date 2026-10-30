@@ -15,12 +15,12 @@ module {
     %s1 = eco.allocate_string {length = 1 : i64} : !eco.value
     eco.dbg %s1 : !eco.value
     // Uninitialized string has null bytes
-    // CHECK: "\u0000"
+    // CHECK: "\0"
 
     // Allocate medium string
     %s10 = eco.allocate_string {length = 10 : i64} : !eco.value
     eco.dbg %s10 : !eco.value
-    // CHECK: "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"
+    // CHECK: "\0\0\0\0\0\0\0\0\0\0"
 
     // Allocate larger string (just verify it prints without crashing)
     %s100 = eco.allocate_string {length = 100 : i64} : !eco.value

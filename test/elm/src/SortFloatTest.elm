@@ -9,11 +9,11 @@ module SortFloatTest exposing (main)
     must sort to themselves and non-integer inputs must be preserved.
 -}
 
--- CHECK: sort: [1, 2, 3, 4]
--- CHECK: sortBy: [1.5, 2.5, 3]
--- CHECK: sortWith: [1, 2.5, 3]
--- CHECK: reverseSort: [3, 2, 1]
--- CHECK: sortByKey: [1.5, 2.5, 3, 4]
+-- CHECK: sort: [1,2,3,4]
+-- CHECK: sortBy: [1.5,2.5,3]
+-- CHECK: sortWith: [1,2.5,3]
+-- CHECK: reverseSort: [3,2,1]
+-- CHECK: sortByKey: [1.5,2.5,3,4]
 
 import Html exposing (text)
 

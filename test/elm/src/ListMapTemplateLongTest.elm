@@ -27,7 +27,7 @@ built without `List.map`.
 -- CHECK: floats2012: True
 -- CHECK: chars2012: True
 -- CHECK: len5000: 5000
--- CHECK: firstLast: ("x1", "x5000")
+-- CHECK: firstLast: ("x1","x5000")
 
 import Html exposing (text)
 

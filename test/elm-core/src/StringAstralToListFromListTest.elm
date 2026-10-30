@@ -8,7 +8,7 @@ the same string (length in UTF-16 units: 4).
 -}
 
 -- CHECK: tolist_len: 3
--- CHECK: tolist_codes: [97, 128512, 98]
+-- CHECK: tolist_codes: [97,128512,98]
 -- CHECK: roundtrip_ok: True
 -- CHECK: fromlist_ok: True
 -- CHECK: fromlist_units: 4

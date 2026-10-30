@@ -10,7 +10,7 @@ Nil-keyed entries last because Nil's `constant=5` sorts as GT against
 heap pointers (`constant=0`).
 -}
 
--- CHECK: keys: [(0, []), (0, [1]), (0, [2])]
+-- CHECK: keys: [(0,[]),(0,[1]),(0,[2])]
 -- CHECK: hasEmpty: True
 -- CHECK: emptyValue: Just "e"
 

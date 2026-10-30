@@ -19,7 +19,7 @@ order is foldr's right-to-left.
 
 -- CHECK: cmp: 2
 -- CHECK-NEXT: cmp: 1
--- CHECK: sorted: [[1, 1], [2, 2]]
+-- CHECK: sorted: [[1,1],[2,2]]
 
 import Html exposing (text)
 

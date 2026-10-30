@@ -1,6 +1,6 @@
 module DecodeListTest exposing (main)
 
--- CHECK: decode_list: Ok [1, 2, 3]
+-- CHECK: decode_list: Ok [1,2,3]
 
 import Html exposing (text)
 import Json.Decode as Decode

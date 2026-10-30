@@ -4,8 +4,8 @@ module DebugToStringTest exposing (main)
 -- CHECK: float_str: "3.14"
 -- CHECK: bool_str: "True"
 -- CHECK: string_str: "\"hello\""
--- CHECK: list_str: "[1, 2, 3]"
--- CHECK: tuple_str: "(1, 2)"
+-- CHECK: list_str: "[1,2,3]"
+-- CHECK: tuple_str: "(1,2)"
 -- CHECK: maybe_just_str: "Just 5"
 -- CHECK: maybe_nothing_str: "Nothing"
 

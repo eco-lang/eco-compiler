@@ -56,7 +56,7 @@ module {
     eco.dbg %bc : !eco.value
     // CHECK: 2
 
-    // Float, including NaN -> EQ (ordered predicates) and -0.0 == 0.0
+    // Float, including NaN -> GT (olt / ugt, as Elm's _Utils_cmp) and -0.0 == 0.0
     %f1 = arith.constant 1.0 : f64
     %f2 = arith.constant 2.0 : f64
     %nan = arith.constant 0x7FF8000000000000 : f64
@@ -73,7 +73,7 @@ module {
     %f = func.call @tag_float(%nan, %f1) : (f64, f64) -> i64
     %bf = eco.box %f : i64 -> !eco.value
     eco.dbg %bf : !eco.value
-    // CHECK: 1
+    // CHECK: 2
     %g = func.call @tag_float(%nz, %pz) : (f64, f64) -> i64
     %bg = eco.box %g : i64 -> !eco.value
     eco.dbg %bg : !eco.value

@@ -5,7 +5,7 @@ module FromArrayFloatListMapTest exposing (main)
     downstream `List.map` arithmetic produces the right numeric result.
 -}
 
--- CHECK: result: [2, 3]
+-- CHECK: result: [2,3]
 -- CHECK: match: True
 
 import Array

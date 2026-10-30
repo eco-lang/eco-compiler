@@ -6,7 +6,7 @@ module FromArrayFloatListCompareSortTest exposing (main)
     path and the List sort re-box-as-Int path with Float content.
 -}
 
--- CHECK: sorted: [1, 2, 3]
+-- CHECK: sorted: [1,2,3]
 -- CHECK: match: True
 
 import Array

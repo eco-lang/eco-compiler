@@ -6,7 +6,7 @@ the key function, not by the input — confirms that downstream allocator
 calls don't depend on whether the constant was lexical or derived.
 -}
 
--- CHECK: result: ["", "", "a", "ba"]
+-- CHECK: result: ["","","a","ba"]
 
 import Html exposing (text)
 

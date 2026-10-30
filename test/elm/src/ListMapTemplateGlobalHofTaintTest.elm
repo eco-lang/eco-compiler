@@ -18,7 +18,7 @@ lines below only pin that the ORDER is still foldr's.
 
 -- CHECK: cmp: 2
 -- CHECK-NEXT: cmp: 1
--- CHECK: sorted: [[1, 1], [2, 2]]
+-- CHECK: sorted: [[1,1],[2,2]]
 
 import Html exposing (text)
 

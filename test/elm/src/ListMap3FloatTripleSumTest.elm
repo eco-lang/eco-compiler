@@ -4,7 +4,7 @@ module ListMap3FloatTripleSumTest exposing (main)
     with three inputs re-boxed as `ElmInt`.
 -}
 
--- CHECK: result: [111, 222]
+-- CHECK: result: [111,222]
 -- CHECK: match: True
 
 import Html exposing (text)

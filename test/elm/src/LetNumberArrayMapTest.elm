@@ -5,7 +5,7 @@ silent-miscompile family to `Array`. Correct: [45, 60].
 
 -}
 
--- CHECK: array: [45, 60]
+-- CHECK: array: [45,60]
 
 import Array
 import Html exposing (text)

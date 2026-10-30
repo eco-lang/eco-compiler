@@ -4,8 +4,8 @@ module PolySpecializeRecursiveTest exposing (main)
 
 -- CHECK: intLen: 3
 -- CHECK: strLen: 2
--- CHECK: intMap: [2, 4, 6]
--- CHECK: strMap: ["aa", "bb"]
+-- CHECK: intMap: [2,4,6]
+-- CHECK: strMap: ["aa","bb"]
 
 import Html exposing (text)
 

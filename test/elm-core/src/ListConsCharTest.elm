@@ -4,9 +4,9 @@ module ListConsCharTest exposing (main)
     a `List Char` literal.
 -}
 
--- CHECK: list: ['a', 'b', 'c']
+-- CHECK: list: ['a','b','c']
 -- CHECK: head: Just 'a'
--- CHECK: prepend: ['z', 'a', 'b', 'c']
+-- CHECK: prepend: ['z','a','b','c']
 
 
 import Html exposing (text)

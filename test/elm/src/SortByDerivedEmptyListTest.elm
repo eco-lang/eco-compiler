@@ -5,7 +5,7 @@ module SortByDerivedEmptyListTest exposing (main)
 inputs. Confirms F3 fires even when the constant is derived.
 -}
 
--- CHECK: result: [[], [], [1, 2], [3]]
+-- CHECK: result: [[],[],[1,2],[3]]
 
 import Html exposing (text)
 

@@ -6,7 +6,7 @@ module LetNumberListOfClosuresTest exposing (main)
 
 -}
 
--- CHECK: listclos: [30, 31]
+-- CHECK: listclos: [30,31]
 
 import Html exposing (text)
 

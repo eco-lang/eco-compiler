@@ -5,8 +5,8 @@ module UtilsEqualityCaptureCharTest exposing (main)
 
 -- CHECK: eq_count: 2
 -- CHECK: ne_count: 3
--- CHECK: eq_filter: ['x', 'x']
--- CHECK: ne_filter: ['a', 'b', 'c']
+-- CHECK: eq_filter: ['x','x']
+-- CHECK: ne_filter: ['a','b','c']
 
 
 import Html exposing (text)

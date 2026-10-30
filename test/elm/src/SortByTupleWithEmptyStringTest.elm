@@ -15,7 +15,7 @@ Sorted by `(parity, suffix)`: (0,""), (0,"x"), (1,""), (1,"x")
                               → 4,         2,      3,      1
 -}
 
--- CHECK: result: [4, 2, 3, 1]
+-- CHECK: result: [4,2,3,1]
 
 import Html exposing (text)
 

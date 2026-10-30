@@ -8,7 +8,7 @@ module JsArrayInitializeFromListFloatUnboxedTest exposing (main)
     wrappers rescue the bits via List.cons specialization.
 -}
 
--- CHECK: result: [1.5, 2.5]
+-- CHECK: result: [1.5,2.5]
 -- CHECK: match: True
 
 import Array

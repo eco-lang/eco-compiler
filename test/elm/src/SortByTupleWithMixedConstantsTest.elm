@@ -19,7 +19,7 @@ test exists to catch the case where the comparator's wrong sign on
 Nil-vs-heap *avoids* changing the result (a "lucky-pass" regression).
 -}
 
--- CHECK: result: [-2, -1, 0, 1, 2]
+-- CHECK: result: [-2,-1,0,1,2]
 
 import Html exposing (text)
 

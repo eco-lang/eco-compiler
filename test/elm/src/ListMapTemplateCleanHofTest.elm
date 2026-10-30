@@ -19,7 +19,7 @@ present in the artifact), not this output.
 
 -}
 
--- CHECK: sorted: [[1, 2], [3, 4]]
+-- CHECK: sorted: [[1,2],[3,4]]
 
 import Html exposing (text)
 

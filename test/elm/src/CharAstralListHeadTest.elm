@@ -7,8 +7,8 @@ Debug.log prints the list with the Char itself.
 
 -- CHECK: head_code: Just 128512
 -- CHECK: match_code: 119070
--- CHECK: list_codes: [128512, 97, 119070]
--- CHECK: list_show: ['😀', 'a']
+-- CHECK: list_codes: [128512,97,119070]
+-- CHECK: list_show: ['😀','a']
 
 
 import Html exposing (text)

@@ -4,7 +4,7 @@ module ListSortWithFloatCompareTest exposing (main)
     re-boxes both operands as `ElmInt` before calling the comparator.
 -}
 
--- CHECK: result: [1, 2, 3]
+-- CHECK: result: [1,2,3]
 -- CHECK: match: True
 
 import Html exposing (text)

@@ -5,8 +5,8 @@ module EqualityMultiTypePapTest exposing (main)
 signature mismatch. All must use AllBoxed ABI.
 -}
 
--- CHECK: intFiltered: [3, 3]
--- CHECK: strFiltered: ["b", "b"]
+-- CHECK: intFiltered: [3,3]
+-- CHECK: strFiltered: ["b","b"]
 -- CHECK: classify: "matched foo"
 
 import Html exposing (text)

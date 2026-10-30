@@ -29,7 +29,7 @@ import Html exposing (text)
 
 
 
--- CHECK: r: [30, 42, 54]
+-- CHECK: r: [30,42,54]
 
 
 type alias St a =

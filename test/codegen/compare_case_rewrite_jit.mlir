@@ -4,10 +4,10 @@
 // same branch the Order round-trip would have. Each helper returns 1/2/3 for
 // LT/EQ/GT so the selected branch is directly observable.
 //
-// The Float cases are the load-bearing ones: the rewrite emits ORDERED lt/gt
-// with EQ as the final else, so NaN (which fails both) routes to EQ — matching
-// emitOrderSelect's OLT/OGT shape. An OEQ-based second test would send NaN to
-// GT instead.
+// The Float cases are the load-bearing ones: the rewrite emits Float's total
+// order (CGEN_086) with EQ as the final else: LT is `a < b` or (`b` NaN and `a`
+// not), GT is `a > b` or (`a` NaN and `b` not), matching the cmp_order lowering,
+// so NaN is above every number and two NaNs are EQ.
 
 module {
   func.func private @ord_int(%a: i64, %b: i64) -> i64 {
@@ -109,16 +109,16 @@ module {
     eco.dbg %br6 : !eco.value
     // CHECK: 2
 
-    // --- Float NaN: each side and both -> EQ (fails both ordered tests) ---
+    // --- Float NaN: above every number (GT / LT), and EQ to itself ---
     %nan = arith.constant 0x7FF8000000000000 : f64
     %r7 = func.call @ord_float(%nan, %f1) : (f64, f64) -> i64
     %br7 = eco.box %r7 : i64 -> !eco.value
     eco.dbg %br7 : !eco.value
-    // CHECK: 2
+    // CHECK: 3
     %r8 = func.call @ord_float(%f1, %nan) : (f64, f64) -> i64
     %br8 = eco.box %r8 : i64 -> !eco.value
     eco.dbg %br8 : !eco.value
-    // CHECK: 2
+    // CHECK: 1
     %r9 = func.call @ord_float(%nan, %nan) : (f64, f64) -> i64
     %br9 = eco.box %r9 : i64 -> !eco.value
     eco.dbg %br9 : !eco.value

@@ -14,7 +14,7 @@ gates).
 
 import Html exposing (text)
 
--- CHECK: result: (24, 18)
+-- CHECK: result: (24,18)
 -- CHECK: probe2: 512
 
 

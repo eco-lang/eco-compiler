@@ -1,6 +1,6 @@
 module TestIndexedMap3 exposing (main)
 
--- CHECK: idx1: [10, 20, 30]
+-- CHECK: idx1: [10,20,30]
 
 import Array
 import Html exposing (text)

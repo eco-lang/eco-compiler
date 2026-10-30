@@ -3,8 +3,8 @@ module RecordAccessorFunctionTest exposing (main)
 {-| Test .field as a function.
 -}
 
--- CHECK: names: ["Alice", "Bob"]
--- CHECK: xs: [1, 4]
+-- CHECK: names: ["Alice","Bob"]
+-- CHECK: xs: [1,4]
 
 import Html exposing (text)
 

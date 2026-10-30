@@ -1,7 +1,7 @@
 module ListRepeatTest exposing (main)
 
--- CHECK: repeat1: [0, 0, 0]
--- CHECK: repeat_str: ["hi", "hi"]
+-- CHECK: repeat1: [0,0,0]
+-- CHECK: repeat_str: ["hi","hi"]
 -- CHECK: repeat_zero: []
 
 import Html exposing (text)

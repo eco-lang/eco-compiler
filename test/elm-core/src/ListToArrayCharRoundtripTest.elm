@@ -6,7 +6,7 @@ module ListToArrayCharRoundtripTest exposing (main)
     Exercises the unsafe kernel paths with unboxed `Char` (u16) heads.
 -}
 
--- CHECK: result: ['a', 'b', 'c']
+-- CHECK: result: ['a','b','c']
 -- CHECK: match: True
 
 import Array

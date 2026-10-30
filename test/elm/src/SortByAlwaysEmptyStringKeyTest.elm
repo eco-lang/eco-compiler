@@ -9,7 +9,7 @@ or crash today.
 intrinsic shortcut that might fold `sortBy (always _)` to `identity`.
 -}
 
--- CHECK: result: [3, 1, 2]
+-- CHECK: result: [3,1,2]
 
 import Html exposing (text)
 

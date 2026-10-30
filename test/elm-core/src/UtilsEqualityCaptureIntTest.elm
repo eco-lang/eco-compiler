@@ -7,8 +7,8 @@ module UtilsEqualityCaptureIntTest exposing (main)
 
 -- CHECK: eq_count: 2
 -- CHECK: ne_count: 3
--- CHECK: eq_filter: [5, 5]
--- CHECK: ne_filter: [1, 2, 3]
+-- CHECK: eq_filter: [5,5]
+-- CHECK: ne_filter: [1,2,3]
 
 
 import Html exposing (text)

@@ -11,7 +11,7 @@ them — so this pins the kernel-vs-compiled single representation END TO END
 -- CHECK: intGt: True
 -- CHECK: strCmp: "lt"
 -- CHECK: floatCmp: "gt"
--- CHECK: listSort: [1, 2, 3]
+-- CHECK: listSort: [1,2,3]
 -- CHECK: orderCase: "eq"
 
 import Html exposing (text)

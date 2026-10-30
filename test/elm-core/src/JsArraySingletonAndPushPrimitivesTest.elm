@@ -8,9 +8,9 @@ module JsArraySingletonAndPushPrimitivesTest exposing (main)
 -- CHECK: int_singleton: [42]
 -- CHECK: float_singleton: [3.14]
 -- CHECK: char_singleton: ['z']
--- CHECK: int_push: [1, 2, 3, 99]
--- CHECK: float_push: [1.5, 2.5, 9.5]
--- CHECK: char_push: ['a', 'b', 'q']
+-- CHECK: int_push: [1,2,3,99]
+-- CHECK: float_push: [1.5,2.5,9.5]
+-- CHECK: char_push: ['a','b','q']
 
 
 import Array

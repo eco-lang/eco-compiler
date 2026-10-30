@@ -3,7 +3,7 @@ module EmbeddedReturnEmptyStringTest exposing (main)
 {-| Test a function that returns empty string, consumed via String.uncons.
 -}
 
--- CHECK: r1: Just ('h', "ello")
+-- CHECK: r1: Just ('h',"ello")
 -- CHECK: r2: Nothing
 
 import Html exposing (text)

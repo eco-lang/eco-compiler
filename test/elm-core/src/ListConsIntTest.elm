@@ -4,9 +4,9 @@ module ListConsIntTest exposing (main)
     a `List Int` literal.
 -}
 
--- CHECK: list: [1, 2, 3]
+-- CHECK: list: [1,2,3]
 -- CHECK: head: Just 1
--- CHECK: prepend: [0, 1, 2, 3]
+-- CHECK: prepend: [0,1,2,3]
 
 
 import Html exposing (text)

@@ -34,14 +34,14 @@ BEHAVIOUR, which must be identical in both flag states.
 
 -}
 
--- CHECK: nested2: [[1, 2], [2, 4], [3, 6]]
+-- CHECK: nested2: [[1,2],[2,4],[3,6]]
 -- CHECK: nested3: 18
--- CHECK: allocating: ["a-1", "b-2", "c-3"]
--- CHECK: sorted: [1, 2, 3, 5, 9]
--- CHECK: taken: [2, 4, 6]
+-- CHECK: allocating: ["a-1","b-2","c-3"]
+-- CHECK: sorted: [1,2,3,5,9]
+-- CHECK: taken: [2,4,6]
 -- CHECK: folded: 55
 -- CHECK: chained: 24
--- CHECK: tuples: [(1, "1"), (2, "2")]
+-- CHECK: tuples: [(1,"1"),(2,"2")]
 
 import Html exposing (text)
 

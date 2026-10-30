@@ -21,11 +21,11 @@ keeps the inliner from folding the calls away.
 
 -}
 
--- CHECK: results: [8, 2, 15, 8, 2, 15]
--- CHECK: letBound: [11, 18, 21]
--- CHECK: inList: [[8], [15], [15]]
--- CHECK: asArgument: [8, 15, 15]
--- CHECK: inRecord: [8, 15, 15]
+-- CHECK: results: [8,2,15,8,2,15]
+-- CHECK: letBound: [11,18,21]
+-- CHECK: inList: [[8],[15],[15]]
+-- CHECK: asArgument: [8,15,15]
+-- CHECK: inRecord: [8,15,15]
 -- CHECK-MLIR: segmentation_unknown
 
 import Html exposing (text)

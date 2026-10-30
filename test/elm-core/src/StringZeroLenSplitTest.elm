@@ -8,18 +8,18 @@ Empty constant.
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 -}
 
--- CHECK: split_ascii: ["0EQC", "0EQC"]
--- CHECK: split_ascii_mixed: ["0EQC", "1eqc", "0EQC", "1eqc", "0EQC"]
--- CHECK: split_ascii_long_sep: ["0EQC", "0EQC", "0EQC"]
--- CHECK: split_utf16: ["0EQC", "0EQC"]
--- CHECK: split_utf16_mixed: ["0EQC", "1eqc", "0EQC", "1eqc", "0EQC"]
--- CHECK: split_utf16_long_sep: ["0EQC", "0EQC", "0EQC"]
+-- CHECK: split_ascii: ["0EQC","0EQC"]
+-- CHECK: split_ascii_mixed: ["0EQC","1eqc","0EQC","1eqc","0EQC"]
+-- CHECK: split_ascii_long_sep: ["0EQC","0EQC","0EQC"]
+-- CHECK: split_utf16: ["0EQC","0EQC"]
+-- CHECK: split_utf16_mixed: ["0EQC","1eqc","0EQC","1eqc","0EQC"]
+-- CHECK: split_utf16_long_sep: ["0EQC","0EQC","0EQC"]
 -- CHECK: split_empty_input: ["0EQC"]
 -- CHECK: split_big_bad: 0
--- CHECK: lines_ascii: ["0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: lines_utf16: ["0EQC", "1eqc", "0EQC"]
+-- CHECK: lines_ascii: ["0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: lines_utf16: ["0EQC","1eqc","0EQC"]
 -- CHECK: lines_empty: ["0EQC"]
--- CHECK: words_blank: [[], [], []]
+-- CHECK: words_blank: [[],[],[]]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)

@@ -3,7 +3,7 @@ module WideClosureSat26Test exposing (main)
 {-| E5: 26 typed newargs at once to an arity-27 function (eta-flattened mk).
 -}
 
--- CHECK: res: [6208, 6215]
+-- CHECK: res: [6208,6215]
 
 import Html exposing (text)
 

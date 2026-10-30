@@ -3,7 +3,7 @@ module EmbeddedReturnNilTest exposing (main)
 {-| Test a function that conditionally returns empty list, consumed by caller.
 -}
 
--- CHECK: r1: [2, 4]
+-- CHECK: r1: [2,4]
 -- CHECK: r2: []
 
 import Html exposing (text)

@@ -9,17 +9,17 @@ module {
     // Should produce replacement character U+FFFD
     %invalid1 = eco.string_literal "\80" : !eco.value
     eco.dbg %invalid1 : !eco.value
-    // CHECK: [eco.dbg] "\uFFFD"
+    // CHECK: [eco.dbg] "�"
 
     // Invalid UTF-8: 0xFF is never valid in UTF-8
     %invalid2 = eco.string_literal "\FF" : !eco.value
     eco.dbg %invalid2 : !eco.value
-    // CHECK: [eco.dbg] "\uFFFD"
+    // CHECK: [eco.dbg] "�"
 
     // Mixed valid and invalid: A + invalid + B
     %mixed = eco.string_literal "A\80B" : !eco.value
     eco.dbg %mixed : !eco.value
-    // CHECK: [eco.dbg] "A\uFFFDB"
+    // CHECK: [eco.dbg] "A�B"
 
     // Valid ASCII still works
     %valid = eco.string_literal "Hello" : !eco.value

@@ -14,9 +14,9 @@ module KernelVariantSmokeTest exposing (main)
 -- CHECK: ne_float: True
 -- CHECK: lt_char: True
 -- CHECK: ge_int: True
--- CHECK: cons_int: [42, 1, 2]
--- CHECK: cons_float: [3.14, 1, 2]
--- CHECK: cons_char: ['z', 'a', 'b']
+-- CHECK: cons_int: [42,1,2]
+-- CHECK: cons_float: [3.14,1,2]
+-- CHECK: cons_char: ['z','a','b']
 -- CHECK: from_int: "100"
 -- CHECK: from_float: "0.5"
 

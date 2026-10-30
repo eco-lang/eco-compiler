@@ -9,11 +9,11 @@ input. Each result must be the Empty constant.
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 -}
 
--- CHECK: sizes: [3, 9600, 200]
--- CHECK: trim: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: filter_none: ["0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: on_empty: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: build_empty: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
+-- CHECK: sizes: [3,9600,200]
+-- CHECK: trim: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: filter_none: ["0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: on_empty: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: build_empty: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)

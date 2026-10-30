@@ -8,7 +8,7 @@ at both an `Int`-defaulting position and a `Float` position in the same body. Th
 
 -}
 
--- CHECK: dual: (31, 45)
+-- CHECK: dual: (31,45)
 
 import Html exposing (text)
 

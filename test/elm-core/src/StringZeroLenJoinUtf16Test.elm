@@ -10,8 +10,8 @@ GC survival check can see it.
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 -}
 
--- CHECK: join_utf16_sep: ["0EQC", "0EQC", "0EQC"]
--- CHECK: control: ["1eqc", "3eqc"]
+-- CHECK: join_utf16_sep: ["0EQC","0EQC","0EQC"]
+-- CHECK: control: ["1eqc","3eqc"]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)

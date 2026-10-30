@@ -1,6 +1,6 @@
 module LssTaskSetProbe exposing (main)
 
--- CHECK: r: [42, 40]
+-- CHECK: r: [42,40]
 
 import Platform
 import Task exposing (Task)

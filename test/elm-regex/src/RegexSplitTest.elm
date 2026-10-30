@@ -1,6 +1,6 @@
 module RegexSplitTest exposing (main)
 
--- CHECK: split1: ["abc", "def", "ghi"]
+-- CHECK: split1: ["abc","def","ghi"]
 
 import Html exposing (text)
 import Regex

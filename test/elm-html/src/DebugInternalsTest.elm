@@ -8,7 +8,7 @@ declared type prints `<internals>`, as on JS, instead of asserting
 -- CHECK: html: <internals>
 -- CHECK: text: <internals>
 -- CHECK: json: <internals>
--- CHECK: pair: (<internals>, 1)
+-- CHECK: pair: (<internals>,1)
 
 import Html
 import Html.Attributes

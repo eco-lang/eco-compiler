@@ -28,25 +28,25 @@ module {
     %i_large = arith.constant 1000000000000000000 : i64
     %f_large = eco.int.toFloat %i_large : i64 -> f64
     eco.dbg %f_large : f64
-    // CHECK: 1e+18
+    // CHECK: 1000000000000000000
 
     // Negative large integer
     %i_neg_large = arith.constant -1000000000000000000 : i64
     %f_neg_large = eco.int.toFloat %i_neg_large : i64 -> f64
     eco.dbg %f_neg_large : f64
-    // CHECK: -1e+18
+    // CHECK: -1000000000000000000
 
     // INT64_MAX
     %i_max = arith.constant 9223372036854775807 : i64
     %f_max = eco.int.toFloat %i_max : i64 -> f64
     eco.dbg %f_max : f64
-    // CHECK: 9223372036854775808
+    // CHECK: 9223372036854776000
 
     // INT64_MIN
     %i_min = arith.constant -9223372036854775808 : i64
     %f_min = eco.int.toFloat %i_min : i64 -> f64
     eco.dbg %f_min : f64
-    // CHECK: -9223372036854775808
+    // CHECK: -9223372036854776000
 
     // Zero
     %i_zero = arith.constant 0 : i64

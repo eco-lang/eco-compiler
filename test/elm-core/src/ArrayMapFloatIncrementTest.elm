@@ -5,7 +5,7 @@ module ArrayMapFloatIncrementTest exposing (main)
     yield correct Float results.
 -}
 
--- CHECK: result: [2, 3]
+-- CHECK: result: [2,3]
 -- CHECK: match: True
 
 import Array

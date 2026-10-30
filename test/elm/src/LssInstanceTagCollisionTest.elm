@@ -26,7 +26,7 @@ scheme or the fence into a wrong ANSWER. The Mono-level guard is
 import Html exposing (text)
 
 
--- CHECK: results: [[12, 7, 8, 5], [20, 11, 12, 7], [32, 17, 18, 10]]
+-- CHECK: results: [[12,7,8,5],[20,11,12,7],[32,17,18,10]]
 
 
 hashA : Int -> Int

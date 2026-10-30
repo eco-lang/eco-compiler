@@ -5,7 +5,7 @@ Same F3 surface — `[]` values appear as embedded constants when the
 comparator dereferences them.
 -}
 
--- CHECK: result: [[], [], [1], [2]]
+-- CHECK: result: [[],[],[1],[2]]
 
 import Html exposing (text)
 

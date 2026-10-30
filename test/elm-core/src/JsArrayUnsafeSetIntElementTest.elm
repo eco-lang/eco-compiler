@@ -4,10 +4,10 @@ module JsArrayUnsafeSetIntElementTest exposing (main)
     `Elm_Kernel_JsArray_unsafeSet_Int`.
 -}
 
--- CHECK: original: [1, 2, 3, 4]
--- CHECK: set_0: [99, 2, 3, 4]
--- CHECK: set_3: [1, 2, 3, 42]
--- CHECK: set_oob: [1, 2, 3, 4]
+-- CHECK: original: [1,2,3,4]
+-- CHECK: set_0: [99,2,3,4]
+-- CHECK: set_3: [1,2,3,42]
+-- CHECK: set_oob: [1,2,3,4]
 
 
 import Array

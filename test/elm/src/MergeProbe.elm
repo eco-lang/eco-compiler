@@ -15,7 +15,7 @@ with `partialMerges=2` under ECO_INLINE_REPORT.
 import Bitwise
 import Html exposing (text)
 
--- CHECK: results: (3, 6)
+-- CHECK: results: (3,6)
 
 
 userAnd : Int -> Int -> Int

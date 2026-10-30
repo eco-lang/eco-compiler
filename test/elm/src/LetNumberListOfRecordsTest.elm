@@ -6,7 +6,7 @@ Correct: [45, 60].
 
 -}
 
--- CHECK: listrec: [45, 60]
+-- CHECK: listrec: [45,60]
 
 import Html exposing (text)
 

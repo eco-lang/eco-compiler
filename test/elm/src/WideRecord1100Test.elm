@@ -9,7 +9,7 @@ module WideRecord1100Test exposing (main)
 -- CHECK: f1023: "1023s"
 -- CHECK: f1024: True
 -- CHECK: f1099: False
--- CHECK: pattern: (1000, False)
+-- CHECK: pattern: (1000,False)
 -- CHECK: update: True
 -- CHECK: eq self: True
 -- CHECK: eq updated: False

@@ -25,10 +25,11 @@ module {
     eco.dbg %round_half : i64
     // CHECK: 1
 
+    // -0.5 rounds to 0: JS Math.round, which Elm's round is, ties toward +infinity
     %neg_half = arith.constant -0.5 : f64
     %round_neg_half = eco.float.round %neg_half : f64 -> i64
     eco.dbg %round_neg_half : i64
-    // CHECK: -1
+    // CHECK: 0
 
     // truncate toward zero
     %f_2_9 = arith.constant 2.9 : f64

@@ -6,7 +6,7 @@ module FromArrayFloatListRoundtripTest exposing (main)
     list value directly so a corrupted round-trip is visible in the output.
 -}
 
--- CHECK: result: [1.5, 2.5, 3.5]
+-- CHECK: result: [1.5,2.5,3.5]
 -- CHECK: match: True
 
 import Array

@@ -25,7 +25,7 @@ Shapes exercised:
 
 -}
 
--- CHECK: boxed: ["a", "b", "c"]
+-- CHECK: boxed: ["a","b","c"]
 -- CHECK: ints: 6
 -- CHECK: floats: 6.5
 -- CHECK: chars: "abc"

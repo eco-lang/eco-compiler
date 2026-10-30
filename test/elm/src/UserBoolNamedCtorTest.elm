@@ -18,7 +18,7 @@ the shared empty constant and dispatched on the reserved tag, so it behaved.)
 -- CHECK: pickTrue: 1
 -- CHECK: pickFalse: 2
 -- CHECK: pickUnknown: 3
--- CHECK: names: ["T", "F", "U"]
+-- CHECK: names: ["T","F","U"]
 
 import Html exposing (text)
 

@@ -1246,7 +1246,7 @@ inline HPointer toFloat(void* str) {
     const char* body = (buf[0] == '+' || buf[0] == '-') ? buf + 1 : buf;
     if (std::strcmp(body, "Infinity") == 0) {
         double inf = std::numeric_limits<double>::infinity();
-        return alloc::just(alloc::unboxedFloat(buf[0] == '-' ? -inf : inf), false);
+        return alloc::justKind(alloc::unboxedFloat(buf[0] == '-' ? -inf : inf), 2);
     }
     // strtod also reads spellings Number does not: inf, nan, infinity in any
     // case, and hexadecimal floats with a p exponent.
@@ -1266,7 +1266,7 @@ inline HPointer toFloat(void* str) {
     if (end != buf + narrowed_len) return alloc::nothing();
     if (std::isnan(val)) return alloc::nothing();
 
-    return alloc::just(alloc::unboxedFloat(val), false);
+    return alloc::justKind(alloc::unboxedFloat(val), 2);
 }
 
 // Returns the decimal text of `n`, with a leading `-` when negative, as a String formed by

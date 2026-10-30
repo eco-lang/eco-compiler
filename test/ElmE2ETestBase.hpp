@@ -42,6 +42,20 @@
 
 namespace ElmE2EBase {
 
+// How many bytes of a failing test's output its failure message shows: ECO_TEST_OUTPUT_LIMIT when set
+// to a positive number, else 500.
+inline size_t e2eOutputLimit() {
+    static const size_t limit = [] {
+        const char* env = std::getenv("ECO_TEST_OUTPUT_LIMIT");
+        if (env && *env) {
+            long long v = std::atoll(env);
+            if (v > 0) return static_cast<size_t>(v);
+        }
+        return static_cast<size_t>(500);
+    }();
+    return limit;
+}
+
 // Test-harness flags for stress-elm programs (`Program StressFlags ...`).
 // Serialized to JSON and decoded by the program's compiler-generated flags
 // decoder — PlatformRuntime has no knowledge of this shape (Phase 5,
@@ -786,8 +800,8 @@ inline void runElmTestFromMlir(const std::string& mlirPath,
         if (!error.empty()) {
             std::ostringstream msg;
             msg << error << "\n";
-            msg << "Actual output:\n" << result.output.substr(0, 500);
-            if (result.output.length() > 500) {
+            msg << "Actual output:\n" << result.output.substr(0, e2eOutputLimit());
+            if (result.output.length() > e2eOutputLimit()) {
                 msg << "\n... (truncated)";
             }
             throw std::runtime_error(msg.str());
@@ -947,8 +961,8 @@ inline std::string verifyProcessOutcome(const std::string& elmPath,
         msg << "(eco-thread output was truncated to " << (sizeof(shared->output) - 1)
             << " bytes)\n";
     }
-    msg << "Actual output:\n" << combinedOut.substr(0, 500);
-    if (combinedOut.length() > 500) msg << "\n... (truncated)";
+    msg << "Actual output:\n" << combinedOut.substr(0, e2eOutputLimit());
+    if (combinedOut.length() > e2eOutputLimit()) msg << "\n... (truncated)";
     return msg.str();
 }
 

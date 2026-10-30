@@ -1,6 +1,6 @@
 module RoundTripListTest exposing (main)
 
--- CHECK: rt_list: Ok [1, 2, 3]
+-- CHECK: rt_list: Ok [1,2,3]
 
 import Html exposing (text)
 import Json.Decode as Decode

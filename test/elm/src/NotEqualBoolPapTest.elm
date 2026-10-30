@@ -5,10 +5,10 @@ intrinsic path cannot fire on a value-position `(/=)`, so this must
 land on `Elm_Kernel_Utils_notEqual` — the path under audit.
 -}
 
--- CHECK: isNotTrueList: [False, True, False, True]
--- CHECK: isNotFalseList: [True, False, True, False]
--- CHECK: filterNotTrue: [False, False]
--- CHECK: filterNotFalse: [True, True]
+-- CHECK: isNotTrueList: [False,True,False,True]
+-- CHECK: isNotFalseList: [True,False,True,False]
+-- CHECK: filterNotTrue: [False,False]
+-- CHECK: filterNotFalse: [True,True]
 -- CHECK: anyNotTrue: True
 -- CHECK: anyNotFalse: True
 

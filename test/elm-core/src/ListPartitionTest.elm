@@ -1,6 +1,6 @@
 module ListPartitionTest exposing (main)
 
--- CHECK: partition1: ([2, 4], [1, 3, 5])
+-- CHECK: partition1: ([2,4],[1,3,5])
 
 import Html exposing (text)
 

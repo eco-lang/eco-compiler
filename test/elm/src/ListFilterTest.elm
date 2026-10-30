@@ -3,11 +3,11 @@ module ListFilterTest exposing (main)
 {-| Test List.filter.
 -}
 
--- CHECK: even: [2, 4]
--- CHECK: positive: [1, 2, 3]
+-- CHECK: even: [2,4]
+-- CHECK: positive: [1,2,3]
 -- CHECK: empty: []
--- CHECK: eq_ho: [3, 3]
--- CHECK: eq_ho_string: ["hello", "hello"]
+-- CHECK: eq_ho: [3,3]
+-- CHECK: eq_ho_string: ["hello","hello"]
 
 import Html exposing (text)
 

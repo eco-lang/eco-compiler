@@ -319,9 +319,9 @@ namespace {
  * instructions.
  */
 struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
-    // Returns whether `a` and `b` are the same index list.
-    static bool indicesEq(ArrayRef<unsigned> a, ArrayRef<unsigned> b) {
-        if (a.size() != b.size()) return false;
+    // Returns whether the index list `a` is a prefix of `b`, or equal to it.
+    static bool isPrefix(ArrayRef<unsigned> a, ArrayRef<unsigned> b) {
+        if (a.size() > b.size()) return false;
         for (size_t i = 0; i < a.size(); ++i)
             if (a[i] != b[i]) return false;
         return true;
@@ -329,24 +329,36 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
 
     // Returns the value at `wantIndices` in `agg`, found by walking back
     // through its `insertvalue` chain, or null when it cannot be found.
+    // `resTy` is the type of that value.
     //
-    // An `insertvalue` with different indices is passed over as writing
-    // another field. At the base of the chain, an undef or poison aggregate
-    // gives the sentinel `UndefValue::get(nullptr)`, which `run` replaces by
-    // an undef of the extract's type, and a `ConstantAggregateZero`,
-    // `ConstantStruct`, `ConstantArray` or `ConstantVector` is indexed into;
-    // any other constant gives null. The constant case matters because
-    // IRBuilder folds an `insertvalue` of a constant into undef into a
-    // constant aggregate, which can sit beneath the inserts that remain.
-    static Value *traceMatchingInsert(Value *agg,
-                                      ArrayRef<unsigned> wantIndices) {
+    // An `insertvalue` at exactly `wantIndices` gives its inserted value. One
+    // at a prefix of them writes the whole sub-aggregate that holds the field,
+    // so the walk continues inside the inserted value with the remaining
+    // indices. One inside the wanted sub-aggregate (`wantIndices` a prefix of
+    // its indices) means no single value holds it, which gives null. Any other
+    // is passed over as writing another field. At the base of the chain, an
+    // undef or poison aggregate gives an undef of `resTy`, and a
+    // `ConstantAggregateZero`, `ConstantStruct`, `ConstantArray` or
+    // `ConstantVector` is indexed into; any other constant gives null. The
+    // constant case matters because IRBuilder folds an `insertvalue` of a
+    // constant into undef into a constant aggregate, which can sit beneath the
+    // inserts that remain.
+    static Value *traceMatchingInsert(Value *agg, ArrayRef<unsigned> wantIndices,
+                                      Type *resTy) {
         while (auto *IV = dyn_cast<InsertValueInst>(agg)) {
-            if (indicesEq(IV->getIndices(), wantIndices))
-                return IV->getInsertedValueOperand();
+            ArrayRef<unsigned> ins = IV->getIndices();
+            if (isPrefix(ins, wantIndices)) {
+                if (ins.size() == wantIndices.size())
+                    return IV->getInsertedValueOperand();
+                return traceMatchingInsert(IV->getInsertedValueOperand(),
+                                           wantIndices.drop_front(ins.size()), resTy);
+            }
+            if (isPrefix(wantIndices, ins))
+                return nullptr;
             agg = IV->getAggregateOperand();
         }
-        if (isa<UndefValue>(agg) || isa<PoisonValue>(agg))
-            return UndefValue::get(nullptr); // sentinel; replaced below
+        if (isa<UndefValue>(agg))   // poison included
+            return UndefValue::get(resTy);
         if (auto *CA = dyn_cast<Constant>(agg)) {
             Constant *cur = CA;
             for (unsigned idx : wantIndices) {
@@ -380,18 +392,21 @@ struct FoldExtractValuePass : public PassInfoMixin<FoldExtractValuePass> {
     // trivially dead `insertvalue` chain in it.
     PreservedAnalyses run(Function &F, FunctionAnalysisManager &) {
         bool changed = false;
-        SmallVector<ExtractValueInst *, 16> work;
+        // Weak handles: deleting a dead chain below can delete an extract
+        // still queued, one that fed only that chain, and its handle is then
+        // null.
+        SmallVector<WeakVH, 16> work;
         for (auto &BB : F)
             for (auto &I : BB)
-                if (auto *EV = dyn_cast<ExtractValueInst>(&I))
-                    work.push_back(EV);
+                if (isa<ExtractValueInst>(&I))
+                    work.push_back(&I);
 
-        for (auto *EV : work) {
+        for (auto &VH : work) {
+            auto *EV = dyn_cast_or_null<ExtractValueInst>((Value *)VH);
+            if (!EV) continue;
             Value *originalAgg = EV->getAggregateOperand();
-            Value *folded = traceMatchingInsert(originalAgg, EV->getIndices());
+            Value *folded = traceMatchingInsert(originalAgg, EV->getIndices(), EV->getType());
             if (!folded) continue;
-            if (isa<UndefValue>(folded) && folded->getType() != EV->getType())
-                folded = UndefValue::get(EV->getType());
             EV->replaceAllUsesWith(folded);
             EV->eraseFromParent();
             // The dead chain is deleted too, so that no aggregate-typed

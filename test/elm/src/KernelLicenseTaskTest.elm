@@ -51,7 +51,7 @@ tripped over.
 
 -- CHECK: a: 42
 -- CHECK: b: 410
--- CHECK: c: [42, 410]
+-- CHECK: c: [42,410]
 -- CHECK: d: 7
 -- CHECK: e: 99
 

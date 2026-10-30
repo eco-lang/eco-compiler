@@ -3,7 +3,7 @@ module EmbeddedNothingMapTest exposing (main)
 {-| Test Nothing flowing through List.map and then pattern-matched.
 -}
 
--- CHECK: results: [-1, 1, -1, 2]
+-- CHECK: results: [-1,1,-1,2]
 
 import Html exposing (text)
 

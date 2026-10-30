@@ -5,7 +5,7 @@ the exact pattern that triggers the bootstrap Stage 6 failure.
 
 -}
 
--- CHECK: first: (0, 'H')
+-- CHECK: first: (0,'H')
 
 import Html exposing (text)
 

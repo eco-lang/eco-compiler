@@ -13,10 +13,10 @@ probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is a correct
 empty string, "0eqc" is a zero-length heap string that is not "".
 -}
 
--- CHECK: join_ascii: ["0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: concat: ["0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: replace: ["0EQC", "0EQC", "0EQC"]
--- CHECK: controls: ["1eqc", "0EQC", "2eqc"]
+-- CHECK: join_ascii: ["0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: concat: ["0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: replace: ["0EQC","0EQC","0EQC"]
+-- CHECK: controls: ["1eqc","0EQC","2eqc"]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)

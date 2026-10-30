@@ -18,7 +18,7 @@ Sorted by `(parity, suffix)` with correct list ordering ([] < [_]):
   → 4,       2,      3,      1
 -}
 
--- CHECK: result: [4, 2, 3, 1]
+-- CHECK: result: [4,2,3,1]
 
 import Html exposing (text)
 

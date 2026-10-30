@@ -7,8 +7,8 @@ module CompareIntCaptureTest exposing (main)
     intrinsic. Either way, the result must be a correctly sorted list.
 -}
 
--- CHECK: sorted: [1, 2, 3, 4, 5]
--- CHECK: reverse_sorted: [5, 4, 3, 2, 1]
+-- CHECK: sorted: [1,2,3,4,5]
+-- CHECK: reverse_sorted: [5,4,3,2,1]
 
 
 import Html exposing (text)

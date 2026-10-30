@@ -9,14 +9,14 @@ flatten limit). Each result must be the Empty constant.
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 -}
 
--- CHECK: slice_ascii: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: slice_utf16: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: slice_big_ascii: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: slice_big_utf16: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: slice_of_slice: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: slice_rope: ["0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC", "0EQC"]
--- CHECK: uncons_rest: ["0EQC", "0EQC", "0EQC"]
--- CHECK: sizes: [3, 2, 9600, 9601, 9000, 160000]
+-- CHECK: slice_ascii: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: slice_utf16: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: slice_big_ascii: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: slice_big_utf16: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: slice_of_slice: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: slice_rope: ["0EQC","0EQC","0EQC","0EQC","0EQC","0EQC","0EQC"]
+-- CHECK: uncons_rest: ["0EQC","0EQC","0EQC"]
+-- CHECK: sizes: [3,2,9600,9601,9000,160000]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)

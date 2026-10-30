@@ -7,7 +7,7 @@ module WideRecord40Test exposing (main)
 -- CHECK: f0031: 31.5
 -- CHECK: f0032: 'g'
 -- CHECK: f0039: False
--- CHECK: pattern: (1000, False)
+-- CHECK: pattern: (1000,False)
 -- CHECK: update: True
 -- CHECK: eq self: True
 -- CHECK: eq updated: False

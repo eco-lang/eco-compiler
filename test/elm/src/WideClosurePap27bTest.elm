@@ -4,7 +4,7 @@ module WideClosurePap27bTest exposing (main)
 kinds at slots 25/26 are truncated to boxed, so the typed consumer reads HPointers.
 -}
 
--- CHECK: res: [23702, 40502]
+-- CHECK: res: [23702,40502]
 
 import Html exposing (text)
 

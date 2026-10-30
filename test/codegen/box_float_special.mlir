@@ -44,13 +44,13 @@ module {
     %f6 = arith.constant 1.0e10 : f64
     %b6 = eco.box %f6 : f64 -> !eco.value
     eco.dbg %b6 : !eco.value
-    // CHECK: 1e+10
+    // CHECK: 10000000000
 
     // Small scientific notation
     %f7 = arith.constant 1.5e-5 : f64
     %b7 = eco.box %f7 : f64 -> !eco.value
     eco.dbg %b7 : !eco.value
-    // CHECK: 1.5e-05
+    // CHECK: 0.000015
 
     %zero = arith.constant 0 : i64
     return %zero : i64

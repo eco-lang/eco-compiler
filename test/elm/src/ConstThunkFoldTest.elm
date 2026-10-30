@@ -17,10 +17,10 @@ compute 1000 = modBy 67108864 (1000 * 5) + (21 + and 31 1000) = 5000 + 29.
 -}
 
 -- CHECK: compute: 5029
--- CHECK: lits: (67108864, 2.5, 'q')
+-- CHECK: lits: (67108864,2.5,'q')
 -- CHECK: bool: True
 -- CHECK: unit: ()
--- CHECK: shift: (5, 31, 21)
+-- CHECK: shift: (5,31,21)
 -- CHECK: pi: True
 -- CHECK-MLIR-NOT: callee = @ConstThunkFoldTest_intLit
 -- CHECK-MLIR-NOT: callee = @ConstThunkFoldTest_floatLit

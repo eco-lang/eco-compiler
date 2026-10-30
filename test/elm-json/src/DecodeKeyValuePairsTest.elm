@@ -1,6 +1,6 @@
 module DecodeKeyValuePairsTest exposing (main)
 
--- CHECK: kvp1: Ok [("a", 1), ("b", 2)]
+-- CHECK: kvp1: Ok [("a",1),("b",2)]
 
 import Html exposing (text)
 import Json.Decode as Decode

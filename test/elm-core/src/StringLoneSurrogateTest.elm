@@ -11,13 +11,13 @@ written next to each other by fromList ARE a surrogate pair, so they read back
 as one astral Char (as in JS).
 -}
 
--- CHECK: lone_high_codes: [55357, 97]
--- CHECK: lone_low_codes: [56832, 55357]
+-- CHECK: lone_high_codes: [55357,97]
+-- CHECK: lone_low_codes: [56832,55357]
 -- CHECK: lone_roundtrip: True
 -- CHECK: lone_rev_roundtrip: True
 -- CHECK: lone_units: 2
--- CHECK: lone_foldr_codes: [97, 56832]
--- CHECK: lone_uncons: Just (55357, 1)
+-- CHECK: lone_foldr_codes: [97,56832]
+-- CHECK: lone_uncons: Just (55357,1)
 -- CHECK: halves_join: True
 -- CHECK: halves_codes: [128512]
 

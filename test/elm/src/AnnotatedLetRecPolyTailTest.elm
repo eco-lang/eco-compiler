@@ -13,7 +13,7 @@ Observed: MLIR verifier error CGEN_003 (typed papExtend newarg has type i64
 but evaluator _tail_rep_N expects !eco.value).
 -}
 
--- CHECK: AnnotatedLetRecPolyTailTest: ([1, 1, 1], ["s", "s"])
+-- CHECK: AnnotatedLetRecPolyTailTest: ([1,1,1],["s","s"])
 
 import Html exposing (text)
 

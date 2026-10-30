@@ -4,9 +4,9 @@ module JsArrayUnsafeSetCharElementTest exposing (main)
     `Elm_Kernel_JsArray_unsafeSet_Char`.
 -}
 
--- CHECK: original: ['a', 'b', 'c', 'd']
--- CHECK: set_0: ['z', 'b', 'c', 'd']
--- CHECK: set_3: ['a', 'b', 'c', 'x']
+-- CHECK: original: ['a','b','c','d']
+-- CHECK: set_0: ['z','b','c','d']
+-- CHECK: set_3: ['a','b','c','x']
 
 
 import Array

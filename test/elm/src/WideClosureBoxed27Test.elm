@@ -3,7 +3,7 @@ module WideClosureBoxed27Test exposing (main)
 {-| E6: 27 boxed (String) newargs at once: rejected by the 25-newarg count cap.
 -}
 
--- CHECK: res: [385, 392]
+-- CHECK: res: [385,392]
 
 import Html exposing (text)
 

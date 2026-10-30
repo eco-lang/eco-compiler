@@ -104,25 +104,69 @@ void output_char(char c) {
     }
 }
 
-// Writes `d` as Elm prints a Float: `Infinity`, `-Infinity` and `NaN` for those values, `0` for both zeros,
-// and otherwise the shortest decimal that reads back as `d` (`std::to_chars`).
+// Writes `d` as Elm prints a Float, which is JavaScript's `Number::toString` (`value + ''`): `NaN`,
+// `Infinity`, `-Infinity`, `0` for both zeros, and otherwise the shortest round-trip digits
+// d1..dk with decimal exponent n (value = 0.d1..dk x 10^n) laid out as an integer when k <= n <= 21,
+// with a point when 0 < n <= 21, as `0.000ddd` when -6 < n <= 0, and as `d[.ddd]e+N` / `e-N`
+// (no exponent padding) otherwise.
 void print_float(double d) {
     if (std::isinf(d)) {
-        if (d > 0) {
-            output_text("Infinity");
-        } else {
-            output_text("-Infinity");
-        }
-    } else if (std::isnan(d)) {
-        output_text("NaN");
-    } else if (d == 0.0) {
-        output_text("0");
-    } else {
-        char buf[32];
-        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), d);
-        *ptr = '\0';
-        output_text(buf);
+        output_text(d > 0 ? "Infinity" : "-Infinity");
+        return;
     }
+    if (std::isnan(d)) {
+        output_text("NaN");
+        return;
+    }
+    if (d == 0.0) {
+        output_text("0");
+        return;
+    }
+    // Shortest round-trip digits and exponent from the scientific form `[-]d[.ddd]e[+-]XX`.
+    char sci[40];
+    auto [end, ec] = std::to_chars(sci, sci + sizeof(sci), d, std::chars_format::scientific);
+    (void)ec;
+    *end = '\0';
+    const char* p = sci;
+    bool neg = false;
+    if (*p == '-') {
+        neg = true;
+        ++p;
+    }
+    char digits[32];
+    int k = 0;
+    for (; *p && *p != 'e'; ++p) {
+        if (*p != '.') digits[k++] = *p;
+    }
+    int exp10 = (*p == 'e') ? std::atoi(p + 1) : 0;
+    while (k > 1 && digits[k - 1] == '0') --k; // to_chars is shortest already; defensive.
+    int n = exp10 + 1;
+
+    std::string out;
+    if (neg) out += '-';
+    if (k <= n && n <= 21) {
+        out.append(digits, k);
+        out.append(static_cast<size_t>(n - k), '0');
+    } else if (0 < n && n <= 21) {
+        out.append(digits, n);
+        out += '.';
+        out.append(digits + n, k - n);
+    } else if (-6 < n && n <= 0) {
+        out += "0.";
+        out.append(static_cast<size_t>(-n), '0');
+        out.append(digits, k);
+    } else {
+        out += digits[0];
+        if (k > 1) {
+            out += '.';
+            out.append(digits + 1, k - 1);
+        }
+        out += 'e';
+        int e = n - 1;
+        out += (e < 0) ? '-' : '+';
+        out += std::to_string(e < 0 ? -e : e);
+    }
+    output_text(out.c_str());
 }
 
 } // namespace
@@ -2771,96 +2815,137 @@ extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
 //===----------------------------------------------------------------------===//
 // The value printer
 //
+// Both printers follow Elm's `_Debug_toAnsiString` (elm/core 1.0.5, ansi off): `[a,b]` and `(a,b)` with no
+// space after the comma, records as `{ a = 1, b = 2 }`, a constructor argument in parentheses when it
+// contains a space and does not start with `{ ( [ < "`, Floats as JavaScript prints numbers, and Strings
+// and Chars with only `\ \n \t \r \v \0` and the quote escaped.
+//
 // Two printers render a value. The untyped one, `print_value`, works from the heap representation alone.
 // The typed one, `print_typed_value`, also reads the type graph registered by `eco_register_type_graph`,
-// which gives constructor and field names and the element types of containers. `depth` counts nesting, and
-// both print `...` instead of a value nested more than 50 deep.
+// which gives constructor and field names and the element types of containers, and prints elm/core's
+// Dict, Set and Array as `Dict.fromList [...]`, `Set.fromList [...]` and `Array.fromList [...]`. `depth`
+// counts nesting, and both print `...` instead of a value nested more than kMaxPrintDepth deep.
 //===----------------------------------------------------------------------===//
 
 // Prints the boxed value `val`, nested `depth` deep, with the untyped printer.
 static void print_value(uint64_t val, int depth);
 
-// Prints the String at `str`, any String form, without quotes: units outside ASCII as `\uXXXX`, the rest
-// as they are. A null `str` prints nothing.
-static void print_string_content(void* str) {
-    if (!str) return;
-    size_t len = static_cast<Header*>(str)->size;
-    for (size_t i = 0; i < len; i++) {
-        u16 c = Elm::StringOps::charAt(str, static_cast<i64>(i));
-        if (c < 128) {
-            output_char(static_cast<char>(c));
-        } else {
-            output_format("\\u%04X", c);
-        }
+// The nesting depth beyond which both printers print `...` instead of a value (Elm has no limit; this
+// bounds the C++ recursion).
+static constexpr int kMaxPrintDepth = 1000;
+
+// Runs `print`, which writes one constructor argument, and writes its text as Elm's `_Debug_toAnsiString`
+// does: in parentheses when it contains a space and does not start with `{`, `(`, `[`, `<` or `"`.
+template <typename F>
+static void print_ctor_arg(F print) {
+    std::ostringstream buf;
+    std::ostringstream* prev = tl_output_stream;
+    tl_output_stream = &buf;
+    print();
+    tl_output_stream = prev;
+    std::string str = buf.str();
+    char c0 = str.empty() ? '\0' : str[0];
+    bool parenless = c0 == '{' || c0 == '(' || c0 == '[' || c0 == '<' || c0 == '"' ||
+                     str.find(' ') == std::string::npos;
+    if (!parenless) output_char('(');
+    if (tl_output_stream) {
+        *tl_output_stream << str;
+    } else {
+        fwrite(str.data(), 1, str.size(), stderr);
+    }
+    if (!parenless) output_char(')');
+}
+
+// Writes the code point `c` in UTF-8; a surrogate or a value above 0x10FFFF is written as U+FFFD.
+static void output_utf8(u32 c) {
+    if ((c >= 0xD800 && c <= 0xDFFF) || c > 0x10FFFF) c = 0xFFFD;
+    char buf[5];
+    if (c < 0x80) {
+        buf[0] = static_cast<char>(c);
+        buf[1] = '\0';
+    } else if (c < 0x800) {
+        buf[0] = static_cast<char>(0xC0 | (c >> 6));
+        buf[1] = static_cast<char>(0x80 | (c & 0x3F));
+        buf[2] = '\0';
+    } else if (c < 0x10000) {
+        buf[0] = static_cast<char>(0xE0 | (c >> 12));
+        buf[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+        buf[2] = static_cast<char>(0x80 | (c & 0x3F));
+        buf[3] = '\0';
+    } else {
+        buf[0] = static_cast<char>(0xF0 | (c >> 18));
+        buf[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+        buf[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+        buf[3] = static_cast<char>(0x80 | (c & 0x3F));
+        buf[4] = '\0';
+    }
+    if (c == 0) {
+        output_char('\0');
+    } else {
+        output_text(buf);
     }
 }
 
-// Prints the String at `str` in double quotes, with `"`, `\`, newline, carriage return and tab escaped, and
-// every other unit outside printable ASCII as `\uXXXX`. A null `str` prints `""`.
+// Writes the code point `c` as Elm's `_Debug_addSlashes` leaves it inside a literal quoted by `quote`
+// (`"` for a String, `'` for a Char): `\`, newline, tab, carriage return, vertical tab, NUL and `quote`
+// escaped with a backslash, every other code point as itself in UTF-8.
+static void print_escaped_cp(u32 c, char quote) {
+    switch (c) {
+    case '\\': output_text("\\\\"); return;
+    case '\n': output_text("\\n"); return;
+    case '\t': output_text("\\t"); return;
+    case '\r': output_text("\\r"); return;
+    case '\v': output_text("\\v"); return;
+    case 0: output_text("\\0"); return;
+    default: break;
+    }
+    if (c == static_cast<u32>(quote)) {
+        output_char('\\');
+        output_char(quote);
+        return;
+    }
+    output_utf8(c);
+}
+
+// Calls `f` with each code point of the String at `str` (any String form): a surrogate pair is combined,
+// a lone surrogate is passed as it is.
+template <typename F>
+static void for_each_code_point(void* str, F f) {
+    size_t len = static_cast<Header*>(str)->size;
+    for (size_t i = 0; i < len; i++) {
+        u32 c = Elm::StringOps::charAt(str, static_cast<i64>(i));
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < len) {
+            u32 lo = Elm::StringOps::charAt(str, static_cast<i64>(i + 1));
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                i++;
+            }
+        }
+        f(c);
+    }
+}
+
+// Prints the String at `str`, any String form, without quotes or escapes, in UTF-8 (a lone surrogate as
+// U+FFFD). A null `str` prints nothing.
+static void print_string_content(void* str) {
+    if (!str) return;
+    for_each_code_point(str, [](u32 c) { output_utf8(c); });
+}
+
+// Prints the String at `str` in double quotes as Elm's Debug.toString does (`_Debug_addSlashes`): `\`,
+// newline, tab, carriage return, vertical tab, NUL and `"` escaped, everything else raw in UTF-8. A null
+// `str` prints `""`.
 static void print_string(void* str) {
     output_char('"');
     if (str) {
-        size_t len = static_cast<Header*>(str)->size;
-        for (size_t i = 0; i < len; i++) {
-            u16 c = Elm::StringOps::charAt(str, static_cast<i64>(i));
-            if (c == '"') {
-                output_text("\\\"");
-            } else if (c == '\\') {
-                output_text("\\\\");
-            } else if (c == '\n') {
-                output_text("\\n");
-            } else if (c == '\r') {
-                output_text("\\r");
-            } else if (c == '\t') {
-                output_text("\\t");
-            } else if (c < 32 || c >= 127) {
-                output_format("\\u%04X", c);
-            } else {
-                output_char(static_cast<char>(c));
-            }
-        }
+        for_each_code_point(str, [](u32 c) { print_escaped_cp(c, '"'); });
     }
     output_char('"');
 }
 
-// Prints the code point `c` as it appears inside a Char literal: `'`, `\`, newline, carriage return and tab
-// escaped; a control character, DEL, a surrogate or a value above 0x10FFFF as `\uXXXX`; anything else as
-// itself, in UTF-8.
+// Prints the code point `c` as it appears inside a Char literal (`_Debug_addSlashes` with `'` quoting).
 static void print_char_cp(u32 c) {
-    if (c == '\'') {
-        output_text("\\'");
-    } else if (c == '\\') {
-        output_text("\\\\");
-    } else if (c == '\n') {
-        output_text("\\n");
-    } else if (c == '\r') {
-        output_text("\\r");
-    } else if (c == '\t') {
-        output_text("\\t");
-    } else if (c < 32 || c == 127 || (c >= 0xD800 && c <= 0xDFFF) || c > 0x10FFFF) {
-        output_format("\\u%04X", c);
-    } else if (c < 127) {
-        output_char(static_cast<char>(c));
-    } else {
-        char buf[5];
-        if (c < 0x800) {
-            buf[0] = static_cast<char>(0xC0 | (c >> 6));
-            buf[1] = static_cast<char>(0x80 | (c & 0x3F));
-            buf[2] = '\0';
-        } else if (c < 0x10000) {
-            buf[0] = static_cast<char>(0xE0 | (c >> 12));
-            buf[1] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-            buf[2] = static_cast<char>(0x80 | (c & 0x3F));
-            buf[3] = '\0';
-        } else {
-            buf[0] = static_cast<char>(0xF0 | (c >> 18));
-            buf[1] = static_cast<char>(0x80 | ((c >> 12) & 0x3F));
-            buf[2] = static_cast<char>(0x80 | ((c >> 6) & 0x3F));
-            buf[3] = static_cast<char>(0x80 | (c & 0x3F));
-            buf[4] = '\0';
-        }
-        output_text(buf);
-    }
+    print_escaped_cp(c, '\'');
 }
 
 // Prints the Char word `c` between single quotes: its code point, or every code point of an encoded
@@ -2948,11 +3033,8 @@ static inline bool is_list_cons(const Custom* custom) {
            fieldKind(custom->unboxed, 1) == 0;
 }
 
-// Prints the list `val` as `[a, b, c]`, its nodes being cons cells, chunk views or list-shaped Customs, and
-// `, ...` after 100 elements.
-//
-// An unboxed Float element is printed with `%g`, not as `print_float` prints a Float. A node of another
-// kind, or a constant other than Empty as a tail, is printed as a marker in angle brackets, which ends
+// Prints the list `val` as `[a,b,c]` (no space after the comma, as Elm prints it), its nodes being cons
+// cells, chunk views or list-shaped Customs. A node of another kind, or a constant other than Empty as a tail, is printed as a marker in angle brackets, which ends
 // the list.
 static void print_list(uint64_t val, int depth) {
     output_char('[');
@@ -2960,12 +3042,12 @@ static void print_list(uint64_t val, int depth) {
     bool first = true;
     uint64_t current = val;
     int count = 0;
-    const int MAX_LIST_ITEMS = 100;
+    const int MAX_LIST_ITEMS = 0x7fffffff; // no cap: Elm prints every element
 
     while (count < MAX_LIST_ITEMS) {
         if (isConstantBits(current)) {
             if (!isEmptyBits(current)) {
-                if (!first) output_text(", ");
+                if (!first) output_char(',');
                 output_text("<invalid_list_tail>");
             }
             break;
@@ -2973,7 +3055,7 @@ static void print_list(uint64_t val, int depth) {
 
         void* ptr = hpointerToPtr(current);
         if (!ptr) {
-            if (!first) output_text(", ");
+            if (!first) output_char(',');
             output_text("<null>");
             break;
         }
@@ -2983,19 +3065,19 @@ static void print_list(uint64_t val, int depth) {
         if (header->tag == Tag_Custom) {
             Custom* custom = static_cast<Custom*>(ptr);
             if (!is_list_cons(custom)) {
-                if (!first) output_text(", ");
+                if (!first) output_char(',');
                 output_text("<non_cons_custom>");
                 break;
             }
 
             if (!first) {
-                output_text(", ");
+                output_char(',');
             }
             first = false;
 
             switch (fieldKind(custom->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)custom->values[0].i); break;
-                case 2: output_format("%g", (double)custom->values[0].f); break;
+                case 2: print_float(custom->values[0].f); break;
                 case 3: print_char(custom->values[0].c); break;
                 default: {
                     uint64_t head_val = static_cast<uint64_t>(custom->values[0].i);
@@ -3009,13 +3091,13 @@ static void print_list(uint64_t val, int depth) {
             Cons* cons = static_cast<Cons*>(ptr);
 
             if (!first) {
-                output_text(", ");
+                output_char(',');
             }
             first = false;
 
             switch (tupleFieldKind(header->unboxed, 0)) {
                 case 1: output_format("%lld", (long long)cons->head.i); break;
-                case 2: output_format("%g", (double)cons->head.f); break;
+                case 2: print_float(cons->head.f); break;
                 case 3: print_char(cons->head.c); break;
                 default: {
                     uint64_t head_val = hpBits(cons->head.p);
@@ -3034,12 +3116,12 @@ static void print_list(uint64_t val, int depth) {
             u32 k = (cv->len < run) ? cv->len : run;
             uint32_t kind = static_cast<uint32_t>(header->unboxed & 0x3);
             for (u32 i = 0; i < k && count < MAX_LIST_ITEMS; i++, count++) {
-                if (!first) output_text(", ");
+                if (!first) output_char(',');
                 first = false;
                 const Unboxable& v = lb->elems[cv->offset + i];
                 switch (kind) {
                     case 1: output_format("%lld", (long long)v.i); break;
-                    case 2: output_format("%g", (double)v.f); break;
+                    case 2: print_float(v.f); break;
                     case 3: print_char(v.c); break;
                     default: print_value(hpBits(v.p), depth + 1); break;
                 }
@@ -3047,7 +3129,7 @@ static void print_list(uint64_t val, int depth) {
             current = hpBits(cv->next);
             continue; // count has been advanced per element
         } else {
-            if (!first) output_text(", ");
+            if (!first) output_char(',');
             output_format("<non_cons_tag_%d>", header->tag);
             break;
         }
@@ -3062,71 +3144,58 @@ static void print_list(uint64_t val, int depth) {
     output_char(']');
 }
 
-// Prints the slot `v` of slot kind `kind`: an Int, a Float with `%g`, a Char, or for kind 0 the boxed value
+// Prints the slot `v` of slot kind `kind`: an Int, a Float, a Char, or for kind 0 the boxed value
 // one level deeper than `depth`.
 static void print_unboxable_slot(const Unboxable& v, uint32_t kind, int depth) {
     switch (kind) {
         case 1: output_format("%lld", (long long)v.i); break;
-        case 2: output_format("%g", (double)v.f); break;
+        case 2: print_float(v.f); break;
         case 3: print_char(v.c); break;
         default: print_value(static_cast<uint64_t>(v.i), depth + 1); break;
     }
 }
 
-// Prints the 2-tuple `tuple` as `(a, b)`.
+// Prints the 2-tuple `tuple` as `(a,b)`.
 static void print_tuple2(Tuple2* tuple, int depth) {
     output_char('(');
     print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
-    output_text(", ");
+    output_char(',');
     print_unboxable_slot(tuple->b, tupleFieldKind(tuple->header.unboxed, 1), depth);
     output_char(')');
 }
 
-// Prints the 3-tuple `tuple` as `(a, b, c)`.
+// Prints the 3-tuple `tuple` as `(a,b,c)`.
 static void print_tuple3(Tuple3* tuple, int depth) {
     output_char('(');
     print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
-    output_text(", ");
+    output_char(',');
     print_unboxable_slot(tuple->b, tupleFieldKind(tuple->header.unboxed, 1), depth);
-    output_text(", ");
+    output_char(',');
     print_unboxable_slot(tuple->c, tupleFieldKind(tuple->header.unboxed, 2), depth);
     output_char(')');
 }
 
-// Prints the Custom `custom` as `Ctor<tag>` followed by its fields separated by spaces, a field that is a
-// Custom with fields in parentheses, and a field word of 0 as `<null>`.
+// Prints the Custom `custom` as `Ctor<tag>` followed by its fields separated by spaces, each field in
+// parentheses by Elm's rule (`print_ctor_arg`), and a field word of 0 as `<null>`.
 static void print_custom(Custom* custom, int depth) {
     uint32_t ctor = custom->ctor;
     uint32_t size = custom->header.size;
 
     output_format("Ctor%u", ctor);
 
-    if (size > 0) {
+    for (uint32_t i = 0; i < size; i++) {
         output_char(' ');
-        for (uint32_t i = 0; i < size; i++) {
-            if (i > 0) output_char(' ');
-
-            uint32_t k = customSlotKind(custom, i);
+        uint32_t k = customSlotKind(custom, i);
+        uint64_t val = static_cast<uint64_t>(custom->values[i].i);
+        print_ctor_arg([&] {
             if (k != 0) {
                 print_unboxable_slot(custom->values[i], k, depth);
+            } else if (val == 0) {
+                output_text("<null>");
             } else {
-                uint64_t val = static_cast<uint64_t>(custom->values[i].i);
-
-                if (val == 0) {
-                    output_text("<null>");
-                } else if (!print_if_constant(val)) {
-                    void* ptr = hpointerToPtr(val);
-                    bool needs_parens = false;
-                    if (ptr) {
-                        Header* h = static_cast<Header*>(ptr);
-                        needs_parens = (h->tag == Tag_Custom && static_cast<Custom*>(ptr)->header.size > 0);
-                    }
-                    if (needs_parens) output_char('(');
-                    print_value(val, depth + 1);
-                    if (needs_parens) output_char(')');
-                }
+                print_value(val, depth + 1);
             }
-        }
+        });
     }
 }
 
@@ -3171,7 +3240,7 @@ static void print_array(ElmArray* array, int depth) {
     output_text("Array.fromList [");
     uint32_t kind = array->header.unboxed & 0x3;
     for (uint32_t i = 0; i < array->length; i++) {
-        if (i > 0) output_text(", ");
+        if (i > 0) output_char(',');
 
         if (kind != 0) {
             print_unboxable_slot(array->elements[i], kind, depth);
@@ -3183,7 +3252,7 @@ static void print_array(ElmArray* array, int depth) {
 }
 
 static void print_value(uint64_t val, int depth) {
-    if (depth > 50) {
+    if (depth > kMaxPrintDepth) {
         output_text("...");
         return;
     }
@@ -3294,7 +3363,7 @@ static void print_value(uint64_t val, int depth) {
         case Tag_LargeByteHeader:
         case Tag_ByteBufferSlice: {
             // All three forms keep the byte count in header.size.
-            output_format("<bytes:%u>", header->size);
+            output_format("<%u bytes>", header->size);
             break;
         }
 
@@ -3405,8 +3474,169 @@ extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32
     }
 }
 
+// Prints the slot word `bits` of slot kind `slotKind` (0 boxed, 1 Int, 2 Float, 3 Char) whose declared
+// type is `type_id`: an unboxed slot as the primitive its type names (or its slot kind says, when the type
+// is not a primitive), a boxed one with the typed printer one level deeper than `depth`.
+static void print_typed_slot(uint64_t bits, uint32_t slotKind, uint32_t type_id, int depth) {
+    if (slotKind != 0) {
+        const Elm::EcoTypeInfo* t = &g_type_graph->types[type_id];
+        if (t->kind == Elm::EcoTypeKind::Primitive) {
+            printPrimitive(bits, t->data.primitive.prim_kind);
+        } else {
+            printPrimitive(bits, primKindOfSlotKind(slotKind));
+        }
+    } else {
+        print_typed_value(bits, type_id, depth + 1);
+    }
+}
+
+// Returns the constructor of the custom type `t` whose id is `ctor_id`, or null.
+static const Elm::EcoCtorInfo* find_ctor(const Elm::EcoTypeInfo* t, uint32_t ctor_id) {
+    for (uint32_t ci = 0; ci < t->data.custom.ctor_count; ++ci) {
+        const Elm::EcoCtorInfo* c = &g_type_graph->ctors[t->data.custom.first_ctor + ci];
+        if (c->ctor_id == ctor_id) return c;
+    }
+    return nullptr;
+}
+
+// The elm/core containers Elm's Debug.toString recognises by constructor name and prints as
+// `Dict.fromList`, `Set.fromList` and `Array.fromList`.
+enum class BuiltinContainer { None, Dict, Set, Array };
+
+// Returns which builtin container the custom type `t` is, by its constructor names.
+static BuiltinContainer builtin_container_of(const Elm::EcoTypeInfo* t) {
+    if (!g_type_graph->ctors || !g_type_graph->strings) return BuiltinContainer::None;
+    for (uint32_t ci = 0; ci < t->data.custom.ctor_count; ++ci) {
+        const Elm::EcoCtorInfo* c = &g_type_graph->ctors[t->data.custom.first_ctor + ci];
+        if (c->name_index >= g_type_graph->string_count) continue;
+        const char* name = g_type_graph->strings[c->name_index];
+        if (std::strcmp(name, "RBNode_elm_builtin") == 0 || std::strcmp(name, "RBEmpty_elm_builtin") == 0)
+            return BuiltinContainer::Dict;
+        if (std::strcmp(name, "Set_elm_builtin") == 0) return BuiltinContainer::Set;
+        if (std::strcmp(name, "Array_elm_builtin") == 0) return BuiltinContainer::Array;
+    }
+    return BuiltinContainer::None;
+}
+
+// Prints the entries of the Dict `node` of type `dict_type_id` in key order (an in-order walk of its
+// RBNode_elm_builtin color key value left right nodes), each as `(k,v)`, or only `k` when `keysOnly`,
+// separated by commas; `first` says whether nothing has been printed yet.
+static void print_dict_entries(uint64_t node, uint32_t dict_type_id, int depth, bool keysOnly, bool& first) {
+    if (depth > kMaxPrintDepth || isConstantBits(node)) return;
+    void* ptr = hpointerToPtr(node);
+    if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Custom) return;
+    Custom* c = static_cast<Custom*>(ptr);
+    const Elm::EcoCtorInfo* ci = find_ctor(&g_type_graph->types[dict_type_id], c->ctor);
+    if (!ci || ci->field_count != 5 || c->header.size != 5) return;
+    if (customSlotKind(c, 3) != 0 || customSlotKind(c, 4) != 0) return; // subtrees are boxed
+    const Elm::EcoFieldInfo* f = &g_type_graph->fields[ci->first_field];
+    print_dict_entries(static_cast<uint64_t>(c->values[3].i), f[3].type_id, depth + 1, keysOnly, first);
+    if (!first) output_char(',');
+    first = false;
+    if (keysOnly) {
+        print_typed_slot(static_cast<uint64_t>(c->values[1].i), customSlotKind(c, 1), f[1].type_id, depth);
+    } else {
+        output_char('(');
+        print_typed_slot(static_cast<uint64_t>(c->values[1].i), customSlotKind(c, 1), f[1].type_id, depth);
+        output_char(',');
+        print_typed_slot(static_cast<uint64_t>(c->values[2].i), customSlotKind(c, 2), f[2].type_id, depth);
+        output_char(')');
+    }
+    print_dict_entries(static_cast<uint64_t>(c->values[4].i), f[4].type_id, depth + 1, keysOnly, first);
+}
+
+// Prints the elements of the JsArray `arr`, separated by commas, with the untyped printer: the type graph
+// does not carry a JsArray's element type.
+static void print_jsarray_elements(uint64_t arr, int depth, bool& first) {
+    if (isConstantBits(arr)) return;
+    void* ptr = hpointerToPtr(arr);
+    if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Array) return;
+    ElmArray* a = static_cast<ElmArray*>(ptr);
+    uint32_t kind = a->header.unboxed & 0x3;
+    for (uint32_t i = 0; i < a->length; i++) {
+        if (!first) output_char(',');
+        first = false;
+        if (kind != 0) {
+            print_unboxable_slot(a->elements[i], kind, depth);
+        } else {
+            print_value(static_cast<uint64_t>(a->elements[i].i), depth + 1);
+        }
+    }
+}
+
+// Prints the elements of an elm/core Array tree `tree` (a JsArray of `Node`s: SubTree, ctor 0, holding a
+// tree, or Leaf, ctor 1, holding a JsArray of elements) in order, separated by commas.
+static void print_array_tree(uint64_t tree, int depth, bool& first) {
+    if (depth > kMaxPrintDepth || isConstantBits(tree)) return;
+    void* ptr = hpointerToPtr(tree);
+    if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Array) return;
+    ElmArray* a = static_cast<ElmArray*>(ptr);
+    if ((a->header.unboxed & 0x3) != 0) return; // a tree holds boxed Nodes
+    for (uint32_t i = 0; i < a->length; i++) {
+        uint64_t nodeBits = static_cast<uint64_t>(a->elements[i].i);
+        void* np = hpointerToPtr(nodeBits);
+        if (isConstantBits(nodeBits) || !np || static_cast<Header*>(np)->tag != Tag_Custom) continue;
+        Custom* node = static_cast<Custom*>(np);
+        if (node->header.size != 1 || customSlotKind(node, 0) != 0) continue;
+        uint64_t inner = static_cast<uint64_t>(node->values[0].i);
+        if (node->ctor == 0) {
+            print_array_tree(inner, depth + 1, first);
+        } else {
+            print_jsarray_elements(inner, depth + 1, first);
+        }
+    }
+}
+
+// Prints `value`, of the builtin container type `which` with type id `type_id`, as Elm does:
+// `Dict.fromList [(k,v),...]`, `Set.fromList [k,...]` or `Array.fromList [x,...]`. A value whose shape
+// is not the container's prints as `<internals>`.
+static void print_builtin_container(uint64_t value, uint32_t type_id, BuiltinContainer which, int depth) {
+    bool first = true;
+    switch (which) {
+    case BuiltinContainer::Dict:
+        output_text("Dict.fromList [");
+        print_dict_entries(value, type_id, depth, false, first);
+        output_char(']');
+        return;
+    case BuiltinContainer::Set: {
+        void* ptr = isConstantBits(value) ? nullptr : hpointerToPtr(value);
+        const Elm::EcoCtorInfo* ci = nullptr;
+        Custom* c = nullptr;
+        if (ptr && static_cast<Header*>(ptr)->tag == Tag_Custom) {
+            c = static_cast<Custom*>(ptr);
+            ci = find_ctor(&g_type_graph->types[type_id], c->ctor);
+        }
+        if (!ci || ci->field_count != 1 || c->header.size != 1 || customSlotKind(c, 0) != 0) {
+            output_text("<internals>");
+            return;
+        }
+        output_text("Set.fromList [");
+        print_dict_entries(static_cast<uint64_t>(c->values[0].i),
+                           g_type_graph->fields[ci->first_field].type_id, depth + 1, true, first);
+        output_char(']');
+        return;
+    }
+    case BuiltinContainer::Array: {
+        void* ptr = isConstantBits(value) ? nullptr : hpointerToPtr(value);
+        if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Custom ||
+            static_cast<Custom*>(ptr)->header.size != 4) {
+            output_text("<internals>");
+            return;
+        }
+        Custom* c = static_cast<Custom*>(ptr);
+        output_text("Array.fromList [");
+        print_array_tree(static_cast<uint64_t>(c->values[2].i), depth + 1, first);
+        print_jsarray_elements(static_cast<uint64_t>(c->values[3].i), depth + 1, first);
+        output_char(']');
+        return;
+    }
+    case BuiltinContainer::None:
+        break;
+    }
+}
+
 static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
-    if (depth > 50) {
+    if (depth > kMaxPrintDepth) {
         output_text("...");
         return;
     }
@@ -3450,7 +3680,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         bool first = true;
         uint64_t current = value;
         int count = 0;
-        const int MAX_LIST_ITEMS = 100;
+        const int MAX_LIST_ITEMS = 0x7fffffff; // no cap: Elm prints every element
 
         while (count < MAX_LIST_ITEMS) {
             // The only constant a list's tail can be is Empty, which is Nil here.
@@ -3485,7 +3715,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 uint32_t ubKind = header->unboxed & 0x3;
                 bool ub = ubKind != 0;
                 for (u32 i = 0; i < k && count < MAX_LIST_ITEMS; i++, count++) {
-                    if (!first) output_text(", ");
+                    if (!first) output_char(',');
                     first = false;
                     uint64_t hv =
                         static_cast<uint64_t>(lb->elems[cv->offset + i].i);
@@ -3513,7 +3743,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 break;
             }
 
-            if (!first) output_text(", ");
+            if (!first) output_char(',');
             first = false;
 
             if (head_kind != 0) {
@@ -3578,7 +3808,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
             }
-            output_text(", ");
+            output_char(',');
             // Field b
             if (tupleFieldKind(unboxed, 1) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
@@ -3606,7 +3836,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->a.i), type_a, depth + 1);
             }
-            output_text(", ");
+            output_char(',');
             // Field b
             if (tupleFieldKind(unboxed, 1) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
@@ -3616,7 +3846,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             } else {
                 print_typed_value(static_cast<uint64_t>(tuple->b.i), type_b, depth + 1);
             }
-            output_text(", ");
+            output_char(',');
             // Field c
             if (tupleFieldKind(unboxed, 2) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_c];
@@ -3701,7 +3931,20 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         // A value built by kernel code need not have the shape its declared type describes, so a mismatch
         // prints `<internals>` rather than asserting.
         if (ctor_count == 0) {
-            output_text("<internals>");
+            void* bp = isConstantBits(value) ? nullptr : hpointerToPtr(value);
+            uint32_t btag = bp ? static_cast<Header*>(bp)->tag : 0;
+            if (bp && (btag == Tag_ByteBuffer || btag == Tag_LargeByteHeader || btag == Tag_ByteBufferSlice)) {
+                // Bytes, a kernel type: Elm prints `<N bytes>`.
+                output_format("<%u bytes>", static_cast<Header*>(bp)->size);
+            } else {
+                output_text("<internals>");
+            }
+            break;
+        }
+
+        BuiltinContainer builtin = builtin_container_of(typeInfo);
+        if (builtin != BuiltinContainer::None) {
+            print_builtin_container(value, type_id, builtin, depth);
             break;
         }
 
@@ -3786,28 +4029,16 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 assert(field_type_id < g_type_graph->type_count &&
                        "Invalid field type_id in Custom type graph");
 
-                bool needs_parens = false;
-                if (!is_unboxed) {
-                    void* field_ptr = hpointerToPtr(field_val);
-                    if (field_ptr) {
-                        Header* h = static_cast<Header*>(field_ptr);
-                        needs_parens = (h->tag == Tag_Custom &&
-                                       static_cast<Custom*>(field_ptr)->header.size > 0);
+                print_ctor_arg([&] {
+                    if (is_unboxed) {
+                        const Elm::EcoTypeInfo* ft = &g_type_graph->types[field_type_id];
+                        assert(ft->kind == Elm::EcoTypeKind::Primitive &&
+                               "Custom field is unboxed but type is not primitive");
+                        printPrimitive(field_val, ft->data.primitive.prim_kind);
+                    } else {
+                        print_typed_value(field_val, field_type_id, depth + 1);
                     }
-                }
-
-                if (needs_parens) output_char('(');
-
-                if (is_unboxed) {
-                    const Elm::EcoTypeInfo* ft = &g_type_graph->types[field_type_id];
-                    assert(ft->kind == Elm::EcoTypeKind::Primitive &&
-                           "Custom field is unboxed but type is not primitive");
-                    printPrimitive(field_val, ft->data.primitive.prim_kind);
-                } else {
-                    print_typed_value(field_val, field_type_id, depth + 1);
-                }
-
-                if (needs_parens) output_char(')');
+                });
             }
         }
         break;

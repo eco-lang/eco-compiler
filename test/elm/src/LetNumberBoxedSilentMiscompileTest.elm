@@ -17,7 +17,7 @@ incorrect output. The CHECK lines below are the correct answers.
 
 -- CHECK: tuple: 45
 -- CHECK: record: 45
--- CHECK: list: [45, 60]
+-- CHECK: list: [45,60]
 -- CHECK: maybe: 45
 -- CHECK: nested: [45]
 

@@ -17,7 +17,7 @@ import Html exposing (text)
 -- CHECK: pairStr: "hi"
 -- CHECK: recFloat: 2.5
 -- CHECK: recInt: 7
--- CHECK: box: Box (42, "hi")
+-- CHECK: box: Box (42,"hi")
 -- CHECK: rbox: RBox { first = 7, second = 2.5 }
 
 

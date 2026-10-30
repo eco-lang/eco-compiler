@@ -6,13 +6,13 @@ the log order is not checked.)
 -}
 
 -- CHECK-DAG: lazy1: [1]
--- CHECK-DAG: lazy2: [1, 2]
--- CHECK-DAG: lazy3: [1, 2, 3]
--- CHECK-DAG: lazy4: [1, 2, 3, 4]
--- CHECK-DAG: lazy5: [1, 2, 3, 4, 5]
--- CHECK-DAG: lazy6: [1, 2, 3, 4, 5, 6]
--- CHECK-DAG: lazy7: [1, 2, 3, 4, 5, 6, 7]
--- CHECK-DAG: lazy8: [1, 2, 3, 4, 5, 6, 7, 8]
+-- CHECK-DAG: lazy2: [1,2]
+-- CHECK-DAG: lazy3: [1,2,3]
+-- CHECK-DAG: lazy4: [1,2,3,4]
+-- CHECK-DAG: lazy5: [1,2,3,4,5]
+-- CHECK-DAG: lazy6: [1,2,3,4,5,6]
+-- CHECK-DAG: lazy7: [1,2,3,4,5,6,7]
+-- CHECK-DAG: lazy8: [1,2,3,4,5,6,7,8]
 -- CHECK: built: 8
 
 import Html exposing (Html)

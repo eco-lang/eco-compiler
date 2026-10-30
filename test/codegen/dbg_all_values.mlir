@@ -68,7 +68,7 @@ module {
 
     %ufsci = arith.constant 1.5e10 : f64
     eco.dbg %ufsci : f64
-    // CHECK: 1.5e
+    // CHECK: 15000000000
 
     // === Unboxed Characters (i32 code points) ===
 
@@ -188,7 +188,7 @@ module {
 
     %alloc_str = eco.allocate_string {length = 10 : i64} : !eco.value
     eco.dbg %alloc_str : !eco.value
-    // CHECK: \u0000
+    // CHECK: "\0\0\0\0\0\0\0\0\0\0"
 
     %zero = arith.constant 0 : i64
     return %zero : i64

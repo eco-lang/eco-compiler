@@ -5,7 +5,7 @@ with Nothing values, mirroring the D.pure f |> D.apply pattern used in
 the compiler's JSON outline decoder.
 -}
 
--- CHECK: result: (-1, "none")
+-- CHECK: result: (-1,"none")
 
 import Html exposing (text)
 

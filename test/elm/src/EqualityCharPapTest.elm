@@ -4,7 +4,7 @@ module EqualityCharPapTest exposing (main)
 Char uses i16 ABI, so kernel PAP must use AllBoxed (!eco.value).
 -}
 
--- CHECK: filtered: ['a', 'a']
+-- CHECK: filtered: ['a','a']
 
 import Html exposing (text)
 

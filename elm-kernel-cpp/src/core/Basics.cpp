@@ -110,20 +110,36 @@ long long remainderBy(long long divisor, long long x) {  // CGEN_084: divisor 0 
 // Rounding
 // ============================================================================
 
+// Converts `x` to a 64-bit Int saturating (CGEN_086, design_docs/float-semantics.md): NaN gives 0,
+// a value at or above 2^63 gives the largest Int, one below -2^63 the smallest, and any other value
+// is truncated toward zero. A plain cast is undefined outside the Int range.
+static long long saturateToInt(double x) {
+    if (x != x) return 0;
+    if (x >= 9223372036854775808.0) return std::numeric_limits<long long>::max();
+    if (x < -9223372036854775808.0) return std::numeric_limits<long long>::min();
+    return static_cast<long long>(x);
+}
+
 long long ceiling(double x) {
-    return static_cast<long long>(std::ceil(x));
+    return saturateToInt(std::ceil(x));
 }
 
 long long floor(double x) {
-    return static_cast<long long>(std::floor(x));
+    return saturateToInt(std::floor(x));
 }
 
+// As JS `Math.round`, which Elm's `round` is: the nearest integer, ties toward +infinity (so
+// round -2.5 == -2, unlike std::round). x - floor(x) is exact for a double, so a value just below a
+// half is not rounded up, as floor(x + 0.5) would round 0.49999999999999994. The result converts
+// saturating.
 long long round(double x) {
-    return static_cast<long long>(std::round(x));
+    double f = std::floor(x);
+    if (x - f >= 0.5) f += 1.0;
+    return saturateToInt(f);
 }
 
 long long truncate(double x) {
-    return static_cast<long long>(std::trunc(x));
+    return saturateToInt(x);
 }
 
 // ============================================================================

@@ -5,7 +5,7 @@ Two boxing layers (list of Maybe). Correct: [45, 60].
 
 -}
 
--- CHECK: listmaybe: [45, 60]
+-- CHECK: listmaybe: [45,60]
 
 import Html exposing (text)
 

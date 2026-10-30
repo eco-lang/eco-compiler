@@ -3,7 +3,7 @@ module EmbeddedConstantsInListTest exposing (main)
 {-| Test List.filterMap identity on a list mixing Nothing and Just values.
 -}
 
--- CHECK: filtered: [1, 2]
+-- CHECK: filtered: [1,2]
 
 import Html exposing (text)
 

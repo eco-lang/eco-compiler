@@ -5,7 +5,7 @@ module SetTupleListKeyTest exposing (main)
 Verify both axes.
 -}
 
--- CHECK: keys: [(0, []), (0, [1]), (0, [2])]
+-- CHECK: keys: [(0,[]),(0,[1]),(0,[2])]
 -- CHECK: size: 3
 -- CHECK: hasEmpty: True
 

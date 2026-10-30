@@ -1,6 +1,6 @@
 module StringIndexesTest exposing (main)
 
--- CHECK: indexes1: [0, 8]
+-- CHECK: indexes1: [0,8]
 -- CHECK: indexes_none: []
 
 import Html exposing (text)

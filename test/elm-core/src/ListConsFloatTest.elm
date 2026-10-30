@@ -4,9 +4,9 @@ module ListConsFloatTest exposing (main)
     a `List Float` literal.
 -}
 
--- CHECK: list: [1, 2.5, 3.75]
+-- CHECK: list: [1,2.5,3.75]
 -- CHECK: head: Just 1
--- CHECK: prepend: [0, 1, 2.5, 3.75]
+-- CHECK: prepend: [0,1,2.5,3.75]
 
 
 import Html exposing (text)

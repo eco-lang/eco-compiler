@@ -1,6 +1,6 @@
 module ParserPositionTest exposing (main)
 
--- CHECK: pos: Ok (1, 4)
+-- CHECK: pos: Ok (1,4)
 -- CHECK: row: Ok 1
 -- CHECK: col: Ok 4
 -- CHECK: offset: Ok 3

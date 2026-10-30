@@ -19,22 +19,22 @@ the generated code); it stays as a guard.
 
 -}
 
--- CHECK: floatInt: (2.5, 1)
--- CHECK: stringInt: ("s", 7)
--- CHECK: listChar: ([1.5], ['c'])
--- CHECK: twice: (3.5, (10, 10))
--- CHECK: numPair: (5, 6)
--- CHECK: capture: (("s", 1), ("s", 2.5))
--- CHECK: maxPair: (3.5, 9)
--- CHECK: showBoth: ("x!", "7")
--- CHECK: captureUse: ("s!", 2)
+-- CHECK: floatInt: (2.5,1)
+-- CHECK: stringInt: ("s",7)
+-- CHECK: listChar: ([1.5],['c'])
+-- CHECK: twice: (3.5,(10,10))
+-- CHECK: numPair: (5,6)
+-- CHECK: capture: (("s",1),("s",2.5))
+-- CHECK: maxPair: (3.5,9)
+-- CHECK: showBoth: ("x!","7")
+-- CHECK: captureUse: ("s!",2)
 -- CHECK: captureFirst: "s?"
--- CHECK: captureMap: [("s", 1), ("s", 2)]
--- CHECK: captureMapUse: ["s1", "s2"]
--- CHECK: wrapInt: (2.5, 0)
+-- CHECK: captureMap: [("s",1),("s",2)]
+-- CHECK: captureMapUse: ["s1","s2"]
+-- CHECK: wrapInt: (2.5,0)
 -- CHECK: captureMapFirst: "ss"
 -- CHECK: captureMapSecond: 3
--- CHECK: applyRun: ("s", 3)
+-- CHECK: applyRun: ("s",3)
 
 import Html exposing (text)
 

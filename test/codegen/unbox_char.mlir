@@ -78,7 +78,7 @@ module {
     %char_null = arith.constant 0 : i32
     %boxed_null = eco.box %char_null : i32 -> !eco.value
     eco.dbg %boxed_null : !eco.value
-    // CHECK: '\u0000'
+    // CHECK: '\0'
 
     %zero = arith.constant 0 : i64
     return %zero : i64

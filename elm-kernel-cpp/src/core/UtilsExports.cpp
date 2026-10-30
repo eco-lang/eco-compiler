@@ -74,10 +74,12 @@ HPtr Elm_Kernel_Utils_compare_Int(int64_t a, int64_t b) {
     return HPtr::fromBits(enc);
 }
 
+// Float's total order (Utils::compareFloat): NaN equals NaN and is above every number.
 HPtr Elm_Kernel_Utils_compare_Float(double a, double b) {
-    uint64_t enc = (a < b) ? Utils::getOrderLT()
-                 : (a > b) ? Utils::getOrderGT()
-                           : Utils::getOrderEQ();
+    const int c = Utils::compareFloat(a, b);
+    uint64_t enc = (c < 0)  ? Utils::getOrderLT()
+                 : (c == 0) ? Utils::getOrderEQ()
+                            : Utils::getOrderGT();
     return HPtr::fromBits(enc);
 }
 

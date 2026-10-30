@@ -29,12 +29,12 @@ import Html exposing (text)
 
 
 
--- CHECK: k1: [9, 10, 11]
--- CHECK: k2: [13, 14, 15]
--- CHECK: boxed: [7, 8, 9]
--- CHECK: tuple: [9, 11, 13]
--- CHECK: ctor1: [11, 12, 15]
--- CHECK: ctor2: [7, 8, 9]
+-- CHECK: k1: [9,10,11]
+-- CHECK: k2: [13,14,15]
+-- CHECK: boxed: [7,8,9]
+-- CHECK: tuple: [9,11,13]
+-- CHECK: ctor1: [11,12,15]
+-- CHECK: ctor2: [7,8,9]
 
 
 {-| §11.1: constructors are partially applied too, and a constructor spec is a

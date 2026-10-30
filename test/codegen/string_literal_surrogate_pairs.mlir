@@ -10,24 +10,24 @@ module {
     // UTF-16: D83D DE00 (surrogate pair)
     %emoji = eco.string_literal "\F0\9F\98\80" : !eco.value
     eco.dbg %emoji : !eco.value
-    // CHECK: [eco.dbg] "\uD83D\uDE00"
+    // CHECK: [eco.dbg] "😀"
 
     // Multiple emoji
     %multi = eco.string_literal "\F0\9F\98\80\F0\9F\98\81" : !eco.value
     eco.dbg %multi : !eco.value
-    // CHECK: [eco.dbg] "\uD83D\uDE00\uD83D\uDE01"
+    // CHECK: [eco.dbg] "😀😁"
 
     // Mix of BMP and non-BMP characters
     // "A" (U+0041) + emoji (U+1F600) + "B" (U+0042)
     %mixed = eco.string_literal "A\F0\9F\98\80B" : !eco.value
     eco.dbg %mixed : !eco.value
-    // CHECK: [eco.dbg] "A\uD83D\uDE00B"
+    // CHECK: [eco.dbg] "A😀B"
 
     // Mathematical symbols outside BMP: U+1D400 (Mathematical Bold Capital A)
     // UTF-8: F0 9D 90 80
     %math = eco.string_literal "\F0\9D\90\80" : !eco.value
     eco.dbg %math : !eco.value
-    // CHECK: [eco.dbg] "\uD835\uDC00"
+    // CHECK: [eco.dbg] "𝐀"
 
     %zero = arith.constant 0 : i64
     return %zero : i64

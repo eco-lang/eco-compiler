@@ -6,7 +6,7 @@ encoded HPointer, never resolves), so this should pass today —
 regression guard against a fix that disturbs sortWith.
 -}
 
--- CHECK: result: ["", "", "a", "b"]
+-- CHECK: result: ["","","a","b"]
 
 import Html exposing (text)
 

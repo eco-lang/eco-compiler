@@ -27,9 +27,9 @@ inliner fold the whole question away before any lambda set is consulted.
 import Html exposing (text)
 
 
--- CHECK: tripled: [13, 16, 19]
--- CHECK: doubled: [9, 11, 13]
--- CHECK: totals: [22, 27, 32]
+-- CHECK: tripled: [13,16,19]
+-- CHECK: doubled: [9,11,13]
+-- CHECK: totals: [22,27,32]
 
 
 triple : Int -> Int

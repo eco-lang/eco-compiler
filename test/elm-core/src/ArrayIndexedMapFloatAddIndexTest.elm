@@ -4,7 +4,7 @@ module ArrayIndexedMapFloatAddIndexTest exposing (main)
     re-boxes each unboxed element as `ElmInt` before the mapper.
 -}
 
--- CHECK: result: [10, 21, 32]
+-- CHECK: result: [10,21,32]
 -- CHECK: match: True
 
 import Array

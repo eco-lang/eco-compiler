@@ -5,7 +5,7 @@ for every input. F3 with the Nil-family constant — same assert in
 `Allocator::resolve`.
 -}
 
--- CHECK: result: [3, 1, 2]
+-- CHECK: result: [3,1,2]
 
 import Html exposing (text)
 

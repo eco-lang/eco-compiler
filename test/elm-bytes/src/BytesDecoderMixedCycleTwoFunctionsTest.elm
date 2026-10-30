@@ -18,7 +18,7 @@ module BytesDecoderMixedCycleTwoFunctionsTest exposing (main)
 
 -}
 
--- CHECK: decoded: Just [3, 5, 7]
+-- CHECK: decoded: Just [3,5,7]
 
 import Bytes.Decode as D
 import Bytes.Encode as E

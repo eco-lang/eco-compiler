@@ -5,8 +5,8 @@ module UtilsEqualityCaptureFloatTest exposing (main)
 
 -- CHECK: eq_count: 2
 -- CHECK: ne_count: 3
--- CHECK: eq_filter: [1.5, 1.5]
--- CHECK: ne_filter: [0, 2, 3]
+-- CHECK: eq_filter: [1.5,1.5]
+-- CHECK: ne_filter: [0,2,3]
 
 
 import Html exposing (text)

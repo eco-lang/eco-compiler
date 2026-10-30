@@ -8,7 +8,7 @@ module ListToArrayFloatRoundtripTest exposing (main)
     on unboxed `Float` heads.
 -}
 
--- CHECK: result: [1.5, 2.5, 3.5]
+-- CHECK: result: [1.5,2.5,3.5]
 -- CHECK: match: True
 
 import Array

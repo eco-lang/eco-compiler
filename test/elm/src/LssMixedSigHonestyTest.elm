@@ -36,7 +36,7 @@ import Html exposing (text)
 -- CHECK: viaIdent: 41
 -- CHECK: viaIncr: 42
 -- CHECK: viaDouble: 82
--- CHECK: shared: [41, 42, 82]
+-- CHECK: shared: [41,42,82]
 
 
 ident : Int -> Int

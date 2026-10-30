@@ -8,7 +8,7 @@ odd-numbered inputs (key=`[n]`). Within each group, stable sort
 preserves input order.
 -}
 
--- CHECK: result: [2, 4, 1, 3]
+-- CHECK: result: [2,4,1,3]
 
 import Html exposing (text)
 

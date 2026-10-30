@@ -32,10 +32,10 @@
 // they must agree with the constructor ids the compiler gives `Basics.Order`
 // and with the `Order` constants in elm-kernel-cpp's Utils.cpp.
 //
-// EQ is the final else, not a third test. Float tests are ordered (`olt`,
-// `ogt`), so a NaN operand fails both and takes the EQ branch, which is the
-// branch `emitOrderSelect` routes it to. An ordered equality test as the second
-// test would send NaN to GT instead. The two must change together.
+// EQ is the final else, not a third test. For Float the tests are Float's total
+// order (CGEN_086), as `eco.float.cmp_order`'s lowering computes it: LT is `a < b`
+// or (`b` NaN and `a` not), GT is `a > b` or (`a` NaN and `b` not), so two NaNs,
+// like two equal numbers, take the EQ branch. The two must change together.
 //
 // Strings and boxed values are tested by sign: `eco.string.cmp3` or a call to
 // `Elm_Kernel_Utils_cmp3` returns an i64 whose sign is the order, and the tests
@@ -189,10 +189,19 @@ std::pair<Value, Value> emitTests(OpBuilder &b, Location loc,
     case ProducerKind::Int:
         return {b.create<IntLtOp>(loc, i1Ty, p.lhs, p.rhs),
                 b.create<IntGtOp>(loc, i1Ty, p.lhs, p.rhs)};
-    case ProducerKind::Float:
-        // Ordered: NaN fails both and falls through to EQ.
-        return {b.create<FloatLtOp>(loc, i1Ty, p.lhs, p.rhs),
-                b.create<FloatGtOp>(loc, i1Ty, p.lhs, p.rhs)};
+    case ProducerKind::Float: {
+        // Float's total order: NaN equals NaN and is above every number.
+        Value t = b.create<arith::ConstantOp>(loc, b.getBoolAttr(true));
+        Value aNaN = b.create<FloatIsNaNOp>(loc, i1Ty, p.lhs);
+        Value bNaN = b.create<FloatIsNaNOp>(loc, i1Ty, p.rhs);
+        Value aNum = b.create<arith::XOrIOp>(loc, aNaN, t);
+        Value bNum = b.create<arith::XOrIOp>(loc, bNaN, t);
+        Value lt = b.create<arith::OrIOp>(loc, b.create<FloatLtOp>(loc, i1Ty, p.lhs, p.rhs),
+                                          b.create<arith::AndIOp>(loc, bNaN, aNum));
+        Value gt = b.create<arith::OrIOp>(loc, b.create<FloatGtOp>(loc, i1Ty, p.lhs, p.rhs),
+                                          b.create<arith::AndIOp>(loc, aNaN, bNum));
+        return {lt, gt};
+    }
     case ProducerKind::Char:
         return {b.create<CharLtOp>(loc, i1Ty, p.lhs, p.rhs),
                 b.create<CharGtOp>(loc, i1Ty, p.lhs, p.rhs)};

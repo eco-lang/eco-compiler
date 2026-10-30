@@ -5,7 +5,7 @@ Same F3 surface as `SortEmptyStringInListTest` with the Nil-family
 constant.
 -}
 
--- CHECK: result: [[], [], [1], [2]]
+-- CHECK: result: [[],[],[1],[2]]
 
 import Html exposing (text)
 

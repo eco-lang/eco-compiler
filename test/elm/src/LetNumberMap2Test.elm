@@ -5,7 +5,7 @@ combinator from the existing `List.map`/`foldl` cases. Correct: [45, 60].
 
 -}
 
--- CHECK: map2: [45, 60]
+-- CHECK: map2: [45,60]
 
 import Html exposing (text)
 

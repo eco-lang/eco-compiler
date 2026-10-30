@@ -8,9 +8,9 @@ neighbours, in a `"""` string, and as a `case` pattern.
 -}
 
 -- CHECK: cr: [13]
--- CHECK: mixed: [97, 13, 98, 10, 99, 9, 100, 92, 101, 34, 102, 13, 103]
--- CHECK: crlf: [13, 10]
--- CHECK: triple: [120, 13, 121]
+-- CHECK: mixed: [97,13,98,10,99,9,100,92,101,34,102,13,103]
+-- CHECK: crlf: [13,10]
+-- CHECK: triple: [120,13,121]
 -- CHECK: pattern: "carriage return"
 -- CHECK: length: 2
 

@@ -3,7 +3,7 @@ module EmbeddedNilRecursiveTest exposing (main)
 {-| Test empty list as the base case of a recursive list builder.
 -}
 
--- CHECK: result: [2, 4, 6]
+-- CHECK: result: [2,4,6]
 
 import Html exposing (text)
 

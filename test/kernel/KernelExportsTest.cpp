@@ -19,6 +19,8 @@
 #include "../../elm-kernel-cpp/src/ExportHelpers.hpp"
 #include "../allocator/TestHelpers.hpp"
 #include "../TestSuite.hpp"
+#include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -794,7 +796,63 @@ static void test_kernel_shift_count_mod_64() {
     TEST_ASSERT(Elm_Kernel_Bitwise_shiftRightZfBy(c65, neg1) == static_cast<uint64_t>(INT64_MAX));
 }
 
+// K19: Float compare, round and the Float-to-Int conversions in the kernel follow eco's Float semantics
+// (CGEN_086, design_docs/float-semantics.md): `compare` is a total order (NaN equals NaN and is above every
+// number, -0 equals +0); the order operators on two boxed Floats are IEEE; `round` is JS `Math.round` (ties
+// toward +infinity); conversions saturate, with NaN giving 0. The inline lowerings are covered by
+// test/elm/src/FloatIeeeSemanticsTest.elm.
+static void test_float_kernels_semantics() {
+    initAllocator();
+    auto ord = [](uint64_t enc) {
+        return enc == Kernel::Utils::getOrderLT() ? -1 : enc == Kernel::Utils::getOrderGT() ? 1 : 0;
+    };
+    const double nan = std::nan("");
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(nan, 1.0).toBits()) == 1);
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(1.0, nan).toBits()) == -1);
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(nan, nan).toBits()) == 0);
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(-0.0, 0.0).toBits()) == 0);
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(1.0, 2.0).toBits()) == -1);
+    TEST_ASSERT(ord(Elm_Kernel_Utils_compare_Float(2.0, 2.0).toBits()) == 0);
+    // Utils::compare on boxed Floats (cmp's Tag_Float arm).
+    {
+        auto& A = Allocator::instance();
+        HPointer a = eco_alloc_float(nan).toHPointer();
+        A.getRootSet().addRoot(&a);
+        HPointer b = eco_alloc_float(1.0).toHPointer();
+        A.getRootSet().addRoot(&b);
+        TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(a), HPtr::fromHPointer(b)).toBits()) == 1);
+        TEST_ASSERT(ord(Elm_Kernel_Utils_compare(HPtr::fromHPointer(b), HPtr::fromHPointer(a)).toBits()) == -1);
+        // The order operators on two boxed Floats are IEEE: false with a NaN either side.
+        TEST_ASSERT(!Kernel::Utils::lt(A.resolve(b), A.resolve(a)));
+        TEST_ASSERT(!Kernel::Utils::gt(A.resolve(a), A.resolve(b)));
+        TEST_ASSERT(!Kernel::Utils::ge(A.resolve(a), A.resolve(a)));
+        A.getRootSet().removeRoot(&b);
+        A.getRootSet().removeRoot(&a);
+    }
+    TEST_ASSERT(Elm_Kernel_Basics_round(2.5) == 3);
+    TEST_ASSERT(Elm_Kernel_Basics_round(-2.5) == -2);
+    TEST_ASSERT(Elm_Kernel_Basics_round(-0.5) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_round(-1.5) == -1);
+    TEST_ASSERT(Elm_Kernel_Basics_round(0.49999999999999994) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_round(4503599627370495.5) == 4503599627370496);
+    TEST_ASSERT(Elm_Kernel_Basics_round(-2.7) == -3);
+    const double inf = std::numeric_limits<double>::infinity();
+    const int64_t hi = std::numeric_limits<int64_t>::max();
+    const int64_t lo = std::numeric_limits<int64_t>::min();
+    TEST_ASSERT(Elm_Kernel_Basics_round(nan) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_floor(nan) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_ceiling(nan) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_truncate(nan) == 0);
+    TEST_ASSERT(Elm_Kernel_Basics_round(inf) == hi);
+    TEST_ASSERT(Elm_Kernel_Basics_floor(-inf) == lo);
+    TEST_ASSERT(Elm_Kernel_Basics_truncate(1e20) == hi);
+    TEST_ASSERT(Elm_Kernel_Basics_truncate(-1e20) == lo);
+    TEST_ASSERT(Elm_Kernel_Basics_truncate(3e10) == 30000000000LL);
+    TEST_ASSERT(Elm_Kernel_Basics_truncate(-2.9) == -2);
+}
+
 void registerKernelExportsTests(Testing::TestSuite& suite) {
+    suite.add(Testing::UnitTest("K19 Float compare, round and conversion kernels (total order, ties up, saturating)", test_float_kernels_semantics));
     suite.add(Testing::UnitTest("K14 kernel integer division is total (CGEN_084)", test_kernel_int_division_total));
     suite.add(Testing::UnitTest("K15 kernel shift count mod 64 (CGEN_085)", test_kernel_shift_count_mod_64));
     suite.add(Testing::UnitTest("K17 encoded case-mapping Chars at the kernel boundary (KERN_008)", test_char_encoded_kernels));

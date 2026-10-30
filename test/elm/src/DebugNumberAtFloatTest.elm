@@ -13,10 +13,10 @@ declared `Elm_Kernel_Debug_toString : (i64) -> !eco.value` over f64 list
 heads, and the program crashed (SIGSEGV) before printing anything.
 -}
 
--- CHECK: showAll: ["1.25", "2.5"]
+-- CHECK: showAll: ["1.25","2.5"]
 -- CHECK: bump: 3.5
 -- CHECK: bumpResult: 3.5
--- CHECK: showAllInt: ["2", "4"]
+-- CHECK: showAllInt: ["2","4"]
 
 import Html exposing (text)
 

@@ -4,8 +4,8 @@ module WideClosureCapture27Test exposing (main)
 papCreate num_captured = 27.
 -}
 
--- CHECK: strings: [1378, 2378]
--- CHECK: ints: [7930, 8930]
+-- CHECK: strings: [1378,2378]
+-- CHECK: ints: [7930,8930]
 
 import Html exposing (text)
 

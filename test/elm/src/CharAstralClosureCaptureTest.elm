@@ -5,9 +5,9 @@ partial application reads back as the same code point when the closure runs,
 including through List.map (generic apply).
 -}
 
--- CHECK: cap_add: [128513, 98]
--- CHECK: cap_return: [128512, 119070]
--- CHECK: pap_pairs: [128513, 128514]
+-- CHECK: cap_add: [128513,98]
+-- CHECK: cap_return: [128512,119070]
+-- CHECK: pap_pairs: [128513,128514]
 
 
 import Html exposing (text)

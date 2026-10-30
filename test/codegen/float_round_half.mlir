@@ -1,7 +1,7 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// Test eco.float.round at half values (ties away from zero).
-// Elm's round uses "half away from zero" rounding.
+// Test eco.float.round at half values.
+// Elm's round is JS Math.round: the nearest integer, ties toward +infinity (round -2.5 == -2).
 
 module {
   func.func @main() -> i64 {
@@ -26,21 +26,21 @@ module {
     eco.dbg %r3_5 : i64
     // CHECK: 4
 
-    // Negative half values (away from zero = more negative)
+    // Negative half values (toward +infinity = toward zero)
     %fn0_5 = arith.constant -0.5 : f64
     %rn0_5 = eco.float.round %fn0_5 : f64 -> i64
     eco.dbg %rn0_5 : i64
-    // CHECK: -1
+    // CHECK: 0
 
     %fn1_5 = arith.constant -1.5 : f64
     %rn1_5 = eco.float.round %fn1_5 : f64 -> i64
     eco.dbg %rn1_5 : i64
-    // CHECK: -2
+    // CHECK: -1
 
     %fn2_5 = arith.constant -2.5 : f64
     %rn2_5 = eco.float.round %fn2_5 : f64 -> i64
     eco.dbg %rn2_5 : i64
-    // CHECK: -3
+    // CHECK: -2
 
     // Non-half values (should round normally)
     %f1_4 = arith.constant 1.4 : f64

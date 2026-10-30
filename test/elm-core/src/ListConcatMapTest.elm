@@ -1,6 +1,6 @@
 module ListConcatMapTest exposing (main)
 
--- CHECK: concatMap1: [1, 1, 2, 2, 3, 3]
+-- CHECK: concatMap1: [1,1,2,2,3,3]
 -- CHECK: concatMap_empty: []
 
 import Html exposing (text)

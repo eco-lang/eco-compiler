@@ -5,8 +5,8 @@ module StringFromNumberCaptureTest exposing (main)
     variants.
 -}
 
--- CHECK: int_strings: ["1", "2", "3"]
--- CHECK: float_strings: ["0.5", "1.5", "2.5"]
+-- CHECK: int_strings: ["1","2","3"]
+-- CHECK: float_strings: ["0.5","1.5","2.5"]
 
 
 import Html exposing (text)

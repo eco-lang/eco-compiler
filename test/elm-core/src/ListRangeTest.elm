@@ -1,6 +1,6 @@
 module ListRangeTest exposing (main)
 
--- CHECK: range1: [1, 2, 3, 4, 5]
+-- CHECK: range1: [1,2,3,4,5]
 -- CHECK: range_empty: []
 -- CHECK: range_single: [3]
 

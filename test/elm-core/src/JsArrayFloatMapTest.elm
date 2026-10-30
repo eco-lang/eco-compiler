@@ -6,9 +6,9 @@ module JsArrayFloatMapTest exposing (main)
     must receive float values unchanged.
 -}
 
--- CHECK: doubled: [2, 4, 6]
--- CHECK: incr: [2.5, 3.5, 4.5]
--- CHECK: negate: [-1, -2, -3]
+-- CHECK: doubled: [2,4,6]
+-- CHECK: incr: [2.5,3.5,4.5]
+-- CHECK: negate: [-1,-2,-3]
 
 import Array
 import Html exposing (text)

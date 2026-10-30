@@ -1,6 +1,6 @@
 module RoundTripKeyValuePairsTest exposing (main)
 
--- CHECK: rt_kvp: Ok [("a", 1), ("b", 2)]
+-- CHECK: rt_kvp: Ok [("a",1),("b",2)]
 
 import Html exposing (text)
 import Json.Decode as Decode

@@ -27,14 +27,14 @@ wildcard and keeps the kernel call. Either way the answer must not change.
 -- CHECK: ropeLen: 140000
 -- CHECK: sliceAppend: "llohel"
 -- CHECK: ropeThenSlice: "ab"
--- CHECK: lists: [1, 2, 3, 4]
--- CHECK: listEmptyR: [1, 2]
--- CHECK: listEmptyL: [1, 2]
+-- CHECK: lists: [1,2,3,4]
+-- CHECK: listEmptyR: [1,2]
+-- CHECK: listEmptyL: [1,2]
 -- CHECK: listBothEmpty: []
--- CHECK: chunkAppend: [2, 4, 6, 1]
+-- CHECK: chunkAppend: [2,4,6,1]
 -- CHECK: nested: "abcdef"
 -- CHECK: polyStr: "hihi"
--- CHECK: polyList: [7, 7]
+-- CHECK: polyList: [7,7]
 
 import Html exposing (text)
 

@@ -1,6 +1,6 @@
 module ParserAndThenTest exposing (main)
 
--- CHECK: pair: Ok (3, 3)
+-- CHECK: pair: Ok (3,3)
 
 import Html exposing (text)
 import Parser

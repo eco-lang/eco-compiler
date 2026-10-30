@@ -6,7 +6,7 @@ Elm_Kernel_Utils_equal - the PAP path must use AllBoxed ABI.
 Exercises CGEN_038 and KERN_006.
 -}
 
--- CHECK: filtered: [5, 5]
+-- CHECK: filtered: [5,5]
 -- CHECK: classify: "matched foo"
 
 import Html exposing (text)

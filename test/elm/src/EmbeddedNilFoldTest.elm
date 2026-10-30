@@ -3,7 +3,7 @@ module EmbeddedNilFoldTest exposing (main)
 {-| Test empty lists flowing through List.foldl with List.length.
 -}
 
--- CHECK: lengths: [0, 3, 0, 1]
+-- CHECK: lengths: [0,3,0,1]
 
 import Html exposing (text)
 

@@ -1,6 +1,6 @@
 module ParserAdvancedLoopTest exposing (main)
 
--- CHECK: items: Ok [3, 2, 1]
+-- CHECK: items: Ok [3,2,1]
 
 import Html exposing (text)
 import Parser.Advanced as PA exposing ((|.), (|=))

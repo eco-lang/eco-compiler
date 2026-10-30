@@ -2,7 +2,7 @@ module LetDestructAliasTest exposing (main)
 
 {-| Test let-destructuring with alias patterns. -}
 
--- CHECK: pair: (1, 2)
+-- CHECK: pair: (1,2)
 -- CHECK: first: 1
 
 import Html exposing (text)

@@ -6,7 +6,7 @@ multi-constructor type, and Debug.log prints the value with the Char itself.
 -}
 
 -- CHECK: box_code: 128512
--- CHECK: shape_codes: [128512, 119070, -1]
+-- CHECK: shape_codes: [128512,119070,-1]
 -- CHECK: box_show: Box 3 '😀'
 
 

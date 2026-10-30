@@ -13,7 +13,7 @@ past it and gives NaN (documented divergence, StringLoneSurrogateTest).
 
 -- CHECK: rt_emoji: 128512
 -- CHECK: rt_max: 1114111
--- CHECK: rt_list: [128512, 1114111, 65536, 65535, 55357, 0]
+-- CHECK: rt_list: [128512,1114111,65536,65535,55357,0]
 -- CHECK: boxed_maybe: Just 128512
 -- CHECK: boxed_identity: 128512
 -- CHECK: eq_astral: True

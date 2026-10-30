@@ -53,17 +53,17 @@ module {
     eco.dbg %trunc_nan : i64
     // CHECK: [eco.dbg]
 
-    // round(0.5) = 1 (round half to even or away from zero)
+    // round(0.5) = 1 (JS Math.round: ties toward +infinity)
     %f0_5 = arith.constant 0.5 : f64
     %round_half = eco.float.round %f0_5 : f64 -> i64
     eco.dbg %round_half : i64
     // CHECK: 1
 
-    // round(-0.5) = -1
+    // round(-0.5) = 0 (ties toward +infinity)
     %neg0_5 = arith.constant -0.5 : f64
     %round_neg_half = eco.float.round %neg0_5 : f64 -> i64
     eco.dbg %round_neg_half : i64
-    // CHECK: -1
+    // CHECK: 0
 
     // floor(0.9) = 0
     %f0_9 = arith.constant 0.9 : f64

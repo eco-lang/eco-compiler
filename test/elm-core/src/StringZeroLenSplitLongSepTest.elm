@@ -9,7 +9,7 @@ Horspool path are not affected. Expected: the input comes back as the single
 part.
 -}
 
--- CHECK: split_long_sep_utf16: [True, True, True, True]
+-- CHECK: split_long_sep_utf16: [True,True,True,True]
 -- CHECK: split_long_sep_ascii: ["a"]
 
 import Html exposing (text)

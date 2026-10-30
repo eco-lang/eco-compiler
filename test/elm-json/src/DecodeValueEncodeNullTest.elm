@@ -9,7 +9,7 @@ module DecodeValueEncodeNullTest exposing (main)
 -- CHECK: null: Ok 0
 -- CHECK: nullable: Ok Nothing
 -- CHECK: string: False
--- CHECK: in_list: Ok [Nothing, Just 1]
+-- CHECK: in_list: Ok [Nothing,Just 1]
 -- CHECK: value_null: Ok 7
 -- CHECK: encode: "null"
 

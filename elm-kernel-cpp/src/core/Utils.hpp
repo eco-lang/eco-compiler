@@ -46,6 +46,18 @@ HPointer compare(void* a, void* b);
  */
 int cmp3(void* a, void* b);
 
+// Float's total order (CGEN_086, design_docs/float-semantics.md): -1, 0 or 1 as `a` is below,
+// equal to or above `b`, where NaN equals NaN and is above every number, and -0 equals +0. It is
+// `compare` on Floats and the order of Floats inside tuples, lists, sort, Dict and Set.
+inline int compareFloat(double a, double b) {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    if (a == b) return 0;
+    const bool aNaN = a != a;
+    const bool bNaN = b != b;
+    return aNaN == bNaN ? 0 : (aNaN ? 1 : -1);
+}
+
 // ============================================================================
 // Equality Operations
 // ============================================================================

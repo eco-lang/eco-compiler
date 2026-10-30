@@ -34,14 +34,14 @@ import Html exposing (text)
 
 
 
--- CHECK: applyInt: [9, 10, 11]
--- CHECK: applyStr: [5, 6, 7]
--- CHECK: swapA: [12, 15, 18]
--- CHECK: swapB: [16, 20, 24]
--- CHECK: firstOrInt: [4, 5, 6]
--- CHECK: firstOrBool: [1, 0, 1]
--- CHECK: twiceInt: [32, 40, 48]
--- CHECK: twiceList: [16, 20, 24]
+-- CHECK: applyInt: [9,10,11]
+-- CHECK: applyStr: [5,6,7]
+-- CHECK: swapA: [12,15,18]
+-- CHECK: swapB: [16,20,24]
+-- CHECK: firstOrInt: [4,5,6]
+-- CHECK: firstOrBool: [1,0,1]
+-- CHECK: twiceInt: [32,40,48]
+-- CHECK: twiceList: [16,20,24]
 
 
 apply : (a -> b) -> a -> b

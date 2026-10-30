@@ -10,7 +10,7 @@ module JsArrayFloatFoldlTest exposing (main)
 -- CHECK: sum: 7
 -- CHECK: product: 24
 -- CHECK: maxViaFold: 3.5
--- CHECK: foldrList: [1.5, 2.5, 3]
+-- CHECK: foldrList: [1.5,2.5,3]
 
 import Array
 import Html exposing (text)

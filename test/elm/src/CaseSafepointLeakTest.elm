@@ -13,8 +13,8 @@ This test predates the removal of `eco.safepoint`; the hazard now lives on
 the carrier's `live_roots` segment instead of a standalone safepoint op.
 -}
 
--- CHECK: extract1: ["b", "a"]
--- CHECK: extract2: ["default", "a"]
+-- CHECK: extract1: ["b","a"]
+-- CHECK: extract2: ["default","a"]
 
 import Html exposing (text)
 

@@ -5,7 +5,7 @@ heap allocation and projection.
 
 -}
 
--- CHECK: pair: ('A', 65)
+-- CHECK: pair: ('A',65)
 
 import Html exposing (text)
 

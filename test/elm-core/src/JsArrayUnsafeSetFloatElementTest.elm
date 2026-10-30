@@ -4,9 +4,9 @@ module JsArrayUnsafeSetFloatElementTest exposing (main)
     `Elm_Kernel_JsArray_unsafeSet_Float`.
 -}
 
--- CHECK: original: [1, 2, 3, 4]
--- CHECK: set_0: [9.5, 2, 3, 4]
--- CHECK: set_2: [1, 2, 1.25, 4]
+-- CHECK: original: [1,2,3,4]
+-- CHECK: set_0: [9.5,2,3,4]
+-- CHECK: set_2: [1,2,1.25,4]
 
 
 import Array

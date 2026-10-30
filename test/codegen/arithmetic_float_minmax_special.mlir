@@ -1,7 +1,7 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
 // Test float min/max with special values (NaN, Infinity, zero signs).
-// Uses IEEE 754 minNum/maxNum semantics.
+// IEEE 754-2019 minimum / maximum (CGEN_086): NaN propagates, -0 is below +0.
 
 module {
   func.func @main() -> i64 {
@@ -16,25 +16,25 @@ module {
     %neg_inf = eco.float.div %neg1, %f0 : f64
     %neg0 = arith.constant -0.0 : f64
 
-    // min(NaN, x) = x (minNum semantics)
+    // min(NaN, x) = NaN
     %min_nan_x = eco.float.min %nan, %f5 : f64
     eco.dbg %min_nan_x : f64
-    // CHECK: 5
+    // CHECK: NaN
 
-    // min(x, NaN) = x
+    // min(x, NaN) = NaN
     %min_x_nan = eco.float.min %f5, %nan : f64
     eco.dbg %min_x_nan : f64
-    // CHECK: 5
+    // CHECK: NaN
 
-    // max(NaN, x) = x (maxNum semantics)
+    // max(NaN, x) = NaN
     %max_nan_x = eco.float.max %nan, %f5 : f64
     eco.dbg %max_nan_x : f64
-    // CHECK: 5
+    // CHECK: NaN
 
-    // max(x, NaN) = x
+    // max(x, NaN) = NaN
     %max_x_nan = eco.float.max %f5, %nan : f64
     eco.dbg %max_x_nan : f64
-    // CHECK: 5
+    // CHECK: NaN
 
     // min(+Inf, x) = x
     %min_inf_x = eco.float.min %pos_inf, %f5 : f64
@@ -66,13 +66,12 @@ module {
     eco.dbg %max_inf_inf : f64
     // CHECK: Infinity
 
-    // min(+0.0, -0.0) behavior (IEEE 754: either is valid)
-    // LLVM minnum typically returns -0.0
+    // min(+0.0, -0.0) = -0.0 (printed 0, as Elm prints -0)
     %min_zeros = eco.float.min %f0, %neg0 : f64
     eco.dbg %min_zeros : f64
     // CHECK: 0
 
-    // max(+0.0, -0.0) behavior (IEEE 754: either is valid)
+    // max(+0.0, -0.0) = +0.0
     %max_zeros = eco.float.max %f0, %neg0 : f64
     eco.dbg %max_zeros : f64
     // CHECK: 0

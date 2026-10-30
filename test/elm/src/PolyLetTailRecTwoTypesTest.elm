@@ -9,7 +9,7 @@ one `foldl` while the second use named `foldl$1`, and the compile crashed with
 "tail-recursive foldl at two types" case of SourceIR.SpecializePolyLetCases.
 -}
 
--- CHECK: r: (6, 2)
+-- CHECK: r: (6,2)
 
 import Html exposing (text)
 

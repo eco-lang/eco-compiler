@@ -40,7 +40,7 @@ import Html exposing (text)
 -- CHECK-NEXT: b: 2
 -- CHECK-NEXT: init: 0
 -- CHECK-NEXT: c: 3
--- CHECK-NEXT: chained: [11, 12, 13]
+-- CHECK-NEXT: chained: [11,12,13]
 
 
 type alias St a =

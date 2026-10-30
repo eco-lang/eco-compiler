@@ -17,7 +17,7 @@ replaced by a `Debug.log` wrapper, and the artifact greps positive for
 
 -}
 
--- CHECK: mapped: [2, 3, 4]
+-- CHECK: mapped: [2,3,4]
 
 import Html exposing (text)
 

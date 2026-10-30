@@ -73,10 +73,10 @@ main =
 
 
 
--- CHECK: a: [11, 22]
--- CHECK: b: [10, 40]
--- CHECK: c: [11, 30]
--- CHECK: d: [15, 6]
+-- CHECK: a: [11,22]
+-- CHECK: b: [10,40]
+-- CHECK: c: [11,30]
+-- CHECK: d: [15,6]
 -- CHECK: e: "ABC"
 -- CHECK: f: "zzz"
 -- CHECK: g: "cba"

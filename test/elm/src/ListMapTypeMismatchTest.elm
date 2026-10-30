@@ -4,7 +4,7 @@ module ListMapTypeMismatchTest exposing (main)
 Same monomorphization issue as Maybe.map but for List.
 -}
 
--- CHECK: result: [True, False, True]
+-- CHECK: result: [True,False,True]
 
 import Html exposing (text)
 

@@ -15,9 +15,9 @@ reference was typed `Int -> a` and its kernel closure registered
 `DebugNumberAtFloatTest`.
 -}
 
--- CHECK: floats: ["1.5", "2.5"]
--- CHECK: ints: ["1", "2"]
--- CHECK: strings: ["\"a\"", "\"b\""]
+-- CHECK: floats: ["1.5","2.5"]
+-- CHECK: ints: ["1","2"]
+-- CHECK: strings: ["\"a\"","\"b\""]
 
 import Html exposing (text)
 

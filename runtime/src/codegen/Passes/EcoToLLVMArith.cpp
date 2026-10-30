@@ -30,6 +30,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cstdint>
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
@@ -585,8 +586,32 @@ struct IntToFloatOpLowering : public OpConversionPattern<IntToFloatOp> {
 };
 
 /**
- * Lowers `round` to `llvm.intr.round`, which rounds halfway cases away from zero, followed by a
- * conversion to Int. The conversion is poison for NaN, an infinity, or a value outside the Int range.
+ * Emits the saturating conversion of `x`, an f64, to i64 (CGEN_086): NaN gives 0, a value at or
+ * above 2^63 gives INT64_MAX, a value below -2^63 gives INT64_MIN, and any other value is truncated
+ * toward zero. `fptosi` alone is poison outside the Int range; `select` passes its poison on only
+ * when it picks it, so it can be computed unconditionally.
+ */
+static Value emitSatFPToSI(Location loc, Value x, ConversionPatternRewriter &rewriter) {
+    auto i64Ty = rewriter.getIntegerType(64);
+    auto f64Ty = rewriter.getF64Type();
+    auto fconst = [&](double v) -> Value {
+        return rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, v));
+    };
+    auto iconst = [&](int64_t v) -> Value {
+        return rewriter.create<arith::ConstantOp>(loc, rewriter.getI64IntegerAttr(v));
+    };
+    Value conv = rewriter.create<arith::FPToSIOp>(loc, i64Ty, x);
+    Value isNaN = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::UNO, x, x);
+    Value tooHigh = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, x, fconst(9223372036854775808.0));
+    Value tooLow = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, x, fconst(-9223372036854775808.0));
+    Value v = rewriter.create<arith::SelectOp>(loc, isNaN, iconst(0), conv);
+    v = rewriter.create<arith::SelectOp>(loc, tooLow, iconst(INT64_MIN), v);
+    return rewriter.create<arith::SelectOp>(loc, tooHigh, iconst(INT64_MAX), v);
+}
+
+/**
+ * Lowers `round` to JS `Math.round` (ties toward +infinity) followed by the saturating conversion to
+ * Int (`emitSatFPToSI`).
  */
 struct FloatRoundOpLowering : public OpConversionPattern<FloatRoundOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -598,14 +623,24 @@ struct FloatRoundOpLowering : public OpConversionPattern<FloatRoundOp> {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto rounded = rewriter.create<LLVM::RoundOp>(loc, adaptor.getValue());
-        rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, i64Ty, rounded);
+        // JS Math.round, which Elm's `round` is: floor(x), plus 1 when x - floor(x) >= 0.5, so ties go
+        // toward +infinity (llvm.round ties away from zero). x - floor(x) is exact for a double.
+        auto f64Ty = rewriter.getF64Type();
+        Value x = adaptor.getValue();
+        Value fl = rewriter.create<LLVM::FFloorOp>(loc, x);
+        Value frac = rewriter.create<arith::SubFOp>(loc, x, fl);
+        Value half = rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, 0.5));
+        Value one = rewriter.create<arith::ConstantOp>(loc, rewriter.getFloatAttr(f64Ty, 1.0));
+        Value up = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OGE, frac, half);
+        Value next = rewriter.create<arith::AddFOp>(loc, fl, one);
+        Value rounded = rewriter.create<arith::SelectOp>(loc, up, next, fl);
+        rewriter.replaceOp(op, emitSatFPToSI(loc, rounded, rewriter));
         return success();
     }
 };
 
 /**
- * Lowers `floor` to `llvm.intr.floor` and a conversion to Int, poison outside the Int range.
+ * Lowers `floor` to `llvm.intr.floor` and the saturating conversion to Int (`emitSatFPToSI`).
  */
 struct FloatFloorOpLowering : public OpConversionPattern<FloatFloorOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -618,13 +653,13 @@ struct FloatFloorOpLowering : public OpConversionPattern<FloatFloorOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
 
         auto floored = rewriter.create<LLVM::FFloorOp>(loc, adaptor.getValue());
-        rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, i64Ty, floored);
+        rewriter.replaceOp(op, emitSatFPToSI(loc, floored, rewriter));
         return success();
     }
 };
 
 /**
- * Lowers `ceiling` to `llvm.intr.ceil` and a conversion to Int, poison outside the Int range.
+ * Lowers `ceiling` to `llvm.intr.ceil` and the saturating conversion to Int (`emitSatFPToSI`).
  */
 struct FloatCeilingOpLowering : public OpConversionPattern<FloatCeilingOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -637,13 +672,13 @@ struct FloatCeilingOpLowering : public OpConversionPattern<FloatCeilingOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
 
         auto ceiled = rewriter.create<LLVM::FCeilOp>(loc, adaptor.getValue());
-        rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, i64Ty, ceiled);
+        rewriter.replaceOp(op, emitSatFPToSI(loc, ceiled, rewriter));
         return success();
     }
 };
 
 /**
- * Lowers `truncate` to a float-to-Int conversion, which rounds toward zero and is poison outside the Int range.
+ * Lowers `truncate` to the saturating float-to-Int conversion (`emitSatFPToSI`), which rounds toward zero.
  */
 struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -653,7 +688,7 @@ struct FloatTruncateOpLowering : public OpConversionPattern<FloatTruncateOp> {
                     ConversionPatternRewriter &rewriter) const override {
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
-        rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, i64Ty, adaptor.getValue());
+        rewriter.replaceOp(op, emitSatFPToSI(op.getLoc(), adaptor.getValue(), rewriter));
         return success();
     }
 };
@@ -832,7 +867,8 @@ struct FloatEqOpLowering : public OpConversionPattern<FloatEqOp> {
 };
 
 /**
- * Lowers Float `/=` to the ordered comparison `one`, which is false when either operand is NaN.
+ * Lowers Float `/=` to the unordered comparison `une`, which is true when either operand is NaN: the
+ * negation of `==`, as IEEE 754 defines not-equal and Elm (JS `!==`) behaves.
  */
 struct FloatNeOpLowering : public OpConversionPattern<FloatNeOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -841,7 +877,7 @@ struct FloatNeOpLowering : public OpConversionPattern<FloatNeOp> {
     matchAndRewrite(FloatNeOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         rewriter.replaceOpWithNewOp<arith::CmpFOp>(
-            op, arith::CmpFPredicate::ONE, adaptor.getLhs(), adaptor.getRhs());
+            op, arith::CmpFPredicate::UNE, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
@@ -879,7 +915,8 @@ struct IntMaxOpLowering : public OpConversionPattern<IntMaxOp> {
 };
 
 /**
- * Lowers Float `min` to `llvm.intr.minnum`, which returns the other operand when one is NaN.
+ * Lowers Float `min` to `llvm.intr.minimum`, IEEE 754-2019 minimum (CGEN_086): NaN in either
+ * operand gives NaN, and -0 is below +0.
  */
 struct FloatMinOpLowering : public OpConversionPattern<FloatMinOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -887,13 +924,14 @@ struct FloatMinOpLowering : public OpConversionPattern<FloatMinOp> {
     LogicalResult
     matchAndRewrite(FloatMinOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<LLVM::MinNumOp>(op, adaptor.getLhs(), adaptor.getRhs());
+        rewriter.replaceOpWithNewOp<LLVM::MinimumOp>(op, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
 
 /**
- * Lowers Float `max` to `llvm.intr.maxnum`, which returns the other operand when one is NaN.
+ * Lowers Float `max` to `llvm.intr.maximum`, IEEE 754-2019 maximum (CGEN_086): NaN in either
+ * operand gives NaN, and +0 is above -0.
  */
 struct FloatMaxOpLowering : public OpConversionPattern<FloatMaxOp> {
     using OpConversionPattern::OpConversionPattern;
@@ -901,7 +939,7 @@ struct FloatMaxOpLowering : public OpConversionPattern<FloatMaxOp> {
     LogicalResult
     matchAndRewrite(FloatMaxOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        rewriter.replaceOpWithNewOp<LLVM::MaxNumOp>(op, adaptor.getLhs(), adaptor.getRhs());
+        rewriter.replaceOpWithNewOp<LLVM::MaximumOp>(op, adaptor.getLhs(), adaptor.getRhs());
         return success();
     }
 };
@@ -1337,9 +1375,10 @@ struct IntCmpOrderOpLowering : public OpConversionPattern<IntCmpOrderOp> {
 };
 
 /**
- * Lowers `eco.float.cmp_order` to ordered comparisons and `emitOrderSelect`. Both comparisons are
- * false when either operand is NaN, so such a comparison gives `EQ`. These predicates are repeated
- * in the `EcoCompareCaseRewrite` pass and must change with it.
+ * Lowers `eco.float.cmp_order` to comparisons and `emitOrderSelect`, as Float's total order
+ * (CGEN_086): NaN equals NaN and is above every number, -0 equals +0. LT is `a < b`, or `b` NaN and
+ * `a` not; GT is `a > b`, or `a` NaN and `b` not; EQ is the rest (equal, or both NaN). These tests
+ * are repeated in the `EcoCompareCaseRewrite` pass and must change with it.
  */
 struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
     // Declares the runtime functions this pattern calls.
@@ -1354,10 +1393,18 @@ struct FloatCmpOrderOpLowering : public OpConversionPattern<FloatCmpOrderOp> {
     matchAndRewrite(FloatCmpOrderOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        Value isLt = rewriter.create<arith::CmpFOp>(
-            loc, arith::CmpFPredicate::OLT, adaptor.getLhs(), adaptor.getRhs());
-        Value isGt = rewriter.create<arith::CmpFOp>(
-            loc, arith::CmpFPredicate::OGT, adaptor.getLhs(), adaptor.getRhs());
+        Value a = adaptor.getLhs(), b = adaptor.getRhs();
+        auto cmp = [&](arith::CmpFPredicate p, Value x, Value y) -> Value {
+            return rewriter.create<arith::CmpFOp>(loc, p, x, y);
+        };
+        Value aNaN = cmp(arith::CmpFPredicate::UNO, a, a);
+        Value bNaN = cmp(arith::CmpFPredicate::UNO, b, b);
+        Value aNum = cmp(arith::CmpFPredicate::ORD, a, a);
+        Value bNum = cmp(arith::CmpFPredicate::ORD, b, b);
+        Value isLt = rewriter.create<arith::OrIOp>(
+            loc, cmp(arith::CmpFPredicate::OLT, a, b), rewriter.create<arith::AndIOp>(loc, bNaN, aNum));
+        Value isGt = rewriter.create<arith::OrIOp>(
+            loc, cmp(arith::CmpFPredicate::OGT, a, b), rewriter.create<arith::AndIOp>(loc, aNaN, bNum));
         rewriter.replaceOp(op, emitOrderSelect(loc, isLt, isGt, runtime, rewriter));
         return success();
     }

@@ -160,8 +160,7 @@ static int compareUnboxableSlot(Allocator& allocator,
             if (a.i == b.i) return 0;
             return a.i < b.i ? -1 : 1;
         case 2:
-            if (a.f == b.f) return 0;
-            return a.f < b.f ? -1 : 1;
+            return compareFloat(a.f, b.f);
         case 3:
             return Elm::CharValue::compare(a.c, b.c);   // KERN_008 order
         default: {
@@ -337,9 +336,7 @@ static int cmp(void* a, void* b) {
         case Tag_Float: {
             ElmFloat* af = static_cast<ElmFloat*>(a);
             ElmFloat* bf = static_cast<ElmFloat*>(b);
-            if (af->value < bf->value) return -1;
-            if (af->value > bf->value) return 1;
-            return 0;
+            return compareFloat(af->value, bf->value);
         }
 
         case Tag_Char: {
@@ -801,19 +798,37 @@ bool notEqual(void* a, void* b) {
     return !equal(a, b);
 }
 
+// Sets `x` and `y` and returns true when `a` and `b` are both boxed Floats: the order operators on
+// two Floats are IEEE 754 comparisons, false with a NaN (CGEN_086); on tuples and lists they follow
+// `cmp`, whose Float order is `compareFloat`'s total order.
+static bool bothFloats(void* a, void* b, double& x, double& y) {
+    if (!a || !b || getTag(a) != Tag_Float || getTag(b) != Tag_Float) return false;
+    x = static_cast<ElmFloat*>(a)->value;
+    y = static_cast<ElmFloat*>(b)->value;
+    return true;
+}
+
 bool lt(void* a, void* b) {
+    double x, y;
+    if (bothFloats(a, b, x, y)) return x < y;
     return cmp(a, b) < 0;
 }
 
 bool le(void* a, void* b) {
+    double x, y;
+    if (bothFloats(a, b, x, y)) return x <= y;
     return cmp(a, b) <= 0;
 }
 
 bool gt(void* a, void* b) {
+    double x, y;
+    if (bothFloats(a, b, x, y)) return x > y;
     return cmp(a, b) > 0;
 }
 
 bool ge(void* a, void* b) {
+    double x, y;
+    if (bothFloats(a, b, x, y)) return x >= y;
     return cmp(a, b) >= 0;
 }
 

@@ -4,7 +4,7 @@ module EqualityFloatPapTest exposing (main)
 Float uses f64 ABI, so kernel PAP must use AllBoxed (!eco.value).
 -}
 
--- CHECK: filtered: [1.5, 1.5]
+-- CHECK: filtered: [1.5,1.5]
 
 import Html exposing (text)
 

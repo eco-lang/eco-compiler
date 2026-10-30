@@ -5,7 +5,7 @@ is `List.sortBy identity`, hitting the same F3 site. Worth a separate
 file because frontends may special-case `List.sort`.
 -}
 
--- CHECK: result: ["", "", "a", "b"]
+-- CHECK: result: ["","","a","b"]
 
 import Html exposing (text)
 

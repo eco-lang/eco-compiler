@@ -1,7 +1,7 @@
 module StringWordsLinesTest exposing (main)
 
--- CHECK: words1: ["hello", "world"]
--- CHECK: lines1: ["line1", "line2"]
+-- CHECK: words1: ["hello","world"]
+-- CHECK: lines1: ["line1","line2"]
 
 import Html exposing (text)
 

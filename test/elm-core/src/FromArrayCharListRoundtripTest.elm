@@ -4,7 +4,7 @@ module FromArrayCharListRoundtripTest exposing (main)
     the equality variant by inspecting the reconstructed list directly.
 -}
 
--- CHECK: result: ['a', 'b', 'c']
+-- CHECK: result: ['a','b','c']
 -- CHECK: match: True
 
 import Array

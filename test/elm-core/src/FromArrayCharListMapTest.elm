@@ -5,7 +5,7 @@ module FromArrayCharListMapTest exposing (main)
     `Char.toUpper` receives proper Char values rather than re-boxed Ints.
 -}
 
--- CHECK: result: ['A', 'B']
+-- CHECK: result: ['A','B']
 -- CHECK: match: True
 
 import Array

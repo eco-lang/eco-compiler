@@ -12,7 +12,7 @@ go 0 with k=2, f=0.5, c='b', flag=True, s="xy":
 -}
 
 -- CHECK: direct: 110
--- CHECK: via_hof: [110, 110]
+-- CHECK: via_hof: [110,110]
 
 import Html exposing (text)
 

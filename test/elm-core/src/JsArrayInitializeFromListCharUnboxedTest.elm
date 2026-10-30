@@ -6,7 +6,7 @@ module JsArrayInitializeFromListCharUnboxedTest exposing (main)
     on unboxed `u16` Char slots.
 -}
 
--- CHECK: result: ['a', 'b', 'c']
+-- CHECK: result: ['a','b','c']
 -- CHECK: match: True
 
 import Array

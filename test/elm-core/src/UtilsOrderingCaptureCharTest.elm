@@ -3,10 +3,10 @@ module UtilsOrderingCaptureCharTest exposing (main)
 {-| Higher-order capture of `(<)`, `(<=)`, `(>)`, `(>=)` on `Char`.
 -}
 
--- CHECK: lt_filter: ['a', 'b']
--- CHECK: le_filter: ['a', 'b', 'c']
--- CHECK: gt_filter: ['d', 'e']
--- CHECK: ge_filter: ['c', 'd', 'e']
+-- CHECK: lt_filter: ['a','b']
+-- CHECK: le_filter: ['a','b','c']
+-- CHECK: gt_filter: ['d','e']
+-- CHECK: ge_filter: ['c','d','e']
 -- CHECK: count_lt: 2
 -- CHECK: count_ge: 3
 

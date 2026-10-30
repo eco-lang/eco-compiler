@@ -1,6 +1,6 @@
 module ParserAdvancedSequenceTest exposing (main)
 
--- CHECK: list: Ok [1, 2, 3]
+-- CHECK: list: Ok [1,2,3]
 
 import Html exposing (text)
 import Parser.Advanced as PA exposing (Trailing(..))

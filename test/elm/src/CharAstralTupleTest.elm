@@ -6,8 +6,8 @@ same code point, in a Tuple2 and a Tuple3, and Debug.log prints it as itself.
 
 -- CHECK: tup2_code: 128512
 -- CHECK: tup3_code: 119070
--- CHECK: tup2_show: (1, '😀')
--- CHECK: tup3_show: ('a', '𝄞', 2)
+-- CHECK: tup2_show: (1,'😀')
+-- CHECK: tup3_show: ('a','𝄞',2)
 
 
 import Html exposing (text)

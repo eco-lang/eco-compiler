@@ -25,7 +25,7 @@ summing it.
 -- CHECK: sort-char-codes: 294
 -- CHECK: sort-of-range: 6
 -- CHECK: sort-of-map: 12
--- CHECK: sortby-key-order: [1, 2, 3]
+-- CHECK: sortby-key-order: [1,2,3]
 
 import Html exposing (text)
 

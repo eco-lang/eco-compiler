@@ -9,7 +9,7 @@ module WideRecord600Test exposing (main)
 -- CHECK: f0063: "63s"
 -- CHECK: f0064: True
 -- CHECK: f0599: False
--- CHECK: pattern: (1000, False)
+-- CHECK: pattern: (1000,False)
 -- CHECK: update: True
 -- CHECK: eq self: True
 -- CHECK: eq updated: False

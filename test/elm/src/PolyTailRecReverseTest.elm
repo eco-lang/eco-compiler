@@ -2,8 +2,8 @@ module PolyTailRecReverseTest exposing (main)
 
 {-| Test polymorphic tail-recursive reverse at multiple types. -}
 
--- CHECK: intRev: [3, 2, 1]
--- CHECK: strRev: ["c", "b", "a"]
+-- CHECK: intRev: [3,2,1]
+-- CHECK: strRev: ["c","b","a"]
 
 import Html exposing (text)
 

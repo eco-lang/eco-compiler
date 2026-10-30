@@ -8,10 +8,10 @@ module ListMap2FloatTest exposing (main)
     match IEEE addition.
 -}
 
--- CHECK: map2Add: [11, 22, 33]
--- CHECK: map2Mul: [3, 5]
--- CHECK: map2Decimals: [4.5, 6.5]
--- CHECK: map3: [111, 222]
+-- CHECK: map2Add: [11,22,33]
+-- CHECK: map2Mul: [3,5]
+-- CHECK: map2Decimals: [4.5,6.5]
+-- CHECK: map3: [111,222]
 
 import Html exposing (text)
 

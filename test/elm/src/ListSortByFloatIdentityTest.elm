@@ -5,7 +5,7 @@ module ListSortByFloatIdentityTest exposing (main)
     function.
 -}
 
--- CHECK: result: [1, 2, 3]
+-- CHECK: result: [1,2,3]
 -- CHECK: match: True
 
 import Html exposing (text)

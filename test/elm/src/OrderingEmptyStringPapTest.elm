@@ -4,11 +4,11 @@ module OrderingEmptyStringPapTest exposing (main)
 applied with `""`. Forces the kernel symbols (no intrinsic shortcut).
 -}
 
--- CHECK: ltEmpty: [False, True, True]
--- CHECK: leEmpty: [True, True, True]
--- CHECK: gtEmpty: [False, False, False]
--- CHECK: geEmpty: [True, False, False]
--- CHECK: cmpEmpty: [EQ, LT, LT]
+-- CHECK: ltEmpty: [False,True,True]
+-- CHECK: leEmpty: [True,True,True]
+-- CHECK: gtEmpty: [False,False,False]
+-- CHECK: geEmpty: [True,False,False]
+-- CHECK: cmpEmpty: [EQ,LT,LT]
 
 import Html exposing (text)
 

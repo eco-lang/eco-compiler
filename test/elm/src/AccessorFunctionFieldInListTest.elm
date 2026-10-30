@@ -12,7 +12,7 @@ below describes the old behaviour.
 
 -}
 
--- CHECK: results: [11, 20]
+-- CHECK: results: [11,20]
 
 import Html exposing (text)
 

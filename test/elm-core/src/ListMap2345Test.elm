@@ -1,7 +1,7 @@
 module ListMap2345Test exposing (main)
 
--- CHECK: map2_result: [5, 7, 9]
--- CHECK: map3_result: [12, 15, 18]
+-- CHECK: map2_result: [5,7,9]
+-- CHECK: map3_result: [12,15,18]
 
 import Html exposing (text)
 

@@ -6,7 +6,7 @@ module WideRecord33Test exposing (main)
 -- CHECK: f0000: 1000
 -- CHECK: f0031: 31.5
 -- CHECK: f0032: 'g'
--- CHECK: pattern: (1000, 'g')
+-- CHECK: pattern: (1000,'g')
 -- CHECK: update: '!'
 -- CHECK: eq self: True
 -- CHECK: eq updated: False

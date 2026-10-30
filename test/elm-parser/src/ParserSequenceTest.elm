@@ -1,7 +1,7 @@
 module ParserSequenceTest exposing (main)
 
--- CHECK: items: Ok [1, 2, 3]
--- CHECK: trailing_ok: Ok [1, 2]
+-- CHECK: items: Ok [1,2,3]
+-- CHECK: trailing_ok: Ok [1,2]
 
 import Html exposing (text)
 import Parser exposing (Trailing(..))

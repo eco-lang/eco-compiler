@@ -17,10 +17,10 @@ test is not about.
 
 -- CHECK: first: 1
 -- CHECK: second: 2.5
--- CHECK: pair: (1, 2.5)
+-- CHECK: pair: (1,2.5)
 -- CHECK: x: 3
 -- CHECK: y: 0.5
--- CHECK: point: (3, 0.5, "p")
+-- CHECK: point: (3,0.5,"p")
 
 import Html exposing (text)
 

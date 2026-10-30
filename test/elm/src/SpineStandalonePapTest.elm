@@ -16,10 +16,10 @@ census.
 
 -}
 
--- CHECK: viaGlobalPap: [11, 12, 13]
--- CHECK: viaCtorPap: [3, 4, 5]
--- CHECK: viaThreeArity: [111, 112, 113]
--- CHECK: composed: [22, 24, 26]
+-- CHECK: viaGlobalPap: [11,12,13]
+-- CHECK: viaCtorPap: [3,4,5]
+-- CHECK: viaThreeArity: [111,112,113]
+-- CHECK: composed: [22,24,26]
 
 import Html exposing (text)
 

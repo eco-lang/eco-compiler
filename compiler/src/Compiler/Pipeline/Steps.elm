@@ -70,6 +70,7 @@ import Compiler.GlobalOpt.CafCensus as CafCensus
 import Compiler.GlobalOpt.CafDedupe as CafDedupe
 import Compiler.GlobalOpt.CafHoist as CafHoist
 import Compiler.GlobalOpt.CseCensus as CseCensus
+import Compiler.GlobalOpt.FloatMinMax as FloatMinMax
 import Compiler.GlobalOpt.InlineSimplify as InlineSimplify
 import Compiler.GlobalOpt.MonoCse as MonoCse
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
@@ -367,11 +368,16 @@ inline ecoConfig monoGraph0 =
                     in
                     { cfg | blacklist = cfg.blacklist ++ extra }
     in
+    -- Float max / min / clamp get IEEE 754-2019 bodies first (CGEN_086), so inlined copies carry them.
+    let
+        monoGraph1 =
+            FloatMinMax.rewrite monoGraph0
+    in
     if ecoConfig.inline.postMono then
-        MonoInlineSimplify.optimize effectiveInlineConfig monoGraph0
+        MonoInlineSimplify.optimize effectiveInlineConfig monoGraph1
 
     else
-        ( monoGraph0, MonoInlineSimplify.emptyMetrics )
+        ( monoGraph1, MonoInlineSimplify.emptyMetrics )
 
 
 {-| Returns the graph with the specializations that nothing reachable still
@@ -611,7 +617,6 @@ globalOpt ecoConfig g =
         |> hoist ecoConfig
 
 
-
 {-| Under `mono.validate`, returns the graph unchanged or `Err` with every
 violation that
 `Compiler.GlobalOpt.Staging.checkClosureStaging` finds: a closure or tail
@@ -630,4 +635,3 @@ checkClosureStaging ecoConfig g =
 
     else
         Ok g
-

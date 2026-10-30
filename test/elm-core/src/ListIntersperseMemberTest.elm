@@ -1,6 +1,6 @@
 module ListIntersperseMemberTest exposing (main)
 
--- CHECK: intersperse1: [1, 0, 2, 0, 3]
+-- CHECK: intersperse1: [1,0,2,0,3]
 -- CHECK: member_yes: True
 -- CHECK: member_no: False
 

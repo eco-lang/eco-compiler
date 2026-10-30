@@ -6,11 +6,11 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 | verdict | high | medium | low | - | total |
 |---|---|---|---|---|---|
-| likely-bug | 1 | 5 | 15 | - | 21 |
-| possible | 9 | 22 | 67 | - | 98 |
+| likely-bug | 0 | 2 | 14 | - | 16 |
+| possible | 7 | 22 | 67 | - | 96 |
 | cleanup | - | - | - | 38 | 38 |
 | not-a-bug | - | - | - | 16 | 16 |
-| already-fixed | 3 | - | - | 1 | 4 |
+| already-fixed | 6 | 3 | 1 | 1 | 11 |
 
 ## High severity
 
@@ -24,9 +24,9 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### FoldExtractValue: UndefValue::get(nullptr) sentinel dereferences null
 - where: `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp:349 (FoldExtractValuePass::traceMatchingInsert)`
-- verdict: likely-bug (checked in code; reviewers confirmed)
+- verdict: FIXED 2026-10-29 (reproduced first: ecoc segfaulted)
 - severity: high
-- `UndefValue::get(Type*)` calls `Ty->getContext()`, so a null type crashes before `run` can replace the sentinel. The compiler crashes on any `extractvalue` whose insertvalue chain ends at undef or poison without the wanted field. The fix is `UndefValue::get(EV->getType())` or a distinct sentinel.
+- `UndefValue::get(Type*)` calls `Ty->getContext()`, so a null type crashes before `run` can replace the sentinel. The compiler crashes on any `extractvalue` whose insertvalue chain ends at undef or poison without the wanted field. The fix is `UndefValue::get(EV->getType())` or a distinct sentinel. Fix: `traceMatchingInsert` takes the extract's type and returns an undef of it. Pin: `test/codegen/fold_extract_value_undef_base.mlir`.
 
 ### String slice copies from a movable nursery string across an allocation
 - where: `runtime/src/allocator/StringOps.cpp:324,344 (slice -> tinyFromU16 -> alloc::allocString)`
@@ -44,15 +44,15 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### FoldExtractValue may use a freed queued extractvalue
 - where: `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp:383-400 (FoldExtractValuePass::run)`
-- verdict: possible (checked in code)
+- verdict: FIXED 2026-10-29 (reproduced first: ecoc segfaulted)
 - severity: high
-- `work` holds raw `ExtractValueInst*`. `RecursivelyDeleteTriviallyDeadInstructions(originalAgg)` can delete a queued extract that fed only the dead chain, for example with nested aggregates or a dominating block that comes later in layout order. The loop then dereferences freed memory. Using WeakTrackingVH, as the second loop already does, fixes it.
+- `work` holds raw `ExtractValueInst*`. `RecursivelyDeleteTriviallyDeadInstructions(originalAgg)` can delete a queued extract that fed only the dead chain, for example with nested aggregates or a dominating block that comes later in layout order. The loop then dereferences freed memory. Using WeakTrackingVH, as the second loop already does, fixes it. Fix: the work list holds `WeakVH`. Pin: `test/codegen/fold_extract_value_queued_freed.mlir`.
 
 ### FoldExtractValue skips prefix-index inserts and reads the wrong field
 - where: `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp:342-346 (traceMatchingInsert)`
-- verdict: possible (checked in code)
+- verdict: FIXED 2026-10-29 (reproduced first: returned the stale value)
 - severity: high
-- An `insertvalue` at [0] that writes a whole sub-aggregate is passed over when looking for [0,1], because only exact index equality is tested. The fold then returns an older value from further down the chain, which is a silent miscompile once nested-aggregate inserts reach this pass.
+- An `insertvalue` at [0] that writes a whole sub-aggregate is passed over when looking for [0,1], because only exact index equality is tested. The fold then returns an older value from further down the chain, which is a silent miscompile once nested-aggregate inserts reach this pass. Fix: a prefix insert is traced into; an insert inside the wanted sub-aggregate gives up. Pin: `test/codegen/fold_extract_value_prefix_insert.mlir`.
 
 ### Closure eval layout labels new args PK_Boxed but primitives are stored raw
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:2677-2694 (PapExtendOpLowering::matchAndRewrite)`, ~2853; vs `emitInlineClosureCall` ~2360-2375
@@ -276,9 +276,9 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Float payloads in Just are tagged with the Int slot kind
 - where: `runtime/src/allocator/BytesOps.hpp:288,309 (decodeFloat32/64)`; `runtime/src/allocator/StringOps.hpp:1255,1275 (String.toFloat)`
-- verdict: likely-bug (checked in code)
+- verdict: FIXED 2026-10-29 (reproduced first)
 - severity: medium
-- `alloc::just(unboxedFloat(..), false)` maps to `justKind(...,1)`, which is Int, but Float is kind 2. Debug.toString and generic compare and equality then read the double's bits as an Int.
+- `alloc::just(unboxedFloat(..), false)` maps to `justKind(...,1)`, which is Int, but Float is kind 2. Debug.toString and generic compare and equality then read the double's bits as an Int. `String.toFloat "1.5" == Just 1.5` was False natively. Fix: the four sites use `justKind(..., 2)`. Pin: test/elm-conformance FloatEdgeTest.
 
 ### UTF-8 and base64 decoders accept invalid input
 - where: `runtime/src/allocator/BytesOps.cpp (decodeUtf8, encodeUtf8, fromBase64)`; `ElmBytesRuntime.cpp (elm_utf8_width/copy)`
@@ -522,21 +522,21 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Float `/=` is false on NaN
 - where: `runtime/src/codegen/Passes/EcoToLLVMArith.cpp:844 (FloatNeOpLowering)`
-- verdict: likely-bug (checked in code)
+- verdict: FIXED 2026-10-29 (reproduced first)
 - severity: medium
-- The lowering uses `CmpFPredicate::ONE`, so `nan /= nan` is False where Elm/JS gives True. The fix is `UNE`.
+- The lowering uses `CmpFPredicate::ONE`, so `nan /= nan` is False where Elm/JS gives True. The fix is `UNE`. Fix: `une`; the op spec in Ops.td already said true. Pins: FloatEdgeTest and the codegen NaN-compare tests, whose ONE expectations were corrected.
 
 ### Float round rounds halves away from zero
 - where: `runtime/src/codegen/Passes/EcoToLLVMArith.cpp:601 (FloatRoundOpLowering)`
-- verdict: likely-bug (checked in code)
+- verdict: FIXED 2026-10-29 (reproduced first)
 - severity: medium
-- `llvm.intr.round` gives `round -2.5 == -3`, while elm/core (`Math.round`) gives -2. The float-to-int conversion is also poison for NaN, inf and out-of-range values, and floor, ceiling and truncate share that.
+- `llvm.intr.round` gives `round -2.5 == -3`, while elm/core (`Math.round`) gives -2. The float-to-int conversion is also poison for NaN, inf and out-of-range values, and floor, ceiling and truncate share that. Fix: JS Math.round (floor, +1 when x - floor(x) >= 0.5) in the lowering and in `Basics::round`. NaN and Infinity cannot be an i64 Int: FloatToIntRangeTest (permanent XFAIL-NATIVE). Pins: FloatEdgeTest, kernel test K19, codegen round tests corrected.
 
 ### Float min/max drop NaN
 - where: `runtime/src/codegen/Passes/EcoToLLVMArith.cpp:890,904 (FloatMin/MaxOpLowering)`
-- verdict: likely-bug (checked in code)
+- verdict: FIXED 2026-10-30 by adopting one IEEE-consistent Float semantics (design_docs/float-semantics.md, CGEN_086)
 - severity: low
-- `minnum`/`maxnum` return the non-NaN operand (`min 1 NaN == 1`), but elm/core's comparison-based min/max can return NaN. Relatedly, FloatCmpOrder maps a NaN `compare` to EQ.
+- `minnum`/`maxnum` return the non-NaN operand (`min 1 NaN == 1`), but elm/core's comparison-based min/max can return NaN. Relatedly, FloatCmpOrder maps a NaN `compare` to EQ. Recorded from Elm on node: Elm's `compare` gives GT for any NaN; FIXED (cmp_order `olt`/`ugt`, the compare+case rewrite, `Elm_Kernel_Utils_compare_Float` and cmp's Tag_Float arm; CGEN_075 amended). The premise about min/max was wrong: elm/core's min/max/clamp are Elm functions, and eco inlines them into its order operators, so `min` already matches and `max`/`clamp` depend on the operators. Elm's operators with a NaN depend on whether an operand is a source literal (the JS generator emits the raw operator then, `_Utils_cmp` otherwise): open decision, pinned by FloatNaNOrderTest (XFAIL-NATIVE). The `eco.float.max`/`min` intrinsics (maxnum/minnum) are not reached by any test. Resolution: the order operators are IEEE whatever the operands; `compare` is a total order (NaN equals NaN and is above every number); Float `max`/`min`/`clamp` are IEEE 754-2019 on every path (Compiler.GlobalOpt.FloatMinMax rewrites elm/core's Float specializations before the post-mono inliner, and `eco.float.max`/`min` lower to `llvm.intr.maximum`/`minimum`); Float-to-Int conversions saturate. Spec test: test/elm/src/FloatIeeeSemanticsTest.elm; Elm's differing results are kept as permanent XFAIL-NATIVE conformance tests.
 
 ### capHoistMaxBytes strtoul truncation
 - where: `runtime/src/codegen/Passes/EcoCapHoistCore.cpp:52`

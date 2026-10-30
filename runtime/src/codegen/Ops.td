@@ -2462,7 +2462,7 @@ def Eco_FloatNeOp : Eco_Op<"float.ne", [Pure, Commutative]> {
   let summary = "Float not-equal comparison";
   let description = [{
     Compare two floats for inequality. Returns i1 (Bool).
-    Returns true if either operand is NaN (ordered comparison).
+    Returns true if either operand is NaN (the unordered comparison `une`).
     Note: NaN != NaN per IEEE 754.
 
     ```mlir
@@ -2506,7 +2506,7 @@ def Eco_FloatMinOp : Eco_Op<"float.min", [Pure, Commutative]> {
   let summary = "Elm float minimum";
   let description = [{
     Return the smaller of two floats.
-    If either is NaN, returns NaN.
+    If either is NaN, returns NaN; -0 is below +0 (IEEE 754-2019 minimum).
 
     ```mlir
     %min = eco.float.min %a, %b : f64
@@ -2521,7 +2521,7 @@ def Eco_FloatMaxOp : Eco_Op<"float.max", [Pure, Commutative]> {
   let summary = "Elm float maximum";
   let description = [{
     Return the larger of two floats.
-    If either is NaN, returns NaN.
+    If either is NaN, returns NaN; +0 is above -0 (IEEE 754-2019 maximum).
 
     ```mlir
     %max = eco.float.max %a, %b : f64

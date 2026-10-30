@@ -12,7 +12,7 @@ module {
     %one = arith.constant 1.0 : f64
 
     // Ordered comparisons with NaN should return false
-    // eco.float.{lt,le,gt,ge,eq,ne} uses ordered comparisons by default
+    // eco.float.{lt,le,gt,ge,eq} use ordered comparisons; eco.float.ne is the unordered UNE
 
     // NaN < 1.0 - should be false (ordered)
     %lt = eco.float.lt %nan, %one : f64
@@ -32,12 +32,11 @@ module {
     eco.dbg %eq_i64 : i64
     // CHECK: 0
 
-    // NaN != NaN - for ORDERED ne (ONE), returns false when NaN involved
-    // This is correct IEEE 754 behavior for ordered comparisons
+    // NaN != NaN - true: ne is UNE, as IEEE 754 and Elm (JS !==) define not-equal
     %ne = eco.float.ne %nan, %nan : f64
     %ne_i64 = arith.extui %ne : i1 to i64
     eco.dbg %ne_i64 : i64
-    // CHECK: 0
+    // CHECK: 1
 
     // NaN <= 1.0 - should be false
     %le = eco.float.le %nan, %one : f64

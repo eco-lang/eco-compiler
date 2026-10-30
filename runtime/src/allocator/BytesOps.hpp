@@ -285,7 +285,7 @@ inline HPointer decodeFloat32(void* buf, i64 offset, Endianness endian) {
     float f;
     std::memcpy(&f, &bits, 4);
 
-    return alloc::just(alloc::unboxedFloat(static_cast<f64>(f)), false);
+    return alloc::justKind(alloc::unboxedFloat(static_cast<f64>(f)), 2);
 }
 
 // Returns `Just` the 64-bit IEEE 754 float in the 8 bytes of `buf` starting at `offset`, read in the order
@@ -306,7 +306,7 @@ inline HPointer decodeFloat64(void* buf, i64 offset, Endianness endian) {
     f64 d;
     std::memcpy(&d, &bits, 8);
 
-    return alloc::just(alloc::unboxedFloat(d), false);
+    return alloc::justKind(alloc::unboxedFloat(d), 2);
 }
 
 // ============================================================================

@@ -5,7 +5,7 @@ module FromArrayCharListCompareSortTest exposing (main)
     plus the List sort re-box path with Char content.
 -}
 
--- CHECK: sorted: ['a', 'b', 'c']
+-- CHECK: sorted: ['a','b','c']
 -- CHECK: match: True
 
 import Array

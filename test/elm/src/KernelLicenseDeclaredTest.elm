@@ -77,7 +77,7 @@ main =
 
 -- CHECK: a: "[2,4,6]"
 -- CHECK: b: "[-1,-2,-3]"
--- CHECK: c: ["a", "b", "c"]
+-- CHECK: c: ["a","b","c"]
 -- CHECK: d: "x-y-z"
 -- CHECK: e: "p-q-r"
 -- CHECK: f: 4

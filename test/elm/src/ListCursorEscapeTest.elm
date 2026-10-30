@@ -9,19 +9,19 @@ a node (idx 0), or at the end of the list. A result is walked again, so a view
 made at the exit is itself walked by a cursor.
 -}
 
--- CHECK: midChunk: [6, 7, 8, 9, 10]
--- CHECK: atStart: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+-- CHECK: midChunk: [6,7,8,9,10]
+-- CHECK: atStart: [1,2,3,4,5,6,7,8,9,10]
 -- CHECK: toEnd: []
 -- CHECK: empty: []
--- CHECK: cells: [4, 5]
--- CHECK: rewalk: [9, 10]
+-- CHECK: cells: [4,5]
+-- CHECK: rewalk: [9,10]
 -- CHECK: rewalkSum: 19
--- CHECK: floats: [3.5, 4.5]
--- CHECK: strings: ["d", "e"]
+-- CHECK: floats: [3.5,4.5]
+-- CHECK: strings: ["d","e"]
 -- CHECK: lastEven: [10]
 -- CHECK: long: 49001
 -- CHECK: longLen: 1000
--- CHECK: churn: (225750, 374550)
+-- CHECK: churn: (225750,374550)
 
 import Html exposing (text)
 

@@ -6,7 +6,7 @@ unchanged, so the `""` values appear as embedded constants when the
 comparator dereferences them.
 -}
 
--- CHECK: result: ["", "", "a", "b"]
+-- CHECK: result: ["","","a","b"]
 
 import Html exposing (text)
 

@@ -7,10 +7,10 @@ module SortCharTest exposing (main)
     This test pins the IEEE-correct / type-correct behavior.
 -}
 
--- CHECK: sort: ['a', 'b', 'c']
--- CHECK: sortWith: ['x', 'y', 'z']
--- CHECK: reverse: ['c', 'b', 'a']
--- CHECK: sortByCode: ['A', 'Z', 'a', 'z']
+-- CHECK: sort: ['a','b','c']
+-- CHECK: sortWith: ['x','y','z']
+-- CHECK: reverse: ['c','b','a']
+-- CHECK: sortByCode: ['A','Z','a','z']
 
 import Char
 import Html exposing (text)

@@ -1,6 +1,6 @@
 module TestIndexedMap exposing (main)
 
--- CHECK: indexedMap1: [(0, 10), (1, 20), (2, 30)]
+-- CHECK: indexedMap1: [(0,10),(1,20),(2,30)]
 
 import Array
 import Html exposing (text)

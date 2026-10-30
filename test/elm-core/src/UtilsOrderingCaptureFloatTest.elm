@@ -3,10 +3,10 @@ module UtilsOrderingCaptureFloatTest exposing (main)
 {-| Higher-order capture of `(<)`, `(<=)`, `(>)`, `(>=)` on `Float`.
 -}
 
--- CHECK: lt_filter: [1, 2]
--- CHECK: le_filter: [1, 2, 3]
--- CHECK: gt_filter: [4, 5]
--- CHECK: ge_filter: [3, 4, 5]
+-- CHECK: lt_filter: [1,2]
+-- CHECK: le_filter: [1,2,3]
+-- CHECK: gt_filter: [4,5]
+-- CHECK: ge_filter: [3,4,5]
 -- CHECK: count_lt: 2
 -- CHECK: count_ge: 3
 

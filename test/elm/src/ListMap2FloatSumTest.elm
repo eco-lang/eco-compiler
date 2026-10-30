@@ -6,7 +6,7 @@ module ListMap2FloatSumTest exposing (main)
     match IEEE addition.
 -}
 
--- CHECK: result: [12, 23]
+-- CHECK: result: [12,23]
 -- CHECK: match: True
 
 import Html exposing (text)

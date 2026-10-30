@@ -8,7 +8,7 @@ Elm semantics: `"" < "x"`, so even-numbered inputs (key=`""`) precede
 odd-numbered inputs (key=`"x"`).
 -}
 
--- CHECK: result: [2, 4, 1, 3]
+-- CHECK: result: [2,4,1,3]
 
 import Html exposing (text)
 
