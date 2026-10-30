@@ -961,6 +961,40 @@ Default leg (flag off):
 - **Gates (fresh, before the triple):** elm-tests 918/0 + 14,436/0; `full` 2,491/2,491 and JS
   208/208 (4 skips); `stress` 114/114; `bootstrap` (4b and 8c fixed points, 9b) green.
 
+### FloatMinMax: new `Compiler.GlobalOpt.FloatMinMax` pass + IEEE Float semantics + Elm-exact Debug.toString (CGEN_086, 2026-10-30): **regression check, no regression from the pass (FLAT vs a no-pass control)**
+
+| run | wall (s) | parse/check/build (s) | mono (s) | MLIR codegen (s) | GC time (s) | minor GC | major GC | promoted MiB | max RSS (kB) | out.mlir (B) | fixed point |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| r1 | 67.87 | 27.7 | 25.5 | 8.9 | 3.08 | 1392 | 8 | 6823 | 6500884 | 12209627 | same |
+| r2 | 68.27 | 27.9 | 25.6 | 8.9 | 3.13 | 1392 | 8 | 6823 | 6498872 | 12209627 | same |
+| r3 | 68.54 | 28.0 | 25.8 | 9.0 | 3.05 | 1392 | 8 | 6823 | 6501024 | 12209627 | same |
+| **median** | **68.27** | 27.9 | 25.6 | 8.9 | 3.08 | 1392 | 8 | 6823 | 6500884 | 12209627 | |
+| Δ vs review-bug-list fixes (2026-10-24) | +1.93 (spread 0.67) | +3.7 | +0.5 | −2.8 | +0.42 | +103 | +1 | +578 | +245,124 | −87,034 (−0.7 %, source moved) | |
+| control `nopass` (same tree, pass call removed), median | 67.46 (67.26 / 68.41 / 67.46, spread 1.15) | 27.8 | 25.2 | 8.8 | 3.11 | 1392 | 8 | 6819 | 6498432 | 12209627 | same as `ecofloat-b.mlir` |
+| `eco-optfix` (2026-10-24 binary) on today's source, median | 68.41 (68.81 / 68.41 / 67.46, spread 1.35) | 25.0 | 25.6 | 11.9 | 2.70 | 1305 | 7 | 6286 | 6265704 | 12214152 | n/a (older compiler) |
+
+- **What:** not a front-end step. The tree since the last row took the GC-safety review fixes, FoldExtractValue,
+  Elm-exact Debug.toString, and the IEEE Float semantics (CGEN_086), including a new GlobalOpt pass,
+  `Compiler.GlobalOpt.FloatMinMax`. It runs once over the mono graph before the post-mono inliner. The newest
+  native compiler, `eco-compiler-casemap-compiler` (2026-10-28), compiled the tree to `ecofloat.mlir`, which was
+  lowered to `eco-optfloat`. Because the pass is an analysis change, `eco-optfloat` did one more turn to
+  `ecofloat-b.mlir` and `eco-optfloat-b`, and that binary is the candidate. A == B: the compiler's own source has no
+  Float `max`/`min`/`clamp`, so the pass does not change its output. Registry: `~/.eco/0.2.0/packages/registry.dat`.
+- **Checks:** rc 0 on every run (all nine), no `[gc-stats] SIG`, each triple deterministic, the candidate and the
+  control reproduce `ecofloat-b.mlir`. `.ecot` 8,535,210 B.
+- **Verdict:** wall is +1.93 s against the recorded row, outside its band, so two extra timed legs isolate it.
+  (1) The **control** is the same tree with only the `FloatMinMax.rewrite` call removed, built by `eco-optfloat-b`
+  (the edit was undone before its triple, so the workload is the real tree). The pass costs +0.81 s of wall,
+  **inside the control's 1.15 s band, so FLAT**, with mono +0.4 s inside the overlap of the two triples
+  (25.1-25.7 vs 25.5-25.8) and every counter equal except promoted +4 MiB. (2) **`eco-optfix`**, the 2026-10-24
+  binary, on today's source runs in 68.41 s, the same as today's 68.27 s: the +1.93 s against the recorded row is
+  drift and workload, not a regression. Between the two binaries, parse/check/build is +2.9 s and GC time +0.38 s
+  (minors +87, promoted +537 MiB) slower today, while MLIR codegen is −3.0 s faster, netting to flat. That
+  front-end move predates this pass and is not attributed here. The 2026-10-28 Char work (encoded Char,
+  KERN_008) touches the `Char` kernels the parser calls, which makes it the first suspect.
+- **Gates (fresh, before the triple):** `full` 2,561/2,561 (3 XFAIL-NATIVE: the Float divergence records), JS
+  219/219 (5 skips).
+
 ## 6a. Batched end-of-series gates (run once each, after S8)
 
 - **G5 `TypedOptimizedCodecTest` (new):** 135/135 standard-suite modules round-trip the v2 codec
@@ -1239,3 +1273,5 @@ same-sitting control run, not the `ref` row's recorded wall. Details live in eac
 | uf1 | 67.64 | 0.00 | 1304 | 6 | 6366 | 6600748 | LOSS (FLAT, not a deletion: UnionFind on bare array + Int compares; reverted) | noCS |
 | uf2 | 68.57 | +0.93 | 1310 | 6 | 6364 | 6537156 | LOSS (FLAT: adjustRank no-op write skip; pcb unchanged, minor +8; reverted) | noCS |
 | LOS | 68.70 | +1.06 | 1344 | 7 | 6439 | 6395480 | — (regression check across a moved tree, not an A/B: large-object space + header-less large bodies; GC time flat, mono +0.8 / codegen +0.4 from grown source, RSS −158 MB; fixed point + deterministic) | noCS |
+| review-bug-list | 66.34 | -2.36 | 1289 | 7 | 6245 | 6255760 | — (regression check across a moved tree: plans/review-bug-list-fixes.md; every stat at or below LOS; fixed point + deterministic) | LOS |
+| FloatMinMax | 68.27 | +1.93 | 1392 | 8 | 6823 | 6500884 | — (regression check across a moved tree: new FloatMinMax pass + IEEE Float + Debug.toString; pass FLAT vs a no-pass control 67.46 (band 1.15); 2026-10-24 binary on today's source 68.41; fixed point + deterministic) | review-bug-list |

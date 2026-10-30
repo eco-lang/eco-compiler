@@ -3545,18 +3545,24 @@ static void print_dict_entries(uint64_t node, uint32_t dict_type_id, int depth, 
     print_dict_entries(static_cast<uint64_t>(c->values[4].i), f[4].type_id, depth + 1, keysOnly, first);
 }
 
-// Prints the elements of the JsArray `arr`, separated by commas, with the untyped printer: the type graph
-// does not carry a JsArray's element type.
-static void print_jsarray_elements(uint64_t arr, int depth, bool& first) {
+// The type id meaning "no type": an Array whose element type the type graph does not give.
+static constexpr uint32_t kNoElemType = 0xFFFFFFFFu;
+
+// Prints the elements of the JsArray `arr`, separated by commas: with the typed printer as type `elem_type_id`
+// when it is a type id (not `kNoElemType`), else with the untyped printer.
+static void print_jsarray_elements(uint64_t arr, uint32_t elem_type_id, int depth, bool& first) {
     if (isConstantBits(arr)) return;
     void* ptr = hpointerToPtr(arr);
     if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Array) return;
     ElmArray* a = static_cast<ElmArray*>(ptr);
     uint32_t kind = a->header.unboxed & 0x3;
+    bool typed = elem_type_id < g_type_graph->type_count;
     for (uint32_t i = 0; i < a->length; i++) {
         if (!first) output_char(',');
         first = false;
-        if (kind != 0) {
+        if (typed) {
+            print_typed_slot(static_cast<uint64_t>(a->elements[i].i), kind, elem_type_id, depth);
+        } else if (kind != 0) {
             print_unboxable_slot(a->elements[i], kind, depth);
         } else {
             print_value(static_cast<uint64_t>(a->elements[i].i), depth + 1);
@@ -3565,8 +3571,8 @@ static void print_jsarray_elements(uint64_t arr, int depth, bool& first) {
 }
 
 // Prints the elements of an elm/core Array tree `tree` (a JsArray of `Node`s: SubTree, ctor 0, holding a
-// tree, or Leaf, ctor 1, holding a JsArray of elements) in order, separated by commas.
-static void print_array_tree(uint64_t tree, int depth, bool& first) {
+// tree, or Leaf, ctor 1, holding a JsArray of elements of type `elem_type_id`) in order, separated by commas.
+static void print_array_tree(uint64_t tree, uint32_t elem_type_id, int depth, bool& first) {
     if (depth > kMaxPrintDepth || isConstantBits(tree)) return;
     void* ptr = hpointerToPtr(tree);
     if (!ptr || static_cast<Header*>(ptr)->tag != Tag_Array) return;
@@ -3580,11 +3586,26 @@ static void print_array_tree(uint64_t tree, int depth, bool& first) {
         if (node->header.size != 1 || customSlotKind(node, 0) != 0) continue;
         uint64_t inner = static_cast<uint64_t>(node->values[0].i);
         if (node->ctor == 0) {
-            print_array_tree(inner, depth + 1, first);
+            print_array_tree(inner, elem_type_id, depth + 1, first);
         } else {
-            print_jsarray_elements(inner, depth + 1, first);
+            print_jsarray_elements(inner, elem_type_id, depth + 1, first);
         }
     }
+}
+
+// Returns the element type id of the Array `c` of type `array_type_id`, or `kNoElemType`. elm/core declares
+// `type JsArray a = JsArray a`, so the one field of the JsArray type's one constructor has the element type;
+// the type of Array_elm_builtin's fourth field (its tail) is that JsArray.
+static uint32_t array_elem_type_id(const Custom* c, uint32_t array_type_id) {
+    const Elm::EcoCtorInfo* ci = find_ctor(&g_type_graph->types[array_type_id], c->ctor);
+    if (!ci || ci->field_count != 4) return kNoElemType;
+    uint32_t tail_type_id = g_type_graph->fields[ci->first_field + 3].type_id;
+    if (tail_type_id >= g_type_graph->type_count) return kNoElemType;
+    const Elm::EcoTypeInfo* tail = &g_type_graph->types[tail_type_id];
+    if (tail->kind != Elm::EcoTypeKind::Custom || tail->data.custom.ctor_count != 1) return kNoElemType;
+    const Elm::EcoCtorInfo* jsCtor = &g_type_graph->ctors[tail->data.custom.first_ctor];
+    if (jsCtor->field_count != 1) return kNoElemType;
+    return g_type_graph->fields[jsCtor->first_field].type_id;
 }
 
 // Prints `value`, of the builtin container type `which` with type id `type_id`, as Elm does:
@@ -3624,9 +3645,10 @@ static void print_builtin_container(uint64_t value, uint32_t type_id, BuiltinCon
             return;
         }
         Custom* c = static_cast<Custom*>(ptr);
+        uint32_t elem_type_id = array_elem_type_id(c, type_id);
         output_text("Array.fromList [");
-        print_array_tree(static_cast<uint64_t>(c->values[2].i), depth + 1, first);
-        print_jsarray_elements(static_cast<uint64_t>(c->values[3].i), depth + 1, first);
+        print_array_tree(static_cast<uint64_t>(c->values[2].i), elem_type_id, depth + 1, first);
+        print_jsarray_elements(static_cast<uint64_t>(c->values[3].i), elem_type_id, depth + 1, first);
         output_char(']');
         return;
     }
