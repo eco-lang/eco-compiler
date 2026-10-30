@@ -1,6 +1,6 @@
 /**
- * Tests for CaseMap.hpp / CaseMapTables.hpp / CharValue.hpp: the generated case-mapping tables
- * and the Char value encoding (KERN_008, plans/char-case-mapping-elm-exact.md).
+ * Tests for CaseMap.hpp / CaseMapTables.hpp: the generated Unicode simple case-mapping tables
+ * (KERN_008, plans/char-simple-case-mapping.md).
  */
 
 #ifndef CASE_MAP_TEST_HPP

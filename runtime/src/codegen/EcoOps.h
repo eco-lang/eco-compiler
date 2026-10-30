@@ -49,9 +49,8 @@ namespace eco {
 // `createEcoGCPreparePass` removes it from every call, so no pass after that one may rely on it.
 inline constexpr llvm::StringLiteral kCseSafeAttrName{"eco.cse_safe"};
 
-// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: a Char value
-// (a Unicode code point 0..0x10FFFF, or an encoded case-mapping result,
-// KERN_008) held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3 (Char)
+// Bit width of Elm Char in SSA, ABI and LLVM aggregate fields: one Unicode
+// code point 0..0x10FFFF (KERN_008) held in i32 (Eco_Char, CGEN_015, REP_ABI_001). A kind-3 (Char)
 // heap/closure word holds it zero-extended to 64 bits (REP_HEAP_002).
 inline constexpr unsigned kEcoCharBits = 32;
 

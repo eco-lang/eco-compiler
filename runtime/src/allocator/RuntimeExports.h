@@ -387,18 +387,8 @@ HPtr eco_alloc_int(int64_t value);
 // Allocates a boxed Float holding `value`, and returns it. May collect.
 HPtr eco_alloc_float(double value);
 
-// Allocates a boxed Char holding `value`, a Char word as `CharValue.hpp` defines it, and returns it. May
-// collect.
+// Allocates a boxed Char holding `value`, one code point (KERN_008), and returns it. May collect.
 HPtr eco_alloc_char(uint32_t value);
-
-// Does nothing. Exactly one of the two is defined, the one matching this runtime's
-// `ECO_CHAR_CASE_EXPANSION` setting (KERN_008, `CharValue::kBuildGuardSymbol`), so a program compiled for
-// the other setting fails to link or, under the JIT, to resolve the symbol.
-#if ECO_CHAR_CASE_EXPANSION
-void eco_char_case_expansion_on(void);
-#else
-void eco_char_case_expansion_off(void);
-#endif
 
 // Allocates `size` bytes for an object with tag `tag`, as `eco_alloc_with_roots` does with no roots, and
 // returns it. May collect. Only the header's tag and size are written.
@@ -668,8 +658,7 @@ void eco_dbg_print_int(int64_t value);
 // Prints `[eco.dbg] `, the Float `value` as Elm prints it (`Infinity`, `NaN`, `0` for -0.0) and a newline.
 void eco_dbg_print_float(double value);
 
-// Prints `[eco.dbg] `, the Char `value` in Elm syntax and a newline. An encoded case-mapping result
-// prints as all its code points (KERN_008).
+// Prints `[eco.dbg] `, the Char `value` (one code point) in Elm syntax and a newline.
 void eco_dbg_print_char(int32_t value);
 
 // Prints the `num_args` boxed values in `values`, each with the type `type_ids[i]` in the registered type

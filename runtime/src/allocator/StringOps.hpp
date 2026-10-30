@@ -26,11 +26,10 @@
 // store it as a UTF-8 form again, so that one UTF-16 operand does not make every later operation on
 // the result widen too.
 //
-// A Char is a Char value as `CharValue.hpp` defines it: a code point or, with
-// `ECO_CHAR_CASE_EXPANSION` on, an encoded case-mapping result that stands for two or three UTF-16
-// units. Operations that turn a String into Chars decode code points, and combine two units only
-// when they are a valid surrogate pair; a lone surrogate becomes a Char of its own unit value.
-// Operations that turn Chars into a String write each value's whole expansion.
+// A Char is one code point (KERN_008). Operations that turn a String into Chars decode code points,
+// and combine two units only when they are a valid surrogate pair; a lone surrogate becomes a Char of
+// its own unit value. Operations that turn Chars into a String write each code point as one or two
+// UTF-16 units.
 //
 // Any allocation may move a nursery object. A function that takes a String as `void*` takes the
 // address of a String object, which the caller has resolved and which is valid only until the next
@@ -416,8 +415,7 @@ inline u16 charAt(void* str, i64 index) {
 // Between UTF-16 units and Chars
 // ============================================================================
 //
-// Decoding gives only code points, never an encoded case-mapping value, and combines only a valid
-// high-then-low surrogate pair. A lone surrogate decodes to its own unit value and encodes back to
+// Decoding gives code points, and combines only a valid high-then-low surrogate pair. A lone surrogate decodes to its own unit value and encodes back to
 // that one unit, so decoding a String and encoding the Chars again gives the same units.
 
 // Returns whether the UTF-16 unit `u` is a high (leading) surrogate.
@@ -453,17 +451,16 @@ inline u32 prevCodePoint(const u16* p, size_t& i) {
     return u;
 }
 
-// Returns how many UTF-16 units `encodeCodePoint` writes for the Char value `cp`, from 1 to
-// `CharValue::kMaxCharUnits`.
+// Returns how many UTF-16 units `encodeCodePoint` writes for the Char `cp`: 1 or 2.
 inline u32 codePointUnits(u32 cp) { return CaseMap::units(cp); }
 
-// Writes the Char value `cp` to `out` as UTF-16 units and returns how many it wrote, as
-// `CaseMap::writeUnits` does. `out` must have room for `CharValue::kMaxCharUnits` units.
+// Writes the Char `cp` to `out` as UTF-16 units and returns how many it wrote, as
+// `CaseMap::writeUnits` does. `out` must have room for 2 units.
 inline u32 encodeCodePoint(u32 cp, u16* out) { return CaseMap::writeUnits(cp, out); }
 
-// Appends the UTF-16 units of the Char value `cp` to `out`.
+// Appends the UTF-16 units of the Char `cp` to `out`.
 inline void appendCodePoint(std::vector<u16>& out, u32 cp) {
-    u16 buf[CharValue::kMaxCharUnits];
+    u16 buf[2];
     u32 n = encodeCodePoint(cp, buf);
     out.insert(out.end(), buf, buf + n);
 }
@@ -756,29 +753,23 @@ HPointer indexes(void* needle, void* haystack);
 // ============================================================================
 
 // Returns `str` with each code point mapped by `CaseMap::upper`, when `upper`, or else by
-// `CaseMap::lower`, writing each mapped value's whole expansion, so the length may change.
+// `CaseMap::lower`: the Unicode simple case mapping, one code point to one code point with no
+// context (no Final_Sigma rule), so the result has the same length as `str` in code points and in
+// UTF-16 units (no simple mapping crosses planes). A lone surrogate is left as it is.
 //
-// When lowering, a capital sigma (U+03A3) becomes the final form U+03C2 where
-// `CaseMap::finalSigmaAt` says it ends a word, and U+03C3 elsewhere. The result is a UTF-8 form
-// when it is all ASCII and UTF-8 Strings are enabled, and a UTF-16 String otherwise. `str` is
-// copied into C++ memory first, so it need not stay valid. `str` must be non-null and non-empty.
-// A GC point.
+// The result is a UTF-8 form when it is all ASCII and UTF-8 Strings are enabled, and a UTF-16
+// String otherwise. `str` is copied into C++ memory first, so it need not stay valid. `str` must
+// be non-null and non-empty. A GC point.
 inline HPointer caseMapGeneral(void* str, bool upper) {
     std::u16string src = toStdU16String(str);
     const u16* p = reinterpret_cast<const u16*>(src.data());
     const size_t n = src.size();
     std::vector<u16> out;
-    out.reserve(n + 8);
+    out.reserve(n);
     u16 acc = 0;
     for (size_t i = 0; i < n;) {
-        const size_t start = i;
         const u32 cp = nextCodePoint(p, n, i);
-        u32 m;
-        if (!upper && cp == 0x3A3u) {
-            m = CaseMap::finalSigmaAt(p, n, start, i) ? 0x3C2u : 0x3C3u;
-        } else {
-            m = upper ? CaseMap::upper(cp) : CaseMap::lower(cp);
-        }
+        const u32 m = upper ? CaseMap::upper(cp) : CaseMap::lower(cp);
         const size_t before = out.size();
         appendCodePoint(out, m);
         for (size_t k = before; k < out.size(); ++k) acc |= out[k];
@@ -851,8 +842,7 @@ inline HPointer toUpper(void* str) {
 //
 // An all-ASCII String needs only `A` to `Z` changed: from a UTF-8 form, with UTF-8 Strings
 // enabled, the result is a UTF-8 form, and otherwise a UTF-16 String of the same length. A String
-// with any other unit goes through `caseMapGeneral`, which treats a word-final capital sigma
-// specially. A GC point.
+// with any other unit goes through `caseMapGeneral`. A GC point.
 inline HPointer toLower(void* str) {
     if (!str) return alloc::emptyString();
     u32 len = rawLen(str);
@@ -1384,7 +1374,7 @@ inline HPointer fromFloat(f64 n) {
     return makeUtf8LeafFromBytes(reinterpret_cast<const u8*>(buf), static_cast<u32>(len));
 }
 
-// Returns the String of the one Char value `c`.
+// Returns the String of the one Char `c`.
 //
 // A Char below 0x80, with UTF-8 Strings enabled, gives a one-byte UTF-8 leaf, so that a String
 // built from ASCII Chars stays in UTF-8 forms. Any other gives a UTF-16 String of the units
@@ -1394,13 +1384,12 @@ inline HPointer fromChar(u32 c) {
         u8 b = static_cast<u8>(c);
         return makeUtf8LeafFromBytes(&b, 1);
     }
-    // The test c < 0x80 above cannot catch an encoded value, which is at least 0x200000.
-    u16 buf[CharValue::kMaxCharUnits];
+    u16 buf[2];
     u32 n = encodeCodePoint(c, buf);
     return alloc::allocString(buf, n);
 }
 
-// Returns the units of the Char value `c` followed by `str`, as a new String; `fromChar(c)` when
+// Returns the units of the Char `c` followed by `str`, as a new String; `fromChar(c)` when
 // `str` is null.
 //
 // The result is a UTF-8 form when `c` is below 0x80, `str` is a UTF-8 form and UTF-8 Strings are
@@ -1408,7 +1397,7 @@ inline HPointer fromChar(u32 c) {
 inline HPointer cons(u32 c, void* str) {
     if (!str) return fromChar(c);
     u32 len = rawLen(str);
-    u16 units[CharValue::kMaxCharUnits];
+    u16 units[2];
     u32 n = encodeCodePoint(c, units);
     size_t total_len = static_cast<size_t>(len) + n;
 
@@ -1452,12 +1441,11 @@ HPointer uncons(void* str);
 // A function from a code point to an Elm value. No function in this component takes one.
 using CharMapper = Unboxable (*)(u32);
 
-// A function from the code point of one Char to the Char value that replaces it, which may be an
-// encoded case-mapping result.
+// A function from the code point of one Char to the code point that replaces it.
 using CharToCharMapper = u32 (*)(u32);
 
-// Returns a new UTF-16 String of the values `mapFunc` gives for the code points of `str`, in order,
-// each written with its whole expansion, or the Empty constant for null or empty `str`.
+// Returns a new UTF-16 String of the code points `mapFunc` gives for the code points of `str`, in
+// order, or the Empty constant for null or empty `str`.
 //
 // `mapFunc` is called once per code point, in order. `str` is copied into C++ memory before the
 // first call. A GC point.

@@ -2,7 +2,6 @@
 
 #include "../KernelExports.h"
 #include "Char.hpp"
-#include "allocator/CharValue.hpp"
 
 using namespace Elm::Kernel;
 
@@ -29,16 +28,13 @@ uint32_t Elm_Kernel_Char_fromCode(int64_t code) {
 // then mask down to the canonical 32-bit Char value. The wider type also
 // keeps the C++ compiler from optimising the mask away.
 //
-// Char.toCode is the code point, or an encoded case-mapping result's first
-// code point (value & 0x1FFFFF, KERN_008), as elm/core's charCodeAt(0) gives.
+// Char.toCode is the code point itself: a Char is one code point (KERN_008).
 int64_t Elm_Kernel_Char_toCode(uint64_t c_raw) {
-    return static_cast<int64_t>(
-        Elm::CharValue::firstCodePoint(static_cast<uint32_t>(c_raw & 0xFFFFFFFFu)));
+    return static_cast<int64_t>(static_cast<uint32_t>(c_raw & 0xFFFFFFFFu));
 }
 
-// The four case mappers return the full 32-bit Char value: an encoded
-// multi-code-point result (Char.toUpper 'ß' == "SS", KERN_008) as well as a
-// code point (Char.cpp, CaseMap.hpp).
+// The four case mappers return one code point, the Unicode simple case mapping
+// of the argument (Char.cpp, CaseMap.hpp, plans/char-simple-case-mapping.md).
 
 uint32_t Elm_Kernel_Char_toLower(uint64_t c_raw) {
     char32_t result = Char::toLower(static_cast<char32_t>(c_raw & 0xFFFFFFFFu));

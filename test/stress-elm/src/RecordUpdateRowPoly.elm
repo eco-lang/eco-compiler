@@ -1,7 +1,7 @@
 module RecordUpdateRowPoly exposing (main)
 
 -- CHECK: smallFinal: -1
--- CHECK: bigFinal: (-1, 20, 30)
+-- CHECK: bigFinal: (-1,20,30)
 
 import Html exposing (text)
 

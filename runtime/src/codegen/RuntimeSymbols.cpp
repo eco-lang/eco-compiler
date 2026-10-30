@@ -27,9 +27,6 @@ namespace eco {
 
 // Returns the map from each name listed below, mangled by `interner`, to the
 // address of that function in this process, as an exported absolute symbol.
-//
-// Exactly one of `eco_char_case_expansion_on` and `eco_char_case_expansion_off` is in the map: the one this
-// runtime is built to define.
 static llvm::orc::SymbolMap buildRuntimeSymbolMap(
     llvm::orc::MangleAndInterner interner) {
     llvm::orc::SymbolMap symbolMap;
@@ -83,17 +80,6 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_intern_closure0),
                 llvm::JITSymbolFlags::Exported);
-#if ECO_CHAR_CASE_EXPANSION
-        symbolMap[interner("eco_char_case_expansion_on")] =
-            llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_char_case_expansion_on),
-                llvm::JITSymbolFlags::Exported);
-#else
-        symbolMap[interner("eco_char_case_expansion_off")] =
-            llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&eco_char_case_expansion_off),
-                llvm::JITSymbolFlags::Exported);
-#endif
         symbolMap[interner("eco_alloc_int")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_int),

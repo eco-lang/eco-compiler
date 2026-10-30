@@ -25,7 +25,9 @@ files beside `KernelSetFacts.elm`, and `kernel-license-manifest.txt` is gone:
 - `kernel-license-audit.csv` (`kernel,date,plan,note`): one line per audit or
   re-audit. The first audit's note carries the §2.6 markers (`class:`, `entry:`,
   `type:`, `B1:`-`B3:`); the `audited:` marker is now the `date` column. A re-audit
-  ADDS a line rather than appending to a string.
+  ADDS a line rather than appending to a string. (Updated 2026-10-30: `date` may be a
+  UTC stamp `YYYY-MM-DDTHH:MM:SS`; a plain `YYYY-MM-DD` means midnight, so a file can
+  be re-audited more than once a day. See `check-kernel-license-manifest.sh`.)
 - `kernel-license-files.csv` (`kernel,file,sha256,audited`): the rot pins, one per
   (kernel x file), with the date of the kernel's latest audit.
 

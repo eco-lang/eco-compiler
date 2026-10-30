@@ -407,8 +407,8 @@ async function runProject(spec, opts, server) {
     }
     fs.mkdirSync(outDir, { recursive: true });
     if (spec.unicodeTables) {
-        // The recorded expectations are node's case mapping; eco's tables must be the same
-        // Unicode version (plans/char-case-mapping-elm-exact.md Step 1).
+        // The recorded expectations are node's case mapping; eco's tables (UnicodeData.txt
+        // simple mappings) must be the same Unicode version (plans/char-simple-case-mapping.md).
         const m = /kUnicodeVersion = "([^"]+)"/.exec(fs.readFileSync(spec.unicodeTables, 'utf8'));
         const tables = m ? m[1] : '(none)';
         if (tables !== process.versions.unicode) {

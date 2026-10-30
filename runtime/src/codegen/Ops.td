@@ -209,13 +209,12 @@ def Eco_ConstantKind : I32EnumAttr<"ConstantKind", "Eco embedded constant kind",
 // Unboxed primitive types matching Elm semantics
 def Eco_Int   : I<64>;   // Elm Int (64-bit signed)
 def Eco_Float : F<64>;   // Elm Float (IEEE 754 double)
-// Elm Char is a Char value in i32 (CGEN_015, KERN_008): a Unicode code point
-// 0..0x10FFFF, or an encoded multi-code-point case-mapping result (bits 21-28
-// = rank + 1, from Char.toUpper/toLower only); a kind-3 heap/closure slot
-// holds it zero-extended to 64 bits (REP_HEAP_002). Note
+// Elm Char is one Unicode code point 0..0x10FFFF in i32 (CGEN_015, KERN_008);
+// a kind-3 heap/closure slot holds it zero-extended to 64 bits (REP_HEAP_002).
+// Note
 // i32 is ALSO the ctor-tag type (eco.get_tag) and the BytesFusion counter
 // type: those never reach a slot-kind classifier (eco::isEcoCharType).
-def Eco_Char  : I<32>;   // Elm Char (a Char value, KERN_008)
+def Eco_Char  : I<32>;   // Elm Char (one code point, KERN_008)
 def Eco_Bool  : I<1>;    // Elm Bool (True/False)
 
 // Any value that can appear in Eco operations (boxed or unboxed)
@@ -2707,9 +2706,8 @@ def Eco_BoolXorOp : Eco_Op<"bool.xor", [Pure, Commutative]> {
 def Eco_CharToIntOp : Eco_Op<"char.toInt", [Pure]> {
   let summary = "Convert Char to Int (Char.toCode)";
   let description = [{
-    Get the Unicode code point of a character as an integer: the first code
-    point, value & 0x1FFFFF, so an encoded case-mapping result (KERN_008)
-    gives its expansion's first code point, as Elm's charCodeAt(0) does.
+    Get the Unicode code point of a character as an integer: the Char value
+    zero-extended to i64 (a Char is one code point, KERN_008).
 
     ```mlir
     %code = eco.char.toInt %c : i32 -> i64
@@ -2737,10 +2735,8 @@ def Eco_CharFromIntOp : Eco_Op<"char.fromInt", [Pure]> {
 }
 
 // Char comparisons - all return i1 (Bool)
-// Char is i32 holding a Char value (KERN_008). Ordering is the unsigned
-// compare of rotl32(v, 11) (CharValue::sortKey): code-point order for ordinary
-// Chars, JS UTF-16 string order wherever an encoded case-mapping result takes
-// part. eq/ne are plain integer equality.
+// Char is i32 holding one code point (KERN_008). Ordering is the unsigned
+// compare of the code points; eq/ne are plain integer equality.
 
 def Eco_CharLtOp : Eco_Op<"char.lt", [Pure]> {
   let summary = "Char less-than comparison (unsigned)";
@@ -2826,7 +2822,7 @@ def Eco_CharCmpOrderOp : Eco_Op<"char.cmp_order", [Pure]> {
   let summary = "Compare two chars; return Order singleton (LT/EQ/GT)";
   let description = [{
     Returns a pre-allocated Order Custom value as `!eco.value`. Char compares
-    are unsigned compares of rotl32(v, 11) (mirrors `eco.char.lt`, KERN_008).
+    are unsigned compares of the code points (mirrors `eco.char.lt`, KERN_008).
 
     ```mlir
     %ord = eco.char.cmp_order %a, %b : i32

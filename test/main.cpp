@@ -1162,7 +1162,7 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite runtimeSymbolMapTests("RuntimeSymbolMap");
     registerRuntimeSymbolMapTests(runtimeSymbolMapTests);
 
-    // Char case-mapping tables and the Char value encoding (KERN_008)
+    // Char simple case-mapping tables (KERN_008)
     Testing::TestSuite caseMapTests("CaseMap");
     registerCaseMapTests(caseMapTests);
 

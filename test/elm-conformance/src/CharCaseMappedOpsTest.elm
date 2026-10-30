@@ -1,12 +1,18 @@
-module CharCaseEncodedOpsTest exposing (main)
+module CharCaseMappedOpsTest exposing (main)
 
-{-| Operations on the multi-code-point Chars that Char.toUpper/toLower return: equality,
-compare, sort, Dict and Set keys, case, the Char predicates, re-mapping, the String functions
-that write or read Chars, and Debug.log. Every equality here gives the same answer in Elm's
-debug mode and under --optimize (the JS runner's mode guard checks this).
-Expectations recorded from Elm (plans/char-case-mapping-elm-exact.md Step 0.6).
+{-| Elm's operations on the multi-code-point Chars that Char.toUpper/toLower return on JS (full
+case mapping): equality, compare, sort, Dict and Set keys, case, the Char predicates, re-mapping,
+the String functions that write or read Chars, and Debug.log. Every equality here gives the same
+answer in Elm's debug mode and under --optimize (the JS runner's mode guard checks this).
+
+eco uses the Unicode simple case mapping instead, so a mapped Char is always one code point
+(design\_docs/char-case-mapping.md, plans/char-simple-case-mapping.md). The expectations are Elm's
+own results, recorded from Elm on node (run-js-e2e.js --record), so the test passes on node and is
+an expected failure natively for good: it records the difference. eco's own results are checked by
+test/elm/src/CharSimpleCaseTest.elm.
 -}
 
+-- XFAIL-NATIVE: deliberate divergence from Elm: eco uses Unicode simple case mapping, so these mapped Chars are single code points (design_docs/char-case-mapping.md)
 -- CHECK: dbg: 'SS'
 -- CHECK: dbgfi: 'FI'
 -- CHECK: eq upSharpS S: "False"

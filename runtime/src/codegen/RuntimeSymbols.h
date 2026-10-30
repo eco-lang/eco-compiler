@@ -15,9 +15,6 @@
 // name missing from the list still resolves if the host executable exports it, and fails only otherwise.
 // The `__eco_alloc_inline` marker is left out on purpose: a call to it that survives the backend is a
 // fatal backend error, and leaving it unmapped means one could never run even if it got past that.
-// Of the two Char build-guard functions, `eco_char_case_expansion_on` and `eco_char_case_expansion_off`,
-// only the one this runtime defines is listed, so code lowered for the other `ECO_CHAR_CASE_EXPANSION`
-// setting fails to resolve.
 //
 //===----------------------------------------------------------------------===//
 

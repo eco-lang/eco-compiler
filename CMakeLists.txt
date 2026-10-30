@@ -130,17 +130,6 @@ else()
     add_compile_definitions(ENABLE_P1_CENSUS=0)
 endif()
 
-# Elm-exact multi-code-point Char case mapping (plans/char-case-mapping-elm-exact.md, KERN_008).
-# OFF compiles the encoded-Char paths out and leaves expanding code points (ß, ﬁ, ...) unchanged.
-# Read only by runtime/src/allocator/CharValue.hpp; a program lowered with one setting refuses to
-# link against a runtime built with the other (eco_char_case_expansion_on/_off).
-option(ECO_CHAR_CASE_EXPANSION "Elm-exact multi-code-point Char case mapping" ON)
-if(ECO_CHAR_CASE_EXPANSION)
-    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=1)
-else()
-    add_compile_definitions(ECO_CHAR_CASE_EXPANSION=0)
-endif()
-
 # Per-GC `[heap-trace] …` diagnostics. When OFF (default), the trace prints
 # and their gathering logic are compiled out so they cost nothing on the hot
 # path. When ON, the existing `ECO_HEAP_TRACE` env-var still gates emission at
@@ -1386,11 +1375,13 @@ option(ECO_TLA_CANARY_STRICT "Fail the build when the TLA+ model canary (see tes
 set(TLA_CANARY_MANIFEST "${CMAKE_SOURCE_DIR}/test/tla/manifest.txt")
 set(TLA_CANARY_CHECKER "${CMAKE_SOURCE_DIR}/test/scripts/check-tla-manifest.sh")
 if(EXISTS "${TLA_CANARY_MANIFEST}")
-    file(GLOB _tla_canary_alloc
+    # CONFIGURE_DEPENDS: adding or deleting an allocator file re-globs, so a deleted header never
+    # stays a dependency of tla-canary.stamp with "no known rule to make it".
+    file(GLOB _tla_canary_alloc CONFIGURE_DEPENDS
             "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.cpp"
             "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.hpp"
             "${CMAKE_SOURCE_DIR}/runtime/src/allocator/*.h")
-    file(GLOB _tla_canary_maps "${CMAKE_SOURCE_DIR}/test/tla/*/MAPPING.md")
+    file(GLOB _tla_canary_maps CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/test/tla/*/MAPPING.md")
     set(TLA_CANARY_DEPS
             "${TLA_CANARY_CHECKER}"
             "${TLA_CANARY_MANIFEST}"
@@ -1569,7 +1560,8 @@ set(_full_js_e2e)
 set(_full_casemap_check)
 if(NOT WIN32)
     set(_full_js_e2e COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-js-e2e)
-    # The case tables must be the running node's (plans/char-case-mapping-elm-exact.md Step 1).
+    # The case tables must be what the vendored UCD generates, and node's Unicode version must be
+    # theirs (plans/char-simple-case-mapping.md).
     set(_full_casemap_check COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-casemap-tables.sh
         ${CMAKE_SOURCE_DIR} ${NODE_EXECUTABLE})
 endif()
@@ -1587,7 +1579,7 @@ add_custom_target(full
     COMMAND ${CMAKE_BINARY_DIR}/system-kernel-cpp/eco-system-core-test
     COMMAND sh -c "${CMAKE_BINARY_DIR}/test/test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
     # The eco-system and elm-conformance suites on the JS target (plans/eco-system-library.md
-    # Phase 10, plans/char-case-mapping-elm-exact.md).
+    # Phase 10, plans/char-simple-case-mapping.md).
     ${_full_js_e2e}
     ${_full_node_addon}
     ${_full_driver_cli}

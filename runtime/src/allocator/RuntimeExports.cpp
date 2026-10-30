@@ -348,12 +348,6 @@ extern "C" void eco_enable_list_chunks(void) {
     eco_g_list_chunks = true;
 }
 
-#if ECO_CHAR_CASE_EXPANSION
-extern "C" void eco_char_case_expansion_on(void) {}
-#else
-extern "C" void eco_char_case_expansion_off(void) {}
-#endif
-
 // Cons-site census. When the environment variable ECO_CONS_SITES is set (to anything), each
 // `eco_alloc_cons` call is counted against its return address in a per-thread map, and the counts are
 // printed to stderr at exit as offsets from the executable's load address. A thread's map is merged into
@@ -2943,21 +2937,11 @@ static void print_string(void* str) {
     output_char('"');
 }
 
-// Prints the code point `c` as it appears inside a Char literal (`_Debug_addSlashes` with `'` quoting).
-static void print_char_cp(u32 c) {
-    print_escaped_cp(c, '\'');
-}
-
-// Prints the Char word `c` between single quotes: its code point, or every code point of an encoded
-// case-mapping result (KERN_008), so that `Char.toUpper 'ß'` prints as `'SS'`.
+// Prints the Char `c`, one code point (KERN_008), between single quotes, escaped as inside a Char literal
+// (`_Debug_addSlashes` with `'` quoting).
 static void print_char(u32 c) {
     output_char('\'');
-    if (Elm::CharValue::isEncoded(c)) {
-        const Elm::CaseMap::Entry& e = Elm::CaseMap::entry(c);
-        for (u32 i = 0; i < e.len; i++) print_char_cp(e.units[i]);
-    } else {
-        print_char_cp(c);
-    }
+    print_escaped_cp(c, '\'');
     output_char('\'');
 }
 

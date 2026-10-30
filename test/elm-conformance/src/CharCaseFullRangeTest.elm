@@ -1,16 +1,22 @@
 module CharCaseFullRangeTest exposing (main)
 
 {-| The whole case-mapping table, as hashes. For every code point of every plane (surrogates
-skipped) it mixes the Char mappings, their re-mappings, Char.toCode, Char.isUpper and the
-one-Char String mappings into one hash per plane ("plane p"); String.toUpper/toLower of each
-block of 0x100 code points into a second hash per plane ("strplane p"), which covers the
-whole-string paths and Final_Sigma with real neighbours; and the sorted list of every
-toUpper/toLower result below U+D800 plus its Set size ("sorted"). A mismatch says which plane
-to look at. Expectations recorded from Elm (plans/char-case-mapping-elm-exact.md Step 0.6).
+and `skip` skipped) it mixes the Char mappings, their re-mappings, Char.toCode, Char.isUpper and
+the one-Char String mappings into one hash per plane ("plane p"); String.toUpper/toLower of each
+block of 0x100 code points (minus `skip`) into a second hash per plane ("strplane p"), which
+covers the whole-string paths with real neighbours; and the sorted list of every toUpper/toLower
+result below U+D800 whose source is not in `skip`, plus its Set size ("sorted"). A mismatch says
+which plane to look at. Expectations recorded from Elm (run-js-e2e.js --record).
+
+`skip` holds the code points where eco differs from Elm on purpose (plans/char-simple-case-mapping.md,
+design\_docs/char-case-mapping.md): the 103 whose full case mapping is several code points (Elm's
+results for them are recorded in CaseMappingDivergenceTest), U+1E9E, whose lower case is U+00DF,
+and U+03A3, whose lower case depends on Final\_Sigma. All are in the BMP, so the hashes of planes
+1-16 are what they would be without it.
 -}
 
--- CHECK: plane 0: "1592108178"
--- CHECK: strplane 0: "429400736"
+-- CHECK: plane 0: "818950263"
+-- CHECK: strplane 0: "773073838"
 -- CHECK: plane 1: "1952169291"
 -- CHECK: strplane 1: "173977151"
 -- CHECK: plane 2: "202726133"
@@ -43,7 +49,7 @@ to look at. Expectations recorded from Elm (plans/char-case-mapping-elm-exact.md
 -- CHECK: strplane 15: "253914372"
 -- CHECK: plane 16: "1310054095"
 -- CHECK: strplane 16: "112942602"
--- CHECK: sorted: "554220795"
+-- CHECK: sorted: "1490912566"
 
 import ConformanceHelp exposing (charCps, hashString, logAll, mix, worker)
 import Set
@@ -52,6 +58,33 @@ import Set
 isSurrogate : Int -> Bool
 isSurrogate cp =
     cp >= 0xD800 && cp <= 0xDFFF
+
+
+{-| The code points left out (see the module comment).
+-}
+skip : Set.Set Int
+skip =
+    Set.fromList
+        (0x1E9E
+            :: 0x03A3
+            :: [ 0x00DF, 0x0130, 0x0149, 0x01F0, 0x0390, 0x03B0, 0x0587, 0x1E96, 0x1E97, 0x1E98
+               , 0x1E99, 0x1E9A, 0x1F50, 0x1F52, 0x1F54, 0x1F56, 0x1F80, 0x1F81, 0x1F82, 0x1F83
+               , 0x1F84, 0x1F85, 0x1F86, 0x1F87, 0x1F88, 0x1F89, 0x1F8A, 0x1F8B, 0x1F8C, 0x1F8D
+               , 0x1F8E, 0x1F8F, 0x1F90, 0x1F91, 0x1F92, 0x1F93, 0x1F94, 0x1F95, 0x1F96, 0x1F97
+               , 0x1F98, 0x1F99, 0x1F9A, 0x1F9B, 0x1F9C, 0x1F9D, 0x1F9E, 0x1F9F, 0x1FA0, 0x1FA1
+               , 0x1FA2, 0x1FA3, 0x1FA4, 0x1FA5, 0x1FA6, 0x1FA7, 0x1FA8, 0x1FA9, 0x1FAA, 0x1FAB
+               , 0x1FAC, 0x1FAD, 0x1FAE, 0x1FAF, 0x1FB2, 0x1FB3, 0x1FB4, 0x1FB6, 0x1FB7, 0x1FBC
+               , 0x1FC2, 0x1FC3, 0x1FC4, 0x1FC6, 0x1FC7, 0x1FCC, 0x1FD2, 0x1FD3, 0x1FD6, 0x1FD7
+               , 0x1FE2, 0x1FE3, 0x1FE4, 0x1FE6, 0x1FE7, 0x1FF2, 0x1FF3, 0x1FF4, 0x1FF6, 0x1FF7
+               , 0x1FFC, 0xFB00, 0xFB01, 0xFB02, 0xFB03, 0xFB04, 0xFB05, 0xFB06, 0xFB13, 0xFB14
+               , 0xFB15, 0xFB16, 0xFB17
+               ]
+        )
+
+
+skipped : Int -> Bool
+skipped cp =
+    isSurrogate cp || Set.member cp skip
 
 
 {-| Mixes everything about one code point into `h`.
@@ -91,26 +124,27 @@ mixCodePoint cp h =
            )
 
 
-{-| Folds `mixCodePoint` over code points `cp .. last`, skipping surrogates. Tail-recursive.
+{-| Folds `mixCodePoint` over code points `cp .. last`, skipping surrogates and `skip`.
+Tail-recursive.
 -}
 charLoop : Int -> Int -> Int -> Int
 charLoop cp last h =
     if cp > last then
         h
 
-    else if isSurrogate cp then
+    else if skipped cp then
         charLoop (cp + 1) last h
 
     else
         charLoop (cp + 1) last (mixCodePoint cp h)
 
 
-{-| The String of code points `lo .. lo + 0xFF`, surrogates skipped.
+{-| The String of code points `lo .. lo + 0xFF`, surrogates and `skip` skipped.
 -}
 block : Int -> String
 block lo =
     List.range lo (lo + 0xFF)
-        |> List.filter (\cp -> not (isSurrogate cp))
+        |> List.filter (\cp -> not (skipped cp))
         |> List.map Char.fromCode
         |> String.fromList
 
@@ -149,6 +183,7 @@ sorted =
     let
         mapped =
             List.range 0 0xD7FF
+                |> List.filter (\cp -> not (Set.member cp skip))
                 |> List.concatMap (\cp -> [ Char.toUpper (Char.fromCode cp), Char.toLower (Char.fromCode cp) ])
 
         h =

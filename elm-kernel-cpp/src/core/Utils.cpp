@@ -10,7 +10,6 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
-#include "allocator/CharValue.hpp"
 #include "allocator/ListOps.hpp"
 
 #include <vector>
@@ -152,6 +151,11 @@ static bool eqUnboxableSlot(Allocator& allocator,
 
 // Compare two Unboxable slots whose kinds agree (0=boxed, 1=Int, 2=Float, 3=Char).
 // Returns -1, 0, or 1.
+// Chars compare in code-point order: a Char is one code point (KERN_008).
+static int compareChar(u32 a, u32 b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+
 static int compareUnboxableSlot(Allocator& allocator,
                                  Elm::Unboxable a, Elm::Unboxable b, uint32_t kind,
                                  int (*cmpFn)(void*, void*)) {
@@ -162,7 +166,7 @@ static int compareUnboxableSlot(Allocator& allocator,
         case 2:
             return compareFloat(a.f, b.f);
         case 3:
-            return Elm::CharValue::compare(a.c, b.c);   // KERN_008 order
+            return compareChar(a.c, b.c);
         default: {
             // Both slots are boxed HPointers - recurse.
             void* ao; void* bo; bool eq;
@@ -260,8 +264,8 @@ static int compareListElem(Elm::Allocator& allocator,
             } else {
                 u32 bv = static_cast<ElmChar*>(boxedPtr)->value;
                 u32 uv = prim.c;
-                if (aKind == 0) { ord = Elm::CharValue::compare(bv, uv); }
-                else             { ord = Elm::CharValue::compare(uv, bv); }
+                if (aKind == 0) { ord = compareChar(bv, uv); }
+                else             { ord = compareChar(uv, bv); }
             }
             return ord;
         }
@@ -340,16 +344,14 @@ static int cmp(void* a, void* b) {
         }
 
         case Tag_Char: {
-            // Chars order by CharValue::sortKey, like the eco.char.lt
-            // intrinsic (KERN_008): code-point order for ordinary Chars, and
-            // for an encoded case-mapping result (Char.toUpper 'ß' == "SS")
-            // the order of its expansion as a UTF-16 string, as in elm/core's
-            // JS. Between ordinary Chars the two orders differ only between
-            // U+E000..U+FFFF and astral code points (JS puts the astral
-            // surrogate pair first) - a documented divergence.
+            // Chars order by code point, like the eco.char.lt intrinsic
+            // (KERN_008). elm/core's JS compares them as UTF-16 strings; the
+            // two orders differ only between U+E000..U+FFFF and astral code
+            // points (JS puts the astral surrogate pair first) - a documented
+            // divergence.
             ElmChar* ac = static_cast<ElmChar*>(a);
             ElmChar* bc = static_cast<ElmChar*>(b);
-            return Elm::CharValue::compare(ac->value, bc->value);
+            return compareChar(ac->value, bc->value);
         }
 
         case Tag_String: {

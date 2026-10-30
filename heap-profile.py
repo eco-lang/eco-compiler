@@ -109,9 +109,7 @@ def select_build_tree(tree: str, compiler_mlir: str | None = None,
         stem = f"eco-compiler-{COMPILER_MLIR_OVERRIDE.stem}"
     if BUILD_TREE != PRIMARY_TREE:
         stem = f"{stem}-{BUILD_TREE.name}"
-        # A tree whose compile-time options change LOWERING (e.g.
-        # -DECO_CHAR_CASE_EXPANSION=OFF, plans/char-case-mapping-elm-exact.md)
-        # must lower with its own eco-boot-native, into its own object file.
+        # A tree whose compile-time options change LOWERING must lower with its own eco-boot-native, into its own object file.
         if lower_with_tree:
             ECO_BOOT_NATIVE = BUILD_TREE / "runtime/src/codegen/eco-boot-native"
             ECO_COMPILER_OBJ = ECO_COMPILER_OBJ.with_name(
@@ -1940,7 +1938,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lower-with-build-tree", action="store_true",
                    help="also LOWER with the --build-tree's eco-boot-native, "
                         "into <stem>-<tree>.o: for a tree whose options change "
-                        "the lowering, e.g. -DECO_CHAR_CASE_EXPANSION=OFF.")
+                        "the lowering.")
 
     sub = p.add_subparsers(dest="cmd", required=False)
 

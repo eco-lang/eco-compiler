@@ -1,10 +1,11 @@
 #!/bin/sh
-# check-casemap-tables.sh — fail if runtime/src/allocator/CaseMapTables.hpp is not what the given
-# node generates (plans/char-case-mapping-elm-exact.md Step 1).
+# check-casemap-tables.sh — fail if runtime/src/allocator/CaseMapTables.hpp is not what the vendored
+# UnicodeData.txt generates, or if the given node's Unicode version is not the tables'
+# (plans/char-simple-case-mapping.md, design_docs/char-case-mapping.md).
 #
-# The case tables are node's own toUpperCase/toLowerCase, the reference the elm-conformance tests
-# were recorded against. A node with another Unicode version (or an ICU fix within one) changes
-# the reference: regenerate the tables and re-record the conformance tests together.
+# The elm-conformance tests are recorded from node, so node's Unicode version must be the tables':
+# to move to another version, update the vendored data, regenerate the tables and re-record those
+# tests together.
 #
 # Usage: test/scripts/check-casemap-tables.sh [REPO_ROOT] [NODE]
 set -eu

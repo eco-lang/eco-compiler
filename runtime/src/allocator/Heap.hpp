@@ -421,9 +421,7 @@ typedef struct {
 } ElmInt;
 
 /**
- * A boxed Char (KERN_008, CharValue.hpp): one Unicode code point (0 to 0x10FFFF; a lone surrogate is
- * its unit value) or, when ECO_CHAR_CASE_EXPANSION is on, an encoded case-mapping result whose first
- * code point is in bits 0-20 and whose rank is above them.
+ * A boxed Char (KERN_008): one Unicode code point, 0 to 0x10FFFF (a lone surrogate is its unit value).
  */
 typedef struct {
     Header header;

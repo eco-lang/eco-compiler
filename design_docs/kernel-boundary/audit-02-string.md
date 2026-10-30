@@ -41,7 +41,7 @@ through HPtr · **TB** Task builder · **RT** runtime mutable state · **E** eff
 | `Elm_Kernel_String_lines` | `(HPtr) -> HPtr` | **PA** | – | N parts + spine | **Elm-source** possible, slower | `String.cpp:179-284`. Two arms (UTF-8 byte scan → `slice`; UTF-16 snapshot → `allocString`). CR/CRLF/LF handling matches elm/core's `/\r\n|\r|\n/`. |
 | `Elm_Kernel_String_words` | `(HPtr) -> HPtr` | **PA** | – | trim result + N parts + spine | **Elm-source** possible, slower | `String.cpp:286-389`. ASCII-whitespace only (` \t\n\r`) vs elm/core's Unicode `/\s+/` — divergence, see Key findings #12. |
 | `Elm_Kernel_String_reverse` | `(HPtr) -> HPtr` | **PA** | – | 1 AsciiOut or 1 blank leaf | **Hard-Infeasible** | `StringOps.hpp:838-872`. Must materialise (segment walk writing backwards). **Reverses raw u16 units** — breaks surrogate pairs; elm/core's `_String_reverse` is pair-aware (`elm.js:927-945`). |
-| `Elm_Kernel_String_toUpper` | `(HPtr) -> HPtr` | **PA** | – | 1 AsciiOut or 1 blank leaf | **Elm-source** feasible (it is a `map` over ASCII) | `StringOps.hpp:762-796`. ASCII-only `a-z`→`A-Z`; elm/core uses JS `.toUpperCase()` (full Unicode). No ICU anywhere in the runtime. (Updated 2026-10-28, plans/char-case-mapping-elm-exact.md: now full Unicode via the generated `CaseMap.hpp` tables, expansions included; the in-place ASCII loop is the fast path for an all-ASCII source.) |
+| `Elm_Kernel_String_toUpper` | `(HPtr) -> HPtr` | **PA** | – | 1 AsciiOut or 1 blank leaf | **Elm-source** feasible (it is a `map` over ASCII) | `StringOps.hpp:762-796`. ASCII-only `a-z`→`A-Z`; elm/core uses JS `.toUpperCase()` (full Unicode). No ICU anywhere in the runtime. (Updated 2026-10-28, plans/char-case-mapping-elm-exact.md: now full Unicode via the generated `CaseMap.hpp` tables, expansions included; the in-place ASCII loop is the fast path for an all-ASCII source.) (Updated 2026-10-30, plans/char-simple-case-mapping.md: the Unicode simple case mapping per code point, no expansions, no Final_Sigma; design_docs/char-case-mapping.md.) |
 | `Elm_Kernel_String_toLower` | `(HPtr) -> HPtr` | **PA** | – | 1 AsciiOut or 1 blank leaf | **Elm-source** feasible | `StringOps.hpp:801-833`. Same ASCII-only caveat. (Updated 2026-10-28: full Unicode plus the Final_Sigma rule, as for `toUpper`.) |
 | `Elm_Kernel_String_trim` | `(HPtr) -> HPtr` | **PA** | – | 0 (whole/empty) or 1 slice/leaf via `slice()` | **Hard-Infeasible** | `StringOps.hpp:878-900`. **Always widens first** (`toStdU16String` on the whole string, counted by `UTF8_WIDEN_TRIM`) even though the trim set is pure ASCII — see Key findings #9. |
 | `Elm_Kernel_String_trimLeft` | `(HPtr) -> HPtr` | **PA** | – | as above | **Hard-Infeasible** | `StringOps.hpp:905-922`. Same eager widen. |
@@ -200,7 +200,9 @@ runtime state touched is the `GC_STATS_*` census, compiled out in non-stats buil
     `headerWord = constTagBits | (u64(len) << 32)` — a `shl`+`or` on top of
     `emitInlineAllocWithHeader`. `uncons` is the hot path in char-by-char Elm parsing.
 
-12. **ASCII-only case mapping and whitespace, versus elm/core's Unicode.** `toUpper`/`toLower`
+12. **ASCII-only case mapping and whitespace, versus elm/core's Unicode.** (Updated 2026-10-30:
+    the case-mapping half is stale. `toUpper`/`toLower` use the Unicode simple case mapping, see
+    design_docs/char-case-mapping.md; the whitespace half is unchanged by it.) `toUpper`/`toLower`
     handle only `a-z`/`A-Z` (`StringOps.hpp:776, 815`) where elm/core calls JS
     `.toUpperCase()`/`.toLowerCase()` (`elm.js:1026-1034`); `words` splits on ` \t\n\r` where
     elm/core uses `/\s+/`; `trim` likewise versus JS `.trim()`. These may be deliberate (no ICU

@@ -85,7 +85,8 @@ A row's audit is kept outside this module, in two CSV files beside it, keyed by
 the kernel's `Prefix.Home.name`:
 
   - `kernel-license-audit.csv` has one line per audit or re-audit of a row:
-    `kernel,date,plan,note`. The first audit's note records `class`, `entry`
+    `kernel,date,plan,note`, where `date` is a UTC stamp `YYYY-MM-DDTHH:MM:SS` or a
+    plain `YYYY-MM-DD` (midnight). The first audit's note records `class`, `entry`
     (the C++ entry point), `type` (the Elm type audited), `B1` (how function
     values move through the kernel), `B2` (what it stores outside its result)
     and `B3` (whether it allocates a closure). The class is `vacuous` when the
@@ -93,7 +94,7 @@ the kernel's `Prefix.Home.name`:
     recorded judgement of the rest, and do not follow from the arrows in the
     type. A license is `Inert` exactly when its class is `vacuous`.
   - `kernel-license-files.csv` lists, for each license, the C++ files its
-    audit read: `kernel,file,sha256,audited`, where `audited` is the date of
+    audit read: `kernel,file,sha256,audited`, where `audited` is the stamp of
     the kernel's latest audit line.
 
 `test/scripts/check-kernel-license-manifest.sh` checks the two files against

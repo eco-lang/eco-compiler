@@ -330,8 +330,8 @@ inline HPointer allocFloat(f64 value) {
     return Allocator::instance().wrap(obj);
 }
 
-// Allocates a boxed Char holding `value`, a Char value as CharValue.hpp defines it, for a place that
-// needs a Char as an HPointer. A GC point.
+// Allocates a boxed Char holding `value`, one code point (KERN_008), for a place that needs a Char as
+// an HPointer. A GC point.
 inline HPointer allocChar(u32 value) {
     ElmChar* obj = static_cast<ElmChar*>(
         eco_alloc_with_roots(Tag_Char, sizeof(ElmChar), nullptr, 0, 0));
@@ -357,8 +357,8 @@ inline Unboxable unboxedFloat(f64 value) {
     return u;
 }
 
-// Returns a slot holding the Char value `cp` (a code point or, with case expansion on, an encoded
-// case-mapping result; CharValue.hpp), zero-extended to the whole 64-bit word. Code that reads a Char
+// Returns a slot holding the Char `cp` (one code point, KERN_008), zero-extended to the whole 64-bit
+// word. Code that reads a Char
 // slot as a raw word relies on bits 32 to 63 being zero, so a Char slot is written through this.
 inline Unboxable unboxedChar(u32 cp) {
     Unboxable u;

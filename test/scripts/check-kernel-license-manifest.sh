@@ -16,12 +16,15 @@
 #
 #   kernel-license-files.csv   kernel,file,sha256,audited
 #       One line per (licensed or intrinsic-annotated kernel x audited C++
-#       file), with the file's sha256 and the date of the kernel's latest
+#       file), with the file's sha256 and the stamp of the kernel's latest
 #       audit when the hash was taken.
 #   kernel-license-audit.csv   kernel,date,plan,note
-#       One line per audit or re-audit of a row. `date` is YYYY-MM-DD (empty
-#       only for a first audit whose date was never recorded); `plan` names
-#       the plans/*.md file behind it, if any.
+#       One line per audit or re-audit of a row. `date` is a UTC stamp,
+#       YYYY-MM-DDTHH:MM:SS (`date -u +%Y-%m-%dT%H:%M:%S`), or a plain
+#       YYYY-MM-DD, which means midnight, YYYY-MM-DDT00:00:00 (older lines;
+#       empty only for a first audit whose date was never recorded). Stamps
+#       are compared at that granularity, so a file can be re-audited several
+#       times a day. `plan` names the plans/*.md file behind it, if any.
 #
 # A license kernel is named `<Prefix>.<Home>.<name>` (`Elm.File.size`), an
 # intrinsic annotation `<Prefix>.Kernel.<Home>.<name>`, so an intrinsic pin is
@@ -41,13 +44,13 @@
 #      names a row, a license's first audit carries the class:, entry:,
 #      type:, B1:, B2: and B3: markers and a `Positional` row's carries
 #      entry:, a license is `Inert` exactly when its audit says
-#      `class: vacuous`, and each pin's `audited` date is its kernel's latest
-#      audit date.
+#      `class: vacuous`, and each pin's `audited` stamp is its kernel's latest
+#      audit stamp.
 #
-# `--update` re-hashes the pinned files and sets each pin's `audited` date. It
+# `--update` re-hashes the pinned files and sets each pin's `audited` stamp. It
 # is the LAST step of a re-audit, never a way to make a red build green: it
-# refuses to change a hash unless the kernel has an audit line dated after the
-# pin's current `audited` date. New pins are added to the files CSV by hand,
+# refuses to change a hash unless the kernel has an audit line stamped strictly
+# after the pin's current `audited` stamp. New pins are added to the files CSV by hand,
 # with the sha256 and audited columns left empty for `--update` to fill.
 #
 # Scope note (deliberate): the CSV pins the kernel's OWN C++ — the entry
@@ -156,8 +159,20 @@ sort -u "$TMP/rows" > "$TMP/rows.sorted"
 awk -F'\t' '$2 == "TypeFaithful" || $2 == "Intrinsic" { print $1 }' "$TMP/rows.sorted" | sort -u > "$TMP/pinnable"
 
 # --- the CSVs -----------------------------------------------------------------
-# kernel <TAB> latest audit date (empty when no audit line has a date)
-awk -F, 'NR > 1 { k = $1; if (!(k in latest)) latest[k] = ""; if ($2 > latest[k]) latest[k] = $2 }
+# A stamp's comparison key: a plain YYYY-MM-DD is midnight of that day, so
+# "2026-10-30" and "2026-10-30T00:00:00" are equal and every later time of the
+# day is after both. Keys compare as strings.
+stamp_key() {
+    case "$1" in
+        ????-??-??) echo "$1T00:00:00" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# kernel <TAB> latest audit stamp, as written (empty when no audit line has
+# one). The latest is chosen by comparison key.
+awk -F, 'function key(d) { return length(d) == 10 ? d "T00:00:00" : d }
+         NR > 1 { k = $1; if (!(k in latest)) latest[k] = ""; if (key($2) > key(latest[k])) latest[k] = $2 }
          END { for (k in latest) print k "\t" latest[k] }' "$AUDIT_CSV" | sort > "$TMP/latest"
 
 # --- --update: re-hash the pins ----------------------------------------------
@@ -173,10 +188,12 @@ if [ "$MODE" = "--update" ]; then
         fi
         got=$(sha256_of "$ROOT/$file")
         latest=$(awk -F'\t' -v k="$kernel" '$1 == k { print $2 }' "$TMP/latest")
-        if [ "$got" != "$want" ] && [ -n "$audited" ] && ! [ "$latest" \> "$audited" ]; then
+        if [ "$got" != "$want" ] && [ -n "$audited" ] \
+            && ! [ "$(stamp_key "$latest")" \> "$(stamp_key "$audited")" ]; then
             echo "check-kernel-license-manifest: refusing to re-hash $file for $kernel:" >&2
             echo "  its latest audit ($latest) is not after the pin's ($audited). Add a" >&2
-            echo "  re-audit line to kernel-license-audit.csv first." >&2
+            echo "  re-audit line to kernel-license-audit.csv first, stamped with the" >&2
+            echo "  current UTC time (date -u +%Y-%m-%dT%H:%M:%S)." >&2
             echo "FAIL" >> "$TMP/refused"
             echo "$kernel,$file,$want,$audited"
             continue
@@ -228,7 +245,7 @@ if ! diff -u "$TMP/audited" "$TMP/rowkernels" > "$TMP/audit.diff" 2>&1; then
     sed 's/^/  /' "$TMP/audit.diff" >&2
 fi
 
-awk -F, 'NR > 1 && $2 != "" && $2 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ { print "  line " NR ": bad date " $2 }' \
+awk -F, 'NR > 1 && $2 != "" && $2 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9](T[0-9][0-9]:[0-9][0-9]:[0-9][0-9])?$/ { print "  line " NR ": bad date " $2 }' \
     "$AUDIT_CSV" > "$TMP/dates"
 awk -F'\t' '$2 == "" { print "  " $1 " has no dated audit" }' "$TMP/latest" >> "$TMP/dates"
 if [ -s "$TMP/dates" ]; then
@@ -277,7 +294,8 @@ tail -n +2 "$FILES_CSV" | while IFS=, read -r kernel file want audited; do
         echo "    current: $got" >&2
         echo "  Re-audit per plans/kernel-parametricity-license.md §2 (application-only" >&2
         echo "  through the sanctioned entry points, no retention, no fabrication or" >&2
-        echo "  laundering, honest type), add a dated re-audit line for the kernel to" >&2
+        echo "  laundering, honest type), add a re-audit line for the kernel, stamped" >&2
+        echo "  with the current UTC time (date -u +%Y-%m-%dT%H:%M:%S), to" >&2
         echo "  kernel-license-audit.csv, then run $0 <repo-root> --update." >&2
         echo "  If the kernel can no longer be licensed, demote the row to Positional" >&2
         echo "  or delete it — a wrong license is a miscompile, a missing one costs" >&2
@@ -288,7 +306,7 @@ tail -n +2 "$FILES_CSV" | while IFS=, read -r kernel file want audited; do
     latest=$(awk -F'\t' -v k="$kernel" '$1 == k { print $2 }' "$TMP/latest")
     if [ "$audited" != "$latest" ]; then
         echo "check-kernel-license-manifest: $kernel pins $file as audited $audited," >&2
-        echo "  but its latest audit line is dated $latest. Run $0 <repo-root> --update." >&2
+        echo "  but its latest audit line is stamped $latest. Run $0 <repo-root> --update." >&2
         echo "FAIL" >> "$TMP/hashfail"
     fi
 done

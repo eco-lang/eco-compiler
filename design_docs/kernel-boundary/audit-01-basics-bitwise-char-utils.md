@@ -155,7 +155,9 @@ Not deletable, but never on an applied path.
    `toLocaleLower`/`toLocaleUpper` (`Char.cpp:121`/`:140`) just forward to them. 5 LLVM
    instructions each. (Updated 2026-10-28, plans/char-case-mapping-elm-exact.md: no longer true.
    The case mappers are table lookups in `CaseMap.hpp` and may return encoded multi-code-point
-   Chars, KERN_008; `toCode` masks to the first code point.)
+   Chars, KERN_008; `toCode` masks to the first code point.) (Updated 2026-10-30,
+   plans/char-simple-case-mapping.md: the tables are the Unicode simple case mapping, one code
+   point to one code point; no encoded Chars, and `toCode` is the value.)
 4. **The genuinely irreducible core is exactly two things:** (a) `Utils::cmp`/`eqHelp` structural
    recursion over arbitrary heap values — per-slot unboxed-kind bitmap dispatch, mixed
    boxed/unboxed cross-checks, 4-form strings, hybrid Cons/ConsChunk spines, 3-form ByteBuffers,

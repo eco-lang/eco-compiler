@@ -1,6 +1,7 @@
 ---
-status: done
-updated: 2026-10-28
+status: superseded
+updated: 2026-10-30
+superseded_by: "plans/char-simple-case-mapping.md"
 ---
 
 # Elm-exact Char and String case mapping with an encoded Char range

@@ -4,7 +4,6 @@
 #include "../ExportHelpers.hpp"
 #include "Utils.hpp"
 #include "allocator/StringOps.hpp"
-#include "allocator/CharValue.hpp"
 #include "allocator/ListOps.hpp"
 
 using namespace Elm;
@@ -85,10 +84,11 @@ HPtr Elm_Kernel_Utils_compare_Float(double a, double b) {
 
 // Char arguments arrive as uint64_t and are masked to the 32-bit Char value
 // (see CharExports.cpp for the statepoint zero-extension rationale). Chars
-// compare by CharValue::compare (KERN_008; see the Tag_Char note in Utils.cpp).
+// compare in code-point order (KERN_008; see the Tag_Char note in Utils.cpp).
 HPtr Elm_Kernel_Utils_compare_Char(uint64_t a_raw, uint64_t b_raw) {
-    const int c = Elm::CharValue::compare(static_cast<uint32_t>(a_raw & 0xFFFFFFFFu),
-                                          static_cast<uint32_t>(b_raw & 0xFFFFFFFFu));
+    const uint32_t a = static_cast<uint32_t>(a_raw & 0xFFFFFFFFu);
+    const uint32_t b = static_cast<uint32_t>(b_raw & 0xFFFFFFFFu);
+    const int c = a < b ? -1 : (a > b ? 1 : 0);
     uint64_t enc = (c < 0) ? Utils::getOrderLT()
                  : (c > 0) ? Utils::getOrderGT()
                            : Utils::getOrderEQ();
@@ -151,9 +151,8 @@ HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b) {
 // Phase C per-instance variants for equality and ordering on primitives.
 // Each takes the corresponding primitive ABI type directly and returns the
 // boxed Bool (HPtr to the True / False singleton). C operators give the
-// correct semantics: IEEE 754 comparison for Float (NaN-aware); Chars order by
-// the unsigned compare of CharValue::sortKey and are equal iff their values
-// are (KERN_008).
+// correct semantics: IEEE 754 comparison for Float (NaN-aware); Chars compare
+// as unsigned code points in their low 32 bits (KERN_008).
 HPtr Elm_Kernel_Utils_equal_Int   (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
 HPtr Elm_Kernel_Utils_equal_Float (double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a == b)); }
 HPtr Elm_Kernel_Utils_equal_Char  (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) == (b & 0xFFFFFFFFu))); }
@@ -164,19 +163,19 @@ HPtr Elm_Kernel_Utils_notEqual_Char (uint64_t a, uint64_t b) { return HPtr::from
 
 HPtr Elm_Kernel_Utils_lt_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a < b)); }
 HPtr Elm_Kernel_Utils_lt_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a < b)); }
-HPtr Elm_Kernel_Utils_lt_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool(Elm::CharValue::sortKey(static_cast<uint32_t>(a)) < Elm::CharValue::sortKey(static_cast<uint32_t>(b)))); }
+HPtr Elm_Kernel_Utils_lt_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) < (b & 0xFFFFFFFFu))); }
 
 HPtr Elm_Kernel_Utils_le_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a <= b)); }
 HPtr Elm_Kernel_Utils_le_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a <= b)); }
-HPtr Elm_Kernel_Utils_le_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool(Elm::CharValue::sortKey(static_cast<uint32_t>(a)) <= Elm::CharValue::sortKey(static_cast<uint32_t>(b)))); }
+HPtr Elm_Kernel_Utils_le_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) <= (b & 0xFFFFFFFFu))); }
 
 HPtr Elm_Kernel_Utils_gt_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a > b)); }
 HPtr Elm_Kernel_Utils_gt_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a > b)); }
-HPtr Elm_Kernel_Utils_gt_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool(Elm::CharValue::sortKey(static_cast<uint32_t>(a)) > Elm::CharValue::sortKey(static_cast<uint32_t>(b)))); }
+HPtr Elm_Kernel_Utils_gt_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) > (b & 0xFFFFFFFFu))); }
 
 HPtr Elm_Kernel_Utils_ge_Int  (int64_t  a, int64_t  b) { return HPtr::fromBits(Export::encodeBoxedBool(a >= b)); }
 HPtr Elm_Kernel_Utils_ge_Float(double   a, double   b) { return HPtr::fromBits(Export::encodeBoxedBool(a >= b)); }
-HPtr Elm_Kernel_Utils_ge_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool(Elm::CharValue::sortKey(static_cast<uint32_t>(a)) >= Elm::CharValue::sortKey(static_cast<uint32_t>(b)))); }
+HPtr Elm_Kernel_Utils_ge_Char (uint64_t a, uint64_t b) { return HPtr::fromBits(Export::encodeBoxedBool((a & 0xFFFFFFFFu) >= (b & 0xFFFFFFFFu))); }
 
 HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
     uint64_t a_bits = a.toBits();
