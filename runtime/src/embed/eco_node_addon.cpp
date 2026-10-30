@@ -7,7 +7,7 @@
 //     const app = Elm.Main.init({ flags: null });
 //     app.ports.logPort.subscribe(msg => console.log(msg));
 //     app.ports.onP2PSend.send({ subjectId: 1, messageId: 2 });
-//     app.stop();   // stops the program and waits for it
+//     await app.stop();   // stops the program; resolves to its exit code once it has finished
 //
 // It is written against Node's C API, N-API, and against the embedding interface in `eco_embed.h`. The program
 // runs on its own eco thread, as `eco_app_start` describes; JavaScript runs on Node's main thread. Values cross
@@ -23,7 +23,8 @@
 //   process running.
 // - One keepalive TSFN, `g_keepalive`, is referenced from its creation and while the program reports itself
 //   busy through the idle hook (`eco_set_idle_hook`), and from each port send until the next idle report; an
-//   idle report unreferences it.
+//   idle report unreferences it. Once `app.stop()` has been called it is never referenced again, and it is
+//   unreferenced when the stop completes; a failed start releases it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +34,7 @@
 #include "eco_embed.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string>
@@ -53,6 +55,19 @@ napi_threadsafe_function g_keepalive = nullptr;
 // Whether the program last reported itself busy; true until the first report. Written on the eco thread, read
 // on the main thread.
 std::atomic<bool> g_ecoBusy{true};
+// Whether `app.stop()` has been called. Used on the main thread only. Once set, nothing references
+// `g_keepalive` again, so a stopped program never holds Node's event loop.
+bool g_stopped = false;
+
+// Tries to throw a JavaScript `Error` carrying N-API's last error message for `env`. If a JavaScript exception is
+// already pending, that exception is what propagates.
+void throwLastNapiError(napi_env env) {
+    const napi_extended_error_info* info = nullptr;
+    napi_get_last_error_info(env, &info);
+    napi_throw_error(env, nullptr,
+                     info && info->error_message ? info->error_message
+                                                 : "eco: N-API call failed");
+}
 
 // Evaluates the N-API call `call` and, if it does not return `napi_ok`, tries to throw a JavaScript `Error`
 // carrying N-API's last error message for `env` and returns `ret` from the enclosing function. If a JavaScript
@@ -65,12 +80,7 @@ std::atomic<bool> g_ecoBusy{true};
     do {                                                                     \
         napi_status status_ = (call);                                        \
         if (status_ != napi_ok) {                                            \
-            const napi_extended_error_info* info_ = nullptr;                 \
-            napi_get_last_error_info((env), &info_);                         \
-            napi_throw_error((env), nullptr,                                 \
-                             info_ && info_->error_message                   \
-                                 ? info_->error_message                      \
-                                 : "eco: N-API call failed");                \
+            throwLastNapiError(env);                                         \
             return (ret);                                                    \
         }                                                                    \
     } while (0)
@@ -155,14 +165,15 @@ void nodeSink(const char* json, void* user) {
     }
 }
 
-// References `g_keepalive` if `g_ecoBusy` is set and unreferences it if not; the call queued by `ecoActivity`.
+// References `g_keepalive` if `g_ecoBusy` is set and the app has not been stopped, and unreferences it
+// otherwise; the call queued by `ecoActivity`.
 //
 // It reads the state when it runs, not when it was queued, so after a burst of reports the TSFN matches the
 // latest. It does nothing when `env` is null, as when the TSFN is being torn down.
 void keepaliveTrampoline(napi_env env, napi_value /*jsCb*/, void* /*ctx*/,
                          void* /*data*/) {
     if (env == nullptr || g_keepalive == nullptr) return;
-    if (g_ecoBusy.load())
+    if (g_ecoBusy.load() && !g_stopped)
         napi_ref_threadsafe_function(env, g_keepalive);
     else
         napi_unref_threadsafe_function(env, g_keepalive);
@@ -210,9 +221,9 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    auto* entry = new SubEntry();
+    // Owned here until every N-API call has succeeded, so a failure leaks neither the entry nor its TSFN.
+    auto entry = std::make_unique<SubEntry>();
     entry->port = *portName;
-    NAPI_CALL(env, napi_create_reference(env, argv[0], 1, &entry->fnRef));
 
     napi_value resourceName;
     NAPI_CALL(env, napi_create_string_utf8(env, "eco_port", NAPI_AUTO_LENGTH,
@@ -222,10 +233,18 @@ napi_value portSubscribe(napi_env env, napi_callback_info info) {
                   env, argv[0], nullptr, resourceName, /*max_queue=*/0,
                   /*initial_thread_count=*/1, nullptr, nullptr, nullptr,
                   callJsTrampoline, &entry->tsfn));
-    NAPI_CALL(env, napi_unref_threadsafe_function(env, entry->tsfn));
+    napi_status st = napi_unref_threadsafe_function(env, entry->tsfn);
+    if (st == napi_ok) st = napi_create_reference(env, argv[0], 1, &entry->fnRef);
+    if (st != napi_ok) {
+        // No other thread has the TSFN yet, so it can be released here.
+        throwLastNapiError(env);
+        napi_release_threadsafe_function(entry->tsfn, napi_tsfn_release);
+        return nullptr;
+    }
 
-    subEntries().push_back(entry);
-    eco_port_subscribe(portName->c_str(), nodeSink, entry);
+    SubEntry* subscribed = entry.release();
+    subEntries().push_back(subscribed);
+    eco_port_subscribe(portName->c_str(), nodeSink, subscribed);
 
     return nullptr;
 }
@@ -267,9 +286,9 @@ napi_value portUnsubscribe(napi_env env, napi_callback_info info) {
 // incoming port whose name is the function's data, with `eco_port_send`.
 //
 // Propagates any exception `JSON.stringify` throws; throws a `TypeError` if it does not return a string, as for
-// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send. On success it references
-// `g_keepalive` before returning, so that Node's event loop is held until the program next reports itself idle,
-// if it does; after the program has stopped none follows.
+// `undefined` or a function, and an `Error` if `eco_port_send` refuses the send. On success, unless
+// `app.stop()` has been called, it references `g_keepalive` before returning, so that Node's event loop is held
+// until the program next reports itself idle.
 napi_value portSend(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -308,18 +327,61 @@ napi_value portSend(napi_env env, napi_callback_info info) {
     }
     // Referenced here, not left to the idle hook, so that the loop is held before the eco thread has seen the
     // value and reported itself busy.
-    if (g_keepalive != nullptr)
+    if (g_keepalive != nullptr && !g_stopped)
         napi_ref_threadsafe_function(env, g_keepalive);
     return nullptr;
 }
 
-// Implements `app.stop()`: asks the program to stop with `eco_app_stop` and blocks the main thread until the
-// eco thread has finished, with `eco_app_join`.
+/**
+ * One `app.stop()` in progress: the async work that waits for the eco thread off the main thread, the
+ * deferred of the Promise it settles, and the program's exit code once it has finished.
+ */
+struct StopWork {
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+    int exitCode = 0;
+};
+
+// Waits for the eco thread to finish, with `eco_app_join`; runs on a libuv worker thread.
+void stopExecute(napi_env /*env*/, void* data) {
+    static_cast<StopWork*>(data)->exitCode = eco_app_join();
+}
+
+// Unreferences `g_keepalive`, resolves the stop's Promise with the exit code and frees the work; runs on the
+// main thread once `stopExecute` has returned.
+void stopComplete(napi_env env, napi_status /*status*/, void* data) {
+    auto* sw = static_cast<StopWork*>(data);
+    if (g_keepalive != nullptr) napi_unref_threadsafe_function(env, g_keepalive);
+    napi_value code;
+    if (napi_create_int32(env, sw->exitCode, &code) == napi_ok)
+        napi_resolve_deferred(env, sw->deferred, code);
+    napi_delete_async_work(env, sw->work);
+    delete sw;
+}
+
+// Implements `app.stop()`: asks the program to stop with `eco_app_stop` and returns a Promise that resolves to
+// the program's exit code once the eco thread has finished. The wait, `eco_app_join`, runs on a libuv worker
+// thread, so Node's main thread is not blocked. From this call on, nothing references `g_keepalive` again.
+// Calling it again returns another Promise that resolves the same way.
 napi_value appStop(napi_env env, napi_callback_info /*info*/) {
-    (void)env;
+    g_stopped = true;
     eco_app_stop();
-    eco_app_join();
-    return nullptr;
+
+    napi_value promise, resourceName;
+    auto sw = std::make_unique<StopWork>();
+    NAPI_CALL(env, napi_create_promise(env, &sw->deferred, &promise));
+    NAPI_CALL(env, napi_create_string_utf8(env, "eco_stop", NAPI_AUTO_LENGTH,
+                                           &resourceName));
+    NAPI_CALL(env, napi_create_async_work(env, nullptr, resourceName,
+                                          stopExecute, stopComplete,
+                                          sw.get(), &sw->work));
+    if (napi_queue_async_work(env, sw->work) != napi_ok) {
+        throwLastNapiError(env);
+        napi_delete_async_work(env, sw->work);
+        return nullptr;
+    }
+    sw.release();  // stopComplete frees it
+    return promise;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +432,9 @@ napi_value buildPortsObject(napi_env env) {
 
 // Whether `elmInit` has started the program.
 bool g_inited = false;
+// Whether `elmInit` tried to start the program and failed. `eco_app_start` cannot be retried, so a later call
+// fails at once.
+bool g_startFailed = false;
 
 // Implements `Elm.<Root>.init(opts)`: starts the program with `opts.flags` as its flags and returns the app
 // object, `{ ports, stop }`.
@@ -378,9 +443,9 @@ bool g_inited = false;
 // If `opts` is null, a function or a primitive, or `opts.flags` is `undefined` or `JSON.stringify` returns a
 // non-string, the program is started with no flags, as `eco_app_start` describes for a null `flags_json`. Throws
 // an `Error` if the program has already been started successfully by this function, or fails to start; since
-// `eco_app_start` cannot be retried, a later call after a failed start fails too. Before starting it, creates
-// `g_keepalive`, referenced, and installs `ecoActivity` as the idle hook, so that the loop is held
-// from the start until the program first reports itself idle.
+// `eco_app_start` cannot be retried, a later call after a failed start fails too, creating nothing. Before
+// starting it, creates `g_keepalive`, referenced, and installs `ecoActivity` as the idle hook, so that the loop
+// is held from the start until the program first reports itself idle; a failed start releases both.
 napi_value elmInit(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1];
@@ -389,6 +454,11 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
     if (g_inited) {
         napi_throw_error(env, nullptr,
                          "eco: Elm.init may only be called once per process");
+        return nullptr;
+    }
+    if (g_startFailed) {
+        napi_throw_error(env, nullptr,
+                         "eco: the app failed to start and cannot be started again");
         return nullptr;
     }
 
@@ -449,6 +519,12 @@ napi_value elmInit(napi_env env, napi_callback_info info) {
 
     if (eco_app_start(0, nullptr, hasFlags ? flagsJson.c_str() : nullptr) !=
         0) {
+        // No eco thread exists to call the hook or the TSFN, so both can go here; otherwise the referenced
+        // keepalive would hold Node's event loop for good.
+        g_startFailed = true;
+        eco_set_idle_hook(nullptr, nullptr);
+        napi_release_threadsafe_function(g_keepalive, napi_tsfn_release);
+        g_keepalive = nullptr;
         napi_throw_error(env, nullptr, "eco: app failed to start");
         return nullptr;
     }

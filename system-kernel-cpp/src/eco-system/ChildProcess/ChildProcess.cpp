@@ -290,6 +290,7 @@ void completeRun(int64_t jobId) {
     uint64_t timerToken = j->timerToken;
     HoldToken hold = j->hold;
     bool killed = j->killed || j->overflow;
+    [[maybe_unused]] bool waitFailed = j->waitFailed;   // read only on POSIX
     int raw = j->rawStatus;
     std::string out = std::move(j->out), err = std::move(j->err);
     childJobs().erase(jobId);   // `j` is dead from here
@@ -298,7 +299,7 @@ void completeRun(int64_t jobId) {
     int64_t code = -1;
     bool success = false;
 #ifndef _WIN32
-    if (!killed && WIFEXITED(raw)) {
+    if (!killed && !waitFailed && WIFEXITED(raw)) {
         code = WEXITSTATUS(raw);
         success = code == 0;
     }
@@ -332,6 +333,7 @@ void completeSpawn(int64_t jobId) {
     uint64_t timerToken = j->timerToken;
     HoldToken hold = j->hold;
     int raw = j->rawStatus;
+    bool waitFailed = j->waitFailed;
     HPointer router = dec(j->routerEnc);
     HPointer tagger = dec(j->onExitEnc);
     // No allocation since the decode: root, then the job may go.
@@ -343,10 +345,11 @@ void completeSpawn(int64_t jobId) {
     childJobs().erase(jobId);
     cancelTimer(timerToken);
 
-    int64_t code = WaitService::exitCodeFromStatus(raw);   // 128 + signal for a signal death
+    // 128 + signal for a signal death; kWaitFailedExitCode (-1) when the pid could not be waited for.
+    int64_t code = waitFailed ? WaitService::kWaitFailedExitCode : WaitService::exitCodeFromStatus(raw);
     int64_t sig = 0;
 #ifndef _WIN32
-    if (WIFSIGNALED(raw)) sig = WTERMSIG(raw);
+    if (!waitFailed && WIFSIGNALED(raw)) sig = WTERMSIG(raw);
 #endif
 
     auto& s = Scheduler::instance();
@@ -399,6 +402,7 @@ void waitDrain() {
         if (!j) continue;   // a job of a dead heap (F24)
         j->exited = true;
         j->rawStatus = r.rawStatus;
+        j->waitFailed = r.error != 0;
         advanceJob(jobId);
         any = true;
     }

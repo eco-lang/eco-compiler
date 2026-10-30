@@ -41,7 +41,8 @@ struct ChildJob {
     int64_t pid = -1;
 
     bool exited = false;          // its exit was popped from the WaitService
-    int rawStatus = 0;            // raw waitpid status (valid when exited)
+    int rawStatus = 0;            // raw waitpid status (valid when exited and !waitFailed)
+    bool waitFailed = false;      // the WaitService could not wait for the pid (Ready::error)
     HoldToken hold = kNoHold;     // the child's Task hold (kNoHold: Detached)
     uint64_t resumeToken = 0;     // run: the task's; spawn: the child binding's
     uint64_t timerToken = 0;      // armed runDuration timer, 0 when none / fired

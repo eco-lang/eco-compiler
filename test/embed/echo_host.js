@@ -15,7 +15,7 @@
  *     silently, never thrown (JS parity)
  *   - unsubscribe, allowing the documented one trailing callback
  *     (eco_node_addon.cpp, portUnsubscribe)
- *   - cooperative app.stop()
+ *   - cooperative app.stop(), which returns a Promise of the exit code
  *
  * Run:
  *   node test/embed/echo_host.js [shim.js]      (default: ./build/elm.js)
@@ -133,9 +133,13 @@ function onEchoOut(value) {
         clearTimeout(guard);
         clearInterval(keepalive);
         console.log('HOST done');
-        app.stop();
-        console.log('HOST exit: 0');
-        process.exitCode = 0;
+        /* stop() resolves to the program's exit code once the eco thread has finished. */
+        app.stop().then(function (code) {
+            console.log('HOST exit: ' + code);
+            process.exitCode = code === 0 ? 0 : 1;
+        }, function (e) {
+            fail('app.stop() rejected: ' + e);
+        });
     }, 250);
 }
 

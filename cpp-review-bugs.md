@@ -6,11 +6,11 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 | verdict | high | medium | low | - | total |
 |---|---|---|---|---|---|
-| likely-bug | 0 | 2 | 14 | - | 16 |
+| likely-bug | 0 | 0 | 14 | - | 14 |
 | possible | 7 | 22 | 67 | - | 96 |
 | cleanup | - | - | - | 38 | 38 |
 | not-a-bug | - | - | - | 16 | 16 |
-| already-fixed | 6 | 3 | 1 | 1 | 11 |
+| already-fixed | 6 | 5 | 1 | 1 | 13 |
 
 ## High severity
 
@@ -408,9 +408,10 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### WaitService waitpid(-1) steals children and can spin forever
 - where: `runtime/src/platform/WaitService.cpp:135-143`
-- verdict: likely-bug
+- verdict: FIXED 2026-10-30 (reproduced first)
 - severity: medium
 - Reaping every child breaks any other code that waits on its own children: it gets ECHILD, and the status sits in `unclaimed_` forever. A pid that is never a reapable child makes the worker poll every 10 ms forever without answering. On Windows an OpenProcess failure looks like exit code 1.
+- Fix: each submitted child is waited for on a detached thread of its own (`waitpid(pid)` on POSIX, the process handle on Windows); the `waitpid(-1)` worker and `unclaimed_` are gone. A wait that cannot be made (ECHILD, no handle, no thread) is answered at once as failed: `Ready::error` is set and the exit code is `WaitService::kWaitFailedExitCode` (-1), which `Eco.Process.wait` passes on and ChildProcess reports through a new `waitFailed` flag. Pins: `test/platform/PlatformServicesTest.cpp` PS8b (another child keeps its status; failed before the fix) and PS8c (a non-child is answered within 2 s; hung before the fix). PS8 now pins "exited before submit is delivered", since its old form asserted the stealing itself.
 
 ### HttpService: redirect headers accumulate, GET-with-body becomes POST
 - where: `runtime/src/platform/HttpService.cpp (perform, headerCb ~153)`
@@ -498,9 +499,11 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Node addon keepalive leaks hold the event loop open
 - where: `runtime/src/embed/ node addon cpp:212-448 (portSend, elmInit, portSubscribe, appStop)`
-- verdict: likely-bug
+- verdict: FIXED 2026-10-30 (reproduced first, except the portSubscribe N-API-error leak, which no host script can trigger)
 - severity: medium
 - portSend after stop references `g_keepalive` and nothing unreferences it, so Node never exits on its own. After a failed start, a retried elmInit overwrites `g_keepalive` with a new referenced TSFN and leaks the first. portSubscribe leaks a SubEntry on an N-API error, and appStop blocks Node's main thread in join.
+- Note: the send-after-stop leak only shows when the send comes after the stopped program's last idle report has been handled; a send straight after `stop()` was rescued by that queued report.
+- Fix: `g_stopped`, set by `app.stop()`, stops `portSend` and the keepalive trampoline from referencing `g_keepalive` again; a failed start releases the keepalive and the idle hook, and a later `init` throws without creating anything; `portSubscribe` owns its entry in a `unique_ptr` and releases the TSFN if a later N-API call fails; `app.stop()` returns a Promise of the exit code, joining on a libuv worker (`napi_async_work`) and unreferencing the keepalive when it completes. Pins: `test/embed/lifecycle_host.js` (modes stop-promise, send-after-stop, failed-start, the last under `prlimit --nproc=1`), run with `echo_host.js` by `test/embed/run-node-addon-tests.sh`, target `run-node-addon-tests`, now part of `full`.
 
 ### eco_embed: failed thread start leaves started=true
 - where: `runtime/src/embed/eco_embed.cpp:213-326`

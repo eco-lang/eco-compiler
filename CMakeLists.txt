@@ -1537,6 +1537,21 @@ add_custom_target(stress
 # `compiler/bin/index.js` (guida.js via the XHR mock + eco-io-handler),
 # so only Stage 1 is needed — no Stage 2+ build.
 # run-js-e2e (compiler/CMakeLists.txt) exists on POSIX hosts only.
+# run-node-addon-tests: builds test/elm/src/PortEchoTest.elm as a `.node` addon and runs the Node hosts
+# against it (test/embed/run-node-addon-tests.sh): the port round trip, app.stop()'s Promise, and no
+# keepalive leaked after a stop, a send after stop or a failed start. Linux only (`.node` addons are
+# glibc-ABI). `full` runs it after the JS suite.
+set(_full_node_addon)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET eco-boot-native AND TARGET EcoNodeGlue)
+    add_custom_target(run-node-addon-tests
+        COMMAND sh ${CMAKE_SOURCE_DIR}/test/embed/run-node-addon-tests.sh
+            ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR} ${NODE_EXECUTABLE}
+        DEPENDS eco-boot-native EcoNodeGlue guida
+        COMMENT "Running the Node addon (.node) host tests"
+        USES_TERMINAL
+    )
+    set(_full_node_addon COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-node-addon-tests)
+endif()
 set(_full_js_e2e)
 set(_full_casemap_check)
 if(NOT WIN32)
@@ -1561,6 +1576,7 @@ add_custom_target(full
     # The eco-system and elm-conformance suites on the JS target (plans/eco-system-library.md
     # Phase 10, plans/char-case-mapping-elm-exact.md).
     ${_full_js_e2e}
-    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E and the JS eco-system E2E"
+    ${_full_node_addon}
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E, the JS eco-system E2E and the Node addon tests"
     USES_TERMINAL
 )

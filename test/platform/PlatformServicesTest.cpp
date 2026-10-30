@@ -249,29 +249,71 @@ void test_wait_signal_death_is_128_plus_sig() {
     TEST_ASSERT(WaitService::exitCodeFromStatus(r.rawStatus) == 137);
 }
 
-// A child that exits (and is reaped by the worker while it waits for another
-// child) before its own submit is parked as unclaimed and delivered at submit.
-void test_wait_reaped_before_submit_is_delivered() {
+// A child that has exited before its own submit (still a zombie: nothing
+// reaps a child nobody has submitted) is delivered once submitted.
+void test_wait_exited_before_submit_is_delivered() {
     initRuntime();
     auto& ws = WaitService::instance();
-    pid_t slow = spawnExit(5, /*delayMs=*/400);
     pid_t fast = spawnExit(7);
-    TEST_ASSERT(slow > 0 && fast > 0);
-    ws.submit(slow, 301, WaitLane::EcoKernel);
-    // The worker's waitpid(-1) reaps `fast` first; once reaped, the pid is
-    // gone (kill(pid, 0) fails with ESRCH; a zombie still answers).
-    TEST_ASSERT(waitFor([&] { return ::kill(fast, 0) == -1 && errno == ESRCH; }));
+    TEST_ASSERT(fast > 0);
+    // Wait for the exit without reaping it.
+    siginfo_t info{};
+    TEST_ASSERT(::waitid(P_PID, static_cast<id_t>(fast), &info, WEXITED | WNOWAIT) == 0);
     ws.submit(fast, 302, WaitLane::EcoSystem);
-    // Delivered by submit itself, without another waitpid.
-    TEST_ASSERT(ws.hasReady(WaitLane::EcoSystem));
+    TEST_ASSERT(waitFor([&] { return ws.hasReady(WaitLane::EcoSystem); }));
     WaitService::Ready r{};
     TEST_ASSERT(ws.tryPopReady(WaitLane::EcoSystem, r));
     TEST_ASSERT(r.token == 302);
     TEST_ASSERT(r.exitCode == 7);
+    TEST_ASSERT(r.error == 0);
+}
+
+// A wait in progress reaps only its own child: a child other code started
+// (here Spawn.hpp's own spawnChild / waitChild, as a host embedding eco
+// would) keeps its status for its own waiter. Before the per-child waits, the
+// worker's waitpid(-1) reaped it and waitChild failed with ECHILD.
+void test_wait_leaves_other_children_alone() {
+    initRuntime();
+    auto& ws = WaitService::instance();
+    pid_t slow = spawnExit(5, /*delayMs=*/600);
+    TEST_ASSERT(slow > 0);
+    ws.submit(slow, 401, WaitLane::EcoKernel);
+
+    Elm::platform::SpawnSpec spec;
+    spec.program = "/bin/sh";
+    spec.args = {"-c", "exit 9"};
+    spec.shellKind = Elm::platform::kShellNone;
+    auto other = Elm::platform::spawnChild(spec, Elm::platform::StdioMode::Null, /*newSession=*/false);
+    TEST_ASSERT(other.err == 0);
+    // Let `other` exit while the wait for `slow` is in progress.
+    siginfo_t info{};
+    TEST_ASSERT(::waitid(P_PID, static_cast<id_t>(other.pid), &info, WEXITED | WNOWAIT) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    Elm::platform::ChildExit ex = Elm::platform::waitChild(other);
+    TEST_ASSERT(ex.exited);
+    TEST_ASSERT(ex.code == 9);
+
     TEST_ASSERT(waitFor([&] { return ws.hasReady(WaitLane::EcoKernel); }));
+    WaitService::Ready r{};
     TEST_ASSERT(ws.tryPopReady(WaitLane::EcoKernel, r));
-    TEST_ASSERT(r.token == 301);
+    TEST_ASSERT(r.token == 401);
     TEST_ASSERT(r.exitCode == 5);
+}
+
+// A pid that is not a child of this process is answered at once as a failed
+// wait (error set, exit code kWaitFailedExitCode), not left pending while the
+// worker polls forever.
+void test_wait_for_non_child_fails_promptly() {
+    initRuntime();
+    auto& ws = WaitService::instance();
+    pid_t notOurs = ::getppid();
+    ws.submit(notOurs, 501, WaitLane::EcoSystem);
+    TEST_ASSERT(waitFor([&] { return ws.hasReady(WaitLane::EcoSystem); }, 2000));
+    WaitService::Ready r{};
+    TEST_ASSERT(ws.tryPopReady(WaitLane::EcoSystem, r));
+    TEST_ASSERT(r.token == 501);
+    TEST_ASSERT(r.error == ECHILD);
+    TEST_ASSERT(r.exitCode == WaitService::kWaitFailedExitCode);
 }
 #endif  // !_WIN32
 
@@ -656,7 +698,9 @@ void registerPlatformServicesTests(IsolatedTestRunner::IsolatedTestCaseSuite& su
 #if !defined(_WIN32)
     suite.add(Testing::TestCase("platform-services/PS6 wait lanes route results", test_wait_lanes_route_results));
     suite.add(Testing::TestCase("platform-services/PS7 wait signal death 128+sig", test_wait_signal_death_is_128_plus_sig));
-    suite.add(Testing::TestCase("platform-services/PS8 wait reaped before submit", test_wait_reaped_before_submit_is_delivered));
+    suite.add(Testing::TestCase("platform-services/PS8 wait exited before submit", test_wait_exited_before_submit_is_delivered));
+    suite.add(Testing::TestCase("platform-services/PS8b wait leaves other children alone", test_wait_leaves_other_children_alone));
+    suite.add(Testing::TestCase("platform-services/PS8c wait for a non-child fails promptly", test_wait_for_non_child_fails_promptly));
 #endif
     suite.add(Testing::TestCase("platform-services/PS9 exit code roundtrip", test_exit_code_roundtrip));
     // plans/program-liveness-rule.md §11.2 PS4-PS9 (prefixed "liveness": the

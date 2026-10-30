@@ -7,11 +7,9 @@
 // primitive (platform/Spawn.hpp: posix_spawnp / CreateProcessW, never fork;
 // plans/spawn-not-fork.md Phase 2).
 //
-// Phase 4a wraps `wait` in a binding with a BLOCKING evaluator — the
-// scheduler thread still blocks on `waitpid` until the child exits. Phase 4b
-// replaces this with a `WaitService` (SIGCHLD + waitpid(WNOHANG) worker)
-// that hands the result back via the standard async-source drain. The
-// blocking-evaluator wait is the stepping stone, not the destination.
+// `wait` parks its Task and submits the pid to the `WaitService`, which waits
+// for that one child on a thread of its own and hands the result back via the
+// standard async-source drain; the scheduler thread never blocks on it.
 //
 // `exit(code)` is the explicit Q7 / KERNEL_TASK_IO_001 exemption: it never
 // returns, so wrapping it in a Task is misleading. It stays eager.
@@ -118,7 +116,7 @@ HPointer spawnProcessBody(HPointer captured) {
 }
 
 // PHASE-4b WaitService drain. Pops (token, exitCode) pairs queued by the
-// WaitService worker thread, allocates Task.succeed(exitCode) on the main
+// WaitService's waiting threads, allocates Task.succeed(exitCode) on the main
 // thread, and resumes the parked closure via callClosure1. Mirrors
 // Scheduler::processReadyAsync's TimerService loop. Runs from inside
 // processReadyAsync's asyncSources_ iteration.
@@ -128,7 +126,9 @@ void waitServiceDrain() {
     while (Elm::Platform::WaitService::instance().tryPopReady(
                Elm::Platform::WaitLane::EcoKernel, ready)) {
         std::uint64_t token = ready.token;
-        int exitCode = ready.exitCode;  // 128 + signal for a signal death
+        // 128 + signal for a signal death; WaitService::kWaitFailedExitCode (-1) when the pid could not
+        // be waited for (Eco.Process.wait's Task cannot fail, so the failure is reported as that code).
+        int exitCode = ready.exitCode;
         HPointer resumeClosure = sched.takePendingResume(token);
         if (Elm::alloc::isNil(resumeClosure)) {
             sched.releaseHold(token);
@@ -162,7 +162,7 @@ void waitEnsureRegistered() {
 
 // PHASE-4b async-park body for `wait`. Captured payload is
 // tuple2(pid [unboxed Int], unit). Registers the resume token with the
-// scheduler, submits the pid to the WaitService worker, and returns the
+// scheduler, submits the pid to the WaitService, and returns the
 // kill handle. The actual `taskSucceed(exitCode)` is delivered later by
 // `waitServiceDrain` on the main thread.
 HPointer waitBody(HPointer captured, HPointer resume) {
@@ -221,7 +221,7 @@ uint64_t spawnProcess(uint64_t cmd, uint64_t args,
 }
 
 uint64_t wait(uint64_t handle) {
-    // PHASE-4b: WaitService worker handles waitpid in a separate thread;
+    // PHASE-4b: the WaitService waits for the child on a thread of its own;
     // the binding evaluator only parks the resume + submits the pid.
     waitEnsureRegistered();
     HPointer payload = Elm::alloc::tuple2(
