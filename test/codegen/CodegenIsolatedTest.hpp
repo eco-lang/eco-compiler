@@ -224,10 +224,18 @@ inline std::vector<RunLine> parseRunLines(const std::string& content) {
 }
 
 /**
- * Check if the test is expected to fail (has XFAIL marker).
+ * Check if the test is expected to fail (has an `// XFAIL: <reason>` line): a fixture that pins an
+ * open defect by asserting the CORRECT behaviour, so it fails until the defect is fixed (see
+ * runFixture).
  */
 inline bool isExpectedFail(const std::string& content) {
-    return content.find("XFAIL:") != std::string::npos;
+    return content.find("// XFAIL:") != std::string::npos;
+}
+
+/// Whether ECO_TEST_XFAIL=strict is set: XFAIL fixtures then run as ordinary fixtures.
+inline bool xfailStrict() {
+    const char* e = std::getenv("ECO_TEST_XFAIL");
+    return e != nullptr && std::string(e) == "strict";
 }
 
 // CheckPattern / extractCheckPatterns / verifyPatterns / patternMatches
@@ -423,21 +431,42 @@ inline void runSubprocessTest(const std::string& testPath, const std::string& co
 /**
  * Run every RUN line of one fixture (codegen and bf-codegen suites).
  * Throws std::runtime_error on the first failing line.
+ *
+ * An XFAIL fixture (isExpectedFail) asserts the correct behaviour of an open defect, the
+ * convention of the E2E suites' `-- XFAIL-NATIVE:`: it passes when a RUN line fails (the defect
+ * reproduces) and fails as XPASS when every line passes (the defect looks fixed: remove the
+ * `// XFAIL:` line). Its lines always run ecoc as a subprocess, so a defect that crashes the
+ * compiler cannot take this process down. ECO_TEST_XFAIL=strict runs it as an ordinary fixture.
  */
 inline void runFixture(const std::string& testPath) {
     std::string content = readFile(testPath);
+    const bool xfail = isExpectedFail(content) && !xfailStrict();
 
-    if (isExpectedFail(content)) {
-        std::cout << "  (XFAIL - skipped)" << std::endl;
-        return;
-    }
-
+    std::string firstFailure;
     for (const RunLine& run : parseRunLines(content)) {
-        if (runsInProcess(run, content)) {
+        if (!xfail && runsInProcess(run, content)) {
             runJITTest(testPath, content, run);
-        } else {
-            runSubprocessTest(testPath, content, run);
+            continue;
         }
+        if (!xfail) {
+            runSubprocessTest(testPath, content, run);
+            continue;
+        }
+        try {
+            runSubprocessTest(testPath, content, run);
+        } catch (const std::runtime_error& e) {
+            if (firstFailure.empty()) firstFailure = e.what();
+        }
+    }
+    if (xfail) {
+        if (firstFailure.empty()) {
+            throw std::runtime_error("XPASS: every RUN line passes; the defect looks fixed, so "
+                                     "remove the fixture's // XFAIL: line");
+        }
+        // The message's first line is the RUN line; the reason follows it.
+        std::string reason = firstFailure.substr(firstFailure.find('\n') + 1);
+        for (char& c : reason) if (c == '\n') c = ' ';
+        std::cout << "  (XFAIL: " << reason.substr(0, 200) << ")" << std::endl;
     }
 }
 

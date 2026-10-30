@@ -42,6 +42,7 @@
 #include "allocator/Utf8StringTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/GcSafetyReproTest.hpp"
+#include "allocator/ReviewBugGuardsTest.hpp"
 #include "allocator/CaseMapTest.hpp"
 #include "allocator/StringFormsCompareTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -642,6 +643,8 @@ static IsolatedSuites buildIsolatedSuites() {
     s.largeBodyChurn =
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
     s.largeBodyChurn->add(testLargeBodyChurnRunsMinors);
+    // Expected-fail guard for a runtime-review defect (RB-141, YLOS exhaustion).
+    registerReviewBugIsolatedGuards(*s.largeBodyChurn);
     s.largeBodyChurn->add(testLargeBodyPromotedGarbageRunsMajors);
     s.largeBodyChurn->add(testLargeBodyRecoveryWithoutBudget);
     s.largeBodyChurn->add(testLargeBodyBudgetZeroIsOff);
@@ -1150,6 +1153,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite gcSafetyReproTests("GcSafetyRepro");
     registerGcSafetyReproTests(gcSafetyReproTests);
 
+    // Expected-fail guards for runtime-review defects not fixed yet (test/XfailGuard.hpp)
+    Testing::TestSuite reviewBugGuards("ReviewBugGuards");
+    registerReviewBugGuards(reviewBugGuards);
+
     // Char case-mapping tables and the Char value encoding (KERN_008)
     Testing::TestSuite caseMapTests("CaseMap");
     registerCaseMapTests(caseMapTests);
@@ -1361,6 +1368,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(utf8StringTests));
     suite.add(std::move(stringOpsTests));
     suite.add(std::move(gcSafetyReproTests));
+    suite.add(std::move(reviewBugGuards));
     suite.add(std::move(caseMapTests));
     suite.add(std::move(stringFormsCompareTests));
     suite.add(std::move(listOpsTests));

@@ -1,7 +1,13 @@
 // RUN: %ecoc %s -emit=mlir-llvm 2>&1 | %FileCheck %s
+// RUN: env ECO_FCA_SCAN=1 %ecoc %s -emit=llvm 2>&1 | %FileCheck %s --check-prefix=FCA
 //
 // Phase 0: eco.make.closure_env + eco.make.closure realises a heap
 // closure with captures populated from the value-level env aggregate.
+//
+// FCA leg: an env built in the same function is folded away before RS4GC, so no aggregate holding a
+// GC pointer survives (the control for make_closure_env_arg_fca.mlir, where it arrives as an
+// argument).
+// FCA: FCA-SCAN: clean
 
 module {
   llvm.func @stub_evaluator(%args: !llvm.ptr) -> !llvm.ptr {

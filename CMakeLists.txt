@@ -1552,6 +1552,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET eco-boot-native AND TARGET EcoN
     )
     set(_full_node_addon COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-node-addon-tests)
 endif()
+# run-driver-cli-tests: command-line checks of eco-boot-native (test/scripts/check-driver-cli.sh),
+# including expected-fail checks for open cpp-review-bugs.md defects. `full` runs it last.
+set(_full_driver_cli)
+if(NOT WIN32 AND TARGET eco-boot-native)
+    add_custom_target(run-driver-cli-tests
+        COMMAND sh ${CMAKE_SOURCE_DIR}/test/scripts/check-driver-cli.sh
+            ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}
+        DEPENDS eco-boot-native
+        COMMENT "Running the eco-boot-native command-line checks"
+        USES_TERMINAL
+    )
+    set(_full_driver_cli COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target run-driver-cli-tests)
+endif()
 set(_full_js_e2e)
 set(_full_casemap_check)
 if(NOT WIN32)
@@ -1577,6 +1590,7 @@ add_custom_target(full
     # Phase 10, plans/char-case-mapping-elm-exact.md).
     ${_full_js_e2e}
     ${_full_node_addon}
-    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E, the JS eco-system E2E and the Node addon tests"
+    ${_full_driver_cli}
+    COMMENT "Gate A: clean, rebuild default ALL + Stage 1, run eco/system Core unit tests, JIT E2E, the JS eco-system E2E, the Node addon tests and the driver CLI checks"
     USES_TERMINAL
 )

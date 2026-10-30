@@ -6,11 +6,13 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 | verdict | high | medium | low | - | total |
 |---|---|---|---|---|---|
-| likely-bug | 0 | 0 | 14 | - | 14 |
-| possible | 7 | 22 | 67 | - | 96 |
-| cleanup | - | - | - | 38 | 38 |
-| not-a-bug | - | - | - | 16 | 16 |
-| already-fixed | 6 | 5 | 1 | 1 | 13 |
+| likely-bug | 3 | 6 | 22 | - | 31 |
+| possible | 0 | 1 | 1 | - | 2 |
+| cleanup | 2 | 3 | 30 | 38 | 73 |
+| not-a-bug | 2 | 11 | 28 | 16 | 57 |
+| already-fixed | 6 | 6 | 1 | 1 | 14 |
+
+The 96 "possible" entries were triaged on 2026-10-30 against the code of that day: 17 became likely-bug, 35 cleanup, 41 not-a-bug, 1 already-fixed, and 2 stay possible (latent, not reproducible). Each triaged verdict says why. 13 of the 17 new likely-bugs are reproduced by an expected-fail test that asserts the correct behaviour and fails today (E2E `-- XFAIL-NATIVE:`, codegen `// XFAIL:`, unit `[xfail RB-<line>]`, or the driver-cli checks; `ECO_TEST_XFAIL=strict` makes the unit, codegen and driver ones fail). The other 4 are Windows-only, TSan-only or diagnostics-only and have no test here. Severity is the logged severity; most new likely-bugs are latent (hand-written MLIR only) or edge cases.
 
 ## High severity
 
@@ -56,43 +58,43 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Closure eval layout labels new args PK_Boxed but primitives are stored raw
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:2677-2694 (PapExtendOpLowering::matchAndRewrite)`, ~2853; vs `emitInlineClosureCall` ~2360-2375
-- verdict: possible (checked in code; a code comment admits the mismatch)
+- verdict: likely-bug (triaged 2026-10-30: latent: the front end always emits `_capture_abi` with `_fast_evaluator`; reproduced by test/codegen/papextend_capture_abi_layout.mlir (XFAIL): a boxed capture makes the runtime un-box the raw Int argument and assert in spliceArgsForSaturatedCall)
 - severity: high
 - For papExtend with `_capture_abi` but no `_fast_evaluator`, the layout is the capture kinds followed by one PK_Boxed per new argument, but primitive new args are stored raw and the call passes only the new-argument count. A GC or the runtime reading that layout would treat raw Int/Float bits as pointers, or read capture kinds as new-arg kinds. `preMaterializeApplyLayouts` mints the same layout. The runtime consumer has not been traced.
 
 ### Two-alternative `str` case lowered by constructor tag
 - where: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp:228-313 (CaseToScfIfPattern)`
-- verdict: possible (checked in code: the `isStringCase` guard that the >2-alternative pattern has at :416 is absent here)
+- verdict: likely-bug (triaged 2026-10-30: latent: every front-end `str` fan-out has at least three alternatives; reproduced by test/codegen/case_string_two_alt_jit.mlir (XFAIL): "world" takes the "hello" branch)
 - severity: high
 - A two-alternative yield-form `str` case outside scf or a joinpoint reaches the final `else` branch, which compares `eco.get_tag` of the string with `tags[1]`, so it picks the wrong alternative. It is unknown whether the front end emits this shape, and E2E would probably have caught it if it were common.
 
 ### JoinpointToScfWhile assumes an !eco.value scrutinee and drops returns
 - where: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp:1006-1142 (JoinpointToScfWhilePattern)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: dead: CaseOp::verify forbids the eco.return / eco.jump alternatives the pattern matches and nothing emits eco.joinpoint; the pattern would also be unsound (drops entry ops, ignores a third alternative, tests the tag whatever the case kind): delete it)
 - severity: high
 - The pattern calls GetTagOp whatever the case_kind. It drops entry-block ops before the case, continuation ops after the first jump, and the exit `eco.return` operands, and its own comment admits valued returns are unhandled. With more than two alternatives it loops on any non-exit tag. It is a miscompile if JoinpointNormalization ever lets a non-conforming joinpoint through.
 
 ### eco_apply_closure_eval roots no args when args_layout is null
 - where: `runtime/src/allocator/RuntimeExports.cpp:2188 (eco_apply_closure_eval)`
-- verdict: possible (checked in code)
+- verdict: cleanup (triaged 2026-10-30: no caller passes a null layout with arguments (codegen, eco_apply_closure and every kernel caller pass one); treat null as all-boxed at entry)
 - severity: high
 - Arguments are rooted only `if (args_layout)`. On an over-applied call with a null layout, trailing boxed args in `typed_args` stay unrooted while the first stage's evaluator runs and may collect, so any nursery arg is stale afterwards. This is safe only if codegen never passes a null layout together with boxed args.
 
 ### make.closure keeps an env aggregate with GC pointers live across the allocation
 - where: `runtime/src/codegen/Passes/EcoToLLVMValueAgg.cpp:818-889 (make.closure lowering)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: latent: the front end never emits closure_env / make.closure; reproduced by test/codegen/make_closure_env_arg_fca.mlir (XFAIL, ECO_FCA_SCAN): an env that arrives as an argument reaches RS4GC as an aggregate holding a GC pointer. Extracting before the allocation is not enough, since the function's entry capacity check is a safepoint too)
 - severity: high
 - `envAgg` is an LLVM struct that can hold `ptr addrspace(1)` captures, and on the out-of-line path its fields are extracted only after `emitAllocWithSafepoint`. RS4GC does not relocate first-class aggregates, so this is correct only if FoldExtractValue or SROA scalarizes it first. The only check, FcaScan, runs under `ECO_FCA_SCAN` only. If the struct is not scalarized, a boxed capture is stale after a GC.
 
 ### __eco_init_globals runs before the JIT stack map is parsed
 - where: `runtime/src/codegen/ecoc.cpp:417-441 (JIT run path)`; also `runtime/src/codegen/EcoRunner.cpp:255-271 (executeJIT)`
-- verdict: possible (checked in code: the init call precedes `globalStackMap().parse` in both files)
+- verdict: not-a-bug (triaged 2026-10-30: __eco_init_globals only registers the type graph and global roots (gc-leaf, non-allocating), so no collection can happen during it; moving the parse first is hardening)
 - severity: high
 - If global initialisation allocates enough to trigger a GC, the collector walks JIT frames that have no stack-map records yet. Their roots are neither found nor relocated.
 
 ### OldGen forget-block loop recycles large-body ids the nursery list may still name
 - where: `runtime/src/allocator/OldGenSpace.cpp:~6028 (forget-block loop, nursery_owned_bodies_)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: kind 0/1 ids are exactly the listed nursery-owned bodies, a stale entry names a retired slot or a kind-2 body the sweep skips, and a duplicate is dropped after the first free)
 - severity: high
 - Kind-0/1 ids are recycled directly. If such an id is still in `nursery_owned_bodies_` and `registerLargeBody` reuses it before the next minor sweep, the stale entry names the new body, and the sweep can free a live body.
 
@@ -116,157 +118,157 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Windows unwinder: a leaf frame ends the root walk
 - where: `runtime/src/allocator/StackUnwind.cpp:105-111,141-144 (step)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the walk starts in a non-leaf frame and every lower frame is mid-call, which Win64 requires to have unwind data; ignored RtlVirtualUnwind results are cleanup. Unverified side note: EcoJIT makes registerEHFrames a no-op on Windows, which may leave JIT code without .pdata)
 - severity: medium
 - Win64 `step` stops at a frame with no RUNTIME_FUNCTION instead of popping the return address from Rsp, as Windows does for leaf frames, and the `RtlVirtualUnwind` outcome is ignored. A leaf frame on the path cuts the GC root walk short, so JIT roots above it are missed. Callers cannot tell an unwind failure from the end of the stack, and the arm64 DWARF identity register map has no `#if` guard.
 
 ### BlockTable credits stale live counts to recycled ids
 - where: `runtime/src/allocator/BlockTable.hpp (LiveBytesAccumulator::mergeInto/sum, storageBase, posOf/swapRemove)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: IM5 forbids releasing a block during a mark, markLiveMergeAll zeroes every live id first, large-cell frees call markLiveTake, and validate builds abort on unmerged counts)
 - severity: medium
 - A count left on an id released before the merge is credited to that id's next incarnation. The snapshot-cycle rule (no release during a cycle) probably excludes this, but nothing checks it. `storageBase` accepts negative k, and the order ops silently corrupt on a non-live id.
 
 ### RootedSlots push writes through a possibly dead record
 - where: `runtime/src/allocator/RootedSlots.hpp (push)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: RootedSlots push/pop are LIFO-scoped and restore points never sit above a live record; an assert in push would document it)
 - severity: medium
 - `push` patches `rec_` without checking that the record is still live. If LIFO scoping is broken and the range stack has been restored below it, the write corrupts a different root record. `RootedElems::push` also treats any kind above 3 as unboxed.
 
 ### NurserySpace destructor relies on tenureTeardown without asserting
 - where: `runtime/src/allocator/NurserySpace.cpp:112-121 (~NurserySpace)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the only owner, ~ThreadLocalHeap (and reset), always calls tenureTeardown, and ~GCBackgroundGang joins its threads itself)
 - severity: medium
 - If an owner skips tenureTeardown, `rg_.reset()` destroys a GCBackgroundGang that may still be running, which can crash or hang at heap destruction.
 
 ### Release-build OOM paths return or dereference null
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp:336 (eco_alloc_inline_slow), ~476 (allocLargeString), allocate*, allocatePermanent, ensureNursery`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-141] in test/allocator/ReviewBugGuardsTest.cpp: with a 64 MiB reservation, exhausting the old generation through YLOS allocations hits the assert in allocateYoungLarge, with no out-of-memory report (a release build returns null); allocateLargePinned, allocatePermanent, allocate and allocateSlowRaw share the pattern. Large String/Bytes bodies are already fixed (largeBodyExhausted). Unit tests only: max_heap_size bounds the old generation only through the first initialize's reservation (HEAP_043))
 - severity: medium
 - Out-of-memory is handled only by assert. With NDEBUG (release preset), allocateYoungLarge charges debt and returns null, allocLargeString dereferences it, and eco_alloc_inline_slow callers dereference null. The result is a crash instead of a clean OOM abort.
 
 ### GCGang goIdle borrows from the epoch bits if called uncounted
 - where: `runtime/src/allocator/ GC gang (goIdle)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: every runMarkerLoop caller is counted in (reactivate, or a Member in SliceControl's initial count); an assert in goIdle would document it)
 - severity: medium
 - `goIdle` is a plain fetch_sub. A participant that is not in the count (for example an Assist run with joined=false) borrows from the epoch bits, and on a done word with count 0 it clears kDone. Only the calling contract prevents this.
 
 ### StackMap parsing trusts blob bounds via assert only
 - where: `runtime/src/allocator/StackMap.cpp:150-225 (StackMap::parse)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: the only inputs are the binary's own LLVM-emitted stack-map section; hardening against a corrupt binary)
 - severity: low
 - A truncated or corrupt stack-map section reads past `data+size` in NDEBUG builds. The input is compiler-produced, so this needs a corrupt binary.
 
 ### TenureWork scanYlos skips the young-elsewhere check
 - where: `runtime/src/allocator/TenureWork.hpp:614 (scanYlos)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: a missing defensive check (TV6) on both engines' YLOS scan; only reachable once HEAP_005 / P1 / HEAP_BUILDER_003 is already broken)
 - severity: low
 - Unlike childOfCopy and markTarget, a YLOS child that is young outside the tenuring extent is not reported through `abortYoungChild`. If the invariant is ever broken, that child dangles silently instead of aborting.
 
 ### HeapConfigJson numeric parsing overflows
 - where: `runtime/src/allocator/HeapConfigJson.cpp:42-49,67,101,141,304-307,519,626`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: out_of_range terminates exactly as invalid_argument does at every entry point; a real wrap needs an absurd value, which validate then mostly rejects)
 - severity: low
 - `std::stoull` throws `out_of_range` on over-long digit strings, and callers catch only `invalid_argument`. `magnitude*multiplier` wraps silently, so "20000000000000000000K" gives a small size. `jitter_us` is reset to 0 when unset, unlike the other variables, and ECO_TENURE_COLLECTORS accepts "+" and whitespace.
 
 ### Allocator accounting and trace errors
 - where: `runtime/src/allocator/Allocator.cpp (growNurserySliceSet, acquireOldGenRegion, out-of-space path)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: stats and trace only: region commits counted in the low half, acquireOldGenRegion not counted in fresh_bytes, fresh_bytes bumped before a failed commit)
 - severity: low
 - In region mode all commits count as "low" nursery bytes. `acquireOldGenRegion` does not bump `page_supply_.fresh_bytes`, and `dumpHeapState` on out-of-space ignores `heapTraceEnabled()`. These are stats and trace errors only.
 
 ### PageWork epoch wrap, null commit, stall misattribution
 - where: `runtime/src/allocator/PageWork.cpp (syncPoint, topUpWindow, drainAll, onReuse)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the epochs only increase and are reset only after PageWork is drained; production and test PageOps always set commit)
 - severity: low
 - In `syncPoint`, `epoch - recorded` wraps if epoch is lower, which ages every extent at once. `topUpWindow` calls `ops_.commit` without a null check, so a PageOps with populate but no commit crashes. Stall and reuse stats are misattributed.
 
 ### P1Census diagnostics: fork child checks parent tables, unlocked setters
 - where: `runtime/src/allocator/P1Census.cpp (verifyOldGen, onMinorStart, forget, setMode, noteWrite)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: census / validate builds only: unlocked statistic and test switch; the fork-child check compares against an unchanged copy-on-write image)
 - severity: low
 - In mode 2 a forked child can verify tables inherited from the parent and abort. setMode and the builder-path `w_calls++` are unlocked, and noteWrite from a heap-less thread miscounts. This affects census builds only.
 
 ### PermanentSpace resolves non-heap static words
 - where: `runtime/src/allocator/PermanentSpace.cpp:110, ~139, ~177`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: embedded constants return early, eco_caf_promote is only emitted for eco.value thunks, and string literals are runtime allocations)
 - severity: low
 - `alloc.resolve` is called on static words that may be embedded constants or null, which trips Allocator::resolve's asserts under ECO_HEAP_VALIDATE. Release builds fall harmlessly into the values_constant branch. `used + bytes` overflow is unchecked.
 
 ### LargeObjectSpace bin and alignment waste
 - where: `runtime/src/allocator/LargeObjectSpace.cpp:~131-138`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: binFor is ceil(log2) and tryAllocate scans every bin at or above it, and findRun checks alignment over every run; an unused bin 11 is waste only)
 - severity: low
 - An aligned request can miss every bin even though a suitable run exists, so a new block is grown (memory overhead only). Bin 11 is never used, and `heads_` is uninitialised before init.
 
 ### selectEvacuationSet reads the pin bit of a possibly header-less first cell
 - where: `runtime/src/allocator/OldGenSpace.cpp:6363-6367 (selectEvacuationSet)`
-- verdict: possible (a reviewer rated it medium; kept low because evacuateSlice re-checks pins per object)
+- verdict: cleanup (triaged 2026-10-30: dead check: pinned objects live only in LOS or is_large blocks, which selectEvacuationSet skips before the pin test; delete it)
 - severity: low
 - In bitmap mode a one-class block's first cell may be free with no valid header, so `first_hdr->pin` reads stale bits. The worst case is a wrong evacuation-candidate decision, which costs fragmentation only.
 
 ### OldGen fragmentation stats under-count
 - where: `runtime/src/allocator/OldGenSpace.cpp (splitter, free_list_sentinel_count_)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: sentinels exist only outside the default bitmap mode, and a splitter remainder is a piece of a cell freeLargeBodyCell already counted)
 - severity: low
 - Sentinel cells left by the splitter remainder are not counted in garbage_bytes, so `frag_stats_.total_free_bytes` is low. This is a stats error only.
 
 ### OldGen initialize continues with an empty bag if acquireOldGenRegion fails
 - where: `runtime/src/allocator/OldGenSpace.cpp:~360 (initialize)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: diagnostics only: the heap still grows block by block through acquireOldGenBlock, with its normal out-of-memory handling)
 - severity: low
 - The metadata path aborts on failure, but the bag path continues silently, so the heap later fails somewhere less obvious.
 
 ### roleOf treats the stale builder area as a live role
 - where: `runtime/src/allocator/NurseryRegion.cpp (roleOf; TV7 check ~308-325)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: documented in NurseryRegions.hpp (a builder area has its extent's role); a pointer into a stale builder area is already a dangling pointer, which TV7 rejects)
 - severity: low
 - A stray pointer into the stale builder area of an Age, Aged or Hand extent is classed as a live reference of that role, and only ECO_HEAP_VALIDATE would notice. This may be intended.
 
 ### GCStats accounting errors
 - where: `runtime/src/allocator/GCStats.cpp`, `OldGenSpace.cpp:~7713`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: mostly wrong claims; one real gap: a destroyed heap's LOS cumulative counters are not folded into accumulated_stats_, so the banner loses them)
 - severity: low
 - LOS allocations are missing from the old-gen histogram, reset does not clear wall_time_ns, a clock reading and point-in-time LOS values are summed, and addStall kind 3 collides with the pause kind. These are diagnostics only.
 
 ### collectAtSafepoint runs a STW majorGC in mark-cycle mode
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp:~600 (collectAtSafepoint)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: documented (ThreadLocalHeap.hpp): a collectAtSafepoint major is stop-the-world; majorGC finishes a running cycle first, and generated code never calls the safepoint poll)
 - severity: low
 - The trigger path calls stop-the-world majorGC even when `useMarkCycle()` is true, unlike the minorGC trigger. It is a performance and consistency issue unless it interacts with an in-flight mark cycle, which has not been checked.
 
 ### allocatePermanent skips debt accounting and the large-alloc note
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp (allocatePermanent)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: the only caller is allocInternObject, reached only when the permanent-space reservation is full or ECO_CAF_PERMANENT=0; the skipped bytes are bounded by the literal count)
 - severity: low
 - It is not counted toward HEAP_079 direct-allocation debt, does not call noteLargeAlloc, and has no major-GC retry on failure. Permanent allocations are rare.
 
 ### majorGC trace dumps are not gated by the runtime switch
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp:~984 (majorGC)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: diagnostics only: two dumpHeapState calls in majorGC ignore heapTraceEnabled(), against the ECO_HEAP_TRACE option's contract; only in -DECO_HEAP_TRACE=ON builds, so no test)
 - severity: low
 - Unlike the minorGC dumps, the major begin/end dumps do not check that tracing is enabled at runtime, so a debug-trace build prints them and spends time on them without the switch.
 
 ### Shadow-root push after thread detach gives a misleading abort
 - where: `runtime/src/allocator/ shadow root stack push`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: pushing from a detached thread is a caller bug; only the message is wrong ("overflow at depth 0" instead of "thread not attached"))
 - severity: low
 - A push after the TLS words are cleared aborts in checked builds with "shadow root stack overflow at depth 0" instead of reporting a thread that is not attached.
 
 ### alloc_buffer_size is not required to be a page multiple
 - where: `runtime/src/allocator/HeapConfig (validate, resolveNurseryRegions)`; `AllocatorCommon.hpp (validate)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-255] in test/allocator/ReviewBugGuardsTest.cpp: validate accepts alloc_buffer_size = 1.5 pages, which acquireOldGenBlock then asserts on (release builds fail MAP_FIXED commits); reachable only through ECO_HEAP_CONFIG)
 - severity: low
 - Old-gen pages and nursery blocks are cut in `alloc_buffer_size` units, but validation does not require it to be a multiple of OS_PAGE_SIZE, which is a compile-time constant never checked at runtime (16K-page hosts). The validate messages ("x86-64", "legacy") misstate the checks.
 
 ### POSIX reserveAddressSpaceBelow TSan loop ignores the limit
 - where: `runtime/src/allocator/PlatformVirtualMemory_posix.cpp:42-48`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: latent and ThreadSanitizer builds only: both callers pass HPOINTER_ADDRESS_LIMIT (2^43), above the 512 GB bound; a TSan-build test in AddressSpaceReservationTest.cpp would show it, not added (no TSan unit build here))
 - severity: low
 - Under `__SANITIZE_THREAD__` the probe loop is bounded by 512 GB, not min(limit, 512 GB). This breaks the contract, but is harmless for the only caller (limit 2^43).
 
 ### win32 commitAt returns the rounded base for an unaligned addr
 - where: `runtime/src/allocator/PlatformVirtualMemory_win32.cpp (commitAt)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the contract requires page-aligned addresses and every caller passes one)
 - severity: low
 - A caller that compares the result with `addr` sees a failure when `addr` is not page-aligned.
 
@@ -290,55 +292,55 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### StringOps behaviour diverges from elm/core JS
 - where: `runtime/src/allocator/StringOps.cpp:~700-725 (indexes)`; `StringOps.hpp (toInt/toFloat ~1208-1238, trim ~951, padLeft/padRight, repeat ~1018)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by test/elm-conformance/src/StringKernelEdgeTest.elm (XFAIL-NATIVE, recorded from Elm): String.indexes "" gives every index instead of [], String.toInt rejects a leading "+", trim / trimLeft / trimRight / words strip only space, tab, LF and CR (not VT, FF, NBSP, U+FEFF, U+2028, U+3000 ...), and words "" is [] instead of [""]. toFloat is already fixed; pad / repeat are unreachable (Elm-coded in elm/core))
 - severity: medium
 - `indexes ""` returns 0..len where JS returns []. `toInt` rejects a leading `+`. `toFloat` accepts whitespace, hex and locale forms and rejects ERANGE. `trim` misses NBSP, FEFF, FF and VT, the pad char cannot be astral, and `repeat` does not check `srcLen*n` against u32. Nobody traced whether each routine is the one programs actually reach.
 
 ### elm_utf8_decode has no bounds check
 - where: `runtime/src/allocator/ElmBytesRuntime.cpp:203 (elm_utf8_decode)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: not reached: Bytes.Decode.string never fuses, and the kernel path checks bounds (a negative Bytes.Decode.bytes length already decodes to Nothing, test/elm-bytes/src/DecodeNegativeLengthTest.elm). Latent hole for when it fuses: bf.require accepts a negative i32 length, reproduced by test/bf-codegen/bf_require_negative.mlir (XFAIL). Separately, Elm's `string (-1)` succeeds with "" where eco's strict decode gives Nothing (eco's documented semantics, DecodeStringStrictFusedTest t9_negative))
 - severity: medium
 - Nothing checks that offset+len stays in the buffer, so a bad offset reads out of bounds, and `elm_bytebuffer_data` may be null for an embedded-constant buffer. It is safe if the generated decoder always bounds-checks first, which the Elm Bytes decoder normally does.
 
 ### ListOps sort/maximum/minimum/sum/product ignore the element kind
 - where: `runtime/src/allocator/ListOps.cpp:489-560`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: unreachable: only test/allocator calls ListOps sort and the reductions)
 - severity: low
 - Every element is treated as Int, so Floats compare and sum by bit pattern and boxed values by address, and sort returns kind Int. No caller outside ListOps was found (the kernel exports do their own work), so this is latent.
 
 ### ListOps::sortBy/sortWith use an unstable std::sort
 - where: `runtime/src/allocator/ListOps.cpp:507,530`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: dead pair: the exported List.sortBy / sortWith use std::stable_sort; delete these or make them stable)
 - severity: low
 - Elm's sortBy and sortWith are stable. The exported Elm_Kernel_List_sortBy/sortWith use std::stable_sort, and the unstable path is reached only through Elm::Kernel::List in List.cpp.
 
 ### ListOps misc: kind collapse, range INT64_MIN, unrooted foldr element
 - where: `runtime/src/allocator/ListOps.cpp (map/indexedMap/intersperse/singleton/repeat, last, range, foldr:434, unzip)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: unreachable: none of these ListOps helpers has a production caller (List.range is Elm-coded))
 - severity: low
 - A Float or Char passed through `bool is_boxed` gets kind Int. `range` with low == INT64_MIN overflows `--i` (UB). foldr does not root the current element across `fold`. `last` on a malformed list returns Just null, and unzip casts unchecked. There are no external callers, so all of this is latent.
 
 ### HeapHelpers kind, zeroing and bounds inconsistencies
 - where: `runtime/src/allocator/HeapHelpers.hpp (bool-is_boxed overloads, kindFromBoxedFlag, arrayPush, allocByteBuffer, makeByteBufferSlice, arrayGet)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: every caller passes a boxed value or an Int to the bool overloads, the null allocByteBuffer call has n = 0, and slice callers check bounds first)
 - severity: low
 - `bool is_boxed` helpers map every unboxed value to Int. `allocByteBuffer(nullptr, n)` zeroes on the large path but not the small one. arrayPush does not check kinds after the first push, and makeByteBufferSlice and arrayGet are unchecked.
 
 ### StringOps dropLeft/dropRight on a null string
 - where: `runtime/src/allocator/StringOps.hpp:609-620`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: unreachable (elm/core implements these over slice); move the null check first)
 - severity: low
 - The `n <= 0` check comes before the null check, so a null `str` (a resolved empty constant) hits Allocator::wrap's non-null assert. No kernel caller was found.
 
 ### builder_begin on a pinned large ByteBuffer
 - where: `runtime/src/allocator/ElmBytesRuntime.cpp:80 (elm_bytebuffer_builder_begin)`
-- verdict: possible (checked in code)
+- verdict: not-a-bug (triaged 2026-10-30: a large Bytes value is a nursery LargeByteHeader with a pinned body, so the builder marks a nursery header and the isInNursery assert holds)
 - severity: low
 - A buffer at or above the LOT threshold is pinned, not young, yet mark_as_builder sets builder=1 and age=0 on it. clear_builder then asserts under ECO_HEAP_VALIDATE. The effect looks benign in normal builds.
 
 ### caseMapGeneral(null or empty) with UTF-8 asserts
 - where: `runtime/src/allocator/ strings caseMapGeneral / allocAsciiOut`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: toUpper / toLower return early for null or empty input, and every code point maps to at least one unit)
 - severity: low
 - The assert in allocAsciiOut fires for that input, but no current caller reaches it.
 
@@ -362,43 +364,43 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### _fast allocators ignore the large-object threshold
 - where: `runtime/src/allocator/RuntimeExports.cpp (eco_*_fast, eco_gc_alloc_region_fast)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: codegen and kernels never call the _fast allocators; the region allocator handles its cap and large regions consistently)
 - severity: medium
 - These bump the nursery whatever the size, unlike eco_alloc_with_roots. They are harmless if codegen calls them only for fixed small sizes, which has not been fully checked.
 
 ### eco_store_field on a Closure writes an untraced slot in release builds
 - where: `runtime/src/allocator/RuntimeExports.cpp:1922 (eco_store_field)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: all three codegen call sites store into customs or records, never closures; aborting in every build would be hardening)
 - severity: medium
 - Debug builds assert against a Closure target, but release builds still write the slot with no barrier or kind update. Only buggy codegen reaches this.
 
 ### Type table: short attribute arrays emitted as zeros, reader bound assert-only
 - where: `runtime/src/codegen/Passes/EcoToLLVMGlobals.cpp:333-356`; `runtime/src/allocator/RuntimeExports.cpp:~3764/3818/3846`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: only corrupt compiler metadata reaches it; hardening)
 - severity: low
 - The Tuple, Record, Custom and Function arms emit zeroed type info for a short `typeArr` instead of rejecting it. The reader indexes `types[...]` after an assert-only bounds check, so a bad id reads out of bounds in release builds. Only corrupt compiler metadata triggers this.
 
 ### eco_alloc_tuple3 stores unboxed_mask unmasked
 - where: `runtime/src/allocator/RuntimeExports.cpp:454 (eco_alloc_tuple3)`
-- verdict: possible (checked in code)
+- verdict: not-a-bug (triaged 2026-10-30: Header.unboxed is a 6-bit bitfield, so the store truncates without touching other bits)
 - severity: low
 - Every other tuple3 path masks with `& 0x3F`. If codegen ever sets bits 6-7, they corrupt the adjacent header bits.
 
 ### eco_alloc_cons root mask vs stored kind
 - where: `runtime/src/allocator/RuntimeExports.cpp:417 (eco_alloc_cons*)`
-- verdict: possible (checked in code)
+- verdict: not-a-bug (triaged 2026-10-30: codegen masks the head kind and uses eco_alloc_cons_uninit; nothing calls eco_alloc_cons)
 - severity: low
 - Rooting tests `head_kind != 0`, but the stored kind is `head_kind & 3`, so a kind of 4 or 8 is stored boxed but not rooted. Codegen emits only 0-3.
 
 ### CTOR_Router equals CONSTANT_TAG (0xFFFD)
 - where: `runtime/src/allocator/HeapHelpers.hpp:2188`, `Heap.hpp:402-408`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: Platform.Router is opaque and kernel-built, codegen never reads it through eco_get_header_tag / eco_get_custom_ctor, and a colliding user type would need 65,534 constructors)
 - severity: low
 - `eco_get_tag` returns 0xFFFD both for a router (a heap Custom) and for embedded constants. `eco_get_header_tag` and `eco_get_custom_ctor` return 0 for constants, which collides with Tag_Int and ctor 0.
 
 ### eco_enable_list_chunks is missing from the JIT symbol map
 - where: `runtime/src/jit/ (runtime symbol map)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_list_chunks_enable.mlir (XFAIL): `ecoc -emit=jit` on a main marked eco.list_chunks fails with "Symbols not found: [ eco_enable_list_chunks ]"; test/test hides it because it exports its symbols)
 - severity: low
 - Generated code calls it, but it resolves only through process symbol search, so the JIT fails if the host does not export it. `registerRuntimeSymbols(mlir::ExecutionEngine&)` has no caller.
 
@@ -423,73 +425,73 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Spawn: Windows shell quoting, POSIX pid reuse, handle leak
 - where: `runtime/src/platform/Spawn.cpp (Windows spawnChild, POSIX killChild, registerProcessHandle)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: Windows only: cmd /s /c does not understand appendQuoted's \" escapes, so ChildProcess.run with the default shell mangles quoted arguments; not testable here (no Windows build). killChild's pid-reuse case is a documented precondition, but ChildProcess killJob has the same race between the WaitService reaping and waitDrain (not deterministic). The real handle leak is Eco.Process.spawn without wait)
 - severity: medium
 - Shell-mode commands containing `"` reach `cmd /s /c` with `\"` escapes and run with the wrong argument text. POSIX `killChild` on an already-reaped pid can signal an unrelated reused pid. `g_handles[pid]=` leaks the old handle.
 
 ### Windows spawn ignores ResumeThread, job and _open_osfhandle failures
 - where: `runtime/src/platform/Spawn.cpp:343-359,393 (spawnChild, waitChild)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: Windows only; needs an invalid handle or CRT fd exhaustion)
 - severity: medium
 - A failed ResumeThread leaves the child suspended forever, and a failed job setup silently loses kill-tree semantics. A failed `_open_osfhandle` leaks the pipe and returns fd -1 with err 0, and a failed wait in waitChild is ignored.
 
 ### Windows process handle closed twice
 - where: `runtime/src/platform/Process.cpp:56`; `Spawn.cpp (releaseChild)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the handle is registered once and never released twice; the real issues are leaks (spawn without wait; run never closes ch.process))
 - severity: medium
 - `child.process` is registered with WaitService while the SpawnedChild keeps the same handle. Both close it, and the second CloseHandle can close an unrelated reused handle.
 
 ### Duplicate POSIX wait submit leaves a Pending entry forever
 - where: `runtime/src/platform/WaitService.cpp (POSIX submit)`
-- verdict: possible
+- verdict: already-fixed (triaged 2026-10-30: the 2026-10-30 WaitService rewrite has no Pending table: a duplicate submit gets one result and one failed Ready)
 - severity: medium
 - Submitting the same pid twice leaves one `Pending` that is never erased. The worker keeps reaping, gets ECHILD and wakes every 10 ms for the life of the process.
 
 ### Scheduler rawSend uses the caller's possibly stale snapshot
 - where: `runtime/src/platform/Scheduler.cpp:471 (Scheduler::rawSend)`
-- verdict: possible (checked in code)
+- verdict: likely-bug (triaged 2026-10-30: not as described (the caller's snapshot is never stale); each rawSend enqueues a new version of the process and drain steps every queued version, so two sends before a drain deliver the first message twice. Reproduced by [xfail RB-448] in test/platform/SchedulerPidTest.cpp: [1,1,2]. Not reachable from Elm (effect modules are kernel-only; Http drains after every tick))
 - severity: medium
 - mailboxPushBack builds the new process from the given HPointer, not `latestProcessById`. A stale handle registers an old snapshot as the latest version, so the newer state is lost and the old root is re-stepped.
 
 ### Scheduler: Binding re-step, dropped mailbox, wrong latest version
 - where: `runtime/src/platform/Scheduler.cpp:~946-979 (stepping Binding, resumeEvaluator)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: parts (a) and (b) are unreachable (only self-processes get messages); (c) is one case of a broader defect: Process.kill does not stop a runnable (not parked) process. Reproduced by test/elm-conformance/src/ProcessKillRunnableTest.elm (XFAIL-NATIVE, recorded from Elm): a killed child logs "survived runnable" natively, never in Elm)
 - severity: medium
 - Enqueuing a process parked on a Binding re-runs the bind callback, so its effect repeats. The resume closure restores the pre-park mailbox, so messages that arrived while parked are dropped. On synchronous resume setRoot registers the parked copy as latest, so killTask can hit the wrong version. elm/core usage may never reach these.
 
 ### PlatformRuntime dispatchEffects overwrites state set during drain
 - where: `runtime/src/platform/PlatformRuntime.cpp:~380-395 (dispatchEffects)`
-- verdict: possible
+- verdict: possible (triaged 2026-10-30: latent: the overwrite is real in code, but no native manager's onSelfMsg changes its state today (only Http uses self-messages, and returns the state unchanged))
 - severity: medium
 - A manager state written by handleSelfMsg during `sched.drain()` is overwritten by onEffects' older result, which loses the self-message update. sendToSelf sends even when the Task is never run, and a second setupEffects leaves the old handlers registered.
 
 ### Windows exit codes >= 0x80000000 become negative
 - where: `runtime/src/platform/ wait/process cpp:115-116`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: Windows only: WaitService casts the DWORD exit code to int, so a crash such as 0xC0000005 reads as a negative code, and 0xFFFFFFFF collides with kWaitFailedExitCode (-1); not testable here (no Windows build))
 - severity: low
 - A DWORD exit code is cast to int, so NTSTATUS crash codes are reported as negative exit codes.
 
 ### TaskBinding null callback still yields a Binding
 - where: `runtime/src/platform/TaskBinding.hpp:147-150,175-178`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: dead branch: allocClosureK writes through the new pointer before returning, so the resolve cannot be null)
 - severity: low
 - If `resolve(cb)` is null, a Binding with an empty slot 0 is returned, and stepping it later calls a null callback.
 
 ### TimerService double-schedule of a token; NaN millis
 - where: `runtime/src/platform/TimerService.cpp (schedule)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: double-schedule is not a bug (tokens are unique and the worker handles a duplicate); a NaN or infinite millis is undefined behaviour in duration_cast: clamp it)
 - severity: low
 - Re-scheduling a token overwrites `byToken_`, so cancel misses the earlier timer, which still fires. This violates a stated precondition. `duration_cast` of NaN or huge millis is UB.
 
 ### StackMapSection PE/ELF parsing gaps
 - where: `runtime/src/platform/StackMapSection.hpp`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: the parser only reads eco's own linked 64-bit image)
 - severity: low
 - The parser misses `/NN` long PE section names, overreads a non-NUL-terminated shstrtab in strcmp, mishandles a size-0 shstrtab, ignores e_shnum == 0 and SHN_XINDEX, and assumes 64-bit images. It reads only the program's own image.
 
 ### Windows currentExecutablePath returns a truncated path
 - where: `runtime/src/platform/PlatformPaths.hpp:60-66`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: the dead check is real, but a Windows path fits the 32768-unit buffer)
 - severity: low
 - If GetModuleFileNameW fills the 32768-unit buffer, the `len >= size+1` test never fires and a truncated path is returned as complete. An exe directly under "/" gives "", which is also the failure value.
 
@@ -515,7 +517,7 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### PortRuntime: concurrent-subscribe split, silent wrong-name or wrong-direction subscribe
 - where: `runtime/src/platform/PortRuntime.cpp:292-340,398-408,426,479-492`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: documented contract (PortRuntime.hpp, eco_embed.h); the duplicate-name crash is unreachable)
 - severity: low
 - Two concurrent first subscribers each take part of the buffered payloads. A misspelt name creates a silent permanent entry and eco_port_subscribe reports success, and subscribeOutgoing on an incoming port also succeeds silently. The duplicate-name crash branches are unreachable.
 
@@ -551,163 +553,163 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Closure kind mapping: only i16 is Char; large layouts keyed by hash
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp (mlirTypeToParamKind, evalLayoutName, PapCreateGroupOpLowering)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: stale premise: Char is i32 now and maps to kind 3; no parameter is i1 / i8 (REP_ABI_001); a 64-bit FNV collision is practically impossible)
 - severity: medium
 - An i8 or i32 parameter is recorded as boxed but read raw by the wrapper. Two different kind lists of more than 64 entries with equal FNV hashes share one layout. PapCreateGroup derives kinds without the `wrapperWillBeTypedNewargs` check, so an args-array evaluator gets its kinds from a `(ptr)` signature.
 
 ### SretFuncOpLowering keeps arg_attrs unshifted
 - where: `runtime/src/codegen/Passes/EcoToLLVMFunc.cpp:~175-185 (SretFuncOpLowering)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: latent: nothing produces arg_attrs)
 - severity: medium
 - Per-argument attributes are copied onto a function that has an extra leading sret parameter, so noalias or nonnull lands on the wrong argument and can miscompile, if arg_attrs are ever set. The pattern also returns failure() after it has moved the body, which misuses the conversion framework.
 
 ### EcoCapHoistPlan counts a non-constant alloc size as 0 bytes
 - where: `runtime/src/codegen/Passes/EcoCapHoistPlan.cpp (alloc budget scan)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the only emitter always passes a constant size, the backend stops on a non-constant one, and plan-given mode re-checks each budget)
 - severity: medium
 - An `__eco_alloc_inline` with a non-constant size adds 0 to the budget, so a covered function can reserve too little capacity and its unchecked bumps overflow it.
 
 ### Primitive-result closure calls emit an unmatched __eco_sat_begin
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp (emitInlineClosureCall)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: a missed optimisation, not wrong output: Int / Float / Char-result saturated closure calls lose the $sat fast path. Reproduced by test/codegen/sat_bracket_primitive_result.mlir (XFAIL))
 - severity: low
 - A begin marker is emitted with no end, and the backend drops it, so these sites lose the saturated fast path. This costs performance, not correctness.
 
 ### Boxed-store validator call can be a statepoint
 - where: `runtime/src/codegen/Passes/EcoBoxedStoreVerify.cpp:65 (eco_validate_nursery_hptr_bits declaration)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: formally violates HEAP_031, but the validator never allocates and ECO_LOWERING_VALIDATION is off in every build; declare it gc-leaf)
 - severity: low
 - Without gc-leaf, ECO_LOWERING_VALIDATION builds get a statepoint between a fresh allocation and its field stores, and between array.set's clone and its store, which the alloc-store invariant forbids. Release builds are unaffected.
 
 ### EcoListTemplate debug vectors survive across runs
 - where: `runtime/src/codegen/Passes/EcoListTemplate.cpp:491-514 (debugOtherOps/debugBaseUseOwners)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: the pipeline is rebuilt per compile; the remaining hazard needs ECO_LIST_TEMPLATE_DEBUG)
 - severity: low
 - They are never cleared, so a second run with ECO_LIST_TEMPLATE_DEBUG dereferences possibly erased ops from the first run. This affects debug only.
 
 ### EcoOps verifiers cast attributes without type checks
 - where: `runtime/src/codegen/EcoOps.cpp (PapCreateGroupOp::verify, JoinpointOp::print, ListMapOp::verify)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: ODS checks the typed array attributes before verify runs; only jpResultTypes is unconstrained (malformed generic-form input; cleanup))
 - severity: low
 - `cast<IntegerAttr>` asserts on malformed IR instead of emitting a diagnostic, and `JoinpointOp::print` crashes on an empty body.
 
 ### String case lowering does not validate string_patterns
 - where: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp (buildStringIfChain)`, and the string case LLVM lowering
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: CaseOp::verify checks string_patterns and every driver parses with verification on)
 - severity: low
 - Neither checks `string_patterns.size() == alts.size() - 1`, and `cast<StringAttr>` asserts on a non-string entry, so malformed input crashes the compiler.
 
 ### EcoToLLVMValueAgg cons head_kind vs head type
 - where: `runtime/src/codegen/Passes/EcoToLLVMValueAgg.cpp:~564-590`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: latent: the front end never sets head_kind on eco.to_heap; reproduced by test/codegen/to_heap_cons_head_kind_mismatch.mlir (XFAIL): ToHeapOp::verify does not check head_kind against the head type, so a boxed head under head_kind = 1 compiles)
 - severity: low
 - The header kind comes from `head_kind`, but the stored word follows the head type, so only the verifier catches a mismatch.
 
 ### EcoToLLVMErrorDebug stores narrow operands into i64 slots
 - where: `runtime/src/codegen/Passes/EcoToLLVMErrorDebug.cpp (typed dbg loop, valueToI64)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: hand-written MLIR only (the front end boxes before eco.dbg); the untyped path would print an i1 as an HPointer)
 - severity: low
 - An i16 or i1 stored into an i64 slot leaves the upper bytes uninitialised, so debug printing shows garbage.
 
 ### EcoToLLVMGlobals strings array skips non-StringAttr entries but counts them
 - where: `runtime/src/codegen/Passes/EcoToLLVMGlobals.cpp:~198`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: malformed input only (unconstrained ArrayAttr))
 - severity: low
 - A skipped entry shifts the later pointers down and leaves a trailing undef with an overstated `string_count`. A second `eco.type_table` is dropped silently. All of this needs malformed input.
 
 ### EcoToLLVMTypes NDEBUG end() deref on an un-premade literal
 - where: `runtime/src/codegen/Passes/EcoToLLVMTypes.cpp:~155-176`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: collectPreMatDemand covers every converted body; report_fatal_error instead of assert would be hardening)
 - severity: low
 - The missing-index check is assert-only, so a release build dereferences `end()` if a literal was not pre-materialized.
 
 ### EcoToLLVM symCache can create duplicate symbols
 - where: `runtime/src/codegen/Passes/EcoToLLVMInternal.h (ensureSymCache)`; `EcoToLLVMRuntime.cpp:133-140 (getOrCreateFunc)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the next access after clear() goes through a lookup that refills the cache; Elm names cannot clash with eco_*)
 - severity: low
 - A `cacheSymbol` call before the first lookup after `clear()` leaves the cache incomplete, so a later lookup misses an existing func and creates a duplicate. `getOrCreateFunc` also duplicates if a non-llvm.func holds the name.
 
 ### EcoBackend: empty object path, swallowed filler errors
 - where: `runtime/src/codegen/EcoBackend.cpp:~4421, ~815-828`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: every caller sets a non-empty path and SplitModule always calls its callback N times)
 - severity: low
 - An empty objectFilePath gives `objectFiles = {""}`. When SplitModule makes fewer parts, filler-object errors and a null TM are skipped silently, which leaves an expected file unwritten and causes a later link failure.
 
 ### EcoGcFreePropagation unrowed-marker check is not exhaustive
 - where: `runtime/src/codegen/Passes/EcoGcFreePropagation.cpp:~213-288, :335`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: a function that stops early is already poisoned; the pass comment documents the missing error)
 - severity: low
 - The walk stops at the first poisoning call, so later unrowed `__eco_` markers go unreported. A trusted definition that already has gc-leaf keeps it when poisoned.
 
 ### isTrustedLeafDecl trusts any eco_/Elm_Kernel_ prefix
 - where: `runtime/src/codegen/Passes/EcoMarkerFacts.h:~174`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the prefix test only skips a check; nothing stamps a generated definition gc-leaf before these passes, and Elm names cannot carry the prefixes)
 - severity: low
 - A generated function with such a prefix would bypass the leaf check. None has been seen.
 
 ### Control-flow and joinpoint analysis imprecision
 - where: `runtime/src/codegen/Passes/EcoToLLVMControlFlow.cpp (int/str case use rewrite)`; `JoinpointNormalization.cpp:59,123-138`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: case alternatives are single-block by the verifier and joinpoints are never emitted; see JoinpointToScfWhile for the dead, unsound pattern)
 - severity: low
 - Int and string case lowering rewrites scrutinee uses only in caseBlocks, so nested multi-block alternatives can keep old uses and fail verification. `isSingleExitJoinpoint` counts nested and unreachable returns, and `hasSimpleCaseDispatch` checks only the first block.
 
 ### EcoReachability: duplicate flag, unused addressof drops its target
 - where: `runtime/src/codegen/Passes/EcoReachability.cpp`; `EcoSymbolGraph.h:20-21,85`
-- verdict: possible
+- verdict: possible (triaged 2026-10-30: latent and not reproduced: an unused addressof is dead-code-eliminated before reachability runs in ecoc's pipeline, so a hand-written fixture cannot reach it; the duplicate flag is cleanup)
 - severity: low
 - Running the pass twice appends a duplicate `eco-reach` flag. An unused `llvm.mlir.addressof @g` adds no edge, so `@g` is erased and the verifier rejects the module (a compile error, not a miscompile).
 
 ### EcoSymbolGraph ignores llvm.invoke callees
 - where: `runtime/src/codegen/Passes/EcoSymbolGraph.cpp:61,119,196-209`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: an invoke callee still becomes an Address edge (conservative), and no pass creates llvm.invoke)
 - severity: low
 - An invoke callee would be classed as an address-taken use. Nothing emits invoke today.
 
 ### EcoPAPSimplify fused extend loses attributes
 - where: `runtime/src/codegen/Passes/EcoPAPSimplify.cpp (P2 fusion, usesArgsArrayConvention)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: performance only: a typed fusion drops _capture_abi / _pap_prefix and can miss the fast path; _result_kind is read only on generic paths)
 - severity: low
 - The fused typed extend drops the second extend's `_result_kind`, and `func.func` args-array functions are not excluded. A typed papExtend whose `arg_type_ids` has the wrong length silently falls back instead of being rejected.
 
 ### EcoFoldProject creates arith ops without declaring the dialect
 - where: `runtime/src/codegen/Passes/EcoFoldProject.cpp`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: every driver loads arith, and the pass never runs standalone)
 - severity: low
 - There is no arith in `getDependentDialects`, so running the pass standalone loads arith mid-pass from worker threads. The pipeline preloads arith, so it is safe there. It also calls getenv per op from threads.
 
 ### UndefinedFunction misses nested and llvm.func definitions
 - where: `runtime/src/codegen/Passes/UndefinedFunction.cpp:61,72 (runOnOperation)`
-- verdict: possible (checked in code)
+- verdict: not-a-bug (triaged 2026-10-30: the scope is documented; the pass runs before any llvm.func exists)
 - severity: low
 - Definitions are scanned at top level as func.func only, while calls are walked recursively, so a callee defined as llvm.func or in a nested module is falsely reported as undefined.
 
 ### EcoTailConversions partial-conversion edge cases
 - where: `runtime/src/codegen/Passes/EcoTailConversions.cpp (runOnOperation)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: nothing emits cf.assert, and every global initializer is built from llvm ops)
 - severity: low
 - `cf.assert` passes through until LLVM translation fails, and arith or scf inside global initializer regions is not converted.
 
 ### Compare+case rewrite can raise the compare's execution count
 - where: `runtime/src/codegen/Passes/EcoCompareCaseRewrite.cpp:226-275 (tryRewrite/emitTests)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: joinpoints are never emitted and TailRec loops whole bodies; even so the results would stay correct)
 - severity: low
 - The tests are emitted right before the case, so a producer outside a joinpoint loop gets its string or boxed three-way compare re-run on every iteration. The results stay correct, but it is slower.
 
 ### EcoSplit inline list vs MAX_INSTS=0
 - where: `runtime/src/codegen/EcoSplit.cpp`; `EcoBackend.cpp:~3896`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: a delta-debug hook; missed inlines cost speed, not correctness)
 - severity: low
 - With ECO_CAP_INLINE_MAX_INSTS=0 and ECO_CAP_INLINE_LIST set, the backend marks the listed functions but EcoSplit makes no import copies, so the knobs disagree. Only the first partition error is reported.
 
 ### BFToLLVM: read.bytes ok always true, i32 UTF-8 offset
 - where: `runtime/src/codegen/Passes/BFToLLVM.cpp:~694-815, ~1482, ~1514`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: elm_alloc_bytebuffer never returns null, and every buffer length is u32)
 - severity: low
 - An allocation failure in bf.read.bytes is never reported because `ok` is always true. The UTF-8 offset is truncated to i32, which breaks buffers above 2 GiB. The writes assume a little-endian target, which every supported target is.
 
 ### LoweringStats short writes and init order
 - where: `runtime/src/codegen/LoweringStats.cpp:31,49-51`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: timelineMark is never called during static initialization; short writes only affect diagnostics)
 - severity: low
 - A short `write` silently truncates a line, and the dynamically initialised `kProcessEpoch` makes a static-init `timelineMark` from another TU measure from 0.
 
@@ -755,37 +757,37 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Windows __eco_init_globals / gc-roots check is always true
 - where: `runtime/src/codegen/eco_entry.cpp:94-98,152`; `EcoRunner.cpp (executeJIT)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: an unresolved non-weak symbol is a link error, and the compiler always emits __eco_init_globals; fix the comment)
 - severity: medium
 - On Windows the declarations are not weak, so `if (sym)` is always true. A module with no globals defines no `__eco_init_globals`, so it either fails to link or calls null, unless a stub exists elsewhere (none was found).
 
 ### JIT: cantFail on fallible paths
 - where: `runtime/src/jit/EcoJIT.cpp (create, invokePacked, initialize, registerSymbols)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_backend_error_reported.mlir (XFAIL): a backend error under -emit=jit aborts with "Failure value returned from cantFail wrapped call" (SIGABRT) instead of ecoc's error report)
 - severity: medium
 - In release builds `cantFail` on a failure is UB. A duplicate symbol in `registerSymbols` is a plausible user-triggered failure, and `create` aborts on transformer and addIRModule errors even though it returns Expected.
 
 ### JIT EH-frame walk misreads extended-length records
 - where: `runtime/src/jit/EcoJIT.cpp:148-175 (registerEHFrames/deregisterEHFrames, undoProcessFdeShift)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: unreachable: LLVM MC always emits 32-bit DWARF .eh_frame records)
 - severity: low
 - For a 64-bit-length record the CIE pointer is read at P+4 instead of P+12, and no read is bounds-checked against End. LLVM does not emit extended records for JIT objects of this size.
 
 ### EcoNativeDriver: unconditional debug print, racy init, skipped checks
 - where: `runtime/src/codegen/EcoNativeDriver.cpp (~375 llvm::errs; initializeLLVMNativeTarget; checkAddressTaken)`
-- verdict: possible
+- verdict: cleanup (triaged 2026-10-30: a stray "[eco-native::pipeline] runEcoBackend begin" print on stderr; the rest is serialised, deliberate or not true)
 - severity: low
 - "runEcoBackend begin" goes to stderr on every non-split build. The non-atomic static init flag races on a concurrent first call. ECO_REACH_VALIDATE is skipped on the split route, a .node shim write failure is ignored, and temp files leak on backend failure.
 
 ### eco-boot CLI edge cases
 - where: `runtime/src/codegen/eco-boot.cpp (main, getOutputPath)`
-- verdict: possible
+- verdict: likely-bug (triaged 2026-10-30: reproduced by test/scripts/check-driver-cli.sh (XFAIL, target run-driver-cli-tests, run by full): --emit=mlir on a .mlir input links a 14 MB executable into a file named "-" and exits 0. The rest (unclamped -O on --emit=llvm, a few temp-file leaks on error paths) is cleanup)
 - severity: low
 - `--emit=mlir` on a .mlir input links an executable to `-`. `--emit=llvm` passes an unclamped -O level, and temp files leak on several error paths.
 
 ### Eco_Kernel_Order_register_gc_roots called twice per run
 - where: `runtime/src/codegen/ecoc.cpp:~414`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: the callee is an empty no-op (Order values are embedded constants))
 - severity: low
 - When the eco-kernel aggregate hook is linked, the function is called twice and can register roots twice.
 
@@ -795,7 +797,7 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 ### Trace: late nameThread no-op; wants() reads g_keep unlocked
 - where: `runtime/src/ trace cpp:76,156 (nameThread, wants)`
-- verdict: possible
+- verdict: not-a-bug (triaged 2026-10-30: test-only code (TLA trace harnesses); the late nameThread no-op is the documented contract and g_keep is published by g_on's release/acquire)
 - severity: low
 - `nameThread` silently does nothing once any event has been logged. `wants()` reads `g_keep` while `begin()` rewrites it, which is safe only under begin's "no other thread logs" contract.
 
