@@ -317,6 +317,31 @@ void test_wait_for_non_child_fails_promptly() {
 }
 #endif  // !_WIN32
 
+#if defined(_WIN32)
+// PS8d (Windows): an NTSTATUS crash code reaches the consumer as the non-negative 3221225477
+// (0xC0000005), as Node reports it, never as a negative number that could be taken for
+// kWaitFailedExitCode (cpp-review-bugs.md "Windows exit codes >= 0x80000000 become negative").
+// Not run in this repository's Linux CI; it needs the win-build preset.
+void test_wait_ntstatus_exit_code_non_negative() {
+    initRuntime();
+    auto& ws = WaitService::instance();
+    Elm::platform::SpawnSpec spec;
+    spec.program = "exit /b -1073741819";
+    spec.shellKind = Elm::platform::kShellDefault;
+    auto c = Elm::platform::spawnChild(spec, Elm::platform::StdioMode::Null, /*newSession=*/false);
+    TEST_ASSERT(c.err == 0);
+    Elm::platform::registerProcessHandle(c.pid, c.process);
+    c.process = nullptr;
+    ws.submit(c.pid, 601, WaitLane::EcoSystem);
+    TEST_ASSERT(waitFor([&] { return ws.hasReady(WaitLane::EcoSystem); }));
+    WaitService::Ready r{};
+    TEST_ASSERT(ws.tryPopReady(WaitLane::EcoSystem, r));
+    TEST_ASSERT(r.token == 601);
+    TEST_ASSERT(r.error == 0);
+    TEST_ASSERT(r.exitCode == 3221225477LL);
+}
+#endif  // _WIN32
+
 // ---- exit code export (Phase 2 step 2) --------------------------------------
 
 void test_exit_code_roundtrip() {
@@ -701,6 +726,8 @@ void registerPlatformServicesTests(IsolatedTestRunner::IsolatedTestCaseSuite& su
     suite.add(Testing::TestCase("platform-services/PS8 wait exited before submit", test_wait_exited_before_submit_is_delivered));
     suite.add(Testing::TestCase("platform-services/PS8b wait leaves other children alone", test_wait_leaves_other_children_alone));
     suite.add(Testing::TestCase("platform-services/PS8c wait for a non-child fails promptly", test_wait_for_non_child_fails_promptly));
+#else
+    suite.add(Testing::TestCase("platform-services/PS8d wait: an NTSTATUS exit code is non-negative", test_wait_ntstatus_exit_code_non_negative));
 #endif
     suite.add(Testing::TestCase("platform-services/PS9 exit code roundtrip", test_exit_code_roundtrip));
     // plans/program-liveness-rule.md §11.2 PS4-PS9 (prefixed "liveness": the

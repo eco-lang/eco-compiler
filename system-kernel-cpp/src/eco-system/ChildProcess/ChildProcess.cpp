@@ -290,7 +290,7 @@ void completeRun(int64_t jobId) {
     uint64_t timerToken = j->timerToken;
     HoldToken hold = j->hold;
     bool killed = j->killed || j->overflow;
-    [[maybe_unused]] bool waitFailed = j->waitFailed;   // read only on POSIX
+    bool waitFailed = j->waitFailed;
     int raw = j->rawStatus;
     std::string out = std::move(j->out), err = std::move(j->err);
     childJobs().erase(jobId);   // `j` is dead from here
@@ -301,6 +301,12 @@ void completeRun(int64_t jobId) {
 #ifndef _WIN32
     if (!killed && !waitFailed && WIFEXITED(raw)) {
         code = WEXITSTATUS(raw);
+        success = code == 0;
+    }
+#else
+    // Windows has no exit/signal split: the exit code is the outcome (non-negative, WaitService).
+    if (!killed && !waitFailed) {
+        code = WaitService::exitCodeFromStatus(raw);
         success = code == 0;
     }
 #endif
@@ -551,6 +557,12 @@ HPointer childProcessRunBody(HPointer captured, HPointer resume) {
             Scheduler::callClosure1(resume, task);
             return alloc::unit();
         }
+#if defined(_WIN32)
+        // The WaitService waits on this handle and closes it (Spawn.hpp takeProcessHandle); left here it
+        // leaked, and the WaitService opened a second handle by pid.
+        Elm::platform::registerProcessHandle(ch.pid, ch.process);
+        ch.process = nullptr;
+#endif
 
         auto col = std::make_shared<RunCollector>();
         col->outFd = ch.stdoutFd;

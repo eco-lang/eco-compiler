@@ -22,9 +22,10 @@ WaitService& WaitService::instance() {
     return *inst;
 }
 
-int WaitService::exitCodeFromStatus(int rawStatus) {
+std::int64_t WaitService::exitCodeFromStatus(int rawStatus) {
 #if defined(_WIN32)
-    return rawStatus;
+    // The DWORD exit code, unsigned: an NTSTATUS crash code is >= 0x80000000 and must not read as negative.
+    return static_cast<std::int64_t>(static_cast<std::uint32_t>(rawStatus));
 #else
     if (WIFEXITED(rawStatus)) return WEXITSTATUS(rawStatus);
     if (WIFSIGNALED(rawStatus)) return 128 + WTERMSIG(rawStatus);

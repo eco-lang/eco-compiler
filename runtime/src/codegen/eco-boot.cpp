@@ -89,6 +89,7 @@
 
 #include "mlir/Transforms/Passes.h"
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -720,8 +721,21 @@ int main(int argc, char **argv) {
     // Get MLIR input (either directly or via frontend compilation)
     std::string mlirFile;
     std::string tempMlirFile;
+    // Removes the front end's temporary MLIR on every return, error returns included. Removing a file
+    // that is already gone is harmless, so the explicit removals below stay.
+    auto removeTempMlir = llvm::make_scope_exit([&] {
+        if (!tempMlirFile.empty())
+            llvm::sys::fs::remove(tempMlirFile);
+    });
 
     if (isMlirFile(inputFilename)) {
+        // `--emit=mlir` asks for the front end's output, which an MLIR input already is. Without this,
+        // the input would fall through to the executable path and be linked into a file named `-`.
+        if (emitAction == EmitMLIR) {
+            llvm::errs() << "Error: --emit=mlir needs an .elm input; " << inputFilename
+                         << " is already MLIR (ecoc --emit=mlir prints it as text)\n";
+            return 1;
+        }
         mlirFile = inputFilename;
     } else if (isElmFile(inputFilename)) {
         if (emitAction == EmitMLIR) {
@@ -977,8 +991,9 @@ int main(int argc, char **argv) {
         }
         if (optLevel > 0) {
             eco::LoweringStats::Scope scope(stats, "LLVM optimization (-O>0)");
+            // Clamped to 3 as on the executable path; makeOptimizingTransformer rejects a higher level.
             auto optPipeline = makeOptimizingTransformer(
-                optLevel, /*sizeLevel=*/0, /*targetMachine=*/tm.get());
+                std::min(optLevel.getValue(), 3u), /*sizeLevel=*/0, /*targetMachine=*/tm.get());
             if (auto err = optPipeline(llvmModule.get())) {
                 llvm::errs() << "Error: LLVM optimization failed: " << llvm::toString(std::move(err)) << "\n";
                 return 1;
@@ -1009,6 +1024,11 @@ int main(int argc, char **argv) {
     // the objects, and the executable or library is then linked.
     std::string objFile;
     std::string tempObjFile;
+    // Removed on every return, as the temporary MLIR is.
+    auto removeTempObj = llvm::make_scope_exit([&] {
+        if (!tempObjFile.empty())
+            llvm::sys::fs::remove(tempObjFile);
+    });
     // `-o foo.o` with the default --emit=exe is object-only output too.
     bool emitObjOnly =
         (emitAction == EmitObj) ||

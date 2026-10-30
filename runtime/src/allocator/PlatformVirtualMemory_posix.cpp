@@ -38,8 +38,10 @@ void* reserveAddressSpaceBelow(std::size_t size, std::uintptr_t limit) {
 
 #if defined(__SANITIZE_THREAD__)
     // Under ThreadSanitizer the 1 TB candidates below can collide with its
-    // shadow memory, so try [64 GB, 512 GB) first, in 64 GB steps.
-    for (std::uintptr_t base = 0x10'0000'0000ULL; base + size <= 0x80'0000'0000ULL;
+    // shadow memory, so try [64 GB, 512 GB) first, in 64 GB steps, never
+    // past `limit`.
+    for (std::uintptr_t base = 0x10'0000'0000ULL;
+         base + size <= 0x80'0000'0000ULL && base + size <= limit;
          base += 0x10'0000'0000ULL) {
         void* p = mmap(reinterpret_cast<void*>(base), size, PROT_NONE, kBaseFlags | kFixed, -1, 0);
         if (p == MAP_FAILED) continue;

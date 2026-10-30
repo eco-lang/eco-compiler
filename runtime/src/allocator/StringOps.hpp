@@ -937,8 +937,18 @@ inline HPointer reverse(void* str) {
     return out.hp;
 }
 
-// Returns `str` without the whitespace at either end, where whitespace is only space, tab, line
-// feed and carriage return.
+// Returns whether the UTF-16 unit `c` is whitespace as JavaScript's `\s` (and so `String.prototype.trim`)
+// defines it: TAB, LF, VT, FF, CR, SPACE, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F,
+// U+3000 and U+FEFF. elm/core's String.trim, trimLeft, trimRight and words use this set.
+inline bool isJsWhitespace(u16 c) {
+    if (c <= 0x20) return c == 0x20 || (c >= 0x09 && c <= 0x0D);
+    if (c < 0xA0) return false;
+    return c == 0x00A0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 ||
+           c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000 || c == 0xFEFF;
+}
+
+// Returns `str` without the whitespace at either end, where whitespace is `isJsWhitespace`'s set, as in
+// elm/core's `_String_trim` (`str.trim()`).
 //
 // The result is `str` itself when there is none to remove, the Empty constant when nothing else
 // remains or `str` is null, and otherwise what `slice` gives for the rest. A GC point.
@@ -951,13 +961,11 @@ inline HPointer trim(void* str) {
     if (len == 0) return alloc::emptyString();
 
     size_t start = 0;
-    while (start < len && (buf[start] == ' ' || buf[start] == '\t' ||
-                           buf[start] == '\n' || buf[start] == '\r')) {
+    while (start < len && isJsWhitespace(buf[start])) {
         ++start;
     }
     size_t end = len;
-    while (end > start && (buf[end - 1] == ' ' || buf[end - 1] == '\t' ||
-                           buf[end - 1] == '\n' || buf[end - 1] == '\r')) {
+    while (end > start && isJsWhitespace(buf[end - 1])) {
         --end;
     }
     if (start >= end) return alloc::emptyString();
@@ -976,8 +984,7 @@ inline HPointer trimLeft(void* str) {
     if (len == 0) return alloc::emptyString();
 
     size_t start = 0;
-    while (start < len && (buf[start] == ' ' || buf[start] == '\t' ||
-                           buf[start] == '\n' || buf[start] == '\r')) {
+    while (start < len && isJsWhitespace(buf[start])) {
         ++start;
     }
     if (start == 0) return Allocator::instance().wrap(str);
@@ -996,8 +1003,7 @@ inline HPointer trimRight(void* str) {
     if (len == 0) return alloc::emptyString();
 
     size_t end = len;
-    while (end > 0 && (buf[end - 1] == ' ' || buf[end - 1] == '\t' ||
-                       buf[end - 1] == '\n' || buf[end - 1] == '\r')) {
+    while (end > 0 && isJsWhitespace(buf[end - 1])) {
         --end;
     }
     if (end == len) return Allocator::instance().wrap(str);
@@ -1192,10 +1198,10 @@ inline bool narrowAsciiToStack(void* str, char* buf, size_t cap, size_t* out_len
 
 // Returns `Just` the Int that `str` spells in decimal, or `Nothing`.
 //
-// It gives `Just` only when `str` is ASCII, at most 64 units long, and in the form
-// `std::from_chars` accepts for base 10 with nothing left over (an optional `-` and then digits,
-// with no `+`, no spaces, and a value that fits in 64 bits); anything else, including a null or
-// empty `str`, gives `Nothing`. A GC point.
+// It gives `Just` only when `str` is ASCII, at most 64 units long, and an optional `+` or `-` followed
+// by at least one decimal digit and nothing else, with a value that fits in 64 bits, as elm/core's
+// `_String_toInt` accepts (`"+5"` is `Just 5`; `"+"`, `"-"`, `"+-5"` and `"++5"` are `Nothing`);
+// anything else, including a null or empty `str` or spaces, gives `Nothing`. A GC point.
 inline HPointer toInt(void* str) {
     if (!str) return alloc::nothing();
     u32 len = rawLen(str);
@@ -1208,8 +1214,19 @@ inline HPointer toInt(void* str) {
         return alloc::nothing();
     }
 
+    // std::from_chars accepts a leading `-` but not `+`, so a `+` is skipped here; after either sign a
+    // digit must follow, or "+-5" would parse as -5.
+    const char* first = buf;
+    const char* digits = buf;
+    if (buf[0] == '+') {
+        first = digits = buf + 1;   // the digits start right after it: "+-5" is not a number
+    } else if (buf[0] == '-') {
+        digits = buf + 1;           // from_chars reads the `-` itself
+    }
+    if (digits == buf + narrowed_len || *digits < '0' || *digits > '9') return alloc::nothing();
+
     i64 val;
-    auto [end, ec] = std::from_chars(buf, buf + narrowed_len, val, 10);
+    auto [end, ec] = std::from_chars(first, buf + narrowed_len, val, 10);
     if (ec != std::errc() || end != buf + narrowed_len) return alloc::nothing();
 
     return alloc::just(alloc::unboxedInt(val), false);

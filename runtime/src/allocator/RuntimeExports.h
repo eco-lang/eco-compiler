@@ -263,6 +263,19 @@ extern thread_local void* eco_tl_bump_state;
 // (asserted). Without assertions, failure returns 0.
 HPtr eco_alloc_inline_slow(uint64_t size);
 
+// Lets lists built from then on be chunk chains; generated code calls it at the start of @main when
+// the module is marked `eco.list_chunks`. Never undone.
+void eco_enable_list_chunks(void);
+
+// Dispatch census hooks, emitted only under ECO_DISPATCH_STATS (RuntimeExports.cpp): one fast-path
+// dispatch of `evaluator_fp`, and one generic call with `reason`. Both do nothing unless the census is on.
+void eco_dispatch_stats_fast(void* evaluator_fp);
+void eco_gencall_stats(int32_t reason);
+
+// The head and the tail of a list that may be a chunk chain or cons cells (chunked-list mode).
+HPtr eco_list_head_hybrid(HPtr list);
+HPtr eco_list_tail_hybrid(HPtr list);
+
 // Makes at least `n` bytes free in the calling thread's nursery bump range without allocating them,
 // collecting if needed, so that inline allocations totalling at most `n` bytes need no further check
 // (HEAP_041). Not gc-leaf.

@@ -80,6 +80,18 @@ void Scheduler::registerLatestProcess(HPointer proc) {
     latestProc_[id] = encodeHP(proc);
 }
 
+void Scheduler::updateLatestProcess(HPointer proc) {
+    void* ptr = resolveHP(proc);
+    if (!ptr) return;
+    auto it = latestProc_.find(static_cast<Process*>(ptr)->id);
+    if (it != latestProc_.end()) it->second = encodeHP(proc);
+}
+
+void Scheduler::processKilled(u64 id) {
+    latestProc_.erase(id);
+    selfMsgHandlers_.erase(id);
+}
+
 HPointer Scheduler::latestProcessById(u64 id) {
     auto it = latestProc_.find(id);
     if (it == latestProc_.end()) return listNil();
@@ -251,7 +263,7 @@ HPointer Scheduler::procWithRoot(HPointer srcHP, HPointer newRoot) {
     // Root the by-value locals across allocProcess (see procWithStack).
     Elm::StackRootGuard guard(&newRoot, &oldStack, &oldMailbox);
     HPointer newHP = allocProcess(id, newRoot, oldStack, oldMailbox);
-    Scheduler::instance().registerLatestProcess(newHP);
+    Scheduler::instance().updateLatestProcess(newHP);
     return newHP;
 }
 
@@ -268,7 +280,7 @@ HPointer Scheduler::procWithStack(HPointer srcHP, HPointer newStack) {
     // caller-supplied newStack. allocProcess is a GC point.
     Elm::StackRootGuard guard(&oldRoot, &newStack, &oldMailbox);
     HPointer newHP = allocProcess(id, oldRoot, newStack, oldMailbox);
-    Scheduler::instance().registerLatestProcess(newHP);
+    Scheduler::instance().updateLatestProcess(newHP);
     return newHP;
 }
 
@@ -280,7 +292,7 @@ HPointer Scheduler::procWithMailbox(HPointer srcHP, HPointer newMailbox) {
     HPointer oldRoot = src->root;
     HPointer oldStack = src->stack;
     HPointer newHP = allocProcess(id, oldRoot, oldStack, newMailbox);
-    Scheduler::instance().registerLatestProcess(newHP);
+    Scheduler::instance().updateLatestProcess(newHP);
     return newHP;
 }
 
@@ -445,9 +457,9 @@ static void* resumeEvaluator(void* args[]) {
     HPointer newTask = decodeHP(taskEnc);
 
     if (resolveHP(procHP)) {
+        Scheduler::instance().noteResumed();
         HPointer newProcHP = Scheduler::procWithRoot(procHP, newTask);
         Scheduler::instance().enqueue(newProcHP);
-    } else {
     }
 
     return reinterpret_cast<void*>(encodeHP(unit()));
@@ -483,11 +495,14 @@ void Scheduler::rawSend(HPointer procHP, HPointer msg) {
 // the time it is killed, and its root is the Task the process started with,
 // not the parked Binding that carries the kill handle.
 static HPointer killBindingBody(HPointer targetProcHP) {
+    auto& sched = Scheduler::instance();
     void* ptr = resolveHP(targetProcHP);
+    u64 id = 0;
+    bool haveId = false;
     if (ptr) {
-        HPointer latest = Scheduler::instance().latestProcessById(
-            static_cast<Process*>(ptr)->id);
-        ptr = resolveHP(latest);
+        id = static_cast<Process*>(ptr)->id;
+        haveId = true;
+        ptr = resolveHP(sched.latestProcessById(id));
     }
     if (ptr) {
         Process* proc = static_cast<Process*>(ptr);
@@ -502,7 +517,11 @@ static HPointer killBindingBody(HPointer targetProcHP) {
             }
         }
     }
-    return Scheduler::instance().taskSucceed(unit());
+    // As elm/core's `_Scheduler_kill` sets the process's root to null: the process takes no further step,
+    // whether it was parked or queued to run. A process killing itself is not stopped, as in JS, where the
+    // kill binding's own callback gives it a root again.
+    if (haveId && !sched.isStepping(id)) sched.processKilled(id);
+    return sched.taskSucceed(unit());
 }
 
 HPointer Scheduler::killTask(HPointer procHP) {
@@ -846,6 +865,28 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
 
     if (!resolveProc()) return;
 
+    // Step the process's latest version, not necessarily the one this run-queue entry holds. Elm's JS scheduler
+    // has one mutable process; here every change makes a new version, and each `rawSend` or resume queues its
+    // own, so an entry may be stale. The latest version holds everything an older one did (its mailbox
+    // included), so stepping it consumes every message once, and a second entry for the same process finds
+    // nothing left. An id with no latest version has finished or been killed: the entry is dropped. A stale entry
+    // whose latest version is parked on a Binding is dropped too: that process runs again only when resumed.
+    {
+        Process* p = resolveProc();
+        const u64 id = p->id;
+        HPointer latest = latestProcessById(id);
+        if (alloc::isNil(latest)) return;
+        const uint64_t latestEnc = encodeHP(latest);
+        if (latestEnc != procEncoded) {
+            void* lp = resolveHP(latest);
+            Task* lroot = lp ? resolveRoot(static_cast<Process*>(lp)) : nullptr;
+            if (lroot && lroot->ctor == Task_Binding) return;
+            procEncoded = latestEnc;
+        }
+    }
+    const u64 steppingId = resolveProc()->id;
+    SteppingScope stepping(*this, steppingId);
+
     while (true) {
         Process* proc = resolveProc();
         if (!proc) break;
@@ -953,11 +994,19 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 closureCapture(clPtr, boxed(currentProcHP()), true);
             }
 
+            const u64 resumesBefore = resumeSerial_;
             HPointer killHandle = callClosure1(bindCallback, resumeClosure);
 
             // The callback may have collected.
             proc = resolveProc();
             if (!proc) break;
+
+            // A callback that resumed synchronously has already queued the resumed version and made it the
+            // latest; registering a parked copy now would hide it (a kill would find the parked Binding, and
+            // the stale-entry rule above would skip the resumed version).
+            if (resumeSerial_ != resumesBefore &&
+                encodeHP(latestProcessById(proc->id)) != procEncoded)
+                break;
 
             // The kill handle goes on a copy of the Binding made for this
             // process, never into the Task itself: a Task is an immutable

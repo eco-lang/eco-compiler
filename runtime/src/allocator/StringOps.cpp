@@ -699,15 +699,9 @@ HPointer join(void* sep, HPointer stringList) {
 }
 
 HPointer indexes(void* needle, void* haystack) {
-    if (!haystack) return alloc::listFromInts({});
-    if (!needle) {
-        size_t haystack_len = static_cast<Header*>(haystack)->size;
-        std::vector<i64> indices;
-        for (size_t i = 0; i <= haystack_len; ++i) {
-            indices.push_back(static_cast<i64>(i));
-        }
-        return alloc::listFromInts(indices);
-    }
+    // An empty needle has no index, as elm/core's `_String_indexes` returns [] when the needle's length is
+    // below 1. A null pointer is the empty string.
+    if (!haystack || !needle) return alloc::listFromInts({});
 
     if (isUtf8(needle))
         GC_STATS_UTF8_WIDEN_SITE(UTF8_WIDEN_INDEXES, static_cast<Header*>(needle)->size);
@@ -722,9 +716,7 @@ HPointer indexes(void* needle, void* haystack) {
 
     std::vector<i64> indices;
     if (needle_len == 0) {
-        for (size_t i = 0; i <= haystack_len; ++i) {
-            indices.push_back(static_cast<i64>(i));
-        }
+        // No index, as above.
     } else if (needle_len <= haystack_len) {
         // Boyer-Moore-Horspool for a needle of 4 or more units, and a direct scan otherwise. The skip
         // table is indexed by a unit's low byte, so units that share it share an entry.

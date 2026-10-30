@@ -177,6 +177,67 @@ void eco::detail::collectPreMatDemand(MLIRContext *ctx,
 
 namespace {
 
+// Returns whether `t` is a value aggregate (REP_AGG_001: tuple2, tuple3, record, custom, cons, closure_env) that
+// holds a GC pointer: an `!eco.value` field, directly or inside a nested aggregate.
+bool aggregateHoldsGCPointer(Type t) {
+    auto anyHolds = [](ArrayRef<Type> fields) {
+        return llvm::any_of(fields, [](Type f) {
+            return isa<eco::ValueType>(f) || aggregateHoldsGCPointer(f);
+        });
+    };
+    if (auto t2 = dyn_cast<eco::Tuple2Type>(t)) return anyHolds({t2.getFirst(), t2.getSecond()});
+    if (auto t3 = dyn_cast<eco::Tuple3Type>(t))
+        return anyHolds({t3.getFirst(), t3.getSecond(), t3.getThird()});
+    if (auto r = dyn_cast<eco::RecordType>(t)) return anyHolds(r.getFields());
+    if (auto c = dyn_cast<eco::CustomType>(t)) return anyHolds(c.getFields());
+    if (auto c = dyn_cast<eco::ConsType>(t)) return anyHolds({c.getHead(), c.getTail()});
+    if (auto e = dyn_cast<eco::ClosureEnvType>(t)) return anyHolds(e.getCaptures());
+    return false;
+}
+
+// Reports every place in `module` where a value aggregate holding a GC pointer crosses a function or block
+// boundary: a function argument or result, a block argument, or a result of an op with regions (scf.if,
+// scf.while, eco.case, ...). Returns failure if there is one.
+//
+// Such an aggregate lowers to an LLVM struct holding a `ptr addrspace(1)`, which RS4GC cannot relocate, so a
+// collection while it is live leaves the pointer stale. FoldExtractValuePass removes an aggregate only when it is
+// built and consumed in one function, and the front end never produces one at a boundary (census 2026-10-30), so
+// this is a hard error rather than a silent miscompile until the boundaries are scalarized
+// (plans/aggregate-boundary-scalarization.md; cpp-review-bugs.md "make.closure keeps an env aggregate ...").
+LogicalResult checkAggregateBoundaries(ModuleOp module) {
+    bool bad = false;
+    auto report = [&](Location loc, StringRef where, Type t) {
+        emitError(loc) << where << " has type " << t
+                       << ": an aggregate holding a GC pointer as a function argument or result, or as a block "
+                          "argument or region result, is not supported yet (RS4GC cannot relocate a pointer "
+                          "inside a struct; see plans/aggregate-boundary-scalarization.md)";
+        bad = true;
+    };
+    module.walk([&](Operation *op) {
+        if (auto f = dyn_cast<func::FuncOp>(op)) {
+            for (auto [i, t] : llvm::enumerate(f.getFunctionType().getInputs()))
+                if (aggregateHoldsGCPointer(t))
+                    report(f.getLoc(), ("argument " + Twine(i) + " of @" + f.getSymName()).str(), t);
+            for (auto [i, t] : llvm::enumerate(f.getFunctionType().getResults()))
+                if (aggregateHoldsGCPointer(t))
+                    report(f.getLoc(), ("result " + Twine(i) + " of @" + f.getSymName()).str(), t);
+        }
+        if (op->getNumRegions() == 0) return;
+        for (Value r : op->getResults())
+            if (aggregateHoldsGCPointer(r.getType()))
+                report(op->getLoc(), ("a result of '" + op->getName().getStringRef() + "'").str(), r.getType());
+        for (Region &region : op->getRegions())
+            for (Block &block : region) {
+                // A function's entry-block arguments are its arguments, reported above.
+                if (isa<func::FuncOp>(op) && &block == &region.front()) continue;
+                for (BlockArgument a : block.getArguments())
+                    if (aggregateHoldsGCPointer(a.getType()))
+                        report(a.getLoc(), "a block argument", a.getType());
+            }
+    });
+    return failure(bad);
+}
+
 /**
  * The `eco-to-llvm` module pass, whose stages the file comment describes. It is created by
  * `eco::createEcoToLLVMPass` and registered by `eco::registerEcoPasses`.
@@ -202,6 +263,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
     void runOnOperation() override {
         ModuleOp module = getOperation();
         auto *ctx = &getContext();
+
+        // Before any conversion: an aggregate holding a GC pointer at a function or block boundary cannot be
+        // lowered safely yet.
+        if (failed(checkAggregateBoundaries(module))) {
+            signalPassFailure();
+            return;
+        }
 
         // Stage timers for ECO_ECO2LLVM_STATS. Each ecoStageReport() prints the steady_clock time since the
         // previous report (or since here) and restarts the clock; with the variable unset it does nothing.

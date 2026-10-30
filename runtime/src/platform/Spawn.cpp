@@ -211,8 +211,6 @@ SpawnedChild spawnChild(const SpawnSpec& spec, StdioMode mode, bool newSession) 
         argv.push_back(prog);
         for (const auto& a : spec.args) argv.push_back(widen(a));
     } else {
-        std::string line = spec.program;
-        for (const auto& a : spec.args) { line += ' '; line += a; }
         std::wstring shell;
         if (spec.shellKind == kShellCustom && !spec.customShell.empty()) {
             shell = widen(spec.customShell);
@@ -226,9 +224,19 @@ SpawnedChild spawnChild(const SpawnSpec& spec, StdioMode mode, bool newSession) 
         argv.push_back(L"/d");
         argv.push_back(L"/s");
         argv.push_back(L"/c");
-        argv.push_back(widen(line));
     }
     std::wstring cmd = commandLine(argv);
+    if (spec.shellKind != kShellNone) {
+        // `cmd /s /c` strips the first and the last quote of the rest of its command line and runs what is left
+        // as it is, so the line goes inside one pair of quotes with nothing escaped. `appendQuoted`'s `\"`
+        // escapes are for CommandLineToArgvW, which cmd does not use: `echo "a b"` would print `\"a b\"`
+        // (cpp-review-bugs.md "Spawn: Windows shell quoting ...").
+        std::string line = spec.program;
+        for (const auto& a : spec.args) { line += ' '; line += a; }
+        cmd += L" \"";
+        cmd += widen(line);
+        cmd += L'"';
+    }
     std::wstring env = environmentBlock(spec);
     std::wstring cwd = spec.inheritCwd ? std::wstring() : widen(spec.cwd);
 

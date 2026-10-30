@@ -1451,6 +1451,18 @@ LogicalResult ToHeapOp::verify() {
   }
   if (getSlotKinds())
     return emitOpError("slot_kinds is only meaningful on a record/custom aggregate");
+  // A cons's head_kind / head_unboxed, when set, must agree with the head type: the lowering writes
+  // head_kind into the header but stores the head by its type, so a disagreement makes the GC skip a
+  // pointer or trace a raw word. Left at their defaults (0 / false) they are derived from the type.
+  if (auto cons = dyn_cast<eco::ConsType>(valTy)) {
+    const int64_t k = fieldKind(cons.getHead());
+    if (getHeadKind() != 0 && getHeadKind() != k)
+      return emitOpError("head_kind = ") << getHeadKind()
+             << " does not match head type " << cons.getHead() << " (kind " << k << ")";
+    if (getHeadUnboxed() && k == 0)
+      return emitOpError("head_unboxed = true but head type ") << cons.getHead()
+             << " is boxed (head_kind " << getHeadKind() << ")";
+  }
   return success();
 }
 

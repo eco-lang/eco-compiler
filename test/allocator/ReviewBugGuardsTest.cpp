@@ -1,14 +1,14 @@
 /**
- * Expected-fail guards for runtime-review defects (cpp-review-bugs.md) that are reproduced but not
- * fixed yet (see ReviewBugGuardsTest.hpp and test/XfailGuard.hpp).
+ * Regression tests for runtime-review defects (cpp-review-bugs.md), fixed 2026-10-30 (see
+ * ReviewBugGuardsTest.hpp).
  *
- *   RB-255  HeapConfig::validate accepts an alloc_buffer_size that is not a multiple of the OS page
- *           size; the heap then commits buffers at addresses mmap(MAP_FIXED) rejects (an assert in
- *           acquireOldGenBlock, or an out-of-memory report in a release build).
- *   RB-141  When the old generation is exhausted, a large pointer-bearing (YLOS) allocation does not
- *           report "out of memory": after its major-GC retry it only asserts (a release build returns
- *           null and the caller dereferences it), unlike large String/Bytes bodies, which end in
- *           largeBodyExhausted's "eco: out of memory" abort.
+ *   RB-255  (fixed 2026-10-30, now a plain test) HeapConfig::validate rejects an alloc_buffer_size
+ *           that is not a multiple of the OS page size; before, the heap committed buffers at
+ *           addresses mmap(MAP_FIXED) rejects.
+ *   RB-141  (fixed 2026-10-30, now a plain test) When the old generation is exhausted, a large
+ *           pointer-bearing (YLOS) allocation ends in heapExhausted's "eco: out of memory" abort; it
+ *           used to only assert after its major-GC retry (a release build returned null and the caller
+ *           dereferenced it).
  */
 
 #include "ReviewBugGuardsTest.hpp"
@@ -50,22 +50,18 @@ void testAllocBufferSizePageMultiple() {
     }
     HeapConfig bad = configWithBufferSize(OS_PAGE_SIZE * 3 / 2);
     bool rejected = false;
-    std::string why;
     try {
         bad.validate();
     } catch (const std::invalid_argument& e) {
-        rejected = true;
-        why = e.what();
+        rejected = std::string(e.what()).find("multiple of the OS page size") != std::string::npos;
     }
-    XfailGuard::report("RB-255", !rejected,
-                       rejected ? "validate rejects alloc_buffer_size = 1.5 pages (" + why + ")"
-                                : "validate accepts alloc_buffer_size = 1.5 pages");
+    TEST_ASSERT(rejected);
 }
 
 // RB-141: fills a small heap (a 64 MiB reservation) with rooted large arrays, all placed in the YLOS
-// (large_ptr_nursery_divisor = 0), until the old generation is exhausted. The correct end is an
-// "out of memory" abort; today it is the assert in allocateYoungLarge (or, in a release build, a
-// null pointer).
+// (large_ptr_nursery_divisor = 0), until the old generation is exhausted. The end must be an
+// "out of memory" abort (it was the assert in allocateYoungLarge, or a null pointer in a release
+// build).
 void testYlosExhaustionReportsOutOfMemory() {
 #if !defined(_WIN32)
     XfailGuard::ChildResult r = XfailGuard::runInChild([] {
@@ -101,10 +97,10 @@ void testYlosExhaustionReportsOutOfMemory() {
     }
     const bool cleanOom = WIFSIGNALED(r.status) && WTERMSIG(r.status) == SIGABRT &&
                           r.stderrText.find("out of memory") != std::string::npos;
-    std::string how = cleanOom ? "an \"out of memory\" abort"
-                               : "no \"out of memory\" report (wait status " + std::to_string(r.status) +
-                                     "; stderr: " + r.stderrText.substr(0, 200) + ")";
-    XfailGuard::report("RB-141", !cleanOom, how);
+    if (!cleanOom) {
+        TEST_FAIL("RB-141: no \"out of memory\" report (wait status " + std::to_string(r.status) +
+                  "; stderr: " + r.stderrText.substr(0, 200) + ")");
+    }
 #endif
 }
 
@@ -112,12 +108,12 @@ void testYlosExhaustionReportsOutOfMemory() {
 
 void registerReviewBugGuards(Testing::TestSuite& suite) {
     suite.add(Testing::TestCase(
-        "[xfail RB-255] HeapConfig::validate rejects an alloc_buffer_size that is not a page multiple",
+        "RB-255 HeapConfig::validate rejects an alloc_buffer_size that is not a page multiple",
         testAllocBufferSizePageMultiple));
 }
 
 void registerReviewBugIsolatedGuards(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
     suite.add(Testing::TestCase(
-        "[xfail RB-141] YLOS exhaustion ends in an out-of-memory report, not an assert or null",
+        "RB-141 YLOS exhaustion ends in an out-of-memory report, not an assert or null",
         testYlosExhaustionReportsOutOfMemory));
 }

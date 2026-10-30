@@ -131,12 +131,10 @@ public:
     // `options.transformer` if one is set, and added to the engine, which
     // targets the host. Symbols the module does not define are resolved
     // against the current process, and against what `registerSymbols` later
-    // defines. `op` is not kept. Returns an error if translation fails or
-    // no target machine can be made for the host. A transformer that returns
-    // an error, or a failure to build the engine, add the module or create
-    // the process symbol generator, is not reported: it is treated as
-    // impossible, which aborts when assertions are on and is undefined
-    // behaviour otherwise.
+    // defines. `op` is not kept. Returns an error if translation fails, no
+    // target machine can be made for the host, the transformer returns an
+    // error (the backend's own diagnostics), or building the engine, adding
+    // the module or creating the process symbol generator fails.
     static llvm::Expected<std::unique_ptr<EcoJIT>>
     create(mlir::Operation *op, const EcoJITOptions &options = {});
 
@@ -170,10 +168,9 @@ public:
     // Defines, in the engine's main library, the absolute symbols that
     // `symbolMap` returns when called with the engine's name mangler.
     //
-    // `symbolMap` is called once, before this returns. Defining a name that
-    // is already defined is not reported: it is treated as impossible, which
-    // aborts when assertions are on and is undefined behaviour otherwise.
-    void registerSymbols(
+    // `symbolMap` is called once, before this returns. Returns an error if a
+    // name is already defined, for example by the module itself.
+    llvm::Error registerSymbols(
         llvm::function_ref<llvm::orc::SymbolMap(llvm::orc::MangleAndInterner)>
             symbolMap);
 

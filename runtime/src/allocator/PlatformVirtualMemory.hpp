@@ -31,7 +31,7 @@ void* reserveAddressSpace(std::size_t size);
 
 // Reserves `size` bytes of address space and returns its base `b`, or `nullptr`
 // if `size` is zero, exceeds `limit`, or no fitting range could be reserved.
-// Except in ThreadSanitizer builds with `limit` below 512 GB, `b + size <= limit`.
+// `b + size <= limit` always.
 //
 // It tries bases at multiples of 1 TB from 1 TB upwards (after, under
 // ThreadSanitizer, 64 GB steps below 512 GB), then accepts an OS-chosen address

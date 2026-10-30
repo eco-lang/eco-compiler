@@ -287,11 +287,13 @@ HPointer lines(void* str) {
 }
 
 HPointer words(void* str) {
-    // Trim and split by whitespace
+    // As elm/core's `_String_words`, `str.trim().split(/\s+/g)`: trim, then split on runs of whitespace, where
+    // whitespace is JavaScript's `\s` (StringOps::isJsWhitespace). A string that trims to empty gives [""].
     HPointer trimmed = StringOps::trim(str);
 
     if (StringOps::isEmpty(trimmed)) {
-        return alloc::listNil();
+        std::vector<HPointer> one{alloc::emptyString()};
+        return alloc::listFromPointers(one);
     }
 
     auto& allocator = Allocator::instance();
@@ -309,8 +311,8 @@ HPointer words(void* str) {
         size_t start = 0;
         bool in_word = false;
         for (size_t i = 0; i <= len; ++i) {
-            bool ws = (i == len) ||
-                d[i] == ' ' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r';
+            // UTF-8 forms hold ASCII only, so a byte is a whole unit here.
+            bool ws = (i == len) || StringOps::isJsWhitespace(d[i]);
             if (ws) {
                 if (in_word) { ranges.push_back({start, i - start}); in_word = false; }
             } else if (!in_word) {
@@ -349,9 +351,7 @@ HPointer words(void* str) {
     bool in_word = false;
 
     for (size_t i = 0; i <= len; ++i) {
-        bool is_whitespace = (i == len) ||
-            strData[i] == ' ' || strData[i] == '\t' ||
-            strData[i] == '\n' || strData[i] == '\r';
+        bool is_whitespace = (i == len) || StringOps::isJsWhitespace(strData[i]);
 
         if (is_whitespace) {
             if (in_word) {

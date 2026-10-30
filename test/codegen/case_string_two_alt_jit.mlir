@@ -1,11 +1,10 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// XFAIL: cpp-review-bugs.md "Two-alternative `str` case lowered by constructor tag" -- not fixed yet
-//
 // A string `eco.case` with two alternatives ("hello" and the default) whose alternatives yield, not
-// nested in scf, is declined by CaseStringToScfIfChainPattern (it wants an scf parent) and taken by
-// CaseToScfIfPattern, which tests the scrutinee's CONSTRUCTOR TAG against tags[1] instead of
-// comparing strings, so "hello" and "world" take the same branch. The front end never emits a
+// nested in scf, is declined by CaseStringToScfIfChainPattern (it wants an scf parent). Until
+// 2026-10-30 CaseToScfIfPattern then took it and tested the scrutinee's CONSTRUCTOR TAG against
+// tags[1] instead of comparing strings, so "hello" and "world" took the same branch; it now declines
+// string cases and EcoToLLVM lowers this one with string compares. The front end never emits a
 // two-alternative string case (a one-edge decision becomes a Chain, so every `str` fan-out has at
 // least three alternatives), so only hand-written MLIR reaches it. @classify3, a three-alternative
 // case, is the control.

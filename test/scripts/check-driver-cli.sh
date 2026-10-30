@@ -36,22 +36,22 @@ result() {
     fi
 }
 
-# RB-780 (cpp-review-bugs.md "eco-boot CLI edge cases"): --emit=mlir on a .mlir input must print
-# MLIR on stdout (or refuse with an error). getOutputPath returns "-" for EmitMLIR, and for a .mlir
-# input main skips the Elm-only EmitMLIR return and falls into the executable path, so today it
-# links an executable into a file named "-" and exits 0.
+# RB-780 (cpp-review-bugs.md "eco-boot CLI edge cases", fixed 2026-10-30): --emit=mlir on a .mlir
+# input must print MLIR on stdout or refuse with an error. It used to skip the Elm-only EmitMLIR return
+# and fall into the executable path, linking an executable into a file named "-" and exiting 0; it now
+# refuses.
 d="$WORK/emit-mlir"
 mkdir -p "$d"
 rc=0
 ( cd "$d" && "$DRIVER" --emit=mlir "$ROOT/test/codegen/arithmetic_bitwise.mlir" > out 2> err ) || rc=$?
 if [ -e "$d/-" ]; then
-    result emit-mlir-on-mlir-input 1 0 "exit $rc; linked an executable into a file named '-'"
+    result emit-mlir-on-mlir-input 0 0 "exit $rc; linked an executable into a file named '-'"
 elif [ "$rc" -eq 0 ] && grep -q 'module' "$d/out"; then
-    result emit-mlir-on-mlir-input 1 1 "printed MLIR"
+    result emit-mlir-on-mlir-input 0 1 "printed MLIR"
 elif [ "$rc" -ne 0 ] && [ -s "$d/err" ]; then
-    result emit-mlir-on-mlir-input 1 1 "refused with an error"
+    result emit-mlir-on-mlir-input 0 1 "refused with an error"
 else
-    result emit-mlir-on-mlir-input 1 0 "exit $rc; no MLIR on stdout and no error"
+    result emit-mlir-on-mlir-input 0 0 "exit $rc; no MLIR on stdout and no error"
 fi
 rm -f "$d/-"
 

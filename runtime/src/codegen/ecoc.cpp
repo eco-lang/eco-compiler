@@ -402,7 +402,11 @@ static int runJIT(ModuleOp module) {
     auto &engine = maybeEngine.get();
 
     // Before the first lookup, which is what compiles the module.
-    eco::registerRuntimeSymbols(*engine);
+    if (llvm::Error err = eco::registerRuntimeSymbols(*engine)) {
+        llvm::errs() << "Failed to register runtime symbols: "
+                     << llvm::toString(std::move(err)) << "\n";
+        return 1;
+    }
 
     Elm::Allocator::instance().initialize();
     Elm::Allocator::instance().initThread();

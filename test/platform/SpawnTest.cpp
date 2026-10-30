@@ -181,6 +181,33 @@ void test_spawn_poll_and_kill() {
 
 #endif  // !_WIN32
 
+#if defined(_WIN32)
+// W1: the default shell (cmd /d /s /c) runs the line as written: quotes inside it reach the command
+// unescaped. Spawn.cpp used to quote the line with CommandLineToArgvW escapes, which cmd does not
+// understand, so `echo "a b"` printed `\"a b\"` (cpp-review-bugs.md "Spawn: Windows shell quoting").
+// Not run in this repository's Linux CI; it needs the win-build preset.
+void test_spawn_shell_line_quotes() {
+    SpawnSpec spec;
+    spec.program = "echo \"a b\"";
+    spec.shellKind = kShellDefault;
+    spec.outputPath = (std::filesystem::temp_directory_path() /
+                       ("eco-spawn-test-w1-" +
+                        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                          .string();
+    SpawnedChild c = spawnChild(spec, StdioMode::ToFile, false);
+    TEST_ASSERT(c.err == 0 && c.pid > 0);
+    ChildExit e = waitChild(c);
+    releaseChild(c);
+    TEST_ASSERT(e.exited && e.code == 0);
+    std::ifstream in(spec.outputPath, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    in.close();
+    std::filesystem::remove(spec.outputPath);
+    TEST_ASSERT(ss.str() == "\"a b\"\r\n");
+}
+#endif  // _WIN32
+
 }  // namespace
 
 void registerSpawnTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
@@ -195,6 +222,6 @@ void registerSpawnTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite) {
     suite.add(Testing::TestCase("spawn/S8 argv round trip", test_spawn_argv_round_trip));
     suite.add(Testing::TestCase("spawn/S9 poll and kill", test_spawn_poll_and_kill));
 #else
-    (void)suite;
+    suite.add(Testing::TestCase("spawn/W1 the default shell runs a quoted line as written", test_spawn_shell_line_quotes));
 #endif
 }

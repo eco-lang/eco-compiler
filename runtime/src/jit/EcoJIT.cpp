@@ -420,23 +420,31 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
             return std::make_unique<TMOwningSimpleCompiler>(std::move(tm));
         };
 
-    auto jit = cantFail(LLJITBuilder()
-                            .setCompileFunctionCreator(compileFunctionCreator)
-                            .setObjectLinkingLayerCreator(objectLinkingLayerCreator)
-                            .setDataLayout(dataLayout)
-                            .create());
+    auto jit = LLJITBuilder()
+                   .setCompileFunctionCreator(compileFunctionCreator)
+                   .setObjectLinkingLayerCreator(objectLinkingLayerCreator)
+                   .setDataLayout(dataLayout)
+                   .create();
+    if (!jit)
+        return jit.takeError();
 
+    // The transformer is the backend (eco::runEcoBackend), which reports real errors (a plan-stamp
+    // mismatch, an unsupported construct), so they are returned, not treated as impossible.
     ThreadSafeModule tsm(std::move(llvmModule), std::move(ctx));
-    if (options.transformer)
-        cantFail(tsm.withModuleDo(
-            [&](Module &module) { return options.transformer(&module); }));
-    cantFail(jit->addIRModule(std::move(tsm)));
-    engine->jit_ = std::move(jit);
+    if (options.transformer) {
+        if (Error err = tsm.withModuleDo(
+                [&](Module &module) { return options.transformer(&module); }))
+            return std::move(err);
+    }
+    if (Error err = (*jit)->addIRModule(std::move(tsm)))
+        return std::move(err);
+    engine->jit_ = std::move(*jit);
 
-    JITDylib &mainJD = engine->jit_->getMainJITDylib();
-    mainJD.addGenerator(
-        cantFail(DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            dataLayout.getGlobalPrefix())));
+    auto generator = DynamicLibrarySearchGenerator::GetForCurrentProcess(
+        dataLayout.getGlobalPrefix());
+    if (!generator)
+        return generator.takeError();
+    engine->jit_->getMainJITDylib().addGenerator(std::move(*generator));
 
     return std::move(engine);
 }
@@ -485,12 +493,12 @@ Error EcoJIT::invokePacked(StringRef name, MutableArrayRef<void *> args) {
     return Error::success();
 }
 
-void EcoJIT::registerSymbols(
+Error EcoJIT::registerSymbols(
     function_ref<SymbolMap(MangleAndInterner)> symbolMap) {
     auto &mainJD = jit_->getMainJITDylib();
-    cantFail(mainJD.define(
+    return mainJD.define(
         absoluteSymbols(symbolMap(MangleAndInterner(
-            mainJD.getExecutionSession(), jit_->getDataLayout())))));
+            mainJD.getExecutionSession(), jit_->getDataLayout()))));
 }
 
 } // namespace eco

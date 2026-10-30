@@ -6,13 +6,13 @@ These findings were logged during a comments-only re-commenting pass over `runti
 
 | verdict | high | medium | low | - | total |
 |---|---|---|---|---|---|
-| likely-bug | 3 | 6 | 22 | - | 31 |
+| likely-bug | 0 | 1 | 15 | - | 16 |
 | possible | 0 | 1 | 1 | - | 2 |
 | cleanup | 2 | 3 | 30 | 38 | 73 |
 | not-a-bug | 2 | 11 | 28 | 16 | 57 |
-| already-fixed | 6 | 6 | 1 | 1 | 14 |
+| already-fixed | 9 | 11 | 8 | 1 | 29 |
 
-The 96 "possible" entries were triaged on 2026-10-30 against the code of that day: 17 became likely-bug, 35 cleanup, 41 not-a-bug, 1 already-fixed, and 2 stay possible (latent, not reproducible). Each triaged verdict says why. 13 of the 17 new likely-bugs are reproduced by an expected-fail test that asserts the correct behaviour and fails today (E2E `-- XFAIL-NATIVE:`, codegen `// XFAIL:`, unit `[xfail RB-<line>]`, or the driver-cli checks; `ECO_TEST_XFAIL=strict` makes the unit, codegen and driver ones fail). The other 4 are Windows-only, TSan-only or diagnostics-only and have no test here. Severity is the logged severity; most new likely-bugs are latent (hand-written MLIR only) or edge cases.
+The 96 "possible" entries were triaged on 2026-10-30 against the code of that day: 17 became likely-bug, 35 cleanup, 41 not-a-bug, 1 already-fixed, and 2 stay possible (latent, not reproducible). Each triaged verdict says why. 13 of the 17 new likely-bugs are reproduced by an expected-fail test that asserts the correct behaviour and fails today (E2E `-- XFAIL-NATIVE:`, codegen `// XFAIL:`, unit `[xfail RB-<line>]`, or the driver-cli checks; `ECO_TEST_XFAIL=strict` makes the unit, codegen and driver ones fail). The other 4 are Windows-only, TSan-only or diagnostics-only and have no test here. Severity is the logged severity; most new likely-bugs are latent (hand-written MLIR only) or edge cases. On 2026-10-30 plans/review-likely-bugs-fixes.md fixed 15 of the 17 and part of the other 2 (the Windows Spawn and exit-code entries, whose remaining parts are recorded in their verdicts); those 2 are still counted as likely-bug. The 14 low likely-bugs of the original review are not in that plan.
 
 ## High severity
 
@@ -58,13 +58,13 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Closure eval layout labels new args PK_Boxed but primitives are stored raw
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp:2677-2694 (PapExtendOpLowering::matchAndRewrite)`, ~2853; vs `emitInlineClosureCall` ~2360-2375
-- verdict: likely-bug (triaged 2026-10-30: latent: the front end always emits `_capture_abi` with `_fast_evaluator`; reproduced by test/codegen/papextend_capture_abi_layout.mlir (XFAIL): a boxed capture makes the runtime un-box the raw Int argument and assert in spliceArgsForSaturatedCall)
+- verdict: FIXED 2026-10-30: the `_capture_abi`-only branch builds the layout from the new arguments' types (and the pre-pass no longer makes the wrong layout); test/codegen/papextend_capture_abi_layout.mlir now a plain test (was: likely-bug (triaged 2026-10-30: latent: the front end always emits `_capture_abi` with `_fast_evaluator`; reproduced by test/codegen/papextend_capture_abi_layout.mlir (XFAIL): a boxed capture makes the runtime un-box the raw Int argument and assert in spliceArgsForSaturatedCall))
 - severity: high
 - For papExtend with `_capture_abi` but no `_fast_evaluator`, the layout is the capture kinds followed by one PK_Boxed per new argument, but primitive new args are stored raw and the call passes only the new-argument count. A GC or the runtime reading that layout would treat raw Int/Float bits as pointers, or read capture kinds as new-arg kinds. `preMaterializeApplyLayouts` mints the same layout. The runtime consumer has not been traced.
 
 ### Two-alternative `str` case lowered by constructor tag
 - where: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp:228-313 (CaseToScfIfPattern)`
-- verdict: likely-bug (triaged 2026-10-30: latent: every front-end `str` fan-out has at least three alternatives; reproduced by test/codegen/case_string_two_alt_jit.mlir (XFAIL): "world" takes the "hello" branch)
+- verdict: FIXED 2026-10-30: CaseToScfIfPattern declines string cases, so EcoToLLVM lowers them with string compares; test/codegen/case_string_two_alt_jit.mlir now a plain test; test/elm/src/StringCaseTwoAltTest.elm pins that the front end never emits one (was: likely-bug (triaged 2026-10-30: latent: every front-end `str` fan-out has at least three alternatives (a single string pattern becomes an eco.value.eq test and a Bool case), pinned by the E2E regression test test/elm/src/StringCaseTwoAltTest.elm; reproduced by test/codegen/case_string_two_alt_jit.mlir (XFAIL): "world" takes the "hello" branch))
 - severity: high
 - A two-alternative yield-form `str` case outside scf or a joinpoint reaches the final `else` branch, which compares `eco.get_tag` of the string with `tags[1]`, so it picks the wrong alternative. It is unknown whether the front end emits this shape, and E2E would probably have caught it if it were common.
 
@@ -82,7 +82,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### make.closure keeps an env aggregate with GC pointers live across the allocation
 - where: `runtime/src/codegen/Passes/EcoToLLVMValueAgg.cpp:818-889 (make.closure lowering)`
-- verdict: likely-bug (triaged 2026-10-30: latent: the front end never emits closure_env / make.closure; reproduced by test/codegen/make_closure_env_arg_fca.mlir (XFAIL, ECO_FCA_SCAN): an env that arrives as an argument reaches RS4GC as an aggregate holding a GC pointer. Extracting before the allocation is not enough, since the function's entry capacity check is a safepoint too)
+- verdict: FIXED 2026-10-30 (guarded): the defect is general (any value aggregate holding a GC pointer at a function or block boundary); EcoToLLVM now rejects such a boundary with a hard error (REP_AGG_002, checkAggregateBoundaries) until plans/aggregate-boundary-scalarization.md scalarizes them; test/codegen/make_closure_env_arg_fca.mlir expects the error, aggregate_boundary_unboxed_ok.mlir is the control (was: likely-bug (triaged 2026-10-30: latent: the front end never emits closure_env / make.closure; reproduced by test/codegen/make_closure_env_arg_fca.mlir (XFAIL, ECO_FCA_SCAN): an env that arrives as an argument reaches RS4GC as an aggregate holding a GC pointer. Extracting before the allocation is not enough, since the function's entry capacity check is a safepoint too))
 - severity: high
 - `envAgg` is an LLVM struct that can hold `ptr addrspace(1)` captures, and on the out-of-line path its fields are extracted only after `emitAllocWithSafepoint`. RS4GC does not relocate first-class aggregates, so this is correct only if FoldExtractValue or SROA scalarizes it first. The only check, FcaScan, runs under `ECO_FCA_SCAN` only. If the struct is not scalarized, a boxed capture is stale after a GC.
 
@@ -142,7 +142,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Release-build OOM paths return or dereference null
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp:336 (eco_alloc_inline_slow), ~476 (allocLargeString), allocate*, allocatePermanent, ensureNursery`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-141] in test/allocator/ReviewBugGuardsTest.cpp: with a 64 MiB reservation, exhausting the old generation through YLOS allocations hits the assert in allocateYoungLarge, with no out-of-memory report (a release build returns null); allocateLargePinned, allocatePermanent, allocate and allocateSlowRaw share the pattern. Large String/Bytes bodies are already fixed (largeBodyExhausted). Unit tests only: max_heap_size bounds the old generation only through the first initialize's reservation (HEAP_043))
+- verdict: FIXED 2026-10-30: every ThreadLocalHeap allocation path that can fail after its collections ends in heapExhausted's "eco: out of memory" abort (allocate, allocateSlow, allocateSlowRaw, ensureNursery, allocateRegionSlow, allocateYoungLarge, allocateLargePinned, allocatePermanent); RB-141 in test/allocator/ReviewBugGuardsTest.cpp now a plain test (was: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-141] in test/allocator/ReviewBugGuardsTest.cpp: with a 64 MiB reservation, exhausting the old generation through YLOS allocations hits the assert in allocateYoungLarge, with no out-of-memory report (a release build returns null); allocateLargePinned, allocatePermanent, allocate and allocateSlowRaw share the pattern. Large String/Bytes bodies are already fixed (largeBodyExhausted). Unit tests only: max_heap_size bounds the old generation only through the first initialize's reservation (HEAP_043)))
 - severity: medium
 - Out-of-memory is handled only by assert. With NDEBUG (release preset), allocateYoungLarge charges debt and returns null, allocLargeString dereferences it, and eco_alloc_inline_slow callers dereference null. The result is a crash instead of a clean OOM abort.
 
@@ -244,7 +244,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### majorGC trace dumps are not gated by the runtime switch
 - where: `runtime/src/allocator/ThreadLocalHeap.cpp:~984 (majorGC)`
-- verdict: likely-bug (triaged 2026-10-30: diagnostics only: two dumpHeapState calls in majorGC ignore heapTraceEnabled(), against the ECO_HEAP_TRACE option's contract; only in -DECO_HEAP_TRACE=ON builds, so no test)
+- verdict: FIXED 2026-10-30: both dumps are gated on heapTraceEnabled() (TLA canary audited: M1, M5, M8, no model change); no test (only -DECO_HEAP_TRACE=ON builds, which were not built here) (was: likely-bug (triaged 2026-10-30: diagnostics only: two dumpHeapState calls in majorGC ignore heapTraceEnabled(), against the ECO_HEAP_TRACE option's contract; only in -DECO_HEAP_TRACE=ON builds, so no test))
 - severity: low
 - Unlike the minorGC dumps, the major begin/end dumps do not check that tracing is enabled at runtime, so a debug-trace build prints them and spends time on them without the switch.
 
@@ -256,13 +256,13 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### alloc_buffer_size is not required to be a page multiple
 - where: `runtime/src/allocator/HeapConfig (validate, resolveNurseryRegions)`; `AllocatorCommon.hpp (validate)`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-255] in test/allocator/ReviewBugGuardsTest.cpp: validate accepts alloc_buffer_size = 1.5 pages, which acquireOldGenBlock then asserts on (release builds fail MAP_FIXED commits); reachable only through ECO_HEAP_CONFIG)
+- verdict: FIXED 2026-10-30: HeapConfig::validate requires a page multiple; RB-255 now a plain test (was: likely-bug (triaged 2026-10-30: reproduced by [xfail RB-255] in test/allocator/ReviewBugGuardsTest.cpp: validate accepts alloc_buffer_size = 1.5 pages, which acquireOldGenBlock then asserts on (release builds fail MAP_FIXED commits); reachable only through ECO_HEAP_CONFIG))
 - severity: low
 - Old-gen pages and nursery blocks are cut in `alloc_buffer_size` units, but validation does not require it to be a multiple of OS_PAGE_SIZE, which is a compile-time constant never checked at runtime (16K-page hosts). The validate messages ("x86-64", "legacy") misstate the checks.
 
 ### POSIX reserveAddressSpaceBelow TSan loop ignores the limit
 - where: `runtime/src/allocator/PlatformVirtualMemory_posix.cpp:42-48`
-- verdict: likely-bug (triaged 2026-10-30: latent and ThreadSanitizer builds only: both callers pass HPOINTER_ADDRESS_LIMIT (2^43), above the 512 GB bound; a TSan-build test in AddressSpaceReservationTest.cpp would show it, not added (no TSan unit build here))
+- verdict: FIXED 2026-10-30: the ThreadSanitizer probing loop is bounded by the limit too; test reserveAddressSpaceBelow honours a limit below 512 GB (passes trivially outside TSan; not run under TSan here) (was: likely-bug (triaged 2026-10-30: latent and ThreadSanitizer builds only: both callers pass HPOINTER_ADDRESS_LIMIT (2^43), above the 512 GB bound; a TSan-build test in AddressSpaceReservationTest.cpp would show it, not added (no TSan unit build here)))
 - severity: low
 - Under `__SANITIZE_THREAD__` the probe loop is bounded by 512 GB, not min(limit, 512 GB). This breaks the contract, but is harmless for the only caller (limit 2^43).
 
@@ -292,7 +292,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### StringOps behaviour diverges from elm/core JS
 - where: `runtime/src/allocator/StringOps.cpp:~700-725 (indexes)`; `StringOps.hpp (toInt/toFloat ~1208-1238, trim ~951, padLeft/padRight, repeat ~1018)`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by test/elm-conformance/src/StringKernelEdgeTest.elm (XFAIL-NATIVE, recorded from Elm): String.indexes "" gives every index instead of [], String.toInt rejects a leading "+", trim / trimLeft / trimRight / words strip only space, tab, LF and CR (not VT, FF, NBSP, U+FEFF, U+2028, U+3000 ...), and words "" is [] instead of [""]. toFloat is already fixed; pad / repeat are unreachable (Elm-coded in elm/core))
+- verdict: FIXED 2026-10-30: indexes "" is [], toInt accepts one leading +, trim / trimLeft / trimRight / words use JavaScript's whitespace set (StringOps::isJsWhitespace), words of an empty or blank string is [""]; StringKernelEdgeTest (with new rows) now passes natively (was: likely-bug (triaged 2026-10-30: reproduced by test/elm-conformance/src/StringKernelEdgeTest.elm (XFAIL-NATIVE, recorded from Elm): String.indexes "" gives every index instead of [], String.toInt rejects a leading "+", trim / trimLeft / trimRight / words strip only space, tab, LF and CR (not VT, FF, NBSP, U+FEFF, U+2028, U+3000 ...), and words "" is [] instead of [""]. toFloat is already fixed; pad / repeat are unreachable (Elm-coded in elm/core)))
 - severity: medium
 - `indexes ""` returns 0..len where JS returns []. `toInt` rejects a leading `+`. `toFloat` accepts whitespace, hex and locale forms and rejects ERANGE. `trim` misses NBSP, FEFF, FF and VT, the pad char cannot be astral, and `repeat` does not check `srcLen*n` against u32. Nobody traced whether each routine is the one programs actually reach.
 
@@ -400,7 +400,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### eco_enable_list_chunks is missing from the JIT symbol map
 - where: `runtime/src/jit/ (runtime symbol map)`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_list_chunks_enable.mlir (XFAIL): `ecoc -emit=jit` on a main marked eco.list_chunks fails with "Symbols not found: [ eco_enable_list_chunks ]"; test/test hides it because it exports its symbols)
+- verdict: FIXED 2026-10-30: mapped, together with 28 other runtime declarations the map lacked (typed getters, hybrid list head/tail, dispatch-census hooks, acos/asin/atan/atan2); test/codegen/RuntimeSymbolMapTest.cpp checks the map against every declaration EcoRuntime can emit; jit_list_chunks_enable.mlir now a plain test (was: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_list_chunks_enable.mlir (XFAIL): `ecoc -emit=jit` on a main marked eco.list_chunks fails with "Symbols not found: [ eco_enable_list_chunks ]"; test/test hides it because it exports its symbols))
 - severity: low
 - Generated code calls it, but it resolves only through process symbol search, so the JIT fails if the host does not export it. `registerRuntimeSymbols(mlir::ExecutionEngine&)` has no caller.
 
@@ -425,7 +425,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Spawn: Windows shell quoting, POSIX pid reuse, handle leak
 - where: `runtime/src/platform/Spawn.cpp (Windows spawnChild, POSIX killChild, registerProcessHandle)`
-- verdict: likely-bug (triaged 2026-10-30: Windows only: cmd /s /c does not understand appendQuoted's \" escapes, so ChildProcess.run with the default shell mangles quoted arguments; not testable here (no Windows build). killChild's pid-reuse case is a documented precondition, but ChildProcess killJob has the same race between the WaitService reaping and waitDrain (not deterministic). The real handle leak is Eco.Process.spawn without wait)
+- verdict: PARTLY FIXED 2026-10-30 (Windows code, not built or run here): the default shell's line goes inside one pair of quotes for cmd /s /c, with no CommandLineToArgvW escapes (test spawn/W1, Windows only); ChildProcess.run hands its process handle to the WaitService instead of leaking it. Accepted, not fixed: an Eco.Process.spawn never waited keeps its registered handle until exit (no lifetime signal for the Process value), and the POSIX ChildProcess killJob pid-reuse race (needs a pid reused within milliseconds; the fix would move reaping out of the WaitService threads) (was: likely-bug (triaged 2026-10-30: Windows only: cmd /s /c does not understand appendQuoted's \" escapes, so ChildProcess.run with the default shell mangles quoted arguments; not testable here (no Windows build). killChild's pid-reuse case is a documented precondition, but ChildProcess killJob has the same race between the WaitService reaping and waitDrain (not deterministic). The real handle leak is Eco.Process.spawn without wait))
 - severity: medium
 - Shell-mode commands containing `"` reach `cmd /s /c` with `\"` escapes and run with the wrong argument text. POSIX `killChild` on an already-reaped pid can signal an unrelated reused pid. `g_handles[pid]=` leaks the old handle.
 
@@ -449,13 +449,13 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Scheduler rawSend uses the caller's possibly stale snapshot
 - where: `runtime/src/platform/Scheduler.cpp:471 (Scheduler::rawSend)`
-- verdict: likely-bug (triaged 2026-10-30: not as described (the caller's snapshot is never stale); each rawSend enqueues a new version of the process and drain steps every queued version, so two sends before a drain deliver the first message twice. Reproduced by [xfail RB-448] in test/platform/SchedulerPidTest.cpp: [1,1,2]. Not reachable from Elm (effect modules are kernel-only; Http drains after every tick))
+- verdict: FIXED 2026-10-30: stepProcess steps the latest registered version of a queued process, so two sends before a drain deliver each message once; RB-448 now a plain test (was: likely-bug (triaged 2026-10-30: not as described (the caller's snapshot is never stale); each rawSend enqueues a new version of the process and drain steps every queued version, so two sends before a drain deliver the first message twice. Reproduced by [xfail RB-448] in test/platform/SchedulerPidTest.cpp: [1,1,2]. Not reachable from Elm (effect modules are kernel-only; Http drains after every tick)))
 - severity: medium
 - mailboxPushBack builds the new process from the given HPointer, not `latestProcessById`. A stale handle registers an old snapshot as the latest version, so the newer state is lost and the old root is re-stepped.
 
 ### Scheduler: Binding re-step, dropped mailbox, wrong latest version
 - where: `runtime/src/platform/Scheduler.cpp:~946-979 (stepping Binding, resumeEvaluator)`
-- verdict: likely-bug (triaged 2026-10-30: parts (a) and (b) are unreachable (only self-processes get messages); (c) is one case of a broader defect: Process.kill does not stop a runnable (not parked) process. Reproduced by test/elm-conformance/src/ProcessKillRunnableTest.elm (XFAIL-NATIVE, recorded from Elm): a killed child logs "survived runnable" natively, never in Elm)
+- verdict: FIXED 2026-10-30 (part c, the reachable one): Process.kill ends the target (processKilled), so a runnable process takes no further step, and a Binding callback that resumed synchronously no longer registers a parked copy; ProcessKillRunnableTest now passes natively (was: likely-bug (triaged 2026-10-30: parts (a) and (b) are unreachable (only self-processes get messages); (c) is one case of a broader defect: Process.kill does not stop a runnable (not parked) process. Reproduced by test/elm-conformance/src/ProcessKillRunnableTest.elm (XFAIL-NATIVE, recorded from Elm): a killed child logs "survived runnable" natively, never in Elm))
 - severity: medium
 - Enqueuing a process parked on a Binding re-runs the bind callback, so its effect repeats. The resume closure restores the pre-park mailbox, so messages that arrived while parked are dropped. On synchronous resume setRoot registers the parked copy as latest, so killTask can hit the wrong version. elm/core usage may never reach these.
 
@@ -467,7 +467,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Windows exit codes >= 0x80000000 become negative
 - where: `runtime/src/platform/ wait/process cpp:115-116`
-- verdict: likely-bug (triaged 2026-10-30: Windows only: WaitService casts the DWORD exit code to int, so a crash such as 0xC0000005 reads as a negative code, and 0xFFFFFFFF collides with kWaitFailedExitCode (-1); not testable here (no Windows build))
+- verdict: PARTLY FIXED 2026-10-30 (Windows code, not built or run here): WaitService::Ready::exitCode is 64-bit and exitCodeFromStatus reads the DWORD unsigned, so 0xC0000005 is 3221225477 and never collides with kWaitFailedExitCode; ChildProcess.run reports Windows exit codes (it always reported -1). Open: Eco.Process.wait (eco-kernel-cpp Process.cpp, int exitCode) still narrows it; Process.cpp was re-audited on 2026-10-30, so that change waits for a later-dated license audit. Test PS8d, Windows only (was: likely-bug (triaged 2026-10-30: Windows only: WaitService casts the DWORD exit code to int, so a crash such as 0xC0000005 reads as a negative code, and 0xFFFFFFFF collides with kWaitFailedExitCode (-1); not testable here (no Windows build)))
 - severity: low
 - A DWORD exit code is cast to int, so NTSTATUS crash codes are reported as negative exit codes.
 
@@ -571,7 +571,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### Primitive-result closure calls emit an unmatched __eco_sat_begin
 - where: `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp (emitInlineClosureCall)`
-- verdict: likely-bug (triaged 2026-10-30: a missed optimisation, not wrong output: Int / Float / Char-result saturated closure calls lose the $sat fast path. Reproduced by test/codegen/sat_bracket_primitive_result.mlir (XFAIL))
+- verdict: FIXED 2026-10-30: the primitive-result branch emits __eco_sat_end, so the call gets the $sat fast path; sat_bracket_primitive_result.mlir now a plain test (was: likely-bug (triaged 2026-10-30: a missed optimisation, not wrong output: Int / Float / Char-result saturated closure calls lose the $sat fast path. Reproduced by test/codegen/sat_bracket_primitive_result.mlir (XFAIL)))
 - severity: low
 - A begin marker is emitted with no end, and the backend drops it, so these sites lose the saturated fast path. This costs performance, not correctness.
 
@@ -601,7 +601,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### EcoToLLVMValueAgg cons head_kind vs head type
 - where: `runtime/src/codegen/Passes/EcoToLLVMValueAgg.cpp:~564-590`
-- verdict: likely-bug (triaged 2026-10-30: latent: the front end never sets head_kind on eco.to_heap; reproduced by test/codegen/to_heap_cons_head_kind_mismatch.mlir (XFAIL): ToHeapOp::verify does not check head_kind against the head type, so a boxed head under head_kind = 1 compiles)
+- verdict: FIXED 2026-10-30: ToHeapOp::verify rejects a cons head_kind / head_unboxed that disagrees with the head type; to_heap_cons_head_kind_mismatch.mlir now a plain test (was: likely-bug (triaged 2026-10-30: latent: the front end never sets head_kind on eco.to_heap; reproduced by test/codegen/to_heap_cons_head_kind_mismatch.mlir (XFAIL): ToHeapOp::verify does not check head_kind against the head type, so a boxed head under head_kind = 1 compiles))
 - severity: low
 - The header kind comes from `head_kind`, but the stored word follows the head type, so only the verifier catches a mismatch.
 
@@ -763,7 +763,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### JIT: cantFail on fallible paths
 - where: `runtime/src/jit/EcoJIT.cpp (create, invokePacked, initialize, registerSymbols)`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_backend_error_reported.mlir (XFAIL): a backend error under -emit=jit aborts with "Failure value returned from cantFail wrapped call" (SIGABRT) instead of ecoc's error report)
+- verdict: FIXED 2026-10-30: EcoJIT::create returns the transformer's, the engine builder's, addIRModule's and the symbol generator's errors, and registerSymbols / registerRuntimeSymbols return theirs; jit_backend_error_reported.mlir now a plain test (was: likely-bug (triaged 2026-10-30: reproduced by test/codegen/jit_backend_error_reported.mlir (XFAIL): a backend error under -emit=jit aborts with "Failure value returned from cantFail wrapped call" (SIGABRT) instead of ecoc's error report))
 - severity: medium
 - In release builds `cantFail` on a failure is UB. A duplicate symbol in `registerSymbols` is a plausible user-triggered failure, and `create` aborts on transformer and addIRModule errors even though it returns Expected.
 
@@ -781,7 +781,7 @@ The 96 "possible" entries were triaged on 2026-10-30 against the code of that da
 
 ### eco-boot CLI edge cases
 - where: `runtime/src/codegen/eco-boot.cpp (main, getOutputPath)`
-- verdict: likely-bug (triaged 2026-10-30: reproduced by test/scripts/check-driver-cli.sh (XFAIL, target run-driver-cli-tests, run by full): --emit=mlir on a .mlir input links a 14 MB executable into a file named "-" and exits 0. The rest (unclamped -O on --emit=llvm, a few temp-file leaks on error paths) is cleanup)
+- verdict: FIXED 2026-10-30: --emit=mlir on an .mlir input refuses with an error; -O is clamped to 3 on --emit=llvm; temporary files are removed on every return (scope guards); the driver-cli check is now plain (was: likely-bug (triaged 2026-10-30: reproduced by test/scripts/check-driver-cli.sh (XFAIL, target run-driver-cli-tests, run by full): --emit=mlir on a .mlir input links a 14 MB executable into a file named "-" and exits 0. The rest (unclamped -O on --emit=llvm, a few temp-file leaks on error paths) is cleanup))
 - severity: low
 - `--emit=mlir` on a .mlir input links an executable to `-`. `--emit=llvm` passes an unclamped -O level, and temp files leak on several error paths.
 

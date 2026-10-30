@@ -13,7 +13,9 @@
 // The first is that a `Process` value is never changed. Every step allocates a new one (`procWith*`), so an
 // HPointer to a process goes stale as soon as the process is stepped. The id does not: ids are never reused,
 // and a registry maps each live process's id to its latest value. `latestProcessById` is how a holder finds
-// the current version, and a process leaves the registry when it finishes.
+// the current version, and a process leaves the registry when it finishes or is killed. A run-queue entry may
+// hold an older version; `stepProcess` steps the latest one, so a process is stepped as the one mutable process
+// of Elm's JS scheduler would be.
 //
 // The second is that only the eco thread may touch the heap. The run queue, the process registry, the
 // finished-process hand-over and the table of parked resume closures hold encoded HPointers, and one external
@@ -278,8 +280,20 @@ public:
     HPointer takeFinishedProcess(u64 id);
 
     // Records `proc` as the latest version of the process with its id. Does nothing if `proc` is not a heap
-    // object.
+    // object. Used for a new process; `procWith*` use `updateLatestProcess`.
     void registerLatestProcess(HPointer proc);
+    // Records `proc` as the latest version of its process if that process is live (registered), and does
+    // nothing otherwise, so that a version made after a kill or finish (a late resume) does not revive it.
+    void updateLatestProcess(HPointer proc);
+    // Ends process `id` at a kill: removes its registry entry and self-message handler, so it takes no
+    // further step (stepProcess drops a run-queue entry with no latest version) and gets no messages.
+    void processKilled(u64 id);
+    // Returns whether `stepProcess` is stepping process `id` right now (a process running Process.kill on
+    // itself).
+    bool isStepping(u64 id) const { return steppingDepth_ > 0 && steppingId_ == id; }
+    // Counts a resume (the resume closure's evaluator calls it), so `stepProcess` can tell a Binding
+    // callback that resumed synchronously.
+    void noteResumed() { ++resumeSerial_; }
 
     // Makes `handler` the self-message handler of process `procId`, replacing any previous one.
     //
@@ -368,6 +382,25 @@ private:
     // the `std::function` that is running survives a registration.
     std::deque<std::pair<std::function<void()>, std::function<bool()>>> asyncSources_;
     bool working_ = false;  // Set while `drain` runs; nothing reads it.
+    // Resumes so far (noteResumed); eco thread only.
+    u64 resumeSerial_ = 0;
+    // The process `stepProcess` is stepping, while `steppingDepth_` > 0 (a step can nest: a kernel callback
+    // may drain). Eco thread only.
+    u64 steppingId_ = 0;
+    int steppingDepth_ = 0;
+    // Records the process being stepped for the scope of one `stepProcess`.
+    struct SteppingScope {
+        Scheduler& s;
+        u64 prevId;
+        SteppingScope(Scheduler& sch, u64 id) : s(sch), prevId(sch.steppingId_) {
+            s.steppingId_ = id;
+            ++s.steppingDepth_;
+        }
+        ~SteppingScope() {
+            s.steppingId_ = prevId;
+            --s.steppingDepth_;
+        }
+    };
     // Guards the run queue against the event loop's wait, and the quiescence listeners. Taken briefly before
     // every notification of `eventCV_`, so that a wake-up cannot fall between the loop's check and its wait.
     std::mutex mutex_;

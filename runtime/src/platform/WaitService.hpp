@@ -65,11 +65,13 @@ public:
      * For an exit, `exitCode` is `exitCodeFromStatus(rawStatus)`. On POSIX
      * `rawStatus` is the status `waitpid` reported, which a consumer can test
      * with `WIFSIGNALED` and `WTERMSIG` to tell a signal death from an exit.
-     * On Windows both members hold the process's exit code.
+     * On Windows `rawStatus` holds the process's exit code as a DWORD's bits and `exitCode` holds it as
+     * a non-negative number: an NTSTATUS crash code such as 0xC0000005 is 3221225477, as Node reports
+     * it, never a negative number that could be taken for `kWaitFailedExitCode`.
      */
     struct Ready {
         std::uint64_t  token; // The `resumeToken` given to `submit`.
-        int            exitCode;
+        std::int64_t   exitCode;
         int            rawStatus;
         // 0 when the child exited. Otherwise the wait failed and this is the
         // error (POSIX errno, Windows GetLastError); `exitCode` is then
@@ -104,8 +106,8 @@ public:
     //
     // On POSIX that is the exit status for a child that exited, 128 plus the
     // signal number for one killed by a signal, and 1 for any other status.
-    // On Windows it returns `rawStatus` unchanged.
-    static int exitCodeFromStatus(int rawStatus);
+    // On Windows it returns `rawStatus` read as an unsigned 32-bit exit code, so it is never negative.
+    static std::int64_t exitCodeFromStatus(int rawStatus);
 
 private:
     WaitService() = default;

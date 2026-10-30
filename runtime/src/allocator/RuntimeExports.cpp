@@ -342,8 +342,8 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
 // `eco_enable_list_chunks`; read by the list builders, including `eco_scratch_finish`. Never cleared.
 extern "C" bool eco_g_list_chunks = false;
 
-// Sets `eco_g_list_chunks`, so that lists built from then on may be chunk chains. Not declared in a header:
-// generated code calls it by name.
+// Sets `eco_g_list_chunks`, so that lists built from then on may be chunk chains. Generated code calls it by
+// name (EcoToLLVM, at the start of @main); RuntimeSymbols.cpp maps it for the JIT.
 extern "C" void eco_enable_list_chunks(void) {
     eco_g_list_chunks = true;
 }

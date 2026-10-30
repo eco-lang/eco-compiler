@@ -263,6 +263,10 @@ private:
     // Prints that a large `kind` body of `body_size` bytes could not be allocated after a minor and a major
     // collection, with the old generation's in-use bytes and cap, and aborts.
     [[noreturn]] void largeBodyExhausted(const char* kind, size_t body_size);
+    // Reports that an allocation of `size` bytes for `what` failed after the collections its path runs, with
+    // the old generation's use and cap, and aborts: "eco: out of memory: ...". Every allocation path ends here
+    // rather than returning null (cpp-review-bugs.md "Release-build OOM paths return or dereference null").
+    [[noreturn]] void heapExhausted(const char* what, size_t size);
 
 public:
 

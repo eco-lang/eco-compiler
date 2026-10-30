@@ -8,3 +8,4 @@
 extern Testing::TestCase testReserveBelowFitsUnderLimit;
 extern Testing::TestCase testReserveBelowCommitRoundTrip;
 extern Testing::TestCase testReserveBelowRejectsOversize;
+extern Testing::TestCase testReserveBelowHonoursSmallLimit;

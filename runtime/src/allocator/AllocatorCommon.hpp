@@ -89,7 +89,7 @@ enum class Color : u32 {
 // other target.
 //
 // Old-gen extents are rounded up to a multiple of it, and `HeapConfig::validate` requires an allocation
-// buffer to be at least this size. Nothing in this file checks it against the page size of the running
+// buffer to be a multiple of it. Nothing in this file checks it against the page size of the running
 // system.
 #if defined(__APPLE__) && defined(__aarch64__)
 constexpr size_t OS_PAGE_SIZE = 16384;
@@ -1194,12 +1194,18 @@ struct HeapConfig {
 
         // ========== 4. AllocBuffer Constraints ==========
 
-        // Allocation buffers are mapped with mmap(MAP_FIXED), which works in whole pages.
+        // Allocation buffers are mapped with mmap(MAP_FIXED) at multiples of their size, which works in
+        // whole pages.
         constexpr size_t MIN_BUFFER_SIZE = OS_PAGE_SIZE;
         if (alloc_buffer_size < MIN_BUFFER_SIZE) {
             throw std::invalid_argument(
                 "alloc_buffer_size must be >= the OS page size "
-                "(4 KiB on x86-64, 16 KiB on Apple Silicon)");
+                "(16 KiB on Apple Silicon, 4 KiB elsewhere)");
+        }
+        if (alloc_buffer_size % OS_PAGE_SIZE != 0) {
+            throw std::invalid_argument(
+                "alloc_buffer_size must be a multiple of the OS page size "
+                "(16 KiB on Apple Silicon, 4 KiB elsewhere)");
         }
 
         if (alloc_buffer_size > old_gen_space) {

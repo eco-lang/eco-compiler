@@ -222,8 +222,8 @@ static bool hasAggregateResults(CaseOp op) {
  *
  * An `i1` scrutinee is the condition itself, inverted when `tags[1]` is not 1. An `int` or `chr` scrutinee is unboxed
  * to `i64` or `i32` if it is boxed and compared with `tags[1]`. Any other scrutinee is compared by its constructor
- * tag, and that includes the scrutinee of a two-alternative `str` case that `CaseStringToScfIfChainPattern` did not
- * take.
+ * tag. A `str` case is declined: a String's constructor tag says nothing about its contents. One that
+ * `CaseStringToScfIfChainPattern` did not take stays `eco.case`, and EcoToLLVM lowers it with string compares.
  */
 struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
     StringCaseMemo *stringCaseMemo; // Not owned; must outlive the pattern.
@@ -242,6 +242,11 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         auto alts = op.getAlternatives();
         if (alts.size() != 2) {
             LLVM_DEBUG(llvm::dbgs() << "  -> rejected: " << alts.size() << " alternatives (need 2)\n");
+            return failure();
+        }
+
+        if (isStringCase(op)) {
+            LLVM_DEBUG(llvm::dbgs() << "  -> rejected: string case (compared by contents, not tag)\n");
             return failure();
         }
 

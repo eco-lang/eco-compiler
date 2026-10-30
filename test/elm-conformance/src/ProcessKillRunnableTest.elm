@@ -16,7 +16,6 @@ The parent then sleeps and logs "done".
 
 -}
 
--- XFAIL-NATIVE: cpp-review-bugs.md "Scheduler: Binding re-step ..." (c) -- Process.kill does not stop a runnable process (killBindingBody only calls a parked Binding's kill handle); not fixed yet
 -- CHECK: kill: "survived queued"
 -- CHECK: kill: "done"
 -- CHECK-NOT: survived runnable

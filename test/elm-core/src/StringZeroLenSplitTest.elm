@@ -1,11 +1,15 @@
 module StringZeroLenSplitTest exposing (main)
 
-{-| HEAP_071 audit: split / lines / words producing EMPTY parts (leading,
+{-| HEAP\_071 audit: split / lines / words producing EMPTY parts (leading,
 trailing and adjacent separators), on ASCII (UTF-8 byte path) and non-ASCII
 (UTF-16 snapshot path) inputs, plus a large input. Every empty part must be the
 Empty constant.
 
 probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
+
+`String.words` of a blank string is `[""]`, as in Elm (`str.trim().split(/\s+/g)`); until 2026-10-30
+eco gave `[]` and this test pinned that (plans/review-likely-bugs-fixes.md step 1a).
+
 -}
 
 -- CHECK: split_ascii: ["0EQC","0EQC"]
@@ -19,7 +23,7 @@ probe s = length, String.isEmpty, (s == ""), case-on-"" — "0EQC" is correct.
 -- CHECK: lines_ascii: ["0EQC","0EQC","0EQC","0EQC"]
 -- CHECK: lines_utf16: ["0EQC","1eqc","0EQC"]
 -- CHECK: lines_empty: ["0EQC"]
--- CHECK: words_blank: [[],[],[]]
+-- CHECK: words_blank: [[""],[""],[""]]
 -- CHECK: after_gc_bad: 0
 
 import Html exposing (text)
@@ -28,8 +32,18 @@ import Html exposing (text)
 probe : String -> String
 probe s =
     String.fromInt (String.length s)
-        ++ (if String.isEmpty s then "E" else "e")
-        ++ (if s == "" then "Q" else "q")
+        ++ (if String.isEmpty s then
+                "E"
+
+            else
+                "e"
+           )
+        ++ (if s == "" then
+                "Q"
+
+            else
+                "q"
+           )
         ++ (case s of
                 "" ->
                     "C"
@@ -59,7 +73,7 @@ main =
             String.split "é" "é"
 
         splitUtf16Mixed =
-            String.split "é" "éaééb\u{00E9}"
+            String.split "é" "éaéébé"
 
         splitUtf16LongSep =
             String.split "éééé" "éééééééé"
@@ -88,9 +102,17 @@ main =
 
         held =
             List.filter isEmptyPart
-                (splitAscii ++ splitAsciiMixed ++ splitAsciiLongSep ++ splitUtf16
-                    ++ splitUtf16Mixed ++ splitUtf16LongSep ++ splitEmptyInput
-                    ++ splitBig ++ linesAscii ++ linesUtf16 ++ linesEmpty
+                (splitAscii
+                    ++ splitAsciiMixed
+                    ++ splitAsciiLongSep
+                    ++ splitUtf16
+                    ++ splitUtf16Mixed
+                    ++ splitUtf16LongSep
+                    ++ splitEmptyInput
+                    ++ splitBig
+                    ++ linesAscii
+                    ++ linesUtf16
+                    ++ linesEmpty
                 )
 
         churn =

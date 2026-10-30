@@ -10,7 +10,8 @@
 // binds them: each name is defined in the engine as an absolute symbol at the address of the function
 // linked into this process.
 //
-// The list of names is written out by hand. `EcoJIT` also searches the process's exported symbols, so a
+// The list of names is written out by hand; a unit test (test/codegen/RuntimeSymbolMapTest.cpp) checks that
+// every runtime declaration the lowering can emit is in it. `EcoJIT` also searches the process's exported symbols, so a
 // name missing from the list still resolves if the host executable exports it, and fails only otherwise.
 // The `__eco_alloc_inline` marker is left out on purpose: a call to it that survives the backend is a
 // fatal backend error, and leaving it unmapped means one could never run even if it got past that.
@@ -23,9 +24,10 @@
 #ifndef ECO_RUNTIME_SYMBOLS_H
 #define ECO_RUNTIME_SYMBOLS_H
 
-namespace mlir {
-class ExecutionEngine;
-} // namespace mlir
+#include "llvm/Support/Error.h"
+
+#include <string>
+#include <vector>
 
 namespace eco {
 class EcoJIT;
@@ -37,15 +39,14 @@ class EcoJIT;
 // Defines in `engine` every name this component lists, each at the address of its function in this
 // process.
 //
-// Call it once per engine, before the code that calls these functions is compiled.
-void registerRuntimeSymbols(mlir::ExecutionEngine &engine);
+// Call it once per engine, before the code that calls these functions is compiled: `EcoJIT` compiles code
+// when a symbol in it is first looked up, so the call must come before that lookup. Returns an error if a
+// name is already defined (a second call, or a module that defines a runtime symbol's name).
+llvm::Error registerRuntimeSymbols(eco::EcoJIT &engine);
 
-// Defines the same names as the `mlir::ExecutionEngine` overload, in an `EcoJIT`.
-//
-// Call it once per engine: a second call redefines the names, which aborts when assertions are on and
-// is undefined behaviour otherwise. `EcoJIT` compiles code when a symbol in it is first
-// looked up, so the call must come before that lookup.
-void registerRuntimeSymbols(eco::EcoJIT &engine);
+// Returns every name `registerRuntimeSymbols` defines, unmangled. Used by the test that checks every
+// runtime declaration the lowering can emit is listed (test/codegen/RuntimeSymbolMapTest.cpp).
+std::vector<std::string> runtimeSymbolNames();
 
 } // namespace eco
 

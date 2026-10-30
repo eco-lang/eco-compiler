@@ -1,17 +1,15 @@
 // RUN: not %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 // UNSETENV: ECO_CAPHOIST_VALIDATE ECO_GCFREE_VALIDATE
 //
-// XFAIL: cpp-review-bugs.md "JIT: cantFail on fallible paths" -- not fixed yet
-//
 // EcoJIT::create (EcoJIT.cpp) wraps the IR transformer (eco::runEcoBackend) and addIRModule in
 // llvm::cantFail, so a backend error under -emit=jit aborts the process ("Failure value returned
 // from cantFail wrapped call") instead of reaching ecoc's "Failed to create execution engine"
 // report; in the test binary (EcoRunner) the same error would kill the whole process. The trigger is
 // the plan-stamp mismatch of gcfree_plan_veq_mismatch.mlir, which -emit=llvm reports cleanly.
 //
-// The correct result is a clean non-zero exit with the backend's message. Today: SIGABRT, which
-// `not` does not accept (a crash is not a failure exit).
+// The result is now a clean non-zero exit with the backend's message (`not` does not accept a crash).
 //
+// CHECK: Failed to create execution engine
 // CHECK: disagree on value-eq leafness
 
 module {

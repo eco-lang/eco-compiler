@@ -43,6 +43,7 @@
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/GcSafetyReproTest.hpp"
 #include "allocator/ReviewBugGuardsTest.hpp"
+#include "codegen/RuntimeSymbolMapTest.hpp"
 #include "allocator/CaseMapTest.hpp"
 #include "allocator/StringFormsCompareTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -643,7 +644,7 @@ static IsolatedSuites buildIsolatedSuites() {
     s.largeBodyChurn =
         std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("LargeBodyChurn");
     s.largeBodyChurn->add(testLargeBodyChurnRunsMinors);
-    // Expected-fail guard for a runtime-review defect (RB-141, YLOS exhaustion).
+    // Regression test for a runtime-review defect (RB-141, YLOS exhaustion reports out of memory).
     registerReviewBugIsolatedGuards(*s.largeBodyChurn);
     s.largeBodyChurn->add(testLargeBodyPromotedGarbageRunsMajors);
     s.largeBodyChurn->add(testLargeBodyRecoveryWithoutBudget);
@@ -1153,9 +1154,13 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite gcSafetyReproTests("GcSafetyRepro");
     registerGcSafetyReproTests(gcSafetyReproTests);
 
-    // Expected-fail guards for runtime-review defects not fixed yet (test/XfailGuard.hpp)
+    // Regression tests for runtime-review defects (cpp-review-bugs.md, RB-<line>)
     Testing::TestSuite reviewBugGuards("ReviewBugGuards");
     registerReviewBugGuards(reviewBugGuards);
+
+    // The JIT's runtime symbol map covers every runtime declaration the lowering emits
+    Testing::TestSuite runtimeSymbolMapTests("RuntimeSymbolMap");
+    registerRuntimeSymbolMapTests(runtimeSymbolMapTests);
 
     // Char case-mapping tables and the Char value encoding (KERN_008)
     Testing::TestSuite caseMapTests("CaseMap");
@@ -1210,6 +1215,7 @@ int main(int argc, char* argv[]) {
     addressReservationTests.add(testReserveBelowFitsUnderLimit);
     addressReservationTests.add(testReserveBelowCommitRoundTrip);
     addressReservationTests.add(testReserveBelowRejectsOversize);
+    addressReservationTests.add(testReserveBelowHonoursSmallLimit);
 
     // HPointer golden-word and round-trip layout tests.
     Testing::TestSuite hpointerLayoutTests("HPointerLayout");
@@ -1369,6 +1375,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(stringOpsTests));
     suite.add(std::move(gcSafetyReproTests));
     suite.add(std::move(reviewBugGuards));
+    suite.add(std::move(runtimeSymbolMapTests));
     suite.add(std::move(caseMapTests));
     suite.add(std::move(stringFormsCompareTests));
     suite.add(std::move(listOpsTests));

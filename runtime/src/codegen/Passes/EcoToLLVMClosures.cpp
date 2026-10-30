@@ -2200,9 +2200,8 @@ static Value emitClosureEvalCall(ConversionPatternRewriter &rewriter,
 // When the result is an Int, Float or Char (by `origResultType`, or by
 // `resultType` if that is null), `eco_closure_call_saturated_eval` writes it
 // unboxed into a stack slot. Otherwise `eco_closure_call_saturated` returns
-// it. Only the second form is bracketed by saturated-call markers
-// (`emitSatBegin`); in the first, a begin marker may be emitted with no end,
-// and the backend then drops it.
+// it. Both forms are bracketed by saturated-call markers (`emitSatBegin` /
+// `emitSatEnd`) when the new arguments' eco types are known.
 //
 // `safeOp` is the operation being lowered. It must not be null, and the
 // stack arrays are allocated in the entry block of its `llvm.func`.
@@ -2350,6 +2349,11 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);
 
         Value result = rewriter.create<LLVM::LoadOp>(loc, slotTy, resultSlot);
+        // Closes the bracket for a primitive result too: the backend's `$sat` diamond takes its fast
+        // entry's return type from this value and checks the closure's result kind against the begin
+        // marker's. Without the end the begin was dropped and the call stayed generic
+        // (cpp-review-bugs.md "Primitive-result closure calls emit an unmatched __eco_sat_begin").
+        emitSatEnd(rewriter, loc, runtime, satTok, result);
         // Only a Char narrower than i32 is adapted; any other mismatch
         // between `slotTy` and `resultType` is returned as `slotTy`.
         if (slotTy != resultType) {
@@ -2675,23 +2679,14 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             if (fastEval && captureAbi) {
                 result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy);
             } else {
-                // With `_capture_abi` alone, the layout passed is the capture
-                // kinds followed by one boxed kind per new argument, although
-                // `emitInlineClosureCall` stores primitive new arguments raw
-                // and passes the new-argument count with this layout.
-                Value layoutPtr;
-                if (captureAbi) {
-                    SmallVector<uint8_t> kinds;
-                    for (auto attr : captureAbi) {
-                        auto typeAttr = mlir::dyn_cast<TypeAttr>(attr);
-                        kinds.push_back(typeAttr ? mlirTypeToParamKind(typeAttr.getValue()) : 0);
-                    }
-                    for (int64_t i = 0; i < numNewArgs; ++i)
-                        kinds.push_back(0); // PK_Boxed
-                    layoutPtr = getOrCreateEvalLayout(rewriter, loc, runtime, kinds);
-                }
+                // The layout is built by `emitInlineClosureCall` from the new arguments' own types: the
+                // runtime (eco_closure_call_saturated_eval / spliceArgsForSaturatedCall) reads kinds
+                // [0, num_newargs) as the NEW arguments' kinds and takes the captures' kinds from the
+                // closure. `_capture_abi` without `_fast_evaluator` used to pass
+                // [capture kinds..., 0 x new args] here, so a raw Int new argument was read with a
+                // capture's (boxed) kind (cpp-review-bugs.md, fixed 2026-10-30).
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
-                                               origNewArgTypes, origResultType, op, layoutPtr);
+                                               origNewArgTypes, origResultType, op, /*layoutPtr=*/Value());
             }
             rewriter.replaceOp(op, result);
         } else {
@@ -2870,15 +2865,12 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
 };
 
 // Makes the eval layouts a closure call site `op` with new arguments
-// `origNewargs` may refer to: the layout of their kinds with `resultKind`, the
-// same kinds with result kind 0, and, when `captureAbi` is not null, the
-// kinds of `captureAbi` followed by one boxed kind per new argument. More is
-// made than a site uses; an unreferenced layout is a private global that
-// LLVM can discard.
+// `origNewargs` may refer to: the layout of their kinds with `resultKind`, and
+// the same kinds with result kind 0. More is made than a site uses; an
+// unreferenced layout is a private global that LLVM can discard.
 static void preMaterializeApplyLayouts(OpBuilder &builder,
                                        const EcoRuntime &runtime, Operation *op,
-                                       ValueRange origNewargs, uint8_t resultKind,
-                                       ArrayAttr captureAbi) {
+                                       ValueRange origNewargs, uint8_t resultKind) {
     Location loc = op->getLoc();
     SmallVector<uint8_t> kinds;
     kinds.reserve(origNewargs.size());
@@ -2886,15 +2878,6 @@ static void preMaterializeApplyLayouts(OpBuilder &builder,
     ensureEvalLayoutGlobal(builder, loc, runtime, kinds, resultKind);
     if (resultKind != 0)
         ensureEvalLayoutGlobal(builder, loc, runtime, kinds, /*resultKind=*/0);
-    if (captureAbi) {
-        SmallVector<uint8_t> ck;
-        for (Attribute a : captureAbi) {
-            auto ta = dyn_cast<TypeAttr>(a);
-            ck.push_back(ta ? mlirTypeToParamKind(ta.getValue()) : 0);
-        }
-        for (size_t i = 0; i < kinds.size(); ++i) ck.push_back(0);
-        ensureEvalLayoutGlobal(builder, loc, runtime, ck, /*resultKind=*/0);
-    }
 }
 
 } // namespace
@@ -3077,8 +3060,7 @@ void eco::detail::preMaterializeClosureArtifacts(
         } else if (auto pe = dyn_cast<PapExtendOp>(op)) {
             preMaterializeApplyLayouts(
                 builder, runtime, op, pe.getNewargs(),
-                static_cast<uint8_t>(pe.get_resultKind()),
-                pe->getAttrOfType<ArrayAttr>("_capture_abi"));
+                static_cast<uint8_t>(pe.get_resultKind()));
         } else if (auto call = dyn_cast<CallOp>(op)) {
             if (call.getCallee()) return;
             auto operands = call.getOperands();
@@ -3087,9 +3069,7 @@ void eco::detail::preMaterializeClosureArtifacts(
             uint8_t rk = 0;
             if (auto a = call->getAttrOfType<IntegerAttr>("_result_kind"))
                 rk = static_cast<uint8_t>(a.getInt());
-            preMaterializeApplyLayouts(builder, runtime, op,
-                                       newargs, rk,
-                                       /*captureAbi=*/nullptr);
+            preMaterializeApplyLayouts(builder, runtime, op, newargs, rk);
         }
     };
     for (const PreMatDemand &d : demand)

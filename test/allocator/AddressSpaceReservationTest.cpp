@@ -66,6 +66,21 @@ Testing::TestCase testReserveBelowRejectsOversize(
         TEST_ASSERT(platform::reserveAddressSpaceBelow(0, kLimit) == nullptr);
     });
 
+// A limit below the 512 GB the ThreadSanitizer probing loop covers: the result is null or lies wholly
+// below the limit. Before 2026-10-30 a TSan build returned the 64 GB base for a 32 GB limit
+// (cpp-review-bugs.md "POSIX reserveAddressSpaceBelow TSan loop ignores the limit"); other builds
+// pass either way.
+Testing::TestCase testReserveBelowHonoursSmallLimit(
+    "reserveAddressSpaceBelow honours a limit below 512 GB", []() {
+        constexpr std::size_t kSize = 1ULL << 30;            // 1 GiB
+        constexpr std::uintptr_t kSmallLimit = 32ULL << 30;  // 32 GiB
+        void* base = platform::reserveAddressSpaceBelow(kSize, kSmallLimit);
+        if (base == nullptr) return;
+        const bool fits = reinterpret_cast<std::uintptr_t>(base) + kSize <= kSmallLimit;
+        platform::releaseReservation(base, kSize);
+        TEST_ASSERT(fits);
+    });
+
 // Note: the guarantee that the *configured* allocator heap fits below the limit
 // is enforced at runtime inside Allocator::initialize() (it throws if
 // reserveAddressSpaceBelow cannot place the reservation), which every E2E and

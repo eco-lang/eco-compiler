@@ -104,6 +104,7 @@ add_executable(test
         allocator/StringOpsTest.cpp
         allocator/GcSafetyReproTest.cpp
         allocator/ReviewBugGuardsTest.cpp
+        codegen/RuntimeSymbolMapTest.cpp
         allocator/CaseMapTest.cpp
         allocator/StringFormsCompareTest.cpp
         allocator/ListOpsTest.cpp

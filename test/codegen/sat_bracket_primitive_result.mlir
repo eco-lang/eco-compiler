@@ -1,12 +1,10 @@
 // RUN: %ecoc %s -emit=mlir-llvm 2>&1 | %FileCheck %s
 //
-// XFAIL: cpp-review-bugs.md "Primitive-result closure calls emit an unmatched __eco_sat_begin" -- not fixed yet (a missed optimisation, not wrong output)
-//
 // A saturating typed eco.papExtend with no `_fast_evaluator` is lowered by emitInlineClosureCall
 // (EcoToLLVMClosures.cpp), which brackets the call with __eco_sat_begin / __eco_sat_end so the
-// backend can turn it into a `$sat` fast-path call. For an Int / Float / Char result the
-// primitive-result branch returns before emitting __eco_sat_end, so expandSatMarkers drops the
-// unmatched begin: the call stays on the generic path (and keeps a dead inline resolve). Ordinary
+// backend can turn it into a `$sat` fast-path call. Until 2026-10-30, for an Int / Float / Char
+// result the primitive-result branch returned before emitting __eco_sat_end, so expandSatMarkers
+// dropped the unmatched begin and the call stayed on the generic path (a missed optimisation). Ordinary
 // Elm reaches it, but the output does not change, so only the IR shows it. @caller_boxed, with a
 // boxed result, is the control.
 //

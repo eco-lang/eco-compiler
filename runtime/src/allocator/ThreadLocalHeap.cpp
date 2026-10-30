@@ -274,8 +274,7 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     if (size >= config_->large_object_threshold) {
         return allocateYoungLarge(size, tag);
     }
-    assert(false && "Failed to allocate to nursery, it is full.");
-    return nullptr;
+    heapExhausted("an object in the nursery", size);
 }
 
 void* ThreadLocalHeap::allocateFast(size_t size) {
@@ -315,8 +314,7 @@ void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
     if (size >= config_->large_object_threshold) {
         return allocateYoungLarge(size, tag);
     }
-    assert(false && "Failed to allocate after GC in slow path.");
-    return nullptr;
+    heapExhausted("an object in the nursery", size);
 }
 
 void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
@@ -337,8 +335,7 @@ void* ThreadLocalHeap::allocateSlowRaw(size_t size) {
         return obj;
     }
 
-    assert(false && "Failed to allocate after GC in slow path (raw).");
-    return nullptr;
+    heapExhausted("an inline allocation in the nursery", size);
 }
 
 void ThreadLocalHeap::ensureNursery(size_t n) {
@@ -362,7 +359,7 @@ void ThreadLocalHeap::ensureNursery(size_t n) {
         return;
     }
 
-    assert(false && "ensureNursery: cannot satisfy after GC (HEAP_017)");
+    heapExhausted("nursery headroom (HEAP_017)", n);
 }
 
 void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
@@ -384,8 +381,7 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
     if (obj) return obj;
 
     if (large) regionTooLarge(total);
-    assert(false && "Failed to allocate region after GC.");
-    return nullptr;
+    heapExhausted("a closure group region in the nursery", total);
 }
 
 [[noreturn]] void ThreadLocalHeap::regionTooLarge(size_t total) {
@@ -425,6 +421,14 @@ void ThreadLocalHeap::noteDirectAlloc(size_t bytes) {
     }
 }
 
+[[noreturn]] void ThreadLocalHeap::heapExhausted(const char* what, size_t size) {
+    std::fprintf(stderr,
+                 "eco: out of memory: cannot allocate %zu bytes for %s (old generation %zu of %zu bytes in "
+                 "use)\n",
+                 size, what, parent_->getOldGenCommittedBytes(), parent_->getOldGenMaxBytes());
+    std::abort();
+}
+
 [[noreturn]] void ThreadLocalHeap::largeBodyExhausted(const char* kind, size_t body_size) {
     std::fprintf(stderr,
                  "eco: out of memory: cannot allocate a %zu-byte large %s body (old generation "
@@ -444,7 +448,7 @@ void* ThreadLocalHeap::allocateYoungLarge(size_t size, Tag tag) {
         majorGC(GCStats::MajorReason::AllocFailure);
         obj = old_gen_.allocateYoungLarge(size, tag, nursery_.minor_color_);
     }
-    assert(obj && "Failed to allocate young large object.");
+    if (!obj) heapExhausted("a large object (YLOS)", size);
     noteDirectAlloc(size);
     return obj;
 }
@@ -461,10 +465,7 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
         majorGC(GCStats::MajorReason::AllocFailure);
         obj = old_gen_.allocateOldLarge(size, tag);
     }
-    if (!obj) {
-        assert(false && "Failed to allocate large pinned object in old gen.");
-        return nullptr;
-    }
+    if (!obj) heapExhausted("a large pointer-free object", size);
     noteDirectAlloc(size);
     return obj;
 }
@@ -567,7 +568,7 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     size = (size + 7) & ~static_cast<size_t>(7);
     if (size >= config_->large_object_threshold) {
         void* big = old_gen_.allocateOldLarge(size, tag);
-        assert(big && "Failed to allocate a large permanent object in old gen.");
+        if (!big) heapExhausted("a large permanent object", size);
         return big;
     }
     void* obj = old_gen_.allocate(size);
@@ -583,8 +584,7 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
         return obj;
     }
 
-    assert(false && "Failed to allocate in old gen.");
-    return nullptr;
+    heapExhausted("a permanent object", size);
 }
 
 // ============================================================================
@@ -827,9 +827,8 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
     }
     const bool profile_phases = gcPhaseProfileEnabled();
 
-    // Unlike minorGC's, this dump and the one at the end are not conditional on heapTraceEnabled(), so a build with
-    // ECO_HEAP_TRACE prints them on every major.
-    parent_->dumpHeapState("majorGC begin");
+    if (Allocator::heapTraceEnabled())
+        parent_->dumpHeapState("majorGC begin");
 
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
@@ -1009,7 +1008,8 @@ void ThreadLocalHeap::majorGC(GCStats::MajorReason reason) {
         std::fflush(stderr);
     }
 
-    parent_->dumpHeapState("majorGC end");
+    if (Allocator::heapTraceEnabled())
+        parent_->dumpHeapState("majorGC end");
 }
 // TLA-REGION(TLH.majorGC) end
 

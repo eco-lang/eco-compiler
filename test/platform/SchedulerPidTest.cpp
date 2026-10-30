@@ -23,7 +23,6 @@
 #include "../../runtime/src/platform/TaskBinding.hpp"
 #include "../allocator/TestHelpers.hpp"
 #include "../TestSuite.hpp"
-#include "../XfailGuard.hpp"
 
 #include <cstdint>
 #include <string>
@@ -196,11 +195,10 @@ void test_sd1_finished_process_not_rooted() {
 // ---- RB-448: two self-messages sent before one drain ----------------------
 //
 // cpp-review-bugs.md "Scheduler rawSend uses the caller's possibly stale snapshot": each rawSend
-// enqueues a new version of the receiving process (its mailbox grown by one), and drain steps every
-// queued version with no check that it is still the latest. Two sends before a drain queue
-// P1 = [m1] and P2 = [m1, m2], so the self handler sees m1, m1, m2: m1 is delivered twice.
-// HttpExports.cpp works around it by draining after every progress tick. Expected-fail guard
-// (test/XfailGuard.hpp).
+// enqueues a new version of the receiving process (its mailbox grown by one), and drain used to step
+// every queued version with no check that it was still the latest. Two sends before a drain queued
+// P1 = [m1] and P2 = [m1, m2], so the self handler saw m1, m1, m2. Fixed 2026-10-30: stepProcess steps
+// the latest version, so each message is delivered once.
 
 std::vector<int64_t> g_rb448Got;
 
@@ -225,8 +223,7 @@ void test_rb448_two_sends_one_drain() {
 
     std::string got;
     for (int64_t v : g_rb448Got) got += (got.empty() ? "" : ",") + std::to_string(v);
-    const bool correct = got == "1,2";
-    XfailGuard::report("RB-448", !correct, "the self handler received [" + got + "] (correct: [1,2])");
+    if (got != "1,2") TEST_FAIL("RB-448: the self handler received [" + got + "] (correct: [1,2])");
 }
 
 }  // namespace
@@ -235,5 +232,5 @@ void registerSchedulerPidTests(IsolatedTestRunner::IsolatedTestCaseSuite& suite)
     suite.add(Testing::TestCase("platform-services/SD-1 self-message after process-id wrap", test_sd1_self_message_after_pid_wrap));
     suite.add(Testing::TestCase("platform-services/SD-1 kill after process-id wrap", test_sd1_kill_after_pid_wrap));
     suite.add(Testing::TestCase("platform-services/SD-1 finished process not rooted", test_sd1_finished_process_not_rooted));
-    suite.add(Testing::TestCase("platform-services/[xfail RB-448] two self-messages sent before one drain are each delivered once", test_rb448_two_sends_one_drain));
+    suite.add(Testing::TestCase("platform-services/RB-448 two self-messages sent before one drain are each delivered once", test_rb448_two_sends_one_drain));
 }

@@ -1,18 +1,17 @@
 // RUN: %ecoc %s -emit=jit 2>&1 | %FileCheck %s
 //
-// XFAIL: cpp-review-bugs.md "Closure eval layout labels new args PK_Boxed but primitives are stored raw" -- not fixed yet
-//
 // A saturating typed `eco.papExtend` that carries `_capture_abi` but no `_fast_evaluator` is lowered
-// by the `_capture_abi`-only branch of EcoToLLVMClosures, which builds the evaluator layout as
-// [capture kinds..., 0 x new args] and passes it with num_newargs = the new-arg count. The runtime
+// by the `_capture_abi`-only branch of EcoToLLVMClosures, which until 2026-10-30 built the evaluator
+// layout as [capture kinds..., 0 x new args] and passed it with num_newargs = the new-arg count; it
+// now builds the layout from the new arguments' types. The runtime
 // (RuntimeExports.cpp, eco_apply_closure_eval / spliceArgsForSaturatedCall) reads the first
-// num_newargs kinds as the kinds of the NEW arguments, so it reads the capture's kind instead. Here
-// the capture is boxed (kind 0) and the new argument is a raw Int: the runtime treats 21 as a heap
+// num_newargs kinds as the kinds of the NEW arguments, so it read the capture's kind instead. Here
+// the capture is boxed (kind 0) and the new argument is a raw Int: the runtime treated 21 as a heap
 // pointer. The front end always emits `_capture_abi` together with `_fast_evaluator` (the fast
 // path), so only hand-written MLIR reaches the branch; with an Int capture, as in
 // fast_dispatch_direct_call.mlir, the kinds happen to agree.
 //
-// Today: the assert in spliceArgsForSaturatedCall ("cannot un-box null/embedded HPointer").
+// Before the fix: the assert in spliceArgsForSaturatedCall ("cannot un-box null/embedded HPointer").
 //
 // CHECK: [eco.dbg] 42
 

@@ -237,7 +237,11 @@ private:
 
         auto& engine = maybeEngine.get();
 
-        eco::registerRuntimeSymbols(*engine);
+        if (llvm::Error err = eco::registerRuntimeSymbols(*engine)) {
+            result.errorMessage = "Failed to register runtime symbols: " +
+                                  llvm::toString(std::move(err));
+            return result;
+        }
 
         Elm::Allocator::instance().initialize();
         Elm::Allocator::instance().initThread();

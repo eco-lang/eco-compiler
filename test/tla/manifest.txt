@@ -120,7 +120,7 @@ region  ff5a5c22afef0e396f0084d662b8af2021452f2fc11298d8e9d94eaea30564d9  runtim
 region  bb6ee6083acc18aded120238c4f40e2959bbc0b34da65eb2df5c11e7a2a4f1c9  runtime/src/allocator/OldGenTenure.cpp  OGT.grantAllocateShared  M1,M4,M5,W3
 region  b76cc201e7ecd7e09b092b279a881957f7f47dd9679fb65607848e10065d4794  runtime/src/allocator/OldGenTenure.cpp  OGT.returnTenureGrant  M4,M5
 region  896f924a1e351b7c4757782875590c6feddd698f67f14aca3bc010ace0c3a176  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.minorGC  M1,M4,M5,M6,M8
-region  69a04246e15b4942b5dae3cf8503a2483dd69eb00cd433b6498514ea3573aecc  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGC  M1,M5,M8
+region  1b502d5256e8648b32227a0033b263b5c043790fdc11d75335136ac422924aad  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGC  M1,M5,M8
 region  7666793086636f0d6bead6c77e7ef2ac981340be56c965639342e1e09bc62287  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.majorGCAndShrink  M1,M4,M8
 region  e089cd52124e93a910f8de68bc11fa4cfb96030c8db8901aa397be88b2c31d54  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.startMarkCycle  M1,M5
 region  f57df5d9b5056118350e4015ce900b9b358661a09b1bfbbaeb9a2c427b7eac91  runtime/src/allocator/ThreadLocalHeap.cpp  TLH.stepMarkCycle  M1

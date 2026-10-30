@@ -2,10 +2,17 @@
 
 #include "RuntimeSymbols.h"
 
-#include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "EcoJIT.h"
 
+#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
+#include "llvm/IR/DataLayout.h"
+
+#include <cmath>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "../allocator/RuntimeExports.h"
 #include "../allocator/PermanentSpace.hpp"
@@ -113,6 +120,130 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         symbolMap[interner("eco_alloc_inline_slow")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_inline_slow),
+                llvm::JITSymbolFlags::Exported);
+        // Typed field getters (tuples, records, arrays), the hybrid list head / tail of chunked-list
+        // mode, and the dispatch-census hooks (ECO_DISPATCH_STATS).
+        symbolMap[interner("eco_gencall_stats")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gencall_stats),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_dispatch_stats_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_dispatch_stats_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_array_get_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_array_get_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_array_get_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_array_get_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_array_get_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_array_get_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_record_get_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_record_get_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_record_get_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_record_get_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_record_get_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_record_get_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get0_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get0_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get0_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get0_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get0_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get0_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get1_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get1_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get1_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get1_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple2_get1_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple2_get1_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get0_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get0_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get0_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get0_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get0_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get0_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get1_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get1_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get1_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get1_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get1_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get1_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get2_char")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get2_char),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get2_f64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get2_f64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_tuple3_get2_i64")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_tuple3_get2_i64),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_list_head_hybrid")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_list_head_hybrid),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_list_tail_hybrid")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_list_tail_hybrid),
+                llvm::JITSymbolFlags::Exported);
+        // libm functions the lowering calls directly (Basics.acos / asin / atan / atan2).
+        symbolMap[interner("acos")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(static_cast<double (*)(double)>(&::acos)),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("asin")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(static_cast<double (*)(double)>(&::asin)),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("atan")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(static_cast<double (*)(double)>(&::atan)),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("atan2")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(static_cast<double (*)(double, double)>(&::atan2)),
+                llvm::JITSymbolFlags::Exported);
+        // Called at the start of @main in chunked-list mode (EcoToLLVM).
+        symbolMap[interner("eco_enable_list_chunks")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_enable_list_chunks),
                 llvm::JITSymbolFlags::Exported);
 
         // Slow path of a hoisted nursery capacity check.
@@ -1022,14 +1153,25 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
     return symbolMap;
 }
 
-void registerRuntimeSymbols(ExecutionEngine &engine) {
-    engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
-        return buildRuntimeSymbolMap(interner);
-    });
+std::vector<std::string> runtimeSymbolNames() {
+    // ELF mangling ("m:e") adds no prefix, so each interned name is the C name itself.
+    llvm::orc::ExecutionSession session(
+        llvm::cantFail(llvm::orc::SelfExecutorProcessControl::Create()));
+    std::vector<std::string> names;
+    {
+        // MangleAndInterner keeps a reference to the layout, so it must outlive the interner.
+        const llvm::DataLayout layout("e-m:e");
+        llvm::orc::MangleAndInterner interner(session, layout);
+        llvm::orc::SymbolMap map = buildRuntimeSymbolMap(interner);
+        names.reserve(map.size());
+        for (const auto& entry : map) names.push_back((*entry.first).str());
+    }
+    llvm::cantFail(session.endSession());
+    return names;
 }
 
-void registerRuntimeSymbols(eco::EcoJIT &engine) {
-    engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
+llvm::Error registerRuntimeSymbols(eco::EcoJIT &engine) {
+    return engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
         return buildRuntimeSymbolMap(interner);
     });
 }
