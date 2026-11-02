@@ -6,7 +6,8 @@ full self-hosted chain builds end-to-end and produces the unified
 as `eco-<ver>-x86_64-windows.zip`. The whole chain is gated in CI by the
 single [`win-aot.yml`][win-aot] workflow — front-end Stages 1–5, the
 elm-tests suite, runtime + JIT E2E, the Stage 6 → 9 AOT self-host chain,
-and the unified bundle smoke-tested with `eco.exe --help` — backed by
+and, in a parallel job built with the `win-release` preset, the unified
+bundle smoke-tested with `eco.exe --help` — backed by
 [`win-llvm-build.yml`][win-llvm-build], the cached LLVM-MSVC base-image
 warmer. (`win-aot` supersedes the former `win-bootstrap` + `win-runtime`
 workflows, folded in as gateway steps.) See
@@ -73,6 +74,9 @@ points:
   on the compiler itself.
 - `win-build` — full configure: runtime, kernels, codegen, tests,
   compiler. Requires the LLVM install tree from the previous step.
+- `win-release` — the same configure in Release mode (`/O2 /DNDEBUG`, no
+  debug info or PDBs, no asserts, no GC stats), building into
+  `build-release/`, as `release` is for Linux. CI ships the bundle from it.
 
 ```powershell
 # Front-end only:

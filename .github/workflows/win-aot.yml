@@ -1,17 +1,19 @@
-# Windows — single consolidated build: full bootstrap + every test gateway +
-# the shippable Win64 distribution bundle, in one job.
+# Windows — full bootstrap + every test gateway, and the shippable Win64
+# distribution bundle, as two parallel jobs like linux-aot's test and bundle.
+# win-llvm-build stays as the LLVM base-image cache-warmer.
 #
-# Replaces the former three-workflow split (win-bootstrap / win-runtime /
-# win-aot). Windows has a single toolchain (the cached LLVM-MSVC install tree
-# from win-llvm-build), so test-vs-ship need not be split. win-llvm-build
-# stays as the LLVM base-image cache-warmer.
+#   aot (win-build preset: RelWithDebInfo, asserts and GC stats on), steps
+#   cheap -> expensive (fail-fast):
+#     1. front-end stages 1-5      (pure Node)
+#     2. elm-tests                 (compiler's own Elm suite)
+#     3. JIT E2E (build + run test.exe)
+#     4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point) + verify PE
 #
-# Steps run cheap -> expensive (fail-fast):
-#   1. front-end stages 1-5      (pure Node)                  — was win-bootstrap
-#   2. elm-tests                 (compiler's own Elm suite)   — was win-bootstrap
-#   3. JIT E2E (build + run test.exe)                         — was win-runtime
-#   4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point)  — was win-aot
-#   5. verify PE -> package ZIP -> smoke-test bundle          — was win-aot
+#   bundle (win-release preset: Release, no asserts, no GC stats, no PDBs):
+#     the Stage 6-9 chain again in release mode -> package ZIP -> smoke-test
+#     it. The bundle ships from here, so users get release-mode eco and
+#     programs, as from the Linux static build. publish-nightly and release
+#     take a run only when every job is green.
 #
 # stress / AOT-E2E stay Windows-gated-off (NOT WIN32) as in the runtime suite.
 name: win-aot
@@ -270,6 +272,158 @@ jobs:
           & "$env:LLVM_DIR\bin\llvm-readobj.exe" --file-headers $eco | Select-String -Pattern 'Machine|Magic|Subsystem' | Write-Host
           Write-Host "OK: Stage 9 AOT-produced eco.exe is a valid Win64 PE"
 
+      - name: Save ccache (master only)
+        # After the build/test steps, so it holds this run's objects; only on
+        # master (see "Restore ccache").
+        if: success() && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: win-aot-ccache-${{ github.sha }}
+
+      - name: Prune superseded ccache entries
+        # Keep only the newest win-aot-ccache-* entry on master (the one just saved):
+        # restore-keys only ever reads the newest, and per-commit entries
+        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
+        # Other refs save nothing, so they dry-run it instead: list what
+        # master's prune would delete and check the token may delete caches.
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
+        run: .github/scripts/prune-caches.sh win-aot-ccache-
+
+      - name: Upload AOT output + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-aot-output
+          path: |
+            build/compiler/build-kernel/bin/eco.exe
+            build/compiler/build-kernel/bin/eco-compiler.exe
+            ${{ runner.temp }}/test_output.txt
+            ${{ runner.temp }}/test_output.txt.err
+            ${{ runner.temp }}/elm-tests.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  bundle:
+    runs-on: windows-latest
+    # Actual wall-clock is ~60 min (Stage 6 ~9m + Stage 7 ~15m + Stage 8/9
+    # ~22m + the JIT gateway ~6m); 240 leaves ample headroom under the 6h cap.
+    timeout-minutes: 240
+    # actions: write lets "Prune superseded ccache entries" delete caches
+    # (the repository's default token is read-only).
+    permissions:
+      contents: read
+      actions: write
+    env:
+      LLVM_DIR: ${{ github.workspace }}\experiments\win-llvm-build\out\llvm-install
+      # ccache reuses object files for unchanged TUs across runs (the eco build
+      # itself is otherwise uncached on Windows). Kept small via CCACHE_MAXSIZE
+      # so it stays well under the 10 GB repo cache budget.
+      CCACHE_DIR: ${{ github.workspace }}\.ccache
+      CCACHE_MAXSIZE: '1G'
+      # ccache refuses clang-cl's /clang:<arg> pass-through options. curl adds
+      # /clang:-Werror-implicit-function-declaration even with PICKY_COMPILER
+      # off; warning flags don't change the object, so let ccache skip them.
+      CCACHE_IGNOREOPTIONS: '/clang:-W* -clang:-W*'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the build number counts commits (eco-version.sh).
+          fetch-depth: 0
+
+      - name: Compute the build version
+        shell: bash
+        run: |
+          v=$(bash .github/scripts/eco-version.sh)
+          echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building eco $v"
+
+      - name: Set up MSVC dev environment
+        # clang-cl is pinned in the win presets; it needs the MSVC headers/libs
+        # to satisfy CMake's compiler probe. ilammy/msvc-dev-cmd sources
+        # vcvarsall x64 (also provides ml64/link/lib for the AOT link line).
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Restore LLVM 21.1.8 install tree (from win-llvm-build / E-W3)
+        # fail-on-cache-miss: the LLVM source build is the job of win-llvm-build
+        # (kept warm by the nightly schedule). A cold cache fails fast and
+        # legibly — re-run win-llvm-build — rather than silently degrading.
+        uses: actions/cache@v4
+        with:
+          path: experiments/win-llvm-build/out/llvm-install
+          key: llvm-mlir-21.1.8-x86_64-pc-windows-msvc-x86-release-mt-v1
+          fail-on-cache-miss: true
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+        shell: pwsh
+
+      - name: Install rapidcheck (configure-time dep of the test tree)
+        shell: pwsh
+        run: |
+          git clone --depth=1 https://github.com/emil-e/rapidcheck.git $env:RUNNER_TEMP\rapidcheck
+          cmake -S $env:RUNNER_TEMP\rapidcheck -B $env:RUNNER_TEMP\rapidcheck\build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_INSTALL_PREFIX="$env:RUNNER_TEMP\rapidcheck-install"
+          cmake --build $env:RUNNER_TEMP\rapidcheck\build --target install
+          echo "rapidcheck_DIR=$env:RUNNER_TEMP\rapidcheck-install\share\rapidcheck\cmake" >> $env:GITHUB_ENV
+
+      - name: Tool versions
+        shell: pwsh
+        run: |
+          node --version
+          pnpm --version
+          (cmake --version | Select-Object -First 1)
+          ninja --version
+          Write-Host "CPUs: $env:NUMBER_OF_PROCESSORS"
+          (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+
+      - name: Install ccache
+        shell: pwsh
+        run: choco install ccache --no-progress -y
+
+      - name: Restore ccache
+        # Its own key: Release objects never match win-build's, so sharing
+        # aot's entry would only evict it. Saved on master only, as in aot.
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: win-release-ccache-${{ github.sha }}
+          restore-keys: win-release-ccache-
+
+      - name: Zero ccache stats
+        shell: pwsh
+        run: ccache -z
+
+      - name: Configure (win-release preset)
+        shell: pwsh
+        # ECO_VERSION_OVERRIDE stamps eco --version and the bundle name.
+        run: cmake --preset win-release -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache "-DECO_VERSION_OVERRIDE=$env:ECO_VERSION"
+
+      - name: Stage 6-9 — unified eco.exe (release mode)
+        # `--target eco` pulls the whole chain: Stages 1-5, eco-boot-native,
+        # Stage 6 eco-compiler.exe, 7, the 8c fixed point and 9a/9b.
+        shell: pwsh
+        run: cmake --build build-release --target eco -- -k 20
+
+      - name: Verify PE output (Stage 9 unified eco.exe)
+        shell: pwsh
+        run: |
+          $eco = "build-release\compiler\build-kernel\bin\eco.exe"
+          if (-not (Test-Path $eco)) { Write-Host "ERROR: $eco not built"; exit 1 }
+          Write-Host "=== file metadata ==="
+          Get-ChildItem $eco | Format-List
+          Write-Host "=== PE header sanity (llvm-readobj) ==="
+          & "$env:LLVM_DIR\bin\llvm-readobj.exe" --file-headers $eco | Select-String -Pattern 'Machine|Magic|Subsystem' | Write-Host
+          Write-Host "OK: Stage 9 AOT-produced eco.exe is a valid Win64 PE"
+
       # ---- Ship: package + smoke-test the Windows bundle in isolation. ----
       - name: Package Windows bundle (ZIP)
         # CPack picks up the BundleWindows component from CMakeLists.txt's
@@ -278,15 +432,15 @@ jobs:
         # sources, examples.
         shell: pwsh
         run: |
-          cmake --build build --target package -- -k 20
-          Get-ChildItem build\eco-*.zip | Format-List
+          cmake --build build-release --target package -- -k 20
+          Get-ChildItem build-release\eco-*.zip | Format-List
 
       - name: Smoke-test the bundle in isolation
         # Extract the ZIP to a fresh prefix and probe bin/eco.exe (the unified
         # Stage 9 binary). Confirms the bundle is self-contained.
         shell: pwsh
         run: |
-          $bundle = Get-ChildItem build\eco-*.zip | Select-Object -First 1
+          $bundle = Get-ChildItem build-release\eco-*.zip | Select-Object -First 1
           $dest = "$env:RUNNER_TEMP\eco-bundle"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           Expand-Archive -Path $bundle.FullName -DestinationPath $dest -Force
@@ -324,40 +478,33 @@ jobs:
           Write-Host "OK: bundled eco.exe runs in isolation"
 
       - name: Save ccache (master only)
-        # After the build/test steps, so it holds this run's objects; only on
-        # master (see "Restore ccache").
         if: success() && github.ref == 'refs/heads/master'
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: win-aot-ccache-${{ github.sha }}
+          key: win-release-ccache-${{ github.sha }}
 
       - name: Prune superseded ccache entries
-        # Keep only the newest win-aot-ccache-* entry on master (the one just saved):
-        # restore-keys only ever reads the newest, and per-commit entries
-        # otherwise pile up and push the LLVM caches out of the 10 GB limit.
-        # Other refs save nothing, so they dry-run it instead: list what
-        # master's prune would delete and check the token may delete caches.
         if: success()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
-        run: .github/scripts/prune-caches.sh win-aot-ccache-
+        run: .github/scripts/prune-caches.sh win-release-ccache-
 
-      - name: Upload AOT output + bundle + logs
+      - name: ccache stats
+        if: always()
+        shell: pwsh
+        run: ccache -s
+
+      - name: Upload the bundle + logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: win-aot-output
+          name: win-bundle-output
           path: |
-            build/compiler/build-kernel/bin/eco.exe
-            build/compiler/build-kernel/bin/eco-compiler.exe
-            build/eco-*.zip
+            build-release/eco-*.zip
             ${{ runner.temp }}/help.txt
             ${{ runner.temp }}/help.txt.err
-            ${{ runner.temp }}/test_output.txt
-            ${{ runner.temp }}/test_output.txt.err
-            ${{ runner.temp }}/elm-tests.log
           if-no-files-found: warn
           retention-days: 7

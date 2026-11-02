@@ -1,20 +1,21 @@
-# macOS — single consolidated build: full bootstrap + every test gateway +
-# the shippable Darwin distribution bundle, in one job.
+# macOS — full bootstrap + every test gateway, and the shippable Darwin
+# distribution bundle, as two parallel jobs like linux-aot's test and bundle:
 #
-# This replaces the former three-workflow split (mac-bootstrap / mac-runtime /
-# mac-aot). macOS has a single toolchain (the static LLVM 21.1.8 tree cached by
-# mac-llvm-build), so there is no structural reason to split test-vs-ship;
-# folding them removes two redundant configures per push (macOS runners bill
-# at 10x). The bundle-smoke job then installs the bundle on a fresh runner set
-# up like a typical user's Mac (Command Line Tools only, no Homebrew LLVM or
-# OpenSSL).
+#   aot (mac-build preset: RelWithDebInfo, asserts and GC stats on), steps
+#   cheap -> expensive (fail-fast), mirroring linux's gate order:
+#     1. front-end stages 1-5      (pure Node; no LLVM needed)
+#     2. elm-tests                 (compiler's own Elm suite)
+#     3. JIT E2E (build + run test)
+#     4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point) + verify Mach-O
 #
-# Steps run cheap -> expensive (fail-fast), mirroring linux's gate order:
-#   1. front-end stages 1-5      (pure Node; no LLVM needed) — was mac-bootstrap
-#   2. elm-tests                 (compiler's own Elm suite)  — was mac-bootstrap
-#   3. JIT E2E (build + run test)                            — was mac-runtime
-#   4. Stage 6-9 self-host chain (incl. 8c MLIR fixed point) — was mac-aot
-#   5. verify Mach-O -> package Darwin bundle -> smoke-test  — was mac-aot
+#   bundle (mac-release preset: Release, no asserts, no GC stats, stripped):
+#     the Stage 6-9 chain again in release mode -> package the Darwin bundle
+#     -> smoke-test it -> macOS floor check. The bundle ships from here, so
+#     users get release-mode eco and programs, as from the Linux static build.
+#
+# The bundle-smoke job then installs the bundle on a fresh runner set up like
+# a typical user's Mac (Command Line Tools only, no Homebrew LLVM or OpenSSL).
+# publish-nightly and release take a run only when every job is green.
 name: mac-aot
 
 on:
@@ -211,88 +212,6 @@ jobs:
           fi
           echo "OK: unified eco runs as native Mach-O"
 
-      # ---- Ship: package + smoke-test the Darwin bundle in isolation. ----
-      - name: Package Darwin bundle (TGZ)
-        # CPack picks up the BundleDarwin component from CMakeLists.txt's
-        # if(APPLE) install block — eco-boot-native, eco-compiler, project
-        # archives + libzip/openssl statics + kernel sources + examples.
-        run: |
-          cmake --build build --target package -- -k 20
-          ls -la build/*.tar.gz
-          tar -tzf build/eco-*-darwin.tar.gz | head -40
-          echo "..."
-          tar -tzf build/eco-*-darwin.tar.gz | wc -l | xargs -I{} echo "Total files: {}"
-
-      - name: Smoke-test the bundle in isolation
-        # Extract the tarball to a fresh prefix and run bin/eco from there.
-        # resolveFile() finds the project archives via
-        # <exe>/../lib/eco-runtime/project — confirms the bundle is
-        # self-contained (no implicit dep on the build tree). Then build
-        # Hello.elm with it, as the Linux bundle smoke does
-        # (docker/static-build.Dockerfile): the link finds clang and the SDK
-        # through xcrun at link time, not through build-host paths.
-        run: |
-          set +e
-          mkdir -p /tmp/eco-bundle && cd /tmp/eco-bundle
-          tar -xzf "$GITHUB_WORKSPACE"/build/eco-*-darwin.tar.gz
-          ls -la bin/ lib/eco-runtime/project/ 2>&1 | head -50
-          ./bin/eco --help 2>&1 | head -10
-          rc=$?
-          if [ $rc -ge 128 ]; then
-              echo "ERROR: bin/eco crashed (rc=$rc)"; exit 1
-          fi
-          echo "OK: bundled eco runs in isolation"
-
-          mkdir -p /tmp/eco-smoke/src && cd /tmp/eco-smoke
-          cp "$GITHUB_WORKSPACE"/compiler/examples/elm.json elm.json
-          cp "$GITHUB_WORKSPACE"/compiler/examples/src/Hello.elm src/Hello.elm
-          /tmp/eco-bundle/bin/eco make src/Hello.elm --output=hello || {
-              echo "ERROR: bundled eco make failed"; exit 1; }
-          test -x ./hello || { echo "ERROR: no hello executable"; exit 1; }
-          # Hello.elm is browser-style Html; headless it exits non-zero, so
-          # only a crash (signal) fails the smoke.
-          ./hello >/dev/null 2>&1
-          rc=$?
-          if [ $rc -ge 128 ]; then
-              echo "ERROR: hello crashed (rc=$rc)"; exit 1
-          fi
-          echo "OK: bundled eco built a runnable hello (rc=$rc)"
-
-      - name: Check macOS floor and linked libraries
-        # The floor (CMAKE_OSX_DEPLOYMENT_TARGET, 15.0) must hold for eco, the
-        # programs it links and every archive the bundle ships, including
-        # brew's openssl statics. A runner-image or bottle change that raises
-        # it fails here. eco must load nothing from Homebrew (LLVM/MLIR and
-        # OpenSSL are linked statically).
-        run: |
-          set -e
-          min=15.0
-          eco=/tmp/eco-bundle/bin/eco
-          test/scripts/check-macho-floor.sh "$min" \
-            "$eco" \
-            build/compiler/build-kernel/bin/eco-compiler \
-            /tmp/eco-smoke/hello \
-            /tmp/eco-bundle/lib/eco-runtime/project/*.a
-          if grep -n "built for newer" /tmp/eco-build.log; then
-              echo "ERROR: a link mixed in objects built for a newer macOS than $min"
-              exit 1
-          fi
-          echo "=== otool -L bin/eco ==="
-          otool -L "$eco"
-          if otool -L "$eco" | tail -n +2 \
-              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
-              echo "ERROR: eco links a library outside macOS (expected static LLVM/MLIR/OpenSSL)"
-              exit 1
-          fi
-          echo "=== otool -L hello ==="
-          otool -L /tmp/eco-smoke/hello
-          if otool -L /tmp/eco-smoke/hello | tail -n +2 \
-              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
-              echo "ERROR: hello links a library outside macOS"
-              exit 1
-          fi
-          echo "OK: macOS floor $min holds; eco and hello load only macOS libraries"
-
       - name: Save ccache (master only)
         # After the build/test steps, so it holds this run's objects; only on
         # master (see "Restore ccache").
@@ -337,7 +256,6 @@ jobs:
           name: mac-aot-output
           path: |
             build/compiler/build-kernel/bin/eco
-            build/eco-*-darwin.tar.gz
             build/compiler/build-kernel/timing-*.txt
             /tmp/codesign.txt
             /tmp/help.txt
@@ -347,11 +265,226 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  bundle:
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    env:
+      ECO_MAC_DEPS_DIR: ${{ github.workspace }}/experiments/mac-llvm-build/out/llvm-install
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the build number counts commits (eco-version.sh).
+          fetch-depth: 0
+
+      - name: Compute the build version
+        run: |
+          v=$(.github/scripts/eco-version.sh)
+          echo "ECO_VERSION=$v" >> "$GITHUB_ENV"
+          echo "Building eco $v"
+
+      - name: Restore LLVM 21.1.8 install tree (from mac-llvm-build)
+        # fail-on-cache-miss: the LLVM source build is mac-llvm-build's job
+        # (2-3 h). A cold cache fails fast and legibly — run mac-llvm-build,
+        # then re-run this. Same contract as win-aot and linux-aot.
+        uses: actions/cache/restore@v4
+        with:
+          path: experiments/mac-llvm-build/out/llvm-install
+          key: mac-llvm-mlir-21.1.8-arm64-macos15.0-release-v1
+          fail-on-cache-miss: true
+
+      - name: Install dependencies
+        run: |
+          # libzip is vendored via FetchContent on APPLE (see
+          # eco-kernel-cpp/CMakeLists.txt) so brew's libzip is not needed.
+          # openssl@3 provides the static libssl.a/libcrypto.a linked into eco
+          # and user programs. pkgconf is still useful for kernel curl/ssl
+          # probes. rapidcheck is a configure-time dep of the test tree
+          # (find_package); Homebrew has no formula for it, so build it from
+          # source, for the same minimum macOS as everything else.
+          brew install openssl@3 pnpm gnu-time pkgconf ccache
+          git clone --depth=1 https://github.com/emil-e/rapidcheck.git /tmp/rapidcheck
+          cmake -S /tmp/rapidcheck -B /tmp/rapidcheck/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+          cmake --build /tmp/rapidcheck/build
+          sudo cmake --install /tmp/rapidcheck/build
+
+      - name: Tool versions
+        run: |
+          node --version
+          pnpm --version
+          cmake --version | head -1
+          ninja --version
+          sysctl hw.memsize hw.ncpu
+
+      - name: Restore ccache
+        # Its own key: Release objects never match mac-build's, so sharing
+        # aot's entry would only evict it. Saved on master only, as in aot.
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-release-ccache-${{ github.sha }}
+          restore-keys: mac-release-ccache-
+
+      - name: Configure (mac-release preset)
+        # ECO_VERSION_OVERRIDE stamps eco --version and the bundle name.
+        run: |
+          cmake --preset mac-release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DECO_VERSION_OVERRIDE="$ECO_VERSION"
+
+      - name: Build Stage 9 — unified eco binary (release mode)
+        # Logged so the floor gate below can scan the Stage 6-9 links for
+        # ld64's "built for newer macOS version" warnings.
+        run: |
+          set +e
+          cmake --build build-release --target eco -- -k 20 2>&1 | tee /tmp/eco-build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Verify Mach-O output (Stage 9 unified eco)
+        run: |
+          set +e
+          eco_bin=build-release/compiler/build-kernel/bin/eco
+          ls -la $eco_bin
+          file $eco_bin
+          # Confirm it's arm64 Mach-O and ad-hoc-signed.
+          file $eco_bin | grep -q 'Mach-O 64-bit executable arm64' || {
+              echo "ERROR: $eco_bin is not arm64 Mach-O"; exit 1; }
+          codesign -dv $eco_bin 2>&1 | tee /tmp/codesign.txt
+          grep -q 'adhoc' /tmp/codesign.txt || {
+              echo "ERROR: $eco_bin is not ad-hoc-signed"; exit 1; }
+          # Smoke-run --help. Stage 9 also reaches the in-process
+          # EcoNativeDriverStatic linkage so a missing eco_native_lower_and_link
+          # weak/strong override would surface here as a SIGABRT.
+          $eco_bin --help 2>&1 | tee /tmp/help.txt | head -20
+          if grep -qE 'Killed|Segmentation fault|Bus error|Abort' /tmp/help.txt; then
+              echo "ERROR: eco --help crashed at runtime"; exit 1
+          fi
+          echo "OK: unified eco runs as native Mach-O"
+
+      # ---- Ship: package + smoke-test the Darwin bundle in isolation. ----
+      - name: Package Darwin bundle (TGZ)
+        # CPack picks up the BundleDarwin component from CMakeLists.txt's
+        # if(APPLE) install block — eco-boot-native, eco-compiler, project
+        # archives + libzip/openssl statics + kernel sources + examples.
+        run: |
+          cmake --build build-release --target package -- -k 20
+          ls -la build-release/*.tar.gz
+          tar -tzf build-release/eco-*-darwin.tar.gz | head -40
+          echo "..."
+          tar -tzf build-release/eco-*-darwin.tar.gz | wc -l | xargs -I{} echo "Total files: {}"
+
+      - name: Smoke-test the bundle in isolation
+        # Extract the tarball to a fresh prefix and run bin/eco from there.
+        # resolveFile() finds the project archives via
+        # <exe>/../lib/eco-runtime/project — confirms the bundle is
+        # self-contained (no implicit dep on the build tree). Then build
+        # Hello.elm with it, as the Linux bundle smoke does
+        # (docker/static-build.Dockerfile): the link finds clang and the SDK
+        # through xcrun at link time, not through build-host paths.
+        run: |
+          set +e
+          mkdir -p /tmp/eco-bundle && cd /tmp/eco-bundle
+          tar -xzf "$GITHUB_WORKSPACE"/build-release/eco-*-darwin.tar.gz
+          ls -la bin/ lib/eco-runtime/project/ 2>&1 | head -50
+          ./bin/eco --help 2>&1 | head -10
+          rc=$?
+          if [ $rc -ge 128 ]; then
+              echo "ERROR: bin/eco crashed (rc=$rc)"; exit 1
+          fi
+          echo "OK: bundled eco runs in isolation"
+
+          mkdir -p /tmp/eco-smoke/src && cd /tmp/eco-smoke
+          cp "$GITHUB_WORKSPACE"/compiler/examples/elm.json elm.json
+          cp "$GITHUB_WORKSPACE"/compiler/examples/src/Hello.elm src/Hello.elm
+          /tmp/eco-bundle/bin/eco make src/Hello.elm --output=hello || {
+              echo "ERROR: bundled eco make failed"; exit 1; }
+          test -x ./hello || { echo "ERROR: no hello executable"; exit 1; }
+          # Hello.elm is browser-style Html; headless it exits non-zero, so
+          # only a crash (signal) fails the smoke.
+          ./hello >/dev/null 2>&1
+          rc=$?
+          if [ $rc -ge 128 ]; then
+              echo "ERROR: hello crashed (rc=$rc)"; exit 1
+          fi
+          echo "OK: bundled eco built a runnable hello (rc=$rc)"
+
+      - name: Check macOS floor and linked libraries
+        # The floor (CMAKE_OSX_DEPLOYMENT_TARGET, 15.0) must hold for eco, the
+        # programs it links and every archive the bundle ships, including
+        # brew's openssl statics. A runner-image or bottle change that raises
+        # it fails here. eco must load nothing from Homebrew (LLVM/MLIR and
+        # OpenSSL are linked statically).
+        run: |
+          set -e
+          min=15.0
+          eco=/tmp/eco-bundle/bin/eco
+          test/scripts/check-macho-floor.sh "$min" \
+            "$eco" \
+            build-release/compiler/build-kernel/bin/eco-compiler \
+            /tmp/eco-smoke/hello \
+            /tmp/eco-bundle/lib/eco-runtime/project/*.a
+          if grep -n "built for newer" /tmp/eco-build.log; then
+              echo "ERROR: a link mixed in objects built for a newer macOS than $min"
+              exit 1
+          fi
+          echo "=== otool -L bin/eco ==="
+          otool -L "$eco"
+          if otool -L "$eco" | tail -n +2 \
+              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+              echo "ERROR: eco links a library outside macOS (expected static LLVM/MLIR/OpenSSL)"
+              exit 1
+          fi
+          echo "=== otool -L hello ==="
+          otool -L /tmp/eco-smoke/hello
+          if otool -L /tmp/eco-smoke/hello | tail -n +2 \
+              | grep -vE '^[[:space:]]+(/usr/lib/|/System/Library/)'; then
+              echo "ERROR: hello links a library outside macOS"
+              exit 1
+          fi
+          echo "OK: macOS floor $min holds; eco and hello load only macOS libraries"
+
+      - name: Save ccache (master only)
+        if: success() && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/ccache
+          key: mac-release-ccache-${{ github.sha }}
+
+      - name: Prune superseded ccache entries
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.ref != 'refs/heads/master' && '1' || '' }}
+        run: .github/scripts/prune-caches.sh mac-release-ccache-
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s | head -15
+
+      - name: Upload the bundle + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-bundle-output
+          path: |
+            build-release/compiler/build-kernel/bin/eco
+            /tmp/codesign.txt
+            /tmp/help.txt
+            /tmp/eco-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload the Darwin bundle for bundle-smoke
         uses: actions/upload-artifact@v4
         with:
           name: mac-bundle
-          path: build/eco-*-darwin.tar.gz
+          path: build-release/eco-*-darwin.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -362,7 +495,7 @@ jobs:
   # downloads and unpacks the packages itself, exercising eco's curl, zip/zlib
   # and OpenSSL code (plans/mac-self-contained-bundle.md step 2).
   bundle-smoke:
-    needs: aot
+    needs: bundle
     runs-on: macos-15
     timeout-minutes: 20
     steps:

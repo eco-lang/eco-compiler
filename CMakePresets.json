@@ -38,7 +38,7 @@
     {
       "name": "mac-build",
       "displayName": "Mac build (RelWithDebInfo, static LLVM 21.1.8 via $ECO_MAC_DEPS_DIR, full runtime)",
-      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). CI ships the Darwin bundle from this tree, so ECO_GC_STATS is OFF here as in the release preset: no GC counters and no exit-time stats banner in eco or in the programs it builds. See plans/mac-self-contained-bundle.md.",
+      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). Mac CI tests and bootstraps from this tree; the Darwin bundle comes from mac-release. See plans/mac-self-contained-bundle.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
@@ -47,8 +47,22 @@
         "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
         "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}",
-        "ECO_GC_STATS": "OFF"
+        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}"
+      }
+    },
+    {
+      "name": "mac-release",
+      "displayName": "Mac release (arm64 — shippable Darwin bundle)",
+      "description": "The mac-build configure in Release mode, as the release preset is for Linux: -O2 -DNDEBUG, no debug syms, no asserts, GC stats OFF, symbols stripped from eco and the programs it links (ld64 -S). CI ships the Darwin bundle from this tree. Set ECO_MAC_DEPS_DIR as for mac-build.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS_RELEASE": "-O2 -DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O2 -DNDEBUG",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}"
       }
     },
     {
@@ -100,6 +114,28 @@
       }
     },
     {
+      "name": "win-release",
+      "displayName": "Windows release (x86_64 — shippable Win64 bundle)",
+      "description": "The win-build configure in Release mode, as the release preset is for Linux: /O2 /DNDEBUG, no debug info (/Zi) or PDBs, no asserts, GC stats OFF. CI ships the Windows bundle from this tree. Set LLVM_DIR as for win-build.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_LINKER_TYPE": "LLD",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_CXX_FLAGS_INIT": "/EHsc",
+        "CMAKE_C_FLAGS_RELEASE": "/O2 /DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "/O2 /DNDEBUG /EHsc",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "/INCREMENTAL:NO",
+        "CMAKE_SHARED_LINKER_FLAGS_INIT": "/INCREMENTAL:NO",
+        "CMAKE_PREFIX_PATH": "$env{LLVM_DIR}",
+        "ECO_LLVM_FUNCTION_SECTIONS": "ON"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (static musl — shippable binary)",
       "description": "Stage B static musl build. -O2 -DNDEBUG, no debug syms, no asserts, GC stats OFF, kernel-debug OFF, --strip-all on the final link.",
@@ -138,6 +174,11 @@
       "jobs": 0
     },
     {
+      "name": "mac-release",
+      "configurePreset": "mac-release",
+      "jobs": 0
+    },
+    {
       "name": "mac-frontend",
       "configurePreset": "mac-frontend",
       "jobs": 0
@@ -145,6 +186,11 @@
     {
       "name": "win-build",
       "configurePreset": "win-build",
+      "jobs": 0
+    },
+    {
+      "name": "win-release",
+      "configurePreset": "win-release",
       "jobs": 0
     },
     {

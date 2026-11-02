@@ -91,6 +91,7 @@ Two macOS-specific presets:
 |---|---|---|
 | `mac-frontend` | `build/` | Front-end only. Configures `compiler/` via `ECO_FRONTEND_ONLY=ON`; pure Node/Elm bootstrap through Stage 5 (eco-compiler.mlir). No LLVM/MLIR / runtime / kernels / tests. Fast (~4 min on a clean build). |
 | `mac-build` | `build/` | Full configure: runtime, kernels, tests, compiler. Static LLVM/MLIR 21.1.8 from `$ECO_MAC_DEPS_DIR`. AppleClang + ld64 (no lld). |
+| `mac-release` | `build-release/` | The same configure in Release mode (`-O2 -DNDEBUG`, no asserts, no GC stats, stripped links), as `release` is for Linux. CI builds the Darwin bundle from it. |
 
 Both are gated on `${hostSystemName} == Darwin` so they only appear in
 `cmake --list-presets` on macOS hosts.
@@ -199,7 +200,7 @@ workflow under `.github/workflows/`:
 | Workflow | What it checks (cheap → expensive, fail-fast) |
 |---|---|
 | `mac-llvm-build` | Builds the static LLVM/MLIR 21.1.8 tree (`experiments/mac-llvm-build/build.sh`, 2-3 h cold) and caches it; a weekly run keeps the cache warm. |
-| `mac-aot` | Restores that tree; full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`); CPack bundle; a bundle smoke-test that builds `Hello.elm`; the macOS-floor and linked-library gate. Its `bundle-smoke` job then installs the bundle on a fresh runner with only the Command Line Tools (Xcode app and Homebrew LLVM/OpenSSL moved aside, clean `HOME`, minimal `PATH`) and builds and runs two programs. |
+| `mac-aot` | Restores that tree. Its `aot` job does a full configure (`mac-build`); front-end Stages 1-5; the elm-tests suite; runtime + JIT E2E test binary; the full Stage 9 bootstrap (`--target eco`); Mach-O verification (`file` + `codesign -dv` + `--help`). In parallel, its `bundle` job configures `mac-release`, runs the Stage 9 bootstrap in Release mode, then builds the CPack bundle, smoke-tests it by building `Hello.elm`, and runs the macOS-floor and linked-library gate. Its `bundle-smoke` job then installs the bundle on a fresh runner with only the Command Line Tools (Xcode app and Homebrew LLVM/OpenSSL moved aside, clean `HOME`, minimal `PATH`) and builds and runs two programs. |
 
 `mac-aot` runs on the free `macos-15` (arm64, M-class) hosted runner.
 It supersedes the former `mac-bootstrap` (front-end) and `mac-runtime`
