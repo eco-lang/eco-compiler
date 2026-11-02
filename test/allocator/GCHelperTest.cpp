@@ -643,6 +643,7 @@ HeapConfig modeConfig(uint32_t mode, size_t ahead) {
     return cfg;
 }
 
+#if ENABLE_GC_STATS  // every caller reads the GC counters
 struct ModeRun {
     uint64_t minors, majors, promoted, allocated, bytes_alloc, inuse_peak, hiwater;
     uint64_t released, fresh, reuse_total, cancelled;
@@ -766,6 +767,8 @@ ModeRun runModeWorkload(uint32_t mode, uint32_t jitter, size_t ahead = 0,
     return m;
 }
 
+
+#endif  // ENABLE_GC_STATS
 }  // namespace
 
 Testing::TestCase testDecommitModesAgreeOnCounters(

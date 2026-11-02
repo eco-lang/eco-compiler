@@ -197,8 +197,14 @@ void churn(int n = 20000) {
     for (int i = 0; i < n; ++i) (void)alloc::allocInt(0x5A5A0000 + i);
 }
 
+#if ENABLE_GC_STATS
 uint64_t minorCount() { return Allocator::instance().getCombinedStats().minor_gc_count; }
 uint64_t majorCount() { return Allocator::instance().getCombinedStats().major_gc_count; }
+#else
+// No counters in this build; every assertion that reads them is compiled out.
+uint64_t minorCount() { return 0; }
+uint64_t majorCount() { return 0; }
+#endif
 
 ThreadLocalHeap* tlh(Allocator& a) { return AllocatorTestAccess::getThreadHeap(a); }
 OldGenSpace& og(Allocator& a) { return tlh(a)->getOldGen(); }

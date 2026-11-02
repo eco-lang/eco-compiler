@@ -298,12 +298,16 @@ static void test_typed_newargs_skips_reboxing() {
 
     // Snapshot the allocator's object counter ACROSS the apply call only.
     // Anything before this point (closure alloc, etc.) is excluded.
+#if ENABLE_GC_STATS
     uint64_t before = Allocator::instance().getCombinedStats().objects_allocated;
+#endif
 
     HPtr result = eco_apply_closure_typed(
         closure_hptr, typed_args, 3, layoutBuf.layout());
 
+#if ENABLE_GC_STATS
     uint64_t after = Allocator::instance().getCombinedStats().objects_allocated;
+#endif
 
     // Evaluator received raw primitives intact.
     TEST_ASSERT(g_typed_record.called);
@@ -318,7 +322,9 @@ static void test_typed_newargs_skips_reboxing() {
     // Re-boxing of three primitive args would have added 3 to the counter
     // (eco_alloc_int + eco_alloc_float + eco_alloc_char). The typed-newargs
     // path must do none of that.
+#if ENABLE_GC_STATS
     TEST_ASSERT(after - before == 0);
+#endif
 
     // Result round-trips.
     TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
@@ -344,13 +350,17 @@ static void test_legacy_path_still_reboxes() {
     auto layoutBuf = LayoutStorage<3>::build(
         {/*PK_Int*/1, /*PK_Float*/2, /*PK_Char*/3});
 
+#if ENABLE_GC_STATS
     uint64_t before = Allocator::instance().getCombinedStats().objects_allocated;
+#endif
     HPtr result = eco_apply_closure_typed(
         closure_hptr, typed_args, 3, layoutBuf.layout());
+#if ENABLE_GC_STATS
     uint64_t after = Allocator::instance().getCombinedStats().objects_allocated;
 
     // Three primitives → three eco_alloc_* calls on the legacy path.
     TEST_ASSERT(after - before >= 3);
+#endif
     TEST_ASSERT(Elm::Kernel::Export::decodeBoxedBool(result.toBits()) == true);
 }
 

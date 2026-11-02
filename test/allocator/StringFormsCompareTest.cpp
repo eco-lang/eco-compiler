@@ -276,7 +276,9 @@ size_t runMatrix(RootedPool& entries, const std::vector<Entry>& es, const char* 
     std::vector<Snapshot> before;
     for (const auto& e : es) before.push_back(snap(entries.slot[e.slot]));
 
+#if ENABLE_GC_STATS
     const uint64_t allocs0 = Allocator::instance().getCombinedStats().objects_allocated;
+#endif
     size_t pairs = 0;
     std::string failures;
     unsigned nfail = 0;
@@ -309,10 +311,12 @@ size_t runMatrix(RootedPool& entries, const std::vector<Entry>& es, const char* 
         }
     }
 
+#if ENABLE_GC_STATS
     const uint64_t allocs1 = Allocator::instance().getCombinedStats().objects_allocated;
     if (allocs1 != allocs0)
         fail("equal/compare allocated " + std::to_string(allocs1 - allocs0) +
              " objects (they must never flatten or allocate)");
+#endif
     for (size_t i = 0; i < es.size(); ++i) {
         Snapshot now = snap(entries.slot[es[i].slot]);
         const Snapshot& was = before[i];

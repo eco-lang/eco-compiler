@@ -83,7 +83,9 @@ void churn() {
     for (int i = 0; i < 100000; ++i) (void)alloc::allocInt(i);
 }
 
+#if ENABLE_GC_STATS
 [[maybe_unused]] uint64_t minorCount() { return Allocator::instance().getCombinedStats().minor_gc_count; }
+#endif
 
 // Hand-made objects in a plain buffer: the accessors are pure functions.
 template <class T> T* inBuffer(std::vector<u64>& buf, u32 slots) {
@@ -212,9 +214,13 @@ void test_closure_call_saturated_roots_40_slots() {
             alloc::closureCapture(Allocator::instance().resolve(c), boxed(strs[i]), PK_Boxed);
         uint64_t newargs[20];
         for (int i = 0; i < 20; ++i) std::memcpy(&newargs[i], &strs[20 + i], sizeof(uint64_t));
+#if ENABLE_GC_STATS
         const uint64_t minors = minorCount();
+#endif
         HPtr res = eco_closure_call_saturated(toHPtr(c), newargs, 20, nullptr);
+#if ENABLE_GC_STATS
         if (minorCount() == minors) _exit(4);   // vacuous: no GC ran inside
+#endif
         if (printed(res) != quoted("arg39")) _exit(3);
     });
     TEST_ASSERT(r == 0);
@@ -254,10 +260,14 @@ void test_record_slots_beyond_32_survive_minor_gc() {
         for (int i = 0; i < 70; ++i) v[i] = boxed(alloc::allocInt(1000 + i));
         HPointer h = alloc::record(v, 0);
         a.getRootSet().addRoot(&h);
+#if ENABLE_GC_STATS
         const uint64_t minors = minorCount();
+#endif
         churn();
         a.minorGC();
+#if ENABLE_GC_STATS
         if (minorCount() == minors) _exit(4);
+#endif
         Record* obj = static_cast<Record*>(Allocator::instance().resolve(h));
         for (int i = 32; i < 70; ++i) {
             if (boxedIntValue(obj->values[i]) != 1000 + i) _exit(3);

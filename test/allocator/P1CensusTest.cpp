@@ -335,10 +335,14 @@ Testing::TestCase testP1ChunkChainSurvivesMidConstructionGC(
         while (NurserySpaceTestAccess::headroom(nursery) > first_link + 1024) {
             (void)alloc::allocInt(-1);
         }
+#if ENABLE_GC_STATS
         const uint64_t minors0 = alloc.getCombinedStats().minor_gc_count;
+#endif
         HPointer list = alloc::listFromPointers(elems);
         alloc.getRootSet().addRoot(&list);
+#if ENABLE_GC_STATS
         TEST_ASSERT(alloc.getCombinedStats().minor_gc_count > minors0);   // GC mid-build
+#endif
         churn(20000);
         alloc.minorGC();
         churn(20000);

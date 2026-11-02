@@ -145,7 +145,8 @@ endif()
 # banner. Default ON for any non-Release build (so the dev `build/` and
 # `debug/` presets keep the stats path live), OFF under Release so user-
 # facing AOT binaries built from the static musl preset don't drag the
-# counter overhead or clutter stderr at exit.
+# counter overhead or clutter stderr at exit. The mac-build preset sets it
+# OFF too, since CI ships the Darwin bundle from that RelWithDebInfo tree.
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     option(ECO_GC_STATS "Enable GC allocation/timing counters and the exit-time stats banner" OFF)
 else()

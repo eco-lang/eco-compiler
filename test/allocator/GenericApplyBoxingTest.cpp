@@ -256,12 +256,14 @@ static void test_generic_apply_both_args_boxed_at_callsite() {
 // ============================================================================
 
 static bool g_eval70_ok = false;
-static uint64_t g_eval70_minors = 0;
+[[maybe_unused]] static uint64_t g_eval70_minors = 0;
 
 static void* eval70(void* args[]) {
     for (int i = 0; i < 20000; ++i) (void)alloc::allocInt(i);   // churn
     Allocator::instance().minorGC();
+#if ENABLE_GC_STATS
     g_eval70_minors = Allocator::instance().getCombinedStats().minor_gc_count;
+#endif
     bool ok = true;
     for (int i = 0; i < 70; ++i) {
         void* o = hptrToRaw(reinterpret_cast<uint64_t>(args[i]));
@@ -280,12 +282,16 @@ static void test_generic_apply_70_args_roots_slots_beyond_64() {
     const size_t saved = eco_gc_stack_range_point();
     pushRootsByKinds(args, 70, [](uint32_t) { return 0u; });
     for (int i = 0; i < 70; ++i) args[i] = eco_alloc_int(1000 + i).toBits();
+#if ENABLE_GC_STATS
     const uint64_t minorsBefore = Allocator::instance().getCombinedStats().minor_gc_count;
+#endif
     uint64_t cbits;
     std::memcpy(&cbits, &c, sizeof(cbits));
     HPtr result = eco_apply_closure(HPtr::fromBits(cbits), args, 70);
     eco_gc_restore_stack_range_point(saved);
+#if ENABLE_GC_STATS
     TEST_ASSERT(g_eval70_minors > minorsBefore);   // not vacuous: a GC ran inside
+#endif
     TEST_ASSERT(g_eval70_ok);
     void* r = hptrToRaw(result.toBits());
     TEST_ASSERT(r && static_cast<ElmInt*>(r)->value == 1);

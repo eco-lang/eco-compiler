@@ -38,7 +38,7 @@
     {
       "name": "mac-build",
       "displayName": "Mac build (RelWithDebInfo, static LLVM 21.1.8 via $ECO_MAC_DEPS_DIR, full runtime)",
-      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). See plans/mac-self-contained-bundle.md.",
+      "description": "Full configure on macOS (arm64): runtime, kernels, tests, compiler. LLVM/MLIR 21.1.8 static archives from the install tree experiments/mac-llvm-build/build.sh produces; set ECO_MAC_DEPS_DIR to that prefix before running this preset. AppleClang + ld64 (no lld). Minimum macOS comes from CMAKE_OSX_DEPLOYMENT_TARGET (15.0, top-level CMakeLists.txt). CI ships the Darwin bundle from this tree, so ECO_GC_STATS is OFF here as in the release preset: no GC counters and no exit-time stats banner in eco or in the programs it builds. See plans/mac-self-contained-bundle.md.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
@@ -47,7 +47,8 @@
         "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
         "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -UNDEBUG",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}"
+        "CMAKE_PREFIX_PATH": "$env{ECO_MAC_DEPS_DIR}",
+        "ECO_GC_STATS": "OFF"
       }
     },
     {

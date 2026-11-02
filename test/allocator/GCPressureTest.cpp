@@ -39,6 +39,16 @@
         }                                                                   \
     } while (0)
 
+// An assertion on the GC counters. Without ENABLE_GC_STATS there are no counters (the helpers
+// below return zeros), so it checks nothing; `sizeof` keeps its operands referenced.
+#if ENABLE_GC_STATS
+#define GCP_STATS_ASSERT(cond) GCP_ASSERT(cond)
+#define RC_STATS_ASSERT(cond) RC_ASSERT(cond)
+#else
+#define GCP_STATS_ASSERT(cond) ((void)sizeof(cond))
+#define RC_STATS_ASSERT(cond) ((void)sizeof(cond))
+#endif
+
 #include <rapidcheck.h>
 
 #include "Allocator.hpp"
@@ -73,7 +83,11 @@ void* hptrBitsToRaw(uint64_t bits) {
 // fine. Stats from previous reset cycles do not pollute the result because
 // initAllocator() resets and re-creates the thread heap.
 GCStats currentStats() {
+#if ENABLE_GC_STATS
     return Allocator::instance().getCombinedStats();
+#else
+    return GCStats{};
+#endif
 }
 
 // Convenience: how many minor GCs ran since the heap was reset.
@@ -149,7 +163,7 @@ Testing::TestCase testNurseryChurnPromotesRootedFraction(
         }
 
         const uint64_t minors_before_drain = minorGCCount();
-        GCP_ASSERT(minors_before_drain >= 30);
+        GCP_STATS_ASSERT(minors_before_drain >= 30);
 
         // Drain: run enough explicit minor GCs to ensure every survivor
         // exceeded promotion age.
@@ -207,8 +221,8 @@ Testing::TestCase testMajorGCTriggersAfterPromotionFloodAllocator(
             alloc.majorGC();
         }
 
-        GCP_ASSERT(majorGCCount() >= 3);
-        GCP_ASSERT(currentStats().bytes_freed > 0);
+        GCP_STATS_ASSERT(majorGCCount() >= 3);
+        GCP_STATS_ASSERT(currentStats().bytes_freed > 0);
 
         // All rooted ints must still be intact.
         for (size_t i = 0; i < roots.size(); ++i) {
@@ -338,7 +352,7 @@ Testing::TestCase testCyclicGarbageBetweenGenerations(
         // Sanity: most of the cycle bytes are gone. We do not demand 0
         // because internal allocator metadata may live in old gen too.
         GCP_ASSERT(old_gen_after_collect < old_gen_with_cycles);
-        GCP_ASSERT(majorGCCount() >= 1);
+        GCP_STATS_ASSERT(majorGCCount() >= 1);
     });
 
 // ============================================================================
@@ -415,7 +429,7 @@ Testing::TestCase testEcoAllocChurnSurvivesManyMinorGCs(
             }
         }
 
-        GCP_ASSERT(minorGCCount() >= 5);
+        GCP_STATS_ASSERT(minorGCCount() >= 5);
 
         // Promote everyone.
         for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
@@ -512,8 +526,8 @@ Testing::TestCase testEcoAllocClosureCapturesSurviveGC(
         for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
         alloc.majorGC();
 
-        GCP_ASSERT(minorGCCount() >= 5);
-        GCP_ASSERT(majorGCCount() >= 1);
+        GCP_STATS_ASSERT(minorGCCount() >= 5);
+        GCP_STATS_ASSERT(majorGCCount() >= 1);
 
         for (auto& r : roots) {
             void* obj = readBarrier(r.slot);
@@ -677,7 +691,7 @@ Testing::TestCase testEcoAllocStringChurnAndPromotion(
         // Promote, then sweep.
         for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
         alloc.majorGC();
-        GCP_ASSERT(majorGCCount() >= 1);
+        GCP_STATS_ASSERT(majorGCCount() >= 1);
 
         for (auto& r : roots) {
             ElmString* s =
@@ -720,7 +734,7 @@ Testing::TestCase testEcoAllocConsListLongPromotion(
         }
 
         // Stats: many minor GCs should have fired during list construction.
-        GCP_ASSERT(minorGCCount() >= 5);
+        GCP_STATS_ASSERT(minorGCCount() >= 5);
 
         // Force several promotions and a major GC.
         for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
@@ -926,7 +940,7 @@ Testing::TestCase testLargeObjectPinnedAcrossMajorGC(
             for (u32 j = 0; j <= PROMOTION_AGE; ++j) alloc.minorGC();
             alloc.majorGC();
         }
-        GCP_ASSERT(majorGCCount() >= 4);
+        GCP_STATS_ASSERT(majorGCCount() >= 4);
 
         for (auto& p : pinned) {
             void* hdr_obj = alloc.resolve(p.slot);
@@ -1059,7 +1073,7 @@ Testing::TestCase testMajorGCInitiatedByOccupancyAndAllocFailure(
                 }
             }
             const uint64_t after_major = currentStats().major_gc_count;
-            GCP_ASSERT(after_major > before_major);
+            GCP_STATS_ASSERT(after_major > before_major);
 
             for (auto& r : roots) alloc.getRootSet().removeRoot(&r);
         }
@@ -1108,7 +1122,7 @@ Testing::TestCase testMajorGCInitiatedByOccupancyAndAllocFailure(
                 currentStats().major_gc_alloc_failure_triggers;
             // Either the alloc-fail path fired, or the major GC ran
             // (occupancy could also reclaim before failure).
-            GCP_ASSERT(after_fail > before_fail || majorGCCount() >= 1);
+            GCP_STATS_ASSERT(after_fail > before_fail || majorGCCount() >= 1);
 
             for (auto& r : live) {
                 if (r.ptr_ind == 0) alloc.getRootSet().removeRoot(&r);
@@ -1239,7 +1253,7 @@ Testing::TestCase testRandomizedPressureWorkload(
                 RC_ASSERT(static_cast<ElmInt*>(obj)->value == r.ival);
             }
 
-            RC_ASSERT(minorGCCount() >= 1);
+            RC_STATS_ASSERT(minorGCCount() >= 1);
             (void)majorGCCount();
 
             for (auto& r : rooted) alloc.getRootSet().removeRoot(&r.slot);
@@ -1322,7 +1336,7 @@ Testing::TestCase testStackRootRangeUnderPressure(
             }
             alloc.minorGC();
         }
-        GCP_ASSERT(minorGCCount() - before >= 5);
+        GCP_STATS_ASSERT(minorGCCount() - before >= 5);
 
         // Each stack root must have been updated to the post-evacuation
         // location and resolve to the original int value.
@@ -1397,11 +1411,11 @@ Testing::TestCase testPanicSweepDrivesAllocationToCompletion(
         // Mutator-budget sweep activity must have accrued: with mixed
         // garbage and a small heap, the dynamic budget is the only path
         // that drives lazy sweep on the allocation slow path.
-        GCP_ASSERT(mutator_sweep_after >= mutator_sweep_before);
+        GCP_STATS_ASSERT(mutator_sweep_after >= mutator_sweep_before);
         // Panic counter is allowed to remain zero on a workload where the
         // dynamic budget alone closed the gap before bag-page exhaustion.
         // We assert only the weaker invariant: the counter is monotonic.
-        GCP_ASSERT(panic_after >= panic_before);
+        GCP_STATS_ASSERT(panic_after >= panic_before);
 
         for (auto& r : roots) alloc.getRootSet().removeRoot(&r);
     });
@@ -1435,7 +1449,7 @@ Testing::TestCase testSafepointPollingDrainsPressure(
         const uint64_t after = minorGCCount();
         // We don't require an exact count, but at least a few collections
         // must have run.
-        GCP_ASSERT(after - before >= 5);
+        GCP_STATS_ASSERT(after - before >= 5);
         // Allocation counter advances.
-        GCP_ASSERT(bytesAllocated() > 0);
+        GCP_STATS_ASSERT(bytesAllocated() > 0);
     });
