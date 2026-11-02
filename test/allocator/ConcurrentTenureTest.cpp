@@ -170,7 +170,10 @@ Testing::TestCase testTenureStopResumeSameLayout(
     []() {
 #if !defined(_WIN32)
         const Run ref = runInChild(tenureConfig(1), 31, 0, 0);
-        TEST_ASSERT(ref.promoted > 0 && ref.layout[1] > 0);
+        TEST_ASSERT(ref.layout[1] > 0);
+#if ENABLE_GC_STATS
+        TEST_ASSERT(ref.promoted > 0);
+#endif
         for (uint64_t k : {1ull, 13ull, 5000ull}) {
             const Run m2 = runInChild(tenureConfig(2), 31, k, 0);
             if (!sameRun(m2, ref, "stop/resume")) TEST_FAIL("mode 2 with forced stops differs from mode 1");
